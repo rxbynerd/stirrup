@@ -20,14 +20,18 @@ V1 Phase 4 delivers a basic container executor with `--network none`, resource l
 - **Registry allowlist.** The harness maintains a local allowlist of permitted registries (e.g. `ghcr.io/stirrup/*`, `docker.io/library/*`). Images from unrecognised registries are rejected.
 - **Image signing verification.** Verify image signatures via cosign/Sigstore before pulling. This ensures the image was built by a trusted CI pipeline and hasn't been tampered with.
 
-```typescript
-interface ContainerImagePolicy {
-  allowedRegistries: string[];           // glob patterns: "ghcr.io/stirrup/*"
-  requireDigest: boolean;                // reject tag-only references
-  requireSignature?: {
-    verifier: "cosign";
-    publicKey: string;                   // path or inline PEM
-  };
+```go
+// ContainerImagePolicy defines the image trust policy for container executors.
+type ContainerImagePolicy struct {
+	AllowedRegistries []string         `json:"allowedRegistries"` // glob patterns: "ghcr.io/stirrup/*"
+	RequireDigest     bool             `json:"requireDigest"`     // reject tag-only references
+	RequireSignature  *SignaturePolicy `json:"requireSignature,omitempty"`
+}
+
+// SignaturePolicy configures image signature verification.
+type SignaturePolicy struct {
+	Verifier  string `json:"verifier"`  // "cosign"
+	PublicKey string `json:"publicKey"` // path or inline PEM
 }
 ```
 
@@ -100,12 +104,13 @@ V1 treats MCP servers as trusted extensions. This section defines a trust model 
 
 The `ToolsConfig` should include an allowlist of permitted tool names per MCP server. The harness rejects tool registrations that don't match the allowlist:
 
-```typescript
-interface McpServerConfig {
-  uri: string;
-  trust: "trusted" | "semi-trusted" | "untrusted";
-  allowedTools?: string[];              // if set, only these tools are registered
-  credentialRef?: string;               // secret:// reference for auth
+```go
+// McpServerConfig defines trust and access controls for an MCP server.
+type McpServerConfig struct {
+	URI           string   `json:"uri"`
+	Trust         string   `json:"trust"`                    // "trusted" | "semi-trusted" | "untrusted"
+	AllowedTools  []string `json:"allowedTools,omitempty"`   // if set, only these tools are registered
+	CredentialRef string   `json:"credentialRef,omitempty"`  // secret:// reference for auth
 }
 ```
 
@@ -133,15 +138,24 @@ V1 includes structured delimiters for untrusted context. These items add deeper 
 
 A `ToolCallGuard` inspects tool call inputs before dispatch, independent of the sandbox tier. It's defense in depth — the sandbox is the primary boundary, but catching suspicious patterns before they reach the executor is better.
 
-```typescript
-interface ToolCallGuard {
-  check(call: { name: string; input: unknown }): {
-    allowed: true;
-  } | {
-    allowed: false;
-    reason: string;
-    severity: "block" | "warn";
-  };
+```go
+// ToolCallGuard inspects tool call inputs before dispatch, independent
+// of the sandbox tier. It is defense in depth -- not a security boundary.
+type ToolCallGuard interface {
+	Check(call ToolCallInput) GuardResult
+}
+
+// ToolCallInput holds the tool call to be checked.
+type ToolCallInput struct {
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// GuardResult holds whether a tool call was allowed or flagged.
+type GuardResult struct {
+	Allowed  bool   `json:"allowed"`
+	Reason   string `json:"reason,omitempty"`   // populated when Allowed is false
+	Severity string `json:"severity,omitempty"` // "block" | "warn"
 }
 ```
 
@@ -270,10 +284,13 @@ V1 includes log scrubbing and RunConfig redaction. These items address remaining
 
 The `ProductionTrace` type should support a `classification` field:
 
-```typescript
-interface ProductionTrace extends RunTrace {
-  // ... existing fields ...
-  classification?: "public" | "internal" | "confidential";
+```go
+// ProductionTrace embeds RunTrace and adds production-specific metadata.
+// The Classification field drives retention and access policies.
+type ProductionTrace struct {
+	RunTrace
+	// ... existing fields ...
+	Classification string `json:"classification,omitempty"` // "public" | "internal" | "confidential"
 }
 ```
 
@@ -305,12 +322,13 @@ The lakehouse stores `user_id`, `target_repo`, `cost`, and `harness_version` per
 
 ### 7.2 YAML parsing safety
 
-Eval suite and experiment definitions are YAML files. YAML deserialization has a history of code execution vulnerabilities via custom tags and constructors.
+Eval suite and experiment definitions are YAML files. YAML deserialization has a history of code execution vulnerabilities via custom tags and constructors in dynamic languages (JavaScript's `!!js/function`, Python's `!!python/object`).
 
-**Mitigation:** Use a safe YAML parser that rejects custom tags:
-- Node.js `yaml` package with `schema: 'core'` (rejects `!!js/function`, `!!python/object`, etc.)
-- Validate parsed YAML against a JSON Schema before use.
-- Never use `YAML.parse()` with default options on untrusted input — always specify the safe schema.
+**Mitigation:** Go's YAML parsing is structurally safer than dynamic-language alternatives:
+- Use `gopkg.in/yaml.v3`, which does not support executable tags. Go YAML parsers unmarshal into typed structs, not arbitrary objects — there is no equivalent of JavaScript's `!!js/function` or Python's `!!python/object` because Go has no mechanism to construct arbitrary types from YAML tags.
+- Go's type system provides natural safety: YAML is unmarshalled into concrete struct types with explicit field mappings. Unknown fields can be rejected by using `KnownFields(true)` on the YAML decoder.
+- Validate parsed YAML against a JSON Schema before use (convert to JSON, then validate with `github.com/santhosh-tekuri/jsonschema`).
+- Despite Go's structural safety, always treat YAML from external sources as untrusted input — validate all fields, reject unexpected values, and enforce size limits on the YAML document itself.
 
 ### 7.3 Mined eval task quarantine
 
@@ -327,20 +345,26 @@ Eval suite and experiment definitions are YAML files. YAML deserialization has a
 
 ## 8. Dependency supply chain
 
-### 8.1 npm dependency security
+### 8.1 Go module supply chain security
 
-- Pin all dependencies by exact version and hash in `pnpm-lock.yaml`.
-- Run `npm audit` in CI on every PR. Block merges with known high/critical vulnerabilities.
-- Consider vendoring critical dependencies (Anthropic SDK, OpenAI SDK, gRPC libraries) to reduce supply chain risk.
-- Use `npm provenance` verification where available.
+Go's module system provides structurally stronger supply chain security than npm or pip:
+
+- **`go.sum` provides cryptographic verification** of all module content. Every module version is hashed and recorded; builds fail if content changes.
+- **`sum.golang.org` transparency log** verifies module hashes globally. This is a publicly auditable, append-only log (similar to Certificate Transparency) that detects module tampering — even if the source repository is compromised, the transparency log will catch hash mismatches. No equivalent exists in the npm or pip ecosystems.
+- **`go mod vendor` + `-mod=vendor`** copies all dependencies into the repository and builds without network access. This eliminates runtime dependency on module proxies and provides a complete, auditable snapshot of all dependency code.
+- **`govulncheck`** (official Go vulnerability scanner, `golang.org/x/vuln/cmd/govulncheck`) scans dependencies against the Go vulnerability database. Run in CI on every PR; block merges with known high/critical vulnerabilities.
+- **`GONOSUMCHECK` and `GONOSUMDB` should never be set in CI.** These environment variables disable the transparency log and checksum database, respectively. Audit CI configurations to ensure they are absent.
+- **Reproducible builds with `CGO_ENABLED=0`** produce statically linked binaries with no C library dependencies, eliminating an entire class of native-code supply chain risks.
+- **Minimal dependency culture:** Go's extensive stdlib (HTTP, JSON, crypto, testing, regexp, compression) means fewer third-party dependencies are needed in the first place. The harness's provider adapters use only `net/http`, `encoding/json`, and `bufio` — all stdlib.
 - Enable Dependabot or Renovate for automated dependency updates with CI gates.
 
 ### 8.2 Container base image updates
 
-- Use a minimal base image (e.g. `node:lts-slim`, `distroless/nodejs`) to reduce attack surface.
-- Pin base images by digest.
+- **Build stage:** `golang:1.22-alpine` or `golang:1.22` for compilation.
+- **Runtime stage:** `scratch` or `gcr.io/distroless/static` for the final image. Go produces a single static binary (`CGO_ENABLED=0`), so no OS-level runtime, shell, or package manager is needed. This yields a ~10-20MB final image with zero OS-level dependencies — a dramatically smaller attack surface than any runtime-dependent base image.
+- Pin base images by digest (e.g. `golang:1.22-alpine@sha256:abc123`).
 - Scan images with Trivy or Snyk in CI.
-- Rebuild images on a regular cadence (weekly) to pick up OS-level security patches.
+- Rebuild images on a regular cadence (weekly) to pick up any base image security patches (primarily relevant for the build stage; `scratch`/`distroless` images have minimal update needs).
 
 ---
 
