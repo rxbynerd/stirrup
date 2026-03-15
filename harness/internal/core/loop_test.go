@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	contextpkg "github.com/rubynerd/stirrup/harness/internal/context"
@@ -295,4 +297,277 @@ func (m *infiniteToolCallProvider) Stream(_ context.Context, _ types.StreamParam
 	ch <- types.StreamEvent{Type: "message_complete", StopReason: "tool_use"}
 	close(ch)
 	return ch, nil
+}
+
+// errorProvider is a provider whose Stream() always returns an error.
+type errorProvider struct {
+	err error
+}
+
+func (m *errorProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	return nil, m.err
+}
+
+// streamErrorProvider sends an error event on the channel.
+type streamErrorProvider struct {
+	err error
+}
+
+func (m *streamErrorProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	ch := make(chan types.StreamEvent, 1)
+	ch <- types.StreamEvent{Type: "error", Error: m.err}
+	close(ch)
+	return ch, nil
+}
+
+// failingPromptBuilder always returns an error from Build.
+type failingPromptBuilder struct {
+	err error
+}
+
+func (m *failingPromptBuilder) Build(_ context.Context, _ prompt.PromptContext) (string, error) {
+	return "", m.err
+}
+
+// failingVerifier always returns Passed: false.
+type failingVerifier struct{}
+
+func (m *failingVerifier) Verify(_ context.Context, _ verifier.VerifyContext) (*types.VerificationResult, error) {
+	return &types.VerificationResult{
+		Passed:   false,
+		Feedback: "verification check failed",
+	}, nil
+}
+
+// --- P0: Security-critical tests ---
+
+func TestDispatchToolCall_UnknownTool(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{})
+
+	call := types.ToolCall{
+		ID:    "tc_unknown",
+		Name:  "nonexistent_tool",
+		Input: json.RawMessage(`{}`),
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if success {
+		t.Error("expected success == false for unknown tool")
+	}
+	if !strings.Contains(output, "Unknown tool") {
+		t.Errorf("expected output to contain 'Unknown tool', got %q", output)
+	}
+}
+
+func TestDispatchToolCall_PermissionDenied(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{})
+
+	// Register a side-effecting tool.
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:        "dangerous_tool",
+		Description: "A tool with side effects",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		SideEffects: true,
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "should not reach here", nil
+		},
+	})
+	loop.Tools = registry
+
+	// Use DenySideEffects policy that includes this tool.
+	loop.Permissions = permission.NewDenySideEffects(map[string]bool{
+		"dangerous_tool": true,
+	})
+
+	call := types.ToolCall{
+		ID:    "tc_denied",
+		Name:  "dangerous_tool",
+		Input: json.RawMessage(`{}`),
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if success {
+		t.Error("expected success == false for denied tool")
+	}
+	if !strings.Contains(output, "Permission denied") {
+		t.Errorf("expected output to contain 'Permission denied', got %q", output)
+	}
+}
+
+func TestDispatchToolCall_ToolHandlerError(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{})
+
+	// Register a tool whose handler returns an error.
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:        "broken_tool",
+		Description: "A tool that always errors",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		SideEffects: false,
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "", errors.New("handler exploded")
+		},
+	})
+	loop.Tools = registry
+
+	call := types.ToolCall{
+		ID:    "tc_broken",
+		Name:  "broken_tool",
+		Input: json.RawMessage(`{}`),
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if success {
+		t.Error("expected success == false for erroring tool handler")
+	}
+	if !strings.Contains(output, "Tool error") {
+		t.Errorf("expected output to contain 'Tool error', got %q", output)
+	}
+}
+
+// --- P1: Reliability-critical tests ---
+
+func TestLoop_ProviderStreamError(t *testing.T) {
+	prov := &errorProvider{err: errors.New("connection refused")}
+
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() should not return a Go error on provider stream failure, got: %v", err)
+	}
+	if runTrace == nil {
+		t.Fatal("expected non-nil RunTrace even on provider error")
+	}
+	if runTrace.Outcome != "error" {
+		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
+	}
+}
+
+func TestLoop_StreamEventError(t *testing.T) {
+	prov := &streamErrorProvider{err: errors.New("server returned 500")}
+
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() should not return a Go error on stream event error, got: %v", err)
+	}
+	if runTrace == nil {
+		t.Fatal("expected non-nil RunTrace even on stream event error")
+	}
+	if runTrace.Outcome != "error" {
+		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
+	}
+}
+
+func TestLoop_ContextCancelled(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Hello"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	loop := buildTestLoop(prov)
+	config := buildTestConfig()
+
+	// Cancel the context before running.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	runTrace, err := loop.Run(ctx, config)
+	if err != nil {
+		t.Fatalf("Run() should not return a Go error on context cancellation, got: %v", err)
+	}
+	if runTrace == nil {
+		t.Fatal("expected non-nil RunTrace even on context cancellation")
+	}
+	if runTrace.Outcome != "error" {
+		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
+	}
+}
+
+func TestLoop_VerificationFailed(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Done with the task."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	loop := buildTestLoop(prov)
+	loop.Verifier = &failingVerifier{}
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "verification_failed" {
+		t.Errorf("expected outcome 'verification_failed', got %q", runTrace.Outcome)
+	}
+}
+
+func TestLoop_PromptBuildError(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Hello"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	loop := buildTestLoop(prov)
+	loop.Prompt = &failingPromptBuilder{err: errors.New("template parse failure")}
+	config := buildTestConfig()
+
+	_, err := loop.Run(context.Background(), config)
+	if err == nil {
+		t.Fatal("expected non-nil error when prompt builder fails")
+	}
+	if !strings.Contains(err.Error(), "build system prompt") {
+		t.Errorf("expected error to mention prompt building, got: %v", err)
+	}
+}
+
+func TestDefaultModelPricing(t *testing.T) {
+	// Known models should return their specific pricing.
+	sonnet := defaultModelPricing("claude-sonnet-4-6")
+	if sonnet.InputPer1M != 3.0 || sonnet.OutputPer1M != 15.0 {
+		t.Errorf("unexpected sonnet pricing: %+v", sonnet)
+	}
+
+	haiku := defaultModelPricing("claude-haiku-4-5")
+	if haiku.InputPer1M != 0.80 || haiku.OutputPer1M != 4.0 {
+		t.Errorf("unexpected haiku pricing: %+v", haiku)
+	}
+
+	opus := defaultModelPricing("claude-opus-4-6")
+	if opus.InputPer1M != 15.0 || opus.OutputPer1M != 75.0 {
+		t.Errorf("unexpected opus pricing: %+v", opus)
+	}
+
+	// Unknown models should fall back to sonnet pricing.
+	unknown := defaultModelPricing("some-future-model")
+	if unknown.InputPer1M != 3.0 || unknown.OutputPer1M != 15.0 {
+		t.Errorf("expected fallback pricing for unknown model, got: %+v", unknown)
+	}
+}
+
+func TestBuildLoop_InvalidConfig(t *testing.T) {
+	config := buildTestConfig()
+	config.MaxTurns = 200 // exceeds the maximum of 100
+
+	_, err := BuildLoop(context.Background(), config)
+	if err == nil {
+		t.Fatal("expected error for invalid config with maxTurns > 100")
+	}
+	if !strings.Contains(err.Error(), "maxTurns") {
+		t.Errorf("expected error to mention maxTurns, got: %v", err)
+	}
 }

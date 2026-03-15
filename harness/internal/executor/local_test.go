@@ -76,6 +76,49 @@ func TestResolvePath_AbsoluteOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestResolvePath_SymlinkEscapesWorkspace(t *testing.T) {
+	exec, dir := newTestExecutor(t)
+
+	// Create a symlink inside the workspace that points to /tmp (outside).
+	link := filepath.Join(dir, "escape_link")
+	if err := os.Symlink("/tmp", link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	// Attempting to resolve a path through the symlink should fail because
+	// the resolved target (/tmp/...) is outside the workspace.
+	_, err := exec.ResolvePath("escape_link/somefile")
+	if err == nil {
+		t.Fatal("expected error for symlink escaping workspace")
+	}
+	if !strings.Contains(err.Error(), "escapes workspace") {
+		t.Errorf("error should mention workspace escape, got: %v", err)
+	}
+
+	// The symlink target itself should also be rejected.
+	_, err = exec.ResolvePath("escape_link")
+	if err == nil {
+		t.Fatal("expected error for symlink target outside workspace")
+	}
+}
+
+func TestResolvePath_AbsoluteInsideWorkspace(t *testing.T) {
+	exec, dir := newTestExecutor(t)
+
+	// Create a file inside the workspace.
+	testFile := filepath.Join(dir, "inner.txt")
+	os.WriteFile(testFile, []byte("hi"), 0o644)
+
+	// An absolute path that falls inside the workspace should be accepted.
+	resolved, err := exec.ResolvePath(testFile)
+	if err != nil {
+		t.Fatalf("ResolvePath: %v", err)
+	}
+	if resolved != testFile {
+		t.Errorf("got %q, want %q", resolved, testFile)
+	}
+}
+
 func TestReadFile(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 	content := "hello world"

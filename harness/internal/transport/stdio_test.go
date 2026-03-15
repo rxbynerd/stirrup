@@ -85,6 +85,32 @@ func TestStdioTransport_OnControlSkipsMalformed(t *testing.T) {
 	}
 }
 
+func TestStdioTransport_EmitScrubsSecrets(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewStdioTransport(&buf, strings.NewReader(""))
+
+	event := types.HarnessEvent{
+		Type:    "tool_result",
+		Content: "key is sk-ant-abc123-secret",
+		Message: "token ghp_abcdef1234567890",
+	}
+
+	if err := tr.Emit(event); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "sk-ant-") {
+		t.Error("Anthropic API key was not scrubbed from output")
+	}
+	if strings.Contains(output, "ghp_") {
+		t.Error("GitHub PAT was not scrubbed from output")
+	}
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Error("expected [REDACTED] placeholder in output")
+	}
+}
+
 func TestStdioTransport_Close(t *testing.T) {
 	tr := NewStdioTransport(&bytes.Buffer{}, strings.NewReader(""))
 	if err := tr.Close(); err != nil {
