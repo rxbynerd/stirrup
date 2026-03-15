@@ -12,6 +12,10 @@ import (
 	"github.com/rubynerd/stirrup/types"
 )
 
+// maxVerificationRetries is the maximum number of times the verifier can
+// request a retry before the run is terminated with verification_failed.
+const maxVerificationRetries = 3
+
 // Run executes the agentic loop as described in VERSION1.md:
 //
 //	repeat {
@@ -19,7 +23,7 @@ import (
 //	  run verifier
 //	  if verifier passes → done
 //	  if retries exhausted → done (with failure)
-//	  else → feed verifier feedback back into the loop
+//	  else → feed verifier feedback back into the loop as a user message
 //	}
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
 	// Start tracing.
@@ -51,26 +55,94 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		Type: "ready",
 	})
 
-	// Main agentic loop.
-	var lastStopReason string
+	// Outer verification loop.
 	outcome := "success"
+	verificationAttempts := 0
+
+	for verificationAttempts <= maxVerificationRetries {
+		// Run the inner agentic loop.
+		var innerOutcome string
+		messages, innerOutcome = l.runInnerLoop(ctx, config, systemPrompt, messages, costTracker)
+
+		if innerOutcome != "success" {
+			outcome = innerOutcome
+			break
+		}
+
+		// Run verifier.
+		vResult, verifyErr := l.Verifier.Verify(ctx, verifier.VerifyContext{
+			Mode:     config.Mode,
+			Executor: l.Executor,
+			Messages: messages,
+		})
+		if verifyErr != nil || vResult.Passed {
+			// Verifier passed (or errored — treat as pass to avoid blocking).
+			outcome = "success"
+			break
+		}
+
+		// Verification failed.
+		verificationAttempts++
+		if verificationAttempts > maxVerificationRetries {
+			outcome = "verification_failed"
+			break
+		}
+
+		// Feed verifier feedback back into the loop as a user message.
+		feedback := vResult.Feedback
+		if feedback == "" {
+			feedback = "Verification failed. Please review and fix the issues."
+		}
+		messages = append(messages, types.Message{
+			Role: "user",
+			Content: []types.ContentBlock{
+				{Type: "text", Text: feedback},
+			},
+		})
+	}
+
+	// Finalise git.
+	_, _ = l.Git.Finalise(ctx)
+
+	// Emit done event.
+	_ = l.Transport.Emit(types.HarnessEvent{
+		Type:       "done",
+		StopReason: outcome,
+	})
+
+	// Finish trace.
+	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
+	if traceErr != nil {
+		return nil, fmt.Errorf("finish trace: %w", traceErr)
+	}
+
+	return runTrace, nil
+}
+
+// runInnerLoop runs the agentic loop turns until the model says "done",
+// max turns is reached, budget is exceeded, or an error occurs.
+// Returns the updated messages and the outcome.
+func (l *AgenticLoop) runInnerLoop(
+	ctx context.Context,
+	config *types.RunConfig,
+	systemPrompt string,
+	messages []types.Message,
+	costTracker *CostTracker,
+) ([]types.Message, string) {
+	var lastStopReason string
 
 	for turn := 0; turn < config.MaxTurns; turn++ {
 		// Check budget before each turn.
 		budgetCheck := costTracker.CheckBudget(config.MaxCostBudget, config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
-			outcome = "budget_exceeded"
-			break
+			return messages, "budget_exceeded"
 		}
 
 		// Check context cancellation.
 		select {
 		case <-ctx.Done():
-			outcome = "error"
+			return messages, "error"
 		default:
-		}
-		if outcome != "success" {
-			break
 		}
 
 		// Select model for this turn.
@@ -96,8 +168,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			ReserveForResponse: 64000,
 		})
 		if err != nil {
-			outcome = "error"
-			break
+			return messages, "error"
 		}
 
 		// Stream model response.
@@ -112,48 +183,55 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		})
 		if err != nil {
 			// Rollback: don't append anything on error.
-			outcome = "error"
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
 				StopReason: "error",
 				DurationMs: time.Since(turnStart).Milliseconds(),
 			})
-			break
+			return messages, "error"
 		}
 
 		// Consume stream events.
-		blocks, stopReason, streamErr := streamEventsToResult(ctx, ch, l.Transport)
+		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport)
 		turnDuration := time.Since(turnStart)
 
 		if streamErr != nil {
 			// Rollback on stream error — don't append partial content.
-			outcome = "error"
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
 				StopReason: "error",
 				DurationMs: turnDuration.Milliseconds(),
 			})
-			break
+			return messages, "error"
 		}
 
-		lastStopReason = stopReason
+		lastStopReason = sr.StopReason
+
+		// Track token usage. Output tokens come from the stream; input tokens
+		// are estimated from the messages sent.
+		inputTokenEstimate := estimateCurrentTokens(preparedMessages)
+		pricing := defaultModelPricing(selection.Model)
+		costTracker.RecordTurn(inputTokenEstimate, sr.OutputTokens, pricing)
 
 		// Record turn in trace.
 		l.Trace.RecordTurn(types.TurnTrace{
-			Turn:       turn,
-			StopReason: stopReason,
+			Turn: turn,
+			Tokens: types.TokenUsage{
+				Input:  inputTokenEstimate,
+				Output: sr.OutputTokens,
+			},
+			StopReason: sr.StopReason,
 			DurationMs: turnDuration.Milliseconds(),
 		})
 
 		// Append assistant message.
-		messages = appendAssistantContent(messages, blocks)
+		messages = appendAssistantContent(messages, sr.Blocks)
 
 		// Extract tool calls.
-		toolCalls := collectToolCalls(blocks)
+		toolCalls := collectToolCalls(sr.Blocks)
 
-		if stopReason == "end_turn" || len(toolCalls) == 0 {
-			// Model is done — exit the inner loop.
-			break
+		if sr.StopReason == "end_turn" || len(toolCalls) == 0 {
+			return messages, "success"
 		}
 
 		// Dispatch tool calls.
@@ -164,7 +242,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			output, success := l.dispatchToolCall(ctx, call)
 			callDuration := time.Since(callStart)
 
-			// Record tool call trace.
 			l.Trace.RecordToolCall(types.ToolCallTrace{
 				Name:       call.Name,
 				DurationMs: callDuration.Milliseconds(),
@@ -177,7 +254,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 				IsError:   !success,
 			})
 
-			// Emit tool result event.
 			_ = l.Transport.Emit(types.HarnessEvent{
 				Type:      "tool_result",
 				ToolUseID: call.ID,
@@ -190,41 +266,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 		// Git checkpoint after tool use.
 		_ = l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls)))
-
-		// If we've reached max turns, record it.
-		if turn == config.MaxTurns-1 {
-			outcome = "max_turns"
-		}
 	}
 
-	// Run verifier if the loop completed normally.
-	if outcome == "success" {
-		vResult, verifyErr := l.Verifier.Verify(ctx, verifier.VerifyContext{
-			Mode:     config.Mode,
-			Executor: l.Executor,
-			Messages: messages,
-		})
-		if verifyErr == nil && !vResult.Passed {
-			outcome = "verification_failed"
-		}
-	}
-
-	// Finalise git.
-	_, _ = l.Git.Finalise(ctx)
-
-	// Emit done event.
-	_ = l.Transport.Emit(types.HarnessEvent{
-		Type:       "done",
-		StopReason: outcome,
-	})
-
-	// Finish trace.
-	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
-	if traceErr != nil {
-		return nil, fmt.Errorf("finish trace: %w", traceErr)
-	}
-
-	return runTrace, nil
+	// Reached max turns.
+	return messages, "max_turns"
 }
 
 // finishWithError records an error outcome and finishes the trace.

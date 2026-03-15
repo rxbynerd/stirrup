@@ -4,6 +4,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	contextpkg "github.com/rubynerd/stirrup/harness/internal/context"
 	"github.com/rubynerd/stirrup/harness/internal/edit"
@@ -13,6 +14,7 @@ import (
 	"github.com/rubynerd/stirrup/harness/internal/prompt"
 	"github.com/rubynerd/stirrup/harness/internal/provider"
 	"github.com/rubynerd/stirrup/harness/internal/router"
+	"github.com/rubynerd/stirrup/harness/internal/security"
 	"github.com/rubynerd/stirrup/harness/internal/tool"
 	"github.com/rubynerd/stirrup/harness/internal/trace"
 	"github.com/rubynerd/stirrup/harness/internal/transport"
@@ -90,11 +92,18 @@ func (ct *CostTracker) CheckBudget(maxCostBudget *float64, maxTokenBudget *int) 
 }
 
 // dispatchToolCall executes a single tool call, checking permissions and
-// validating input. Returns the tool result string and whether it succeeded.
+// validating input against the tool's JSON Schema. Returns the tool result
+// string and whether it succeeded.
 func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall) (string, bool) {
 	t := l.Tools.Resolve(call.Name)
 	if t == nil {
 		return "Unknown tool: " + call.Name, false
+	}
+
+	// Validate input against the tool's JSON Schema. This is mandatory and
+	// cannot be disabled (VERSION1.md section 7: "Tool input validation").
+	if err := security.ValidateJSONSchema(call.Input, t.InputSchema); err != nil {
+		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false
 	}
 
 	// Check permissions for side-effecting tools.
@@ -169,18 +178,24 @@ func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
 	return calls
 }
 
+// streamResult holds the results of consuming a model response stream.
+type streamResult struct {
+	Blocks       []types.ContentBlock
+	StopReason   string
+	OutputTokens int
+}
+
 // streamEventsToResult consumes a stream event channel and returns the
-// accumulated content blocks and final stop reason.
-func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport) ([]types.ContentBlock, string, error) {
-	var blocks []types.ContentBlock
-	var stopReason string
+// accumulated content blocks, final stop reason, and token usage.
+func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport) (*streamResult, error) {
+	result := &streamResult{}
 	var currentText string
 	inText := false
 
 	for event := range ch {
 		select {
 		case <-ctx.Done():
-			return nil, "", ctx.Err()
+			return nil, ctx.Err()
 		default:
 		}
 
@@ -199,12 +214,12 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 		case "tool_call":
 			// Flush any accumulated text block.
 			if inText {
-				blocks = append(blocks, types.ContentBlock{Type: "text", Text: currentText})
+				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
 				inText = false
 				currentText = ""
 			}
 			inputBytes, _ := json.Marshal(event.Input)
-			blocks = append(blocks, types.ContentBlock{
+			result.Blocks = append(result.Blocks, types.ContentBlock{
 				Type:  "tool_use",
 				ID:    event.ID,
 				Name:  event.Name,
@@ -213,23 +228,23 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 
 		case "message_complete":
 			if inText {
-				blocks = append(blocks, types.ContentBlock{Type: "text", Text: currentText})
+				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
 				inText = false
 			}
-			stopReason = event.StopReason
+			result.StopReason = event.StopReason
 
 		case "error":
 			if event.Error != nil {
-				return nil, "", event.Error
+				return nil, event.Error
 			}
 		}
 	}
 
 	if inText {
-		blocks = append(blocks, types.ContentBlock{Type: "text", Text: currentText})
+		result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
 	}
 
-	return blocks, stopReason, nil
+	return result, nil
 }
 
 // defaultModelPricing returns pricing for known models.

@@ -44,6 +44,21 @@ func (rc RunConfig) Redact() RunConfig {
 	if redacted.Provider.APIKeyRef != "" {
 		redacted.Provider.APIKeyRef = "secret://[REDACTED]"
 	}
+	if redacted.Executor.VcsBackend != nil && redacted.Executor.VcsBackend.APIKeyRef != "" {
+		vcs := *redacted.Executor.VcsBackend
+		vcs.APIKeyRef = "secret://[REDACTED]"
+		redacted.Executor.VcsBackend = &vcs
+	}
+	if len(redacted.Tools.MCPServers) > 0 {
+		servers := make([]MCPServerConfig, len(redacted.Tools.MCPServers))
+		copy(servers, redacted.Tools.MCPServers)
+		for i := range servers {
+			if servers[i].APIKeyRef != "" {
+				servers[i].APIKeyRef = "secret://[REDACTED]"
+			}
+		}
+		redacted.Tools.MCPServers = servers
+	}
 	return redacted
 }
 

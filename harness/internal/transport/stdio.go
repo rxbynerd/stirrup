@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/rubynerd/stirrup/harness/internal/security"
 	"github.com/rubynerd/stirrup/types"
 )
 
@@ -31,9 +32,14 @@ func NewStdioTransport(w io.Writer, r io.Reader) *StdioTransport {
 	}
 }
 
-// Emit marshals the event as a single JSON line and writes it to the output
-// stream.
+// Emit scrubs secret patterns from the event's string fields, marshals it as
+// a single JSON line, and writes it to the output stream.
 func (s *StdioTransport) Emit(event types.HarnessEvent) error {
+	// Scrub known secret patterns from all string fields.
+	event.Text = security.Scrub(event.Text)
+	event.Content = security.Scrub(event.Content)
+	event.Message = security.Scrub(event.Message)
+
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal harness event: %w", err)
