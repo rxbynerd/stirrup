@@ -67,7 +67,7 @@ The research is clear (Stripe's "blueprints" pattern, Princeton's findings): **u
 │  Provider Adapters                                 │
 │  Anthropic │ Bedrock Converse │ OpenAI-compatible   │
 │  Common interface: stream(messages, tools) →        │
-│    AsyncIterable<StreamEvent>                       │
+│    <-chan StreamEvent                                │
 └──────────┬───────────────────────────────────────-┘
            │
 ┌──────────▼───────────────────────────────────────-┐
@@ -611,7 +611,7 @@ repeat {
 
 This is the pattern Spotify's Honk, Stripe's Minions, and Codex all use. The verifier is pluggable:
 
-- **TestRunner**: `npm test`, `pytest`, `bundle exec rspec` — parse exit code and output
+- **TestRunner**: `go test ./...`, `npm test`, `pytest`, `bundle exec rspec` — parse exit code and output
 - **LLMJudge**: a separate (cheap) model reviews the diff against the original prompt for scope creep and correctness
 - **Composite**: chain both — tests must pass AND judge must approve
 
@@ -827,7 +827,7 @@ The control plane can override this per-task. A research task against an untrust
 
 #### Updated Executor interface
 
-The interface is unchanged — that's the point. The tools call `executor.readFile()`, `executor.exec()`, etc., without knowing whether they're hitting the GitHub API, a local filesystem, or a Docker container. The sandbox tier is invisible to the model and to the tool implementations.
+The interface is unchanged — that's the point. The tools call `executor.ReadFile()`, `executor.Exec()`, etc., without knowing whether they're hitting the GitHub API, a local filesystem, or a Docker container. The sandbox tier is invisible to the model and to the tool implementations.
 
 One addition: a `capabilities` method so the tool registry can adapt what tools are offered based on what the executor supports:
 
@@ -864,18 +864,26 @@ This keeps the harness single-purpose: receive task, execute, report, exit.
 
 Every harness run produces a structured trace via the `TraceEmitter` interface:
 
-```typescript
-interface RunTrace {
-  id: string;
-  config: RunConfig;              // full config for reproducibility
-  startedAt: Date;
-  completedAt: Date;
-  turns: number;
-  tokenUsage: { input: number; output: number };
-  toolCalls: { name: string; durationMs: number; success: boolean }[];
-  verificationResults: VerificationResult[];
-  outcome: "success" | "error" | "max_turns" | "verification_failed";
-  cost: number;
+```go
+// RunTrace captures the full telemetry of a single harness run.
+type RunTrace struct {
+	ID                  string               `json:"id"`
+	Config              RunConfig            `json:"config"` // full config for reproducibility
+	StartedAt           time.Time            `json:"startedAt"`
+	CompletedAt         time.Time            `json:"completedAt"`
+	Turns               int                  `json:"turns"`
+	TokenUsage          TokenUsage           `json:"tokenUsage"`
+	ToolCalls           []ToolCallSummary    `json:"toolCalls"`
+	VerificationResults []VerificationResult `json:"verificationResults"`
+	Outcome             string               `json:"outcome"` // "success" | "error" | "max_turns" | "verification_failed"
+	Cost                float64              `json:"cost"`
+}
+
+// ToolCallSummary records a single tool call's outcome for the trace.
+type ToolCallSummary struct {
+	Name       string `json:"name"`
+	DurationMs int64  `json:"durationMs"`
+	Success    bool   `json:"success"`
 }
 ```
 
@@ -889,18 +897,20 @@ The sandbox tiers (section 5) provide the primary isolation boundary, but severa
 
 The `RunConfig` never contains raw secrets. Provider configs, MCP server credentials, and VCS tokens are stored as references to a `SecretStore`:
 
-```typescript
-interface SecretStore {
-  resolve(ref: string): Promise<string>;  // "secret://anthropic-key" → "sk-ant-..."
+```go
+// SecretStore resolves secret references to their concrete values.
+type SecretStore interface {
+	Resolve(ctx context.Context, ref string) (string, error) // "secret://anthropic-key" → "sk-ant-..."
 }
 
 // Provider configs use references:
-// { type: "anthropic", apiKeyRef: "secret://anthropic-key" }
-// NOT: { type: "anthropic", apiKey: "sk-ant-..." }
+//   ProviderConfig{Type: "anthropic", APIKeyRef: "secret://anthropic-key"}
+// NOT:
+//   ProviderConfig{Type: "anthropic", APIKeyRef: "sk-ant-..."}
 ```
 
 The `SecretStore` interface has concrete implementations for different environments:
-- **Environment variables** — `secret://FOO` resolves to `process.env.FOO`. Simplest, suitable for local dev and CI.
+- **Environment variables** — `secret://FOO` resolves to `os.Getenv("FOO")`. Simplest, suitable for local dev and CI.
 - **File-based** — `secret://file:///run/secrets/api-key` reads a mounted secret file. Suitable for Docker/K8s secrets.
 - **Cloud KMS** — `secret://aws-ssm://param-name` or `secret://gcp-sm://secret-name`. For production deployments.
 
@@ -908,33 +918,39 @@ This ensures that `RunConfig` objects — which are serialised into traces, reco
 
 #### RunConfig validation with security invariants
 
-The factory (`factory.ts`) validates every `RunConfig` before constructing components. Validation enforces hard security constraints that cannot be overridden by the control plane or CLI flags:
+The factory (`factory.go`) validates every `RunConfig` before constructing components. Validation enforces hard security constraints that cannot be overridden by the control plane or CLI flags:
 
-```typescript
-function validateRunConfig(config: RunConfig): ValidationResult {
-  const errors: string[] = [];
+```go
+// ValidateRunConfig enforces hard security constraints that cannot be
+// overridden by the control plane or CLI flags.
+func ValidateRunConfig(config *RunConfig) error {
+	var errs []string
 
-  // Tool input validation is mandatory — cannot be disabled
-  // (enforced by the ToolRegistry, not configurable)
+	// Tool input validation is mandatory — cannot be disabled
+	// (enforced by the ToolRegistry, not configurable)
 
-  // Read-only modes must use deny-side-effects or ask-upstream
-  if (["planning", "review", "research", "toil"].includes(config.mode)) {
-    if (config.permissionPolicy.type === "allow-all") {
-      errors.push(`Mode "${config.mode}" requires a restrictive permission policy`);
-    }
-  }
+	// Read-only modes must use deny-side-effects or ask-upstream
+	readOnlyModes := map[string]bool{
+		"planning": true, "review": true, "research": true, "toil": true,
+	}
+	if readOnlyModes[config.Mode] && config.PermissionPolicy.Type == "allow-all" {
+		errs = append(errs, fmt.Sprintf("mode %q requires a restrictive permission policy", config.Mode))
+	}
 
-  // maxTurns must be bounded
-  if (config.maxTurns > 100) {
-    errors.push("maxTurns exceeds maximum of 100");
-  }
+	// maxTurns must be bounded
+	if config.MaxTurns > 100 {
+		errs = append(errs, "maxTurns exceeds maximum of 100")
+	}
 
-  // timeout must be set
-  if (!config.timeout || config.timeout > 3600) {
-    errors.push("timeout is required and must be <= 3600 seconds");
-  }
+	// timeout must be set
+	if config.Timeout == nil || *config.Timeout > 3600 {
+		errs = append(errs, "timeout is required and must be <= 3600 seconds")
+	}
 
-  return { valid: errors.length === 0, errors };
+	if len(errs) > 0 {
+		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 ```
 
@@ -944,33 +960,33 @@ These invariants prevent misconfiguration from creating security holes. The fact
 
 The `ToolRegistry` validates every tool call's `input` against the tool's `inputSchema` before dispatching to the handler. This is mandatory and cannot be disabled.
 
-```typescript
+```go
 // In the core loop, before dispatching a tool call:
-const tool = this.tools.resolve(call.name);
-if (!tool) {
-  return { error: `Unknown tool: ${call.name}` };
+tool := l.Tools.Resolve(call.Name)
+if tool == nil {
+	return fmt.Sprintf("Unknown tool: %s", call.Name), nil
 }
 
-const validation = validateJsonSchema(call.input, tool.inputSchema);
-if (!validation.valid) {
-  return { error: `Invalid input for ${call.name}: ${validation.errors.join(", ")}` };
+// Validate input against the tool's JSON Schema.
+// Uses github.com/santhosh-tekuri/jsonschema for schema validation.
+if err := validateJSONSchema(call.Input, tool.InputSchema); err != nil {
+	return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), nil
 }
 
-// Strip dangerous keys before passing to handler
-const sanitisedInput = stripPrototypeKeys(call.input);
-await tool.handler(sanitisedInput);
+result, err := tool.Handler(ctx, call.Input)
 ```
 
-`stripPrototypeKeys` removes `__proto__`, `constructor`, and `prototype` keys from tool input objects to prevent prototype pollution. `validateJsonSchema` rejects inputs with unexpected fields (via `additionalProperties: false` on all tool schemas) and enforces type constraints.
+`validateJSONSchema` rejects inputs with unexpected fields (via `additionalProperties: false` on all tool schemas) and enforces type constraints. Go's type system provides natural protection against prototype pollution — JSON is unmarshalled into typed structs, not arbitrary object graphs, so there is no equivalent of JavaScript's `__proto__` injection vector. JSON Schema validation in Go can use `github.com/santhosh-tekuri/jsonschema`, a well-maintained, dependency-light library.
 
 #### Structured delimiters for untrusted content
 
 The `PromptBuilder` wraps all `dynamicContext` values in structured delimiters before injecting them into the system prompt. This reduces the surface for prompt injection from external sources (issue bodies, PR descriptions, file contents injected as context).
 
-```typescript
-// PromptBuilder wraps dynamic context values:
-function wrapUntrustedContext(key: string, value: string): string {
-  return `<untrusted_context name="${key}">\n${value}\n</untrusted_context>`;
+```go
+// wrapUntrustedContext wraps dynamic context values in structured delimiters
+// before injecting them into the system prompt.
+func wrapUntrustedContext(key, value string) string {
+	return fmt.Sprintf("<untrusted_context name=%q>\n%s\n</untrusted_context>", key, value)
 }
 ```
 
@@ -985,8 +1001,8 @@ The `Executor` interface enforces hard limits on resource consumption, even at t
 | File read size | 10 MB per `readFile` call | Check `stat.size` before reading; reject with error |
 | File write size | 10 MB per `writeFile` call | Check `content.length` before writing |
 | Command output | 1 MB combined stdout + stderr | Truncate and append `[output truncated at 1MB]` |
-| Command timeout | 30s default, configurable up to `maxTimeout` | `child_process` timeout + SIGKILL after grace period |
-| Symlink resolution | `resolvePath` calls `realpath()` and verifies canonical path is within workspace | Prevents symlink traversal attacks (e.g. `/workspace/link` → `/etc/shadow`) |
+| Command timeout | 30s default, configurable up to `maxTimeout` | `context.WithTimeout` + `os/exec` process kill after grace period |
+| Symlink resolution | `ResolvePath` calls `filepath.EvalSymlinks()` and verifies canonical path is within workspace | Prevents symlink traversal attacks (e.g. `/workspace/link` -> `/etc/shadow`) |
 
 These limits apply to all executor implementations. The `Executor` interface documents them as invariants that concrete implementations must enforce.
 
@@ -994,22 +1010,24 @@ These limits apply to all executor implementations. The `Executor` interface doc
 
 All structured log events pass through a `LogScrubber` before emission. The scrubber applies regex-based redaction to all string values in the `data` field:
 
-```typescript
-const SECRET_PATTERNS = [
-  /sk-ant-[a-zA-Z0-9_-]+/g,        // Anthropic API keys
-  /ghp_[a-zA-Z0-9]+/g,              // GitHub personal access tokens
-  /ghs_[a-zA-Z0-9]+/g,              // GitHub app installation tokens
-  /AKIA[A-Z0-9]{16}/g,              // AWS access key IDs
-  /Bearer\s+[a-zA-Z0-9._-]+/g,      // Bearer tokens
-  /-----BEGIN\s+\w+\s+KEY-----/g,    // PEM private keys
-  /secret:\/\/[^\s"']+/g,            // Secret store references
-];
+```go
+// secretPatterns are compiled once at init time. Go's regexp package (stdlib)
+// provides RE2-based matching — guaranteed linear time, no catastrophic backtracking.
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`sk-ant-[a-zA-Z0-9_-]+`),       // Anthropic API keys
+	regexp.MustCompile(`ghp_[a-zA-Z0-9]+`),             // GitHub personal access tokens
+	regexp.MustCompile(`ghs_[a-zA-Z0-9]+`),             // GitHub app installation tokens
+	regexp.MustCompile(`AKIA[A-Z0-9]{16}`),             // AWS access key IDs
+	regexp.MustCompile(`Bearer\s+[a-zA-Z0-9._-]+`),    // Bearer tokens
+	regexp.MustCompile(`-----BEGIN\s+\w+\s+KEY-----`),  // PEM private keys
+	regexp.MustCompile(`secret://[^\s"']+`),            // Secret store references
+}
 
-function scrub(value: string): string {
-  return SECRET_PATTERNS.reduce(
-    (v, pattern) => v.replace(pattern, "[REDACTED]"),
-    value,
-  );
+func scrub(value string) string {
+	for _, pat := range secretPatterns {
+		value = pat.ReplaceAllString(value, "[REDACTED]")
+	}
+	return value
 }
 ```
 
@@ -1060,38 +1078,53 @@ Decide: adopt variant, reject, or investigate further
 
 An eval suite is a collection of tasks, each with a reproducible starting state and a way to judge the outcome. This is the most important piece — without it, everything else is theatre.
 
-```typescript
-interface EvalSuite {
-  id: string;
-  description: string;
-  tasks: EvalTask[];
+```go
+// EvalSuite is a collection of tasks with reproducible starting states
+// and outcome judges.
+type EvalSuite struct {
+	ID          string     `json:"id"`
+	Description string     `json:"description"`
+	Tasks       []EvalTask `json:"tasks"`
 }
 
-interface EvalTask {
-  id: string;
-  description: string;
+// EvalTask describes a single evaluation task.
+type EvalTask struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
 
-  // Starting state — a git ref that the workspace is reset to before each run.
-  // This makes runs reproducible regardless of what previous runs did.
-  repo: string;                    // git remote URL or local path
-  ref: string;                     // commit SHA, tag, or branch
+	// Starting state — a git ref that the workspace is reset to before each run.
+	// This makes runs reproducible regardless of what previous runs did.
+	Repo string `json:"repo"` // git remote URL or local path
+	Ref  string `json:"ref"`  // commit SHA, tag, or branch
 
-  // What to do
-  prompt: string;
-  mode: string;
+	// What to do
+	Prompt string `json:"prompt"`
+	Mode   string `json:"mode"`
 
-  // How to judge the outcome — layered, not exclusive
-  judge: EvalJudge;
+	// How to judge the outcome — layered, not exclusive
+	Judge EvalJudge `json:"judge"`
 }
 
-// Judges are composable. A task can require tests to pass AND specific files
-// to exist AND an LLM judge to approve the diff.
-type EvalJudge =
-  | { type: "test-command"; command: string }              // exit code 0 = pass
-  | { type: "file-exists"; paths: string[] }               // all paths must exist after run
-  | { type: "file-contains"; path: string; pattern: string } // regex match in file
-  | { type: "diff-review"; criteria: string }              // LLM reviews the diff against criteria
-  | { type: "composite"; judges: EvalJudge[]; require: "all" | "any" };
+// EvalJudge describes how to judge a run's outcome. Judges are composable:
+// a task can require tests to pass AND specific files to exist AND an LLM
+// judge to approve the diff.
+//
+// The Type field selects the variant:
+//   - "test-command": Command (exit code 0 = pass)
+//   - "file-exists": Paths (all must exist after run)
+//   - "file-contains": Path + Pattern (regex match in file)
+//   - "diff-review": Criteria (LLM reviews the diff)
+//   - "composite": Judges + Require ("all" | "any")
+type EvalJudge struct {
+	Type     string      `json:"type"`
+	Command  string      `json:"command,omitempty"`
+	Paths    []string    `json:"paths,omitempty"`
+	Path     string      `json:"path,omitempty"`
+	Pattern  string      `json:"pattern,omitempty"`
+	Criteria string      `json:"criteria,omitempty"`
+	Judges   []EvalJudge `json:"judges,omitempty"`
+	Require  string      `json:"require,omitempty"` // "all" | "any"
+}
 ```
 
 **Where tasks come from:**
@@ -1108,50 +1141,65 @@ This is essentially the SWE-bench methodology applied to your own repos. It's mo
 
 An experiment holds one or more variables constant while varying others. The `RunConfig` already supports this — an experiment is just a template with holes.
 
-```typescript
-interface Experiment {
-  id: string;
-  description: string;
-  suite: string;                         // eval suite to run against
+```go
+// Experiment holds one or more variables constant while varying others.
+type Experiment struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Suite       string `json:"suite"` // eval suite to run against
 
-  // The baseline config — all fields except the variable(s) under test
-  baseConfig: Partial<RunConfig>;
+	// The baseline config — all fields except the variable(s) under test.
+	// Uses a partial RunConfig (pointer fields for optionality).
+	BaseConfig RunConfigOverrides `json:"baseConfig"`
 
-  // Variants — each overrides specific fields of baseConfig
-  variants: {
-    name: string;
-    overrides: Partial<RunConfig>;
-  }[];
+	// Variants — each overrides specific fields of BaseConfig.
+	Variants []ExperimentVariant `json:"variants"`
 
-  // How many times to run each task × variant combination.
-  // N=1 is a smoke test. N=5+ gives statistical signal.
-  // Non-determinism comes from model sampling (temperature > 0)
-  // and from tool execution timing/output.
-  runsPerVariant: number;
+	// How many times to run each task x variant combination.
+	// N=1 is a smoke test. N=5+ gives statistical signal.
+	RunsPerVariant int `json:"runsPerVariant"`
+}
+
+// ExperimentVariant names a set of RunConfig overrides.
+type ExperimentVariant struct {
+	Name      string             `json:"name"`
+	Overrides RunConfigOverrides `json:"overrides"`
+}
+
+// RunConfigOverrides holds optional RunConfig fields for experiment variants.
+type RunConfigOverrides struct {
+	Mode            string              `json:"mode,omitempty"`
+	Provider        *ProviderConfig     `json:"provider,omitempty"`
+	ModelRouter     *ModelRouterConfig  `json:"modelRouter,omitempty"`
+	ContextStrategy *ContextStrategyConfig `json:"contextStrategy,omitempty"`
+	EditStrategy    *EditStrategyConfig `json:"editStrategy,omitempty"`
+	Verifier        *VerifierConfig     `json:"verifier,omitempty"`
+	MaxTurns        *int                `json:"maxTurns,omitempty"`
 }
 ```
 
 Example: "Does search-replace editing outperform whole-file on execution tasks?"
 
-```typescript
-const editStrategyExperiment: Experiment = {
-  id: "edit-strategy-comparison-2026-03",
-  description: "Compare whole-file vs search-replace editing on execution tasks",
-  suite: "core-repo-50",
-  baseConfig: {
-    mode: "execution",
-    provider: { type: "anthropic" },
-    modelRouter: { type: "static", provider: "anthropic", model: "claude-sonnet-4-6" },
-    contextStrategy: { type: "sliding-window", maxTokens: 180_000 },
-    verifier: { type: "test-runner", command: "npm test" },
-    maxTurns: 20,
-  },
-  variants: [
-    { name: "whole-file", overrides: { editStrategy: { type: "whole-file" } } },
-    { name: "search-replace", overrides: { editStrategy: { type: "search-replace" } } },
-  ],
-  runsPerVariant: 5,
-};
+```go
+maxTurns := 20
+editStrategyExperiment := Experiment{
+	ID:          "edit-strategy-comparison-2026-03",
+	Description: "Compare whole-file vs search-replace editing on execution tasks",
+	Suite:       "core-repo-50",
+	BaseConfig: RunConfigOverrides{
+		Mode:            "execution",
+		Provider:        &ProviderConfig{Type: "anthropic"},
+		ModelRouter:     &ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		ContextStrategy: &ContextStrategyConfig{Type: "sliding-window", MaxTokens: 180000},
+		Verifier:        &VerifierConfig{Type: "test-runner", Command: "go test ./..."},
+		MaxTurns:        &maxTurns,
+	},
+	Variants: []ExperimentVariant{
+		{Name: "whole-file", Overrides: RunConfigOverrides{EditStrategy: &EditStrategyConfig{Type: "whole-file"}}},
+		{Name: "search-replace", Overrides: RunConfigOverrides{EditStrategy: &EditStrategyConfig{Type: "search-replace"}}},
+	},
+	RunsPerVariant: 5,
+}
 ```
 
 ### Metrics
@@ -1171,27 +1219,34 @@ Pass/fail is necessary but not sufficient. Two configs might both pass 80% of ta
 | **Verification retries** | `RunTrace.verificationResults.length` | How often the model needs correction |
 | **Consistency** | Variance across N runs of same task | Reliability / non-determinism |
 
-```typescript
-interface ExperimentReport {
-  experimentId: string;
-  suite: string;
-  variants: {
-    name: string;
-    config: Partial<RunConfig>;
-    results: {
-      passRate: number;              // 0.0 - 1.0
-      meanCost: number;
-      medianTurns: number;
-      meanTokens: { input: number; output: number };
-      meanToolCalls: number;
-      toolFailureRate: number;
-      meanWallClockMs: number;
-      meanDiffLines: number;
-      meanVerificationRetries: number;
-      consistency: number;           // 0.0 - 1.0 (% of tasks with same outcome across all N runs)
-      perTask: TaskResult[];         // detailed per-task breakdown
-    };
-  }[];
+```go
+// ExperimentReport holds the aggregated results of an experiment.
+type ExperimentReport struct {
+	ExperimentID string           `json:"experimentId"`
+	Suite        string           `json:"suite"`
+	Variants     []VariantReport  `json:"variants"`
+}
+
+// VariantReport holds the results for a single experiment variant.
+type VariantReport struct {
+	Name    string             `json:"name"`
+	Config  RunConfigOverrides `json:"config"`
+	Results VariantResults     `json:"results"`
+}
+
+// VariantResults holds the aggregated metrics for a variant.
+type VariantResults struct {
+	PassRate                float64      `json:"passRate"`                // 0.0 - 1.0
+	MeanCost                float64      `json:"meanCost"`
+	MedianTurns             int          `json:"medianTurns"`
+	MeanTokens              TokenUsage   `json:"meanTokens"`
+	MeanToolCalls           float64      `json:"meanToolCalls"`
+	ToolFailureRate         float64      `json:"toolFailureRate"`
+	MeanWallClockMs         int64        `json:"meanWallClockMs"`
+	MeanDiffLines           float64      `json:"meanDiffLines"`
+	MeanVerificationRetries float64      `json:"meanVerificationRetries"`
+	Consistency             float64      `json:"consistency"` // 0.0 - 1.0
+	PerTask                 []TaskResult `json:"perTask"`
 }
 ```
 
@@ -1203,31 +1258,38 @@ Every harness run should record the full sequence of tool calls and their result
 2. **Replay** — re-evaluate a recorded run against a new verifier or judge without spending model tokens
 3. **Isolation** — compare two runs and see where they diverged (same task, different config — did the model make different tool calls, or the same calls with different outcomes?)
 
-```typescript
-interface TurnRecord {
-  turn: number;
-  modelInput: {
-    messages: Message[];           // what the model saw
-    tools: ToolDefinition[];
-    model: string;
-  };
-  modelOutput: ContentBlock[];     // what the model produced
-  toolCalls: {
-    id: string;
-    name: string;
-    input: unknown;
-    output: string;
-    durationMs: number;
-    success: boolean;
-  }[];
+```go
+// TurnRecord captures the full input/output of a single agentic loop turn.
+type TurnRecord struct {
+	Turn       int              `json:"turn"`
+	ModelInput ModelInput       `json:"modelInput"`
+	ModelOutput []ContentBlock  `json:"modelOutput"`
+	ToolCalls  []ToolCallRecord `json:"toolCalls"`
 }
 
-// A full recording of a run — stored alongside the RunTrace
-interface RunRecording {
-  runId: string;
-  config: RunConfig;
-  turns: TurnRecord[];
-  finalOutcome: RunTrace;
+// ModelInput records what the model saw on a given turn.
+type ModelInput struct {
+	Messages []Message        `json:"messages"`
+	Tools    []ToolDefinition `json:"tools"`
+	Model    string           `json:"model"`
+}
+
+// ToolCallRecord records a single tool call and its result.
+type ToolCallRecord struct {
+	ID         string          `json:"id"`
+	Name       string          `json:"name"`
+	Input      json.RawMessage `json:"input"`
+	Output     string          `json:"output"`
+	DurationMs int64           `json:"durationMs"`
+	Success    bool            `json:"success"`
+}
+
+// RunRecording is a full recording of a run — stored alongside the RunTrace.
+type RunRecording struct {
+	RunID        string       `json:"runId"`
+	Config       RunConfig    `json:"config"`
+	Turns        []TurnRecord `json:"turns"`
+	FinalOutcome RunTrace     `json:"finalOutcome"`
 }
 ```
 
@@ -1245,7 +1307,7 @@ For eval runs to be reproducible, every run must start from the same workspace s
 
 This is cheap (shallow clones are fast) and deterministic (a commit SHA is immutable). No need for filesystem snapshotting or container image builds per task.
 
-For tasks that need installed dependencies (node_modules, vendor/), the eval task can specify a `setup` command that runs before the harness starts. This is cached per `repo + ref + setup command` hash.
+For tasks that need installed dependencies (`vendor/`, `node_modules`, etc.), the eval task can specify a `setup` command that runs before the harness starts. This is cached per `repo + ref + setup command` hash.
 
 ### CI/CD regression gating
 
@@ -1311,37 +1373,34 @@ Every production run emits a `RunTrace` to the control plane via gRPC. The contr
 
 The same `RunTrace` type used in eval, plus production-specific metadata:
 
-```typescript
-interface ProductionTrace extends RunTrace {
-  // Production context — not present in eval traces
-  harness_version: string;         // git SHA or semver of the deployed harness
-  task_source: string;             // "api" | "toil-scheduler" | "manual"
-  target_repo: string;             // what repo was the task run against
-  user_id?: string;                // who triggered it (if applicable)
+```go
+// ProductionTrace extends RunTrace with production-specific metadata.
+type ProductionTrace struct {
+	RunTrace
+	HarnessVersion string `json:"harnessVersion"` // git SHA or semver of the deployed harness
+	TaskSource     string `json:"taskSource"`      // "api" | "toil-scheduler" | "manual"
+	TargetRepo     string `json:"targetRepo"`      // what repo was the task run against
+	UserID         string `json:"userId,omitempty"` // who triggered it (if applicable)
 }
 ```
 
 **What development reads from the lakehouse:**
 
-```typescript
-interface TraceLakehouse {
-  // Baselines: "what does production look like right now?"
-  baseline(filter: TraceFilter): Promise<BaselineMetrics>;
+```go
+// TraceLakehouse provides access to production trace data for baselines,
+// drift detection, failure mining, and lab-vs-production validation.
+type TraceLakehouse interface {
+	// Baseline returns aggregate metrics for production traces matching the filter.
+	Baseline(ctx context.Context, filter TraceFilter) (*BaselineMetrics, error)
 
-  // Drift detection: "has performance changed over this time window?"
-  drift(filter: TraceFilter, window: {
-    current: DateRange;
-    previous: DateRange;
-  }): Promise<DriftReport>;
+	// Drift detects performance changes between two time windows.
+	Drift(ctx context.Context, filter TraceFilter, current, previous DateRange) (*DriftReport, error)
 
-  // Failure mining: "what failed recently? Can we turn these into eval tasks?"
-  failedRuns(filter: TraceFilter, limit: number): Promise<ProductionTrace[]>;
+	// FailedRuns returns recent failed production traces for failure mining.
+	FailedRuns(ctx context.Context, filter TraceFilter, limit int) ([]ProductionTrace, error)
 
-  // Validation: "does production match our lab experiment predictions?"
-  compareToExperiment(
-    experimentId: string,
-    productionFilter: TraceFilter,
-  ): Promise<LabVsProductionReport>;
+	// CompareToExperiment validates whether production matches lab predictions.
+	CompareToExperiment(ctx context.Context, experimentID string, filter TraceFilter) (*LabVsProductionReport, error)
 }
 ```
 
@@ -1361,73 +1420,79 @@ The concrete implementation could be BigQuery, ClickHouse, Postgres with JSONB, 
 
 4. **Lab-to-production validation.** "Our experiment predicted a 10% pass rate improvement. After deploying, production shows 8%. That's within noise — the experiment was predictive." Or: "Lab said +10%, production says -2%. The eval suite doesn't capture something important about production workloads — investigate and add missing task types."
 
-### Project structure: monorepo with packages
+### Project structure: monorepo with modules
 
-**Yes, split out the eval framework — but keep it in the same monorepo.** The harness and the eval framework have different deployment targets, different dependencies, and different release cadences, but they share types and evolve together. A monorepo with workspace packages gets this right.
+**Yes, split out the eval framework — but keep it in the same monorepo.** The harness and the eval framework have different deployment targets, different dependencies, and different release cadences, but they share types and evolve together. Go's workspace feature (`go.work`) handles this cleanly.
 
-Three packages:
+Three modules in a workspace:
 
 ```
 stirrup/
-  packages/
-    types/                           # @stirrup/types
-      src/
-        run-config.ts                # RunConfig, ModePreset, component config types
-        run-trace.ts                 # RunTrace, TurnRecord, RunRecording
-        eval.ts                      # EvalSuite, EvalTask, EvalJudge, Experiment
-        events.ts                    # HarnessEvent, ControlEvent
-        metrics.ts                   # ExperimentReport, BaselineMetrics, DriftReport
-      package.json
+  go.work                             # Go workspace: use ./harness, ./types, ./eval
 
-    harness/                         # @stirrup/harness
-      src/
-        core/                        # loop, factory
-        providers/                   # anthropic, bedrock, openai-compatible
-        router/                      # static, per-mode
-        prompts/                     # default, composed
-        context/                     # sliding-window, summarise
-        tools/                       # registry, builtins, mcp client
-        executor/                    # local, docker
-        edit/                        # whole-file, search-replace, udiff
-        verifier/                    # none, test-runner, composite
-        permissions/                 # allow-all, deny-side-effects, ask-upstream
-        git/                         # none, (future implementations)
-        transport/                   # grpc, stdio
-        trace/                       # jsonl, otel
-        proto/                       # harness.proto
-        cli/                         # CLI entrypoint
-        job.ts                       # K8s job entrypoint
-      Dockerfile
-      package.json                   # depends on @stirrup/types
+  types/                               # github.com/org/stirrup/types
+    go.mod                             # zero dependencies — pure type definitions
+    runconfig.go                       # RunConfig, ModePreset, component config types
+    runtrace.go                        # RunTrace, TurnRecord, RunRecording
+    eval.go                            # EvalSuite, EvalTask, EvalJudge, Experiment
+    events.go                         # HarnessEvent, ControlEvent
+    metrics.go                        # ExperimentReport, BaselineMetrics, DriftReport
 
-    eval/                            # @stirrup/eval
-      src/
-        runner.ts                    # orchestrate runs (local or via control plane)
-        report.ts                    # compute metrics, generate comparison tables
-        replay.ts                    # replay recorded runs
-        ci.ts                        # CI-specific: tier selection, regression detection, exit codes
-        lakehouse/
-          interface.ts               # TraceLakehouse interface
-          bigquery.ts                # (or postgres.ts, clickhouse.ts — concrete adapter)
-        mine.ts                      # mine eval tasks from production failures
-      suites/                        # eval suite definitions (YAML)
-      experiments/                   # experiment definitions (YAML)
-      package.json                   # depends on @stirrup/types, @stirrup/harness
+  harness/                             # github.com/org/stirrup/harness
+    go.mod                             # depends on types module
+    go.sum
+    Makefile
+    Dockerfile
+    cmd/
+      harness/main.go                 # CLI entrypoint
+      job/main.go                     # K8s job entrypoint
+    internal/
+      core/                           # loop, factory
+      provider/                       # anthropic, bedrock, openai-compatible
+      router/                         # static, per-mode
+      prompt/                         # default, composed
+      context/                        # sliding-window, summarise
+      tool/                           # registry, builtins, mcp client
+      executor/                       # local, docker
+      edit/                           # whole-file, search-replace, udiff
+      verifier/                       # none, test-runner, composite
+      permission/                     # allow-all, deny-side-effects, ask-upstream
+      git/                            # none, (future implementations)
+      transport/                      # grpc, stdio
+      trace/                          # jsonl, otel
+      security/                       # secret-store, log-scrubber, validators
+      mcp/                            # MCP client
+    proto/
+      harness.proto
 
-  package.json                       # workspace root (pnpm workspaces)
-  turbo.json                         # build orchestration
+  eval/                                # github.com/org/stirrup/eval
+    go.mod                             # depends on types, optionally harness
+    go.sum
+    cmd/
+      eval/main.go                    # CLI entrypoint for eval commands
+    internal/
+      runner/runner.go                # orchestrate runs (local or via control plane)
+      report/report.go                # compute metrics, generate comparison tables
+      replay/replay.go                # replay recorded runs
+      ci/ci.go                        # CI-specific: tier selection, regression detection
+      lakehouse/
+        lakehouse.go                  # TraceLakehouse interface
+        bigquery.go                   # (or postgres.go, clickhouse.go — concrete adapter)
+      mine/mine.go                    # mine eval tasks from production failures
+    suites/                           # eval suite definitions (YAML)
+    experiments/                      # experiment definitions (YAML)
 ```
 
-**Why three packages, not two:**
+**Why three modules, not two:**
 
-- `@stirrup/types` is the contract between everything. It has zero dependencies and changes rarely. The control plane (a separate service entirely) can depend on it too, for protobuf type generation and trace schemas.
-- `@stirrup/harness` is the deployable artifact — a Docker image. It depends on types and nothing else from the monorepo.
-- `@stirrup/eval` is a development/CI tool. It depends on types (for RunConfig/RunTrace definitions) and optionally on harness (to invoke runs locally). It has its own dependencies (lakehouse clients, data analysis, reporting) that the harness shouldn't carry.
+- `types` is the contract between everything. It has zero dependencies and changes rarely. The control plane (a separate service entirely) can depend on it too, for protobuf type generation and trace schemas.
+- `harness` is the deployable artifact — a Docker image producing a single static binary. It depends on types and nothing else from the workspace.
+- `eval` is a development/CI tool. It depends on types (for RunConfig/RunTrace definitions) and optionally on harness (to invoke runs locally). It has its own dependencies (lakehouse clients, data analysis, reporting) that the harness shouldn't carry.
 
 **Why not a fully separate repo:**
 
-- Shared types would need cross-repo versioning and publishing. This is manageable but adds friction that's not justified at this stage.
-- Harness changes often require eval changes (new component type → new RunConfig field → new eval suite config). Co-locating them means one PR, one review, one merge.
+- Shared types would need cross-repo versioning and publishing. Go modules handle this (`go.work` for local dev, tagged releases for CI), but co-location reduces friction at this stage.
+- Harness changes often require eval changes (new component type -> new RunConfig field -> new eval suite config). Co-locating them means one PR, one review, one merge.
 - If the eval framework grows to serve multiple harnesses (via A2A), it can be extracted to its own repo later. Monorepo-to-multi-repo is easier than the reverse.
 
 ### Development workflow with all pieces connected
@@ -1474,15 +1539,17 @@ The `TraceEmitter` interface (component 12) and `RunTrace` type provide per-run 
 
 Every harness process emits structured JSON logs to stdout (12-factor style — the deployment environment routes them to a log aggregator). Logs are not free-form strings; every log line is a typed event with a consistent schema.
 
-```typescript
-interface LogEvent {
-  timestamp: string;               // ISO 8601
-  level: "debug" | "info" | "warn" | "error";
-  runId: string;                   // correlates all log lines for a single run
-  component: string;               // "loop" | "provider" | "executor" | "tool" | "verifier" | ...
-  event: string;                   // machine-readable event name
-  data?: Record<string, unknown>;  // event-specific payload
-  durationMs?: number;             // for events that measure latency
+```go
+// LogEvent is the structured log schema. Every log line is a typed event
+// with a consistent schema — no free-form strings.
+type LogEvent struct {
+	Timestamp  string         `json:"timestamp"`            // ISO 8601
+	Level      string         `json:"level"`                // "debug" | "info" | "warn" | "error"
+	RunID      string         `json:"runId"`                // correlates all log lines for a single run
+	Component  string         `json:"component"`            // "loop" | "provider" | "executor" | "tool" | "verifier" | ...
+	Event      string         `json:"event"`                // machine-readable event name
+	Data       map[string]any `json:"data,omitempty"`       // event-specific payload
+	DurationMs *int64         `json:"durationMs,omitempty"` // for events that measure latency
 }
 ```
 
@@ -1546,30 +1613,39 @@ run (root span)
 
 **Span attributes** follow OpenTelemetry semantic conventions where applicable, extended with AI-specific attributes:
 
-```typescript
-// On the root run span
-"stirrup.run.id": string;
-"stirrup.run.mode": string;
-"stirrup.run.model": string;
-"stirrup.run.provider": string;
-"stirrup.run.max_turns": number;
-"stirrup.run.executor_type": string;       // "local" | "container" | "api" | "microvm"
+```go
+// Span attribute keys follow OpenTelemetry semantic conventions where
+// applicable, extended with AI-specific attributes.
 
-// On model_request spans
-"gen_ai.system": string;                   // "anthropic" | "openai" | "bedrock"
-"gen_ai.request.model": string;
-"gen_ai.response.model": string;
-"gen_ai.usage.input_tokens": number;
-"gen_ai.usage.output_tokens": number;
-"gen_ai.response.stop_reason": string;
-"stirrup.model.ttft_ms": number;           // time to first token
-"stirrup.model.cost_usd": number;
+// Root run span attributes
+const (
+	AttrRunID         = "stirrup.run.id"
+	AttrRunMode       = "stirrup.run.mode"
+	AttrRunModel      = "stirrup.run.model"
+	AttrRunProvider   = "stirrup.run.provider"
+	AttrRunMaxTurns   = "stirrup.run.max_turns"
+	AttrRunExecutor   = "stirrup.run.executor_type" // "local" | "container" | "api" | "microvm"
+)
 
-// On tool_dispatch spans
-"stirrup.tool.name": string;
-"stirrup.tool.side_effects": boolean;
-"stirrup.tool.success": boolean;
-"stirrup.tool.output_length": number;
+// Model request span attributes
+const (
+	AttrGenAISystem       = "gen_ai.system"              // "anthropic" | "openai" | "bedrock"
+	AttrGenAIReqModel     = "gen_ai.request.model"
+	AttrGenAIRespModel    = "gen_ai.response.model"
+	AttrGenAIInputTokens  = "gen_ai.usage.input_tokens"
+	AttrGenAIOutputTokens = "gen_ai.usage.output_tokens"
+	AttrGenAIStopReason   = "gen_ai.response.stop_reason"
+	AttrModelTTFT         = "stirrup.model.ttft_ms"      // time to first token
+	AttrModelCost         = "stirrup.model.cost_usd"
+)
+
+// Tool dispatch span attributes
+const (
+	AttrToolName         = "stirrup.tool.name"
+	AttrToolSideEffects  = "stirrup.tool.side_effects"
+	AttrToolSuccess      = "stirrup.tool.success"
+	AttrToolOutputLength = "stirrup.tool.output_length"
+)
 ```
 
 **Export targets:**
@@ -1582,7 +1658,7 @@ The `TraceEmitter` interface already supports pluggable backends. For OTel speci
 | OTel Collector | Production | OTLP/gRPC export to a sidecar or cluster-level collector |
 | Jaeger / Tempo / Honeycomb | Production (visualisation) | Collector forwards to the backend of choice |
 
-The harness ships the `@opentelemetry/sdk-node` + `@opentelemetry/exporter-otlp-grpc` packages. The OTel exporter is selected via `TraceEmitterConfig` in the `RunConfig`, defaulting to JSONL for local use.
+The harness uses `go.opentelemetry.io/otel` + `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc` when OTel export is configured. The OTel exporter is selected via `TraceEmitterConfig` in the `RunConfig`, defaulting to JSONL for local use.
 
 ### Metrics
 
@@ -1636,11 +1712,17 @@ The harness is a short-lived job, not a long-running server, so traditional HTTP
 2. **Heartbeat events** — the harness emits periodic `heartbeat` events on the gRPC stream during long-running tool executions (e.g. a test suite that takes 2 minutes). This prevents the control plane from timing out a healthy-but-busy run.
 3. **Startup readiness** — the harness emits a `ready` event after constructing all components from the RunConfig but before starting the first turn. If component construction fails (bad config, unreachable MCP server, invalid credentials), it emits an `error` event and exits with a non-zero code.
 
-```typescript
-type HarnessLifecycleEvent =
-  | { type: "ready"; runId: string; config: RunConfig }
-  | { type: "heartbeat"; runId: string; turn: number; uptimeMs: number }
-  | { type: "shutdown"; runId: string; reason: "complete" | "error" | "cancelled" };
+```go
+// HarnessLifecycleEvent represents lifecycle signals sent on the gRPC stream.
+// The Type field determines which variant fields are populated.
+type HarnessLifecycleEvent struct {
+	Type     string     `json:"type"` // "ready" | "heartbeat" | "shutdown"
+	RunID    string     `json:"runId"`
+	Config   *RunConfig `json:"config,omitempty"`   // type: "ready"
+	Turn     int        `json:"turn,omitempty"`     // type: "heartbeat"
+	UptimeMs int64      `json:"uptimeMs,omitempty"` // type: "heartbeat"
+	Reason   string     `json:"reason,omitempty"`   // type: "shutdown" — "complete" | "error" | "cancelled"
+}
 ```
 
 ### Debugging failed runs
@@ -1663,26 +1745,32 @@ This reconstructs the exact state at turn 7 — messages, tool results, context 
 
 Cost is a first-class observable, not an afterthought. Every `RunTrace` includes a `cost` field computed from token usage and the provider's pricing. The harness tracks cost per-turn and enforces budgets configured in the `RunConfig`:
 
-```typescript
-interface CostTracker {
-  // Called after each model response
-  recordTurn(turn: number, usage: { inputTokens: number; outputTokens: number }, pricing: ModelPricing): void;
+```go
+// CostTracker tracks cumulative cost per run and enforces budgets.
+type CostTracker interface {
+	// RecordTurn is called after each model response.
+	RecordTurn(turn int, inputTokens, outputTokens int, pricing ModelPricing)
 
-  // Returns cumulative cost so far
-  currentCost(): number;
+	// CurrentCost returns the cumulative cost so far.
+	CurrentCost() float64
 
-  // Checks against RunConfig budgets — called by the loop before each turn
-  checkBudget(config: { maxCostBudget?: number; maxTokenBudget?: number }): {
-    withinBudget: boolean;
-    currentCost: number;
-    currentTokens: { input: number; output: number };
-    reason?: string;  // "cost_limit_exceeded" | "token_limit_exceeded"
-  };
+	// CheckBudget verifies the run is within configured budgets.
+	// Called by the loop before each turn.
+	CheckBudget(maxCostBudget *float64, maxTokenBudget *int) BudgetCheck
 }
 
-interface ModelPricing {
-  inputPer1M: number;   // $ per 1M input tokens
-  outputPer1M: number;  // $ per 1M output tokens
+// BudgetCheck holds the result of a budget check.
+type BudgetCheck struct {
+	WithinBudget  bool       `json:"withinBudget"`
+	CurrentCost   float64    `json:"currentCost"`
+	CurrentTokens TokenUsage `json:"currentTokens"`
+	Reason        string     `json:"reason,omitempty"` // "cost_limit_exceeded" | "token_limit_exceeded"
+}
+
+// ModelPricing holds per-model token pricing.
+type ModelPricing struct {
+	InputPer1M  float64 `json:"inputPer1M"`  // $ per 1M input tokens
+	OutputPer1M float64 `json:"outputPer1M"` // $ per 1M output tokens
 }
 ```
 
@@ -1705,7 +1793,7 @@ The current Ruby codebase validates several patterns worth preserving:
 5. **Streaming event types** — `text_delta`, `tool_call`, `tool_result`, `done`, `error` remain the vocabulary, now carried over gRPC/protobuf instead of WebSocket JSON.
 
 What to drop:
-- Manual SSE parsing (use the SDK's streaming support instead)
+- Manual SSE parsing in Ruby (replaced by clean Go SSE parsing using `bufio.Scanner` from stdlib)
 - Sinatra/Puma/Faye server stack (harness is now a job, not a server)
 - Single-model coupling (replaced by `ProviderAdapter` + `ModelRouter`)
 - Hardcoded system prompt and tool set (replaced by `PromptBuilder` + `ModePreset` + `RunConfig`)
@@ -1720,31 +1808,31 @@ Deliver: interactive CLI that can take a prompt, run an agentic loop against Ant
 
 | Component | Implementation | Notes |
 |---|---|---|
-| Provider | Anthropic | `@anthropic-ai/sdk`, credentials via `SecretStore` (env var backend) |
+| Provider | Anthropic | `net/http` + `encoding/json` + `bufio.Scanner` for SSE, credentials via `SecretStore` (env var backend) |
 | Router | Static | One model: `claude-sonnet-4-6` |
 | Prompt builder | Default | Hardcoded per-mode templates, `<untrusted_context>` delimiters for dynamic context |
 | Context strategy | Sliding window | Drop oldest turns beyond budget |
-| Tools | Built-in | filesystem, search, shell, web-fetch. JSON Schema validation on all tool inputs. |
-| Executor | Local (tier 1) | Direct fs + child_process, workspace-scoped. Symlink resolution via `realpath`. File size limits (10MB). Output capping (1MB). |
+| Tools | Built-in | filesystem, search, shell, web-fetch. JSON Schema validation on all tool inputs (`github.com/santhosh-tekuri/jsonschema`). |
+| Executor | Local (tier 1) | Direct `os` + `os/exec`, workspace-scoped. Symlink resolution via `filepath.EvalSymlinks`. File size limits (10MB). Output capping (1MB). |
 | Edit strategy | Whole-file | Model writes entire file via `write_file` |
 | Verifier | None | Model decides when done |
 | Permissions | Deny-side-effects (read-only modes), allow-all (execution mode) | Read-only modes enforce `deny-side-effects` from the start |
 | Transport | Stdio | JSON lines to stdout |
 | Git | None | No git management |
-| Trace | JSONL | Append to local file, `RunConfig.redact()` applied before persistence |
-| Security | Built-in | `SecretStore` (env backend), `RunConfig.validate()`, `LogScrubber`, tool input validation, prototype pollution guard |
+| Trace | JSONL | Append to local file, `RunConfig.Redact()` applied before persistence |
+| Security | Built-in | `SecretStore` (env backend), `ValidateRunConfig()`, `LogScrubber`, tool input validation |
 
 Steps:
-1. Scaffold TypeScript project with the directory structure from the component map
-2. Define all 12 interfaces (`.ts` files in each `interface.ts`)
+1. Initialise Go module (`go mod init`), create directory structure from the component map
+2. Define all 12 interfaces (`.go` files in each package)
 3. Implement `SecretStore` interface + environment variable backend
 4. Implement the simplest concrete version of each component
-5. Implement `RunConfig.validate()` with security invariants (see section 7)
-6. Implement `RunConfig.redact()` for trace/recording persistence
-7. Implement `LogScrubber` with secret pattern redaction
-8. Implement `factory.ts` — constructs components from `RunConfig`, rejects invalid configs
-9. Implement core loop with tool input validation (JSON Schema + prototype key stripping)
-10. CLI entrypoint: build `RunConfig` from flags/env, resolve secrets via `SecretStore`, run loop
+5. Implement `ValidateRunConfig()` with security invariants (see section 7)
+6. Implement `RunConfig.Redact()` for trace/recording persistence
+7. Implement `LogScrubber` with secret pattern redaction (stdlib `regexp`)
+8. Implement `factory.go` -- constructs components from `RunConfig`, rejects invalid configs
+9. Implement core loop with tool input validation (JSON Schema via `github.com/santhosh-tekuri/jsonschema`)
+10. CLI entrypoint (`cmd/harness/main.go`): build `RunConfig` from flags/env, resolve secrets via `SecretStore`, run loop
 11. Verify end-to-end: prompt -> Anthropic -> tool use -> streamed output
 
 ### Phase 2: Modes + MCP + edit strategies + API executor (week 2)
@@ -1775,8 +1863,8 @@ Deliver: tier 2 container executor, test-runner verifier, all three provider ada
 1. Container executor (tier 2): Docker-based sandbox with network isolation (`--network none` default), resource limits (CPU, memory, PIDs), read-only root filesystem, `--cap-drop ALL`, `--security-opt no-new-privileges`. Harness process stays outside; only tool execution runs in the container. See `SECURITY_HARDENING.md` for post-V1 hardening (image supply chain, volume mount security, Docker socket alternatives, user namespace remapping).
 2. `SecretStore` cloud backends: AWS SSM Parameter Store and/or GCP Secret Manager adapters, so production deployments don't rely on environment variables for API keys.
 3. Test-runner verifier (run command, parse output, feed failures back)
-4. OpenAI-compatible provider adapter — covers OpenAI GPT (native), LiteLLM, Azure OpenAI, vLLM, Ollama. Uses `openai` SDK with configurable `baseUrl`. Credentials via `SecretStore`.
-5. AWS Bedrock Converse provider adapter — covers Claude, Llama, Mistral via Bedrock. Uses `@aws-sdk/client-bedrock-runtime`. Translates between internal message/tool types and Bedrock's Converse wire format. Auth via standard AWS credential chain (instance role, IRSA, env vars, SSO profile).
+4. OpenAI-compatible provider adapter -- covers OpenAI GPT (native), LiteLLM, Azure OpenAI, vLLM, Ollama. Uses `net/http` + `encoding/json` with configurable `baseURL`. Credentials via `SecretStore`.
+5. AWS Bedrock Converse provider adapter -- covers Claude, Llama, Mistral via Bedrock. Uses `github.com/aws/aws-sdk-go-v2/service/bedrockruntime`. Translates between internal message/tool types and Bedrock's Converse wire format. Auth via standard AWS credential chain (instance role, IRSA, env vars, SSO profile).
 6. Per-mode model router (e.g. Haiku for toil, Sonnet for execution, Opus for planning). Router selects provider + model, so it can route different modes to different backends (e.g. planning via Bedrock, toil via direct Anthropic).
 7. LLM-summarise context strategy (as an alternative to sliding window)
 
@@ -1784,8 +1872,8 @@ Deliver: tier 2 container executor, test-runner verifier, all three provider ada
 
 Deliver: eval runner, first eval suite, CI pipeline with tier 1 + tier 2 gates.
 
-1. Extract `@stirrup/types` package (RunConfig, RunTrace, EvalSuite, etc.)
-2. Scaffold `@stirrup/eval` package
+1. Extract `types` module (`go mod init github.com/org/stirrup/types`) with RunConfig, RunTrace, EvalSuite, etc.
+2. Scaffold `eval` module (`go mod init github.com/org/stirrup/eval`), configure `go.work` workspace
 3. Implement `ReplayProvider` + `ReplayExecutor` (enables tier 1 unit tests without API calls)
 4. Implement eval runner (orchestrate runs locally, collect traces)
 5. Implement comparison report (metrics table, regression detection)
@@ -1807,7 +1895,7 @@ Deliver: lakehouse integration, failure mining, drift detection.
 
 1. Unified diff edit strategy + multi-strategy fallback
 2. LLM-as-judge verifier
-3. OpenTelemetry trace emitter
+3. OpenTelemetry trace emitter (`go.opentelemetry.io/otel`)
 4. Token budgets and cost caps in the core loop
 5. Sub-agent spawning (fresh loop instance with subset of context)
 6. `eval compare-to-production` command (lab-vs-production validation)
@@ -1870,8 +1958,9 @@ Note: scheduling/toil triggering is the control plane's responsibility. The harn
    ```
    Control Plane
      │
-     ├── gRPC adapter ──→ Our harness (K8s Job, TypeScript)
+     ├── gRPC adapter ──→ Our harness (K8s Job, Go)
      │                     Fast path. Protobuf contract.
+     │                     Go's gRPC implementation is the reference implementation.
      │
      ├── A2A adapter  ──→ OpenHands / SWE-agent / any A2A agent
      │                     HTTP/JSON-RPC/SSE. Standard contract.
