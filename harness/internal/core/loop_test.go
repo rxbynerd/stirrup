@@ -426,6 +426,53 @@ func TestDispatchToolCall_ToolHandlerError(t *testing.T) {
 	}
 }
 
+func TestDispatchToolCall_InvalidInput(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{})
+
+	// Register a tool that requires a "path" field.
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:        "strict_tool",
+		Description: "A tool with required fields",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+		SideEffects: false,
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "should not reach here", nil
+		},
+	})
+	loop.Tools = registry
+
+	call := types.ToolCall{
+		ID:    "tc_invalid",
+		Name:  "strict_tool",
+		Input: json.RawMessage(`{}`), // Missing required "path" field.
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if success {
+		t.Error("expected success == false for invalid input")
+	}
+	if !strings.Contains(output, "Invalid input") {
+		t.Errorf("expected output to contain 'Invalid input', got %q", output)
+	}
+}
+
+func TestCheckBudget_CostLimitExceeded(t *testing.T) {
+	ct := &CostTracker{}
+	pricing := types.ModelPricing{InputPer1M: 3.0, OutputPer1M: 15.0}
+	// Record enough tokens to accumulate meaningful cost.
+	ct.RecordTurn(1_000_000, 100_000, pricing) // $3 input + $1.50 output = $4.50
+
+	maxCost := 1.0
+	check := ct.CheckBudget(&maxCost, nil)
+	if check.WithinBudget {
+		t.Error("expected WithinBudget == false when cost exceeds limit")
+	}
+	if check.Reason != "cost_limit_exceeded" {
+		t.Errorf("expected reason 'cost_limit_exceeded', got %q", check.Reason)
+	}
+}
+
 // --- P1: Reliability-critical tests ---
 
 func TestLoop_ProviderStreamError(t *testing.T) {
