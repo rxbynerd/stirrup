@@ -78,9 +78,16 @@ class Conversation
   # Appends a user message and runs the agentic loop, yielding typed event
   # hashes to the caller as they occur (text_delta, tool_call, tool_result,
   # done, error).
+  #
+  # If any error is raised during the loop, the message history is rolled back
+  # to its state before this call so the conversation remains consistent.
   def say(content, &event_callback)
+    checkpoint = @request[:messages].length
     @request[:messages] << { role: "user", content: content }
     run_loop(&event_callback)
+  rescue
+    @request[:messages].slice!(checkpoint..)
+    raise
   end
 
   private
@@ -113,7 +120,7 @@ class Conversation
     state  = { stop_reason: nil }
 
     response.body.each do |chunk|
-      buffer += chunk.force_encoding('UTF-8')
+      buffer << chunk.force_encoding('UTF-8')
 
       while (boundary = buffer.index("\n\n"))
         event_str = buffer.slice!(0, boundary + 2)
@@ -122,7 +129,9 @@ class Conversation
     end
 
     # Reconstruct assistant content array from accumulated blocks.
-    content = blocks.sort_by { |k, _| k }.map do |_, block|
+    # Unknown block types (e.g. "thinking") leave nil entries — skip them.
+    content = blocks.sort_by { |k, _| k }.filter_map do |_, block|
+      next if block.nil?
       if block[:type] == "text"
         { "type" => "text", "text" => block[:text_buf] }
       else
@@ -131,6 +140,8 @@ class Conversation
           "input" => JSON.parse(input_json) }
       end
     end
+
+    raise "stream ended without a stop_reason (truncated response?)" if state[:stop_reason].nil?
 
     @request[:messages] << { role: "assistant", content: content }
 
