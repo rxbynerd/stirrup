@@ -80,6 +80,14 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 		return nil, fmt.Errorf("build trace emitter: %w", err)
 	}
 
+	// 13. Security logger (writes to stderr).
+	secLogger := security.NewSecurityLogger(os.Stderr, config.RunID)
+
+	// Wire security logger into executor if it supports it.
+	if le, ok := exec.(*executor.LocalExecutor); ok {
+		le.Security = secLogger
+	}
+
 	return &AgenticLoop{
 		Provider:    prov,
 		Router:      rtr,
@@ -93,6 +101,7 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 		Git:         gs,
 		Transport:   tp,
 		Trace:       te,
+		Security:    secLogger,
 	}, nil
 }
 

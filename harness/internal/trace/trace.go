@@ -19,6 +19,9 @@ type TraceEmitter interface {
 	// RecordToolCall appends a tool call trace to the current run.
 	RecordToolCall(call types.ToolCallTrace)
 
+	// RecordCost records the final accumulated cost for the run.
+	RecordCost(cost float64)
+
 	// Finish finalises the trace, writes it to the backing store, and
 	// returns the completed RunTrace.
 	Finish(ctx context.Context, outcome string) (*types.RunTrace, error)

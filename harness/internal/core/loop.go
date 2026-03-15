@@ -104,6 +104,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Finalise git.
 	_, _ = l.Git.Finalise(ctx)
 
+	// Record final cost in trace.
+	l.Trace.RecordCost(costTracker.CurrentCost())
+
 	// Emit done event.
 	_ = l.Transport.Emit(types.HarnessEvent{
 		Type:       "done",

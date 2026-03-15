@@ -9,9 +9,10 @@ type StreamEvent struct {
 	ID         string         `json:"id,omitempty"`
 	Name       string         `json:"name,omitempty"`
 	Input      map[string]any `json:"input,omitempty"`
-	StopReason string         `json:"stopReason,omitempty"`
-	Content    []ContentBlock `json:"content,omitempty"`
-	Error      error          `json:"-"`
+	StopReason   string         `json:"stopReason,omitempty"`
+	OutputTokens int            `json:"outputTokens,omitempty"`
+	Content      []ContentBlock `json:"content,omitempty"`
+	Error        error          `json:"-"`
 }
 
 // StreamParams holds the parameters for a model streaming request.

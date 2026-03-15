@@ -226,10 +226,14 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("parse message_delta: %w", err)}
 				return
 			}
-			ch <- types.StreamEvent{
+			ev := types.StreamEvent{
 				Type:       "message_complete",
 				StopReason: md.Delta.StopReason,
 			}
+			if md.Usage != nil {
+				ev.OutputTokens = md.Usage.OutputTokens
+			}
+			ch <- ev
 
 		case "message_stop":
 			// Stream is done; the goroutine will exit and close the channel.

@@ -20,10 +20,18 @@ const (
 	truncatedSuffix = "\n[output truncated at 1MB]"
 )
 
+// SecurityEventEmitter is an optional interface for emitting structured security events.
+type SecurityEventEmitter interface {
+	PathTraversalBlocked(path, workspace string)
+	FileSizeLimitExceeded(path string, size, limit int64)
+	OutputTruncated(command string, originalSize, limit int)
+}
+
 // LocalExecutor implements Executor by performing operations directly on the
 // local filesystem, sandboxed to a workspace directory.
 type LocalExecutor struct {
 	workspace string // absolute, symlink-resolved workspace root
+	Security  SecurityEventEmitter
 }
 
 // NewLocalExecutor creates an executor rooted at the given workspace directory.
@@ -63,6 +71,9 @@ func (e *LocalExecutor) ResolvePath(relativePath string) (string, error) {
 			}
 		}
 		if !isWithin(resolved, e.workspace) {
+			if e.Security != nil {
+				e.Security.PathTraversalBlocked(relativePath, e.workspace)
+			}
 			return "", fmt.Errorf("path escapes workspace: %s", relativePath)
 		}
 		return resolved, nil
@@ -78,6 +89,9 @@ func (e *LocalExecutor) ResolvePath(relativePath string) (string, error) {
 		}
 	}
 	if !isWithin(resolved, e.workspace) {
+		if e.Security != nil {
+			e.Security.PathTraversalBlocked(relativePath, e.workspace)
+		}
 		return "", fmt.Errorf("path escapes workspace: %s", relativePath)
 	}
 	return resolved, nil
@@ -98,6 +112,9 @@ func (e *LocalExecutor) ReadFile(ctx context.Context, path string) (string, erro
 		return "", fmt.Errorf("path is a directory, not a file: %s", path)
 	}
 	if info.Size() > maxFileSize {
+		if e.Security != nil {
+			e.Security.FileSizeLimitExceeded(path, info.Size(), maxFileSize)
+		}
 		return "", fmt.Errorf("file too large: %d bytes (max %d)", info.Size(), maxFileSize)
 	}
 	data, err := os.ReadFile(resolved)
@@ -111,6 +128,9 @@ func (e *LocalExecutor) ReadFile(ctx context.Context, path string) (string, erro
 // created as needed. Content must not exceed 10 MB.
 func (e *LocalExecutor) WriteFile(ctx context.Context, path string, content string) error {
 	if len(content) > maxFileSize {
+		if e.Security != nil {
+			e.Security.FileSizeLimitExceeded(path, int64(len(content)), maxFileSize)
+		}
 		return fmt.Errorf("content too large: %d bytes (max %d)", len(content), maxFileSize)
 	}
 	resolved, err := e.ResolvePath(path)
@@ -173,6 +193,13 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 	result := &ExecResult{
 		Stdout: truncate(stdout.String(), maxOutputSize),
 		Stderr: truncate(stderr.String(), maxOutputSize),
+	}
+
+	if e.Security != nil {
+		combinedSize := stdout.Len() + stderr.Len()
+		if combinedSize > maxOutputSize {
+			e.Security.OutputTruncated(command, combinedSize, maxOutputSize)
+		}
 	}
 
 	if err != nil {

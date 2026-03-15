@@ -38,6 +38,7 @@ type AgenticLoop struct {
 	Git         git.GitStrategy
 	Transport   transport.Transport
 	Trace       trace.TraceEmitter
+	Security    *security.SecurityLogger // optional, for structured security event logging
 }
 
 // CostTracker tracks cumulative cost per run and enforces budgets.
@@ -103,6 +104,9 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 	// Validate input against the tool's JSON Schema. This is mandatory and
 	// cannot be disabled (VERSION1.md section 7: "Tool input validation").
 	if err := security.ValidateJSONSchema(call.Input, t.InputSchema); err != nil {
+		if l.Security != nil {
+			l.Security.ToolInputRejected(call.Name, []string{err.Error()})
+		}
 		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false
 	}
 
@@ -232,6 +236,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				inText = false
 			}
 			result.StopReason = event.StopReason
+			result.OutputTokens = event.OutputTokens
 
 		case "error":
 			if event.Error != nil {
