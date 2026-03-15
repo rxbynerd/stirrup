@@ -9,26 +9,29 @@ Ruby is a poor fit for a cloud-deployed autonomous coding harness:
 3. **Cloud deployment** — Ruby's startup time, memory footprint, and dependency management (Bundler + native extensions) make it heavier than necessary for containerised workloads. No meaningful serverless story.
 4. **Concurrency model** — Faye/WebSocket + Puma threads is workable but fragile. The current stirrup code already has two mutexes per connection to manage concurrent access. This gets worse, not better, as the system grows.
 
-## Language recommendation: TypeScript (Node.js / Bun)
+## Language recommendation: Go
 
-**TypeScript** is the strongest fit for this project. Rationale:
+**Go** is the strongest fit for this project. Rationale:
 
-| Factor | TypeScript | Go | Python |
+| Factor | Go | TypeScript | Python |
 |---|---|---|---|
-| AI SDKs | Official Anthropic + OpenAI SDKs, both excellent | No official SDKs | Official SDKs, best ecosystem |
-| Streaming | Native async iterators, ReadableStream | Goroutines, channels | asyncio, less ergonomic |
-| JSON handling | Native — no serialisation layer | Verbose struct tags | Good (dicts) |
-| Cloud deployment | Excellent (containers, Lambda, Cloud Run, Fly) | Best (single binary) | Good but dependency-heavy |
-| MCP support | Official MCP TypeScript SDK | Community only | Official MCP Python SDK |
-| Iteration speed | Fast — harness code is impermanent by nature | Slower (compile, verbose) | Fast |
-| Type safety | Good enough (structural typing) | Excellent | Optional (mypy) |
-| Process management | child_process, execa — adequate | Excellent (os/exec) | subprocess — adequate |
+| Supply chain security | `go.sum` + `sum.golang.org` transparency log, no build-time code execution, `go mod vendor`, minimal dependency culture | npm ecosystem has frequent supply chain attacks, `postinstall` scripts execute arbitrary code | pip has no transparency log, `setup.py` executes arbitrary code |
+| AI SDKs | No official SDKs — but the `ProviderAdapter` interface has one method; each adapter is ~200-300 lines of HTTP+SSE parsing using stdlib (`net/http`, `encoding/json`, `bufio.Scanner`). You own and audit every line. | Official Anthropic + OpenAI SDKs, both excellent | Official SDKs, best ecosystem |
+| Concurrency | Goroutines + channels — first-class, lightweight, no coloured functions | async/await + event loop — good for I/O, but single-threaded | asyncio — complex, coloured functions |
+| Cloud deployment | Single static binary, ~10-20MB container on `scratch`/`distroless`, sub-second startup | Requires Node.js runtime, larger images, slower startup | Requires Python runtime, virtualenvs, dependency conflicts |
+| gRPC/Protobuf | First-class support — Go's gRPC implementation is the reference implementation (`google.golang.org/grpc`) | Adequate (`@grpc/grpc-js`) | Adequate (`grpcio`) |
+| Type safety | Excellent — compile-time type checking, no runtime surprises | Good (structural typing, but `any` escape hatch) | Optional (mypy) |
+| Process management | Excellent (`os/exec`, direct syscalls) | `child_process`, `execa` — adequate | `subprocess` — adequate |
+| JSON handling | Struct tags + `encoding/json` — verbose but explicit and type-safe | Native — no serialisation layer | Good (dicts) |
+| Stdlib coverage | HTTP server/client, JSON, crypto, testing, regexp, compression — nearly everything needed is in stdlib | Lean stdlib, heavy npm reliance | Good stdlib, but heavy pip reliance for non-trivial work |
 
-**Go** is the runner-up if we later need extreme concurrency or want single-binary deployment, but the AI SDK gap is significant — you'd be writing raw HTTP clients for every provider, which is exactly the problem stirrup has in Ruby today.
+**The AI SDK gap is acknowledged** but is actually a strength from a supply chain perspective. TypeScript has the best AI SDK ecosystem — official Anthropic and OpenAI SDKs, the official MCP TypeScript SDK — but every third-party dependency is an attack surface. The `ProviderAdapter` interface has a single `Stream` method. Each concrete adapter (Anthropic, Bedrock, OpenAI-compatible) is ~200-300 lines of HTTP request construction and SSE stream parsing, using only Go's stdlib (`net/http` for HTTP, `encoding/json` for JSON, `bufio.Scanner` for SSE line parsing). You own and audit every line. No transitive dependency tree to monitor, no `postinstall` scripts, no build-time code execution. For a security-sensitive harness that holds API keys and executes code, this trade-off strongly favours Go.
 
-**Python** is the ecosystem leader for AI but has worse deployment ergonomics (virtualenvs, dependency conflicts, startup time) and its async story (asyncio) is more complex than Node's event loop for this kind of I/O-bound work.
+**TypeScript** has the richest AI tooling ecosystem but brings significant supply chain risk. The npm ecosystem has a history of dependency confusion attacks, typosquatting, and malicious `postinstall` scripts. For a harness that handles secrets and runs arbitrary code, minimising the dependency surface is worth the cost of writing a few hundred lines of HTTP client code.
 
-**Runtime**: Start with Node.js (LTS). Bun is faster but less battle-tested for long-running server processes with WebSockets. Easy to switch later since the code is the same.
+**Python** is the ecosystem leader for AI research but has worse deployment ergonomics (virtualenvs, dependency conflicts, startup time) and its concurrency model (asyncio with coloured functions) is more complex than goroutines for this kind of concurrent I/O work.
+
+**Runtime**: Go 1.22+ (for `range`-over-func iterators if desired, and the latest `net/http` routing enhancements). Alternatively, Go 1.21 LTS for maximum stability. No runtime manager choice to make — `go build` produces a single static binary.
 
 ## Architecture
 
@@ -88,18 +91,18 @@ The harness is a **short-lived job, not a server**. In cloud deployment, the con
 
 Each mode is just a partial `RunConfig` preset — it sets defaults for the components that vary by mode, while inheriting everything else from the base config:
 
-```typescript
-// A mode is a named set of RunConfig overrides, not a separate type.
-// The control plane (or CLI) merges: baseConfig + modePreset + taskOverrides → RunConfig
-interface ModePreset {
-  name: string;
-  promptBuilder: PromptBuilderConfig;
-  modelRouter: ModelRouterConfig;
-  tools: ToolsConfig;
-  editStrategy: EditStrategyConfig;
-  verifier: VerifierConfig;
-  permissionPolicy: PermissionPolicyConfig;
-  maxTurns: number;
+```go
+// ModePreset is a named set of RunConfig overrides, not a separate type.
+// The control plane (or CLI) merges: baseConfig + modePreset + taskOverrides → RunConfig.
+type ModePreset struct {
+	Name             string                 `json:"name"`
+	PromptBuilder    PromptBuilderConfig    `json:"promptBuilder"`
+	ModelRouter      ModelRouterConfig      `json:"modelRouter"`
+	Tools            ToolsConfig            `json:"tools"`
+	EditStrategy     EditStrategyConfig     `json:"editStrategy"`
+	Verifier         VerifierConfig         `json:"verifier"`
+	PermissionPolicy PermissionPolicyConfig `json:"permissionPolicy"`
+	MaxTurns         int                    `json:"maxTurns"`
 }
 ```
 
@@ -128,16 +131,16 @@ The harness is a composition of pluggable components. Every component below has 
 
 ### Interface definitions
 
-```typescript
+```go
 // --- 1. Model provider ---
 //
 // Three concrete adapters cover the required API surfaces:
 //
-// AnthropicAdapter — Anthropic Messages API (direct). Uses @anthropic-ai/sdk.
+// AnthropicAdapter — Anthropic Messages API (direct). Uses net/http + encoding/json.
 //   For: Claude models via api.anthropic.com.
 //   Auth: API key (x-api-key header).
 //
-// BedrockConverseAdapter — AWS Bedrock Converse API. Uses @aws-sdk/client-bedrock-runtime.
+// BedrockConverseAdapter — AWS Bedrock Converse API. Uses github.com/aws/aws-sdk-go-v2/service/bedrockruntime.
 //   For: Claude, Llama, Mistral, etc. via Bedrock. Many enterprises require Bedrock
 //   for compliance/governance (IAM policies, CloudTrail audit, VPC endpoints).
 //   Auth: AWS IAM (SigV4) — typically via instance role, IRSA, or env credentials.
@@ -145,42 +148,70 @@ The harness is a composition of pluggable components. Every component below has 
 //   and the Converse API has its own message/tool format. The adapter translates
 //   between our internal Message/ToolDefinition types and Bedrock's wire format.
 //
-// OpenAICompatibleAdapter — OpenAI Chat Completions API. Uses openai SDK.
+// OpenAICompatibleAdapter — OpenAI Chat Completions API. Uses net/http + encoding/json.
 //   For: OpenAI GPT models (native), plus any OpenAI-compatible endpoint:
 //   - LiteLLM (proxy for 100+ providers behind a single OpenAI-compatible API)
 //   - Azure OpenAI (different base URL + API version header)
 //   - vLLM, Ollama, llama.cpp server (local inference with OpenAI-compatible API)
 //   Auth: API key (Authorization: Bearer). Base URL is configurable.
-//
-interface ProviderAdapter {
-  stream(params: {
-    model: string;
-    system: string;
-    messages: Message[];
-    tools: ToolDefinition[];
-    maxTokens: number;
-    temperature: number;
-  }): AsyncIterable<StreamEvent>;
+
+// ProviderAdapter streams completions from an LLM.
+type ProviderAdapter interface {
+	Stream(ctx context.Context, params StreamParams) (<-chan StreamEvent, error)
 }
 
-type StreamEvent =
-  | { type: "text_delta"; text: string }
-  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "message_complete"; stopReason: string; content: ContentBlock[] }
-  | { type: "error"; error: Error };
+// StreamParams holds the parameters for a model streaming request.
+type StreamParams struct {
+	Model       string           `json:"model"`
+	System      string           `json:"system"`
+	Messages    []Message        `json:"messages"`
+	Tools       []ToolDefinition `json:"tools"`
+	MaxTokens   int              `json:"maxTokens"`
+	Temperature float64          `json:"temperature"`
+}
+
+// StreamEvent represents a single event from the model's streaming response.
+// Use the Type field to determine which variant fields are populated.
+type StreamEvent struct {
+	Type       string         `json:"type"` // "text_delta" | "tool_call" | "message_complete" | "error"
+	Text       string         `json:"text,omitempty"`
+	ID         string         `json:"id,omitempty"`
+	Name       string         `json:"name,omitempty"`
+	Input      map[string]any `json:"input,omitempty"`
+	StopReason string         `json:"stopReason,omitempty"`
+	Content    []ContentBlock `json:"content,omitempty"`
+	Error      error          `json:"-"`
+}
 
 // --- 2. Model router ---
 // Selects provider + model for each turn based on context.
 // Simplest implementation returns a static value. Advanced implementations
 // could route cheap turns (simple tool calls) to Haiku and complex reasoning
 // to Opus, or A/B test models.
-interface ModelRouter {
-  select(context: {
-    mode: string;
-    turn: number;
-    lastStopReason?: string;
-    tokenUsage: { input: number; output: number };
-  }): { provider: string; model: string };
+
+// ModelRouter selects which provider and model to use for each turn.
+type ModelRouter interface {
+	Select(ctx context.Context, rc RouterContext) ModelSelection
+}
+
+// RouterContext provides the model router with turn-level information.
+type RouterContext struct {
+	Mode           string     `json:"mode"`
+	Turn           int        `json:"turn"`
+	LastStopReason string     `json:"lastStopReason,omitempty"`
+	TokenUsage     TokenUsage `json:"tokenUsage"`
+}
+
+// ModelSelection is the provider + model chosen by the router.
+type ModelSelection struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// TokenUsage tracks input and output token counts.
+type TokenUsage struct {
+	Input  int `json:"input"`
+	Output int `json:"output"`
 }
 
 // --- 3. System prompt ---
@@ -188,55 +219,72 @@ interface ModelRouter {
 // fragments (role preamble, tool usage instructions, output format,
 // workspace description) and injection of dynamic context (file tree,
 // git status, plan progress).
-interface PromptBuilder {
-  build(context: {
-    mode: string;
-    workspace: string;
-    dynamicContext?: Record<string, string>;  // injected by control plane or previous phases
-  }): string;
+
+// PromptBuilder assembles the system prompt from templates and dynamic context.
+type PromptBuilder interface {
+	Build(ctx context.Context, pc PromptContext) (string, error)
+}
+
+// PromptContext provides the prompt builder with mode and workspace information.
+type PromptContext struct {
+	Mode           string            `json:"mode"`
+	Workspace      string            `json:"workspace"`
+	DynamicContext map[string]string `json:"dynamicContext,omitempty"`
 }
 
 // --- 4. Context strategy ---
 // Controls how message history is managed as it approaches token limits.
-// The loop calls `prepare()` before each model call, giving the strategy
+// The loop calls Prepare() before each model call, giving the strategy
 // a chance to compact, summarise, or offload messages.
-interface ContextStrategy {
-  prepare(messages: Message[], budget: {
-    maxTokens: number;
-    currentTokens: number;
-    reserveForResponse: number;
-  }): Promise<Message[]>;
+
+// ContextStrategy manages message history and compaction.
+type ContextStrategy interface {
+	Prepare(ctx context.Context, messages []Message, budget TokenBudget) ([]Message, error)
+}
+
+// TokenBudget describes the token constraints for context preparation.
+type TokenBudget struct {
+	MaxTokens          int `json:"maxTokens"`
+	CurrentTokens      int `json:"currentTokens"`
+	ReserveForResponse int `json:"reserveForResponse"`
 }
 
 // --- 5. Tool registry ---
-// (Already defined — built-in Tool interface + MCP client)
-interface Tool {
-  name: string;
-  description: string;
-  inputSchema: JSONSchema;
-  sideEffects: boolean;
-  handler: (input: unknown) => Promise<string>;
+
+// Tool describes a tool available to the model, including its handler.
+type Tool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema"` // JSON Schema
+	SideEffects bool            `json:"sideEffects"`
+	Handler     func(ctx context.Context, input json.RawMessage) (string, error)
 }
 
-interface ToolRegistry {
-  list(): ToolDefinition[];
-  resolve(name: string): Tool | undefined;
+// ToolRegistry resolves tool definitions and dispatches calls.
+type ToolRegistry interface {
+	List() []ToolDefinition
+	Resolve(name string) *Tool // nil if not found
 }
 
 // --- 6. Executor (sandbox) ---
 // Abstracts where commands run and how files are accessed.
 // The built-in filesystem and shell tools delegate to this interface
-// rather than calling fs/child_process directly.
-interface Executor {
-  readFile(path: string): Promise<string>;
-  writeFile(path: string, content: string): Promise<void>;
-  listDirectory(path: string): Promise<string[]>;
-  exec(command: string, opts?: { timeout?: number }): Promise<{
-    exitCode: number;
-    stdout: string;
-    stderr: string;
-  }>;
-  resolvePath(relativePath: string): string;  // workspace-scoped path resolution
+// rather than calling os/exec directly.
+
+// ExecResult holds the result of a command execution.
+type ExecResult struct {
+	ExitCode int    `json:"exitCode"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
+
+// Executor abstracts where commands run and how files are accessed.
+type Executor interface {
+	ReadFile(ctx context.Context, path string) (string, error)
+	WriteFile(ctx context.Context, path string, content string) error
+	ListDirectory(ctx context.Context, path string) ([]string, error)
+	Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error)
+	ResolvePath(relativePath string) (string, error) // workspace-scoped path resolution
 }
 
 // --- 7. Edit strategy ---
@@ -247,68 +295,94 @@ interface Executor {
 //
 // The edit strategy is both a tool definition (what the model sees) and
 // an applicator (how the harness applies it).
-interface EditStrategy {
-  toolDefinition(): ToolDefinition;          // the edit tool exposed to the model
-  apply(input: unknown, executor: Executor): Promise<EditResult>;
+
+// EditStrategy defines how the model applies file changes.
+type EditStrategy interface {
+	ToolDefinition() ToolDefinition
+	Apply(ctx context.Context, input json.RawMessage, executor Executor) (*EditResult, error)
 }
 
-type EditResult = {
-  path: string;
-  applied: boolean;
-  diff?: string;       // unified diff of what changed
-  error?: string;      // if applied is false
-};
+// EditResult holds the outcome of an edit application.
+type EditResult struct {
+	Path    string `json:"path"`
+	Applied bool   `json:"applied"`
+	Diff    string `json:"diff,omitempty"`  // unified diff of what changed
+	Error   string `json:"error,omitempty"` // if Applied is false
+}
 
 // --- 8. Verifier ---
 // Runs after the agentic loop completes (or between iterations) to validate
 // the output. Can trigger re-entry into the loop with verification feedback.
-interface Verifier {
-  verify(context: {
-    mode: string;
-    executor: Executor;
-    messages: Message[];
-    artifacts: Artifact[];       // files changed, plans produced, etc.
-  }): Promise<VerificationResult>;
+
+// Verifier validates the run's output before completion.
+type Verifier interface {
+	Verify(ctx context.Context, vc VerifyContext) (*VerificationResult, error)
 }
 
-type VerificationResult = {
-  passed: boolean;
-  feedback?: string;             // fed back into the loop if not passed
-  details?: Record<string, unknown>;
-};
+// VerifyContext provides the verifier with the run's state.
+type VerifyContext struct {
+	Mode      string     `json:"mode"`
+	Executor  Executor   `json:"-"`
+	Messages  []Message  `json:"messages"`
+	Artifacts []Artifact `json:"artifacts"`
+}
+
+// VerificationResult holds the outcome of a verification check.
+type VerificationResult struct {
+	Passed   bool           `json:"passed"`
+	Feedback string         `json:"feedback,omitempty"`
+	Details  map[string]any `json:"details,omitempty"`
+}
 
 // --- 9. Permission policy ---
-// Called before executing any tool with sideEffects: true.
+// Called before executing any tool with SideEffects: true.
 // "ask-upstream" sends a request to the control plane via the transport
 // and waits for approval — this is how interactive confirmation works.
-interface PermissionPolicy {
-  check(tool: ToolDefinition, input: unknown): Promise<
-    | { allowed: true }
-    | { allowed: false; reason: string }
-  >;
+
+// PermissionPolicy decides whether a side-effecting tool call is allowed.
+type PermissionPolicy interface {
+	Check(ctx context.Context, tool ToolDefinition, input json.RawMessage) (*PermissionResult, error)
+}
+
+// PermissionResult holds whether a tool call was allowed or denied.
+type PermissionResult struct {
+	Allowed bool   `json:"allowed"`
+	Reason  string `json:"reason,omitempty"` // populated when Allowed is false
 }
 
 // --- 10. Transport ---
-interface Transport {
-  emit(event: HarnessEvent): void;
-  onControl(handler: (event: ControlEvent) => void): void;
-  close(): Promise<void>;
+
+// Transport streams events to/from the control plane.
+type Transport interface {
+	Emit(event HarnessEvent) error
+	OnControl(handler func(event ControlEvent))
+	Close() error
 }
 
 // --- 11. Git strategy ---
 // (Interface reserved — implementation deferred pending research)
-interface GitStrategy {
-  setup(workspace: string, taskId: string): Promise<void>;    // e.g. create branch
-  checkpoint(message: string): Promise<void>;                  // e.g. commit
-  finalise(): Promise<{ branch: string; sha: string }>;        // e.g. push
+
+// GitStrategy manages branches, commits, and push lifecycle.
+type GitStrategy interface {
+	Setup(ctx context.Context, workspace string, taskID string) error
+	Checkpoint(ctx context.Context, message string) error
+	Finalise(ctx context.Context) (*GitResult, error)
+}
+
+// GitResult holds the outcome of finalising a git workflow.
+type GitResult struct {
+	Branch string `json:"branch"`
+	SHA    string `json:"sha"`
 }
 
 // --- 12. Trace emitter ---
-interface TraceEmitter {
-  start(runId: string, config: RunConfig): void;
-  recordTurn(turn: TurnTrace): void;
-  recordToolCall(call: ToolCallTrace): void;
-  finish(outcome: "success" | "error" | "max_turns"): Promise<RunTrace>;
+
+// TraceEmitter records structured telemetry for each run.
+type TraceEmitter interface {
+	Start(runID string, config *RunConfig)
+	RecordTurn(turn TurnTrace)
+	RecordToolCall(call ToolCallTrace)
+	Finish(ctx context.Context, outcome string) (*RunTrace, error)
 }
 ```
 
@@ -316,34 +390,51 @@ interface TraceEmitter {
 
 Every run is fully described by a `RunConfig` — a declarative specification of which implementation to use for each component. This is what the control plane sends (via the `TaskAssignment` in the gRPC contract) and what the CLI builds from flags/env.
 
-```typescript
-interface RunConfig {
-  // Identity
-  runId: string;
-  mode: string;                            // "execution" | "planning" | "review" | "research" | "toil"
+```go
+// RunConfig fully describes a single harness run. It is the composition root:
+// the control plane sends it (via TaskAssignment in the gRPC contract) and
+// the CLI builds it from flags/env.
+type RunConfig struct {
+	// Identity
+	RunID string `json:"runId"`
+	Mode  string `json:"mode"` // "execution" | "planning" | "review" | "research" | "toil"
 
-  // What to do
-  prompt: string;
-  dynamicContext?: Record<string, string>; // injected context (e.g. PR diff, codebase summary)
+	// What to do
+	Prompt         string            `json:"prompt"`
+	DynamicContext map[string]string `json:"dynamicContext,omitempty"`
 
-  // Component selections — each is a discriminated union of implementation + config
-  provider: ProviderConfig;                // { type: "anthropic", apiKeyRef: "secret://anthropic-key" } | { type: "bedrock", region, profile? } | { type: "openai-compatible", apiKeyRef: "secret://openai-key", baseUrl? }
-  modelRouter: ModelRouterConfig;          // { type: "static", provider: "anthropic", model: "claude-sonnet-4-6" }
-  promptBuilder: PromptBuilderConfig;      // { type: "default" } | { type: "custom", fragments: [...] }
-  contextStrategy: ContextStrategyConfig;  // { type: "sliding-window", maxTokens: 180000 }
-  executor: ExecutorConfig;                // { type: "local", workspace: "/path" } | { type: "docker", image: "..." }
-  editStrategy: EditStrategyConfig;        // { type: "whole-file" } | { type: "search-replace" } | { type: "udiff" }
-  verifier: VerifierConfig;                // { type: "none" } | { type: "test-runner", command: "npm test" }
-  permissionPolicy: PermissionPolicyConfig;// { type: "allow-all" } | { type: "deny-side-effects" }
-  gitStrategy: GitStrategyConfig;          // { type: "none" } | { type: "deterministic", baseBranch: "main" }
-  traceEmitter: TraceEmitterConfig;        // { type: "jsonl", path: "/traces" } | { type: "otel", endpoint: "..." }
-  tools: ToolsConfig;                      // { builtins: [...], mcp: [{ uri: "..." }] }
+	// Component selections — each uses a Type field to select the implementation.
+	// Go handles discriminated unions via a Type string + variant-specific fields.
+	Provider         ProviderConfig         `json:"provider"`         // Type: "anthropic" | "bedrock" | "openai-compatible"
+	ModelRouter      ModelRouterConfig      `json:"modelRouter"`      // Type: "static" | "per-mode"
+	PromptBuilder    PromptBuilderConfig    `json:"promptBuilder"`    // Type: "default" | "custom"
+	ContextStrategy  ContextStrategyConfig  `json:"contextStrategy"`  // Type: "sliding-window" | "summarise"
+	Executor         ExecutorConfig         `json:"executor"`         // Type: "local" | "container" | "api" | "microvm"
+	EditStrategy     EditStrategyConfig     `json:"editStrategy"`     // Type: "whole-file" | "search-replace" | "udiff"
+	Verifier         VerifierConfig         `json:"verifier"`         // Type: "none" | "test-runner" | "composite"
+	PermissionPolicy PermissionPolicyConfig `json:"permissionPolicy"` // Type: "allow-all" | "deny-side-effects" | "ask-upstream"
+	GitStrategy      GitStrategyConfig      `json:"gitStrategy"`      // Type: "none" | "deterministic"
+	TraceEmitter     TraceEmitterConfig     `json:"traceEmitter"`     // Type: "jsonl" | "otel"
+	Tools            ToolsConfig            `json:"tools"`
 
-  // Limits
-  maxTurns: number;
-  maxTokenBudget?: number;                 // hard cap on total tokens (input + output)
-  maxCostBudget?: number;                  // hard cap on estimated cost ($)
-  timeout?: number;                        // wall-clock timeout in seconds
+	// Limits
+	MaxTurns       int      `json:"maxTurns"`
+	MaxTokenBudget *int     `json:"maxTokenBudget,omitempty"`
+	MaxCostBudget  *float64 `json:"maxCostBudget,omitempty"` // hard cap on estimated cost ($)
+	Timeout        *int     `json:"timeout,omitempty"`        // wall-clock timeout in seconds
+}
+
+// ProviderConfig selects the model provider implementation.
+// Type determines which fields are relevant:
+//   - "anthropic":         APIKeyRef
+//   - "bedrock":           Region, Profile
+//   - "openai-compatible": APIKeyRef, BaseURL
+type ProviderConfig struct {
+	Type      string `json:"type"`
+	APIKeyRef string `json:"apiKeyRef,omitempty"` // e.g. "secret://anthropic-key"
+	Region    string `json:"region,omitempty"`
+	Profile   string `json:"profile,omitempty"`
+	BaseURL   string `json:"baseUrl,omitempty"`
 }
 ```
 
@@ -354,88 +445,89 @@ The harness entrypoint (CLI or K8s job) deserialises a `RunConfig`, constructs t
 ### Updated project structure
 
 ```
-harness/
-  package.json
-  tsconfig.json
-  src/
+stirrup/
+  go.mod
+  go.sum
+  Makefile                            # Build, test, lint, proto generation
+  Dockerfile
+  cmd/
+    harness/
+      main.go                         # CLI entrypoint — builds RunConfig from flags/env, runs loop
+    job/
+      main.go                         # K8s job entrypoint — builds RunConfig from TaskAssignment
+  internal/
     core/
-      loop.ts             # The ReAct agentic loop — depends only on interfaces
-      types.ts            # Shared types: Message, ToolCall, ToolResult, ContentBlock, etc.
-      factory.ts          # Constructs concrete components from RunConfig
-    providers/
-      interface.ts        # ProviderAdapter interface
-      anthropic.ts        # Anthropic Messages API (uses @anthropic-ai/sdk)
-      bedrock.ts          # AWS Bedrock Converse API (uses @aws-sdk/client-bedrock-runtime)
-      openai-compatible.ts # OpenAI Chat Completions API (uses openai SDK, configurable baseUrl)
+      loop.go                         # The ReAct agentic loop — depends only on interfaces
+      types.go                        # Shared types: Message, ToolCall, ToolResult, ContentBlock, etc.
+      factory.go                      # Constructs concrete components from RunConfig
+    provider/
+      provider.go                     # ProviderAdapter interface
+      anthropic.go                    # Anthropic Messages API (net/http + encoding/json, SSE via bufio.Scanner)
+      bedrock.go                      # AWS Bedrock Converse API (aws-sdk-go-v2/service/bedrockruntime)
+      openai.go                       # OpenAI Chat Completions API (net/http + encoding/json, configurable baseURL)
     router/
-      interface.ts        # ModelRouter interface
-      static.ts           # Always returns one provider+model
-      per-mode.ts         # Maps mode -> provider+model
-    prompts/
-      interface.ts        # PromptBuilder interface
-      default.ts          # Default prompt templates per mode
-      composed.ts         # Assembles from fragments + dynamic context
+      router.go                       # ModelRouter interface
+      static.go                       # Always returns one provider+model
+      permode.go                      # Maps mode -> provider+model
+    prompt/
+      prompt.go                       # PromptBuilder interface
+      default.go                      # Default prompt templates per mode
+      composed.go                     # Assembles from fragments + dynamic context
     context/
-      interface.ts        # ContextStrategy interface
-      sliding-window.ts   # Drop oldest messages beyond token budget
-      summarise.ts        # LLM-summarise old turns (uses provider adapter)
-    tools/
-      interface.ts        # Tool, ToolRegistry interfaces
-      registry.ts         # Concrete registry (built-in + MCP)
+      context.go                      # ContextStrategy interface
+      slidingwindow.go                # Drop oldest messages beyond token budget
+      summarise.go                    # LLM-summarise old turns (uses provider adapter)
+    tool/
+      tool.go                         # Tool struct, ToolRegistry interface
+      registry.go                     # Concrete registry (built-in + MCP)
       builtins/
-        filesystem.ts     # read_file, write_file, list_directory — delegates to Executor
-        search.ts         # grep, glob — delegates to Executor
-        shell.ts          # run_command — delegates to Executor
-        web-fetch.ts      # HTTP fetch -> markdown
+        filesystem.go                 # read_file, write_file, list_directory — delegates to Executor
+        search.go                     # grep, glob — delegates to Executor
+        shell.go                      # run_command — delegates to Executor
+        webfetch.go                   # HTTP fetch -> markdown
     executor/
-      interface.ts        # Executor interface
-      local.ts            # Direct fs + child_process (workspace-scoped)
-      docker.ts           # Docker container exec
+      executor.go                     # Executor interface
+      local.go                        # Direct os + os/exec (workspace-scoped)
+      docker.go                       # Docker container exec
     edit/
-      interface.ts        # EditStrategy interface
-      whole-file.ts       # Model writes entire file content
-      search-replace.ts   # Model specifies old_string/new_string pairs
-      udiff.ts            # Model produces unified diff, harness applies
+      edit.go                         # EditStrategy interface
+      wholefile.go                    # Model writes entire file content
+      searchreplace.go                # Model specifies old_string/new_string pairs
+      udiff.go                        # Model produces unified diff, harness applies
     verifier/
-      interface.ts        # Verifier interface
-      none.ts             # No verification (default)
-      test-runner.ts      # Run a test command, parse exit code + output
-      composite.ts        # Chain multiple verifiers
-    permissions/
-      interface.ts        # PermissionPolicy interface
-      allow-all.ts        # No restrictions
-      deny-side-effects.ts # Block all side-effecting tools (for planning/review)
-      ask-upstream.ts     # Send approval request via transport, wait for response
+      verifier.go                     # Verifier interface
+      none.go                         # No verification (default)
+      testrunner.go                   # Run a test command, parse exit code + output
+      composite.go                    # Chain multiple verifiers
+    permission/
+      permission.go                   # PermissionPolicy interface
+      allowall.go                     # No restrictions
+      denysideeffects.go              # Block all side-effecting tools (for planning/review)
+      askupstream.go                  # Send approval request via transport, wait for response
     git/
-      interface.ts        # GitStrategy interface
-      none.ts             # No git management
+      git.go                          # GitStrategy interface
+      none.go                         # No git management
       # (implementations deferred pending research)
     transport/
-      interface.ts        # Transport interface
-      grpc.ts             # gRPC bidi streaming client
-      stdio.ts            # JSON lines to stdout, reads stdin
+      transport.go                    # Transport interface
+      grpc.go                         # gRPC bidi streaming client
+      stdio.go                        # JSON lines to stdout, reads stdin
     trace/
-      interface.ts        # TraceEmitter interface
-      jsonl.ts            # Append to JSONL file
-      otel.ts             # OpenTelemetry export
+      trace.go                        # TraceEmitter interface
+      jsonl.go                        # Append to JSONL file
+      otel.go                         # OpenTelemetry export
     security/
-      secret-store.ts     # SecretStore interface + env-var backend
-      log-scrubber.ts     # Regex-based secret redaction for logs and recordings
-      input-validator.ts  # JSON Schema validation + prototype key stripping for tool inputs
-      config-validator.ts # RunConfig security invariant checks
+      secretstore.go                  # SecretStore interface + env-var backend
+      logscrubber.go                  # Regex-based secret redaction for logs and recordings
+      inputvalidator.go               # JSON Schema validation for tool inputs
+      configvalidator.go              # RunConfig security invariant checks
     mcp/
-      client.ts           # MCP client: connects to MCP servers, registers tools
-    proto/
-      harness.proto       # Protobuf service + message definitions
-    cli/
-      index.ts            # CLI entrypoint — builds RunConfig from flags/env
-    job.ts                # K8s job entrypoint — builds RunConfig from TaskAssignment
-    config.ts             # RunConfig type + deserialisation + validation
-    index.ts              # Library entrypoint
-  Dockerfile
+      client.go                       # MCP client: connects to MCP servers, registers tools
+  proto/
+    harness.proto                     # Protobuf service + message definitions
 ```
 
-Note: this shows the `harness` package structure only. See "Project structure: monorepo with packages" under the Experimentation section for the full monorepo layout including `types` and `eval` packages.
+Note: this shows the main module structure only. See "Project structure: monorepo with modules" under the Experimentation section for the full workspace layout including separate modules for types and eval.
 
 ## Key design decisions
 
@@ -443,23 +535,49 @@ Note: this shows the `harness` package structure only. See "Project structure: m
 
 The loop receives all its dependencies as constructor arguments. It has no imports from concrete implementations, no environment variable reads, no direct file system access. This is what makes every component independently swappable.
 
-```typescript
-class AgenticLoop {
-  constructor(
-    private provider: ProviderAdapter,
-    private router: ModelRouter,
-    private promptBuilder: PromptBuilder,
-    private context: ContextStrategy,
-    private tools: ToolRegistry,
-    private executor: Executor,
-    private verifier: Verifier,
-    private permissions: PermissionPolicy,
-    private git: GitStrategy,
-    private transport: Transport,
-    private trace: TraceEmitter,
-  ) {}
+```go
+// AgenticLoop drives the ReAct loop. All dependencies are injected as struct
+// fields — the loop has no imports from concrete implementations, no environment
+// variable reads, no direct file system access.
+type AgenticLoop struct {
+	Provider    ProviderAdapter
+	Router      ModelRouter
+	Prompt      PromptBuilder
+	Context     ContextStrategy
+	Tools       ToolRegistry
+	Executor    Executor
+	Verifier    Verifier
+	Permissions PermissionPolicy
+	Git         GitStrategy
+	Transport   Transport
+	Trace       TraceEmitter
+}
 
-  async run(config: RunConfig): Promise<RunTrace> { ... }
+// NewAgenticLoop constructs a loop with all dependencies. Typically called
+// by the factory after resolving concrete implementations from a RunConfig.
+func NewAgenticLoop(
+	provider ProviderAdapter,
+	router ModelRouter,
+	prompt PromptBuilder,
+	ctx ContextStrategy,
+	tools ToolRegistry,
+	executor Executor,
+	verifier Verifier,
+	permissions PermissionPolicy,
+	git GitStrategy,
+	transport Transport,
+	trace TraceEmitter,
+) *AgenticLoop {
+	return &AgenticLoop{
+		Provider: provider, Router: router, Prompt: prompt,
+		Context: ctx, Tools: tools, Executor: executor,
+		Verifier: verifier, Permissions: permissions, Git: git,
+		Transport: transport, Trace: trace,
+	}
+}
+
+func (l *AgenticLoop) Run(ctx context.Context, config *RunConfig) (*RunTrace, error) {
+	// ... agentic loop implementation ...
 }
 ```
 
@@ -523,12 +641,14 @@ The VERSION1 `Executor` interface already abstracts where tools run. The key des
 
 For read-only modes (research, review, planning) against repos the harness doesn't need to clone. The model never touches a real filesystem — `read_file`, `search_files`, and `list_directory` are backed by API calls (GitHub/GitLab API, or any VCS provider).
 
-```typescript
-interface VcsBackend {
-  readFile(repo: string, ref: string, path: string): Promise<string>;
-  listDirectory(repo: string, ref: string, path: string): Promise<string[]>;
-  searchCode(repo: string, query: string): Promise<SearchResult[]>;
-  getDiff(repo: string, base: string, head: string): Promise<string>;
+```go
+// VcsBackend provides read-only access to a repository via API calls,
+// without cloning. Used by the tier 0 API-backed executor.
+type VcsBackend interface {
+	ReadFile(ctx context.Context, repo, ref, path string) (string, error)
+	ListDirectory(ctx context.Context, repo, ref, path string) ([]string, error)
+	SearchCode(ctx context.Context, repo, query string) ([]SearchResult, error)
+	GetDiff(ctx context.Context, repo, base, head string) (string, error)
 }
 ```
 
@@ -546,12 +666,14 @@ This is appropriate for: research mode, review mode, planning mode against known
 
 For trusted environments: local development, internal CI, tasks against your own repos where the prompt source is trusted (you wrote it).
 
-```typescript
-class LocalExecutor implements Executor {
-  // Path traversal guard (same as stirrup's workspace_path)
-  // Command blocklist + metacharacter rejection
-  // Timeout enforcement
-  // Output capping
+```go
+// LocalExecutor implements Executor for tier 1 (workspace-scoped local process).
+type LocalExecutor struct {
+	workspace string
+	// Path traversal guard (same as stirrup's workspace_path)
+	// Command blocklist + metacharacter rejection
+	// Timeout enforcement
+	// Output capping
 }
 ```
 
@@ -590,28 +712,41 @@ The harness process runs **outside** the container. Only tool execution happens 
 └─────────────────────────────────────────────┘
 ```
 
-```typescript
-class ContainerExecutor implements Executor {
-  constructor(private config: {
-    image: string;                        // base image with language runtimes
-    workspace: string;                    // host path, mounted as /workspace
-    network: "none" | { allowlist: string[] };  // egress control
-    resources: {
-      cpus: number;                       // e.g. 2
-      memoryMb: number;                   // e.g. 4096
-      diskMb: number;                     // e.g. 10240
-      pids: number;                       // e.g. 256
-    };
-    timeout: number;                      // container-level kill after N seconds
-  }) {}
+```go
+// ContainerExecutorConfig holds the configuration for a Docker-based sandbox.
+type ContainerExecutorConfig struct {
+	Image     string          `json:"image"`     // base image with language runtimes
+	Workspace string          `json:"workspace"` // host path, mounted as /workspace
+	Network   NetworkConfig   `json:"network"`   // egress control
+	Resources ResourceLimits  `json:"resources"`
+	Timeout   time.Duration   `json:"timeout"`   // container-level kill after this duration
+}
 
-  // All methods execute via `docker exec` against the running container.
-  // The container is started once at the beginning of the run and killed at the end.
-  async exec(command: string, opts?: { timeout?: number }): Promise<ExecResult> {
-    // No blocklist needed — the container IS the boundary.
-    // Network isolation, filesystem isolation, and resource limits are
-    // enforced by the container runtime, not by regex filters.
-  }
+type NetworkConfig struct {
+	Mode      string   `json:"mode"`      // "none" or "allowlist"
+	Allowlist []string `json:"allowlist,omitempty"`
+}
+
+type ResourceLimits struct {
+	CPUs     float64 `json:"cpus"`     // e.g. 2.0
+	MemoryMB int     `json:"memoryMb"` // e.g. 4096
+	DiskMB   int     `json:"diskMb"`   // e.g. 10240
+	PIDs     int     `json:"pids"`     // e.g. 256
+}
+
+// ContainerExecutor implements Executor for tier 2 (Docker container sandbox).
+// All methods execute via `docker exec` against the running container.
+// The container is started once at the beginning of the run and killed at the end.
+type ContainerExecutor struct {
+	config      ContainerExecutorConfig
+	containerID string
+}
+
+func (e *ContainerExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error) {
+	// No blocklist needed — the container IS the boundary.
+	// Network isolation, filesystem isolation, and resource limits are
+	// enforced by the container runtime, not by regex filters.
+	return nil, nil
 }
 ```
 
@@ -652,16 +787,18 @@ Prompt injection's most dangerous outcome isn't corrupting the workspace (that's
 
 The allowlist is part of the `ExecutorConfig` in the RunConfig, so the control plane can set it per-task:
 
-```typescript
-type ExecutorConfig =
-  | { type: "api"; vcsBackend: VcsBackendConfig }
-  | { type: "local"; workspace: string }
-  | { type: "container"; image: string; workspace: string;
-      network: "none" | { allowlist: string[] };
-      resources: ResourceLimits }
-  | { type: "microvm"; image: string; workspace: string;
-      network: { proxy: string; allowlist: string[] };
-      resources: ResourceLimits };
+```go
+// ExecutorConfig selects the executor implementation. The Type field
+// determines which variant-specific fields are relevant.
+type ExecutorConfig struct {
+	Type       string          `json:"type"` // "api" | "local" | "container" | "microvm"
+	VcsBackend *VcsBackendConfig `json:"vcsBackend,omitempty"` // type: "api"
+	Workspace  string          `json:"workspace,omitempty"`    // type: "local", "container", "microvm"
+	Image      string          `json:"image,omitempty"`        // type: "container", "microvm"
+	Network    *NetworkConfig  `json:"network,omitempty"`      // type: "container", "microvm"
+	Resources  *ResourceLimits `json:"resources,omitempty"`    // type: "container", "microvm"
+	Proxy      string          `json:"proxy,omitempty"`        // type: "microvm"
+}
 ```
 
 #### Secret isolation
@@ -694,22 +831,25 @@ The interface is unchanged — that's the point. The tools call `executor.readFi
 
 One addition: a `capabilities` method so the tool registry can adapt what tools are offered based on what the executor supports:
 
-```typescript
-interface Executor {
-  // ... existing methods (readFile, writeFile, listDirectory, exec, resolvePath) ...
-
-  // What this executor supports. The tool registry uses this to filter
-  // which tools to offer the model. An API-backed executor reports
-  // canWrite: false and canExec: false, so write_file and run_command
-  // are never offered.
-  capabilities(): {
-    canRead: boolean;
-    canWrite: boolean;
-    canExec: boolean;
-    canNetwork: boolean;       // can the executed process reach the network?
-    maxTimeout: number;        // maximum command timeout in seconds
-  };
+```go
+// ExecutorCapabilities describes what an executor supports. The tool registry
+// uses this to filter which tools to offer the model. An API-backed executor
+// reports CanWrite: false and CanExec: false, so write_file and run_command
+// are never offered.
+type ExecutorCapabilities struct {
+	CanRead    bool          `json:"canRead"`
+	CanWrite   bool          `json:"canWrite"`
+	CanExec    bool          `json:"canExec"`
+	CanNetwork bool          `json:"canNetwork"`
+	MaxTimeout time.Duration `json:"maxTimeout"`
 }
+
+// The Executor interface gains one additional method:
+//
+//   Capabilities() ExecutorCapabilities
+//
+// All other methods (ReadFile, WriteFile, ListDirectory, Exec, ResolvePath)
+// remain as defined above.
 ```
 
 This closes the loop: the executor determines what's possible, the tool registry determines what's offered, and the permission policy determines what's allowed. Three independent layers of control, all driven by the RunConfig.
