@@ -170,6 +170,7 @@ type ToolsConfig struct {
 
 // MCPServerConfig describes a single MCP server connection.
 type MCPServerConfig struct {
+	Name      string `json:"name"`
 	URI       string `json:"uri"`
 	APIKeyRef string `json:"apiKeyRef,omitempty"`
 }
