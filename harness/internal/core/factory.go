@@ -13,6 +13,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/mcp"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -60,6 +61,17 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 
 	// 6. Tool registry.
 	registry := buildToolRegistry(exec)
+
+	// 6b. MCP tool discovery — connect to remote MCP servers and register
+	// their tools into the registry alongside the built-in tools.
+	if len(config.Tools.MCPServers) > 0 {
+		mcpClient := mcp.NewClient(registry, nil)
+		for _, srv := range config.Tools.MCPServers {
+			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
+				return nil, fmt.Errorf("connect MCP server %q: %w", srv.Name, err)
+			}
+		}
+	}
 
 	// 7. Edit strategy.
 	es := buildEditStrategy(config.EditStrategy)
