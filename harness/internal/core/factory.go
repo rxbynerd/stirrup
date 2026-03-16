@@ -49,16 +49,16 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	// 3. Prompt builder.
 	pb := buildPromptBuilder(config.PromptBuilder)
 
-	// 4. Context strategy.
-	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model)
-
-	// 6. Executor.
+	// 4. Executor (built early because context strategy may need it).
 	exec, err := buildExecutor(config.Executor)
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
 
-	// 5. Tool registry.
+	// 5. Context strategy.
+	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
+
+	// 6. Tool registry.
 	registry := buildToolRegistry(exec)
 
 	// 7. Edit strategy.
@@ -235,10 +235,12 @@ func buildPromptBuilder(cfg types.PromptBuilderConfig) prompt.PromptBuilder {
 	}
 }
 
-func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string) contextpkg.ContextStrategy {
+func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string, exec executor.Executor) contextpkg.ContextStrategy {
 	switch cfg.Type {
 	case "summarise":
 		return contextpkg.NewSummariseStrategy(prov, model)
+	case "offload-to-file":
+		return contextpkg.NewOffloadToFileStrategy(exec)
 	case "sliding-window", "":
 		return contextpkg.NewSlidingWindowStrategy()
 	default:
