@@ -131,7 +131,8 @@ type EditStrategyConfig struct {
 // VerifierConfig selects the verifier implementation.
 type VerifierConfig struct {
 	Type    string `json:"type"`              // "none" | "test-runner" | "composite"
-	Command string `json:"command,omitempty"` // for test-runner
+	Command string `json:"command,omitempty"` // for test-runner: the shell command to execute
+	Timeout int    `json:"timeout,omitempty"` // for test-runner: timeout in seconds (default 300)
 }
 
 // PermissionPolicyConfig selects the permission policy implementation.
