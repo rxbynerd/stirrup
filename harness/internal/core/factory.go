@@ -275,6 +275,8 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 		return edit.NewWholeFileStrategy()
 	case "search-replace":
 		return edit.NewSearchReplaceStrategy()
+	case "udiff":
+		return edit.NewUdiffStrategy()
 	default:
 		return edit.NewWholeFileStrategy()
 	}
