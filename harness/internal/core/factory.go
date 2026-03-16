@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -129,10 +130,39 @@ func buildRouter(cfg types.ModelRouterConfig) router.ModelRouter {
 	switch cfg.Type {
 	case "static":
 		return router.NewStaticRouter(cfg.Provider, cfg.Model)
+	case "per-mode":
+		return buildPerModeRouter(cfg)
 	default:
 		// Default to static with claude-sonnet-4-6.
 		return router.NewStaticRouter("anthropic", "claude-sonnet-4-6")
 	}
+}
+
+// buildPerModeRouter constructs a PerModeRouter from the config. Each entry in
+// ModeModels is "provider/model"; if the slash is absent, the default provider
+// is used with the value treated as the model name.
+func buildPerModeRouter(cfg types.ModelRouterConfig) *router.PerModeRouter {
+	defaultProvider := cfg.Provider
+	if defaultProvider == "" {
+		defaultProvider = "anthropic"
+	}
+	defaultModel := cfg.Model
+	if defaultModel == "" {
+		defaultModel = "claude-sonnet-4-6"
+	}
+	defaultSel := router.ModelSelection{Provider: defaultProvider, Model: defaultModel}
+
+	modeMap := make(map[string]router.ModelSelection, len(cfg.ModeModels))
+	for mode, spec := range cfg.ModeModels {
+		if p, m, ok := strings.Cut(spec, "/"); ok {
+			modeMap[mode] = router.ModelSelection{Provider: p, Model: m}
+		} else {
+			// No slash: use default provider with the given model name.
+			modeMap[mode] = router.ModelSelection{Provider: defaultProvider, Model: spec}
+		}
+	}
+
+	return router.NewPerModeRouter(defaultSel, modeMap)
 }
 
 func buildPromptBuilder(cfg types.PromptBuilderConfig) prompt.PromptBuilder {
