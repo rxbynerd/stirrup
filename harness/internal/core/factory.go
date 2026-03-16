@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
@@ -180,6 +181,9 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 
 func buildVerifier(cfg types.VerifierConfig) verifier.Verifier {
 	switch cfg.Type {
+	case "test-runner":
+		timeout := time.Duration(cfg.Timeout) * time.Second
+		return verifier.NewTestRunnerVerifier(cfg.Command, timeout)
 	case "none", "":
 		return verifier.NewNoneVerifier()
 	default:
