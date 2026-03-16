@@ -133,8 +133,10 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			return nil, fmt.Errorf("resolve API key: %w", err)
 		}
 		return provider.NewOpenAICompatibleAdapter(apiKey, cfg.BaseURL), nil
+	case "bedrock":
+		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile)
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, openai-compatible)", cfg.Type)
+		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, openai-compatible)", cfg.Type)
 	}
 }
 
