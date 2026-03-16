@@ -12,6 +12,7 @@ The harness is a short-lived job. The control plane is a long-lived service. Thi
 2. **Secrets never transit the harness boundary unnecessarily.** The control plane resolves and injects credentials at provision time. The harness receives secret *references*, not raw values.
 3. **Sessions are the unit of isolation.** Each session gets its own sandbox, credential scope, and resource allocation. No shared mutable state between sessions.
 4. **The control plane is provider-agnostic.** It dispatches work via a `WorkerDispatcher` interface — gRPC to our harness, A2A to third-party agents. The control plane doesn't know what's behind the adapter.
+5. **One API, every environment.** Local development, CI, and production all exercise the same control plane API (`CreateSession`, `SendMessage`, etc.). The API surface is constant; only the backing implementations change per environment. This ensures that local and CI runs test the same code paths that production uses. There is no separate "local runner" binary with its own provisioning logic.
 
 ## System architecture
 
@@ -69,6 +70,136 @@ The harness is a short-lived job. The control plane is a long-lived service. Thi
                                     │  Exits on completion         │
                                     └──────────────────────────────┘
 ```
+
+## Deployment profiles
+
+The control plane is a single binary with swappable backend implementations, following the same interface-based composition pattern as the harness. Every environment — local development, CI, production — runs the same control plane code and exercises the same API paths. The difference is which concrete implementations back each internal component.
+
+### Profile overview
+
+| Component | `local` | `ci` | `production` |
+|---|---|---|---|
+| **Session store** | In-memory | SQLite (file-backed) | PostgreSQL |
+| **Sandbox provisioner** | In-process (direct `core.BuildLoop()` call) | Docker container | K8s Job + PV |
+| **Credential vault** | Environment variables (`os.Getenv`) | Environment variables (CI secrets) | AWS STS, GitHub App, HashiCorp Vault |
+| **Worker dispatcher** | In-process function call (no network) | gRPC to harness in Docker container | gRPC to harness in K8s Pod |
+| **Event broker** | Direct channel (no buffering) | Direct channel | Buffered with replay support |
+| **Trace persistence** | JSONL to local file | JSONL to local file | S3 + PostgreSQL metadata |
+| **Scheduler** | Disabled | Disabled | Cron + webhooks + event triggers |
+| **Auth** | None (localhost trusted) | None or static token | mTLS / OAuth2 / OIDC |
+| **TLS** | Disabled | Disabled | Required |
+
+### How profiles are selected
+
+```
+controlplane serve                          # production defaults
+controlplane serve -profile local           # in-memory store, in-process harness, env creds
+controlplane serve -profile ci              # SQLite store, Docker provisioner, env creds
+```
+
+Profiles are not magic — they are named presets for the `ControlPlaneConfig`, analogous to how `ModePreset` works for `RunConfig`. Any field can be overridden via flags or environment variables regardless of profile.
+
+```go
+// ControlPlaneConfig selects implementations for each control plane component.
+// This is the control plane's equivalent of RunConfig.
+type ControlPlaneConfig struct {
+    Profile           string              `json:"profile"`           // "local" | "ci" | "production"
+    ListenAddr        string              `json:"listenAddr"`        // gRPC listen address
+    SessionStore      SessionStoreConfig  `json:"sessionStore"`      // Type: "memory" | "sqlite" | "postgres"
+    Provisioner       ProvisionerConfig   `json:"provisioner"`       // Type: "in-process" | "docker" | "kubernetes"
+    CredentialVault   VaultConfig         `json:"credentialVault"`   // Type: "env" | "aws-sts" | "vault"
+    Dispatcher        DispatcherConfig    `json:"dispatcher"`        // Type: "in-process" | "grpc"
+    EventBroker       EventBrokerConfig   `json:"eventBroker"`       // Type: "direct" | "buffered"
+    TracePersistence  TracePersistConfig  `json:"tracePersistence"`  // Type: "jsonl" | "s3"
+    TLS               *TLSConfig          `json:"tls,omitempty"`
+}
+```
+
+### The `local` profile: in-process composition
+
+The `local` profile is the most interesting case. Instead of launching a separate harness process and connecting over gRPC, the control plane constructs the `AgenticLoop` in-process and calls it directly. This eliminates all network overhead while still exercising the full session lifecycle:
+
+```
+┌─────────────────────────────────────────────────┐
+│  controlplane serve -profile local               │
+│                                                  │
+│  ┌──────────────┐     ┌───────────────────────┐  │
+│  │  gRPC Server  │     │  Session Manager      │  │
+│  │  (localhost)  │────►│  (in-memory store)    │  │
+│  └──────────────┘     └───────────┬───────────┘  │
+│                                   │              │
+│                       ┌───────────▼───────────┐  │
+│                       │  Sandbox Provisioner   │  │
+│                       │  (in-process)          │  │
+│                       │                        │  │
+│                       │  Calls core.BuildLoop()│  │
+│                       │  directly — no Docker, │  │
+│                       │  no K8s, no gRPC to    │  │
+│                       │  harness.              │  │
+│                       └───────────┬───────────┘  │
+│                                   │              │
+│                       ┌───────────▼───────────┐  │
+│                       │  AgenticLoop           │  │
+│                       │  (runs in goroutine)   │  │
+│                       │  Uses local executor   │  │
+│                       └───────────────────────┘  │
+└─────────────────────────────────────────────────┘
+```
+
+The in-process provisioner implements the same `SandboxProvisioner` interface as the Docker and K8s provisioners. It:
+
+1. Resolves the workspace to the current directory (or a specified path).
+2. Resolves credentials via `os.Getenv()`.
+3. Builds a `RunConfig` with `executor.type: "local"`.
+4. Calls `core.BuildLoop()` and `loop.Run()` in a goroutine.
+5. Bridges the harness's `Transport` interface to the control plane's event broker via Go channels (no serialisation, no network).
+6. On completion, returns the `RunTrace` to the session manager.
+
+This means `CreateSession` on the local profile goes through the same state machine (PENDING → PROVISIONING → RUNNING → COMPLETING → COMPLETED), the same credential resolution interface, and the same event routing — just with lighter-weight implementations behind each interface.
+
+### The `ci` profile: Docker with real isolation
+
+CI needs real sandbox isolation (the harness runs untrusted code from the repo under test) but doesn't need K8s, a database, or cloud credential providers. The `ci` profile:
+
+1. Uses SQLite for session state (survives process restarts during long CI jobs, no external database).
+2. Uses the Docker provisioner (same code path as production's K8s provisioner, but targeting the Docker API instead of the K8s API).
+3. Resolves credentials from CI environment variables (GitHub Actions secrets, GitLab CI variables, etc.).
+4. Connects to the harness via gRPC — same transport as production.
+
+This is the closest to production without requiring cloud infrastructure. It exercises the full gRPC transport path, real container isolation, and real credential injection.
+
+### The CLI client: `cmd/stirrup`
+
+The CLI is a thin gRPC client. It does not embed control plane logic.
+
+```
+cmd/
+  harness/main.go            # the harness worker (unchanged)
+  controlplane/main.go       # the control plane server (all profiles)
+  stirrup/main.go             # CLI client — thin gRPC wrapper
+```
+
+For local development, `stirrup` starts an in-process control plane (local profile), calls `CreateSession`, streams events to the terminal, and shuts down on completion. The user never sees the control plane — it looks like a single command:
+
+```
+stirrup -prompt "Fix the race condition in pkg/cache/lru.go"
+```
+
+Under the hood:
+
+1. `stirrup` starts the control plane in-process (local profile, ephemeral gRPC listener on a random port or Unix socket).
+2. `stirrup` calls `CreateSession` with the prompt, mode, and current directory as workspace.
+3. The control plane provisions the session (in-process: just builds the loop and runs it).
+4. Events stream back to `stirrup`, which renders them to the terminal.
+5. On session completion, `stirrup` prints the outcome and exits. The in-process control plane shuts down.
+
+For CI or connecting to a remote control plane:
+
+```
+stirrup -endpoint controlplane.internal:9090 -prompt "Run the review"
+```
+
+The CLI doesn't know or care whether the control plane is in-process or remote. It's a gRPC client either way.
 
 ## External API
 
@@ -838,43 +969,63 @@ Every credential mint, session state transition, approval decision, and teardown
 
 ## Implementation phases
 
-### Phase 1: Core lifecycle (MVP)
+### Phase 1: Local profile + core lifecycle
 
-Deliver: sessions can be created, provisioned (local Docker), executed, and torn down.
+Deliver: the `local` profile works end-to-end. `stirrup -prompt "..."` runs a session through the full control plane API using in-process composition. This is the foundation — every subsequent phase adds implementations behind the same interfaces.
 
-1. Session Manager with state machine (Postgres-backed)
-2. Sandbox Provisioner — Docker-only (no K8s), local development workflow
-3. Credential Vault — environment variable pass-through (no STS minting yet)
-4. Worker Dispatcher — gRPC bidi streaming (connect to existing harness transport)
-5. Event Broker — direct forwarding (no buffering, no replay)
-6. External API — CreateSession, GetSession, CancelSession RPCs
-7. Protobuf definitions for all messages
+1. Define `ControlPlaneConfig` and profile presets (`local`, `ci`, `production`)
+2. Protobuf definitions for all external API messages
+3. Component interfaces: `SessionStore`, `SandboxProvisioner`, `CredentialVault`, `WorkerDispatcher`, `EventBroker`
+4. In-memory session store implementation
+5. Session Manager with state machine (in-memory backing)
+6. In-process sandbox provisioner (calls `core.BuildLoop()` directly, bridges transport via Go channels)
+7. Environment variable credential vault
+8. Direct event broker (no buffering)
+9. gRPC server exposing `CreateSession`, `GetSession`, `CancelSession`, `SendMessage`
+10. `cmd/controlplane` binary with `-profile` flag
+11. `cmd/stirrup` CLI client with embedded in-process control plane for local use
+12. Integration test that exercises `CreateSession` → run → `SessionCompleted` via the gRPC API against the local profile
 
-### Phase 2: Production infrastructure
+At the end of this phase, local development and simple CI use cases work. The same API that production will use is exercised on every run.
 
-Deliver: sessions run on K8s with real credential isolation.
+### Phase 2: CI profile + Docker isolation
+
+Deliver: the `ci` profile provisions real Docker containers and connects via gRPC. CI pipelines can run Stirrup with sandbox isolation.
+
+1. Docker sandbox provisioner (create container, mount workspace, inject env vars, connect harness via gRPC)
+2. gRPC worker dispatcher (connects to harness running inside Docker container)
+3. SQLite session store implementation
+4. JSONL trace persistence to local filesystem
+5. `cmd/stirrup -endpoint` flag for connecting to a remote control plane
+6. Integration test that exercises the full Docker provisioning path
+7. CI pipeline configuration (GitHub Actions) that uses the `ci` profile
+
+### Phase 3: Production profile + cloud infrastructure
+
+Deliver: the `production` profile runs on K8s with real credential isolation and persistent storage.
 
 1. K8s Job-based sandbox provisioner
-2. AWS STS credential minting for Bedrock
-3. GitHub App installation token minting
-4. Network policies for sandbox egress control
-5. Event buffering and client reconnection
-6. Session store with trace persistence to object storage
-7. ListSessions with filtering
+2. PostgreSQL session store implementation
+3. AWS STS credential minting for Bedrock
+4. GitHub App installation token minting
+5. S3 trace persistence + PostgreSQL metadata
+6. Event buffering with client reconnection replay
+7. Network policies for sandbox egress control
+8. ListSessions with filtering
+9. Background reconciler for stuck sessions
 
-### Phase 3: Automation and observability
+### Phase 4: Automation and observability
 
-Deliver: automated session triggers and full observability.
+Deliver: automated session triggers and production observability.
 
-1. Webhook endpoint (GitHub events)
+1. Webhook endpoint (GitHub events → CreateSession)
 2. Cron-based trigger scheduler
 3. Prometheus metrics exporter
 4. Structured logging pipeline
 5. Alerting rules
-6. Background reconciler for stuck sessions
-7. Cost analytics dashboard
+6. Cost analytics dashboard
 
-### Phase 4: Multi-tenancy and hardening
+### Phase 5: Multi-tenancy and hardening
 
 Deliver: production-ready for multiple teams with strong isolation.
 
