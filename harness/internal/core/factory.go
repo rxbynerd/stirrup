@@ -167,6 +167,10 @@ func buildPerModeRouter(cfg types.ModelRouterConfig) *router.PerModeRouter {
 
 func buildPromptBuilder(cfg types.PromptBuilderConfig) prompt.PromptBuilder {
 	switch cfg.Type {
+	case "composed":
+		return prompt.NewComposedPromptBuilder(
+			prompt.WithFragments(prompt.DefaultComposedFragments()...),
+		)
 	case "default", "":
 		return prompt.NewDefaultPromptBuilder()
 	default:
