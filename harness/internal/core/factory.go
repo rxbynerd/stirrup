@@ -50,7 +50,7 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	pb := buildPromptBuilder(config.PromptBuilder)
 
 	// 4. Context strategy.
-	cs := buildContextStrategy(config.ContextStrategy)
+	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model)
 
 	// 6. Executor.
 	exec, err := buildExecutor(config.Executor)
@@ -174,8 +174,10 @@ func buildPromptBuilder(cfg types.PromptBuilderConfig) prompt.PromptBuilder {
 	}
 }
 
-func buildContextStrategy(cfg types.ContextStrategyConfig) contextpkg.ContextStrategy {
+func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string) contextpkg.ContextStrategy {
 	switch cfg.Type {
+	case "summarise":
+		return contextpkg.NewSummariseStrategy(prov, model)
 	case "sliding-window", "":
 		return contextpkg.NewSlidingWindowStrategy()
 	default:
