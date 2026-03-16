@@ -27,7 +27,7 @@ type StreamParams struct {
 
 // HarnessEvent is an event emitted by the harness to the control plane.
 type HarnessEvent struct {
-	Type       string          `json:"type"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "heartbeat" | "ready"
+	Type       string          `json:"type"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "heartbeat" | "ready" | "permission_request"
 	Text       string          `json:"text,omitempty"`
 	ID         string          `json:"id,omitempty"`
 	Name       string          `json:"name,omitempty"`
@@ -37,13 +37,18 @@ type HarnessEvent struct {
 	StopReason string          `json:"stopReason,omitempty"`
 	Message    string          `json:"message,omitempty"`
 	Trace      *RunTrace       `json:"trace,omitempty"`
+	RequestID  string          `json:"requestId,omitempty"` // correlates permission_request with permission_response
+	ToolName   string          `json:"toolName,omitempty"`  // tool name in permission_request
 }
 
 // ControlEvent is an event received from the control plane.
 type ControlEvent struct {
-	Type         string     `json:"type"` // "task_assignment" | "user_response" | "cancel"
+	Type         string     `json:"type"` // "task_assignment" | "user_response" | "cancel" | "permission_response"
 	Task         *RunConfig `json:"task,omitempty"`
 	UserResponse string     `json:"userResponse,omitempty"`
+	RequestID    string     `json:"requestId,omitempty"` // correlates permission_response with permission_request
+	Allowed      *bool      `json:"allowed,omitempty"`   // permission decision
+	Reason       string     `json:"reason,omitempty"`    // explanation for denial
 }
 
 // HarnessLifecycleEvent represents lifecycle signals sent on the transport.

@@ -67,11 +67,11 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	// 8. Verifier.
 	v := buildVerifier(config.Verifier)
 
-	// 9. Permission policy.
-	pp := buildPermissionPolicy(config.PermissionPolicy, registry)
-
-	// 10. Transport.
+	// 9. Transport (built before permission policy since ask-upstream needs it).
 	tp := buildTransport()
+
+	// 10. Permission policy.
+	pp := buildPermissionPolicy(config.PermissionPolicy, registry, tp)
 
 	// 11. Git strategy.
 	gs := buildGitStrategy(config.GitStrategy)
@@ -229,23 +229,33 @@ func buildVerifier(cfg types.VerifierConfig) verifier.Verifier {
 	}
 }
 
-func buildPermissionPolicy(cfg types.PermissionPolicyConfig, registry *tool.Registry) permission.PermissionPolicy {
+func buildPermissionPolicy(cfg types.PermissionPolicyConfig, registry *tool.Registry, tp transport.Transport) permission.PermissionPolicy {
 	switch cfg.Type {
 	case "allow-all":
 		return permission.NewAllowAll()
 	case "deny-side-effects":
 		// Build the set of side-effecting tool names from the registry.
-		sideEffecting := make(map[string]bool)
-		for _, td := range registry.List() {
-			t := registry.Resolve(td.Name)
-			if t != nil && t.SideEffects {
-				sideEffecting[td.Name] = true
-			}
-		}
+		sideEffecting := sideEffectingToolSet(registry)
 		return permission.NewDenySideEffects(sideEffecting)
+	case "ask-upstream":
+		sideEffecting := sideEffectingToolSet(registry)
+		return permission.NewAskUpstreamPolicy(tp, sideEffecting)
 	default:
 		return permission.NewAllowAll()
 	}
+}
+
+// sideEffectingToolSet builds a set of tool names that have side effects
+// from the tool registry.
+func sideEffectingToolSet(registry *tool.Registry) map[string]bool {
+	sideEffecting := make(map[string]bool)
+	for _, td := range registry.List() {
+		t := registry.Resolve(td.Name)
+		if t != nil && t.SideEffects {
+			sideEffecting[td.Name] = true
+		}
+	}
+	return sideEffecting
 }
 
 func buildTransport() transport.Transport {
