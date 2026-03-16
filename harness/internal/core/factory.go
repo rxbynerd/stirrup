@@ -114,8 +114,14 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			return nil, fmt.Errorf("resolve API key: %w", err)
 		}
 		return provider.NewAnthropicAdapter(apiKey), nil
+	case "openai-compatible":
+		apiKey, err := secrets.Resolve(ctx, cfg.APIKeyRef)
+		if err != nil {
+			return nil, fmt.Errorf("resolve API key: %w", err)
+		}
+		return provider.NewOpenAICompatibleAdapter(apiKey, cfg.BaseURL), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %q (Phase 1 supports: anthropic)", cfg.Type)
+		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, openai-compatible)", cfg.Type)
 	}
 }
 
