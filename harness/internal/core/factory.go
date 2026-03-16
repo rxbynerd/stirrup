@@ -173,6 +173,8 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	switch cfg.Type {
 	case "whole-file", "":
 		return edit.NewWholeFileStrategy()
+	case "search-replace":
+		return edit.NewSearchReplaceStrategy()
 	default:
 		return edit.NewWholeFileStrategy()
 	}
