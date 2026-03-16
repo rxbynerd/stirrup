@@ -73,9 +73,10 @@ type ProviderConfig struct {
 
 // ModelRouterConfig selects the model router implementation.
 type ModelRouterConfig struct {
-	Type     string `json:"type"`               // "static" | "per-mode"
-	Provider string `json:"provider,omitempty"` // for static
-	Model    string `json:"model,omitempty"`    // for static
+	Type       string            `json:"type"`                 // "static" | "per-mode"
+	Provider   string            `json:"provider,omitempty"`   // default provider (static + per-mode)
+	Model      string            `json:"model,omitempty"`      // default model (static + per-mode)
+	ModeModels map[string]string `json:"modeModels,omitempty"` // per-mode: mode -> "provider/model" override
 }
 
 // PromptBuilderConfig selects the prompt builder implementation.
