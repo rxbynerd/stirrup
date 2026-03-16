@@ -212,6 +212,8 @@ func buildTransport() transport.Transport {
 
 func buildGitStrategy(cfg types.GitStrategyConfig) git.GitStrategy {
 	switch cfg.Type {
+	case "deterministic":
+		return git.NewDeterministicGitStrategy()
 	case "none", "":
 		return git.NewNoneGitStrategy()
 	default:
