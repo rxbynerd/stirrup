@@ -132,6 +132,8 @@ func buildRouter(cfg types.ModelRouterConfig) router.ModelRouter {
 		return router.NewStaticRouter(cfg.Provider, cfg.Model)
 	case "per-mode":
 		return buildPerModeRouter(cfg)
+	case "dynamic":
+		return buildDynamicRouter(cfg)
 	default:
 		// Default to static with claude-sonnet-4-6.
 		return router.NewStaticRouter("anthropic", "claude-sonnet-4-6")
@@ -163,6 +165,61 @@ func buildPerModeRouter(cfg types.ModelRouterConfig) *router.PerModeRouter {
 	}
 
 	return router.NewPerModeRouter(defaultSel, modeMap)
+}
+
+// buildDynamicRouter constructs a DynamicRouter from the config, applying
+// sensible defaults for any fields not explicitly set.
+func buildDynamicRouter(cfg types.ModelRouterConfig) *router.DynamicRouter {
+	defaultProvider := cfg.Provider
+	if defaultProvider == "" {
+		defaultProvider = "anthropic"
+	}
+	defaultModel := cfg.Model
+	if defaultModel == "" {
+		defaultModel = "claude-sonnet-4-6"
+	}
+
+	cheapProvider := cfg.CheapProvider
+	if cheapProvider == "" {
+		cheapProvider = "anthropic"
+	}
+	cheapModel := cfg.CheapModel
+	if cheapModel == "" {
+		cheapModel = "claude-haiku-4-5-20251001"
+	}
+
+	expensiveProvider := cfg.ExpensiveProvider
+	if expensiveProvider == "" {
+		expensiveProvider = "anthropic"
+	}
+	expensiveModel := cfg.ExpensiveModel
+	if expensiveModel == "" {
+		expensiveModel = "claude-sonnet-4-6"
+	}
+
+	turnThreshold := cfg.ExpensiveTurnThreshold
+	if turnThreshold == 0 {
+		turnThreshold = 10
+	}
+
+	tokenThreshold := cfg.ExpensiveTokenThreshold
+	if tokenThreshold == 0 {
+		tokenThreshold = 50000
+	}
+
+	cheapStopReasons := cfg.CheapStopReasons
+	if len(cheapStopReasons) == 0 {
+		cheapStopReasons = []string{"tool_use"}
+	}
+
+	return router.NewDynamicRouter(router.DynamicRouterConfig{
+		DefaultSelection:        router.ModelSelection{Provider: defaultProvider, Model: defaultModel},
+		CheapSelection:          router.ModelSelection{Provider: cheapProvider, Model: cheapModel},
+		ExpensiveSelection:      router.ModelSelection{Provider: expensiveProvider, Model: expensiveModel},
+		ExpensiveTurnThreshold:  turnThreshold,
+		ExpensiveTokenThreshold: tokenThreshold,
+		CheapStopReasons:        cheapStopReasons,
+	})
 }
 
 func buildPromptBuilder(cfg types.PromptBuilderConfig) prompt.PromptBuilder {
