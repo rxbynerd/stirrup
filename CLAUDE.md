@@ -1,81 +1,105 @@
 # stirrup
 
-A Ruby coding agent server. Exposes a WebSocket endpoint that accepts user messages and streams back responses from Claude (claude-sonnet-4-6) via the Anthropic API, with tool use support.
+A coding agent harness. Go monorepo with 12 swappable components that can be composed via RunConfig. See VERSION1.md for the full design document.
 
-## Architecture
+## Project Structure
 
-- `stirrup.rb` — Core library. Defines `Tool`, `ToolCall`, and `Conversation`. `Conversation` drives the agentic loop: it streams one API turn at a time, dispatches tool calls, appends results, and continues until a non-`tool_use` stop reason.
-- `server.rb` — Sinatra app (`StirrupApp`). Defines the five workspace tools, the system prompt, and the WebSocket handler. One `Conversation` and one persistent HTTP client are created per connection.
+```
+stirrup/
+  go.work                    # Go workspace: types, harness, eval modules
+  types/                     # Shared type definitions (zero dependencies)
+  harness/                   # The harness binary
+    cmd/harness/main.go      # CLI entrypoint
+    internal/
+      core/                  # AgenticLoop, factory, cost tracking
+      provider/              # ProviderAdapter: Anthropic SSE streaming
+      router/                # ModelRouter: static router
+      prompt/                # PromptBuilder: per-mode templates
+      context/               # ContextStrategy: sliding window
+      tool/                  # ToolRegistry + built-in tools
+      executor/              # Executor: local (workspace-scoped)
+      edit/                  # EditStrategy: whole-file
+      verifier/              # Verifier: none
+      permission/            # PermissionPolicy: allow-all, deny-side-effects
+      git/                   # GitStrategy: none
+      transport/             # Transport: stdio (JSON lines)
+      trace/                 # TraceEmitter: JSONL
+      security/              # SecretStore, LogScrubber, input validation
+  eval/                      # Eval framework (scaffolded, not yet implemented)
+```
 
 ## Running
 
-```
-bundle exec ruby server.rb
-```
-
-Requires a `.env` file with:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-WORKSPACE=/path/to/workspace   # optional, defaults to cwd
+```sh
+go build -o stirrup-harness ./harness/cmd/harness
+./stirrup-harness -prompt "Your task here"
 ```
 
-## WebSocket Protocol
-
-Connect to `ws://localhost:4567/`.
-
-**Client → server:**
-```json
-{ "type": "message", "content": "your prompt here" }
+Or directly:
+```sh
+go run ./harness/cmd/harness -prompt "Your task here"
 ```
 
-**Server → client (streamed events):**
+Requires `ANTHROPIC_API_KEY` environment variable.
 
-| `type` | Fields | Description |
+### CLI Flags
+
+| Flag | Default | Description |
 |---|---|---|
-| `text_delta` | `text` | Incremental assistant text |
-| `tool_call` | `id`, `name`, `input` | Tool invocation by the model |
-| `tool_result` | `tool_use_id`, `content` | Result returned to the model |
-| `done` | `stop_reason` | Turn complete |
-| `error` | `message` | Error occurred |
+| `-prompt` | (required) | User prompt |
+| `-mode` | `execution` | Run mode: execution, planning, review, research, toil |
+| `-model` | `claude-sonnet-4-6` | Model to use |
+| `-provider` | `anthropic` | Provider type |
+| `-api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
+| `-workspace` | current directory | Workspace directory |
+| `-max-turns` | `20` | Maximum agentic loop turns |
+| `-timeout` | `600` | Wall-clock timeout in seconds |
+| `-trace` | (none) | Path to JSONL trace file |
 
-Concurrent turns on the same connection are rejected with an `error` event.
+## Architecture
 
-## Tools Available to the Agent
+12 swappable components, all interface-based:
 
-All file/directory tools are sandboxed to `WORKSPACE` via `workspace_path()` in `server.rb`.
+1. **ProviderAdapter** — streams completions from LLMs (Anthropic implemented)
+2. **ModelRouter** — selects provider+model per turn (static implemented)
+3. **PromptBuilder** — assembles system prompt (default per-mode templates)
+4. **ContextStrategy** — manages message history (sliding window)
+5. **ToolRegistry** — resolves and dispatches tools (6 built-in tools)
+6. **Executor** — sandboxed file I/O and command execution (local)
+7. **EditStrategy** — how file changes are applied (whole-file)
+8. **Verifier** — validates run output (none)
+9. **PermissionPolicy** — gates side-effecting tools (allow-all, deny-side-effects)
+10. **Transport** — streams events to/from control plane (stdio)
+11. **GitStrategy** — manages branches/commits (none)
+12. **TraceEmitter** — records telemetry (JSONL)
 
-| Tool | Description |
-|---|---|
-| `read_file` | Read a file from the workspace |
-| `write_file` | Write content to a file (creates parent dirs) |
-| `list_directory` | List a directory's contents |
-| `search_files` | Grep file contents (regex) or find files (glob) |
-| `run_shell_command` | Run a command in the workspace; 30s timeout, output capped at 10,000 chars |
+The core loop is a pure function of its interfaces. All dependencies are injected via the factory (`core.BuildLoop`), which constructs components from a `RunConfig`.
 
-`run_shell_command` applies a blocklist (`rm -rf`, `sudo`, etc.) and rejects shell metacharacters (`|`, `;`, `&`, `<`, `>`, `` ` ``, `$`, `\`). This is best-effort only, not a security boundary.
+## Security Foundations
+
+- **SecretStore**: resolves `secret://` references (env vars, files). API keys never stored in RunConfig.
+- **LogScrubber**: regex-based redaction of 7 secret patterns in all log/trace output.
+- **Input validation**: JSON Schema validation on all tool inputs. Prototype pollution protection.
+- **RunConfig validation**: hard security invariants (read-only modes must use restrictive permissions, bounded maxTurns/timeout).
+- **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.
+- **RunConfig.Redact()**: strips secret references before trace persistence.
 
 ## Key Constants
 
-- `MAX_TURNS = 20` — maximum agentic loop iterations per `Conversation#say` call (in `stirrup.rb`)
-- Model: `claude-sonnet-4-6`
+- `MAX_TURNS = 20` (configurable via RunConfig/CLI)
+- Default model: `claude-sonnet-4-6`
 - `max_tokens: 64000`, `temperature: 0.1`
+- File size limit: 10MB (read/write)
+- Command output cap: 1MB
+- Command timeout: 30s default, 5min max
 
-## Dependencies
+## Development
 
-Ruby 4.0.1 (see `.ruby-version`). Install gems with `bundle install`.
+```sh
+go test ./harness/...    # Run all tests
+go build ./harness/...   # Build all packages
+```
 
-| Gem | Purpose |
-|---|---|
-| `http` | HTTP client for Anthropic API (streaming SSE) |
-| `sinatra` | Web framework |
-| `puma` | Web server |
-| `faye-websocket` | WebSocket support for Rack/Puma |
-| `dotenv` | Load `.env` into `ENV` |
-| `pry` | Debug REPL |
+## Legacy Ruby Code
 
-## Development Notes
-
-- The `Conversation` class in `stirrup.rb` is framework-agnostic — it only needs an `http` client and a list of `Tool` objects. It can be used independently of the Sinatra server.
-- SSE parsing happens manually in `stream_turn` / `handle_sse_event`. Malformed SSE events are silently skipped.
-- `.env` is gitignored. Never commit API keys.
+The original Ruby prototype (`stirrup.rb`, `server.rb`) is still in the repo root. It is superseded by the Go harness but kept for reference during the transition.
