@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // AllowAll is a PermissionPolicy that permits every tool call unconditionally.

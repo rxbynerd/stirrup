@@ -1,7 +1,7 @@
-module github.com/rubynerd/stirrup/harness
+module github.com/rxbynerd/stirrup/harness
 
 go 1.26.1
 
-require github.com/rubynerd/stirrup/types v0.0.0
+require github.com/rxbynerd/stirrup/types v0.0.0
 
-replace github.com/rubynerd/stirrup/types => ../types
+replace github.com/rxbynerd/stirrup/types => ../types

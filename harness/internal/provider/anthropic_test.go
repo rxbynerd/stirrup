@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // sseLines builds an SSE stream body from event/data pairs.

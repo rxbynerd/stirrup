@@ -5,7 +5,7 @@ package context
 import (
 	"context"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // TokenBudget describes the token limits for context preparation.

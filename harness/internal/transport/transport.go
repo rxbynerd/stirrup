@@ -2,7 +2,7 @@
 // events and receiving control events from the orchestration layer.
 package transport
 
-import "github.com/rubynerd/stirrup/types"
+import "github.com/rxbynerd/stirrup/types"
 
 // Transport is the bidirectional channel between the harness and the
 // control plane (or CLI). It emits HarnessEvents outward and receives

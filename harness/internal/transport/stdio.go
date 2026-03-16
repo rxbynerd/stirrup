@@ -7,8 +7,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/rubynerd/stirrup/harness/internal/security"
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // StdioTransport implements Transport over newline-delimited JSON on

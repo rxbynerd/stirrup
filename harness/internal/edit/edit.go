@@ -6,8 +6,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/rubynerd/stirrup/harness/internal/executor"
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // EditResult describes the outcome of an edit operation.

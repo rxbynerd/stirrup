@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // PermissionResult indicates whether a tool call is allowed.

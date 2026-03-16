@@ -1,8 +1,8 @@
 package builtins
 
 import (
-	"github.com/rubynerd/stirrup/harness/internal/executor"
-	"github.com/rubynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
 // RegisterBuiltins registers all built-in tools with the given registry.

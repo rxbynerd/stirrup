@@ -8,17 +8,17 @@ import (
 	"strings"
 	"testing"
 
-	contextpkg "github.com/rubynerd/stirrup/harness/internal/context"
-	"github.com/rubynerd/stirrup/harness/internal/edit"
-	"github.com/rubynerd/stirrup/harness/internal/git"
-	"github.com/rubynerd/stirrup/harness/internal/permission"
-	"github.com/rubynerd/stirrup/harness/internal/prompt"
-	"github.com/rubynerd/stirrup/harness/internal/router"
-	"github.com/rubynerd/stirrup/harness/internal/tool"
-	"github.com/rubynerd/stirrup/harness/internal/trace"
-	"github.com/rubynerd/stirrup/harness/internal/transport"
-	"github.com/rubynerd/stirrup/harness/internal/verifier"
-	"github.com/rubynerd/stirrup/types"
+	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
+	"github.com/rxbynerd/stirrup/harness/internal/edit"
+	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/permission"
+	"github.com/rxbynerd/stirrup/harness/internal/prompt"
+	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/trace"
+	"github.com/rxbynerd/stirrup/harness/internal/transport"
+	"github.com/rxbynerd/stirrup/harness/internal/verifier"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // mockProvider is a test ProviderAdapter that returns predefined events.

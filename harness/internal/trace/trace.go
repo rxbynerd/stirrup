@@ -5,7 +5,7 @@ package trace
 import (
 	"context"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // TraceEmitter records telemetry for a single harness run.

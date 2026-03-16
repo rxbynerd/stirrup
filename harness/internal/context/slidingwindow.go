@@ -3,7 +3,7 @@ package context
 import (
 	"context"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // minPreservedMessages is the minimum number of recent messages to keep,

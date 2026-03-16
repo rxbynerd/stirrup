@@ -5,7 +5,7 @@ package verifier
 import (
 	"context"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // VerifyContext provides the inputs a verifier needs to assess a run's result.

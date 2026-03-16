@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	contextpkg "github.com/rubynerd/stirrup/harness/internal/context"
-	"github.com/rubynerd/stirrup/harness/internal/prompt"
-	"github.com/rubynerd/stirrup/harness/internal/router"
-	"github.com/rubynerd/stirrup/harness/internal/verifier"
-	"github.com/rubynerd/stirrup/types"
+	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
+	"github.com/rxbynerd/stirrup/harness/internal/prompt"
+	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/verifier"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // maxVerificationRetries is the maximum number of times the verifier can

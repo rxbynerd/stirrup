@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rubynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
 const (

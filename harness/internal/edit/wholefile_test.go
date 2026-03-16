@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/rubynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
 func TestWholeFileStrategy_ToolDefinition(t *testing.T) {

@@ -5,7 +5,7 @@ package provider
 import (
 	"context"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // ProviderAdapter streams model responses for a given set of parameters.

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // JSONLTraceEmitter writes run traces as newline-delimited JSON to an

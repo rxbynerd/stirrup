@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/rubynerd/stirrup/harness/internal/executor"
-	"github.com/rubynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
 // readFileSchema is the JSON Schema for the read_file tool input.

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rubynerd/stirrup/harness/internal/executor"
-	"github.com/rubynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
 // searchFilesSchema is the JSON Schema for the search_files tool input.

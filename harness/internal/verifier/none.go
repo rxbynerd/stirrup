@@ -3,7 +3,7 @@ package verifier
 import (
 	"context"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // NoneVerifier is a Verifier that always reports success. Use it when no

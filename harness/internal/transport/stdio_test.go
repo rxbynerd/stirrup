@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 func TestStdioTransport_Emit(t *testing.T) {

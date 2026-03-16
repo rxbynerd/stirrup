@@ -1,6 +1,6 @@
 package tool
 
-import "github.com/rubynerd/stirrup/types"
+import "github.com/rxbynerd/stirrup/types"
 
 // Registry is a concrete implementation of ToolRegistry backed by a map.
 type Registry struct {

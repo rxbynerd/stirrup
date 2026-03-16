@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 func makeMessage(role, text string) types.Message {

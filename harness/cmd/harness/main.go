@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rubynerd/stirrup/harness/internal/core"
-	"github.com/rubynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/harness/internal/core"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 func main() {
