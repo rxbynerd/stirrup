@@ -225,6 +225,12 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 
 func buildVerifier(cfg types.VerifierConfig) verifier.Verifier {
 	switch cfg.Type {
+	case "composite":
+		subs := make([]verifier.Verifier, len(cfg.Verifiers))
+		for i, sub := range cfg.Verifiers {
+			subs[i] = buildVerifier(sub)
+		}
+		return verifier.NewCompositeVerifier(subs)
 	case "test-runner":
 		timeout := time.Duration(cfg.Timeout) * time.Second
 		return verifier.NewTestRunnerVerifier(cfg.Command, timeout)

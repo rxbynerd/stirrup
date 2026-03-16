@@ -73,10 +73,19 @@ type ProviderConfig struct {
 
 // ModelRouterConfig selects the model router implementation.
 type ModelRouterConfig struct {
-	Type       string            `json:"type"`                 // "static" | "per-mode"
-	Provider   string            `json:"provider,omitempty"`   // default provider (static + per-mode)
-	Model      string            `json:"model,omitempty"`      // default model (static + per-mode)
+	Type       string            `json:"type"`                 // "static" | "per-mode" | "dynamic"
+	Provider   string            `json:"provider,omitempty"`   // default provider (static + per-mode + dynamic)
+	Model      string            `json:"model,omitempty"`      // default model (static + per-mode + dynamic)
 	ModeModels map[string]string `json:"modeModels,omitempty"` // per-mode: mode -> "provider/model" override
+
+	// Dynamic router fields: complexity-based model selection.
+	CheapProvider           string   `json:"cheapProvider,omitempty"`
+	CheapModel              string   `json:"cheapModel,omitempty"`
+	ExpensiveProvider       string   `json:"expensiveProvider,omitempty"`
+	ExpensiveModel          string   `json:"expensiveModel,omitempty"`
+	ExpensiveTurnThreshold  int      `json:"expensiveTurnThreshold,omitempty"`
+	ExpensiveTokenThreshold int      `json:"expensiveTokenThreshold,omitempty"`
+	CheapStopReasons        []string `json:"cheapStopReasons,omitempty"`
 }
 
 // PromptBuilderConfig selects the prompt builder implementation.
@@ -131,9 +140,10 @@ type EditStrategyConfig struct {
 
 // VerifierConfig selects the verifier implementation.
 type VerifierConfig struct {
-	Type    string `json:"type"`              // "none" | "test-runner" | "composite"
-	Command string `json:"command,omitempty"` // for test-runner: the shell command to execute
-	Timeout int    `json:"timeout,omitempty"` // for test-runner: timeout in seconds (default 300)
+	Type      string           `json:"type"`                // "none" | "test-runner" | "composite"
+	Command   string           `json:"command,omitempty"`   // for test-runner: the shell command to execute
+	Timeout   int              `json:"timeout,omitempty"`   // for test-runner: timeout in seconds (default 300)
+	Verifiers []VerifierConfig `json:"verifiers,omitempty"` // for composite: sub-verifiers to chain
 }
 
 // PermissionPolicyConfig selects the permission policy implementation.
