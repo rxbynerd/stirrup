@@ -137,6 +137,10 @@ func buildRouter(cfg types.ModelRouterConfig) router.ModelRouter {
 
 func buildPromptBuilder(cfg types.PromptBuilderConfig) prompt.PromptBuilder {
 	switch cfg.Type {
+	case "composed":
+		return prompt.NewComposedPromptBuilder(
+			prompt.WithFragments(prompt.DefaultComposedFragments()...),
+		)
 	case "default", "":
 		return prompt.NewDefaultPromptBuilder()
 	default:
