@@ -35,8 +35,12 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
 
-	// Secret store for resolving credential references.
-	secrets := security.NewEnvSecretStore()
+	// Secret store for resolving credential references. AutoSecretStore routes
+	// to SSM for "secret://ssm:///..." refs, falling back to env/file otherwise.
+	secrets, err := security.NewAutoSecretStore(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("build secret store: %w", err)
+	}
 
 	// 1. Provider adapter.
 	prov, err := buildProvider(ctx, config.Provider, secrets)
