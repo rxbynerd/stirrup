@@ -2,7 +2,10 @@ module github.com/rxbynerd/stirrup/harness
 
 go 1.26.1
 
-require github.com/rxbynerd/stirrup/types v0.0.0
+require (
+	github.com/rxbynerd/stirrup/gen v0.0.0
+	github.com/rxbynerd/stirrup/types v0.0.0
+)
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.4 // indirect
@@ -21,6 +24,15 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
 	github.com/aws/smithy-go v1.24.2 // indirect
+	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/text v0.32.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/grpc v1.79.2 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/rxbynerd/stirrup/types => ../types
+replace (
+	github.com/rxbynerd/stirrup/gen => ../gen
+	github.com/rxbynerd/stirrup/types => ../types
+)

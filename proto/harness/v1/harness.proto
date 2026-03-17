@@ -1,0 +1,186 @@
+syntax = "proto3";
+
+package harness.v1;
+
+// HarnessService is the bidirectional streaming interface between the harness
+// (client) and the control plane (server). The harness connects outbound and
+// opens a single bidi stream for the lifetime of a task run.
+service HarnessService {
+  // RunTask opens a bidirectional stream. The control plane sends a
+  // TaskAssignment as the first ControlEvent; the harness streams
+  // HarnessEvents back as it works, and reads ControlEvents for user
+  // responses, permission decisions, and cancellation signals.
+  rpc RunTask(stream HarnessEvent) returns (stream ControlEvent);
+}
+
+// HarnessEvent is sent from the harness to the control plane.
+message HarnessEvent {
+  string type = 1; // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "heartbeat" | "ready" | "permission_request"
+
+  // Fields used by various event types. Only the relevant fields are
+  // populated for a given type.
+  string text = 2;
+  string id = 3;
+  string name = 4;
+  bytes input = 5;         // JSON-encoded tool input
+  string tool_use_id = 6;
+  string content = 7;
+  string stop_reason = 8;
+  string message = 9;
+  RunTrace trace = 10;
+  string request_id = 11;  // correlates permission_request/response
+  string tool_name = 12;
+}
+
+// ControlEvent is sent from the control plane to the harness.
+message ControlEvent {
+  string type = 1; // "task_assignment" | "user_response" | "cancel" | "permission_response"
+
+  RunConfig task = 2;
+  string user_response = 3;
+  string request_id = 4;    // correlates permission_response with permission_request
+  OptionalBool allowed = 5; // permission decision
+  string reason = 6;        // explanation for denial
+}
+
+// OptionalBool wraps a boolean so we can distinguish "not set" from "false".
+message OptionalBool {
+  bool value = 1;
+}
+
+// RunConfig describes a single harness run. This is the wire-format version
+// sent in TaskAssignment; it is translated to the internal types.RunConfig.
+message RunConfig {
+  string run_id = 1;
+  string mode = 2;
+  string prompt = 3;
+  map<string, string> dynamic_context = 4;
+
+  // Component selections
+  ProviderConfig provider = 5;
+  ModelRouterConfig model_router = 6;
+  PromptBuilderConfig prompt_builder = 7;
+  ContextStrategyConfig context_strategy = 8;
+  ExecutorConfig executor = 9;
+  EditStrategyConfig edit_strategy = 10;
+  VerifierConfig verifier = 11;
+  PermissionPolicyConfig permission_policy = 12;
+  GitStrategyConfig git_strategy = 13;
+  TraceEmitterConfig trace_emitter = 14;
+  ToolsConfig tools = 15;
+
+  // Limits
+  int32 max_turns = 16;
+  optional int32 max_token_budget = 17;
+  optional double max_cost_budget = 18;
+  optional int32 timeout = 19;
+}
+
+// RunTrace is included with "done" events.
+message RunTrace {
+  string run_id = 1;
+  int32 turns = 2;
+  int32 input_tokens = 3;
+  int32 output_tokens = 4;
+  double cost_usd = 5;
+  int64 duration_ms = 6;
+  string stop_reason = 7;
+}
+
+// Component config messages — these mirror types.RunConfig sub-structs.
+
+message ProviderConfig {
+  string type = 1;
+  string api_key_ref = 2;
+  string region = 3;
+  string profile = 4;
+  string base_url = 5;
+}
+
+message ModelRouterConfig {
+  string type = 1;
+  string provider = 2;
+  string model = 3;
+  map<string, string> mode_models = 4;
+  string cheap_provider = 5;
+  string cheap_model = 6;
+  string expensive_provider = 7;
+  string expensive_model = 8;
+  int32 expensive_turn_threshold = 9;
+  int32 expensive_token_threshold = 10;
+  repeated string cheap_stop_reasons = 11;
+}
+
+message PromptBuilderConfig {
+  string type = 1;
+  string template = 2;
+}
+
+message ContextStrategyConfig {
+  string type = 1;
+  int32 max_tokens = 2;
+}
+
+message ExecutorConfig {
+  string type = 1;
+  VcsBackendConfig vcs_backend = 2;
+  string workspace = 3;
+  string image = 4;
+  NetworkConfig network = 5;
+  ResourceLimits resources = 6;
+  string proxy = 7;
+}
+
+message VcsBackendConfig {
+  string type = 1;
+  string api_key_ref = 2;
+  string repo = 3;
+  string ref = 4;
+}
+
+message NetworkConfig {
+  string mode = 1;
+  repeated string allowlist = 2;
+}
+
+message ResourceLimits {
+  double cpus = 1;
+  int32 memory_mb = 2;
+  int32 disk_mb = 3;
+  int32 pids = 4;
+}
+
+message EditStrategyConfig {
+  string type = 1;
+}
+
+message VerifierConfig {
+  string type = 1;
+  string command = 2;
+  int32 timeout = 3;
+  repeated VerifierConfig verifiers = 4;
+}
+
+message PermissionPolicyConfig {
+  string type = 1;
+}
+
+message GitStrategyConfig {
+  string type = 1;
+}
+
+message TraceEmitterConfig {
+  string type = 1;
+  string file_path = 2;
+}
+
+message ToolsConfig {
+  repeated string built_in = 1;
+  repeated MCPServerConfig mcp_servers = 2;
+}
+
+message MCPServerConfig {
+  string name = 1;
+  string uri = 2;
+  string api_key_ref = 3;
+}
