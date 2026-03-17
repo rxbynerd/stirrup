@@ -77,7 +77,7 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	es := buildEditStrategy(config.EditStrategy)
 
 	// 8. Verifier.
-	v := buildVerifier(config.Verifier)
+	v := buildVerifier(config.Verifier, prov)
 
 	// 9. Transport (built before permission policy since ask-upstream needs it).
 	tp, err := buildTransport(ctx, config.Transport)
@@ -322,14 +322,20 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	}
 }
 
-func buildVerifier(cfg types.VerifierConfig) verifier.Verifier {
+func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter) verifier.Verifier {
 	switch cfg.Type {
 	case "composite":
 		subs := make([]verifier.Verifier, len(cfg.Verifiers))
 		for i, sub := range cfg.Verifiers {
-			subs[i] = buildVerifier(sub)
+			subs[i] = buildVerifier(sub, prov)
 		}
 		return verifier.NewCompositeVerifier(subs)
+	case "llm-judge":
+		model := cfg.Model
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+		return verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria)
 	case "test-runner":
 		timeout := time.Duration(cfg.Timeout) * time.Second
 		return verifier.NewTestRunnerVerifier(cfg.Command, timeout)
