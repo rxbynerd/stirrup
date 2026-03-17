@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -879,7 +878,3 @@ func (m *mockSecurityEmitter) OutputTruncated(_ string, _, _ int) {
 
 // Ensure that mockSecurityEmitter satisfies the interface.
 var _ SecurityEventEmitter = (*mockSecurityEmitter)(nil)
-
-// Suppress unused import warnings.
-var _ = fmt.Sprintf
-var _ = os.Getenv
