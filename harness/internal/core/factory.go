@@ -80,7 +80,10 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	v := buildVerifier(config.Verifier)
 
 	// 9. Transport (built before permission policy since ask-upstream needs it).
-	tp := buildTransport()
+	tp, err := buildTransport(ctx, config.Transport)
+	if err != nil {
+		return nil, fmt.Errorf("build transport: %w", err)
+	}
 
 	// 10. Permission policy.
 	pp := buildPermissionPolicy(config.PermissionPolicy, registry, tp)
@@ -345,8 +348,18 @@ func sideEffectingToolSet(registry *tool.Registry) map[string]bool {
 	return sideEffecting
 }
 
-func buildTransport() transport.Transport {
-	return transport.NewStdioTransport(os.Stdout, os.Stdin)
+func buildTransport(ctx context.Context, cfg types.TransportConfig) (transport.Transport, error) {
+	switch cfg.Type {
+	case "grpc":
+		if cfg.Address == "" {
+			return nil, fmt.Errorf("gRPC transport requires an address")
+		}
+		return transport.NewGRPCTransport(ctx, cfg.Address)
+	case "stdio", "":
+		return transport.NewStdioTransport(os.Stdout, os.Stdin), nil
+	default:
+		return nil, fmt.Errorf("unsupported transport type: %q (supported: stdio, grpc)", cfg.Type)
+	}
 }
 
 func buildGitStrategy(cfg types.GitStrategyConfig) git.GitStrategy {

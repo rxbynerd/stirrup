@@ -27,6 +27,7 @@ type RunConfig struct {
 	Verifier         VerifierConfig         `json:"verifier"`
 	PermissionPolicy PermissionPolicyConfig `json:"permissionPolicy"`
 	GitStrategy      GitStrategyConfig      `json:"gitStrategy"`
+	Transport        TransportConfig        `json:"transport"`
 	TraceEmitter     TraceEmitterConfig     `json:"traceEmitter"`
 	Tools            ToolsConfig            `json:"tools"`
 
@@ -154,6 +155,12 @@ type PermissionPolicyConfig struct {
 // GitStrategyConfig selects the git strategy implementation.
 type GitStrategyConfig struct {
 	Type string `json:"type"` // "none" | "deterministic"
+}
+
+// TransportConfig selects the transport implementation.
+type TransportConfig struct {
+	Type    string `json:"type"`              // "stdio" | "grpc"
+	Address string `json:"address,omitempty"` // gRPC target address (required when type is "grpc")
 }
 
 // TraceEmitterConfig selects the trace emitter implementation.
