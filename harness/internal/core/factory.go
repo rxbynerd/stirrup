@@ -64,7 +64,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	pb := buildPromptBuilder(config.PromptBuilder)
 
 	// 4. Executor (built early because context strategy may need it).
-	exec, err := buildExecutor(config.Executor)
+	exec, err := buildExecutor(ctx, config.Executor, secrets)
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -90,7 +90,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	es := buildEditStrategy(config.EditStrategy)
 
 	// 8. Verifier.
-	v := buildVerifier(config.Verifier)
+	v := buildVerifier(config.Verifier, prov)
 
 	// 9. Transport — use the injected one if provided, otherwise build from config.
 	if tp == nil {
@@ -283,7 +283,7 @@ func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.Provide
 	}
 }
 
-func buildExecutor(cfg types.ExecutorConfig) (executor.Executor, error) {
+func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore) (executor.Executor, error) {
 	switch cfg.Type {
 	case "local", "":
 		workspace := cfg.Workspace
@@ -313,8 +313,21 @@ func buildExecutor(cfg types.ExecutorConfig) (executor.Executor, error) {
 			Network:   cfg.Network,
 			Resources: cfg.Resources,
 		})
+	case "api":
+		if cfg.VcsBackend == nil {
+			return nil, fmt.Errorf("api executor requires vcsBackend configuration")
+		}
+		token, err := secrets.Resolve(ctx, cfg.VcsBackend.APIKeyRef)
+		if err != nil {
+			return nil, fmt.Errorf("resolve VCS API key: %w", err)
+		}
+		parts := strings.SplitN(cfg.VcsBackend.Repo, "/", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid repo format %q, expected 'owner/repo'", cfg.VcsBackend.Repo)
+		}
+		return executor.NewAPIExecutor(token, parts[0], parts[1], cfg.VcsBackend.Ref), nil
 	default:
-		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container)", cfg.Type)
+		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, api)", cfg.Type)
 	}
 }
 
@@ -337,14 +350,20 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	}
 }
 
-func buildVerifier(cfg types.VerifierConfig) verifier.Verifier {
+func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter) verifier.Verifier {
 	switch cfg.Type {
 	case "composite":
 		subs := make([]verifier.Verifier, len(cfg.Verifiers))
 		for i, sub := range cfg.Verifiers {
-			subs[i] = buildVerifier(sub)
+			subs[i] = buildVerifier(sub, prov)
 		}
 		return verifier.NewCompositeVerifier(subs)
+	case "llm-judge":
+		model := cfg.Model
+		if model == "" {
+			model = "claude-haiku-4-5-20251001"
+		}
+		return verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria)
 	case "test-runner":
 		timeout := time.Duration(cfg.Timeout) * time.Second
 		return verifier.NewTestRunnerVerifier(cfg.Command, timeout)

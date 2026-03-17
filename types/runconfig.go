@@ -141,10 +141,12 @@ type EditStrategyConfig struct {
 
 // VerifierConfig selects the verifier implementation.
 type VerifierConfig struct {
-	Type      string           `json:"type"`                // "none" | "test-runner" | "composite"
+	Type      string           `json:"type"`                // "none" | "test-runner" | "llm-judge" | "composite"
 	Command   string           `json:"command,omitempty"`   // for test-runner: the shell command to execute
 	Timeout   int              `json:"timeout,omitempty"`   // for test-runner: timeout in seconds (default 300)
 	Verifiers []VerifierConfig `json:"verifiers,omitempty"` // for composite: sub-verifiers to chain
+	Criteria  string           `json:"criteria,omitempty"`  // for llm-judge: natural language evaluation criteria
+	Model     string           `json:"model,omitempty"`     // for llm-judge: model to use for judging
 }
 
 // PermissionPolicyConfig selects the permission policy implementation.
