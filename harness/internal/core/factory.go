@@ -44,8 +44,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
 
-	// Secret store for resolving credential references.
-	secrets := security.NewEnvSecretStore()
+	// Secret store for resolving credential references. AutoSecretStore routes
+	// to SSM for "secret://ssm:///..." refs, falling back to env/file otherwise.
+	secrets, err := security.NewAutoSecretStore(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("build secret store: %w", err)
+	}
 
 	// 1. Provider adapter.
 	prov, err := buildProvider(ctx, config.Provider, secrets)
@@ -103,7 +107,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	gs := buildGitStrategy(config.GitStrategy)
 
 	// 12. Trace emitter.
-	te, err := buildTraceEmitter(config.TraceEmitter)
+	te, err := buildTraceEmitter(ctx, config.TraceEmitter)
 	if err != nil {
 		return nil, fmt.Errorf("build trace emitter: %w", err)
 	}
@@ -405,8 +409,14 @@ func buildGitStrategy(cfg types.GitStrategyConfig) git.GitStrategy {
 	}
 }
 
-func buildTraceEmitter(cfg types.TraceEmitterConfig) (trace.TraceEmitter, error) {
+func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig) (trace.TraceEmitter, error) {
 	switch cfg.Type {
+	case "otel":
+		endpoint := cfg.Endpoint
+		if endpoint == "" {
+			endpoint = "localhost:4317"
+		}
+		return trace.NewOTelTraceEmitter(ctx, endpoint)
 	case "jsonl", "":
 		var w io.Writer
 		if cfg.FilePath != "" {
@@ -421,6 +431,6 @@ func buildTraceEmitter(cfg types.TraceEmitterConfig) (trace.TraceEmitter, error)
 		}
 		return trace.NewJSONLTraceEmitter(w), nil
 	default:
-		return nil, fmt.Errorf("unsupported trace emitter type: %q (Phase 1 supports: jsonl)", cfg.Type)
+		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel)", cfg.Type)
 	}
 }
