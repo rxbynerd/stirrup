@@ -29,7 +29,16 @@ import (
 
 // BuildLoop constructs an AgenticLoop from a RunConfig. It validates the config,
 // resolves secrets, and instantiates all components. This is the composition root.
+// Transport is built from config.Transport; use BuildLoopWithTransport to inject
+// a pre-established transport (e.g. from the K8s job entrypoint).
 func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, error) {
+	return BuildLoopWithTransport(ctx, config, nil)
+}
+
+// BuildLoopWithTransport is like BuildLoop but accepts an optional pre-built
+// Transport. When tp is non-nil it is used directly, skipping buildTransport.
+// This allows the K8s job binary to reuse its already-connected gRPC stream.
+func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport) (*AgenticLoop, error) {
 	// Validate RunConfig security invariants.
 	if err := types.ValidateRunConfig(config); err != nil {
 		return nil, fmt.Errorf("config validation: %w", err)
@@ -79,10 +88,12 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	// 8. Verifier.
 	v := buildVerifier(config.Verifier)
 
-	// 9. Transport (built before permission policy since ask-upstream needs it).
-	tp, err := buildTransport(ctx, config.Transport)
-	if err != nil {
-		return nil, fmt.Errorf("build transport: %w", err)
+	// 9. Transport — use the injected one if provided, otherwise build from config.
+	if tp == nil {
+		tp, err = buildTransport(ctx, config.Transport)
+		if err != nil {
+			return nil, fmt.Errorf("build transport: %w", err)
+		}
 	}
 
 	// 10. Permission policy.
