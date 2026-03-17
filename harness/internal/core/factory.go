@@ -101,8 +101,11 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	secLogger := security.NewSecurityLogger(os.Stderr, config.RunID)
 
 	// Wire security logger into executor if it supports it.
-	if le, ok := exec.(*executor.LocalExecutor); ok {
-		le.Security = secLogger
+	switch e := exec.(type) {
+	case *executor.LocalExecutor:
+		e.Security = secLogger
+	case *executor.ContainerExecutor:
+		e.Security = secLogger
 	}
 
 	return &AgenticLoop{
@@ -277,8 +280,26 @@ func buildExecutor(cfg types.ExecutorConfig) (executor.Executor, error) {
 			}
 		}
 		return executor.NewLocalExecutor(workspace)
+	case "container":
+		if cfg.Image == "" {
+			return nil, fmt.Errorf("container executor requires image")
+		}
+		workspace := cfg.Workspace
+		if workspace == "" {
+			var err error
+			workspace, err = os.Getwd()
+			if err != nil {
+				return nil, fmt.Errorf("get working directory: %w", err)
+			}
+		}
+		return executor.NewContainerExecutor(executor.ContainerExecutorConfig{
+			Image:     cfg.Image,
+			HostDir:   workspace,
+			Network:   cfg.Network,
+			Resources: cfg.Resources,
+		})
 	default:
-		return nil, fmt.Errorf("unsupported executor type: %q (Phase 1 supports: local)", cfg.Type)
+		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container)", cfg.Type)
 	}
 }
 
