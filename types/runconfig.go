@@ -167,6 +167,7 @@ type TransportConfig struct {
 type TraceEmitterConfig struct {
 	Type     string `json:"type"`               // "jsonl" | "otel"
 	FilePath string `json:"filePath,omitempty"` // for jsonl
+	Endpoint string `json:"endpoint,omitempty"` // for otel (default: localhost:4317)
 }
 
 // ToolsConfig holds the tool configuration.

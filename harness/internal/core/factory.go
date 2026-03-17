@@ -96,7 +96,7 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	gs := buildGitStrategy(config.GitStrategy)
 
 	// 12. Trace emitter.
-	te, err := buildTraceEmitter(config.TraceEmitter)
+	te, err := buildTraceEmitter(ctx, config.TraceEmitter)
 	if err != nil {
 		return nil, fmt.Errorf("build trace emitter: %w", err)
 	}
@@ -398,8 +398,14 @@ func buildGitStrategy(cfg types.GitStrategyConfig) git.GitStrategy {
 	}
 }
 
-func buildTraceEmitter(cfg types.TraceEmitterConfig) (trace.TraceEmitter, error) {
+func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig) (trace.TraceEmitter, error) {
 	switch cfg.Type {
+	case "otel":
+		endpoint := cfg.Endpoint
+		if endpoint == "" {
+			endpoint = "localhost:4317"
+		}
+		return trace.NewOTelTraceEmitter(ctx, endpoint)
 	case "jsonl", "":
 		var w io.Writer
 		if cfg.FilePath != "" {
@@ -414,6 +420,6 @@ func buildTraceEmitter(cfg types.TraceEmitterConfig) (trace.TraceEmitter, error)
 		}
 		return trace.NewJSONLTraceEmitter(w), nil
 	default:
-		return nil, fmt.Errorf("unsupported trace emitter type: %q (Phase 1 supports: jsonl)", cfg.Type)
+		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel)", cfg.Type)
 	}
 }
