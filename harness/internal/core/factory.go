@@ -51,7 +51,7 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 	pb := buildPromptBuilder(config.PromptBuilder)
 
 	// 4. Executor (built early because context strategy may need it).
-	exec, err := buildExecutor(config.Executor)
+	exec, err := buildExecutor(ctx, config.Executor, secrets)
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -268,7 +268,7 @@ func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.Provide
 	}
 }
 
-func buildExecutor(cfg types.ExecutorConfig) (executor.Executor, error) {
+func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore) (executor.Executor, error) {
 	switch cfg.Type {
 	case "local", "":
 		workspace := cfg.Workspace
@@ -298,8 +298,21 @@ func buildExecutor(cfg types.ExecutorConfig) (executor.Executor, error) {
 			Network:   cfg.Network,
 			Resources: cfg.Resources,
 		})
+	case "api":
+		if cfg.VcsBackend == nil {
+			return nil, fmt.Errorf("api executor requires vcsBackend configuration")
+		}
+		token, err := secrets.Resolve(ctx, cfg.VcsBackend.APIKeyRef)
+		if err != nil {
+			return nil, fmt.Errorf("resolve VCS API key: %w", err)
+		}
+		parts := strings.SplitN(cfg.VcsBackend.Repo, "/", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid repo format %q, expected 'owner/repo'", cfg.VcsBackend.Repo)
+		}
+		return executor.NewAPIExecutor(token, parts[0], parts[1], cfg.VcsBackend.Ref), nil
 	default:
-		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container)", cfg.Type)
+		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, api)", cfg.Type)
 	}
 }
 
