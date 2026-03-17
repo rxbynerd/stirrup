@@ -26,6 +26,8 @@ func main() {
 	maxTurns := flag.Int("max-turns", 20, "Maximum agentic loop turns")
 	timeout := flag.Int("timeout", 600, "Wall-clock timeout in seconds")
 	tracePath := flag.String("trace", "", "Path to JSONL trace file (optional)")
+	transportType := flag.String("transport", "stdio", "Transport type: stdio, grpc")
+	transportAddr := flag.String("transport-addr", "", "gRPC target address (required when transport is grpc)")
 	prompt := flag.String("prompt", "", "User prompt (reads from stdin if empty)")
 	flag.Parse()
 
@@ -60,6 +62,7 @@ func main() {
 		EditStrategy:    types.EditStrategyConfig{Type: "whole-file"},
 		Verifier:        types.VerifierConfig{Type: "none"},
 		GitStrategy:     types.GitStrategyConfig{Type: "none"},
+		Transport:       types.TransportConfig{Type: *transportType, Address: *transportAddr},
 		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl", FilePath: *tracePath},
 		MaxTurns:        *maxTurns,
 		Timeout:         timeout,
