@@ -33,6 +33,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	systemPrompt, err := l.Prompt.Build(ctx, prompt.PromptContext{
 		Mode:           config.Mode,
 		Workspace:      config.Executor.Workspace,
+		MaxTurns:       config.MaxTurns,
 		DynamicContext: config.DynamicContext,
 	})
 	if err != nil {

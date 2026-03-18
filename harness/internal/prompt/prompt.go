@@ -8,6 +8,7 @@ import "context"
 type PromptContext struct {
 	Mode           string
 	Workspace      string
+	MaxTurns       int
 	DynamicContext map[string]string
 }
 
