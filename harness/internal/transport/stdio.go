@@ -14,11 +14,13 @@ import (
 // StdioTransport implements Transport over newline-delimited JSON on
 // stdin (control events) and stdout (harness events).
 type StdioTransport struct {
-	writer  io.Writer
-	reader  io.Reader
-	mu      sync.Mutex // serialises writes to writer
-	handler func(event types.ControlEvent)
-	done    chan struct{}
+	writer    io.Writer
+	reader    io.Reader
+	mu        sync.Mutex // serialises writes to writer
+	handlerMu sync.Mutex // serialises handler registration
+	handlers  []func(types.ControlEvent)
+	done      chan struct{}
+	startOnce sync.Once // ensures the read goroutine is started exactly once
 }
 
 // NewStdioTransport creates a StdioTransport that writes harness events to
@@ -53,25 +55,34 @@ func (s *StdioTransport) Emit(event types.HarnessEvent) error {
 	return err
 }
 
-// OnControl registers a handler for incoming control events and starts a
-// goroutine that reads JSON lines from the input stream. The handler is
-// called synchronously for each parsed event.
+// OnControl registers a handler for incoming control events. Multiple calls
+// accumulate handlers; all registered handlers are called for each event
+// (fan-out). The underlying read goroutine is started on the first call and
+// is not restarted on subsequent calls.
 func (s *StdioTransport) OnControl(handler func(event types.ControlEvent)) {
-	s.handler = handler
+	s.handlerMu.Lock()
+	s.handlers = append(s.handlers, handler)
+	s.handlerMu.Unlock()
 
-	go func() {
-		defer close(s.done)
-		scanner := bufio.NewScanner(s.reader)
-		for scanner.Scan() {
-			var ev types.ControlEvent
-			if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
-				continue // skip malformed lines
+	s.startOnce.Do(func() {
+		go func() {
+			defer close(s.done)
+			scanner := bufio.NewScanner(s.reader)
+			for scanner.Scan() {
+				var ev types.ControlEvent
+				if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+					continue // skip malformed lines
+				}
+				s.handlerMu.Lock()
+				hs := make([]func(types.ControlEvent), len(s.handlers))
+				copy(hs, s.handlers)
+				s.handlerMu.Unlock()
+				for _, h := range hs {
+					h(ev)
+				}
 			}
-			if s.handler != nil {
-				s.handler(ev)
-			}
-		}
-	}()
+		}()
+	})
 }
 
 // Close is a no-op for stdio transport. The caller owns the underlying

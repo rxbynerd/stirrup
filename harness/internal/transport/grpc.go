@@ -18,11 +18,13 @@ import (
 // The harness acts as a client, connecting outbound to the control plane's
 // gRPC endpoint. Events flow in both directions over a single RunTask stream.
 type GRPCTransport struct {
-	conn    *grpc.ClientConn
-	stream  pb.HarnessService_RunTaskClient
-	handler func(event types.ControlEvent)
-	mu      sync.Mutex   // serialises writes to the stream
-	done    chan struct{} // closed when the read loop exits
+	conn      *grpc.ClientConn
+	stream    pb.HarnessService_RunTaskClient
+	mu        sync.Mutex // serialises writes to the stream
+	handlerMu sync.Mutex // serialises handler registration
+	handlers  []func(types.ControlEvent)
+	done      chan struct{} // closed when the read loop exits
+	startOnce sync.Once    // ensures the read goroutine is started exactly once
 }
 
 // GRPCTransportOption configures a GRPCTransport.
@@ -117,30 +119,43 @@ func (g *GRPCTransport) Emit(event types.HarnessEvent) error {
 	return nil
 }
 
-// OnControl registers a handler for incoming control events and starts a
-// goroutine that reads from the gRPC stream. The handler is called
-// synchronously for each received event. When the stream ends (EOF or
-// error), the read loop exits and closes the done channel.
+// OnControl registers a handler for incoming control events. Multiple calls
+// accumulate handlers; all registered handlers are called for each event
+// (fan-out). The underlying read goroutine is started on the first call and
+// is not restarted on subsequent calls — it is safe to call OnControl after
+// the loop is already running.
+//
+// Handlers must not call Emit on the same GRPCTransport (that would deadlock
+// on the write mutex); spawn a goroutine if a handler needs to emit.
 func (g *GRPCTransport) OnControl(handler func(event types.ControlEvent)) {
-	g.handler = handler
+	g.handlerMu.Lock()
+	g.handlers = append(g.handlers, handler)
+	g.handlerMu.Unlock()
 
-	go func() {
-		defer close(g.done)
-		for {
-			pe, err := g.stream.Recv()
-			if err != nil {
-				if err == io.EOF {
+	g.startOnce.Do(func() {
+		go func() {
+			defer close(g.done)
+			for {
+				pe, err := g.stream.Recv()
+				if err != nil {
+					if err == io.EOF {
+						return
+					}
+					// Stream error — stop reading. The caller can detect
+					// this via the done channel and inspect the connection.
 					return
 				}
-				// Stream error — stop reading. The caller can detect
-				// this via the done channel and inspect the connection.
-				return
+				ev := controlEventFromProto(pe)
+				g.handlerMu.Lock()
+				hs := make([]func(types.ControlEvent), len(g.handlers))
+				copy(hs, g.handlers)
+				g.handlerMu.Unlock()
+				for _, h := range hs {
+					h(ev)
+				}
 			}
-			if g.handler != nil {
-				g.handler(controlEventFromProto(pe))
-			}
-		}
-	}()
+		}()
+	})
 }
 
 // Close sends CloseSend on the stream to signal the harness is done

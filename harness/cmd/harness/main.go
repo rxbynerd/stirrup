@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -28,8 +29,18 @@ func main() {
 	tracePath := flag.String("trace", "", "Path to JSONL trace file (optional)")
 	transportType := flag.String("transport", "stdio", "Transport type: stdio, grpc")
 	transportAddr := flag.String("transport-addr", "", "gRPC target address (required when transport is grpc)")
+	followUpGrace := flag.Int("followup-grace", 0, "Seconds to keep gRPC transport open for follow-up requests after the run completes (0 = disabled; env: STIRRUP_FOLLOWUP_GRACE)")
 	prompt := flag.String("prompt", "", "User prompt (reads from stdin if empty)")
 	flag.Parse()
+
+	// Allow the env var to set the follow-up grace when the flag is not provided.
+	if *followUpGrace == 0 {
+		if v := os.Getenv("STIRRUP_FOLLOWUP_GRACE"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				*followUpGrace = n
+			}
+		}
+	}
 
 	// Read prompt from remaining args or stdin.
 	userPrompt := *prompt
@@ -67,6 +78,10 @@ func main() {
 		MaxTurns:        *maxTurns,
 		Timeout:         timeout,
 	}
+	if *followUpGrace > 0 {
+		fg := *followUpGrace
+		config.FollowUpGrace = &fg
+	}
 
 	// Set permission policy based on mode.
 	readOnlyModes := map[string]bool{
@@ -102,8 +117,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error running harness: %v\n", err)
 		os.Exit(1)
 	}
+	printRunSummary(runTrace)
 
-	// Print summary to stderr.
+	// If a follow-up grace period is configured, keep the transport open and
+	// re-run the loop for each user_response control event received within the
+	// window. This lets callers issue refinement requests without tearing down
+	// the session. The grace period timer resets after each completed run.
+	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
+		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace)
+	}
+}
+
+// printRunSummary writes a brief run summary to stderr.
+func printRunSummary(runTrace *types.RunTrace) {
 	fmt.Fprintf(os.Stderr, "\n--- Run complete ---\n")
 	fmt.Fprintf(os.Stderr, "Outcome: %s\n", runTrace.Outcome)
 	fmt.Fprintf(os.Stderr, "Turns: %d\n", runTrace.Turns)

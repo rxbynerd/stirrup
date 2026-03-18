@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -102,4 +103,18 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Tokens: %d in / %d out\n", runTrace.TokenUsage.Input, runTrace.TokenUsage.Output)
 	fmt.Fprintf(os.Stderr, "Tool calls: %d\n", len(runTrace.ToolCalls))
 	fmt.Fprintf(os.Stderr, "Duration: %s\n", runTrace.CompletedAt.Sub(runTrace.StartedAt).Round(time.Millisecond))
+
+	// Honour follow-up grace from the RunConfig (set by the control plane) or
+	// fall back to the STIRRUP_FOLLOWUP_GRACE environment variable.
+	graceSecs := 0
+	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
+		graceSecs = *config.FollowUpGrace
+	} else if v := os.Getenv("STIRRUP_FOLLOWUP_GRACE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			graceSecs = n
+		}
+	}
+	if graceSecs > 0 {
+		core.RunFollowUpLoop(ctx, loop, config, graceSecs)
+	}
 }

@@ -36,6 +36,11 @@ type RunConfig struct {
 	MaxTokenBudget *int     `json:"maxTokenBudget,omitempty"`
 	MaxCostBudget  *float64 `json:"maxCostBudget,omitempty"`
 	Timeout        *int     `json:"timeout,omitempty"`
+
+	// FollowUpGrace is the number of seconds to keep the transport open after
+	// the primary run completes, waiting for follow-up user_response events.
+	// A value of zero or nil disables the grace period (default behaviour).
+	FollowUpGrace *int `json:"followUpGrace,omitempty"`
 }
 
 // Redact returns a copy of the RunConfig with secret references replaced

@@ -275,6 +275,63 @@ func (l *AgenticLoop) runInnerLoop(
 	return messages, "max_turns"
 }
 
+// RunFollowUpLoop waits for follow-up user_response control events on the
+// transport after the primary run has completed. For each follow-up it
+// re-runs the agentic loop with the new prompt. The loop exits when the
+// grace period timer fires with no new request, the context is cancelled,
+// or a "cancel" control event arrives.
+//
+// graceSecs must be > 0. The transport must support fan-out OnControl
+// registration (both GRPCTransport and StdioTransport do).
+func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int) {
+	followUpCh := make(chan string, 1)
+
+	loop.Transport.OnControl(func(event types.ControlEvent) {
+		switch event.Type {
+		case "user_response":
+			select {
+			case followUpCh <- event.UserResponse:
+			default:
+				// A follow-up is already queued. Drop this one; the control
+				// plane should wait for "done" before sending another request.
+			}
+		}
+	})
+
+	grace := time.Duration(graceSecs) * time.Second
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+
+	for {
+		select {
+		case newPrompt := <-followUpCh:
+			// Reset the grace period for the next idle window.
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timer.Reset(grace)
+
+			// Issue a fresh run ID so traces don't collide.
+			config.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
+			config.Prompt = newPrompt
+
+			if _, err := loop.Run(ctx, config); err != nil {
+				// Transport already carries the error event from finishWithError.
+				return
+			}
+
+		case <-timer.C:
+			return
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // finishWithError records an error outcome and finishes the trace.
 func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.RunTrace, error) {
 	_ = l.Transport.Emit(types.HarnessEvent{
