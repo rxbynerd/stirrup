@@ -58,6 +58,7 @@ message RunConfig {
 
   // Component selections
   ProviderConfig provider = 5;
+  map<string, ProviderConfig> providers = 20;
   ModelRouterConfig model_router = 6;
   PromptBuilderConfig prompt_builder = 7;
   ContextStrategyConfig context_strategy = 8;

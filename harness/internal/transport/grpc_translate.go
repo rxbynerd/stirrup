@@ -93,6 +93,12 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.Provider != nil {
 		rc.Provider = providerConfigFromProto(pc.Provider)
 	}
+	if len(pc.Providers) > 0 {
+		rc.Providers = make(map[string]types.ProviderConfig, len(pc.Providers))
+		for name, provider := range pc.Providers {
+			rc.Providers[name] = providerConfigFromProto(provider)
+		}
+	}
 	if pc.ModelRouter != nil {
 		rc.ModelRouter = modelRouterConfigFromProto(pc.ModelRouter)
 	}

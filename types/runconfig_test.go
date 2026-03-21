@@ -36,6 +36,25 @@ func TestRedact_VcsBackendAPIKey(t *testing.T) {
 	}
 }
 
+func TestRedact_ProvidersAPIKeys(t *testing.T) {
+	rc := RunConfig{
+		Providers: map[string]ProviderConfig{
+			"backup": {Type: "openai-compatible", APIKeyRef: "secret://backup-key"},
+			"public": {Type: "openai-compatible"},
+		},
+	}
+	redacted := rc.Redact()
+	if redacted.Providers["backup"].APIKeyRef != "secret://[REDACTED]" {
+		t.Errorf("Providers[backup].APIKeyRef = %q, want redacted", redacted.Providers["backup"].APIKeyRef)
+	}
+	if redacted.Providers["public"].APIKeyRef != "" {
+		t.Errorf("Providers[public].APIKeyRef = %q, want empty", redacted.Providers["public"].APIKeyRef)
+	}
+	if rc.Providers["backup"].APIKeyRef != "secret://backup-key" {
+		t.Error("Redact mutated original Providers map")
+	}
+}
+
 func TestRedact_MCPServersAPIKeys(t *testing.T) {
 	rc := RunConfig{
 		Tools: ToolsConfig{
@@ -76,6 +95,7 @@ func validConfig() *RunConfig {
 	timeout := 60
 	return &RunConfig{
 		Mode:             "execution",
+		Provider:         ProviderConfig{Type: "anthropic"},
 		MaxTurns:         20,
 		Timeout:          &timeout,
 		PermissionPolicy: PermissionPolicyConfig{Type: "allow-all"},
@@ -112,6 +132,46 @@ func TestValidateRunConfig_ReadOnlyModeWithDenySideEffects(t *testing.T) {
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("deny-side-effects should be accepted for read-only mode, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_UnknownPermissionPolicy(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effect"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unknown permission policy type")
+	}
+	if !strings.Contains(err.Error(), "permissionPolicy") {
+		t.Errorf("expected error to mention permissionPolicy, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_UnknownRouterProvider(t *testing.T) {
+	c := validConfig()
+	c.ModelRouter = ModelRouterConfig{
+		Type:     "static",
+		Provider: "backup",
+		Model:    "claude-sonnet-4-6",
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unknown router provider")
+	}
+	if !strings.Contains(err.Error(), "unknown provider") {
+		t.Errorf("expected error to mention unknown provider, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_InvalidBuiltInTool(t *testing.T) {
+	c := validConfig()
+	c.Tools = ToolsConfig{BuiltIn: []string{"delete_everything"}}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for invalid builtin tool")
+	}
+	if !strings.Contains(err.Error(), "tools.builtIn") {
+		t.Errorf("expected error to mention tools.builtIn, got: %v", err)
 	}
 }
 

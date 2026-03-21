@@ -182,7 +182,28 @@ func (l *AgenticLoop) runInnerLoop(
 
 		// Stream model response.
 		turnStart := time.Now()
-		ch, err := l.Provider.Stream(ctx, types.StreamParams{
+		selectedProvider := l.Provider
+		if selection.Provider != "" && len(l.Providers) > 0 {
+			prov, ok := l.Providers[selection.Provider]
+			if !ok {
+				l.Trace.RecordTurn(types.TurnTrace{
+					Turn:       turn,
+					StopReason: "error",
+					DurationMs: time.Since(turnStart).Milliseconds(),
+				})
+				return messages, "error"
+			}
+			selectedProvider = prov
+		}
+		if selectedProvider == nil {
+			l.Trace.RecordTurn(types.TurnTrace{
+				Turn:       turn,
+				StopReason: "error",
+				DurationMs: time.Since(turnStart).Milliseconds(),
+			})
+			return messages, "error"
+		}
+		ch, err := selectedProvider.Stream(ctx, types.StreamParams{
 			Model:       selection.Model,
 			System:      systemPrompt,
 			Messages:    preparedMessages,

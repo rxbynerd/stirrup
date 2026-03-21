@@ -29,6 +29,7 @@ import (
 // variable reads, no direct file system access.
 type AgenticLoop struct {
 	Provider     provider.ProviderAdapter
+	Providers    map[string]provider.ProviderAdapter
 	Router       router.ModelRouter
 	Prompt       prompt.PromptBuilder
 	Context      contextpkg.ContextStrategy

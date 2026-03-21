@@ -295,17 +295,18 @@ type RunConfig struct {
 	Prompt         string                 `protobuf:"bytes,3,opt,name=prompt,proto3" json:"prompt,omitempty"`
 	DynamicContext map[string]string      `protobuf:"bytes,4,rep,name=dynamic_context,json=dynamicContext,proto3" json:"dynamic_context,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Component selections
-	Provider         *ProviderConfig         `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`
-	ModelRouter      *ModelRouterConfig      `protobuf:"bytes,6,opt,name=model_router,json=modelRouter,proto3" json:"model_router,omitempty"`
-	PromptBuilder    *PromptBuilderConfig    `protobuf:"bytes,7,opt,name=prompt_builder,json=promptBuilder,proto3" json:"prompt_builder,omitempty"`
-	ContextStrategy  *ContextStrategyConfig  `protobuf:"bytes,8,opt,name=context_strategy,json=contextStrategy,proto3" json:"context_strategy,omitempty"`
-	Executor         *ExecutorConfig         `protobuf:"bytes,9,opt,name=executor,proto3" json:"executor,omitempty"`
-	EditStrategy     *EditStrategyConfig     `protobuf:"bytes,10,opt,name=edit_strategy,json=editStrategy,proto3" json:"edit_strategy,omitempty"`
-	Verifier         *VerifierConfig         `protobuf:"bytes,11,opt,name=verifier,proto3" json:"verifier,omitempty"`
-	PermissionPolicy *PermissionPolicyConfig `protobuf:"bytes,12,opt,name=permission_policy,json=permissionPolicy,proto3" json:"permission_policy,omitempty"`
-	GitStrategy      *GitStrategyConfig      `protobuf:"bytes,13,opt,name=git_strategy,json=gitStrategy,proto3" json:"git_strategy,omitempty"`
-	TraceEmitter     *TraceEmitterConfig     `protobuf:"bytes,14,opt,name=trace_emitter,json=traceEmitter,proto3" json:"trace_emitter,omitempty"`
-	Tools            *ToolsConfig            `protobuf:"bytes,15,opt,name=tools,proto3" json:"tools,omitempty"`
+	Provider         *ProviderConfig            `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`
+	Providers        map[string]*ProviderConfig `protobuf:"bytes,20,rep,name=providers,proto3" json:"providers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ModelRouter      *ModelRouterConfig         `protobuf:"bytes,6,opt,name=model_router,json=modelRouter,proto3" json:"model_router,omitempty"`
+	PromptBuilder    *PromptBuilderConfig       `protobuf:"bytes,7,opt,name=prompt_builder,json=promptBuilder,proto3" json:"prompt_builder,omitempty"`
+	ContextStrategy  *ContextStrategyConfig     `protobuf:"bytes,8,opt,name=context_strategy,json=contextStrategy,proto3" json:"context_strategy,omitempty"`
+	Executor         *ExecutorConfig            `protobuf:"bytes,9,opt,name=executor,proto3" json:"executor,omitempty"`
+	EditStrategy     *EditStrategyConfig        `protobuf:"bytes,10,opt,name=edit_strategy,json=editStrategy,proto3" json:"edit_strategy,omitempty"`
+	Verifier         *VerifierConfig            `protobuf:"bytes,11,opt,name=verifier,proto3" json:"verifier,omitempty"`
+	PermissionPolicy *PermissionPolicyConfig    `protobuf:"bytes,12,opt,name=permission_policy,json=permissionPolicy,proto3" json:"permission_policy,omitempty"`
+	GitStrategy      *GitStrategyConfig         `protobuf:"bytes,13,opt,name=git_strategy,json=gitStrategy,proto3" json:"git_strategy,omitempty"`
+	TraceEmitter     *TraceEmitterConfig        `protobuf:"bytes,14,opt,name=trace_emitter,json=traceEmitter,proto3" json:"trace_emitter,omitempty"`
+	Tools            *ToolsConfig               `protobuf:"bytes,15,opt,name=tools,proto3" json:"tools,omitempty"`
 	// Limits
 	MaxTurns       int32    `protobuf:"varint,16,opt,name=max_turns,json=maxTurns,proto3" json:"max_turns,omitempty"`
 	MaxTokenBudget *int32   `protobuf:"varint,17,opt,name=max_token_budget,json=maxTokenBudget,proto3,oneof" json:"max_token_budget,omitempty"`
@@ -376,6 +377,13 @@ func (x *RunConfig) GetDynamicContext() map[string]string {
 func (x *RunConfig) GetProvider() *ProviderConfig {
 	if x != nil {
 		return x.Provider
+	}
+	return nil
+}
+
+func (x *RunConfig) GetProviders() map[string]*ProviderConfig {
+	if x != nil {
+		return x.Providers
 	}
 	return nil
 }
@@ -1550,13 +1558,15 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\aallowed\x18\x05 \x01(\v2\x18.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xfe\b\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\x9c\n" +
+	"\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
 	"\x06prompt\x18\x03 \x01(\tR\x06prompt\x12R\n" +
 	"\x0fdynamic_context\x18\x04 \x03(\v2).harness.v1.RunConfig.DynamicContextEntryR\x0edynamicContext\x126\n" +
-	"\bprovider\x18\x05 \x01(\v2\x1a.harness.v1.ProviderConfigR\bprovider\x12@\n" +
+	"\bprovider\x18\x05 \x01(\v2\x1a.harness.v1.ProviderConfigR\bprovider\x12B\n" +
+	"\tproviders\x18\x14 \x03(\v2$.harness.v1.RunConfig.ProvidersEntryR\tproviders\x12@\n" +
 	"\fmodel_router\x18\x06 \x01(\v2\x1d.harness.v1.ModelRouterConfigR\vmodelRouter\x12F\n" +
 	"\x0eprompt_builder\x18\a \x01(\v2\x1f.harness.v1.PromptBuilderConfigR\rpromptBuilder\x12L\n" +
 	"\x10context_strategy\x18\b \x01(\v2!.harness.v1.ContextStrategyConfigR\x0fcontextStrategy\x126\n" +
@@ -1574,7 +1584,10 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x1aA\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x13\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aX\n" +
+	"\x0eProvidersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
+	"\x05value\x18\x02 \x01(\v2\x1a.harness.v1.ProviderConfigR\x05value:\x028\x01B\x13\n" +
 	"\x11_max_token_budgetB\x12\n" +
 	"\x10_max_cost_budgetB\n" +
 	"\n" +
@@ -1682,7 +1695,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),           // 0: harness.v1.HarnessEvent
 	(*ControlEvent)(nil),           // 1: harness.v1.ControlEvent
@@ -1705,7 +1718,8 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	(*ToolsConfig)(nil),            // 18: harness.v1.ToolsConfig
 	(*MCPServerConfig)(nil),        // 19: harness.v1.MCPServerConfig
 	nil,                            // 20: harness.v1.RunConfig.DynamicContextEntry
-	nil,                            // 21: harness.v1.ModelRouterConfig.ModeModelsEntry
+	nil,                            // 21: harness.v1.RunConfig.ProvidersEntry
+	nil,                            // 22: harness.v1.ModelRouterConfig.ModeModelsEntry
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	4,  // 0: harness.v1.HarnessEvent.trace:type_name -> harness.v1.RunTrace
@@ -1713,29 +1727,31 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	2,  // 2: harness.v1.ControlEvent.allowed:type_name -> harness.v1.OptionalBool
 	20, // 3: harness.v1.RunConfig.dynamic_context:type_name -> harness.v1.RunConfig.DynamicContextEntry
 	5,  // 4: harness.v1.RunConfig.provider:type_name -> harness.v1.ProviderConfig
-	6,  // 5: harness.v1.RunConfig.model_router:type_name -> harness.v1.ModelRouterConfig
-	7,  // 6: harness.v1.RunConfig.prompt_builder:type_name -> harness.v1.PromptBuilderConfig
-	8,  // 7: harness.v1.RunConfig.context_strategy:type_name -> harness.v1.ContextStrategyConfig
-	9,  // 8: harness.v1.RunConfig.executor:type_name -> harness.v1.ExecutorConfig
-	13, // 9: harness.v1.RunConfig.edit_strategy:type_name -> harness.v1.EditStrategyConfig
-	14, // 10: harness.v1.RunConfig.verifier:type_name -> harness.v1.VerifierConfig
-	15, // 11: harness.v1.RunConfig.permission_policy:type_name -> harness.v1.PermissionPolicyConfig
-	16, // 12: harness.v1.RunConfig.git_strategy:type_name -> harness.v1.GitStrategyConfig
-	17, // 13: harness.v1.RunConfig.trace_emitter:type_name -> harness.v1.TraceEmitterConfig
-	18, // 14: harness.v1.RunConfig.tools:type_name -> harness.v1.ToolsConfig
-	21, // 15: harness.v1.ModelRouterConfig.mode_models:type_name -> harness.v1.ModelRouterConfig.ModeModelsEntry
-	10, // 16: harness.v1.ExecutorConfig.vcs_backend:type_name -> harness.v1.VcsBackendConfig
-	11, // 17: harness.v1.ExecutorConfig.network:type_name -> harness.v1.NetworkConfig
-	12, // 18: harness.v1.ExecutorConfig.resources:type_name -> harness.v1.ResourceLimits
-	14, // 19: harness.v1.VerifierConfig.verifiers:type_name -> harness.v1.VerifierConfig
-	19, // 20: harness.v1.ToolsConfig.mcp_servers:type_name -> harness.v1.MCPServerConfig
-	0,  // 21: harness.v1.HarnessService.RunTask:input_type -> harness.v1.HarnessEvent
-	1,  // 22: harness.v1.HarnessService.RunTask:output_type -> harness.v1.ControlEvent
-	22, // [22:23] is the sub-list for method output_type
-	21, // [21:22] is the sub-list for method input_type
-	21, // [21:21] is the sub-list for extension type_name
-	21, // [21:21] is the sub-list for extension extendee
-	0,  // [0:21] is the sub-list for field type_name
+	21, // 5: harness.v1.RunConfig.providers:type_name -> harness.v1.RunConfig.ProvidersEntry
+	6,  // 6: harness.v1.RunConfig.model_router:type_name -> harness.v1.ModelRouterConfig
+	7,  // 7: harness.v1.RunConfig.prompt_builder:type_name -> harness.v1.PromptBuilderConfig
+	8,  // 8: harness.v1.RunConfig.context_strategy:type_name -> harness.v1.ContextStrategyConfig
+	9,  // 9: harness.v1.RunConfig.executor:type_name -> harness.v1.ExecutorConfig
+	13, // 10: harness.v1.RunConfig.edit_strategy:type_name -> harness.v1.EditStrategyConfig
+	14, // 11: harness.v1.RunConfig.verifier:type_name -> harness.v1.VerifierConfig
+	15, // 12: harness.v1.RunConfig.permission_policy:type_name -> harness.v1.PermissionPolicyConfig
+	16, // 13: harness.v1.RunConfig.git_strategy:type_name -> harness.v1.GitStrategyConfig
+	17, // 14: harness.v1.RunConfig.trace_emitter:type_name -> harness.v1.TraceEmitterConfig
+	18, // 15: harness.v1.RunConfig.tools:type_name -> harness.v1.ToolsConfig
+	22, // 16: harness.v1.ModelRouterConfig.mode_models:type_name -> harness.v1.ModelRouterConfig.ModeModelsEntry
+	10, // 17: harness.v1.ExecutorConfig.vcs_backend:type_name -> harness.v1.VcsBackendConfig
+	11, // 18: harness.v1.ExecutorConfig.network:type_name -> harness.v1.NetworkConfig
+	12, // 19: harness.v1.ExecutorConfig.resources:type_name -> harness.v1.ResourceLimits
+	14, // 20: harness.v1.VerifierConfig.verifiers:type_name -> harness.v1.VerifierConfig
+	19, // 21: harness.v1.ToolsConfig.mcp_servers:type_name -> harness.v1.MCPServerConfig
+	5,  // 22: harness.v1.RunConfig.ProvidersEntry.value:type_name -> harness.v1.ProviderConfig
+	0,  // 23: harness.v1.HarnessService.RunTask:input_type -> harness.v1.HarnessEvent
+	1,  // 24: harness.v1.HarnessService.RunTask:output_type -> harness.v1.ControlEvent
+	24, // [24:25] is the sub-list for method output_type
+	23, // [23:24] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -1750,7 +1766,7 @@ func file_harness_v1_harness_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   22,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

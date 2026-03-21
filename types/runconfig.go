@@ -18,18 +18,19 @@ type RunConfig struct {
 	DynamicContext map[string]string `json:"dynamicContext,omitempty"`
 
 	// Component selections
-	Provider         ProviderConfig         `json:"provider"`
-	ModelRouter      ModelRouterConfig      `json:"modelRouter"`
-	PromptBuilder    PromptBuilderConfig    `json:"promptBuilder"`
-	ContextStrategy  ContextStrategyConfig  `json:"contextStrategy"`
-	Executor         ExecutorConfig         `json:"executor"`
-	EditStrategy     EditStrategyConfig     `json:"editStrategy"`
-	Verifier         VerifierConfig         `json:"verifier"`
-	PermissionPolicy PermissionPolicyConfig `json:"permissionPolicy"`
-	GitStrategy      GitStrategyConfig      `json:"gitStrategy"`
-	Transport        TransportConfig        `json:"transport"`
-	TraceEmitter     TraceEmitterConfig     `json:"traceEmitter"`
-	Tools            ToolsConfig            `json:"tools"`
+	Provider         ProviderConfig            `json:"provider"`
+	Providers        map[string]ProviderConfig `json:"providers,omitempty"`
+	ModelRouter      ModelRouterConfig         `json:"modelRouter"`
+	PromptBuilder    PromptBuilderConfig       `json:"promptBuilder"`
+	ContextStrategy  ContextStrategyConfig     `json:"contextStrategy"`
+	Executor         ExecutorConfig            `json:"executor"`
+	EditStrategy     EditStrategyConfig        `json:"editStrategy"`
+	Verifier         VerifierConfig            `json:"verifier"`
+	PermissionPolicy PermissionPolicyConfig    `json:"permissionPolicy"`
+	GitStrategy      GitStrategyConfig         `json:"gitStrategy"`
+	Transport        TransportConfig           `json:"transport"`
+	TraceEmitter     TraceEmitterConfig        `json:"traceEmitter"`
+	Tools            ToolsConfig               `json:"tools"`
 
 	// Limits
 	MaxTurns       int      `json:"maxTurns"`
@@ -49,6 +50,16 @@ func (rc RunConfig) Redact() RunConfig {
 	redacted := rc
 	if redacted.Provider.APIKeyRef != "" {
 		redacted.Provider.APIKeyRef = "secret://[REDACTED]"
+	}
+	if len(redacted.Providers) > 0 {
+		providers := make(map[string]ProviderConfig, len(redacted.Providers))
+		for name, provider := range redacted.Providers {
+			if provider.APIKeyRef != "" {
+				provider.APIKeyRef = "secret://[REDACTED]"
+			}
+			providers[name] = provider
+		}
+		redacted.Providers = providers
 	}
 	if redacted.Executor.VcsBackend != nil && redacted.Executor.VcsBackend.APIKeyRef != "" {
 		vcs := *redacted.Executor.VcsBackend
@@ -190,6 +201,80 @@ type MCPServerConfig struct {
 	APIKeyRef string `json:"apiKeyRef,omitempty"`
 }
 
+var validProviderTypes = map[string]bool{
+	"anthropic":         true,
+	"bedrock":           true,
+	"openai-compatible": true,
+}
+
+var validModelRouterTypes = map[string]bool{
+	"static":   true,
+	"per-mode": true,
+	"dynamic":  true,
+}
+
+var validPromptBuilderTypes = map[string]bool{
+	"default":  true,
+	"composed": true,
+}
+
+var validContextStrategyTypes = map[string]bool{
+	"sliding-window":  true,
+	"summarise":       true,
+	"offload-to-file": true,
+}
+
+var validExecutorTypes = map[string]bool{
+	"api":       true,
+	"local":     true,
+	"container": true,
+}
+
+var validEditStrategyTypes = map[string]bool{
+	"whole-file":     true,
+	"search-replace": true,
+	"udiff":          true,
+}
+
+var validVerifierTypes = map[string]bool{
+	"none":        true,
+	"test-runner": true,
+	"llm-judge":   true,
+	"composite":   true,
+}
+
+var validPermissionPolicyTypes = map[string]bool{
+	"allow-all":         true,
+	"deny-side-effects": true,
+	"ask-upstream":      true,
+}
+
+var validGitStrategyTypes = map[string]bool{
+	"none":          true,
+	"deterministic": true,
+}
+
+var validTransportTypes = map[string]bool{
+	"stdio": true,
+	"grpc":  true,
+}
+
+var validTraceEmitterTypes = map[string]bool{
+	"jsonl": true,
+	"otel":  true,
+}
+
+var validBuiltInToolNames = map[string]bool{
+	"read_file":      true,
+	"write_file":     true,
+	"search_replace": true,
+	"apply_diff":     true,
+	"list_directory": true,
+	"search_files":   true,
+	"run_command":    true,
+	"web_fetch":      true,
+}
+
 // ModePreset is a named set of RunConfig overrides.
 type ModePreset struct {
 	Name             string                 `json:"name"`
@@ -206,6 +291,20 @@ type ModePreset struct {
 // overridden by the control plane or CLI flags.
 func ValidateRunConfig(config *RunConfig) error {
 	var errs []string
+
+	validateRequiredType("provider", config.Provider.Type, validProviderTypes, &errs)
+	validateOptionalType("modelRouter", config.ModelRouter.Type, validModelRouterTypes, &errs)
+	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
+	validateOptionalType("contextStrategy", config.ContextStrategy.Type, validContextStrategyTypes, &errs)
+	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
+	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
+	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
+	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
+	validateOptionalType("transport", config.Transport.Type, validTransportTypes, &errs)
+	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
+	validateVerifierConfig(config.Verifier, "verifier", &errs)
+	validateProviderConfigs(config, &errs)
+	validateBuiltInTools(config.Tools.BuiltIn, &errs)
 
 	// Read-only modes must use deny-side-effects or ask-upstream
 	readOnlyModes := map[string]bool{
@@ -232,4 +331,73 @@ func ValidateRunConfig(config *RunConfig) error {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func validateRequiredType(name, value string, valid map[string]bool, errs *[]string) {
+	if value == "" {
+		*errs = append(*errs, fmt.Sprintf("%s type is required", name))
+		return
+	}
+	validateOptionalType(name, value, valid, errs)
+}
+
+func validateOptionalType(name, value string, valid map[string]bool, errs *[]string) {
+	if value == "" {
+		return
+	}
+	if !valid[value] {
+		*errs = append(*errs, fmt.Sprintf("unsupported %s type %q", name, value))
+	}
+}
+
+func validateVerifierConfig(cfg VerifierConfig, path string, errs *[]string) {
+	validateOptionalType(path, cfg.Type, validVerifierTypes, errs)
+	for i, sub := range cfg.Verifiers {
+		validateVerifierConfig(sub, fmt.Sprintf("%s.verifiers[%d]", path, i), errs)
+	}
+}
+
+func validateProviderConfigs(config *RunConfig, errs *[]string) {
+	knownProviders := map[string]bool{}
+	if config.Provider.Type != "" {
+		knownProviders[config.Provider.Type] = true
+	}
+	for name, provider := range config.Providers {
+		if name == "" {
+			*errs = append(*errs, "providers map contains an empty provider name")
+			continue
+		}
+		if knownProviders[name] {
+			*errs = append(*errs, fmt.Sprintf("provider name %q is defined more than once", name))
+			continue
+		}
+		knownProviders[name] = true
+		validateRequiredType(fmt.Sprintf("providers[%s]", name), provider.Type, validProviderTypes, errs)
+	}
+
+	checkProviderRef := func(path, name string) {
+		if name == "" {
+			return
+		}
+		if !knownProviders[name] {
+			*errs = append(*errs, fmt.Sprintf("%s references unknown provider %q", path, name))
+		}
+	}
+
+	checkProviderRef("modelRouter.provider", config.ModelRouter.Provider)
+	checkProviderRef("modelRouter.cheapProvider", config.ModelRouter.CheapProvider)
+	checkProviderRef("modelRouter.expensiveProvider", config.ModelRouter.ExpensiveProvider)
+	for mode, spec := range config.ModelRouter.ModeModels {
+		if providerName, _, ok := strings.Cut(spec, "/"); ok {
+			checkProviderRef(fmt.Sprintf("modelRouter.modeModels[%s]", mode), providerName)
+		}
+	}
+}
+
+func validateBuiltInTools(builtIns []string, errs *[]string) {
+	for _, name := range builtIns {
+		if !validBuiltInToolNames[name] {
+			*errs = append(*errs, fmt.Sprintf("tools.builtIn contains unsupported tool %q", name))
+		}
+	}
 }

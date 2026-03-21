@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -59,14 +60,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("build secret store: %w", err)
 	}
 
-	// 1. Provider adapter.
-	prov, err := buildProvider(ctx, config.Provider, secrets)
+	// 1. Provider adapters.
+	prov, providers, err := buildProviders(ctx, config, secrets)
 	if err != nil {
-		return nil, fmt.Errorf("build provider: %w", err)
+		return nil, fmt.Errorf("build providers: %w", err)
 	}
 
 	// 2. Model router.
-	rtr := buildRouter(config.ModelRouter)
+	rtr := buildRouter(config.ModelRouter, config.Provider.Type)
 
 	// 3. Prompt builder.
 	pb := buildPromptBuilder(config.PromptBuilder)
@@ -84,7 +85,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
 
 	// 6. Tool registry.
-	registry := buildToolRegistry(exec)
+	es := buildEditStrategy(config.EditStrategy)
+	registry := buildToolRegistry(exec, es, config.Tools)
 
 	// 6b. MCP tool discovery — connect to remote MCP servers and register
 	// their tools into the registry alongside the built-in tools.
@@ -98,10 +100,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
-	// 7. Edit strategy.
-	es := buildEditStrategy(config.EditStrategy)
-
-	// 8. Verifier.
+	// 7. Verifier.
 	v := buildVerifier(config.Verifier, prov)
 
 	// 9. Transport — use the injected one if provided, otherwise build from config.
@@ -143,6 +142,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	return &AgenticLoop{
 		Provider:     prov,
+		Providers:    providers,
 		Router:       rtr,
 		Prompt:       pb,
 		Context:      cs,
@@ -158,6 +158,25 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		emitReady:    emitReady,
 		ownedClosers: ownedClosers,
 	}, nil
+}
+
+func buildProviders(ctx context.Context, config *types.RunConfig, secrets security.SecretStore) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
+	defaultProvider, err := buildProvider(ctx, config.Provider, secrets)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	providers := make(map[string]provider.ProviderAdapter, len(config.Providers)+1)
+	providers[config.Provider.Type] = defaultProvider
+	for name, cfg := range config.Providers {
+		providerAdapter, err := buildProvider(ctx, cfg, secrets)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build provider %q: %w", name, err)
+		}
+		providers[name] = providerAdapter
+	}
+
+	return defaultProvider, providers, nil
 }
 
 func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets security.SecretStore) (provider.ProviderAdapter, error) {
@@ -181,25 +200,34 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	}
 }
 
-func buildRouter(cfg types.ModelRouterConfig) router.ModelRouter {
+func buildRouter(cfg types.ModelRouterConfig, defaultProvider string) router.ModelRouter {
 	switch cfg.Type {
 	case "static":
-		return router.NewStaticRouter(cfg.Provider, cfg.Model)
+		providerName := cfg.Provider
+		if providerName == "" {
+			providerName = defaultProvider
+		}
+		return router.NewStaticRouter(providerName, cfg.Model)
 	case "per-mode":
-		return buildPerModeRouter(cfg)
+		return buildPerModeRouter(cfg, defaultProvider)
 	case "dynamic":
-		return buildDynamicRouter(cfg)
+		return buildDynamicRouter(cfg, defaultProvider)
 	default:
-		// Default to static with claude-sonnet-4-6.
-		return router.NewStaticRouter("anthropic", "claude-sonnet-4-6")
+		if defaultProvider == "" {
+			defaultProvider = "anthropic"
+		}
+		return router.NewStaticRouter(defaultProvider, "claude-sonnet-4-6")
 	}
 }
 
 // buildPerModeRouter constructs a PerModeRouter from the config. Each entry in
 // ModeModels is "provider/model"; if the slash is absent, the default provider
 // is used with the value treated as the model name.
-func buildPerModeRouter(cfg types.ModelRouterConfig) *router.PerModeRouter {
+func buildPerModeRouter(cfg types.ModelRouterConfig, fallbackProvider string) *router.PerModeRouter {
 	defaultProvider := cfg.Provider
+	if defaultProvider == "" {
+		defaultProvider = fallbackProvider
+	}
 	if defaultProvider == "" {
 		defaultProvider = "anthropic"
 	}
@@ -224,8 +252,11 @@ func buildPerModeRouter(cfg types.ModelRouterConfig) *router.PerModeRouter {
 
 // buildDynamicRouter constructs a DynamicRouter from the config, applying
 // sensible defaults for any fields not explicitly set.
-func buildDynamicRouter(cfg types.ModelRouterConfig) *router.DynamicRouter {
+func buildDynamicRouter(cfg types.ModelRouterConfig, fallbackProvider string) *router.DynamicRouter {
 	defaultProvider := cfg.Provider
+	if defaultProvider == "" {
+		defaultProvider = fallbackProvider
+	}
 	if defaultProvider == "" {
 		defaultProvider = "anthropic"
 	}
@@ -236,7 +267,7 @@ func buildDynamicRouter(cfg types.ModelRouterConfig) *router.DynamicRouter {
 
 	cheapProvider := cfg.CheapProvider
 	if cheapProvider == "" {
-		cheapProvider = "anthropic"
+		cheapProvider = defaultProvider
 	}
 	cheapModel := cfg.CheapModel
 	if cheapModel == "" {
@@ -245,7 +276,7 @@ func buildDynamicRouter(cfg types.ModelRouterConfig) *router.DynamicRouter {
 
 	expensiveProvider := cfg.ExpensiveProvider
 	if expensiveProvider == "" {
-		expensiveProvider = "anthropic"
+		expensiveProvider = defaultProvider
 	}
 	expensiveModel := cfg.ExpensiveModel
 	if expensiveModel == "" {
@@ -351,10 +382,86 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 	}
 }
 
-func buildToolRegistry(exec executor.Executor) *tool.Registry {
+func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.ToolsConfig) *tool.Registry {
 	registry := tool.NewRegistry()
-	builtins.RegisterBuiltins(registry, exec)
+	caps := exec.Capabilities()
+	if toolEnabled(cfg.BuiltIn, "read_file") && caps.CanRead {
+		registry.Register(builtins.ReadFileTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "list_directory") && caps.CanRead {
+		registry.Register(builtins.ListDirectoryTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "search_files") && caps.CanExec {
+		registry.Register(builtins.SearchFilesTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
+		registry.Register(builtins.RunCommandTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "web_fetch") {
+		registry.Register(builtins.WebFetchTool())
+	}
+	if editToolEnabled(cfg.BuiltIn, es.ToolDefinition().Name) && caps.CanWrite {
+		registry.Register(editStrategyTool(es, exec))
+	}
 	return registry
+}
+
+func toolEnabled(enabled []string, name string) bool {
+	if len(enabled) == 0 {
+		return true
+	}
+	for _, candidate := range enabled {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
+}
+
+func editToolEnabled(enabled []string, actualName string) bool {
+	if len(enabled) == 0 {
+		return true
+	}
+	editAliases := map[string]bool{
+		"write_file":     true,
+		"search_replace": true,
+		"apply_diff":     true,
+	}
+	for _, candidate := range enabled {
+		if candidate == actualName || editAliases[candidate] {
+			return true
+		}
+	}
+	return false
+}
+
+func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
+	definition := es.ToolDefinition()
+	return &tool.Tool{
+		Name:        definition.Name,
+		Description: definition.Description,
+		InputSchema: definition.InputSchema,
+		SideEffects: true,
+		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
+			result, err := es.Apply(ctx, input, exec)
+			if err != nil {
+				return "", err
+			}
+			if result == nil {
+				return "", fmt.Errorf("edit strategy returned no result")
+			}
+			if !result.Applied {
+				if result.Error == "" {
+					return "", fmt.Errorf("edit was not applied")
+				}
+					return "", fmt.Errorf("%s", result.Error)
+			}
+			if result.Diff != "" {
+				return result.Diff, nil
+			}
+			return fmt.Sprintf("Successfully edited %s", result.Path), nil
+		},
+	}
 }
 
 func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {

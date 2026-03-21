@@ -137,6 +137,11 @@ func collectSecretRefs(config *types.RunConfig) []string {
 	if config.Provider.APIKeyRef != "" {
 		refs = append(refs, config.Provider.APIKeyRef)
 	}
+	for _, provider := range config.Providers {
+		if provider.APIKeyRef != "" {
+			refs = append(refs, provider.APIKeyRef)
+		}
+	}
 	if config.Executor.VcsBackend != nil && config.Executor.VcsBackend.APIKeyRef != "" {
 		refs = append(refs, config.Executor.VcsBackend.APIKeyRef)
 	}
