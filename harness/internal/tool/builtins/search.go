@@ -63,15 +63,19 @@ func SearchFilesTool(exec executor.Executor) *tool.Tool {
 			if params.Path != "" {
 				searchDir = params.Path
 			}
+			resolvedDir, err := exec.ResolvePath(searchDir)
+			if err != nil {
+				return "", fmt.Errorf("resolve search path: %w", err)
+			}
 
 			var cmd string
 			switch params.Type {
 			case "grep":
 				cmd = fmt.Sprintf("grep -rn --include='*' %s %s",
-					shellQuote(params.Pattern), shellQuote(searchDir))
+					shellQuote(params.Pattern), shellQuote(resolvedDir))
 			case "glob":
 				cmd = fmt.Sprintf("find %s -name %s -type f",
-					shellQuote(searchDir), shellQuote(params.Pattern))
+					shellQuote(resolvedDir), shellQuote(params.Pattern))
 			}
 
 			result, err := exec.Exec(ctx, cmd, searchTimeout)

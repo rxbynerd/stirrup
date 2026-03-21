@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -40,9 +42,9 @@ func NewAPIExecutor(token, owner, repo, ref string) *APIExecutor {
 
 // ReadFile fetches the raw content of a file from the repository.
 func (a *APIExecutor) ReadFile(ctx context.Context, path string) (string, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", a.baseURL, a.owner, a.repo, path)
-	if a.ref != "" {
-		url += "?ref=" + a.ref
+	url, err := a.contentsURL(path)
+	if err != nil {
+		return "", fmt.Errorf("api executor: build request URL: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -82,9 +84,9 @@ type githubContentEntry struct {
 
 // ListDirectory fetches the contents of a directory from the repository.
 func (a *APIExecutor) ListDirectory(ctx context.Context, path string) ([]string, error) {
-	url := fmt.Sprintf("%s/repos/%s/%s/contents/%s", a.baseURL, a.owner, a.repo, path)
-	if a.ref != "" {
-		url += "?ref=" + a.ref
+	url, err := a.contentsURL(path)
+	if err != nil {
+		return nil, fmt.Errorf("api executor: build request URL: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -134,4 +136,59 @@ func (a *APIExecutor) Capabilities() ExecutorCapabilities {
 		CanExec:    false,
 		CanNetwork: true,
 	}
+}
+
+func (a *APIExecutor) contentsURL(contentPath string) (string, error) {
+	baseURL, err := url.Parse(a.baseURL)
+	if err != nil {
+		return "", err
+	}
+
+	unescapedPath := normalizeGitHubContentPath(contentPath)
+	escapedPath := escapeGitHubContentPath(unescapedPath)
+	basePath := strings.TrimRight(baseURL.Path, "/")
+	baseURL.Path = fmt.Sprintf("%s/repos/%s/%s/contents", basePath, a.owner, a.repo)
+	baseURL.RawPath = fmt.Sprintf("%s/repos/%s/%s/contents",
+		escapeURLPath(basePath),
+		url.PathEscape(a.owner),
+		url.PathEscape(a.repo),
+	)
+	if unescapedPath != "" {
+		baseURL.Path += "/" + unescapedPath
+		baseURL.RawPath += "/" + escapedPath
+	}
+
+	if a.ref != "" {
+		query := baseURL.Query()
+		query.Set("ref", a.ref)
+		baseURL.RawQuery = query.Encode()
+	}
+	return baseURL.String(), nil
+}
+
+func normalizeGitHubContentPath(contentPath string) string {
+	trimmed := strings.Trim(contentPath, "/")
+	if trimmed == "" || trimmed == "." {
+		return ""
+	}
+	return trimmed
+}
+
+func escapeGitHubContentPath(contentPath string) string {
+	parts := strings.Split(contentPath, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
+func escapeURLPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return "/" + strings.Join(parts, "/")
 }

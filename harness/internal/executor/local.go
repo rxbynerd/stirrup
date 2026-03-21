@@ -183,6 +183,7 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = e.workspace
+	cmd.Env = filteredCommandEnv()
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -217,6 +218,53 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 	}
 
 	return result, nil
+}
+
+var allowedCommandEnvKeys = map[string]bool{
+	"CC":              true,
+	"CGO_ENABLED":     true,
+	"CI":              true,
+	"COLORTERM":       true,
+	"CXX":             true,
+	"GOENV":           true,
+	"GOCACHE":         true,
+	"GOMAXPROCS":      true,
+	"GOMODCACHE":      true,
+	"GOPATH":          true,
+	"GOROOT":          true,
+	"GOTOOLCHAIN":     true,
+	"HOME":            true,
+	"LANG":            true,
+	"LOGNAME":         true,
+	"MAKEFLAGS":       true,
+	"NO_COLOR":        true,
+	"PATH":            true,
+	"PKG_CONFIG":      true,
+	"SHELL":           true,
+	"TEMP":            true,
+	"TERM":            true,
+	"TMP":             true,
+	"TMPDIR":          true,
+	"TZ":              true,
+	"USER":            true,
+	"XDG_CACHE_HOME":  true,
+	"XDG_CONFIG_HOME": true,
+	"XDG_DATA_HOME":   true,
+}
+
+func filteredCommandEnv() []string {
+	raw := os.Environ()
+	filtered := make([]string, 0, len(raw))
+	for _, entry := range raw {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if allowedCommandEnvKeys[key] || strings.HasPrefix(key, "LC_") {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 // Capabilities returns the capabilities of the local executor.

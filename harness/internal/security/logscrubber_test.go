@@ -47,6 +47,24 @@ func TestScrub_BearerToken(t *testing.T) {
 	}
 }
 
+func TestScrub_BearerTokenWithBase64Chars(t *testing.T) {
+	input := "Authorization: Bearer abc/def+ghi=="
+	got := Scrub(input)
+	want := "Authorization: [REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestScrub_OpenAIKey(t *testing.T) {
+	input := "openai=sk-abcdefghijklmnopqrstuvwxyz123456"
+	got := Scrub(input)
+	want := "openai=[REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestScrub_PEMKey(t *testing.T) {
 	input := "-----BEGIN RSA PRIVATE KEY-----"
 	got := Scrub(input)

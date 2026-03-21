@@ -182,5 +182,26 @@ func TestAPIExecutor_ReadFile_NoRef(t *testing.T) {
 	}
 }
 
+func TestAPIExecutor_EncodesPathAndRef(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.EscapedPath(); !strings.Contains(got, "/contents/dir%20with%20spaces/file%23name.go") {
+			t.Fatalf("unexpected escaped path: %s", got)
+		}
+		if got := r.URL.Query().Get("ref"); got != "feature/bugfix?one=1" {
+			t.Fatalf("unexpected ref query: %q", got)
+		}
+		w.Write([]byte("content"))
+	}))
+	defer server.Close()
+
+	e := newTestAPIExecutor(server.URL)
+	e.ref = "feature/bugfix?one=1"
+
+	_, err := e.ReadFile(context.Background(), "dir with spaces/file#name.go")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // Verify that APIExecutor satisfies the Executor interface.
 var _ Executor = (*APIExecutor)(nil)

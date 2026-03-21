@@ -5,13 +5,14 @@ import "regexp"
 // secretPatterns defines the set of patterns that should be redacted from logs
 // and other output. Each pattern matches a known secret or credential format.
 var secretPatterns = []*regexp.Regexp{
-	regexp.MustCompile(`sk-ant-[a-zA-Z0-9_-]+`),      // Anthropic API keys
-	regexp.MustCompile(`ghp_[a-zA-Z0-9]+`),            // GitHub PATs
-	regexp.MustCompile(`ghs_[a-zA-Z0-9]+`),            // GitHub app tokens
-	regexp.MustCompile(`AKIA[A-Z0-9]{16}`),            // AWS access key IDs
-	regexp.MustCompile(`Bearer\s+[a-zA-Z0-9._-]+`),   // Bearer tokens
-	regexp.MustCompile(`-----BEGIN[\s\w]+KEY-----`), // PEM private keys
-	regexp.MustCompile(`secret://[^\s"']+`),           // Secret store references
+	regexp.MustCompile(`sk-ant-[a-zA-Z0-9_-]+`),            // Anthropic API keys
+	regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`),            // OpenAI-style API keys
+	regexp.MustCompile(`ghp_[a-zA-Z0-9]+`),                 // GitHub PATs
+	regexp.MustCompile(`ghs_[a-zA-Z0-9]+`),                 // GitHub app tokens
+	regexp.MustCompile(`AKIA[A-Z0-9]{16}`),                 // AWS access key IDs
+	regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`), // Bearer tokens / JWTs
+	regexp.MustCompile(`-----BEGIN[\s\w]+KEY-----`),        // PEM private keys
+	regexp.MustCompile(`secret://[^\s"']+`),                // Secret store references
 }
 
 // Scrub replaces all known secret patterns in value with "[REDACTED]".

@@ -130,9 +130,18 @@ func TestSearchFilesTool_InvalidType(t *testing.T) {
 
 func TestSearchFilesTool_GrepMode(t *testing.T) {
 	mock := &mockExecutor{
+		resolvePathFunc: func(relativePath string) (string, error) {
+			if relativePath != "." {
+				t.Errorf("expected default path '.', got %q", relativePath)
+			}
+			return "/workspace", nil
+		},
 		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
 			if !strings.HasPrefix(command, "grep") {
 				t.Errorf("expected grep command, got: %s", command)
+			}
+			if !strings.Contains(command, "'/workspace'") {
+				t.Errorf("expected resolved workspace path in command, got: %s", command)
 			}
 			return &executor.ExecResult{
 				ExitCode: 0,
@@ -153,6 +162,32 @@ func TestSearchFilesTool_GrepMode(t *testing.T) {
 	}
 	if !strings.Contains(result, "main.go:10") {
 		t.Errorf("expected grep output in result, got: %s", result)
+	}
+}
+
+func TestSearchFilesTool_PathTraversalRejected(t *testing.T) {
+	mock := &mockExecutor{
+		resolvePathFunc: func(relativePath string) (string, error) {
+			if relativePath != "../../etc" {
+				t.Errorf("unexpected path: %q", relativePath)
+			}
+			return "", fmt.Errorf("path escapes workspace")
+		},
+	}
+
+	searchTool := SearchFilesTool(mock)
+	input, _ := json.Marshal(map[string]string{
+		"pattern": "passwd",
+		"path":    "../../etc",
+		"type":    "grep",
+	})
+
+	_, err := searchTool.Handler(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected traversal error")
+	}
+	if !strings.Contains(err.Error(), "resolve search path") {
+		t.Fatalf("expected resolved-path error, got %v", err)
 	}
 }
 
@@ -185,13 +220,29 @@ func TestWebFetchTool_SchemeRejection(t *testing.T) {
 	}
 }
 
+func TestWebFetchTool_PrivateHostRejection(t *testing.T) {
+	fetchTool := WebFetchTool()
+	input, _ := json.Marshal(map[string]string{"url": "http://127.0.0.1/secret"})
+
+	_, err := fetchTool.Handler(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected error for private host")
+	}
+	if !strings.Contains(err.Error(), "private host") {
+		t.Fatalf("expected private host rejection, got %v", err)
+	}
+}
+
 func TestWebFetchTool_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer srv.Close()
 
-	fetchTool := WebFetchTool()
+	fetchTool := newWebFetchTool(webFetchOptions{
+		client:            srv.Client(),
+		allowPrivateHosts: true,
+	})
 	input, _ := json.Marshal(map[string]string{"url": srv.URL})
 
 	_, err := fetchTool.Handler(context.Background(), input)
@@ -213,7 +264,10 @@ func TestWebFetchTool_Truncation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	fetchTool := WebFetchTool()
+	fetchTool := newWebFetchTool(webFetchOptions{
+		client:            srv.Client(),
+		allowPrivateHosts: true,
+	})
 	input, _ := json.Marshal(map[string]string{"url": srv.URL})
 
 	result, err := fetchTool.Handler(context.Background(), input)

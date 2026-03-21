@@ -293,6 +293,19 @@ func TestExec_WorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestExec_FiltersSecretEnvironment(t *testing.T) {
+	t.Setenv("STIRRUP_TEST_SECRET", "super-secret")
+	exec, _ := newTestExecutor(t)
+
+	result, err := exec.Exec(context.Background(), "printf %s \"$STIRRUP_TEST_SECRET\"", 0)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.Stdout != "" {
+		t.Fatalf("expected secret env to be filtered, got %q", result.Stdout)
+	}
+}
+
 func TestCapabilities(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 	caps := exec.Capabilities()
