@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
@@ -26,19 +28,21 @@ import (
 // fields — the loop has no imports from concrete implementations, no environment
 // variable reads, no direct file system access.
 type AgenticLoop struct {
-	Provider    provider.ProviderAdapter
-	Router      router.ModelRouter
-	Prompt      prompt.PromptBuilder
-	Context     contextpkg.ContextStrategy
-	Tools       tool.ToolRegistry
-	Executor    executor.Executor
-	Edit        edit.EditStrategy
-	Verifier    verifier.Verifier
-	Permissions permission.PermissionPolicy
-	Git         git.GitStrategy
-	Transport   transport.Transport
-	Trace       trace.TraceEmitter
-	Security    *security.SecurityLogger // optional, for structured security event logging
+	Provider     provider.ProviderAdapter
+	Router       router.ModelRouter
+	Prompt       prompt.PromptBuilder
+	Context      contextpkg.ContextStrategy
+	Tools        tool.ToolRegistry
+	Executor     executor.Executor
+	Edit         edit.EditStrategy
+	Verifier     verifier.Verifier
+	Permissions  permission.PermissionPolicy
+	Git          git.GitStrategy
+	Transport    transport.Transport
+	Trace        trace.TraceEmitter
+	Security     *security.SecurityLogger // optional, for structured security event logging
+	emitReady    bool
+	ownedClosers []io.Closer
 }
 
 // CostTracker tracks cumulative cost per run and enforces budgets.
@@ -235,8 +239,12 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
 				inText = false
 			}
-			result.StopReason = event.StopReason
-			result.OutputTokens = event.OutputTokens
+			if event.StopReason != "" {
+				result.StopReason = event.StopReason
+			}
+			if event.OutputTokens > 0 {
+				result.OutputTokens = event.OutputTokens
+			}
 
 		case "error":
 			if event.Error != nil {
@@ -250,6 +258,21 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	}
 
 	return result, nil
+}
+
+// Close releases resources owned by the loop, such as container executors,
+// internally-created transports, and closable trace emitters.
+func (l *AgenticLoop) Close() error {
+	var errs []string
+	for i := len(l.ownedClosers) - 1; i >= 0; i-- {
+		if err := l.ownedClosers[i].Close(); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("close loop resources: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
 // defaultModelPricing returns pricing for known models.

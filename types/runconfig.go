@@ -70,11 +70,11 @@ func (rc RunConfig) Redact() RunConfig {
 
 // ProviderConfig selects the model provider implementation.
 type ProviderConfig struct {
-	Type      string `json:"type"`                    // "anthropic" | "bedrock" | "openai-compatible"
-	APIKeyRef string `json:"apiKeyRef,omitempty"`      // e.g. "secret://anthropic-key"
-	Region    string `json:"region,omitempty"`          // bedrock
-	Profile   string `json:"profile,omitempty"`         // bedrock
-	BaseURL   string `json:"baseUrl,omitempty"`         // openai-compatible
+	Type      string `json:"type"`                // "anthropic" | "bedrock" | "openai-compatible"
+	APIKeyRef string `json:"apiKeyRef,omitempty"` // e.g. "secret://anthropic-key"
+	Region    string `json:"region,omitempty"`    // bedrock
+	Profile   string `json:"profile,omitempty"`   // bedrock
+	BaseURL   string `json:"baseUrl,omitempty"`   // openai-compatible
 }
 
 // ModelRouterConfig selects the model router implementation.
@@ -108,18 +108,18 @@ type ContextStrategyConfig struct {
 
 // ExecutorConfig selects the executor implementation.
 type ExecutorConfig struct {
-	Type       string          `json:"type"`                    // "api" | "local" | "container" | "microvm"
+	Type       string            `json:"type"`                 // "api" | "local" | "container" | "microvm"
 	VcsBackend *VcsBackendConfig `json:"vcsBackend,omitempty"` // type: "api"
-	Workspace  string          `json:"workspace,omitempty"`
-	Image      string          `json:"image,omitempty"`
-	Network    *NetworkConfig  `json:"network,omitempty"`
-	Resources  *ResourceLimits `json:"resources,omitempty"`
-	Proxy      string          `json:"proxy,omitempty"`
+	Workspace  string            `json:"workspace,omitempty"`
+	Image      string            `json:"image,omitempty"`
+	Network    *NetworkConfig    `json:"network,omitempty"`
+	Resources  *ResourceLimits   `json:"resources,omitempty"`
+	Proxy      string            `json:"proxy,omitempty"`
 }
 
 // VcsBackendConfig selects the VCS backend for the API executor.
 type VcsBackendConfig struct {
-	Type      string `json:"type"`                // "github" | "gitlab"
+	Type      string `json:"type"` // "github" | "gitlab"
 	APIKeyRef string `json:"apiKeyRef,omitempty"`
 	Repo      string `json:"repo,omitempty"`
 	Ref       string `json:"ref,omitempty"`
@@ -127,7 +127,7 @@ type VcsBackendConfig struct {
 
 // NetworkConfig controls network egress for sandboxed executors.
 type NetworkConfig struct {
-	Mode      string   `json:"mode"`                  // "none" or "allowlist"
+	Mode      string   `json:"mode"` // "none" or "allowlist"
 	Allowlist []string `json:"allowlist,omitempty"`
 }
 
@@ -179,7 +179,7 @@ type TraceEmitterConfig struct {
 
 // ToolsConfig holds the tool configuration.
 type ToolsConfig struct {
-	BuiltIn    []string         `json:"builtIn,omitempty"`    // which built-in tools to enable
+	BuiltIn    []string          `json:"builtIn,omitempty"`    // which built-in tools to enable
 	MCPServers []MCPServerConfig `json:"mcpServers,omitempty"` // MCP server connections
 }
 
@@ -224,8 +224,8 @@ func ValidateRunConfig(config *RunConfig) error {
 	}
 
 	// timeout must be set
-	if config.Timeout == nil || *config.Timeout > 3600 {
-		errs = append(errs, "timeout is required and must be <= 3600 seconds")
+	if config.Timeout == nil || *config.Timeout <= 0 || *config.Timeout > 3600 {
+		errs = append(errs, "timeout is required and must be > 0 and <= 3600 seconds")
 	}
 
 	if len(errs) > 0 {

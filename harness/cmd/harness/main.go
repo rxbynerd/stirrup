@@ -55,8 +55,8 @@ func main() {
 
 	// Build RunConfig from flags.
 	config := &types.RunConfig{
-		RunID: generateRunID(),
-		Mode:  *mode,
+		RunID:  generateRunID(),
+		Mode:   *mode,
 		Prompt: userPrompt,
 		Provider: types.ProviderConfig{
 			Type:      *providerType,
@@ -111,6 +111,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error building harness: %v\n", err)
 		os.Exit(1)
 	}
+	defer loop.Close()
 
 	runTrace, err := loop.Run(ctx, config)
 	if err != nil {

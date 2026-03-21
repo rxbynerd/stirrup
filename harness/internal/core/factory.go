@@ -39,6 +39,14 @@ func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, erro
 // Transport. When tp is non-nil it is used directly, skipping buildTransport.
 // This allows the K8s job binary to reuse its already-connected gRPC stream.
 func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport) (*AgenticLoop, error) {
+	var ownedClosers []io.Closer
+	emitReady := tp == nil
+	cleanup := func() {
+		for i := len(ownedClosers) - 1; i >= 0; i-- {
+			_ = ownedClosers[i].Close()
+		}
+	}
+
 	// Validate RunConfig security invariants.
 	if err := types.ValidateRunConfig(config); err != nil {
 		return nil, fmt.Errorf("config validation: %w", err)
@@ -68,6 +76,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
+	if closer, ok := exec.(io.Closer); ok {
+		ownedClosers = append(ownedClosers, closer)
+	}
 
 	// 5. Context strategy.
 	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
@@ -81,6 +92,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		mcpClient := mcp.NewClient(registry, nil)
 		for _, srv := range config.Tools.MCPServers {
 			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
+				cleanup()
 				return nil, fmt.Errorf("connect MCP server %q: %w", srv.Name, err)
 			}
 		}
@@ -96,8 +108,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	if tp == nil {
 		tp, err = buildTransport(ctx, config.Transport)
 		if err != nil {
+			cleanup()
 			return nil, fmt.Errorf("build transport: %w", err)
 		}
+		ownedClosers = append(ownedClosers, tp)
 	}
 
 	// 10. Permission policy.
@@ -109,7 +123,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 12. Trace emitter.
 	te, err := buildTraceEmitter(ctx, config.TraceEmitter)
 	if err != nil {
+		cleanup()
 		return nil, fmt.Errorf("build trace emitter: %w", err)
+	}
+	if closer, ok := te.(io.Closer); ok {
+		ownedClosers = append(ownedClosers, closer)
 	}
 
 	// 13. Security logger (writes to stderr).
@@ -124,19 +142,21 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	return &AgenticLoop{
-		Provider:    prov,
-		Router:      rtr,
-		Prompt:      pb,
-		Context:     cs,
-		Tools:       registry,
-		Executor:    exec,
-		Edit:        es,
-		Verifier:    v,
-		Permissions: pp,
-		Git:         gs,
-		Transport:   tp,
-		Trace:       te,
-		Security:    secLogger,
+		Provider:     prov,
+		Router:       rtr,
+		Prompt:       pb,
+		Context:      cs,
+		Tools:        registry,
+		Executor:     exec,
+		Edit:         es,
+		Verifier:     v,
+		Permissions:  pp,
+		Git:          gs,
+		Transport:    tp,
+		Trace:        te,
+		Security:     secLogger,
+		emitReady:    emitReady,
+		ownedClosers: ownedClosers,
 	}, nil
 }
 

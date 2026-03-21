@@ -89,6 +89,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error building harness: %v\n", err)
 		os.Exit(1)
 	}
+	defer loop.Close()
 
 	runTrace, err := loop.Run(ctx, config)
 	if err != nil {

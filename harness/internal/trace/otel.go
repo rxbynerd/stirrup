@@ -220,3 +220,11 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 
 	return trace, nil
 }
+
+// Close shuts down the tracer provider and exporter.
+func (e *OTelTraceEmitter) Close() error {
+	if e.provider == nil {
+		return nil
+	}
+	return e.provider.Shutdown(context.Background())
+}

@@ -52,9 +52,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	costTracker := &CostTracker{}
 
 	// Emit ready event.
-	_ = l.Transport.Emit(types.HarnessEvent{
-		Type: "ready",
-	})
+	if l.emitReady {
+		_ = l.Transport.Emit(types.HarnessEvent{
+			Type: "ready",
+		})
+	}
 
 	// Outer verification loop.
 	outcome := "success"
@@ -76,8 +78,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			Executor: l.Executor,
 			Messages: messages,
 		})
-		if verifyErr != nil || vResult.Passed {
-			// Verifier passed (or errored — treat as pass to avoid blocking).
+		if verifyErr != nil {
+			outcome = "verification_error"
+			break
+		}
+		if vResult.Passed {
 			outcome = "success"
 			break
 		}
@@ -234,8 +239,17 @@ func (l *AgenticLoop) runInnerLoop(
 		// Extract tool calls.
 		toolCalls := collectToolCalls(sr.Blocks)
 
-		if sr.StopReason == "end_turn" || len(toolCalls) == 0 {
+		if sr.StopReason == "end_turn" {
 			return messages, "success"
+		}
+		if sr.StopReason != "tool_use" {
+			if sr.StopReason == "" {
+				return messages, "error"
+			}
+			return messages, sr.StopReason
+		}
+		if len(toolCalls) == 0 {
+			return messages, "error"
 		}
 
 		// Dispatch tool calls.

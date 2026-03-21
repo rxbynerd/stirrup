@@ -15,6 +15,7 @@ import (
 // io.Writer (typically a file).
 type JSONLTraceEmitter struct {
 	writer    io.Writer
+	closer    io.Closer
 	mu        sync.Mutex
 	runID     string
 	config    *types.RunConfig
@@ -26,7 +27,11 @@ type JSONLTraceEmitter struct {
 
 // NewJSONLTraceEmitter creates a trace emitter that writes to w.
 func NewJSONLTraceEmitter(w io.Writer) *JSONLTraceEmitter {
-	return &JSONLTraceEmitter{writer: w}
+	emitter := &JSONLTraceEmitter{writer: w}
+	if closer, ok := w.(io.Closer); ok {
+		emitter.closer = closer
+	}
+	return emitter
 }
 
 // Start initialises the trace with run metadata.
@@ -116,4 +121,12 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 	}
 
 	return trace, nil
+}
+
+// Close releases the backing writer when it owns a closable resource such as a file.
+func (e *JSONLTraceEmitter) Close() error {
+	if e.closer == nil {
+		return nil
+	}
+	return e.closer.Close()
 }

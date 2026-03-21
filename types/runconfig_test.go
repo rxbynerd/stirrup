@@ -1,6 +1,7 @@
 package types
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -172,6 +173,22 @@ func TestValidateRunConfig_TimeoutExceedsMax(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timeout") {
 		t.Errorf("expected error to mention timeout, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_TimeoutMustBePositive(t *testing.T) {
+	for _, timeout := range []int{0, -1} {
+		t.Run(fmt.Sprintf("timeout_%d", timeout), func(t *testing.T) {
+			c := validConfig()
+			c.Timeout = &timeout
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatal("expected error for non-positive timeout")
+			}
+			if !strings.Contains(err.Error(), "timeout") {
+				t.Errorf("expected error to mention timeout, got: %v", err)
+			}
+		})
 	}
 }
 

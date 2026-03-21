@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 
@@ -54,21 +55,21 @@ func (m *mockExecutor) Capabilities() interface{}            { return nil }
 func buildTestConfig() *types.RunConfig {
 	timeout := 60
 	return &types.RunConfig{
-		RunID:           "test-run-1",
-		Mode:            "execution",
-		Prompt:          "Hello, write a test file.",
-		Provider:        types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://TEST"},
-		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
-		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
-		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
-		Executor:        types.ExecutorConfig{Type: "local", Workspace: "/tmp"},
-		EditStrategy:    types.EditStrategyConfig{Type: "whole-file"},
-		Verifier:        types.VerifierConfig{Type: "none"},
+		RunID:            "test-run-1",
+		Mode:             "execution",
+		Prompt:           "Hello, write a test file.",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://TEST"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: "/tmp"},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
-		GitStrategy:     types.GitStrategyConfig{Type: "none"},
-		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl"},
-		MaxTurns:        20,
-		Timeout:         &timeout,
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		MaxTurns:         20,
+		Timeout:          &timeout,
 	}
 }
 
@@ -359,6 +360,22 @@ func TestDispatchToolCall_UnknownTool(t *testing.T) {
 	}
 }
 
+type errorVerifier struct{}
+
+func (m *errorVerifier) Verify(_ context.Context, _ verifier.VerifyContext) (*types.VerificationResult, error) {
+	return nil, errors.New("verifier transport failed")
+}
+
+type closeTracker struct {
+	closed bool
+	err    error
+}
+
+func (c *closeTracker) Close() error {
+	c.closed = true
+	return c.err
+}
+
 func TestDispatchToolCall_PermissionDenied(t *testing.T) {
 	loop := buildTestLoop(&mockProvider{})
 
@@ -561,6 +578,47 @@ func TestLoop_VerificationFailed(t *testing.T) {
 	}
 }
 
+func TestLoop_VerificationError(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Done with the task."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	loop := buildTestLoop(prov)
+	loop.Verifier = &errorVerifier{}
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "verification_error" {
+		t.Errorf("expected outcome 'verification_error', got %q", runTrace.Outcome)
+	}
+}
+
+func TestLoop_MaxTokensStopReasonIsFailure(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Partial answer"},
+			{Type: "message_complete", StopReason: "max_tokens"},
+		},
+	}
+
+	loop := buildTestLoop(prov)
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "max_tokens" {
+		t.Errorf("expected outcome 'max_tokens', got %q", runTrace.Outcome)
+	}
+}
+
 func TestLoop_PromptBuildError(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
@@ -616,5 +674,39 @@ func TestBuildLoop_InvalidConfig(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "maxTurns") {
 		t.Errorf("expected error to mention maxTurns, got: %v", err)
+	}
+}
+
+func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
+	ch := make(chan types.StreamEvent, 3)
+	ch <- types.StreamEvent{Type: "text_delta", Text: "Hello"}
+	ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
+	ch <- types.StreamEvent{Type: "message_complete", OutputTokens: 42}
+	close(ch)
+
+	result, err := streamEventsToResult(context.Background(), ch, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	if err != nil {
+		t.Fatalf("streamEventsToResult() error: %v", err)
+	}
+	if result.StopReason != "end_turn" {
+		t.Fatalf("expected stop reason to be preserved, got %q", result.StopReason)
+	}
+	if result.OutputTokens != 42 {
+		t.Fatalf("expected output tokens to be preserved, got %d", result.OutputTokens)
+	}
+}
+
+func TestAgenticLoopClose_ClosesOwnedResources(t *testing.T) {
+	first := &closeTracker{}
+	second := &closeTracker{}
+	loop := &AgenticLoop{
+		ownedClosers: []io.Closer{first, second},
+	}
+
+	if err := loop.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+	if !first.closed || !second.closed {
+		t.Fatalf("expected both closers to run, got first=%v second=%v", first.closed, second.closed)
 	}
 }
