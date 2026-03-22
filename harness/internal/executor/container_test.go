@@ -856,6 +856,49 @@ func TestDemuxDockerStream_Empty(t *testing.T) {
 	}
 }
 
+func TestContainerAPIClient_ArchivePathEncoding(t *testing.T) {
+	var putPath, getPath string
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"PUT /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
+			putPath = r.URL.Query().Get("path")
+			w.WriteHeader(http.StatusOK)
+		},
+		"GET /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
+			getPath = r.URL.Query().Get("path")
+			// Return a minimal valid tar so getArchive succeeds.
+			w.Header().Set("Content-Type", "application/x-tar")
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+	defer cleanup()
+
+	client := newContainerAPIClient(sock)
+	ctx := context.Background()
+
+	// Path with spaces, hash, and other characters that need URL encoding.
+	specialPath := "/workspace/my dir/file #1 (copy).txt"
+
+	// putArchive: verify the path query parameter is decoded correctly by the server.
+	err := client.putArchive(ctx, "ctr1", specialPath, strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("putArchive: %v", err)
+	}
+	if putPath != specialPath {
+		t.Errorf("putArchive path: got %q, want %q", putPath, specialPath)
+	}
+
+	// getArchive: same check.
+	body, err := client.getArchive(ctx, "ctr1", specialPath)
+	if err != nil {
+		t.Fatalf("getArchive: %v", err)
+	}
+	body.Close()
+	if getPath != specialPath {
+		t.Errorf("getArchive path: got %q, want %q", getPath, specialPath)
+	}
+}
+
 // --- Helpers ---
 
 type mockSecurityEmitter struct {

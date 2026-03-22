@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,7 +284,7 @@ func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (in
 
 // putArchive uploads a tar archive to a path inside the container.
 func (c *containerAPIClient) putArchive(ctx context.Context, containerID, destPath string, tarReader io.Reader) error {
-	url := fmt.Sprintf("/containers/%s/archive?path=%s", containerID, destPath)
+	url := fmt.Sprintf("/containers/%s/archive?path=%s", containerID, url.QueryEscape(destPath))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.url(url), tarReader)
 	if err != nil {
 		return err
@@ -301,7 +302,7 @@ func (c *containerAPIClient) putArchive(ctx context.Context, containerID, destPa
 // getArchive downloads a tar archive of a path from inside the container.
 // The caller must close the returned ReadCloser.
 func (c *containerAPIClient) getArchive(ctx context.Context, containerID, srcPath string) (io.ReadCloser, error) {
-	url := fmt.Sprintf("/containers/%s/archive?path=%s", containerID, srcPath)
+	url := fmt.Sprintf("/containers/%s/archive?path=%s", containerID, url.QueryEscape(srcPath))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url(url), nil)
 	if err != nil {
 		return nil, err
