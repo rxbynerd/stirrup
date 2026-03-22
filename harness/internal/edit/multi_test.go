@@ -11,7 +11,7 @@ import (
 )
 
 func TestMultiStrategy_ToolDefinition(t *testing.T) {
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	def := m.ToolDefinition()
 
 	if def.Name != "edit_file" {
@@ -44,7 +44,7 @@ func TestMultiStrategy_RoutesToUdiff(t *testing.T) {
 	// Seed a file so the diff has something to apply against.
 	writeTestFile(t, dir, "test.txt", "line1\nline2\nline3\n")
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{
 		"path": "test.txt",
 		"diff": "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2_modified\n line3"
@@ -70,7 +70,7 @@ func TestMultiStrategy_RoutesToSearchReplace(t *testing.T) {
 
 	writeTestFile(t, dir, "test.txt", "hello world")
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{
 		"path": "test.txt",
 		"old_string": "world",
@@ -95,7 +95,7 @@ func TestMultiStrategy_RoutesToWholeFile(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{
 		"path": "new.txt",
 		"content": "brand new content"
@@ -123,7 +123,7 @@ func TestMultiStrategy_FallbackOnUdiffFailure(t *testing.T) {
 	// so udiff will fail, but whole-file will succeed as fallback.
 	writeTestFile(t, dir, "test.txt", "original content")
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	// Provide both diff (which will fail) and content (which will succeed).
 	input := json.RawMessage(`{
 		"path": "test.txt",
@@ -151,7 +151,7 @@ func TestMultiStrategy_FallbackSearchReplaceToWholeFile(t *testing.T) {
 
 	writeTestFile(t, dir, "test.txt", "hello world")
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	// old_string won't be found, so search-replace fails; content fallback succeeds.
 	input := json.RawMessage(`{
 		"path": "test.txt",
@@ -178,7 +178,7 @@ func TestMultiStrategy_NoApplicableStrategy(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	// Only path provided, no strategy-specific fields.
 	input := json.RawMessage(`{"path": "test.txt"}`)
 
@@ -198,7 +198,7 @@ func TestMultiStrategy_MissingPath(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{"content": "hello"}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
@@ -214,7 +214,7 @@ func TestMultiStrategy_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{invalid`)
 
 	_, err := m.Apply(context.Background(), input, exec)
@@ -229,7 +229,7 @@ func TestMultiStrategy_AllStrategiesFail(t *testing.T) {
 
 	writeTestFile(t, dir, "test.txt", "original content")
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	// diff will fail (bad context), old_string will fail (not found).
 	// No content field, so no whole-file fallback.
 	input := json.RawMessage(`{
@@ -261,7 +261,7 @@ func TestMultiStrategy_PriorityOrder(t *testing.T) {
 
 	writeTestFile(t, dir, "test.txt", "line1\nline2\nline3\n")
 
-	m := NewMultiStrategy()
+	m := NewMultiStrategy(defaultFuzzyThreshold)
 	// Provide both diff and content. Udiff should be tried first and succeed,
 	// so whole-file should never be reached.
 	input := json.RawMessage(`{

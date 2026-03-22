@@ -28,18 +28,25 @@ var udiffSchema = json.RawMessage(`{
 	"additionalProperties": false
 }`)
 
-// fuzzyThreshold is the minimum similarity ratio (0.0–1.0) for fuzzy matching
-// to accept a hunk location. Below this, the hunk is rejected.
-const fuzzyThreshold = 0.80
+// defaultFuzzyThreshold is the default minimum similarity ratio (0.0–1.0) for
+// fuzzy matching to accept a hunk location. Below this, the hunk is rejected.
+const defaultFuzzyThreshold = 0.80
 
 // UdiffStrategy implements EditStrategy by parsing and applying unified diffs.
 // It uses a three-level fallback for hunk matching: exact, whitespace-insensitive,
 // and fuzzy (Levenshtein edit distance).
-type UdiffStrategy struct{}
+type UdiffStrategy struct {
+	// fuzzyThreshold is the minimum similarity ratio (0.0–1.0) for fuzzy
+	// matching. Defaults to defaultFuzzyThreshold (0.80).
+	fuzzyThreshold float64
+}
 
-// NewUdiffStrategy creates a new UdiffStrategy.
-func NewUdiffStrategy() *UdiffStrategy {
-	return &UdiffStrategy{}
+// NewUdiffStrategy creates a new UdiffStrategy with the given fuzzy matching
+// threshold. The threshold controls the minimum similarity ratio (0.0–1.0) for
+// the Levenshtein-based fuzzy matching fallback. Use defaultFuzzyThreshold (0.80)
+// for standard behaviour.
+func NewUdiffStrategy(fuzzyThreshold float64) *UdiffStrategy {
+	return &UdiffStrategy{fuzzyThreshold: fuzzyThreshold}
 }
 
 // ToolDefinition returns the tool definition for the udiff edit strategy.
@@ -53,7 +60,7 @@ func (s *UdiffStrategy) ToolDefinition() types.ToolDefinition {
 
 // Apply parses a unified diff from the input and applies it to the file via the
 // executor. Hunks are applied sequentially with a three-level fallback for
-// matching: exact → whitespace-insensitive → fuzzy (Levenshtein ≥ 80%).
+// matching: exact → whitespace-insensitive → fuzzy (Levenshtein ≥ configured threshold).
 func (s *UdiffStrategy) Apply(ctx context.Context, input json.RawMessage, exec executor.Executor) (*EditResult, error) {
 	var params struct {
 		Path string `json:"path"`
@@ -115,7 +122,7 @@ func (s *UdiffStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 	// Apply hunks sequentially, tracking cumulative offset from prior hunks.
 	offset := 0
 	for i, hunk := range hunks {
-		applied, newLines, newOffset, applyErr := applyHunk(lines, hunk, offset)
+		applied, newLines, newOffset, applyErr := s.applyHunk(lines, hunk, offset)
 		if applyErr != nil {
 			return &EditResult{
 				Path:    params.Path,
@@ -358,7 +365,7 @@ func parseRange(s string, prefix byte) (start, count int, err error) {
 // applyHunk attempts to apply a single hunk to the file lines. It tries three
 // strategies in order: exact match, whitespace-insensitive, and fuzzy. Returns
 // (applied, newLines, newOffset, error).
-func applyHunk(lines []string, h hunk, offset int) (bool, []string, int, error) {
+func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []string, int, error) {
 	oldContent := h.oldLines()
 	newContent := h.newLines()
 
@@ -416,7 +423,7 @@ func applyHunk(lines []string, h hunk, offset int) (bool, []string, int, error) 
 
 	// Strategy 3: Fuzzy match (Levenshtein-based).
 	bestPos, bestSim := findFuzzyMatch(lines, oldContent)
-	if bestSim >= fuzzyThreshold {
+	if bestSim >= s.fuzzyThreshold {
 		replacement := buildReplacement(h, lines, bestPos)
 		result := spliceLines(lines, bestPos, len(oldContent), replacement)
 		drift := bestPos - (h.oldStart - 1)

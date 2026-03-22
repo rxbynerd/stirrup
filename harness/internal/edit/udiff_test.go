@@ -10,7 +10,7 @@ import (
 )
 
 func TestUdiffStrategy_ToolDefinition(t *testing.T) {
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	def := s.ToolDefinition()
 
 	if def.Name != "apply_diff" {
@@ -52,7 +52,7 @@ func TestUdiffStrategy_ExactMatch_SingleHunk(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/file.txt
 +++ b/file.txt
 @@ -2,3 +2,3 @@
@@ -95,7 +95,7 @@ func TestUdiffStrategy_ExactMatch_MultiHunk(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// First hunk replaces line 2 (b->B), second hunk replaces line 8 (h->H).
 	// After first hunk, line count is unchanged, so offset stays 0.
 	diff := `--- a/file.txt
@@ -142,7 +142,7 @@ func TestUdiffStrategy_MultiHunk_OffsetAdjustment(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// First hunk adds a line after b (3 old -> 4 new = +1 offset).
 	// Second hunk at original line 8 should still find 'h' thanks to offset.
 	diff := `--- a/file.txt
@@ -190,7 +190,7 @@ func TestUdiffStrategy_WhitespaceInsensitiveFallback(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/file.txt
 +++ b/file.txt
 @@ -1,3 +1,3 @@
@@ -233,7 +233,7 @@ func TestUdiffStrategy_FuzzyFallback(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// The context lines have minor differences: "calculateTotl" vs "calculateTotal"
 	// but the removed/added lines should still apply.
 	diff := `--- a/calc.js
@@ -276,7 +276,7 @@ func TestUdiffStrategy_FuzzyFailure_BelowThreshold(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// Context lines bear no resemblance to the actual file.
 	diff := `--- a/file.txt
 +++ b/file.txt
@@ -315,7 +315,7 @@ func TestUdiffStrategy_NewFileCreation(t *testing.T) {
 		t.Fatalf("NewLocalExecutor: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- /dev/null
 +++ b/new_file.txt
 @@ -0,0 +1,3 @@
@@ -354,7 +354,7 @@ func TestUdiffStrategy_FileDeletion(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/doomed.txt
 +++ /dev/null
 @@ -1,3 +0,0 @@
@@ -391,7 +391,7 @@ func TestUdiffStrategy_HunkLineMismatch(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// Header claims 5 old lines but body only has 3.
 	diff := `--- a/file.txt
 +++ b/file.txt
@@ -425,7 +425,7 @@ func TestUdiffStrategy_MalformedDiff(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 
 	tests := []struct {
 		name string
@@ -473,7 +473,7 @@ func TestUdiffStrategy_MissingPath(t *testing.T) {
 		t.Fatalf("NewLocalExecutor: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{"diff": "@@ -1,1 +1,1 @@\n-old\n+new"}`)
 
 	result, err := s.Apply(context.Background(), input, exec)
@@ -495,7 +495,7 @@ func TestUdiffStrategy_InvalidJSON(t *testing.T) {
 		t.Fatalf("NewLocalExecutor: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	_, err = s.Apply(context.Background(), json.RawMessage(`{invalid`), exec)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
@@ -509,7 +509,7 @@ func TestUdiffStrategy_NonexistentFile(t *testing.T) {
 		t.Fatalf("NewLocalExecutor: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	diff := `--- a/missing.txt
 +++ b/missing.txt
 @@ -1,1 +1,1 @@
@@ -625,7 +625,7 @@ func TestUdiffStrategy_PureAddition(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	s := NewUdiffStrategy()
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
 	// Hunk that only adds lines (no context, no removals).
 	diff := `--- a/file.txt
 +++ b/file.txt

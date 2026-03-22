@@ -53,10 +53,10 @@ type MultiStrategy struct {
 }
 
 // NewMultiStrategy creates a MultiStrategy with the standard strategy set:
-// udiff, search-replace, and whole-file.
-func NewMultiStrategy() *MultiStrategy {
+// udiff (with the given fuzzy threshold), search-replace, and whole-file.
+func NewMultiStrategy(fuzzyThreshold float64) *MultiStrategy {
 	return &MultiStrategy{
-		udiff:         NewUdiffStrategy(),
+		udiff:         NewUdiffStrategy(fuzzyThreshold),
 		searchReplace: NewSearchReplaceStrategy(),
 		wholeFile:     NewWholeFileStrategy(),
 	}
