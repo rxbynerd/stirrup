@@ -5,6 +5,10 @@ import (
 	"strings"
 )
 
+// absoluteMaxTurns is the hard upper bound on MaxTurns enforced during
+// RunConfig validation, independent of what the caller requests.
+const absoluteMaxTurns = 100
+
 // RunConfig fully describes a single harness run. It is the composition root:
 // the control plane sends it (via TaskAssignment in the gRPC contract) and
 // the CLI builds it from flags/env.
@@ -275,6 +279,15 @@ var validBuiltInToolNames = map[string]bool{
 	"web_fetch":      true,
 }
 
+var readOnlyModes = map[string]bool{
+	"planning": true, "review": true, "research": true, "toil": true,
+}
+
+var writeCapableTools = map[string]bool{
+	"write_file":   true,
+	"run_command":  true,
+}
+
 // ModePreset is a named set of RunConfig overrides.
 type ModePreset struct {
 	Name             string                 `json:"name"`
@@ -307,16 +320,28 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
 
 	// Read-only modes must use deny-side-effects or ask-upstream
-	readOnlyModes := map[string]bool{
-		"planning": true, "review": true, "research": true, "toil": true,
-	}
 	if readOnlyModes[config.Mode] && config.PermissionPolicy.Type == "allow-all" {
 		errs = append(errs, fmt.Sprintf("mode %q requires a restrictive permission policy", config.Mode))
 	}
 
+	// Read-only modes must not enable write-capable tools
+	if readOnlyModes[config.Mode] {
+		if len(config.Tools.BuiltIn) == 0 {
+			errs = append(errs, fmt.Sprintf(
+				"read-only mode %q requires an explicit tools.builtIn list that excludes write tools (write_file, run_command)",
+				config.Mode))
+		} else {
+			for _, tool := range config.Tools.BuiltIn {
+				if writeCapableTools[tool] {
+					errs = append(errs, fmt.Sprintf("read-only mode %q must not enable write tool %q", config.Mode, tool))
+				}
+			}
+		}
+	}
+
 	// maxTurns must be bounded
-	if config.MaxTurns > 100 {
-		errs = append(errs, "maxTurns exceeds maximum of 100")
+	if config.MaxTurns > absoluteMaxTurns {
+		errs = append(errs, fmt.Sprintf("maxTurns exceeds maximum of %d", absoluteMaxTurns))
 	}
 	if config.MaxTurns <= 0 {
 		errs = append(errs, "maxTurns must be positive")

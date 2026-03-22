@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -12,9 +13,23 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// maxVerificationRetries is the maximum number of times the verifier can
-// request a retry before the run is terminated with verification_failed.
-const maxVerificationRetries = 3
+const (
+	// maxVerificationRetries is the maximum number of times the verifier can
+	// request a retry before the run is terminated with verification_failed.
+	maxVerificationRetries = 3
+
+	// defaultMaxContextTokens is the assumed context window size when the
+	// RunConfig does not specify one explicitly.
+	defaultMaxContextTokens = 200_000
+
+	// defaultReserveForResponse is the number of tokens reserved for the
+	// model's response within the context window.
+	defaultReserveForResponse = 64_000
+
+	// tokenEstimationDivisor is the approximate character-to-token ratio
+	// used by estimateCurrentTokens (≈4 characters per token).
+	tokenEstimationDivisor = 4
+)
 
 // Run executes the agentic loop as described in VERSION1.md:
 //
@@ -53,9 +68,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	// Emit ready event.
 	if l.emitReady {
-		_ = l.Transport.Emit(types.HarnessEvent{
+		if err := l.Transport.Emit(types.HarnessEvent{
 			Type: "ready",
-		})
+		}); err != nil {
+			log.Printf("warning: transport emit ready: %v", err)
+		}
 	}
 
 	// Outer verification loop.
@@ -108,16 +125,24 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 
 	// Finalise git.
-	_, _ = l.Git.Finalise(ctx)
+	if _, err := l.Git.Finalise(ctx); err != nil {
+		log.Printf("warning: git finalise: %v", err)
+		_ = l.Transport.Emit(types.HarnessEvent{
+			Type:    "warning",
+			Message: fmt.Sprintf("git finalise: %v", err),
+		})
+	}
 
 	// Record final cost in trace.
 	l.Trace.RecordCost(costTracker.CurrentCost())
 
 	// Emit done event.
-	_ = l.Transport.Emit(types.HarnessEvent{
+	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:       "done",
 		StopReason: outcome,
-	})
+	}); err != nil {
+		log.Printf("warning: transport emit done: %v", err)
+	}
 
 	// Finish trace.
 	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
@@ -167,14 +192,14 @@ func (l *AgenticLoop) runInnerLoop(
 
 		// Prepare context (compact if needed).
 		currentTokens := estimateCurrentTokens(messages)
-		maxTokens := 200000 // default context window
+		maxTokens := defaultMaxContextTokens
 		if config.ContextStrategy.MaxTokens > 0 {
 			maxTokens = config.ContextStrategy.MaxTokens
 		}
 		preparedMessages, err := l.Context.Prepare(ctx, messages, contextpkg.TokenBudget{
 			MaxTokens:          maxTokens,
 			CurrentTokens:      currentTokens,
-			ReserveForResponse: 64000,
+			ReserveForResponse: defaultReserveForResponse,
 		})
 		if err != nil {
 			return messages, "error"
@@ -208,7 +233,7 @@ func (l *AgenticLoop) runInnerLoop(
 			System:      systemPrompt,
 			Messages:    preparedMessages,
 			Tools:       l.Tools.List(),
-			MaxTokens:   64000,
+			MaxTokens:   defaultReserveForResponse,
 			Temperature: 0.1,
 		})
 		if err != nil {
@@ -293,18 +318,33 @@ func (l *AgenticLoop) runInnerLoop(
 				IsError:   !success,
 			})
 
-			_ = l.Transport.Emit(types.HarnessEvent{
+			if err := l.Transport.Emit(types.HarnessEvent{
 				Type:      "tool_result",
 				ToolUseID: call.ID,
 				Content:   output,
-			})
+			}); err != nil {
+				log.Printf("warning: transport emit tool_result: %v", err)
+			}
 		}
 
 		// Append tool results.
 		messages = appendToolResults(messages, toolResults)
 
+		// Re-check budget after tool results are appended. This prevents the
+		// next turn from sending an over-budget context to the provider.
+		budgetCheck = costTracker.CheckBudget(config.MaxCostBudget, config.MaxTokenBudget)
+		if !budgetCheck.WithinBudget {
+			return messages, "budget_exceeded"
+		}
+
 		// Git checkpoint after tool use.
-		_ = l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls)))
+		if err := l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls))); err != nil {
+			log.Printf("warning: git checkpoint: %v", err)
+			_ = l.Transport.Emit(types.HarnessEvent{
+				Type:    "warning",
+				Message: fmt.Sprintf("git checkpoint: %v", err),
+			})
+		}
 	}
 
 	// Reached max turns.
@@ -370,10 +410,15 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 
 // finishWithError records an error outcome and finishes the trace.
 func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.RunTrace, error) {
-	_ = l.Transport.Emit(types.HarnessEvent{
+	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
 		Message: err.Error(),
-	})
-	runTrace, _ := l.Trace.Finish(ctx, "error")
+	}); emitErr != nil {
+		log.Printf("warning: transport emit error event: %v", emitErr)
+	}
+	runTrace, traceErr := l.Trace.Finish(ctx, "error")
+	if traceErr != nil {
+		log.Printf("warning: trace finish: %v", traceErr)
+	}
 	return runTrace, err
 }

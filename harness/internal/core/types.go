@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -215,10 +216,12 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				currentText = ""
 			}
 			currentText += event.Text
-			_ = tp.Emit(types.HarnessEvent{
+			if err := tp.Emit(types.HarnessEvent{
 				Type: "text_delta",
 				Text: event.Text,
-			})
+			}); err != nil {
+				log.Printf("warning: transport emit text_delta: %v", err)
+			}
 
 		case "tool_call":
 			// Flush any accumulated text block.
@@ -294,9 +297,9 @@ func estimateCurrentTokens(messages []types.Message) int {
 	total := 0
 	for _, msg := range messages {
 		for _, block := range msg.Content {
-			total += len(block.Text) / 4
-			total += len(block.Content) / 4
-			total += len(block.Input) / 4
+			total += len(block.Text) / tokenEstimationDivisor
+			total += len(block.Content) / tokenEstimationDivisor
+			total += len(block.Input) / tokenEstimationDivisor
 		}
 	}
 	if total == 0 {

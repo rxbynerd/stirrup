@@ -130,6 +130,7 @@ func TestValidateRunConfig_ReadOnlyModeWithDenySideEffects(t *testing.T) {
 	c := validConfig()
 	c.Mode = "review"
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory", "search_files"}}
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("deny-side-effects should be accepted for read-only mode, got: %v", err)
 	}
@@ -272,5 +273,68 @@ func TestValidateRunConfig_MultipleErrors(t *testing.T) {
 	}
 	if !strings.Contains(errStr, "timeout") {
 		t.Error("expected error to mention timeout violation")
+	}
+}
+
+func TestValidateRunConfig_ReadOnlyModeWithWriteToolInList(t *testing.T) {
+	writeTools := []string{"write_file", "run_command"}
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		for _, tool := range writeTools {
+			t.Run(fmt.Sprintf("%s/%s", mode, tool), func(t *testing.T) {
+				c := validConfig()
+				c.Mode = mode
+				c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+				c.Tools = ToolsConfig{BuiltIn: []string{"read_file", tool}}
+				err := ValidateRunConfig(c)
+				if err == nil {
+					t.Fatalf("expected error for %s mode with %s tool", mode, tool)
+				}
+				errStr := err.Error()
+				if !strings.Contains(errStr, "read-only mode") || !strings.Contains(errStr, tool) {
+					t.Errorf("expected error mentioning read-only mode and %q, got: %v", tool, err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateRunConfig_ReadOnlyModeWithNoExplicitToolList(t *testing.T) {
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			// Tools.BuiltIn left nil (default: all tools enabled)
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for %s mode with no explicit tool list", mode)
+			}
+			if !strings.Contains(err.Error(), "requires an explicit tools.builtIn list") {
+				t.Errorf("expected error about explicit tools.builtIn list, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_ReadOnlyModeWithOnlyReadTools(t *testing.T) {
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory", "search_files"}}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for %s mode with read-only tools, got: %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_ExecutionModeWithWriteTools(t *testing.T) {
+	c := validConfig()
+	c.Mode = "execution"
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "write_file", "run_command"}}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected no error for execution mode with write tools, got: %v", err)
 	}
 }
