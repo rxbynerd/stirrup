@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
@@ -117,5 +119,226 @@ func writeJSONFile(t *testing.T, path string, v any) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// --- parseDate tests ---
+
+func TestParseDate_RFC3339(t *testing.T) {
+	got, err := parseDate("2025-03-15T10:30:00Z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := time.Date(2025, 3, 15, 10, 30, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("parseDate(RFC3339) = %v, want %v", got, want)
+	}
+}
+
+func TestParseDate_DateOnly(t *testing.T) {
+	got, err := parseDate("2025-03-15")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := time.Date(2025, 3, 15, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("parseDate(date-only) = %v, want %v", got, want)
+	}
+}
+
+func TestParseDate_Invalid(t *testing.T) {
+	_, err := parseDate("not-a-date")
+	if err == nil {
+		t.Fatal("expected error for invalid date")
+	}
+}
+
+func TestParseDate_EmptyString(t *testing.T) {
+	_, err := parseDate("")
+	if err == nil {
+		t.Fatal("expected error for empty string")
+	}
+}
+
+// --- parseDuration tests ---
+
+func TestParseDuration_GoFormat(t *testing.T) {
+	cases := []struct {
+		input string
+		want  time.Duration
+	}{
+		{"24h", 24 * time.Hour},
+		{"30m", 30 * time.Minute},
+		{"1h30m", 90 * time.Minute},
+		{"500ms", 500 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		got, err := parseDuration(tc.input)
+		if err != nil {
+			t.Errorf("parseDuration(%q): unexpected error: %v", tc.input, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("parseDuration(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestParseDuration_Days(t *testing.T) {
+	got, err := parseDuration("7d")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := 7 * 24 * time.Hour
+	if got != want {
+		t.Errorf("parseDuration(7d) = %v, want %v", got, want)
+	}
+}
+
+func TestParseDuration_FractionalDays(t *testing.T) {
+	got, err := parseDuration("0.5d")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := 12 * time.Hour
+	if got != want {
+		t.Errorf("parseDuration(0.5d) = %v, want %v", got, want)
+	}
+}
+
+func TestParseDuration_Invalid(t *testing.T) {
+	_, err := parseDuration("notaduration")
+	if err == nil {
+		t.Fatal("expected error for invalid duration")
+	}
+}
+
+func TestParseDuration_BadDays(t *testing.T) {
+	_, err := parseDuration("abcd")
+	if err == nil {
+		t.Fatal("expected error for non-numeric days suffix")
+	}
+}
+
+// --- mineFailureTasks tests ---
+
+func TestMineFailureTasks_FiltersNonSuccess(t *testing.T) {
+	recordings := []types.RunRecording{
+		{
+			RunID:  "r1",
+			Config: types.RunConfig{Prompt: "fix bug A", Mode: "execution"},
+			FinalOutcome: types.RunTrace{
+				ID:      "r1",
+				Outcome: "success",
+			},
+		},
+		{
+			RunID:  "r2",
+			Config: types.RunConfig{Prompt: "fix bug B", Mode: "execution"},
+			FinalOutcome: types.RunTrace{
+				ID:      "r2",
+				Outcome: "error",
+			},
+		},
+		{
+			RunID:  "r3",
+			Config: types.RunConfig{Prompt: "fix bug C", Mode: "planning"},
+			FinalOutcome: types.RunTrace{
+				ID:      "r3",
+				Outcome: "max_turns",
+			},
+		},
+		{
+			RunID:  "r4",
+			Config: types.RunConfig{Prompt: "fix bug D", Mode: "execution"},
+			FinalOutcome: types.RunTrace{
+				ID:      "r4",
+				Outcome: "success",
+			},
+		},
+	}
+
+	tasks := mineFailureTasks(recordings, 0)
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2", len(tasks))
+	}
+
+	if tasks[0].Prompt != "fix bug B" {
+		t.Errorf("task[0].Prompt = %q, want %q", tasks[0].Prompt, "fix bug B")
+	}
+	if tasks[0].Mode != "execution" {
+		t.Errorf("task[0].Mode = %q, want %q", tasks[0].Mode, "execution")
+	}
+	if tasks[0].Judge.Type != "test-command" {
+		t.Errorf("task[0].Judge.Type = %q, want %q", tasks[0].Judge.Type, "test-command")
+	}
+	if tasks[0].Judge.Command != "go test ./..." {
+		t.Errorf("task[0].Judge.Command = %q, want %q", tasks[0].Judge.Command, "go test ./...")
+	}
+
+	if tasks[1].Prompt != "fix bug C" {
+		t.Errorf("task[1].Prompt = %q, want %q", tasks[1].Prompt, "fix bug C")
+	}
+	if tasks[1].Mode != "planning" {
+		t.Errorf("task[1].Mode = %q, want %q", tasks[1].Mode, "planning")
+	}
+}
+
+func TestMineFailureTasks_RespectsLimit(t *testing.T) {
+	recordings := []types.RunRecording{
+		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "error"}},
+		{RunID: "r2", Config: types.RunConfig{Prompt: "b"}, FinalOutcome: types.RunTrace{Outcome: "max_turns"}},
+		{RunID: "r3", Config: types.RunConfig{Prompt: "c"}, FinalOutcome: types.RunTrace{Outcome: "error"}},
+	}
+
+	tasks := mineFailureTasks(recordings, 2)
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2", len(tasks))
+	}
+}
+
+func TestMineFailureTasks_NoFailures(t *testing.T) {
+	recordings := []types.RunRecording{
+		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "success"}},
+	}
+
+	tasks := mineFailureTasks(recordings, 0)
+	if len(tasks) != 0 {
+		t.Fatalf("got %d tasks, want 0", len(tasks))
+	}
+}
+
+// --- buildDriftReport tests ---
+
+func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
+	current := types.TraceMetrics{
+		Count:       10,
+		PassRate:    0.80,
+		MeanCost:    0.50,
+		MeanTurns:   5.0,
+		MeanTokens:  1000,
+		P50Duration: 200,
+		P95Duration: 500,
+	}
+	baseline := types.TraceMetrics{
+		Count:       10,
+		PassRate:    0.90,
+		MeanCost:    0.40,
+		MeanTurns:   4.0,
+		MeanTokens:  900,
+		P50Duration: 180,
+		P95Duration: 450,
+	}
+
+	report := buildDriftReport(current, baseline)
+
+	if math.Abs(report.Deltas.PassRateDelta-(-0.10)) > 0.001 {
+		t.Errorf("PassRateDelta = %f, want -0.10", report.Deltas.PassRateDelta)
+	}
+	if math.Abs(report.Deltas.MeanCostDelta-0.10) > 0.001 {
+		t.Errorf("MeanCostDelta = %f, want 0.10", report.Deltas.MeanCostDelta)
+	}
+	if math.Abs(report.Deltas.MeanTurnsDelta-1.0) > 0.001 {
+		t.Errorf("MeanTurnsDelta = %f, want 1.0", report.Deltas.MeanTurnsDelta)
 	}
 }
