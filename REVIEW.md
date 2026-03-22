@@ -47,22 +47,22 @@ GitHub Actions at `.github/workflows/ci.yml` covers `go test` for types and harn
 
 ### P1 — Fix before production use
 
-**Token estimation uses crude `/4` heuristic** (`core/loop.go:297`)
-The `estimateCurrentTokens` function divides character count by 4. It doesn't account for system prompt size, tool definitions, JSON structural overhead, or the difference between code and natural language tokenization. Impact: budget underreporting on runs with many tools or large context. Could cause context window overflows that surface as opaque provider errors rather than clean budget breaches.
+~~**Token estimation uses crude `/4` heuristic**~~ **RESOLVED**
+Token estimation now accounts for per-message overhead (4 tokens), per-block overhead (3 tokens), tool-related metadata (IDs, names, ToolUseIDs), system prompt tokens, and tool definition tokens. Both call sites in the loop (context preparation and cost tracking) include all three sources. Tests cover the overhead constants.
 
-**Budget not re-checked after tool results** (`core/loop.go:304`)
-Tool results are appended to message history but budget enforcement only runs at the *start* of each turn. A tool returning massive output (e.g., reading a large file) won't trigger a budget check before the next provider call. The provider may reject the request with a context-length error instead of the harness producing a clean budget-exceeded outcome.
+~~**Budget not re-checked after tool results**~~ **RESOLVED**
+Budget is now re-checked after tool results are appended (before git checkpoint), returning `budget_exceeded` immediately if breached.
 
-**Read-only mode validation is incomplete** (`types/runconfig.go:310-315`)
-`ValidateRunConfig` checks that non-execution modes use restrictive permission policies, but doesn't validate that write-capable tools (`write_file`, `run_command`) are disabled or that the executor type is read-only compatible. A misconfigured read-only mode could still modify files.
+~~**Read-only mode validation is incomplete**~~ **RESOLVED**
+`ValidateRunConfig` now requires read-only modes to provide an explicit `tools.builtIn` list that excludes `write_file` and `run_command`. Four new test cases cover all branches.
 
-**Silent error suppression in the loop** (`core/loop.go` various locations)
-`Transport.Emit()`, `Git.Setup()`/`Git.Finalise()`, and `Trace.RecordTurn()` errors are discarded with `_`. Git errors are the most concerning — if a checkpoint commit silently fails, the agent believes its changes are persisted when they aren't. These should at minimum be logged, even if non-fatal.
+~~**Silent error suppression in the loop**~~ **RESOLVED**
+All previously-suppressed errors are now logged via `log.Printf`. Git checkpoint/finalise errors also emit best-effort warning events via transport.
 
 ### P2 — Address soon
 
-**FollowUpLoop is untested** (`core/loop.go:322-369`)
-The follow-up request handling code path has zero test coverage. It's a separate function from the main loop with its own control flow.
+~~**FollowUpLoop is untested**~~ **RESOLVED**
+Four tests added in `followup_test.go`: zero grace period, follow-up arrival, grace expiry, and context cancellation.
 
 **JSON Schema validator is simplified** (`security/inputvalidator.go`)
 The Phase 1 validator supports `type`, `required`, `additionalProperties`, and `properties` — but not `$ref`, `oneOf`, `anyOf`, `allOf`, or `format`. Noted with a TODO suggesting `santhosh-tekuri/jsonschema`. MCP tools with complex schemas could pass invalid input through validation.
@@ -70,8 +70,8 @@ The Phase 1 validator supports `type`, `required`, `additionalProperties`, and `
 **MCP connection failure is fatal** (`core/factory.go:93-101`)
 If any configured MCP server is unavailable at startup, `BuildLoop` fails entirely. The harness cannot start even if the MCP server is optional for the task. Could degrade gracefully: log a warning, skip the server's tools, continue.
 
-**Magic numbers in core logic** (`core/loop.go`, `core/factory.go`)
-`200000` (context window default), `64000` (response token reserve), `3` (verification retries), `100` (max turns cap) are hardcoded inline. Should be named constants for clarity and to prevent accidental inconsistency.
+~~**Magic numbers in core logic**~~ **RESOLVED**
+Extracted to named constants: `defaultMaxContextTokens`, `defaultReserveForResponse`, `tokenEstimationDivisor`, `absoluteMaxTurns`, `messageOverheadTokens`, `blockOverheadTokens`, `toolDefinitionOverheadTokens`.
 
 **Pricing table hardcoded** (`core/types.go:281-289`)
 Model pricing lives in a function body. Will need manual updating as new models release — easy to forget. Consider externalising or at least centralising with the model name constants.
@@ -112,17 +112,11 @@ Without eval, there is no way to measure whether changes to prompts, context str
 
 ## Recommended Focus Areas (in order)
 
-### 1. Harden the loop (half day)
-- Extract magic numbers into named constants
-- Re-check budget after tool results before the next provider call
-- Log (don't discard) transport/git/trace errors — make them observable even if non-fatal
-- Add tests for `FollowUpLoop`
-- Tighten read-only mode validation to check tool enablement and executor type
+### ~~1. Harden the loop~~ DONE (2026-03-22)
 
-### 2. Token estimation improvement (half day)
-Replace the `/4` heuristic with something that accounts for system prompt size and tool definitions. Doesn't need a real tokenizer — even a calibrated multiplier based on message role and content type would be materially better than dividing everything by 4.
+### ~~2. Token estimation improvement~~ DONE (2026-03-22)
 
-### 3. Eval framework (primary remaining work)
+### 3. Eval framework (primary remaining work — next up)
 Suggested implementation order:
 1. `ReplayProvider` + `ReplayExecutor` (deterministic test doubles that replay recorded events)
 2. Minimal eval runner: takes a suite JSON, runs each task against replay doubles, collects traces

@@ -664,6 +664,92 @@ func TestDefaultModelPricing(t *testing.T) {
 	}
 }
 
+func TestEstimateCurrentTokens(t *testing.T) {
+	// Empty messages should return 1 (minimum).
+	if got := estimateCurrentTokens(nil); got != 1 {
+		t.Errorf("empty messages: want 1, got %d", got)
+	}
+
+	// A single text message: overhead + content tokens.
+	msgs := []types.Message{{
+		Role:    "user",
+		Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 40)}},
+	}}
+	got := estimateCurrentTokens(msgs)
+	// 4 (message overhead) + 3 (block overhead) + 10 (40/4 chars) = 17
+	if got != 17 {
+		t.Errorf("single text message: want 17, got %d", got)
+	}
+
+	// Tool use block includes ID, Name, and Input metadata.
+	toolMsg := []types.Message{{
+		Role: "assistant",
+		Content: []types.ContentBlock{{
+			Type:  "tool_use",
+			ID:    "toolu_1234567890", // 16 chars → 4 tokens
+			Name:  "read_file",        // 9 chars → 2 tokens
+			Input: json.RawMessage(`{"path":"/foo"}`), // 15 chars → 3 tokens
+		}},
+	}}
+	got = estimateCurrentTokens(toolMsg)
+	// 4 (msg) + 3 (block) + 4 (ID) + 2 (Name) + 3 (Input) = 16
+	if got != 16 {
+		t.Errorf("tool_use message: want 16, got %d", got)
+	}
+}
+
+func TestEstimateSystemPromptTokens(t *testing.T) {
+	prompt := strings.Repeat("a", 400) // 400 chars → 100 content tokens
+	got := estimateSystemPromptTokens(prompt)
+	// 100 + 4 (message overhead) = 104
+	if got != 104 {
+		t.Errorf("system prompt 400 chars: want 104, got %d", got)
+	}
+}
+
+func TestEstimateToolDefinitionTokens(t *testing.T) {
+	// No tools → 0.
+	if got := estimateToolDefinitionTokens(nil); got != 0 {
+		t.Errorf("no tools: want 0, got %d", got)
+	}
+
+	tools := []types.ToolDefinition{{
+		Name:        "read_file",                                        // 9 → 2
+		Description: "Reads a file from the filesystem",                 // 34 → 8
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`), // 35 → 8
+	}}
+	got := estimateToolDefinitionTokens(tools)
+	// 10 (overhead) + 2 + 8 + 8 = 28
+	if got != 28 {
+		t.Errorf("single tool: want 28, got %d", got)
+	}
+
+	// Multiple tools scale linearly.
+	tools = append(tools, tools[0])
+	got2 := estimateToolDefinitionTokens(tools)
+	if got2 != got*2 {
+		t.Errorf("two identical tools: want %d, got %d", got*2, got2)
+	}
+}
+
+func TestEstimateTokens_OverheadSignificance(t *testing.T) {
+	// With many short messages, overhead should dominate over content.
+	// 20 messages with tiny content.
+	msgs := make([]types.Message, 20)
+	for i := range msgs {
+		msgs[i] = types.Message{
+			Role:    "user",
+			Content: []types.ContentBlock{{Type: "text", Text: "ok"}},
+		}
+	}
+	got := estimateCurrentTokens(msgs)
+	// Each message: 4 (msg overhead) + 3 (block overhead) + 0 ("ok" is 2 chars → 0 at /4) = 7
+	// 20 * 7 = 140
+	if got != 140 {
+		t.Errorf("20 short messages: want 140, got %d", got)
+	}
+}
+
 func TestBuildLoop_InvalidConfig(t *testing.T) {
 	config := buildTestConfig()
 	config.MaxTurns = 200 // exceeds the maximum of 100

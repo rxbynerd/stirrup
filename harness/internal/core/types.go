@@ -292,18 +292,43 @@ func defaultModelPricing(model string) types.ModelPricing {
 	return types.ModelPricing{InputPer1M: 3.0, OutputPer1M: 15.0}
 }
 
-// estimateCurrentTokens provides a rough token count for the message history.
+// estimateCurrentTokens provides a calibrated token count for the message
+// history. It accounts for per-message structural overhead, per-block
+// overhead, and metadata fields (IDs, names) in addition to content.
 func estimateCurrentTokens(messages []types.Message) int {
 	total := 0
 	for _, msg := range messages {
+		total += messageOverheadTokens
 		for _, block := range msg.Content {
+			total += blockOverheadTokens
 			total += len(block.Text) / tokenEstimationDivisor
 			total += len(block.Content) / tokenEstimationDivisor
 			total += len(block.Input) / tokenEstimationDivisor
+			total += len(block.ID) / tokenEstimationDivisor
+			total += len(block.Name) / tokenEstimationDivisor
+			total += len(block.ToolUseID) / tokenEstimationDivisor
 		}
 	}
 	if total == 0 {
 		total = 1
+	}
+	return total
+}
+
+// estimateSystemPromptTokens estimates the token count for the system prompt.
+func estimateSystemPromptTokens(systemPrompt string) int {
+	return len(systemPrompt)/tokenEstimationDivisor + messageOverheadTokens
+}
+
+// estimateToolDefinitionTokens estimates the token count for tool definitions
+// that are sent alongside messages in each API call.
+func estimateToolDefinitionTokens(tools []types.ToolDefinition) int {
+	total := 0
+	for _, t := range tools {
+		total += toolDefinitionOverheadTokens
+		total += len(t.Name) / tokenEstimationDivisor
+		total += len(t.Description) / tokenEstimationDivisor
+		total += len(t.InputSchema) / tokenEstimationDivisor
 	}
 	return total
 }

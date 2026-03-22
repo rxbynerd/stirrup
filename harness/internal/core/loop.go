@@ -27,8 +27,20 @@ const (
 	defaultReserveForResponse = 64_000
 
 	// tokenEstimationDivisor is the approximate character-to-token ratio
-	// used by estimateCurrentTokens (≈4 characters per token).
+	// used by token estimation functions (≈4 characters per token).
 	tokenEstimationDivisor = 4
+
+	// messageOverheadTokens accounts for the JSON structure around each
+	// message (role field, content array wrapper, separators).
+	messageOverheadTokens = 4
+
+	// blockOverheadTokens accounts for the JSON structure around each
+	// content block (type field, object braces, separators).
+	blockOverheadTokens = 3
+
+	// toolDefinitionOverheadTokens accounts for the structural JSON
+	// wrapping each tool definition (type, function wrapper, field keys).
+	toolDefinitionOverheadTokens = 10
 )
 
 // Run executes the agentic loop as described in VERSION1.md:
@@ -190,8 +202,13 @@ func (l *AgenticLoop) runInnerLoop(
 			},
 		})
 
-		// Prepare context (compact if needed).
-		currentTokens := estimateCurrentTokens(messages)
+		// Prepare context (compact if needed). Token estimate includes
+		// system prompt and tool definitions — these consume context but
+		// aren't in the message history.
+		toolDefs := l.Tools.List()
+		currentTokens := estimateCurrentTokens(messages) +
+			estimateSystemPromptTokens(systemPrompt) +
+			estimateToolDefinitionTokens(toolDefs)
 		maxTokens := defaultMaxContextTokens
 		if config.ContextStrategy.MaxTokens > 0 {
 			maxTokens = config.ContextStrategy.MaxTokens
@@ -263,8 +280,10 @@ func (l *AgenticLoop) runInnerLoop(
 		lastStopReason = sr.StopReason
 
 		// Track token usage. Output tokens come from the stream; input tokens
-		// are estimated from the messages sent.
-		inputTokenEstimate := estimateCurrentTokens(preparedMessages)
+		// are estimated from the messages sent plus system prompt and tools.
+		inputTokenEstimate := estimateCurrentTokens(preparedMessages) +
+			estimateSystemPromptTokens(systemPrompt) +
+			estimateToolDefinitionTokens(toolDefs)
 		pricing := defaultModelPricing(selection.Model)
 		costTracker.RecordTurn(inputTokenEstimate, sr.OutputTokens, pricing)
 
