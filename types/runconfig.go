@@ -238,6 +238,7 @@ var validEditStrategyTypes = map[string]bool{
 	"whole-file":     true,
 	"search-replace": true,
 	"udiff":          true,
+	"multi":          true,
 }
 
 var validVerifierTypes = map[string]bool{
@@ -273,6 +274,7 @@ var validBuiltInToolNames = map[string]bool{
 	"write_file":     true,
 	"search_replace": true,
 	"apply_diff":     true,
+	"edit_file":      true,
 	"list_directory": true,
 	"search_files":   true,
 	"run_command":    true,
