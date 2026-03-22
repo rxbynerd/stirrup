@@ -16,7 +16,7 @@ stirrup/
     cmd/harness/main.go      # CLI entrypoint
     cmd/job/main.go          # K8s job entrypoint (gRPC to control plane)
     internal/
-      core/                  # AgenticLoop, factory, cost tracking, sub-agent spawning, stall detection
+      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, stall detection
       provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode templates
@@ -170,7 +170,7 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 - **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command` (shell exit code), `file-exists`, `file-contains` (regex), `composite` (`all`/`any`), and `diff-review` (stub). Path traversal prevention on all workspace-relative paths.
 - **Runner** (`eval/runner/`) — orchestrates suite execution: loads `EvalSuite` from JSON, creates temp workspaces, optionally clones repos at specific refs, invokes the harness binary, parses JSONL traces, applies judges. Sequential task execution. Errors per-task are captured without halting the suite.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness. Useful for testing new judge criteria against existing recordings.
-- **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets. Detects regressions (pass→fail/error) and improvements (fail/error→pass). Computes cost/turn deltas from `RunTrace`. Text formatter for human-readable output.
+- **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets. Detects regressions (pass→fail/error) and improvements (fail/error→pass). Computes turn deltas from `RunTrace`. Text formatter for human-readable output.
 - **CLI** (`eval/cmd/eval/`) — `run`, `compare`, `baseline`, `mine-failures`, `drift`, `compare-to-production` subcommands.
 
 ### Lakehouse (production feedback loop)
@@ -179,7 +179,7 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 - **FileStore adapter** (`eval/lakehouse/filestore.go`) — file-based TraceLakehouse implementation. Stores traces and recordings as JSON files. Supports filtering by time range, outcome, mode, model. Computes aggregate metrics with p50/p95 duration percentiles.
 - **`eval baseline`** — pulls aggregate metrics from a lakehouse for use as experiment baselines.
 - **`eval mine-failures`** — queries non-success recordings and generates EvalSuite JSON with test-command judges.
-- **`eval drift`** — compares metrics between two adjacent time windows, flags significant changes (pass rate >5pp drop, cost/turns >20% increase), exits 1 on drift.
+- **`eval drift`** — compares metrics between two adjacent time windows, flags significant changes (pass rate >5pp drop, turns >20% increase), exits 1 on drift.
 - **`eval compare-to-production`** — loads eval results and production metrics from lakehouse, builds `LabVsProductionReport`, prints comparison table.
 
 ### Sub-agent spawning
@@ -201,7 +201,7 @@ The `stallDetector` (`core/stall.go`) tracks consecutive identical tool calls an
 - **SecretStore**: resolves `secret://` references (env vars, files, AWS SSM via `secret://ssm:///param-name`). `AutoSecretStore` routes by scheme, only initialising SSM client when config refs require it. API keys never stored in RunConfig.
 - **LogScrubber**: regex-based redaction of 7 secret patterns in all log/trace output.
 - **Input validation**: JSON Schema validation on all tool inputs. Prototype pollution protection.
-- **RunConfig validation**: hard security invariants (read-only modes must use restrictive permissions, bounded maxTurns/timeout, FollowUpGrace ≤ 3600s, MaxCostBudget ≤ $100, MaxTokenBudget ≤ 50M).
+- **RunConfig validation**: hard security invariants (read-only modes must use restrictive permissions, bounded maxTurns/timeout, FollowUpGrace ≤ 3600s, MaxTokenBudget ≤ 50M).
 - **HTTP client timeouts**: all provider adapters (Anthropic, OpenAI, Bedrock) and MCP client use explicit HTTP clients with timeouts (120s streaming, 30s MCP) — never `http.DefaultClient`.
 - **Environment filtering**: command execution allowlists 27 safe env vars; blocks all API keys and cloud credentials.
 - **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.

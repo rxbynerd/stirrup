@@ -967,6 +967,51 @@ Every credential mint, session state transition, approval decision, and teardown
 - Workspace volumes are ephemeral and deleted on teardown. No persistent state leaks between sessions.
 - The control plane itself does not execute untrusted code. It only orchestrates — the harness does the execution, inside its sandbox.
 
+## Concerns delegated from Stirrup
+
+The following responsibilities were intentionally excluded from the harness and pushed up to the control plane. The harness is focused on autonomous task execution; these concerns are better served at the orchestration layer where the control plane has fleet-wide visibility and direct client interaction.
+
+### Cost estimation and budget enforcement
+
+Cost estimation at the agent layer is too late — by the time a task reaches the harness, the user has already decided it should run. Pre-session cost estimation (e.g. "this task will cost approximately $X based on historical data for similar prompts") belongs at the `CreateSession` boundary, where the control plane can:
+
+1. **Estimate before provisioning**: use historical trace data from the lakehouse (mean cost by mode, model, and prompt complexity) to surface an estimated cost to the client before committing resources.
+2. **Enforce budget caps**: the `max_cost_budget` field on `CreateSessionRequest` is enforced by the control plane, not the harness. The control plane monitors cumulative token usage (reported via harness events) and cancels the session if the estimated cost exceeds the budget.
+3. **Track actual costs**: the control plane enriches `RunTrace` with cost data after completion, using the provider's pricing at the time of the run. This avoids hardcoding pricing tables in the harness (which go stale as models are released/retired).
+
+The harness retains a `TokenTracker` for token budget enforcement (`maxTokenBudget`), as tokens are a provider-agnostic measure the harness can track without pricing knowledge. Cost (dollars) is a control plane concern.
+
+### Web Fetch tool
+
+The `web_fetch` built-in tool will move from the harness to the control plane, exposed to the harness as an MCP tool or a control plane-proxied tool call. Rationale:
+
+1. **Fleet-wide caching**: multiple harness instances fetching the same URL (documentation pages, API specs, etc.) can share a single cached response. The control plane maintains an HTTP cache keyed by URL, reducing redundant external requests across the fleet.
+2. **Centralised policy**: private IP blocking, domain allowlists/blocklists, rate limiting, and User-Agent management are enforced once at the control plane rather than in every harness instance.
+3. **Audit trail**: all external HTTP requests are logged centrally with the session ID, enabling compliance review and abuse detection.
+
+Until this migration is complete, the harness retains its current `web_fetch` implementation with private IP blocking and response size limits.
+
+### Eval as a system function
+
+The eval framework (`eval/` module) runs as a system function that the control plane invokes, rather than requiring a separate harness instance. The control plane can:
+
+1. **Schedule eval runs**: trigger eval suites on a cron schedule or after deployments, using the existing scheduler infrastructure.
+2. **Compare against production**: the control plane owns the trace lakehouse and can feed production data directly into `eval compare-to-production` and `eval drift` without the eval CLI needing lakehouse credentials.
+3. **Gate deployments**: the `eval-gate` CI job can call the control plane's eval endpoint, which runs suites, compares against baselines, and returns a pass/fail verdict for the deployment pipeline.
+
+The eval CLI and framework remain in the Stirrup repository as they are tightly coupled to harness types and judges, but the control plane is the intended entry point for production eval operations.
+
+### Model routing
+
+The harness implements `ModelRouter` (static, per-mode, dynamic) for turn-level model selection during a run. Fleet-level model routing decisions belong at the control plane:
+
+1. **A/B testing**: route a percentage of sessions to a new model or provider to measure impact before full rollout.
+2. **Cost optimisation**: route low-complexity tasks to cheaper models based on prompt analysis, historical data, or explicit client configuration.
+3. **Capacity management**: shift traffic between providers during outages or rate limit pressure.
+4. **Model lifecycle**: deprecate models fleet-wide by updating the control plane's routing policy, without redeploying harness images.
+
+The control plane sets the `provider` and `modelRouter` fields in the `RunConfig` it sends to the harness. The harness's `ModelRouter` handles turn-level decisions within those constraints.
+
 ## Implementation phases
 
 ### Phase 1: Local profile + core lifecycle

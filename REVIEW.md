@@ -67,23 +67,23 @@ Four tests added in `followup_test.go`: zero grace period, follow-up arrival, gr
 **JSON Schema validator is simplified** (`security/inputvalidator.go`)
 The Phase 1 validator supports `type`, `required`, `additionalProperties`, and `properties` — but not `$ref`, `oneOf`, `anyOf`, `allOf`, or `format`. Noted with a TODO suggesting `santhosh-tekuri/jsonschema`. MCP tools with complex schemas could pass invalid input through validation.
 
-**MCP connection failure is fatal** (`core/factory.go:93-101`)
-If any configured MCP server is unavailable at startup, `BuildLoop` fails entirely. The harness cannot start even if the MCP server is optional for the task. Could degrade gracefully: log a warning, skip the server's tools, continue.
+~~**MCP connection failure is fatal**~~ **RESOLVED** (`core/factory.go`)
+MCP connection failures now log a warning and skip the unavailable server's tools, rather than failing the entire `BuildLoop`.
 
 ~~**Magic numbers in core logic**~~ **RESOLVED**
 Extracted to named constants: `defaultMaxContextTokens`, `defaultReserveForResponse`, `tokenEstimationDivisor`, `absoluteMaxTurns`, `messageOverheadTokens`, `blockOverheadTokens`, `toolDefinitionOverheadTokens`.
 
-**Pricing table hardcoded** (`core/types.go:281-289`)
-Model pricing lives in a function body. Will need manual updating as new models release — easy to forget. Consider externalising or at least centralising with the model name constants.
+~~**Pricing table hardcoded**~~ **RESOLVED**
+Cost estimation removed from Stirrup entirely. Pricing is a control plane concern — see CONTROL_PLANE.md "Concerns delegated from Stirrup" section. The harness retains a `TokenTracker` for token budget enforcement only.
 
 ### P3 — Low priority
 
 - ~~No rate limiting on tool execution — model could call tools in a tight loop~~ **RESOLVED** — stall detection (`core/stall.go`) terminates after 3 repeated identical calls or 5 consecutive failures
-- HTTP error response bodies from providers are not size-limited
-- Fuzzy diff threshold hardcoded at 0.80 in udiff strategy — not configurable
-- Container executor `putArchive` path parameter not URL-encoded — would fail on special characters
-- Web fetch User-Agent `stirrup-harness/1.0` is minor information disclosure
-- `AskUpstreamPolicy` has no timeout on upstream response (mitigated by caller's context timeout, but could be more explicit)
+- ~~HTTP error response bodies from providers are not size-limited~~ **RESOLVED** — Anthropic and OpenAI provider adapters now cap error body reads to 1MB via `io.LimitReader`
+- ~~Fuzzy diff threshold hardcoded at 0.80 in udiff strategy — not configurable~~ **RESOLVED** — threshold is now configurable via `UdiffStrategy.FuzzyThreshold` (default 0.80)
+- ~~Container executor `putArchive` path parameter not URL-encoded — would fail on special characters~~ **RESOLVED** — `putArchive` and `getArchive` now use `url.PathEscape` on the path parameter
+- ~~Web fetch User-Agent `stirrup-harness/1.0` is minor information disclosure~~ **DEFERRED** — Web Fetch tool will move to the control plane for fleet-wide caching. See CONTROL_PLANE.md "Concerns delegated from Stirrup" section.
+- ~~`AskUpstreamPolicy` has no timeout on upstream response~~ **RESOLVED** — `AskUpstreamPolicy` now enforces a configurable timeout (default 5 minutes) with context deadline
 
 ---
 
@@ -98,7 +98,7 @@ The eval framework is now implemented with the following components:
 - **Judge system** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command`, `file-exists`, `file-contains`, `composite` (with `all`/`any` require), and `diff-review` (stub). Path traversal prevention. 19 tests.
 - **Eval runner** (`eval/runner/`) — orchestrates suite execution: validates suite, creates temp workspaces, clones repos, invokes harness binary, parses JSONL traces, applies judges. Supports `DryRun` mode.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness.
-- **Comparison reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets, flags regressions (pass→fail) and improvements (fail→pass), computes cost/turn deltas and aggregate metrics. Human-readable text formatter. 8 tests.
+- **Comparison reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets, flags regressions (pass→fail) and improvements (fail→pass), computes turn deltas and aggregate metrics. Human-readable text formatter. 8 tests.
 - **CLI** (`eval/cmd/eval/`) — `eval run --suite <path>` and `eval compare --current <path> --baseline <path>` subcommands.
 
 **Still missing** (deferred to later phases):
@@ -151,8 +151,7 @@ Mine 10-20 eval tasks from a real repo's closed PRs using `eval mine-failures`. 
 ### 6. Full JSON Schema validation
 Replace the simplified input validator with `santhosh-tekuri/jsonschema` or equivalent. Becomes important as MCP tool schemas grow more complex (nested objects, `oneOf` unions, format constraints).
 
-### 7. Graceful MCP degradation
-Change `BuildLoop` to warn and continue when an MCP server is unreachable, rather than failing the entire loop construction. The harness should be usable without optional remote tool servers.
+### ~~7. Graceful MCP degradation~~ DONE (2026-03-22)
 
 ---
 
@@ -166,7 +165,7 @@ Change `BuildLoop` to warn and continue when an MCP server is unreachable, rathe
 | All passing | Yes |
 | External dep families | 5 (AWS SDK, gRPC, protobuf, OTel, OTel exporter) |
 | Known vulnerabilities | 0 |
-| TODOs in production code | 1 (input validator — acknowledged) |
+| TODOs in production code | 1 (JSON Schema input validator — acknowledged) |
 | VERSION1.md components | 12/12 implemented |
 | VERSION1.md phases | 7/7 complete |
 | CI | GitHub Actions (build, test, eval gate, container publish) |
