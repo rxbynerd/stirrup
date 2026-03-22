@@ -1880,16 +1880,16 @@ Deliver: eval runner, first eval suite, CI pipeline with tier 1 + tier 2 gates.
 6. Mine 10-20 eval tasks from a real repo's closed PRs → first eval suite
 7. CI pipeline: tier 1 (unit tests with replay) + tier 2 (smoke eval) as PR gates
 
-### Phase 6: Production feedback loop (week 5-6)
+### Phase 6: Production feedback loop (week 5-6) ✅
 
 Deliver: lakehouse integration, failure mining, drift detection.
 
-1. Define `TraceLakehouse` interface
-2. Implement first concrete adapter (Postgres JSONB or BigQuery — depends on control plane choices)
-3. `eval baseline` command: pull production metrics as experiment baselines
-4. `eval mine-failures` command: turn production failures into eval tasks
-5. `eval drift` command: detect metric changes over time windows
-6. Tier 3 (full eval) as release gate in CI
+1. ✅ Define `TraceLakehouse` interface (`types/lakehouse.go`)
+2. ✅ Implement first concrete adapter — file-based (`eval/lakehouse/filestore.go`). Postgres/BigQuery adapters can be added behind the same interface when control plane choices are made.
+3. ✅ `eval baseline` command: pull production metrics as experiment baselines
+4. ✅ `eval mine-failures` command: turn production failures into eval tasks
+5. ✅ `eval drift` command: detect metric changes over time windows
+6. ✅ Tier 3 (full eval) as release gate in CI (`eval-gate` job in `.github/workflows/ci.yml`)
 
 ### Phase 7: Remaining features + security hardening (ongoing)
 

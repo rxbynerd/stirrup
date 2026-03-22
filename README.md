@@ -105,10 +105,13 @@ stirrup/
       trace/                 # TraceEmitter: telemetry and logging
       security/              # SecretStore, LogScrubber, input validation
   eval/                      # Evaluation framework
-    cmd/eval/main.go         # CLI entrypoint (run, compare)
+    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift)
     judge/                   # Judge system (test-command, file-exists, file-contains, composite)
     runner/                  # Suite runner and replay evaluator
     reporter/                # Comparison reporter with text formatting
+    lakehouse/               # TraceLakehouse adapters (file-based)
+    suites/                  # Eval suite definitions (JSON)
+    baselines/               # Stored baseline results for CI comparison
 ```
 
 ## Security

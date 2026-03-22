@@ -32,10 +32,13 @@ stirrup/
       security/              # SecretStore (env, file, AWS SSM), LogScrubber, input validation
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
   eval/                      # Eval framework
-    cmd/eval/main.go         # CLI entrypoint for eval commands (run, compare)
+    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift)
     judge/                   # Judge system: test-command, file-exists, file-contains, composite
     runner/                  # Suite runner (live + replay) and replay evaluator
     reporter/                # Comparison reporter: diffs two SuiteResults, text formatting
+    lakehouse/               # TraceLakehouse adapters: file-based (FileStore)
+    suites/                  # Eval suite definitions (JSON)
+    baselines/               # Stored baseline results for CI comparison
 ```
 
 ## Running
@@ -78,6 +81,15 @@ go build -o stirrup-eval ./eval/cmd/eval
 
 # Compare two eval results
 ./stirrup-eval compare --current results/result.json --baseline baseline/result.json
+
+# Pull production metrics as a baseline
+./stirrup-eval baseline --lakehouse path/to/lakehouse [--after 2026-03-01] [--mode execution] [--output metrics.json]
+
+# Mine failures into eval tasks
+./stirrup-eval mine-failures --lakehouse path/to/lakehouse [--after 2026-03-01] [--limit 20] [--output suite.json]
+
+# Detect metric drift between time windows
+./stirrup-eval drift --lakehouse path/to/lakehouse --window 7d [--compare-window 7d] [--mode execution]
 ```
 
 ## Architecture
@@ -156,7 +168,15 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 - **Runner** (`eval/runner/`) — orchestrates suite execution: loads `EvalSuite` from JSON, creates temp workspaces, optionally clones repos at specific refs, invokes the harness binary, parses JSONL traces, applies judges. Sequential task execution. Errors per-task are captured without halting the suite.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness. Useful for testing new judge criteria against existing recordings.
 - **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets. Detects regressions (pass→fail/error) and improvements (fail/error→pass). Computes cost/turn deltas from `RunTrace`. Text formatter for human-readable output.
-- **CLI** (`eval/cmd/eval/`) — `run` (execute suite, write results JSON) and `compare` (diff two results, exit 1 on regressions) subcommands.
+- **CLI** (`eval/cmd/eval/`) — `run`, `compare`, `baseline`, `mine-failures`, `drift` subcommands.
+
+### Lakehouse (production feedback loop)
+
+- **TraceLakehouse interface** (`types/lakehouse.go`) — abstracts storage and querying of production run data. Any backing store (files, Postgres, BigQuery) can implement this interface.
+- **FileStore adapter** (`eval/lakehouse/filestore.go`) — file-based TraceLakehouse implementation. Stores traces and recordings as JSON files. Supports filtering by time range, outcome, mode, model. Computes aggregate metrics with p50/p95 duration percentiles.
+- **`eval baseline`** — pulls aggregate metrics from a lakehouse for use as experiment baselines.
+- **`eval mine-failures`** — queries non-success recordings and generates EvalSuite JSON with test-command judges.
+- **`eval drift`** — compares metrics between two adjacent time windows, flags significant changes (pass rate >5pp drop, cost/turns >20% increase), exits 1 on drift.
 
 ## Security Foundations
 
@@ -203,6 +223,7 @@ buf lint                 # Lint proto files
 
 GitHub Actions at `.github/workflows/ci.yml`:
 - **verify** job: runs `go test` for types, harness, and eval modules, builds the harness and eval binaries (on every push and PR)
+- **eval-gate** job: builds binaries, runs eval suites from `eval/suites/`, compares against baselines in `eval/baselines/`, uploads results as artifacts (on main branch push, after verify passes)
 - **publish-container** job: builds and pushes Docker image to `ghcr.io/rxbynerd/stirrup` (on main branch push only, after verify passes)
 
 ### Known issue: gopls false positives

@@ -1,6 +1,6 @@
 # Stirrup Code Review — 2026-03-22
 
-Comprehensive review of the Go harness codebase on the `golang` branch. All 12 VERSION1.md components are fully implemented. 400+ tests pass at 100% package-level coverage. Zero known vulnerabilities.
+Comprehensive review of the Go harness codebase on the `golang` branch. All 12 VERSION1.md components are fully implemented. 580+ tests pass at 100% package-level coverage. Zero known vulnerabilities.
 
 ## Overall Assessment
 
@@ -39,7 +39,7 @@ Not just present but thoughtful:
 Both stdio (NDJSON) and gRPC (bidi streaming) are production-ready with proper secret scrubbing and complex nested `RunConfig` proto translation. The K8s job entrypoint (`cmd/job/main.go`) correctly implements the dial-wait-run lifecycle.
 
 ### CI
-GitHub Actions at `.github/workflows/ci.yml` covers `go test` for types and harness modules, `go build` for the harness binary, and container image publish to GHCR on main branch pushes.
+GitHub Actions at `.github/workflows/ci.yml` covers `go test` for types, harness, and eval modules, `go build` for the harness and eval binaries, container image publish to GHCR on main branch pushes, and a tier 3 eval gate that runs eval suites when available.
 
 ---
 
@@ -102,16 +102,25 @@ The eval framework is now implemented with the following components:
 - **CLI** (`eval/cmd/eval/`) — `eval run --suite <path>` and `eval compare --current <path> --baseline <path>` subcommands.
 
 **Still missing** (deferred to later phases):
-- `eval mine-failures` and `eval drift` CLI commands (require lakehouse integration, Phase 6)
 - First eval suite mined from real repo PRs (10-20 tasks)
-- CI integration: running eval suite as a gate on harness changes
 - `diff-review` judge implementation (requires LLM judge integration)
+- Postgres/BigQuery lakehouse adapter (file-based adapter implemented; production adapter depends on control plane choices)
+
+### ~~Lakehouse Integration (Phase 6)~~ **RESOLVED** (2026-03-22)
+
+Production feedback loop infrastructure is now implemented:
+
+- **TraceLakehouse interface** (`types/lakehouse.go`) — storage and querying abstraction for production run data. Extended `TraceFilter` with time bounds, `TraceMetrics` with percentile durations, `DriftReport` with delta tracking.
+- **FileStore adapter** (`eval/lakehouse/filestore.go`) — file-based TraceLakehouse implementation. JSON files in `traces/` and `recordings/` directories. Supports all filter fields, aggregate metrics with p50/p95 percentiles. 20 tests.
+- **`eval baseline`** command — pulls production metrics from a lakehouse, outputs TraceMetrics as JSON or human-readable summary.
+- **`eval mine-failures`** command — queries failed recordings, constructs EvalTasks with default test-command judges, outputs an EvalSuite JSON.
+- **`eval drift`** command — compares metrics between two adjacent time windows, flags significant changes (pass rate drop >5pp, cost/turns increase >20%). Exit code 1 on drift.
+- **Tier 3 eval CI gate** — `eval-gate` job in CI runs eval suites on main branch pushes, compares against stored baselines, uploads results as artifacts.
 
 ### Other gaps
 
 - **No end-to-end smoke test** with a real provider (even a single recorded interaction would catch wire-format regressions)
 - **Sub-agent spawning** (Phase 7 per VERSION1.md)
-- **Lakehouse integration** (Phase 6 — production feedback loops)
 
 ---
 
@@ -123,13 +132,15 @@ The eval framework is now implemented with the following components:
 
 ### ~~3. Eval framework~~ DONE (2026-03-22)
 
-### 4. Mine first eval suite and add CI gate
-Mine 10-20 eval tasks from a real repo's closed PRs. Add tier 1 (replay-based unit tests) and tier 2 (smoke eval) as CI gates.
+### ~~4. Lakehouse integration~~ DONE (2026-03-22)
 
-### 5. Full JSON Schema validation
+### 5. Mine first eval suite
+Mine 10-20 eval tasks from a real repo's closed PRs using `eval mine-failures`. Add tier 1 (replay-based unit tests) and tier 2 (smoke eval) as CI gates. The CI infrastructure is in place — it just needs suite files.
+
+### 6. Full JSON Schema validation
 Replace the simplified input validator with `santhosh-tekuri/jsonschema` or equivalent. Becomes important as MCP tool schemas grow more complex (nested objects, `oneOf` unions, format constraints).
 
-### 6. Graceful MCP degradation
+### 7. Graceful MCP degradation
 Change `BuildLoop` to warn and continue when an MCP server is unreachable, rather than failing the entire loop construction. The harness should be usable without optional remote tool servers.
 
 ---
@@ -138,13 +149,13 @@ Change `BuildLoop` to warn and continue when an MCP server is unreachable, rathe
 
 | Metric | Value |
 |--------|-------|
-| Internal packages | 15 (harness) + 4 (eval) = 19 |
-| Packages with tests | 19/19 (100%) |
-| Test functions | ~440+ |
+| Internal packages | 15 (harness) + 5 (eval) = 20 |
+| Packages with tests | 20/20 (100%) |
+| Test functions | ~585 |
 | All passing | Yes |
 | External dep families | 5 (AWS SDK, gRPC, protobuf, OTel, OTel exporter) |
 | Known vulnerabilities | 0 |
 | TODOs in production code | 1 (input validator — acknowledged) |
 | VERSION1.md components | 12/12 implemented |
-| VERSION1.md phases | 1-5 of 7 complete |
-| CI | GitHub Actions (build, test, container publish) |
+| VERSION1.md phases | 1-6 of 7 complete |
+| CI | GitHub Actions (build, test, eval gate, container publish) |
