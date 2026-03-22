@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -122,7 +123,11 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
+		if len(body) > 0 {
+			return nil, fmt.Errorf("anthropic API returned status %d: %s", resp.StatusCode, body)
+		}
 		return nil, fmt.Errorf("anthropic API returned status %d", resp.StatusCode)
 	}
 

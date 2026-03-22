@@ -220,6 +220,33 @@ func TestOpenAIAdapter_HTTPErrorNoBody(t *testing.T) {
 	}
 }
 
+func TestOpenAIAdapter_HTTPErrorLargeBody(t *testing.T) {
+	// Error JSON larger than 4096 bytes should be safely handled by the
+	// LimitReader without consuming unbounded memory.
+	largeMsg := strings.Repeat("x", 8192)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":{"message":"%s","type":"invalid_request_error"}}`, largeMsg)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter("key", srv.URL)
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-4o",
+		MaxTokens: 1024,
+	})
+	if err == nil {
+		t.Fatal("expected error for 400 response, got nil")
+	}
+	// With a 4096-byte limit on the body, the JSON won't fully decode,
+	// so we should fall back to the generic status-code-only error.
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("expected status code in error, got: %v", err)
+	}
+}
+
 func TestOpenAIAdapter_RequestBody(t *testing.T) {
 	var received openaiRequest
 

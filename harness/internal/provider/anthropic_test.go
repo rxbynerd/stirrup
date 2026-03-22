@@ -145,6 +145,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 func TestAnthropicAdapter_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":{"message":"invalid x-api-key"}}`)
 	}))
 	defer srv.Close()
 
@@ -157,6 +158,58 @@ func TestAnthropicAdapter_HTTPError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for 401 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid x-api-key") {
+		t.Errorf("expected error body in message, got: %v", err)
+	}
+}
+
+func TestAnthropicAdapter_HTTPErrorNoBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter("key")
+	adapter.baseURL = srv.URL
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	})
+	if err == nil {
+		t.Fatal("expected error for 500 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("expected status code in error, got: %v", err)
+	}
+}
+
+func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
+	largeBody := strings.Repeat("x", 8192)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, largeBody)
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter("key")
+	adapter.baseURL = srv.URL
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	})
+	if err == nil {
+		t.Fatal("expected error for 400 response, got nil")
+	}
+	// Body should be truncated to 4096 bytes.
+	errMsg := err.Error()
+	if len(errMsg) > 4200 {
+		t.Errorf("error message too large (%d chars), body should be truncated to 4096 bytes", len(errMsg))
+	}
+	if !strings.Contains(errMsg, "400") {
+		t.Errorf("expected status code in error, got: %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -306,7 +307,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		var errResp openaiErrorResponse
-		if err := json.NewDecoder(resp.Body).Decode(&errResp); err == nil && errResp.Error.Message != "" {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && errResp.Error.Message != "" {
 			return nil, fmt.Errorf("openai API returned status %d: %s", resp.StatusCode, errResp.Error.Message)
 		}
 		return nil, fmt.Errorf("openai API returned status %d", resp.StatusCode)
