@@ -31,7 +31,11 @@ stirrup/
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC)
       security/              # SecretStore (env, file, AWS SSM), LogScrubber, input validation
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
-  eval/                      # Eval framework (scaffolded, not yet implemented)
+  eval/                      # Eval framework
+    cmd/eval/main.go         # CLI entrypoint for eval commands (run, compare)
+    judge/                   # Judge system: test-command, file-exists, file-contains, composite
+    runner/                  # Suite runner (live + replay) and replay evaluator
+    reporter/                # Comparison reporter: diffs two SuiteResults, text formatting
 ```
 
 ## Running
@@ -63,6 +67,18 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `-trace` | (none) | Path to JSONL trace file |
 | `-transport` | `stdio` | Transport type: stdio, grpc |
 | `-transport-addr` | (none) | gRPC target address (required when transport=grpc) |
+
+### Eval CLI
+
+```sh
+go build -o stirrup-eval ./eval/cmd/eval
+
+# Run an eval suite
+./stirrup-eval run --suite path/to/suite.json --output results/ [--harness path/to/harness] [--dry-run]
+
+# Compare two eval results
+./stirrup-eval compare --current results/result.json --baseline baseline/result.json
+```
 
 ## Architecture
 
@@ -129,6 +145,19 @@ buf generate
 ```
 Generated code lives in `gen/` (a separate Go module in the workspace). Buf config: `buf.yaml` (lint/breaking rules) and `buf.gen.yaml` (code generation with `buf.build/protocolbuffers/go` and `buf.build/grpc/go` remote plugins).
 
+### Replay doubles (for deterministic eval testing)
+
+- **ReplayProvider** (`provider/replay.go`) — implements `ProviderAdapter` by replaying recorded `TurnRecord.ModelOutput` as stream events. Atomic turn counter, no API calls.
+- **ReplayExecutor** (`executor/replay.go`) — implements `Executor` by replaying recorded tool call outputs indexed by `(toolName, canonicalInput)`. Tracks writes for assertion via `Writes()`.
+
+### Eval framework
+
+- **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command` (shell exit code), `file-exists`, `file-contains` (regex), `composite` (`all`/`any`), and `diff-review` (stub). Path traversal prevention on all workspace-relative paths.
+- **Runner** (`eval/runner/`) — orchestrates suite execution: loads `EvalSuite` from JSON, creates temp workspaces, optionally clones repos at specific refs, invokes the harness binary, parses JSONL traces, applies judges. Sequential task execution. Errors per-task are captured without halting the suite.
+- **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness. Useful for testing new judge criteria against existing recordings.
+- **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets. Detects regressions (pass→fail/error) and improvements (fail/error→pass). Computes cost/turn deltas from `RunTrace`. Text formatter for human-readable output.
+- **CLI** (`eval/cmd/eval/`) — `run` (execute suite, write results JSON) and `compare` (diff two results, exit 1 on regressions) subcommands.
+
 ## Security Foundations
 
 - **SecretStore**: resolves `secret://` references (env vars, files, AWS SSM via `secret://ssm:///param-name`). `AutoSecretStore` routes by scheme, only initialising SSM client when config refs require it. API keys never stored in RunConfig.
@@ -152,8 +181,8 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 A `Justfile` is provided for common tasks (requires [just](https://github.com/casey/just)):
 ```sh
 just              # build + test (default)
-just build        # build harness + job binaries
-just test         # go test ./harness/... ./types/...
+just build        # build harness + job + eval binaries
+just test         # go test ./harness/... ./types/... ./eval/...
 just lint         # golangci-lint
 just proto        # buf generate
 just buf-lint     # buf lint
@@ -164,7 +193,7 @@ just clean        # remove built binaries
 
 Or directly:
 ```sh
-go test ./harness/...    # Run all tests
+go test ./harness/... ./eval/...    # Run all tests
 go build ./harness/...   # Build all packages
 buf generate             # Regenerate proto code (after editing .proto files)
 buf lint                 # Lint proto files
@@ -173,7 +202,7 @@ buf lint                 # Lint proto files
 ### CI
 
 GitHub Actions at `.github/workflows/ci.yml`:
-- **verify** job: runs `go test` for types and harness modules, builds the harness binary (on every push and PR)
+- **verify** job: runs `go test` for types, harness, and eval modules, builds the harness and eval binaries (on every push and PR)
 - **publish-container** job: builds and pushes Docker image to `ghcr.io/rxbynerd/stirrup` (on main branch push only, after verify passes)
 
 ### Known issue: gopls false positives

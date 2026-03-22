@@ -31,9 +31,16 @@ jobs:
         working-directory: harness
         run: go test ./...
 
+      - name: Run eval module tests
+        working-directory: eval
+        run: go test ./...
+
       - name: Build harness binary
         working-directory: harness
         run: go build ./cmd/harness
+
+      - name: Build eval binary
+        run: go build -o stirrup-eval ./eval/cmd/eval
 
   publish-container:
     name: Publish Container

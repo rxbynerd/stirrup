@@ -89,18 +89,23 @@ Model pricing lives in a function body. Will need manual updating as new models 
 
 ## What's Missing
 
-### Eval Framework (Phase 5 — the critical gap)
+### ~~Eval Framework (Phase 5)~~ **RESOLVED** (2026-03-22)
 
-Types are defined in `types/eval.go` (`EvalSuite`, `EvalTask`, `EvalJudge`, `Experiment`, `RunConfigOverrides`) but the `eval/` module contains only a `go.mod`. Nothing is implemented:
+The eval framework is now implemented with the following components:
 
-- **ReplayProvider** — deterministic provider replaying recorded stream events from an `EvalTask`
-- **ReplayExecutor** — deterministic executor replaying file reads and command outputs from a baseline run
-- **Eval runner** — orchestrator for local runs with trace collection
-- **Comparison reporter** — diffs two trace sets, flags regressions in cost/turns/outcome
-- **CLI commands** — `eval run`, `eval compare`, `eval mine-failures`, `eval drift`
-- **First eval suite** — mined from real repo PR history (10-20 tasks)
+- **ReplayProvider** (`harness/internal/provider/replay.go`) — deterministic provider replaying recorded `TurnRecord.ModelOutput` as stream events. Thread-safe atomic turn counter. 6 tests.
+- **ReplayExecutor** (`harness/internal/executor/replay.go`) — deterministic executor replaying tool call recordings keyed by `(toolName, canonicalInput)`. Tracks writes for verification. 12 tests.
+- **Judge system** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command`, `file-exists`, `file-contains`, `composite` (with `all`/`any` require), and `diff-review` (stub). Path traversal prevention. 19 tests.
+- **Eval runner** (`eval/runner/`) — orchestrates suite execution: validates suite, creates temp workspaces, clones repos, invokes harness binary, parses JSONL traces, applies judges. Supports `DryRun` mode.
+- **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness.
+- **Comparison reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets, flags regressions (pass→fail) and improvements (fail→pass), computes cost/turn deltas and aggregate metrics. Human-readable text formatter. 8 tests.
+- **CLI** (`eval/cmd/eval/`) — `eval run --suite <path>` and `eval compare --current <path> --baseline <path>` subcommands.
 
-Without eval, there is no way to measure whether changes to prompts, context strategies, model routing, or model versions improve or regress quality. This blocks Phases 6-7 (lakehouse integration, drift detection, sub-agent spawning).
+**Still missing** (deferred to later phases):
+- `eval mine-failures` and `eval drift` CLI commands (require lakehouse integration, Phase 6)
+- First eval suite mined from real repo PRs (10-20 tasks)
+- CI integration: running eval suite as a gate on harness changes
+- `diff-review` judge implementation (requires LLM judge integration)
 
 ### Other gaps
 
@@ -116,18 +121,15 @@ Without eval, there is no way to measure whether changes to prompts, context str
 
 ### ~~2. Token estimation improvement~~ DONE (2026-03-22)
 
-### 3. Eval framework (primary remaining work — next up)
-Suggested implementation order:
-1. `ReplayProvider` + `ReplayExecutor` (deterministic test doubles that replay recorded events)
-2. Minimal eval runner: takes a suite JSON, runs each task against replay doubles, collects traces
-3. Comparison reporter: diffs two trace sets, flags regressions in outcome/cost/turns
-4. Mine 10-20 eval tasks from a real repo's closed PRs to populate the first suite
-5. CI integration: run the eval suite as a gate on harness changes
+### ~~3. Eval framework~~ DONE (2026-03-22)
 
-### 4. Full JSON Schema validation
+### 4. Mine first eval suite and add CI gate
+Mine 10-20 eval tasks from a real repo's closed PRs. Add tier 1 (replay-based unit tests) and tier 2 (smoke eval) as CI gates.
+
+### 5. Full JSON Schema validation
 Replace the simplified input validator with `santhosh-tekuri/jsonschema` or equivalent. Becomes important as MCP tool schemas grow more complex (nested objects, `oneOf` unions, format constraints).
 
-### 5. Graceful MCP degradation
+### 6. Graceful MCP degradation
 Change `BuildLoop` to warn and continue when an MCP server is unreachable, rather than failing the entire loop construction. The harness should be usable without optional remote tool servers.
 
 ---
@@ -136,13 +138,13 @@ Change `BuildLoop` to warn and continue when an MCP server is unreachable, rathe
 
 | Metric | Value |
 |--------|-------|
-| Internal packages | 15 |
-| Packages with tests | 15/15 (100%) |
-| Test functions | ~400+ |
+| Internal packages | 15 (harness) + 4 (eval) = 19 |
+| Packages with tests | 19/19 (100%) |
+| Test functions | ~440+ |
 | All passing | Yes |
 | External dep families | 5 (AWS SDK, gRPC, protobuf, OTel, OTel exporter) |
 | Known vulnerabilities | 0 |
 | TODOs in production code | 1 (input validator — acknowledged) |
 | VERSION1.md components | 12/12 implemented |
-| VERSION1.md phases | 1-4 of 7 complete |
+| VERSION1.md phases | 1-5 of 7 complete |
 | CI | GitHub Actions (build, test, container publish) |

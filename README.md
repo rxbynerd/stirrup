@@ -104,7 +104,11 @@ stirrup/
       transport/             # Transport: stdio JSON-lines protocol
       trace/                 # TraceEmitter: telemetry and logging
       security/              # SecretStore, LogScrubber, input validation
-  eval/                      # Evaluation framework (scaffolded)
+  eval/                      # Evaluation framework
+    cmd/eval/main.go         # CLI entrypoint (run, compare)
+    judge/                   # Judge system (test-command, file-exists, file-contains, composite)
+    runner/                  # Suite runner and replay evaluator
+    reporter/                # Comparison reporter with text formatting
 ```
 
 ## Security
