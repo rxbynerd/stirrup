@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -90,10 +91,18 @@ type serverSession struct {
 
 // NewClient creates an MCP client that registers discovered tools into the
 // given registry. It uses the provided http.Client for all requests; if nil,
-// http.DefaultClient is used.
+// a default client with a 30-second timeout is used to prevent unbounded
+// connections to remote MCP servers.
 func NewClient(registry *tool.Registry, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 15 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+			},
+		}
 	}
 	return &Client{
 		httpClient: httpClient,

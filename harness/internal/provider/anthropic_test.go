@@ -446,3 +446,20 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 		t.Errorf("last event type = %q, want error", last.Type)
 	}
 }
+
+func TestAnthropicAdapter_HasTimeout(t *testing.T) {
+	adapter := NewAnthropicAdapter("test-key")
+	if adapter.httpClient.Timeout == 0 {
+		t.Error("HTTP client should have a non-zero timeout")
+	}
+	tr, ok := adapter.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("expected *http.Transport")
+	}
+	if tr.TLSHandshakeTimeout == 0 {
+		t.Error("TLSHandshakeTimeout should be non-zero")
+	}
+	if tr.ResponseHeaderTimeout == 0 {
+		t.Error("ResponseHeaderTimeout should be non-zero")
+	}
+}

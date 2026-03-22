@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -290,11 +291,20 @@ func (m *multiCallProvider) Stream(_ context.Context, _ types.StreamParams) (<-c
 }
 
 // infiniteToolCallProvider always returns a tool call, never end_turn.
-type infiniteToolCallProvider struct{}
+// Each call uses a unique input to avoid triggering the stall detector.
+type infiniteToolCallProvider struct {
+	callCount int
+}
 
 func (m *infiniteToolCallProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	m.callCount++
 	ch := make(chan types.StreamEvent, 2)
-	ch <- types.StreamEvent{Type: "tool_call", ID: "tc_inf", Name: "test_tool", Input: map[string]any{}}
+	ch <- types.StreamEvent{
+		Type:  "tool_call",
+		ID:    fmt.Sprintf("tc_inf_%d", m.callCount),
+		Name:  "test_tool",
+		Input: map[string]any{"turn": m.callCount},
+	}
 	ch <- types.StreamEvent{Type: "message_complete", StopReason: "tool_use"}
 	close(ch)
 	return ch, nil

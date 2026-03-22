@@ -176,6 +176,7 @@ func (l *AgenticLoop) runInnerLoop(
 	costTracker *CostTracker,
 ) ([]types.Message, string) {
 	var lastStopReason string
+	stall := &stallDetector{}
 
 	for turn := 0; turn < config.MaxTurns; turn++ {
 		// Check budget before each turn.
@@ -343,6 +344,12 @@ func (l *AgenticLoop) runInnerLoop(
 				Content:   output,
 			}); err != nil {
 				log.Printf("warning: transport emit tool_result: %v", err)
+			}
+
+			// Check for stall conditions after each tool call.
+			if outcome := stall.recordToolCall(call.Name, call.Input, success); outcome != "" {
+				messages = appendToolResults(messages, toolResults)
+				return messages, outcome
 			}
 		}
 

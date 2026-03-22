@@ -493,3 +493,27 @@ func containsSubstr(s, substr string) bool {
 	}
 	return false
 }
+
+func TestNewClient_NilHTTPClient_HasTimeout(t *testing.T) {
+	registry := tool.NewRegistry()
+	client := NewClient(registry, nil)
+	if client.httpClient.Timeout == 0 {
+		t.Error("default HTTP client should have a non-zero timeout")
+	}
+	tr, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("expected *http.Transport as default transport")
+	}
+	if tr.TLSHandshakeTimeout == 0 {
+		t.Error("TLSHandshakeTimeout should be non-zero")
+	}
+}
+
+func TestNewClient_ExplicitHTTPClient_Preserved(t *testing.T) {
+	registry := tool.NewRegistry()
+	custom := &http.Client{}
+	client := NewClient(registry, custom)
+	if client.httpClient != custom {
+		t.Error("explicit HTTP client should be preserved, not replaced")
+	}
+}

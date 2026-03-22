@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -24,11 +25,21 @@ type AnthropicAdapter struct {
 }
 
 // NewAnthropicAdapter creates an adapter for the Anthropic Messages API.
+// The HTTP client is configured with explicit timeouts to prevent unbounded
+// connections. The overall timeout is generous (120s) because streaming
+// responses can be long-lived; transport-level timeouts are tighter.
 func NewAnthropicAdapter(apiKey string) *AnthropicAdapter {
 	return &AnthropicAdapter{
-		apiKey:     apiKey,
-		httpClient: http.DefaultClient,
-		baseURL:    anthropicAPIURL,
+		apiKey: apiKey,
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+			},
+		},
+		baseURL: anthropicAPIURL,
 	}
 }
 

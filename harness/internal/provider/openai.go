@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -35,9 +36,16 @@ func NewOpenAICompatibleAdapter(apiKey, baseURL string) *OpenAICompatibleAdapter
 	// Trim trailing slash so we get a clean URL join.
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAICompatibleAdapter{
-		apiKey:     apiKey,
-		httpClient: http.DefaultClient,
-		baseURL:    baseURL,
+		apiKey: apiKey,
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+			},
+		},
+		baseURL: baseURL,
 	}
 }
 

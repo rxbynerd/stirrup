@@ -601,3 +601,20 @@ func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
 		t.Errorf("event[2].Type = %q, want message_complete", events[2].Type)
 	}
 }
+
+func TestOpenAIAdapter_HasTimeout(t *testing.T) {
+	adapter := NewOpenAICompatibleAdapter("test-key", "")
+	if adapter.httpClient.Timeout == 0 {
+		t.Error("HTTP client should have a non-zero timeout")
+	}
+	tr, ok := adapter.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("expected *http.Transport")
+	}
+	if tr.TLSHandshakeTimeout == 0 {
+		t.Error("TLSHandshakeTimeout should be non-zero")
+	}
+	if tr.ResponseHeaderTimeout == 0 {
+		t.Error("ResponseHeaderTimeout should be non-zero")
+	}
+}
