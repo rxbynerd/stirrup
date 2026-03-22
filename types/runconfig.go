@@ -5,9 +5,20 @@ import (
 	"strings"
 )
 
-// absoluteMaxTurns is the hard upper bound on MaxTurns enforced during
-// RunConfig validation, independent of what the caller requests.
-const absoluteMaxTurns = 100
+const (
+	// absoluteMaxTurns is the hard upper bound on MaxTurns enforced during
+	// RunConfig validation, independent of what the caller requests.
+	absoluteMaxTurns = 100
+
+	// maxFollowUpGrace is the maximum allowed follow-up grace period in seconds.
+	maxFollowUpGrace = 3600
+
+	// maxCostBudget is the maximum allowed cost budget in dollars.
+	maxCostBudget = 100.0
+
+	// maxTokenBudget is the maximum allowed token budget.
+	maxTokenBudget = 50_000_000
+)
 
 // RunConfig fully describes a single harness run. It is the composition root:
 // the control plane sends it (via TaskAssignment in the gRPC contract) and
@@ -279,6 +290,7 @@ var validBuiltInToolNames = map[string]bool{
 	"search_files":   true,
 	"run_command":    true,
 	"web_fetch":      true,
+	"spawn_agent":    true,
 }
 
 var readOnlyModes = map[string]bool{
@@ -352,6 +364,21 @@ func ValidateRunConfig(config *RunConfig) error {
 	// timeout must be set
 	if config.Timeout == nil || *config.Timeout <= 0 || *config.Timeout > 3600 {
 		errs = append(errs, "timeout is required and must be > 0 and <= 3600 seconds")
+	}
+
+	// followUpGrace must be bounded
+	if config.FollowUpGrace != nil && *config.FollowUpGrace > maxFollowUpGrace {
+		errs = append(errs, fmt.Sprintf("followUpGrace must be <= %d seconds", maxFollowUpGrace))
+	}
+
+	// maxCostBudget must be bounded
+	if config.MaxCostBudget != nil && *config.MaxCostBudget > maxCostBudget {
+		errs = append(errs, fmt.Sprintf("maxCostBudget must be <= $%.2f", maxCostBudget))
+	}
+
+	// maxTokenBudget must be bounded
+	if config.MaxTokenBudget != nil && *config.MaxTokenBudget > maxTokenBudget {
+		errs = append(errs, fmt.Sprintf("maxTokenBudget must be <= %d", maxTokenBudget))
 	}
 
 	if len(errs) > 0 {

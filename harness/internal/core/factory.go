@@ -140,7 +140,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		e.Security = secLogger
 	}
 
-	return &AgenticLoop{
+	loop := &AgenticLoop{
 		Provider:     prov,
 		Providers:    providers,
 		Router:       rtr,
@@ -157,7 +157,28 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Security:     secLogger,
 		emitReady:    emitReady,
 		ownedClosers: ownedClosers,
-	}, nil
+	}
+
+	// Register spawn_agent after loop construction. The tool needs a
+	// reference to the loop (chicken-and-egg), so we close over the loop
+	// pointer here. The spawner closure captures the loop and config so
+	// the tool can call SpawnSubAgent without a circular import.
+	if toolEnabled(config.Tools.BuiltIn, "spawn_agent") {
+		spawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
+			result, err := SpawnSubAgent(ctx, loop, config, SubAgentConfig{
+				Prompt:   prompt,
+				Mode:     mode,
+				MaxTurns: maxTurns,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(result)
+		}
+		registry.Register(builtins.SpawnAgentTool(spawner))
+	}
+
+	return loop, nil
 }
 
 func buildProviders(ctx context.Context, config *types.RunConfig, secrets security.SecretStore) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {
