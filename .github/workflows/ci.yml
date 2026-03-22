@@ -42,6 +42,77 @@ jobs:
       - name: Build eval binary
         run: go build -o stirrup-eval ./eval/cmd/eval
 
+  eval-gate:
+    name: Eval Gate
+    runs-on: ubuntu-latest
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            harness/go.mod
+            types/go.mod
+            eval/go.mod
+
+      - name: Build binaries
+        run: |
+          go build -o stirrup-harness ./harness/cmd/harness
+          go build -o stirrup-eval ./eval/cmd/eval
+
+      - name: Check for eval suites
+        id: check-suites
+        run: |
+          if ls eval/suites/*.json 1>/dev/null 2>&1; then
+            echo "has_suites=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_suites=false" >> "$GITHUB_OUTPUT"
+            echo "No eval suites found — skipping eval gate"
+          fi
+
+      - name: Run eval suite
+        if: steps.check-suites.outputs.has_suites == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p eval/results
+          for suite in eval/suites/*.json; do
+            name=$(basename "$suite" .json)
+            ./stirrup-eval run \
+              --suite "$suite" \
+              --harness ./stirrup-harness \
+              --output "eval/results"
+          done
+
+      - name: Compare against baseline
+        if: steps.check-suites.outputs.has_suites == 'true'
+        run: |
+          for result in eval/results/result.json; do
+            baseline="eval/baselines/$(basename "$result")"
+            if [ -f "$baseline" ]; then
+              ./stirrup-eval compare \
+                --current "$result" \
+                --baseline "$baseline"
+            else
+              echo "No baseline found at $baseline — skipping comparison"
+            fi
+          done
+
+      - name: Upload eval results
+        if: steps.check-suites.outputs.has_suites == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: eval/results/
+          retention-days: 30
+
   publish-container:
     name: Publish Container
     runs-on: ubuntu-latest
