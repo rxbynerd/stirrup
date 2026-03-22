@@ -167,7 +167,8 @@ type ResourceLimits struct {
 
 // EditStrategyConfig selects the edit strategy implementation.
 type EditStrategyConfig struct {
-	Type string `json:"type"` // "whole-file" | "search-replace" | "udiff"
+	Type           string   `json:"type"`                     // "whole-file" | "search-replace" | "udiff" | "multi"
+	FuzzyThreshold *float64 `json:"fuzzyThreshold,omitempty"` // udiff/multi: minimum similarity ratio for fuzzy matching (default 0.80)
 }
 
 // VerifierConfig selects the verifier implementation.
@@ -182,7 +183,8 @@ type VerifierConfig struct {
 
 // PermissionPolicyConfig selects the permission policy implementation.
 type PermissionPolicyConfig struct {
-	Type string `json:"type"` // "allow-all" | "deny-side-effects" | "ask-upstream"
+	Type    string `json:"type"`              // "allow-all" | "deny-side-effects" | "ask-upstream"
+	Timeout int    `json:"timeout,omitempty"` // ask-upstream: seconds to wait for a response (0 = 60s default)
 }
 
 // GitStrategyConfig selects the git strategy implementation.
