@@ -80,12 +80,8 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		tasks = append(tasks, result)
 	}
 
-	var totalCost float64
 	passCount := 0
 	for _, tr := range tasks {
-		if tr.Trace != nil {
-			totalCost += tr.Trace.Cost
-		}
 		if tr.Outcome == "pass" {
 			passCount++
 		}
@@ -102,7 +98,6 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		StartedAt:   startedAt,
 		CompletedAt: time.Now(),
 		Tasks:       tasks,
-		TotalCost:   totalCost,
 		PassRate:    passRate,
 	}, nil
 }

@@ -35,10 +35,9 @@ type SubAgentConfig struct {
 
 // SubAgentResult holds the outcome of a sub-agent run.
 type SubAgentResult struct {
-	Outcome string  `json:"outcome"`
-	Output  string  `json:"output"`
-	Turns   int     `json:"turns"`
-	Cost    float64 `json:"cost"`
+	Outcome string `json:"outcome"`
+	Output  string `json:"output"`
+	Turns   int    `json:"turns"`
 }
 
 // SpawnSubAgent creates and runs a sub-agent that reuses the parent loop's
@@ -130,7 +129,6 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Outcome: runTrace.Outcome,
 		Output:  output,
 		Turns:   runTrace.Turns,
-		Cost:    runTrace.Cost,
 	}, nil
 }
 

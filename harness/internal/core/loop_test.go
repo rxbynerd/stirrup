@@ -194,13 +194,8 @@ func TestLoop_BudgetExceeded(t *testing.T) {
 
 	loop := buildTestLoop(prov)
 	config := buildTestConfig()
-	maxCost := 0.0 // zero budget — should exceed immediately... but cost starts at 0
-	config.MaxCostBudget = &maxCost
-
-	// Actually, budget is checked at the START of each turn, and cost starts at 0,
-	// so the first turn will proceed. Let's use a token budget of 0 instead.
+	// Budget is checked at the START of each turn with token budget of 0.
 	maxTokens := 0
-	config.MaxCostBudget = nil
 	config.MaxTokenBudget = &maxTokens
 
 	runTrace, err := loop.Run(context.Background(), config)
@@ -217,17 +212,12 @@ func TestLoop_BudgetExceeded(t *testing.T) {
 	}
 }
 
-func TestCostTracker(t *testing.T) {
-	ct := &CostTracker{}
-	pricing := types.ModelPricing{InputPer1M: 3.0, OutputPer1M: 15.0}
+func TestTokenTracker(t *testing.T) {
+	tt := &TokenTracker{}
 
-	ct.RecordTurn(1000, 500, pricing)
+	tt.RecordTurn(1000, 500)
 
-	if ct.CurrentCost() == 0 {
-		t.Error("expected non-zero cost")
-	}
-
-	tokens := ct.Tokens()
+	tokens := tt.Tokens()
 	if tokens.Input != 1000 || tokens.Output != 500 {
 		t.Errorf("expected tokens 1000/500, got %d/%d", tokens.Input, tokens.Output)
 	}
@@ -484,19 +474,17 @@ func TestDispatchToolCall_InvalidInput(t *testing.T) {
 	}
 }
 
-func TestCheckBudget_CostLimitExceeded(t *testing.T) {
-	ct := &CostTracker{}
-	pricing := types.ModelPricing{InputPer1M: 3.0, OutputPer1M: 15.0}
-	// Record enough tokens to accumulate meaningful cost.
-	ct.RecordTurn(1_000_000, 100_000, pricing) // $3 input + $1.50 output = $4.50
+func TestCheckBudget_TokenLimitExceeded(t *testing.T) {
+	tt := &TokenTracker{}
+	tt.RecordTurn(1_000_000, 100_000)
 
-	maxCost := 1.0
-	check := ct.CheckBudget(&maxCost, nil)
+	maxTokens := 500_000
+	check := tt.CheckBudget(&maxTokens)
 	if check.WithinBudget {
-		t.Error("expected WithinBudget == false when cost exceeds limit")
+		t.Error("expected WithinBudget == false when tokens exceed limit")
 	}
-	if check.Reason != "cost_limit_exceeded" {
-		t.Errorf("expected reason 'cost_limit_exceeded', got %q", check.Reason)
+	if check.Reason != "token_limit_exceeded" {
+		t.Errorf("expected reason 'token_limit_exceeded', got %q", check.Reason)
 	}
 }
 
@@ -650,29 +638,6 @@ func TestLoop_PromptBuildError(t *testing.T) {
 	}
 }
 
-func TestDefaultModelPricing(t *testing.T) {
-	// Known models should return their specific pricing.
-	sonnet := defaultModelPricing("claude-sonnet-4-6")
-	if sonnet.InputPer1M != 3.0 || sonnet.OutputPer1M != 15.0 {
-		t.Errorf("unexpected sonnet pricing: %+v", sonnet)
-	}
-
-	haiku := defaultModelPricing("claude-haiku-4-5")
-	if haiku.InputPer1M != 0.80 || haiku.OutputPer1M != 4.0 {
-		t.Errorf("unexpected haiku pricing: %+v", haiku)
-	}
-
-	opus := defaultModelPricing("claude-opus-4-6")
-	if opus.InputPer1M != 15.0 || opus.OutputPer1M != 75.0 {
-		t.Errorf("unexpected opus pricing: %+v", opus)
-	}
-
-	// Unknown models should fall back to sonnet pricing.
-	unknown := defaultModelPricing("some-future-model")
-	if unknown.InputPer1M != 3.0 || unknown.OutputPer1M != 15.0 {
-		t.Errorf("expected fallback pricing for unknown model, got: %+v", unknown)
-	}
-}
 
 func TestEstimateCurrentTokens(t *testing.T) {
 	// Empty messages should return 1 (minimum).

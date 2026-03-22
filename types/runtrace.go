@@ -22,7 +22,6 @@ type RunTrace struct {
 	ToolCalls           []ToolCallSummary    `json:"toolCalls"`
 	VerificationResults []VerificationResult `json:"verificationResults"`
 	Outcome             string               `json:"outcome"` // "success" | "error" | "max_turns" | "verification_failed" | "budget_exceeded"
-	Cost                float64              `json:"cost"`
 }
 
 // ToolCallSummary records a single tool call's outcome for the trace.
@@ -88,16 +87,9 @@ type RunRecording struct {
 	FinalOutcome RunTrace     `json:"finalOutcome"`
 }
 
-// ModelPricing holds per-model token pricing.
-type ModelPricing struct {
-	InputPer1M  float64 `json:"inputPer1M"`
-	OutputPer1M float64 `json:"outputPer1M"`
-}
-
-// BudgetCheck holds the result of a budget check.
+// BudgetCheck holds the result of a token budget check.
 type BudgetCheck struct {
 	WithinBudget  bool       `json:"withinBudget"`
-	CurrentCost   float64    `json:"currentCost"`
 	CurrentTokens TokenUsage `json:"currentTokens"`
 	Reason        string     `json:"reason,omitempty"`
 }

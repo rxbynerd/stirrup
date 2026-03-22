@@ -359,26 +359,6 @@ func TestValidateRunConfig_FollowUpGraceBound(t *testing.T) {
 	}
 }
 
-func TestValidateRunConfig_CostBudgetBound(t *testing.T) {
-	c := validConfig()
-	cost := 100.01
-	c.MaxCostBudget = &cost
-	err := ValidateRunConfig(c)
-	if err == nil {
-		t.Fatal("expected error for maxCostBudget > 100")
-	}
-	if !strings.Contains(err.Error(), "maxCostBudget") {
-		t.Errorf("expected error to mention maxCostBudget, got: %v", err)
-	}
-
-	// At the boundary should pass.
-	cost = 100.0
-	c.MaxCostBudget = &cost
-	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("expected no error for maxCostBudget=100, got: %v", err)
-	}
-}
-
 func TestValidateRunConfig_TokenBudgetBound(t *testing.T) {
 	c := validConfig()
 	tokens := 50_000_001
@@ -402,7 +382,6 @@ func TestValidateRunConfig_TokenBudgetBound(t *testing.T) {
 func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 	c := validConfig()
 	c.FollowUpGrace = nil
-	c.MaxCostBudget = nil
 	c.MaxTokenBudget = nil
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("expected no error for nil budget fields, got: %v", err)

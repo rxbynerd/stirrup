@@ -187,7 +187,6 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 
 	var (
 		passCount   int
-		totalCost   float64
 		totalTurns  int
 		totalTokens int
 		durations   []float64
@@ -197,7 +196,6 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 		if t.Outcome == "success" {
 			passCount++
 		}
-		totalCost += t.Cost
 		totalTurns += t.Turns
 		totalTokens += t.TokenUsage.Input + t.TokenUsage.Output
 		durationMs := float64(t.CompletedAt.Sub(t.StartedAt).Milliseconds())
@@ -209,10 +207,8 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 	return types.TraceMetrics{
 		Count:       n,
 		PassRate:    float64(passCount) / float64(n),
-		MeanCost:    totalCost / float64(n),
 		MeanTurns:   float64(totalTurns) / float64(n),
 		MeanTokens:  float64(totalTokens) / float64(n),
-		TotalCost:   totalCost,
 		P50Duration: percentile(durations, 0.50),
 		P95Duration: percentile(durations, 0.95),
 	}

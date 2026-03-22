@@ -20,12 +20,6 @@ func FormatText(report eval.ComparisonReport) string {
 		signPrefix(s.PassRateDelta*100),
 		s.PassRateDelta*100,
 	)
-	fmt.Fprintf(&b, "Cost:      $%.2f → $%.2f (%s$%.2f)\n",
-		s.BaselineCost,
-		s.CurrentCost,
-		signPrefix(s.CostDelta),
-		abs(s.CostDelta),
-	)
 
 	b.WriteString("\n")
 
@@ -55,12 +49,4 @@ func signPrefix(v float64) string {
 		return "-"
 	}
 	return "+"
-}
-
-// abs returns the absolute value of a float64.
-func abs(v float64) float64 {
-	if v < 0 {
-		return -v
-	}
-	return v
 }

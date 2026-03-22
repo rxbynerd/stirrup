@@ -22,7 +22,6 @@ type JSONLTraceEmitter struct {
 	startedAt time.Time
 	turns     []types.TurnTrace
 	toolCalls []types.ToolCallTrace
-	cost      float64
 }
 
 // NewJSONLTraceEmitter creates a trace emitter that writes to w.
@@ -58,13 +57,6 @@ func (e *JSONLTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.toolCalls = append(e.toolCalls, call)
-}
-
-// RecordCost records the final accumulated cost for the run.
-func (e *JSONLTraceEmitter) RecordCost(cost float64) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.cost = cost
 }
 
 // Finish builds the final RunTrace, redacts the config, writes it as a
@@ -106,7 +98,6 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		Turns:       len(e.turns),
 		TokenUsage:  totalTokens,
 		ToolCalls:   summaries,
-		Cost:        e.cost,
 		Outcome:     outcome,
 	}
 

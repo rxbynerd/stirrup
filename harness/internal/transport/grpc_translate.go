@@ -60,7 +60,6 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 		Turns:        int32(t.Turns),
 		InputTokens:  int32(t.TokenUsage.Input),
 		OutputTokens: int32(t.TokenUsage.Output),
-		CostUsd:      t.Cost,
 		DurationMs:   t.CompletedAt.Sub(t.StartedAt).Milliseconds(),
 		StopReason:   t.Outcome,
 	}
@@ -80,10 +79,6 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.MaxTokenBudget != nil {
 		v := int(*pc.MaxTokenBudget)
 		rc.MaxTokenBudget = &v
-	}
-	if pc.MaxCostBudget != nil {
-		v := *pc.MaxCostBudget
-		rc.MaxCostBudget = &v
 	}
 	if pc.Timeout != nil {
 		v := int(*pc.Timeout)

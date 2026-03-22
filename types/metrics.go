@@ -19,7 +19,6 @@ type VariantReport struct {
 // VariantResults holds the aggregated metrics for a variant.
 type VariantResults struct {
 	PassRate                float64      `json:"passRate"`
-	MeanCost                float64      `json:"meanCost"`
 	MedianTurns             int          `json:"medianTurns"`
 	MeanTokens              TokenUsage   `json:"meanTokens"`
 	MeanToolCalls           float64      `json:"meanToolCalls"`
@@ -51,7 +50,6 @@ type ProductionTrace struct {
 // BaselineMetrics holds aggregate production metrics for comparison.
 type BaselineMetrics struct {
 	PassRate    float64    `json:"passRate"`
-	MeanCost   float64    `json:"meanCost"`
 	MeanTurns  float64    `json:"meanTurns"`
 	MeanTokens TokenUsage `json:"meanTokens"`
 	SampleSize int        `json:"sampleSize"`
@@ -67,7 +65,6 @@ type DriftReport struct {
 // DriftDeltas holds the absolute differences between current and baseline metrics.
 type DriftDeltas struct {
 	PassRateDelta    float64 `json:"passRateDelta"`
-	MeanCostDelta    float64 `json:"meanCostDelta"`
 	MeanTurnsDelta   float64 `json:"meanTurnsDelta"`
 	MeanTokensDelta  float64 `json:"meanTokensDelta"`
 	P50DurationDelta float64 `json:"p50DurationDelta"`
@@ -78,12 +75,10 @@ type DriftDeltas struct {
 type TraceMetrics struct {
 	Count       int     `json:"count"`
 	PassRate    float64 `json:"passRate"`
-	MeanCost    float64 `json:"meanCost"`
 	MeanTurns   float64 `json:"meanTurns"`
 	MeanTokens  float64 `json:"meanTokens"`
 	P50Duration float64 `json:"p50DurationMs"`
 	P95Duration float64 `json:"p95DurationMs"`
-	TotalCost   float64 `json:"totalCost"`
 }
 
 // DateRange defines a time window for trace queries.

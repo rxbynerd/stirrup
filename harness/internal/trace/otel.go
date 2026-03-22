@@ -28,7 +28,6 @@ type OTelTraceEmitter struct {
 	rootCtx   context.Context
 	turns     []types.TurnTrace
 	toolCalls []types.ToolCallTrace
-	cost      float64
 }
 
 // NewOTelTraceEmitter creates an OTel trace emitter that exports spans to the
@@ -74,7 +73,6 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.startedAt = time.Now()
 	e.turns = nil
 	e.toolCalls = nil
-	e.cost = 0
 
 	ctx := context.Background()
 	ctx, span := e.tracer.Start(ctx, "run",
@@ -152,13 +150,6 @@ func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	span.End(oteltrace.WithTimestamp(spanEnd))
 }
 
-// RecordCost stores the accumulated cost for inclusion in the final trace.
-func (e *OTelTraceEmitter) RecordCost(cost float64) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.cost = cost
-}
-
 // Finish sets the outcome on the root span, ends it, flushes the exporter,
 // and returns the aggregated RunTrace.
 func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.RunTrace, error) {
@@ -171,7 +162,6 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	if e.rootSpan != nil && e.rootSpan.SpanContext().IsValid() {
 		e.rootSpan.SetAttributes(
 			attribute.String("run.outcome", outcome),
-			attribute.Float64("run.cost", e.cost),
 			attribute.Int("run.turns", len(e.turns)),
 		)
 		e.rootSpan.End()
@@ -214,7 +204,6 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		Turns:       len(e.turns),
 		TokenUsage:  totalTokens,
 		ToolCalls:   summaries,
-		Cost:        e.cost,
 		Outcome:     outcome,
 	}
 

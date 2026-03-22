@@ -65,8 +65,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 		Success:    false,
 	})
 
-	emitter.RecordCost(0.042)
-
 	trace, err := emitter.Finish(context.Background(), "success")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -88,10 +86,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	if trace.Outcome != "success" {
 		t.Errorf("Outcome: got %q, want %q", trace.Outcome, "success")
 	}
-	if trace.Cost != 0.042 {
-		t.Errorf("Cost: got %f, want 0.042", trace.Cost)
-	}
-
 	// Verify config was redacted.
 	if trace.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef should be redacted, got %q", trace.Config.Provider.APIKeyRef)

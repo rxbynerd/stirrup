@@ -75,8 +75,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Initialize message history.
 	messages := buildMessages(config.Prompt)
 
-	// Cost tracking.
-	costTracker := &CostTracker{}
+	// Token tracking (cost estimation is a control plane concern).
+	tokenTracker := &TokenTracker{}
 
 	// Emit ready event.
 	if l.emitReady {
@@ -94,7 +94,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	for verificationAttempts <= maxVerificationRetries {
 		// Run the inner agentic loop.
 		var innerOutcome string
-		messages, innerOutcome = l.runInnerLoop(ctx, config, systemPrompt, messages, costTracker)
+		messages, innerOutcome = l.runInnerLoop(ctx, config, systemPrompt, messages, tokenTracker)
 
 		if innerOutcome != "success" {
 			outcome = innerOutcome
@@ -145,9 +145,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		})
 	}
 
-	// Record final cost in trace.
-	l.Trace.RecordCost(costTracker.CurrentCost())
-
 	// Emit done event.
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:       "done",
@@ -173,14 +170,14 @@ func (l *AgenticLoop) runInnerLoop(
 	config *types.RunConfig,
 	systemPrompt string,
 	messages []types.Message,
-	costTracker *CostTracker,
+	tokenTracker *TokenTracker,
 ) ([]types.Message, string) {
 	var lastStopReason string
 	stall := &stallDetector{}
 
 	for turn := 0; turn < config.MaxTurns; turn++ {
 		// Check budget before each turn.
-		budgetCheck := costTracker.CheckBudget(config.MaxCostBudget, config.MaxTokenBudget)
+		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
 			return messages, "budget_exceeded"
 		}
@@ -198,8 +195,8 @@ func (l *AgenticLoop) runInnerLoop(
 			Turn:           turn,
 			LastStopReason: lastStopReason,
 			TokenUsage: router.TokenUsage{
-				Input:  costTracker.totalInputTokens,
-				Output: costTracker.totalOutputTokens,
+				Input:  tokenTracker.Tokens().Input,
+				Output: tokenTracker.Tokens().Output,
 			},
 		})
 
@@ -285,8 +282,7 @@ func (l *AgenticLoop) runInnerLoop(
 		inputTokenEstimate := estimateCurrentTokens(preparedMessages) +
 			estimateSystemPromptTokens(systemPrompt) +
 			estimateToolDefinitionTokens(toolDefs)
-		pricing := defaultModelPricing(selection.Model)
-		costTracker.RecordTurn(inputTokenEstimate, sr.OutputTokens, pricing)
+		tokenTracker.RecordTurn(inputTokenEstimate, sr.OutputTokens)
 
 		// Record turn in trace.
 		l.Trace.RecordTurn(types.TurnTrace{
@@ -358,7 +354,7 @@ func (l *AgenticLoop) runInnerLoop(
 
 		// Re-check budget after tool results are appended. This prevents the
 		// next turn from sending an over-budget context to the provider.
-		budgetCheck = costTracker.CheckBudget(config.MaxCostBudget, config.MaxTokenBudget)
+		budgetCheck = tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
 			return messages, "budget_exceeded"
 		}

@@ -40,7 +40,6 @@ type SuiteResult struct {
 	StartedAt   time.Time    `json:"startedAt"`
 	CompletedAt time.Time    `json:"completedAt"`
 	Tasks       []TaskResult `json:"tasks"`
-	TotalCost   float64      `json:"totalCost"`
 	PassRate    float64      `json:"passRate"`
 }
 
@@ -58,7 +57,6 @@ type TaskRegression struct {
 	TaskID          string  `json:"taskId"`
 	BaselineOutcome string  `json:"baselineOutcome"`
 	CurrentOutcome  string  `json:"currentOutcome"`
-	CostDelta       float64 `json:"costDelta,omitempty"`
 	TurnsDelta      int     `json:"turnsDelta,omitempty"`
 }
 
@@ -67,7 +65,6 @@ type TaskImprovement struct {
 	TaskID          string  `json:"taskId"`
 	BaselineOutcome string  `json:"baselineOutcome"`
 	CurrentOutcome  string  `json:"currentOutcome"`
-	CostDelta       float64 `json:"costDelta,omitempty"`
 	TurnsDelta      int     `json:"turnsDelta,omitempty"`
 }
 
@@ -76,8 +73,5 @@ type ComparisonSummary struct {
 	BaselinePassRate float64 `json:"baselinePassRate"`
 	CurrentPassRate  float64 `json:"currentPassRate"`
 	PassRateDelta    float64 `json:"passRateDelta"`
-	BaselineCost     float64 `json:"baselineCost"`
-	CurrentCost      float64 `json:"currentCost"`
-	CostDelta        float64 `json:"costDelta"`
 	HasRegressions   bool    `json:"hasRegressions"`
 }

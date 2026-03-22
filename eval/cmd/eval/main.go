@@ -194,7 +194,6 @@ func printSummary(result eval.SuiteResult) {
 	fmt.Printf("Tasks: %d total, %d passed, %d failed, %d errors\n",
 		len(result.Tasks), passed, failed, errored)
 	fmt.Printf("Pass rate: %.1f%%\n", result.PassRate*100)
-	fmt.Printf("Total cost: $%.4f\n", result.TotalCost)
 }
 
 // cmdBaseline pulls production metrics from a lakehouse as experiment baselines.
@@ -415,7 +414,6 @@ func buildDriftReport(current, baseline types.TraceMetrics) types.DriftReport {
 		Baseline: baseline,
 		Deltas: types.DriftDeltas{
 			PassRateDelta:    current.PassRate - baseline.PassRate,
-			MeanCostDelta:    current.MeanCost - baseline.MeanCost,
 			MeanTurnsDelta:   current.MeanTurns - baseline.MeanTurns,
 			MeanTokensDelta:  current.MeanTokens - baseline.MeanTokens,
 			P50DurationDelta: current.P50Duration - baseline.P50Duration,
@@ -428,23 +426,19 @@ func buildDriftReport(current, baseline types.TraceMetrics) types.DriftReport {
 func printMetricsSummary(m types.TraceMetrics) {
 	fmt.Printf("Traces:       %d\n", m.Count)
 	fmt.Printf("Pass rate:    %.1f%%\n", m.PassRate*100)
-	fmt.Printf("Mean cost:    $%.4f\n", m.MeanCost)
 	fmt.Printf("Mean turns:   %.1f\n", m.MeanTurns)
 	fmt.Printf("P50 duration: %.0fms\n", m.P50Duration)
 	fmt.Printf("P95 duration: %.0fms\n", m.P95Duration)
 }
 
 // printDriftReport prints the drift report and returns true if significant drift
-// was detected. Thresholds: pass rate drop > 5pp, cost increase > 20%,
-// turns increase > 20%.
+// was detected. Thresholds: pass rate drop > 5pp, turns increase > 20%.
 func printDriftReport(report types.DriftReport) bool {
 	fmt.Printf("%-16s %12s %12s %12s\n", "Metric", "Current", "Baseline", "Delta")
 	fmt.Printf("%-16s %12s %12s %12s\n", "------", "-------", "--------", "-----")
 
 	fmt.Printf("%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
 		"Pass rate", report.Current.PassRate*100, report.Baseline.PassRate*100, report.Deltas.PassRateDelta*100)
-	fmt.Printf("%-16s %11s %11s %+12s\n",
-		"Mean cost", formatDollars(report.Current.MeanCost), formatDollars(report.Baseline.MeanCost), formatDollars(report.Deltas.MeanCostDelta))
 	fmt.Printf("%-16s %12.1f %12.1f %+12.1f\n",
 		"Mean turns", report.Current.MeanTurns, report.Baseline.MeanTurns, report.Deltas.MeanTurnsDelta)
 	fmt.Printf("%-16s %11.0fms %11.0fms %+11.0fms\n",
@@ -457,12 +451,6 @@ func printDriftReport(report types.DriftReport) bool {
 	// Pass rate drop > 5 percentage points
 	if report.Deltas.PassRateDelta < -0.05 {
 		flags = append(flags, fmt.Sprintf("pass rate dropped %.1fpp", report.Deltas.PassRateDelta*100))
-	}
-
-	// Cost increase > 20%
-	if report.Baseline.MeanCost > 0 && report.Deltas.MeanCostDelta/report.Baseline.MeanCost > 0.20 {
-		flags = append(flags, fmt.Sprintf("mean cost increased %.0f%%",
-			(report.Deltas.MeanCostDelta/report.Baseline.MeanCost)*100))
 	}
 
 	// Turns increase > 20%
@@ -483,10 +471,6 @@ func printDriftReport(report types.DriftReport) bool {
 	fmt.Println()
 	fmt.Println("No significant drift detected.")
 	return false
-}
-
-func formatDollars(v float64) string {
-	return fmt.Sprintf("$%.4f", v)
 }
 
 // cmdCompareToProduction compares eval suite results against production metrics
@@ -577,26 +561,22 @@ func cmdCompareToProduction(args []string) {
 func buildLabVsProductionReport(experimentID string, prodMetrics types.TraceMetrics, result eval.SuiteResult) types.LabVsProductionReport {
 	production := types.BaselineMetrics{
 		PassRate:   prodMetrics.PassRate,
-		MeanCost:   prodMetrics.MeanCost,
 		MeanTurns:  prodMetrics.MeanTurns,
 		SampleSize: prodMetrics.Count,
 	}
 
 	// Compute lab variant metrics from the SuiteResult.
-	var totalCost float64
 	var totalTurns int
 	tracedTasks := 0
 	for _, task := range result.Tasks {
 		if task.Trace != nil {
-			totalCost += task.Trace.Cost
 			totalTurns += task.Trace.Turns
 			tracedTasks++
 		}
 	}
 
-	var meanCost, meanTurns float64
+	var meanTurns float64
 	if tracedTasks > 0 {
-		meanCost = totalCost / float64(tracedTasks)
 		meanTurns = float64(totalTurns) / float64(tracedTasks)
 	}
 
@@ -604,7 +584,6 @@ func buildLabVsProductionReport(experimentID string, prodMetrics types.TraceMetr
 		Name: result.SuiteID,
 		Results: types.VariantResults{
 			PassRate: result.PassRate,
-			MeanCost: meanCost,
 		},
 	}
 
@@ -634,12 +613,6 @@ func printComparisonSummary(report types.LabVsProductionReport) {
 		labPassPct := v.Results.PassRate * 100
 		fmt.Fprintf(os.Stderr, "%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
 			"Pass rate", prodPassPct, labPassPct, labPassPct-prodPassPct)
-
-		fmt.Fprintf(os.Stderr, "%-16s %11s %11s %+12s\n",
-			"Mean cost",
-			formatDollars(report.Production.MeanCost),
-			formatDollars(v.Results.MeanCost),
-			formatDollars(v.Results.MeanCost-report.Production.MeanCost))
 
 		fmt.Fprintf(os.Stderr, "%-16s %12.1f %12d %+12.1f\n",
 			"Mean turns",

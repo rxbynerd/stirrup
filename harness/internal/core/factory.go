@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -90,12 +91,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 6b. MCP tool discovery — connect to remote MCP servers and register
 	// their tools into the registry alongside the built-in tools.
+	// Connection failures are non-fatal: the server's tools are skipped
+	// so the harness can still operate with its built-in tools.
 	if len(config.Tools.MCPServers) > 0 {
 		mcpClient := mcp.NewClient(registry, nil)
 		for _, srv := range config.Tools.MCPServers {
 			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
-				cleanup()
-				return nil, fmt.Errorf("connect MCP server %q: %w", srv.Name, err)
+				log.Printf("warning: MCP server %q unavailable, skipping its tools: %v", srv.Name, err)
 			}
 		}
 	}

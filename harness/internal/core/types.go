@@ -47,54 +47,37 @@ type AgenticLoop struct {
 	ownedClosers []io.Closer
 }
 
-// CostTracker tracks cumulative cost per run and enforces budgets.
-type CostTracker struct {
+// TokenTracker tracks cumulative token usage per run and enforces token budgets.
+// Cost estimation is a control plane concern — the harness only tracks tokens.
+type TokenTracker struct {
 	totalInputTokens  int
 	totalOutputTokens int
-	totalCost         float64
 }
 
-// RecordTurn records tokens and cost for a single turn.
-func (ct *CostTracker) RecordTurn(inputTokens, outputTokens int, pricing types.ModelPricing) {
-	ct.totalInputTokens += inputTokens
-	ct.totalOutputTokens += outputTokens
-	ct.totalCost += float64(inputTokens) / 1_000_000 * pricing.InputPer1M
-	ct.totalCost += float64(outputTokens) / 1_000_000 * pricing.OutputPer1M
-}
-
-// CurrentCost returns the cumulative cost so far.
-func (ct *CostTracker) CurrentCost() float64 {
-	return ct.totalCost
+// RecordTurn records token usage for a single turn.
+func (tt *TokenTracker) RecordTurn(inputTokens, outputTokens int) {
+	tt.totalInputTokens += inputTokens
+	tt.totalOutputTokens += outputTokens
 }
 
 // Tokens returns the cumulative token usage.
-func (ct *CostTracker) Tokens() types.TokenUsage {
-	return types.TokenUsage{Input: ct.totalInputTokens, Output: ct.totalOutputTokens}
+func (tt *TokenTracker) Tokens() types.TokenUsage {
+	return types.TokenUsage{Input: tt.totalInputTokens, Output: tt.totalOutputTokens}
 }
 
-// CheckBudget verifies the run is within configured budgets.
-func (ct *CostTracker) CheckBudget(maxCostBudget *float64, maxTokenBudget *int) types.BudgetCheck {
-	if maxCostBudget != nil && ct.totalCost > *maxCostBudget {
-		return types.BudgetCheck{
-			WithinBudget:  false,
-			CurrentCost:   ct.totalCost,
-			CurrentTokens: ct.Tokens(),
-			Reason:        "cost_limit_exceeded",
-		}
-	}
-	totalTokens := ct.totalInputTokens + ct.totalOutputTokens
+// CheckBudget verifies the run is within the configured token budget.
+func (tt *TokenTracker) CheckBudget(maxTokenBudget *int) types.BudgetCheck {
+	totalTokens := tt.totalInputTokens + tt.totalOutputTokens
 	if maxTokenBudget != nil && totalTokens > *maxTokenBudget {
 		return types.BudgetCheck{
 			WithinBudget:  false,
-			CurrentCost:   ct.totalCost,
-			CurrentTokens: ct.Tokens(),
+			CurrentTokens: tt.Tokens(),
 			Reason:        "token_limit_exceeded",
 		}
 	}
 	return types.BudgetCheck{
 		WithinBudget:  true,
-		CurrentCost:   ct.totalCost,
-		CurrentTokens: ct.Tokens(),
+		CurrentTokens: tt.Tokens(),
 	}
 }
 
@@ -279,18 +262,6 @@ func (l *AgenticLoop) Close() error {
 	return nil
 }
 
-// defaultModelPricing returns pricing for known models.
-func defaultModelPricing(model string) types.ModelPricing {
-	knownPricing := map[string]types.ModelPricing{
-		"claude-sonnet-4-6": {InputPer1M: 3.0, OutputPer1M: 15.0},
-		"claude-haiku-4-5":  {InputPer1M: 0.80, OutputPer1M: 4.0},
-		"claude-opus-4-6":   {InputPer1M: 15.0, OutputPer1M: 75.0},
-	}
-	if p, ok := knownPricing[model]; ok {
-		return p
-	}
-	return types.ModelPricing{InputPer1M: 3.0, OutputPer1M: 15.0}
-}
 
 // estimateCurrentTokens provides a calibrated token count for the message
 // history. It accounts for per-message structural overhead, per-block
