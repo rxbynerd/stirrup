@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// DefaultAskUpstreamTimeout is the default duration to wait for a permission
+// response from the control plane before timing out.
+const DefaultAskUpstreamTimeout = 60 * time.Second
 
 // Transport is a minimal interface matching the subset of transport.Transport
 // needed by AskUpstreamPolicy. Defined locally to avoid a circular import
@@ -23,6 +28,11 @@ type Transport interface {
 // or the context is cancelled.
 type AskUpstreamPolicy struct {
 	transport Transport
+
+	// Timeout is the maximum duration to wait for a permission response from
+	// the control plane. If the control plane does not respond within this
+	// window, Check returns an error.
+	Timeout time.Duration
 
 	// sideEffectingTools maps tool names that have side effects. Tools in
 	// this set require upstream approval; all others are auto-allowed.
@@ -41,10 +51,15 @@ type permissionResponse struct {
 
 // NewAskUpstreamPolicy creates a new AskUpstreamPolicy. The sideEffectingTools
 // map keys are tool names considered to have side effects; calls to those tools
-// are forwarded to the control plane for approval.
-func NewAskUpstreamPolicy(transport Transport, sideEffectingTools map[string]bool) *AskUpstreamPolicy {
+// are forwarded to the control plane for approval. If timeout is zero,
+// DefaultAskUpstreamTimeout (60s) is used.
+func NewAskUpstreamPolicy(transport Transport, sideEffectingTools map[string]bool, timeout time.Duration) *AskUpstreamPolicy {
+	if timeout <= 0 {
+		timeout = DefaultAskUpstreamTimeout
+	}
 	p := &AskUpstreamPolicy{
 		transport:          transport,
+		Timeout:            timeout,
 		sideEffectingTools: sideEffectingTools,
 		pending:            make(map[string]chan permissionResponse),
 	}
@@ -114,6 +129,11 @@ func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition
 			Allowed: resp.allowed,
 			Reason:  resp.reason,
 		}, nil
+	case <-time.After(p.Timeout):
+		p.mu.Lock()
+		delete(p.pending, requestID)
+		p.mu.Unlock()
+		return nil, fmt.Errorf("permission check timed out after %s waiting for upstream response", p.Timeout)
 	case <-ctx.Done():
 		p.mu.Lock()
 		delete(p.pending, requestID)

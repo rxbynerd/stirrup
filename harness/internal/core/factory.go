@@ -486,15 +486,20 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 }
 
 func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
+	fuzzyThreshold := 0.80
+	if cfg.FuzzyThreshold != nil {
+		fuzzyThreshold = *cfg.FuzzyThreshold
+	}
+
 	switch cfg.Type {
 	case "whole-file", "":
 		return edit.NewWholeFileStrategy()
 	case "search-replace":
 		return edit.NewSearchReplaceStrategy()
 	case "udiff":
-		return edit.NewUdiffStrategy()
+		return edit.NewUdiffStrategy(fuzzyThreshold)
 	case "multi":
-		return edit.NewMultiStrategy()
+		return edit.NewMultiStrategy(fuzzyThreshold)
 	default:
 		return edit.NewWholeFileStrategy()
 	}
@@ -534,7 +539,8 @@ func buildPermissionPolicy(cfg types.PermissionPolicyConfig, registry *tool.Regi
 		return permission.NewDenySideEffects(sideEffecting)
 	case "ask-upstream":
 		sideEffecting := sideEffectingToolSet(registry)
-		return permission.NewAskUpstreamPolicy(tp, sideEffecting)
+		timeout := time.Duration(cfg.Timeout) * time.Second
+		return permission.NewAskUpstreamPolicy(tp, sideEffecting, timeout)
 	default:
 		return permission.NewAllowAll()
 	}

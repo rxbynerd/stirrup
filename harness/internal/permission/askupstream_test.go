@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func sideEffectingSet() map[string]bool {
 
 func TestAskUpstream_AutoAllowsReadOnlyTools(t *testing.T) {
 	mt := &mockTransport{}
-	policy := NewAskUpstreamPolicy(mt, sideEffectingSet())
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "read_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
@@ -83,7 +84,7 @@ func TestAskUpstream_AutoAllowsReadOnlyTools(t *testing.T) {
 
 func TestAskUpstream_EmitsRequestForSideEffectingTool(t *testing.T) {
 	mt := &mockTransport{}
-	policy := NewAskUpstreamPolicy(mt, sideEffectingSet())
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 	input := json.RawMessage(`{"path":"/tmp/test","content":"hello"}`)
@@ -131,7 +132,7 @@ func TestAskUpstream_EmitsRequestForSideEffectingTool(t *testing.T) {
 
 func TestAskUpstream_ApprovalResponse(t *testing.T) {
 	mt := &mockTransport{}
-	policy := NewAskUpstreamPolicy(mt, sideEffectingSet())
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "run_shell_command"}
 
@@ -162,7 +163,7 @@ func TestAskUpstream_ApprovalResponse(t *testing.T) {
 
 func TestAskUpstream_DenialResponse(t *testing.T) {
 	mt := &mockTransport{}
-	policy := NewAskUpstreamPolicy(mt, sideEffectingSet())
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 
@@ -197,7 +198,7 @@ func TestAskUpstream_DenialResponse(t *testing.T) {
 
 func TestAskUpstream_ContextCancellation(t *testing.T) {
 	mt := &mockTransport{}
-	policy := NewAskUpstreamPolicy(mt, sideEffectingSet())
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 
@@ -236,7 +237,7 @@ func TestAskUpstream_ContextCancellation(t *testing.T) {
 
 func TestAskUpstream_EmitError(t *testing.T) {
 	mt := &mockTransport{emitErr: errors.New("transport broken")}
-	policy := NewAskUpstreamPolicy(mt, sideEffectingSet())
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 
@@ -259,7 +260,7 @@ func TestAskUpstream_EmitError(t *testing.T) {
 
 func TestAskUpstream_IgnoresUnrelatedControlEvents(t *testing.T) {
 	mt := &mockTransport{}
-	policy := NewAskUpstreamPolicy(mt, sideEffectingSet())
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 
@@ -297,5 +298,43 @@ func TestAskUpstream_IgnoresUnrelatedControlEvents(t *testing.T) {
 	}
 	if !result.Allowed {
 		t.Error("expected allowed after correct response arrives")
+	}
+}
+
+func TestAskUpstream_Timeout(t *testing.T) {
+	mt := &mockTransport{}
+	// Use a very short timeout so the test completes quickly.
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 50*time.Millisecond)
+
+	tool := types.ToolDefinition{Name: "write_file"}
+
+	// Do not send any response — let it time out.
+	result, err := policy.Check(context.Background(), tool, nil)
+	if err == nil {
+		t.Fatal("expected error from timeout")
+	}
+	if result != nil {
+		t.Error("expected nil result on timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timeout error message, got: %v", err)
+	}
+
+	// Verify that the pending request was cleaned up.
+	policy.mu.Lock()
+	pendingCount := len(policy.pending)
+	policy.mu.Unlock()
+	if pendingCount != 0 {
+		t.Errorf("expected 0 pending requests after timeout, got %d", pendingCount)
+	}
+}
+
+func TestAskUpstream_DefaultTimeout(t *testing.T) {
+	mt := &mockTransport{}
+	// Pass 0 to get the default timeout.
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
+
+	if policy.Timeout != DefaultAskUpstreamTimeout {
+		t.Errorf("expected default timeout %v, got %v", DefaultAskUpstreamTimeout, policy.Timeout)
 	}
 }
