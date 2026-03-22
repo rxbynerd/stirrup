@@ -1,6 +1,6 @@
-# Stirrup Code Review — 2026-03-22
+# Stirrup Code Review — 2026-03-22 (updated)
 
-Comprehensive review of the Go harness codebase on the `golang` branch. All 12 VERSION1.md components are fully implemented. 580+ tests pass at 100% package-level coverage. Zero known vulnerabilities.
+Comprehensive review of the Go harness codebase on the `golang` branch. All 12 VERSION1.md components are fully implemented, all 7 phases complete. 630+ tests pass across 22 packages at 100% package-level coverage. Zero known vulnerabilities.
 
 ## Overall Assessment
 
@@ -78,7 +78,7 @@ Model pricing lives in a function body. Will need manual updating as new models 
 
 ### P3 — Low priority
 
-- No rate limiting on tool execution — model could call tools in a tight loop
+- ~~No rate limiting on tool execution — model could call tools in a tight loop~~ **RESOLVED** — stall detection (`core/stall.go`) terminates after 3 repeated identical calls or 5 consecutive failures
 - HTTP error response bodies from providers are not size-limited
 - Fuzzy diff threshold hardcoded at 0.80 in udiff strategy — not configurable
 - Container executor `putArchive` path parameter not URL-encoded — would fail on special characters
@@ -117,10 +117,21 @@ Production feedback loop infrastructure is now implemented:
 - **`eval drift`** command — compares metrics between two adjacent time windows, flags significant changes (pass rate drop >5pp, cost/turns increase >20%). Exit code 1 on drift.
 - **Tier 3 eval CI gate** — `eval-gate` job in CI runs eval suites on main branch pushes, compares against stored baselines, uploads results as artifacts.
 
+### ~~Phase 7 Features~~ **RESOLVED** (2026-03-22)
+
+Phase 7 is now complete:
+
+- **Multi-strategy edit fallback** (`edit/multi.go`) — unified `edit_file` tool that accepts udiff, search-replace, or whole-file input and routes to the appropriate strategy with automatic fallback. 11 tests.
+- **Sub-agent spawning** (`core/subagent.go`, `tool/builtins/subagent.go`, `transport/null.go`) — `spawn_agent` tool creates a fresh `AgenticLoop` with a subset of context, no recursion (spawn_agent excluded from child tools), synchronous execution with `captureTransport` for output extraction. 8 tests.
+- **`eval compare-to-production`** (`eval/cmd/eval/main.go`) — loads eval results + production metrics from lakehouse, builds `LabVsProductionReport`, prints comparison table. 5 tests.
+- **Security hardening** (SECURITY_HARDENING.md immediate fixes):
+  - HTTP client timeouts on all provider adapters and MCP client
+  - RunConfig validation bounds (FollowUpGrace ≤ 3600s, MaxCostBudget ≤ $100, MaxTokenBudget ≤ 50M)
+  - Loop stall detection (`core/stall.go`) — repeated identical calls (3x) and consecutive failures (5x). 6 tests.
+
 ### Other gaps
 
 - **No end-to-end smoke test** with a real provider (even a single recorded interaction would catch wire-format regressions)
-- **Sub-agent spawning** (Phase 7 per VERSION1.md)
 
 ---
 
@@ -149,13 +160,13 @@ Change `BuildLoop` to warn and continue when an MCP server is unreachable, rathe
 
 | Metric | Value |
 |--------|-------|
-| Internal packages | 15 (harness) + 5 (eval) = 20 |
-| Packages with tests | 20/20 (100%) |
-| Test functions | ~585 |
+| Internal packages | 17 (harness) + 5 (eval) = 22 |
+| Packages with tests | 22/22 (100%) |
+| Test functions | ~630 |
 | All passing | Yes |
 | External dep families | 5 (AWS SDK, gRPC, protobuf, OTel, OTel exporter) |
 | Known vulnerabilities | 0 |
 | TODOs in production code | 1 (input validator — acknowledged) |
 | VERSION1.md components | 12/12 implemented |
-| VERSION1.md phases | 1-6 of 7 complete |
+| VERSION1.md phases | 7/7 complete |
 | CI | GitHub Actions (build, test, eval gate, container publish) |

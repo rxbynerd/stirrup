@@ -16,23 +16,23 @@ stirrup/
     cmd/harness/main.go      # CLI entrypoint
     cmd/job/main.go          # K8s job entrypoint (gRPC to control plane)
     internal/
-      core/                  # AgenticLoop, factory, cost tracking
+      core/                  # AgenticLoop, factory, cost tracking, sub-agent spawning, stall detection
       provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode templates
       context/               # ContextStrategy: sliding window, summarise, offload
-      tool/                  # ToolRegistry + built-in tools
+      tool/                  # ToolRegistry + built-in tools (incl. spawn_agent)
       executor/              # Executor: local, container (Docker/Podman), API (GitHub)
-      edit/                  # EditStrategy: whole-file, search-replace, udiff
+      edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy
       verifier/              # Verifier: none, test-runner, composite, llm-judge
       permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream
       git/                   # GitStrategy: none, deterministic
-      transport/             # Transport: stdio, gRPC bidi streaming
+      transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC)
       security/              # SecretStore (env, file, AWS SSM), LogScrubber, input validation
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
   eval/                      # Eval framework
-    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift)
+    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift, compare-to-production)
     judge/                   # Judge system: test-command, file-exists, file-contains, composite
     runner/                  # Suite runner (live + replay) and replay evaluator
     reporter/                # Comparison reporter: diffs two SuiteResults, text formatting
@@ -90,6 +90,9 @@ go build -o stirrup-eval ./eval/cmd/eval
 
 # Detect metric drift between time windows
 ./stirrup-eval drift --lakehouse path/to/lakehouse --window 7d [--compare-window 7d] [--mode execution]
+
+# Compare eval results against production metrics
+./stirrup-eval compare-to-production --results results/result.json --lakehouse path/to/lakehouse [--after 2026-03-01] [--experiment-id exp1]
 ```
 
 ## Architecture
@@ -100,12 +103,12 @@ go build -o stirrup-eval ./eval/cmd/eval
 2. **ModelRouter** — selects provider+model per turn (static, per-mode, dynamic)
 3. **PromptBuilder** — assembles system prompt (default per-mode templates, composed)
 4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file)
-5. **ToolRegistry** — resolves and dispatches tools (6 built-in tools + MCP remote tools)
+5. **ToolRegistry** — resolves and dispatches tools (7 built-in tools + MCP remote tools)
 6. **Executor** — sandboxed file I/O and command execution (local, container, API)
-7. **EditStrategy** — how file changes are applied (whole-file, search-replace, udiff)
+7. **EditStrategy** — how file changes are applied (whole-file, search-replace, udiff, multi-strategy)
 8. **Verifier** — validates run output (none, test-runner, composite, llm-judge)
 9. **PermissionPolicy** — gates side-effecting tools (allow-all, deny-side-effects, ask-upstream)
-10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming)
+10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null for sub-agents)
 11. **GitStrategy** — manages branches/commits (none, deterministic)
 12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry)
 
@@ -168,7 +171,7 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 - **Runner** (`eval/runner/`) — orchestrates suite execution: loads `EvalSuite` from JSON, creates temp workspaces, optionally clones repos at specific refs, invokes the harness binary, parses JSONL traces, applies judges. Sequential task execution. Errors per-task are captured without halting the suite.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness. Useful for testing new judge criteria against existing recordings.
 - **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets. Detects regressions (pass→fail/error) and improvements (fail/error→pass). Computes cost/turn deltas from `RunTrace`. Text formatter for human-readable output.
-- **CLI** (`eval/cmd/eval/`) — `run`, `compare`, `baseline`, `mine-failures`, `drift` subcommands.
+- **CLI** (`eval/cmd/eval/`) — `run`, `compare`, `baseline`, `mine-failures`, `drift`, `compare-to-production` subcommands.
 
 ### Lakehouse (production feedback loop)
 
@@ -177,15 +180,33 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 - **`eval baseline`** — pulls aggregate metrics from a lakehouse for use as experiment baselines.
 - **`eval mine-failures`** — queries non-success recordings and generates EvalSuite JSON with test-command judges.
 - **`eval drift`** — compares metrics between two adjacent time windows, flags significant changes (pass rate >5pp drop, cost/turns >20% increase), exits 1 on drift.
+- **`eval compare-to-production`** — loads eval results and production metrics from lakehouse, builds `LabVsProductionReport`, prints comparison table.
+
+### Sub-agent spawning
+
+The `spawn_agent` built-in tool (`tool/builtins/subagent.go`) creates a fresh `AgenticLoop` with its own message history, running synchronously as a tool call. The sub-agent reuses the parent's provider, executor, and tools (except `spawn_agent` itself — preventing infinite recursion). It uses a `NullTransport` (no streaming to control plane), `NoneVerifier`, `NoneGitStrategy`, and a `captureTransport` that records text deltas for output extraction. Max turns capped at 20, defaults to 10.
+
+The `SubAgentSpawner` function type in `builtins` decouples the tool from the `core` package, avoiding circular imports. The factory provides the concrete closure.
+
+### Multi-strategy edit fallback
+
+The `MultiStrategy` (`edit/multi.go`) presents a unified `edit_file` tool that accepts fields from all three edit strategies. It routes based on which fields are present (diff → udiff, old_string → search-replace, content → whole-file) and automatically falls back to the next applicable strategy if the primary one fails.
+
+### Loop stall detection
+
+The `stallDetector` (`core/stall.go`) tracks consecutive identical tool calls and consecutive failures. The loop terminates with `"stalled"` after 3 repeated identical calls (same name + same input) or `"tool_failures"` after 5 consecutive failures.
 
 ## Security Foundations
 
 - **SecretStore**: resolves `secret://` references (env vars, files, AWS SSM via `secret://ssm:///param-name`). `AutoSecretStore` routes by scheme, only initialising SSM client when config refs require it. API keys never stored in RunConfig.
 - **LogScrubber**: regex-based redaction of 7 secret patterns in all log/trace output.
 - **Input validation**: JSON Schema validation on all tool inputs. Prototype pollution protection.
-- **RunConfig validation**: hard security invariants (read-only modes must use restrictive permissions, bounded maxTurns/timeout).
+- **RunConfig validation**: hard security invariants (read-only modes must use restrictive permissions, bounded maxTurns/timeout, FollowUpGrace ≤ 3600s, MaxCostBudget ≤ $100, MaxTokenBudget ≤ 50M).
+- **HTTP client timeouts**: all provider adapters (Anthropic, OpenAI, Bedrock) and MCP client use explicit HTTP clients with timeouts (120s streaming, 30s MCP) — never `http.DefaultClient`.
+- **Environment filtering**: command execution allowlists 27 safe env vars; blocks all API keys and cloud credentials.
 - **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.
 - **RunConfig.Redact()**: strips secret references before trace persistence.
+- **Stall detection**: repeated identical tool calls (3x) and consecutive failures (5x) terminate the loop.
 
 ## Key Constants
 

@@ -1891,15 +1891,23 @@ Deliver: lakehouse integration, failure mining, drift detection.
 5. ✅ `eval drift` command: detect metric changes over time windows
 6. ✅ Tier 3 (full eval) as release gate in CI (`eval-gate` job in `.github/workflows/ci.yml`)
 
-### Phase 7: Remaining features + security hardening (ongoing)
+### Phase 7: Remaining features + security hardening ✅
 
-1. Unified diff edit strategy + multi-strategy fallback
-2. LLM-as-judge verifier
-3. OpenTelemetry trace emitter (`go.opentelemetry.io/otel`)
-4. Token budgets and cost caps in the core loop
-5. Sub-agent spawning (fresh loop instance with subset of context)
-6. `eval compare-to-production` command (lab-vs-production validation)
-7. Security hardening items from `SECURITY_HARDENING.md` — prioritised by deployment context (see that document for the full roadmap)
+1. ✅ Unified diff edit strategy + multi-strategy fallback (`edit/multi.go`) — unified `edit_file` tool that routes to udiff, search-replace, or whole-file based on input fields, with automatic fallback
+2. ✅ LLM-as-judge verifier (`verifier/llmjudge.go`)
+3. ✅ OpenTelemetry trace emitter (`trace/otel.go`, `go.opentelemetry.io/otel`)
+4. ✅ Token budgets and cost caps in the core loop (`core/types.go`)
+5. ✅ Sub-agent spawning (`core/subagent.go`, `tool/builtins/subagent.go`) — fresh loop instance with subset of context, no recursion (spawn_agent excluded from child), synchronous execution with output capture via `captureTransport`
+6. ✅ `eval compare-to-production` command (`eval/cmd/eval/main.go`) — loads eval results + production metrics from lakehouse, builds `LabVsProductionReport`, prints comparison table
+7. ✅ Security hardening (immediate V1 fixes from `SECURITY_HARDENING.md`):
+   - 0.1 ✅ Search tool path traversal — `ResolvePath` before search
+   - 0.2 ✅ Web fetch SSRF — private IP blocking, DNS resolution validation
+   - 0.3 ✅ HTTP client timeouts — explicit timeouts on Anthropic, OpenAI, MCP clients (120s streaming, 30s MCP)
+   - 0.4 ✅ Log scrubber patterns — broadened for JWTs, OpenAI keys
+   - 0.5 ✅ Environment variable filtering — 27-key allowlist in `filteredCommandEnv()`
+   - 0.6 ✅ API executor URL encoding — `url.PathEscape` on all path components
+   - 0.7 ✅ RunConfig validation bounds — FollowUpGrace ≤ 3600s, MaxCostBudget ≤ $100, MaxTokenBudget ≤ 50M
+   - 9.2 ✅ Loop stall detection (`core/stall.go`) — repeated identical tool calls (3x) and consecutive failures (5x)
 
 Note: scheduling/toil triggering is the control plane's responsibility. The harness just needs to support the toil mode config — the control plane decides *when* to dispatch toil jobs.
 

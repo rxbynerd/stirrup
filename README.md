@@ -6,9 +6,11 @@ A coding agent harness for building composable AI agents. Built in Go with 12 sw
 
 - **Modular Architecture**: 12 interface-based components for LLM provider, tool execution, file editing, and more
 - **Streaming Support**: SSE streaming from Claude API for real-time responses
-- **Security-First**: Built-in secret redaction, input validation, and permission policies
+- **Security-First**: Built-in secret redaction, input validation, permission policies, HTTP client timeouts, loop stall detection
 - **Multi-Mode Operation**: execution, planning, review, research, toil modes
-- **Cost Tracking**: Runtime cost tracking and token accounting
+- **Cost Tracking**: Runtime cost tracking, token accounting, and budget enforcement
+- **Sub-Agent Spawning**: Delegate subtasks to fresh agent instances with their own context
+- **Multi-Strategy Editing**: Unified edit tool with automatic fallback (udiff → search-replace → whole-file)
 - **Extensible**: All components can be swapped out and replaced
 
 ## Quick Start
@@ -90,22 +92,22 @@ stirrup/
   harness/                   # Main harness implementation
     cmd/harness/main.go      # CLI entrypoint
     internal/
-      core/                  # AgenticLoop, factory, cost tracking
-      provider/              # ProviderAdapter: Anthropic SSE streaming
-      router/                # ModelRouter: static model routing
+      core/                  # AgenticLoop, factory, cost tracking, sub-agent spawning, stall detection
+      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible
+      router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode system prompts
-      context/               # ContextStrategy: sliding window context
-      tool/                  # ToolRegistry and built-in tools
-      executor/              # Executor: local command and file execution
-      edit/                  # EditStrategy: whole-file editing
-      verifier/              # Verifier: validation interface
-      permission/            # PermissionPolicy: operation gating
-      git/                   # GitStrategy: version control integration
-      transport/             # Transport: stdio JSON-lines protocol
-      trace/                 # TraceEmitter: telemetry and logging
+      context/               # ContextStrategy: sliding window, summarise, offload
+      tool/                  # ToolRegistry and built-in tools (incl. spawn_agent)
+      executor/              # Executor: local, container, API
+      edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy
+      verifier/              # Verifier: none, test-runner, composite, llm-judge
+      permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream
+      git/                   # GitStrategy: none, deterministic
+      transport/             # Transport: stdio, gRPC, null (for sub-agents)
+      trace/                 # TraceEmitter: JSONL, OpenTelemetry
       security/              # SecretStore, LogScrubber, input validation
   eval/                      # Evaluation framework
-    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift)
+    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift, compare-to-production)
     judge/                   # Judge system (test-command, file-exists, file-contains, composite)
     runner/                  # Suite runner and replay evaluator
     reporter/                # Comparison reporter with text formatting
