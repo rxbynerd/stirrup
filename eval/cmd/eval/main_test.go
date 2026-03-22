@@ -308,6 +308,186 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 	}
 }
 
+// --- buildLabVsProductionReport tests ---
+
+func TestBuildLabVsProductionReport_Basic(t *testing.T) {
+	prodMetrics := types.TraceMetrics{
+		Count:    100,
+		PassRate: 0.85,
+		MeanCost: 0.45,
+		MeanTurns: 4.2,
+	}
+
+	result := eval.SuiteResult{
+		SuiteID:  "test-suite",
+		RunID:    "run-1",
+		PassRate: 0.90,
+		Tasks: []eval.TaskResult{
+			{TaskID: "t1", Outcome: "pass", Trace: &types.RunTrace{Cost: 0.30, Turns: 3}},
+			{TaskID: "t2", Outcome: "pass", Trace: &types.RunTrace{Cost: 0.50, Turns: 4}},
+			{TaskID: "t3", Outcome: "fail", Trace: &types.RunTrace{Cost: 0.40, Turns: 5}},
+		},
+	}
+
+	report := buildLabVsProductionReport("exp-1", prodMetrics, result)
+
+	if report.ExperimentID != "exp-1" {
+		t.Errorf("ExperimentID = %q, want %q", report.ExperimentID, "exp-1")
+	}
+
+	// Production baseline
+	if report.Production.SampleSize != 100 {
+		t.Errorf("Production.SampleSize = %d, want 100", report.Production.SampleSize)
+	}
+	if math.Abs(report.Production.PassRate-0.85) > 0.001 {
+		t.Errorf("Production.PassRate = %f, want 0.85", report.Production.PassRate)
+	}
+	if math.Abs(report.Production.MeanCost-0.45) > 0.001 {
+		t.Errorf("Production.MeanCost = %f, want 0.45", report.Production.MeanCost)
+	}
+	if math.Abs(report.Production.MeanTurns-4.2) > 0.001 {
+		t.Errorf("Production.MeanTurns = %f, want 4.2", report.Production.MeanTurns)
+	}
+
+	// Variant
+	if len(report.Variants) != 1 {
+		t.Fatalf("got %d variants, want 1", len(report.Variants))
+	}
+	v := report.Variants[0]
+	if v.Name != "test-suite" {
+		t.Errorf("Variant.Name = %q, want %q", v.Name, "test-suite")
+	}
+	if math.Abs(v.Results.PassRate-0.90) > 0.001 {
+		t.Errorf("Variant.PassRate = %f, want 0.90", v.Results.PassRate)
+	}
+	// Mean cost = (0.30 + 0.50 + 0.40) / 3 = 0.40
+	if math.Abs(v.Results.MeanCost-0.40) > 0.001 {
+		t.Errorf("Variant.MeanCost = %f, want 0.40", v.Results.MeanCost)
+	}
+	// Mean turns = (3 + 4 + 5) / 3 = 4.0 => MedianTurns = 4
+	if v.Results.MedianTurns != 4 {
+		t.Errorf("Variant.MedianTurns = %d, want 4", v.Results.MedianTurns)
+	}
+}
+
+func TestBuildLabVsProductionReport_NoTraces(t *testing.T) {
+	prodMetrics := types.TraceMetrics{
+		Count:    50,
+		PassRate: 0.70,
+		MeanCost: 0.30,
+	}
+
+	result := eval.SuiteResult{
+		SuiteID:  "no-traces",
+		PassRate: 0.50,
+		Tasks: []eval.TaskResult{
+			{TaskID: "t1", Outcome: "pass"},
+			{TaskID: "t2", Outcome: "fail"},
+		},
+	}
+
+	report := buildLabVsProductionReport("exp-2", prodMetrics, result)
+
+	if len(report.Variants) != 1 {
+		t.Fatalf("got %d variants, want 1", len(report.Variants))
+	}
+	v := report.Variants[0]
+	// With no traces, mean cost and turns should be zero.
+	if v.Results.MeanCost != 0 {
+		t.Errorf("Variant.MeanCost = %f, want 0", v.Results.MeanCost)
+	}
+	if v.Results.MedianTurns != 0 {
+		t.Errorf("Variant.MedianTurns = %d, want 0", v.Results.MedianTurns)
+	}
+}
+
+func TestBuildLabVsProductionReport_MixedTraces(t *testing.T) {
+	prodMetrics := types.TraceMetrics{Count: 10, PassRate: 0.80}
+
+	result := eval.SuiteResult{
+		SuiteID:  "mixed",
+		PassRate: 0.75,
+		Tasks: []eval.TaskResult{
+			{TaskID: "t1", Outcome: "pass", Trace: &types.RunTrace{Cost: 0.20, Turns: 2}},
+			{TaskID: "t2", Outcome: "error"}, // no trace
+			{TaskID: "t3", Outcome: "pass", Trace: &types.RunTrace{Cost: 0.40, Turns: 6}},
+		},
+	}
+
+	report := buildLabVsProductionReport("exp-3", prodMetrics, result)
+	v := report.Variants[0]
+
+	// Only traced tasks count: mean cost = (0.20 + 0.40) / 2 = 0.30
+	if math.Abs(v.Results.MeanCost-0.30) > 0.001 {
+		t.Errorf("Variant.MeanCost = %f, want 0.30", v.Results.MeanCost)
+	}
+	// Mean turns = (2 + 6) / 2 = 4
+	if v.Results.MedianTurns != 4 {
+		t.Errorf("Variant.MedianTurns = %d, want 4", v.Results.MedianTurns)
+	}
+}
+
+func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
+	report := types.LabVsProductionReport{
+		ExperimentID: "smoke-test",
+		Production: types.BaselineMetrics{
+			PassRate:   0.85,
+			MeanCost:   0.45,
+			MeanTurns:  4.2,
+			SampleSize: 100,
+		},
+		Variants: []types.VariantReport{
+			{
+				Name: "v1",
+				Results: types.VariantResults{
+					PassRate:    0.90,
+					MeanCost:    0.38,
+					MedianTurns: 3,
+				},
+			},
+		},
+	}
+
+	// Redirect stderr to discard so test output stays clean.
+	origStderr := os.Stderr
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = devNull
+	defer func() {
+		os.Stderr = origStderr
+		devNull.Close()
+	}()
+
+	// Should not panic.
+	printComparisonSummary(report)
+}
+
+func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
+	report := types.LabVsProductionReport{
+		ExperimentID: "empty",
+		Production: types.BaselineMetrics{
+			PassRate:   0.50,
+			SampleSize: 10,
+		},
+	}
+
+	origStderr := os.Stderr
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = devNull
+	defer func() {
+		os.Stderr = origStderr
+		devNull.Close()
+	}()
+
+	// Should not panic with zero variants.
+	printComparisonSummary(report)
+}
+
 // --- buildDriftReport tests ---
 
 func TestBuildDriftReport_ComputesDeltas(t *testing.T) {

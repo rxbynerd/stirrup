@@ -28,11 +28,12 @@ import (
 const usage = `Usage: eval <command> [options]
 
 Commands:
-  run             Run an eval suite
-  compare         Compare two eval results
-  baseline        Pull production metrics as experiment baselines
-  mine-failures   Turn production failures into eval tasks
-  drift           Detect metric changes over time windows
+  run                    Run an eval suite
+  compare                Compare two eval results
+  compare-to-production  Compare eval results to production metrics
+  baseline               Pull production metrics as experiment baselines
+  mine-failures          Turn production failures into eval tasks
+  drift                  Detect metric changes over time windows
 
 Run "eval <command> -help" for details.
 `
@@ -56,6 +57,8 @@ func main() {
 		cmdMineFailures(os.Args[2:])
 	case "drift":
 		cmdDrift(os.Args[2:])
+	case "compare-to-production":
+		cmdCompareToProduction(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", os.Args[1], usage)
 		os.Exit(1)
@@ -484,6 +487,166 @@ func printDriftReport(report types.DriftReport) bool {
 
 func formatDollars(v float64) string {
 	return fmt.Sprintf("$%.4f", v)
+}
+
+// cmdCompareToProduction compares eval suite results against production metrics
+// from a lakehouse, producing a LabVsProductionReport.
+func cmdCompareToProduction(args []string) {
+	fs := flag.NewFlagSet("compare-to-production", flag.ExitOnError)
+	lakehousePath := fs.String("lakehouse", "", "Path to lakehouse directory (required)")
+	resultsPath := fs.String("results", "", "Path to eval SuiteResult JSON (required)")
+	experimentID := fs.String("experiment-id", "", "Experiment identifier")
+	afterStr := fs.String("after", "", "Filter production traces after this date (RFC3339 or YYYY-MM-DD)")
+	beforeStr := fs.String("before", "", "Filter production traces before this date (RFC3339 or YYYY-MM-DD)")
+	mode := fs.String("mode", "", "Filter by run mode")
+	model := fs.String("model", "", "Filter by model name")
+	outputPath := fs.String("output", "", "Output path for report JSON")
+	fs.Parse(args)
+
+	if *lakehousePath == "" {
+		log.Fatal("-lakehouse is required")
+	}
+	if *resultsPath == "" {
+		log.Fatal("-results is required")
+	}
+
+	result, err := loadResult(*resultsPath)
+	if err != nil {
+		log.Fatalf("loading results: %v", err)
+	}
+
+	store, err := lakehouse.NewFileStore(*lakehousePath)
+	if err != nil {
+		log.Fatalf("opening lakehouse: %v", err)
+	}
+	defer store.Close()
+
+	filter := types.TraceFilter{
+		Mode:  *mode,
+		Model: *model,
+	}
+	if *afterStr != "" {
+		t, err := parseDate(*afterStr)
+		if err != nil {
+			log.Fatalf("parsing -after: %v", err)
+		}
+		filter.After = &t
+	}
+	if *beforeStr != "" {
+		t, err := parseDate(*beforeStr)
+		if err != nil {
+			log.Fatalf("parsing -before: %v", err)
+		}
+		filter.Before = &t
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	prodMetrics, err := store.Metrics(ctx, filter)
+	if err != nil {
+		log.Fatalf("computing production metrics: %v", err)
+	}
+
+	expID := *experimentID
+	if expID == "" {
+		expID = result.SuiteID
+	}
+
+	report := buildLabVsProductionReport(expID, prodMetrics, result)
+
+	if *outputPath != "" {
+		if err := writeJSON(*outputPath, report); err != nil {
+			log.Fatalf("writing report: %v", err)
+		}
+		fmt.Fprintf(os.Stderr, "Report written to %s\n", *outputPath)
+	} else {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			log.Fatalf("marshalling report: %v", err)
+		}
+		fmt.Println(string(data))
+	}
+
+	fmt.Fprintln(os.Stderr)
+	printComparisonSummary(report)
+}
+
+// buildLabVsProductionReport constructs a LabVsProductionReport from production
+// TraceMetrics and an eval SuiteResult.
+func buildLabVsProductionReport(experimentID string, prodMetrics types.TraceMetrics, result eval.SuiteResult) types.LabVsProductionReport {
+	production := types.BaselineMetrics{
+		PassRate:   prodMetrics.PassRate,
+		MeanCost:   prodMetrics.MeanCost,
+		MeanTurns:  prodMetrics.MeanTurns,
+		SampleSize: prodMetrics.Count,
+	}
+
+	// Compute lab variant metrics from the SuiteResult.
+	var totalCost float64
+	var totalTurns int
+	tracedTasks := 0
+	for _, task := range result.Tasks {
+		if task.Trace != nil {
+			totalCost += task.Trace.Cost
+			totalTurns += task.Trace.Turns
+			tracedTasks++
+		}
+	}
+
+	var meanCost, meanTurns float64
+	if tracedTasks > 0 {
+		meanCost = totalCost / float64(tracedTasks)
+		meanTurns = float64(totalTurns) / float64(tracedTasks)
+	}
+
+	variant := types.VariantReport{
+		Name: result.SuiteID,
+		Results: types.VariantResults{
+			PassRate: result.PassRate,
+			MeanCost: meanCost,
+		},
+	}
+
+	// MedianTurns is an int field; use the truncated mean as an approximation
+	// when we don't have enough data points for a proper median.
+	variant.Results.MedianTurns = int(meanTurns)
+
+	return types.LabVsProductionReport{
+		ExperimentID: experimentID,
+		Production:   production,
+		Variants:     []types.VariantReport{variant},
+	}
+}
+
+// printComparisonSummary prints a human-readable table comparing production
+// metrics to each lab variant.
+func printComparisonSummary(report types.LabVsProductionReport) {
+	fmt.Fprintf(os.Stderr, "Experiment: %s\n", report.ExperimentID)
+	fmt.Fprintf(os.Stderr, "Production sample size: %d\n\n", report.Production.SampleSize)
+
+	for _, v := range report.Variants {
+		fmt.Fprintf(os.Stderr, "Variant: %s\n", v.Name)
+		fmt.Fprintf(os.Stderr, "%-16s %12s %12s %12s\n", "Metric", "Production", "Lab", "Delta")
+		fmt.Fprintf(os.Stderr, "%-16s %12s %12s %12s\n", "------", "----------", "---", "-----")
+
+		prodPassPct := report.Production.PassRate * 100
+		labPassPct := v.Results.PassRate * 100
+		fmt.Fprintf(os.Stderr, "%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
+			"Pass rate", prodPassPct, labPassPct, labPassPct-prodPassPct)
+
+		fmt.Fprintf(os.Stderr, "%-16s %11s %11s %+12s\n",
+			"Mean cost",
+			formatDollars(report.Production.MeanCost),
+			formatDollars(v.Results.MeanCost),
+			formatDollars(v.Results.MeanCost-report.Production.MeanCost))
+
+		fmt.Fprintf(os.Stderr, "%-16s %12.1f %12d %+12.1f\n",
+			"Mean turns",
+			report.Production.MeanTurns,
+			v.Results.MedianTurns,
+			float64(v.Results.MedianTurns)-report.Production.MeanTurns)
+	}
 }
 
 // parseDate parses a date string in either RFC3339 or "2006-01-02" format.
