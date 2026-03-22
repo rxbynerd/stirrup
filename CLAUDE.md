@@ -170,6 +170,12 @@ buf generate             # Regenerate proto code (after editing .proto files)
 buf lint                 # Lint proto files
 ```
 
+### CI
+
+GitHub Actions at `.github/workflows/ci.yml`:
+- **verify** job: runs `go test` for types and harness modules, builds the harness binary (on every push and PR)
+- **publish-container** job: builds and pushes Docker image to `ghcr.io/rxbynerd/stirrup` (on main branch push only, after verify passes)
+
 ### Known issue: gopls false positives
 
 The LSP (gopls) frequently reports false positive diagnostics due to the `go.work` workspace module resolution. Errors referencing packages like `NewComposedPromptBuilder not declared by package prompt` or fields from other modules are almost always false. Always verify with `go build` and `go test` — if they pass, the LSP errors are spurious.
