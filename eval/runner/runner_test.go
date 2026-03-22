@@ -139,7 +139,6 @@ func TestReplayRecording_Passing(t *testing.T) {
 		FinalOutcome: types.RunTrace{
 			ID:    "trace-1",
 			Turns: 2,
-			Cost:  0.03,
 		},
 	}
 
@@ -165,9 +164,6 @@ func TestReplayRecording_Passing(t *testing.T) {
 	if result.Trace == nil {
 		t.Fatal("expected trace to be set")
 	}
-	if result.Trace.Cost != 0.03 {
-		t.Errorf("trace cost = %f, want 0.03", result.Trace.Cost)
-	}
 }
 
 func TestReplayRecording_Failing(t *testing.T) {
@@ -179,7 +175,6 @@ func TestReplayRecording_Failing(t *testing.T) {
 		FinalOutcome: types.RunTrace{
 			ID:    "trace-2",
 			Turns: 1,
-			Cost:  0.01,
 		},
 	}
 
@@ -208,7 +203,7 @@ func TestParseTraceFile(t *testing.T) {
 	dir := t.TempDir()
 
 	t.Run("valid trace", func(t *testing.T) {
-		trace := types.RunTrace{ID: "t1", Turns: 5, Cost: 0.10}
+		trace := types.RunTrace{ID: "t1", Turns: 5}
 		data, _ := json.Marshal(trace)
 		path := filepath.Join(dir, "valid.jsonl")
 		os.WriteFile(path, append([]byte("ignored first line\n"), append(data, '\n')...), 0o644)

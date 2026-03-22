@@ -24,8 +24,8 @@ func task(id, outcome string, trace *types.RunTrace) eval.TaskResult {
 	}
 }
 
-func trace(cost float64, turns int) *types.RunTrace {
-	return &types.RunTrace{Cost: cost, Turns: turns}
+func trace(turns int) *types.RunTrace {
+	return &types.RunTrace{Turns: turns}
 }
 
 func suite(runID string, tasks ...eval.TaskResult) eval.SuiteResult {
@@ -135,14 +135,14 @@ func TestCompare(t *testing.T) {
 	}
 }
 
-func TestCompare_CostAndTurnDeltas(t *testing.T) {
+func TestCompare_TurnDeltas(t *testing.T) {
 	baseline := suite("base",
-		task("a", "pass", trace(1.00, 5)),
-		task("b", "fail", trace(0.50, 3)),
+		task("a", "pass", trace(5)),
+		task("b", "fail", trace(3)),
 	)
 	current := suite("curr",
-		task("a", "fail", trace(1.20, 8)),
-		task("b", "pass", trace(0.30, 2)),
+		task("a", "fail", trace(8)),
+		task("b", "pass", trace(2)),
 	)
 
 	report := Compare(baseline, current)
@@ -153,10 +153,6 @@ func TestCompare_CostAndTurnDeltas(t *testing.T) {
 	reg := report.Regressions[0]
 	if reg.TaskID != "a" {
 		t.Errorf("regression TaskID: got %q, want %q", reg.TaskID, "a")
-	}
-	wantCostDelta := 0.20
-	if diff := reg.CostDelta - wantCostDelta; diff > 0.001 || diff < -0.001 {
-		t.Errorf("regression CostDelta: got %.4f, want %.4f", reg.CostDelta, wantCostDelta)
 	}
 	if reg.TurnsDelta != 3 {
 		t.Errorf("regression TurnsDelta: got %d, want %d", reg.TurnsDelta, 3)
@@ -169,10 +165,6 @@ func TestCompare_CostAndTurnDeltas(t *testing.T) {
 	if imp.TaskID != "b" {
 		t.Errorf("improvement TaskID: got %q, want %q", imp.TaskID, "b")
 	}
-	wantImpCostDelta := -0.20
-	if diff := imp.CostDelta - wantImpCostDelta; diff > 0.001 || diff < -0.001 {
-		t.Errorf("improvement CostDelta: got %.4f, want %.4f", imp.CostDelta, wantImpCostDelta)
-	}
 	if imp.TurnsDelta != -1 {
 		t.Errorf("improvement TurnsDelta: got %d, want %d", imp.TurnsDelta, -1)
 	}
@@ -180,15 +172,12 @@ func TestCompare_CostAndTurnDeltas(t *testing.T) {
 
 func TestCompare_NilTraces(t *testing.T) {
 	baseline := suite("base", task("a", "pass", nil))
-	current := suite("curr", task("a", "fail", trace(1.00, 5)))
+	current := suite("curr", task("a", "fail", trace(5)))
 
 	report := Compare(baseline, current)
 
 	if len(report.Regressions) != 1 {
 		t.Fatalf("expected 1 regression, got %d", len(report.Regressions))
-	}
-	if report.Regressions[0].CostDelta != 0 {
-		t.Errorf("expected zero CostDelta with nil baseline trace, got %f", report.Regressions[0].CostDelta)
 	}
 	if report.Regressions[0].TurnsDelta != 0 {
 		t.Errorf("expected zero TurnsDelta with nil baseline trace, got %d", report.Regressions[0].TurnsDelta)
@@ -197,12 +186,12 @@ func TestCompare_NilTraces(t *testing.T) {
 
 func TestCompare_Summary(t *testing.T) {
 	baseline := suite("base",
-		task("a", "pass", trace(1.00, 5)),
-		task("b", "fail", trace(0.50, 3)),
+		task("a", "pass", trace(5)),
+		task("b", "fail", trace(3)),
 	)
 	current := suite("curr",
-		task("a", "pass", trace(0.80, 4)),
-		task("b", "pass", trace(0.40, 2)),
+		task("a", "pass", trace(4)),
+		task("b", "pass", trace(2)),
 	)
 
 	report := Compare(baseline, current)
@@ -217,15 +206,6 @@ func TestCompare_Summary(t *testing.T) {
 	}
 	if !approxEqual(s.PassRateDelta, 0.5) {
 		t.Errorf("PassRateDelta: got %f, want 0.5", s.PassRateDelta)
-	}
-	if !approxEqual(s.BaselineCost, 1.50) {
-		t.Errorf("BaselineCost: got %f, want 1.50", s.BaselineCost)
-	}
-	if !approxEqual(s.CurrentCost, 1.20) {
-		t.Errorf("CurrentCost: got %f, want 1.20", s.CurrentCost)
-	}
-	if !approxEqual(s.CostDelta, -0.30) {
-		t.Errorf("CostDelta: got %f, want -0.30", s.CostDelta)
 	}
 	if s.HasRegressions {
 		t.Error("HasRegressions should be false when there are no regressions")
@@ -243,9 +223,6 @@ func TestFormatText_NoRegressions(t *testing.T) {
 			BaselinePassRate: 0.5,
 			CurrentPassRate:  1.0,
 			PassRateDelta:    0.5,
-			BaselineCost:     1.50,
-			CurrentCost:      1.20,
-			CostDelta:        -0.30,
 			HasRegressions:   false,
 		},
 	}
@@ -264,9 +241,6 @@ func TestFormatText_NoRegressions(t *testing.T) {
 	if !strings.Contains(got, "task-bar: fail → pass") {
 		t.Error("missing improvement detail")
 	}
-	if !strings.Contains(got, "-$0.30") {
-		t.Error("missing negative cost delta")
-	}
 }
 
 func TestFormatText_WithRegressions(t *testing.T) {
@@ -280,9 +254,6 @@ func TestFormatText_WithRegressions(t *testing.T) {
 			BaselinePassRate: 1.0,
 			CurrentPassRate:  0.0,
 			PassRateDelta:    -1.0,
-			BaselineCost:     1.00,
-			CurrentCost:      1.50,
-			CostDelta:        0.50,
 			HasRegressions:   true,
 		},
 	}

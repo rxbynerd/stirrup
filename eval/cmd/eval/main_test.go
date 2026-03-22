@@ -312,9 +312,8 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 
 func TestBuildLabVsProductionReport_Basic(t *testing.T) {
 	prodMetrics := types.TraceMetrics{
-		Count:    100,
-		PassRate: 0.85,
-		MeanCost: 0.45,
+		Count:     100,
+		PassRate:  0.85,
 		MeanTurns: 4.2,
 	}
 
@@ -323,9 +322,9 @@ func TestBuildLabVsProductionReport_Basic(t *testing.T) {
 		RunID:    "run-1",
 		PassRate: 0.90,
 		Tasks: []eval.TaskResult{
-			{TaskID: "t1", Outcome: "pass", Trace: &types.RunTrace{Cost: 0.30, Turns: 3}},
-			{TaskID: "t2", Outcome: "pass", Trace: &types.RunTrace{Cost: 0.50, Turns: 4}},
-			{TaskID: "t3", Outcome: "fail", Trace: &types.RunTrace{Cost: 0.40, Turns: 5}},
+			{TaskID: "t1", Outcome: "pass", Trace: &types.RunTrace{Turns: 3}},
+			{TaskID: "t2", Outcome: "pass", Trace: &types.RunTrace{Turns: 4}},
+			{TaskID: "t3", Outcome: "fail", Trace: &types.RunTrace{Turns: 5}},
 		},
 	}
 
@@ -342,9 +341,6 @@ func TestBuildLabVsProductionReport_Basic(t *testing.T) {
 	if math.Abs(report.Production.PassRate-0.85) > 0.001 {
 		t.Errorf("Production.PassRate = %f, want 0.85", report.Production.PassRate)
 	}
-	if math.Abs(report.Production.MeanCost-0.45) > 0.001 {
-		t.Errorf("Production.MeanCost = %f, want 0.45", report.Production.MeanCost)
-	}
 	if math.Abs(report.Production.MeanTurns-4.2) > 0.001 {
 		t.Errorf("Production.MeanTurns = %f, want 4.2", report.Production.MeanTurns)
 	}
@@ -360,10 +356,6 @@ func TestBuildLabVsProductionReport_Basic(t *testing.T) {
 	if math.Abs(v.Results.PassRate-0.90) > 0.001 {
 		t.Errorf("Variant.PassRate = %f, want 0.90", v.Results.PassRate)
 	}
-	// Mean cost = (0.30 + 0.50 + 0.40) / 3 = 0.40
-	if math.Abs(v.Results.MeanCost-0.40) > 0.001 {
-		t.Errorf("Variant.MeanCost = %f, want 0.40", v.Results.MeanCost)
-	}
 	// Mean turns = (3 + 4 + 5) / 3 = 4.0 => MedianTurns = 4
 	if v.Results.MedianTurns != 4 {
 		t.Errorf("Variant.MedianTurns = %d, want 4", v.Results.MedianTurns)
@@ -374,7 +366,6 @@ func TestBuildLabVsProductionReport_NoTraces(t *testing.T) {
 	prodMetrics := types.TraceMetrics{
 		Count:    50,
 		PassRate: 0.70,
-		MeanCost: 0.30,
 	}
 
 	result := eval.SuiteResult{
@@ -392,10 +383,7 @@ func TestBuildLabVsProductionReport_NoTraces(t *testing.T) {
 		t.Fatalf("got %d variants, want 1", len(report.Variants))
 	}
 	v := report.Variants[0]
-	// With no traces, mean cost and turns should be zero.
-	if v.Results.MeanCost != 0 {
-		t.Errorf("Variant.MeanCost = %f, want 0", v.Results.MeanCost)
-	}
+	// With no traces, turns should be zero.
 	if v.Results.MedianTurns != 0 {
 		t.Errorf("Variant.MedianTurns = %d, want 0", v.Results.MedianTurns)
 	}
@@ -408,19 +396,15 @@ func TestBuildLabVsProductionReport_MixedTraces(t *testing.T) {
 		SuiteID:  "mixed",
 		PassRate: 0.75,
 		Tasks: []eval.TaskResult{
-			{TaskID: "t1", Outcome: "pass", Trace: &types.RunTrace{Cost: 0.20, Turns: 2}},
+			{TaskID: "t1", Outcome: "pass", Trace: &types.RunTrace{Turns: 2}},
 			{TaskID: "t2", Outcome: "error"}, // no trace
-			{TaskID: "t3", Outcome: "pass", Trace: &types.RunTrace{Cost: 0.40, Turns: 6}},
+			{TaskID: "t3", Outcome: "pass", Trace: &types.RunTrace{Turns: 6}},
 		},
 	}
 
 	report := buildLabVsProductionReport("exp-3", prodMetrics, result)
 	v := report.Variants[0]
 
-	// Only traced tasks count: mean cost = (0.20 + 0.40) / 2 = 0.30
-	if math.Abs(v.Results.MeanCost-0.30) > 0.001 {
-		t.Errorf("Variant.MeanCost = %f, want 0.30", v.Results.MeanCost)
-	}
 	// Mean turns = (2 + 6) / 2 = 4
 	if v.Results.MedianTurns != 4 {
 		t.Errorf("Variant.MedianTurns = %d, want 4", v.Results.MedianTurns)
@@ -432,7 +416,6 @@ func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
 		ExperimentID: "smoke-test",
 		Production: types.BaselineMetrics{
 			PassRate:   0.85,
-			MeanCost:   0.45,
 			MeanTurns:  4.2,
 			SampleSize: 100,
 		},
@@ -441,7 +424,6 @@ func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
 				Name: "v1",
 				Results: types.VariantResults{
 					PassRate:    0.90,
-					MeanCost:    0.38,
 					MedianTurns: 3,
 				},
 			},
@@ -494,7 +476,6 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 	current := types.TraceMetrics{
 		Count:       10,
 		PassRate:    0.80,
-		MeanCost:    0.50,
 		MeanTurns:   5.0,
 		MeanTokens:  1000,
 		P50Duration: 200,
@@ -503,7 +484,6 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 	baseline := types.TraceMetrics{
 		Count:       10,
 		PassRate:    0.90,
-		MeanCost:    0.40,
 		MeanTurns:   4.0,
 		MeanTokens:  900,
 		P50Duration: 180,
@@ -514,9 +494,6 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 
 	if math.Abs(report.Deltas.PassRateDelta-(-0.10)) > 0.001 {
 		t.Errorf("PassRateDelta = %f, want -0.10", report.Deltas.PassRateDelta)
-	}
-	if math.Abs(report.Deltas.MeanCostDelta-0.10) > 0.001 {
-		t.Errorf("MeanCostDelta = %f, want 0.10", report.Deltas.MeanCostDelta)
 	}
 	if math.Abs(report.Deltas.MeanTurnsDelta-1.0) > 0.001 {
 		t.Errorf("MeanTurnsDelta = %f, want 1.0", report.Deltas.MeanTurnsDelta)

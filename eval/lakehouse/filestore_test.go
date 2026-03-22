@@ -9,7 +9,7 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func makeTrace(id, outcome, mode, model string, started time.Time, durationMs int64, cost float64, turns int, tokens types.TokenUsage) types.RunTrace {
+func makeTrace(id, outcome, mode, model string, started time.Time, durationMs int64, turns int, tokens types.TokenUsage) types.RunTrace {
 	return types.RunTrace{
 		ID:      id,
 		Outcome: outcome,
@@ -21,7 +21,6 @@ func makeTrace(id, outcome, mode, model string, started time.Time, durationMs in
 		},
 		StartedAt:   started,
 		CompletedAt: started.Add(time.Duration(durationMs) * time.Millisecond),
-		Cost:        cost,
 		Turns:       turns,
 		TokenUsage:  tokens,
 	}
@@ -44,7 +43,7 @@ func TestStoreAndQueryTrace(t *testing.T) {
 	defer fs.Close()
 
 	ctx := context.Background()
-	trace := makeTrace("t1", "success", "execution", "claude-sonnet-4-6", time.Now(), 1000, 0.05, 3, types.TokenUsage{Input: 100, Output: 200})
+	trace := makeTrace("t1", "success", "execution", "claude-sonnet-4-6", time.Now(), 1000, 3, types.TokenUsage{Input: 100, Output: 200})
 
 	if err := fs.StoreTrace(ctx, trace); err != nil {
 		t.Fatalf("StoreTrace: %v", err)
@@ -71,7 +70,7 @@ func TestStoreAndQueryRecording(t *testing.T) {
 	defer fs.Close()
 
 	ctx := context.Background()
-	trace := makeTrace("r1", "success", "execution", "claude-sonnet-4-6", time.Now(), 500, 0.02, 2, types.TokenUsage{Input: 50, Output: 100})
+	trace := makeTrace("r1", "success", "execution", "claude-sonnet-4-6", time.Now(), 500, 2, types.TokenUsage{Input: 50, Output: 100})
 	rec := makeRecording("r1", trace)
 
 	if err := fs.StoreRecording(ctx, rec); err != nil {
@@ -154,11 +153,11 @@ func seedTraces(t *testing.T, fs *FileStore) {
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	traces := []types.RunTrace{
-		makeTrace("t1", "success", "execution", "claude-sonnet-4-6", base, 1000, 0.05, 3, types.TokenUsage{Input: 100, Output: 200}),
-		makeTrace("t2", "error", "planning", "claude-haiku-3", base.Add(1*time.Hour), 2000, 0.10, 5, types.TokenUsage{Input: 200, Output: 400}),
-		makeTrace("t3", "success", "execution", "claude-sonnet-4-6", base.Add(2*time.Hour), 3000, 0.15, 7, types.TokenUsage{Input: 300, Output: 600}),
-		makeTrace("t4", "max_turns", "review", "claude-opus-4", base.Add(3*time.Hour), 4000, 0.20, 10, types.TokenUsage{Input: 400, Output: 800}),
-		makeTrace("t5", "success", "execution", "claude-sonnet-4-6", base.Add(4*time.Hour), 5000, 0.25, 2, types.TokenUsage{Input: 500, Output: 1000}),
+		makeTrace("t1", "success", "execution", "claude-sonnet-4-6", base, 1000, 3, types.TokenUsage{Input: 100, Output: 200}),
+		makeTrace("t2", "error", "planning", "claude-haiku-3", base.Add(1*time.Hour), 2000, 5, types.TokenUsage{Input: 200, Output: 400}),
+		makeTrace("t3", "success", "execution", "claude-sonnet-4-6", base.Add(2*time.Hour), 3000, 7, types.TokenUsage{Input: 300, Output: 600}),
+		makeTrace("t4", "max_turns", "review", "claude-opus-4", base.Add(3*time.Hour), 4000, 10, types.TokenUsage{Input: 400, Output: 800}),
+		makeTrace("t5", "success", "execution", "claude-sonnet-4-6", base.Add(4*time.Hour), 5000, 2, types.TokenUsage{Input: 500, Output: 1000}),
 	}
 	for _, tr := range traces {
 		if err := fs.StoreTrace(ctx, tr); err != nil {
@@ -360,9 +359,6 @@ func TestMetrics_EmptyStore(t *testing.T) {
 	if m.PassRate != 0 {
 		t.Fatalf("expected pass rate 0, got %f", m.PassRate)
 	}
-	if m.TotalCost != 0 {
-		t.Fatalf("expected total cost 0, got %f", m.TotalCost)
-	}
 }
 
 func approxEqual(a, b, epsilon float64) bool {
@@ -390,16 +386,6 @@ func TestMetrics_Computation(t *testing.T) {
 	expectedPassRate := 3.0 / 5.0
 	if !approxEqual(m.PassRate, expectedPassRate, 0.001) {
 		t.Fatalf("expected pass rate %f, got %f", expectedPassRate, m.PassRate)
-	}
-
-	// Total cost: 0.05 + 0.10 + 0.15 + 0.20 + 0.25 = 0.75
-	if !approxEqual(m.TotalCost, 0.75, 0.001) {
-		t.Fatalf("expected total cost 0.75, got %f", m.TotalCost)
-	}
-
-	// Mean cost: 0.75 / 5 = 0.15
-	if !approxEqual(m.MeanCost, 0.15, 0.001) {
-		t.Fatalf("expected mean cost 0.15, got %f", m.MeanCost)
 	}
 
 	// Mean turns: (3+5+7+10+2) / 5 = 5.4
@@ -455,8 +441,8 @@ func TestQueryRecordings_FilterByOutcome(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	t1 := makeTrace("r1", "success", "execution", "claude-sonnet-4-6", base, 1000, 0.05, 3, types.TokenUsage{Input: 100, Output: 200})
-	t2 := makeTrace("r2", "error", "execution", "claude-sonnet-4-6", base.Add(time.Hour), 2000, 0.10, 5, types.TokenUsage{Input: 200, Output: 400})
+	t1 := makeTrace("r1", "success", "execution", "claude-sonnet-4-6", base, 1000, 3, types.TokenUsage{Input: 100, Output: 200})
+	t2 := makeTrace("r2", "error", "execution", "claude-sonnet-4-6", base.Add(time.Hour), 2000, 5, types.TokenUsage{Input: 200, Output: 400})
 
 	if err := fs.StoreRecording(ctx, makeRecording("r1", t1)); err != nil {
 		t.Fatalf("StoreRecording: %v", err)
