@@ -24,7 +24,7 @@ const (
 // HarnessEvent is sent from the harness to the control plane.
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Type  string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "heartbeat" | "ready" | "permission_request"
+	Type  string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "warning" | "heartbeat" | "ready" | "permission_request"
 	// Fields used by various event types. Only the relevant fields are
 	// populated for a given type.
 	Text          string    `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
@@ -312,6 +312,7 @@ type RunConfig struct {
 	MaxTokenBudget *int32   `protobuf:"varint,17,opt,name=max_token_budget,json=maxTokenBudget,proto3,oneof" json:"max_token_budget,omitempty"`
 	MaxCostBudget  *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
 	Timeout        *int32   `protobuf:"varint,19,opt,name=timeout,proto3,oneof" json:"timeout,omitempty"`
+	FollowUpGrace  *int32   `protobuf:"varint,21,opt,name=follow_up_grace,json=followUpGrace,proto3,oneof" json:"follow_up_grace,omitempty"` // seconds; 0 means disabled; max 3600; maps to types.RunConfig.FollowUpGrace
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -482,6 +483,13 @@ func (x *RunConfig) GetMaxCostBudget() float64 {
 func (x *RunConfig) GetTimeout() int32 {
 	if x != nil && x.Timeout != nil {
 		return *x.Timeout
+	}
+	return 0
+}
+
+func (x *RunConfig) GetFollowUpGrace() int32 {
+	if x != nil && x.FollowUpGrace != nil {
+		return *x.FollowUpGrace
 	}
 	return 0
 }
@@ -1164,10 +1172,11 @@ func (x *ResourceLimits) GetPids() int32 {
 }
 
 type EditStrategyConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Type           string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	FuzzyThreshold *float64               `protobuf:"fixed64,2,opt,name=fuzzy_threshold,json=fuzzyThreshold,proto3,oneof" json:"fuzzy_threshold,omitempty"` // minimum similarity ratio for fuzzy matching; default 0.80; maps to types.EditStrategyConfig.FuzzyThreshold
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *EditStrategyConfig) Reset() {
@@ -1205,6 +1214,13 @@ func (x *EditStrategyConfig) GetType() string {
 		return x.Type
 	}
 	return ""
+}
+
+func (x *EditStrategyConfig) GetFuzzyThreshold() float64 {
+	if x != nil && x.FuzzyThreshold != nil {
+		return *x.FuzzyThreshold
+	}
+	return 0
 }
 
 type VerifierConfig struct {
@@ -1278,6 +1294,7 @@ func (x *VerifierConfig) GetVerifiers() []*VerifierConfig {
 type PermissionPolicyConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Timeout       int32                  `protobuf:"varint,2,opt,name=timeout,proto3" json:"timeout,omitempty"` // seconds before auto-deny; 0 means use harness default (60s); maps to types.PermissionPolicyConfig.Timeout
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1317,6 +1334,13 @@ func (x *PermissionPolicyConfig) GetType() string {
 		return x.Type
 	}
 	return ""
+}
+
+func (x *PermissionPolicyConfig) GetTimeout() int32 {
+	if x != nil {
+		return x.Timeout
+	}
+	return 0
 }
 
 type GitStrategyConfig struct {
@@ -1367,6 +1391,7 @@ type TraceEmitterConfig struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	FilePath      string                 `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
+	Endpoint      string                 `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"` // otel: gRPC exporter address; empty means localhost:4317; maps to types.TraceEmitterConfig.Endpoint
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1411,6 +1436,13 @@ func (x *TraceEmitterConfig) GetType() string {
 func (x *TraceEmitterConfig) GetFilePath() string {
 	if x != nil {
 		return x.FilePath
+	}
+	return ""
+}
+
+func (x *TraceEmitterConfig) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
 	}
 	return ""
 }
@@ -1558,7 +1590,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\aallowed\x18\x05 \x01(\v2\x18.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\x9c\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xdd\n" +
 	"\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
@@ -1581,7 +1613,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\tmax_turns\x18\x10 \x01(\x05R\bmaxTurns\x12-\n" +
 	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12+\n" +
 	"\x0fmax_cost_budget\x18\x12 \x01(\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
-	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x1aA\n" +
+	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
+	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x1aA\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aX\n" +
@@ -1591,7 +1624,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x11_max_token_budgetB\x12\n" +
 	"\x10_max_cost_budgetB\n" +
 	"\n" +
-	"\b_timeout\"\xdc\x01\n" +
+	"\b_timeoutB\x12\n" +
+	"\x10_follow_up_grace\"\xdc\x01\n" +
 	"\bRunTrace\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x14\n" +
 	"\x05turns\x18\x02 \x01(\x05R\x05turns\x12!\n" +
@@ -1654,21 +1688,25 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x04cpus\x18\x01 \x01(\x01R\x04cpus\x12\x1b\n" +
 	"\tmemory_mb\x18\x02 \x01(\x05R\bmemoryMb\x12\x17\n" +
 	"\adisk_mb\x18\x03 \x01(\x05R\x06diskMb\x12\x12\n" +
-	"\x04pids\x18\x04 \x01(\x05R\x04pids\"(\n" +
+	"\x04pids\x18\x04 \x01(\x05R\x04pids\"j\n" +
 	"\x12EditStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\x92\x01\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12,\n" +
+	"\x0ffuzzy_threshold\x18\x02 \x01(\x01H\x00R\x0efuzzyThreshold\x88\x01\x01B\x12\n" +
+	"\x10_fuzzy_threshold\"\x92\x01\n" +
 	"\x0eVerifierConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x18\n" +
 	"\atimeout\x18\x03 \x01(\x05R\atimeout\x128\n" +
-	"\tverifiers\x18\x04 \x03(\v2\x1a.harness.v1.VerifierConfigR\tverifiers\",\n" +
+	"\tverifiers\x18\x04 \x03(\v2\x1a.harness.v1.VerifierConfigR\tverifiers\"F\n" +
 	"\x16PermissionPolicyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"'\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
+	"\atimeout\x18\x02 \x01(\x05R\atimeout\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"E\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"a\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
-	"\tfile_path\x18\x02 \x01(\tR\bfilePath\"f\n" +
+	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
+	"\bendpoint\x18\x03 \x01(\tR\bendpoint\"f\n" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12<\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2\x1b.harness.v1.MCPServerConfigR\n" +
@@ -1760,6 +1798,7 @@ func file_harness_v1_harness_proto_init() {
 		return
 	}
 	file_harness_v1_harness_proto_msgTypes[3].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[13].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

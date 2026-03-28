@@ -15,7 +15,7 @@ service HarnessService {
 
 // HarnessEvent is sent from the harness to the control plane.
 message HarnessEvent {
-  string type = 1; // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "heartbeat" | "ready" | "permission_request"
+  string type = 1; // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "warning" | "heartbeat" | "ready" | "permission_request"
 
   // Fields used by various event types. Only the relevant fields are
   // populated for a given type.
@@ -35,6 +35,8 @@ message HarnessEvent {
 // ControlEvent is sent from the control plane to the harness.
 message ControlEvent {
   string type = 1; // "task_assignment" | "user_response" | "cancel" | "permission_response"
+                    // NOTE: "cancel" is defined in the protocol but is not yet handled by the
+                    // harness main loop or job entrypoint (no-op on receipt).
 
   RunConfig task = 2;
   string user_response = 3;
@@ -75,6 +77,7 @@ message RunConfig {
   optional int32 max_token_budget = 17;
   optional double max_cost_budget = 18;
   optional int32 timeout = 19;
+  optional int32 follow_up_grace = 21; // seconds; 0 means disabled; max 3600; maps to types.RunConfig.FollowUpGrace
 }
 
 // RunTrace is included with "done" events.
@@ -153,6 +156,7 @@ message ResourceLimits {
 
 message EditStrategyConfig {
   string type = 1;
+  optional double fuzzy_threshold = 2; // minimum similarity ratio for fuzzy matching; default 0.80; maps to types.EditStrategyConfig.FuzzyThreshold
 }
 
 message VerifierConfig {
@@ -164,6 +168,7 @@ message VerifierConfig {
 
 message PermissionPolicyConfig {
   string type = 1;
+  int32 timeout = 2; // seconds before auto-deny; 0 means use harness default (60s); maps to types.PermissionPolicyConfig.Timeout
 }
 
 message GitStrategyConfig {
@@ -173,6 +178,7 @@ message GitStrategyConfig {
 message TraceEmitterConfig {
   string type = 1;
   string file_path = 2;
+  string endpoint = 3; // otel: gRPC exporter address; empty means localhost:4317; maps to types.TraceEmitterConfig.Endpoint
 }
 
 message ToolsConfig {
