@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -102,7 +101,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, mcpClient)
 		for _, srv := range config.Tools.MCPServers {
 			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
-				log.Printf("warning: MCP server %q unavailable, skipping its tools: %v", srv.Name, err)
+				slog.Warn("MCP server unavailable, skipping its tools", "server", srv.Name, "error", err)
 			}
 		}
 	}

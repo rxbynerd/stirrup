@@ -428,6 +428,7 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 		if sr.StopReason != "tool_use" {
 			if sr.StopReason == "" {
+				l.Logger.Warn("provider returned empty stop reason", "turn", turn)
 				return messages, "error"
 			}
 			return messages, sr.StopReason

@@ -71,7 +71,8 @@ func (s *StdioTransport) OnControl(handler func(event types.ControlEvent)) {
 			for scanner.Scan() {
 				var ev types.ControlEvent
 				if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
-					continue // skip malformed lines
+					// Skip malformed lines — non-JSON output may be interleaved on stdin.
+					continue
 				}
 				s.handlerMu.Lock()
 				hs := make([]func(types.ControlEvent), len(s.handlers))
