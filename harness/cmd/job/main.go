@@ -74,11 +74,14 @@ func main() {
 		}
 	})
 
+	assignTimer := time.NewTimer(5 * time.Minute)
+	defer assignTimer.Stop()
+
 	var config *types.RunConfig
 	select {
 	case config = <-configCh:
 		// Got our assignment.
-	case <-time.After(5 * time.Minute):
+	case <-assignTimer.C:
 		fmt.Fprintln(os.Stderr, "Fatal: no task assignment received within 5 minutes")
 		os.Exit(1)
 	case <-tp.Done():

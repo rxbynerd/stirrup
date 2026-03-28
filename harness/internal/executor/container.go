@@ -382,6 +382,16 @@ func demuxDockerStream(r io.Reader) (string, string, error) {
 		if frameSize > maxDockerFrameSize {
 			return stdout.String(), stderr.String(), fmt.Errorf("docker stream frame exceeds %d byte limit: %d", maxDockerFrameSize, frameSize)
 		}
+
+		// Once accumulated output exceeds the cap, drain remaining frames
+		// without buffering to prevent unbounded memory growth.
+		if stdout.Len()+stderr.Len() > maxOutputSize {
+			if _, err := io.CopyN(io.Discard, r, int64(frameSize)); err != nil {
+				return stdout.String(), stderr.String(), fmt.Errorf("drain stream frame: %w", err)
+			}
+			continue
+		}
+
 		frame := make([]byte, frameSize)
 		if _, err := io.ReadFull(r, frame); err != nil {
 			return stdout.String(), stderr.String(), fmt.Errorf("read stream frame: %w", err)
