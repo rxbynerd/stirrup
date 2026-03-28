@@ -80,9 +80,16 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		v := int(*pc.MaxTokenBudget)
 		rc.MaxTokenBudget = &v
 	}
+	if pc.MaxCostBudget != nil {
+		rc.MaxCostBudget = pc.MaxCostBudget
+	}
 	if pc.Timeout != nil {
 		v := int(*pc.Timeout)
 		rc.Timeout = &v
+	}
+	if pc.FollowUpGrace != nil {
+		v := int(*pc.FollowUpGrace)
+		rc.FollowUpGrace = &v
 	}
 
 	if pc.Provider != nil {
@@ -114,12 +121,18 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	}
 	if pc.EditStrategy != nil {
 		rc.EditStrategy = types.EditStrategyConfig{Type: pc.EditStrategy.Type}
+		if pc.EditStrategy.FuzzyThreshold != nil {
+			rc.EditStrategy.FuzzyThreshold = pc.EditStrategy.FuzzyThreshold
+		}
 	}
 	if pc.Verifier != nil {
 		rc.Verifier = verifierConfigFromProto(pc.Verifier)
 	}
 	if pc.PermissionPolicy != nil {
-		rc.PermissionPolicy = types.PermissionPolicyConfig{Type: pc.PermissionPolicy.Type}
+		rc.PermissionPolicy = types.PermissionPolicyConfig{
+			Type:    pc.PermissionPolicy.Type,
+			Timeout: int(pc.PermissionPolicy.Timeout),
+		}
 	}
 	if pc.GitStrategy != nil {
 		rc.GitStrategy = types.GitStrategyConfig{Type: pc.GitStrategy.Type}
@@ -128,6 +141,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		rc.TraceEmitter = types.TraceEmitterConfig{
 			Type:     pc.TraceEmitter.Type,
 			FilePath: pc.TraceEmitter.FilePath,
+			Endpoint: pc.TraceEmitter.Endpoint,
 		}
 	}
 	if pc.Tools != nil {
