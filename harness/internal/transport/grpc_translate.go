@@ -211,9 +211,11 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 
 func verifierConfigFromProto(pc *pb.VerifierConfig) types.VerifierConfig {
 	vc := types.VerifierConfig{
-		Type:    pc.Type,
-		Command: pc.Command,
-		Timeout: int(pc.Timeout),
+		Type:     pc.Type,
+		Command:  pc.Command,
+		Timeout:  int(pc.Timeout),
+		Criteria: pc.Criteria,
+		Model:    pc.Model,
 	}
 	for _, sub := range pc.Verifiers {
 		vc.Verifiers = append(vc.Verifiers, verifierConfigFromProto(sub))

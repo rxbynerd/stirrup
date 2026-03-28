@@ -1229,6 +1229,8 @@ type VerifierConfig struct {
 	Command       string                 `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
 	Timeout       int32                  `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	Verifiers     []*VerifierConfig      `protobuf:"bytes,4,rep,name=verifiers,proto3" json:"verifiers,omitempty"`
+	Criteria      string                 `protobuf:"bytes,5,opt,name=criteria,proto3" json:"criteria,omitempty"` // llm-judge: evaluation criteria string
+	Model         string                 `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`       // llm-judge: model identifier to use as judge
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1289,6 +1291,20 @@ func (x *VerifierConfig) GetVerifiers() []*VerifierConfig {
 		return x.Verifiers
 	}
 	return nil
+}
+
+func (x *VerifierConfig) GetCriteria() string {
+	if x != nil {
+		return x.Criteria
+	}
+	return ""
+}
+
+func (x *VerifierConfig) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
 }
 
 type PermissionPolicyConfig struct {
@@ -1692,12 +1708,14 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x12EditStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12,\n" +
 	"\x0ffuzzy_threshold\x18\x02 \x01(\x01H\x00R\x0efuzzyThreshold\x88\x01\x01B\x12\n" +
-	"\x10_fuzzy_threshold\"\x92\x01\n" +
+	"\x10_fuzzy_threshold\"\xc4\x01\n" +
 	"\x0eVerifierConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x18\n" +
 	"\atimeout\x18\x03 \x01(\x05R\atimeout\x128\n" +
-	"\tverifiers\x18\x04 \x03(\v2\x1a.harness.v1.VerifierConfigR\tverifiers\"F\n" +
+	"\tverifiers\x18\x04 \x03(\v2\x1a.harness.v1.VerifierConfigR\tverifiers\x12\x1a\n" +
+	"\bcriteria\x18\x05 \x01(\tR\bcriteria\x12\x14\n" +
+	"\x05model\x18\x06 \x01(\tR\x05model\"F\n" +
 	"\x16PermissionPolicyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
 	"\atimeout\x18\x02 \x01(\x05R\atimeout\"'\n" +

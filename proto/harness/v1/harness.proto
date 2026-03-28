@@ -164,6 +164,8 @@ message VerifierConfig {
   string command = 2;
   int32 timeout = 3;
   repeated VerifierConfig verifiers = 4;
+  string criteria = 5; // llm-judge: evaluation criteria string
+  string model    = 6; // llm-judge: model identifier to use as judge
 }
 
 message PermissionPolicyConfig {
