@@ -99,6 +99,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// so the harness can still operate with its built-in tools.
 	if len(config.Tools.MCPServers) > 0 {
 		mcpClient := mcp.NewClient(registry, nil)
+		ownedClosers = append(ownedClosers, mcpClient)
 		for _, srv := range config.Tools.MCPServers {
 			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
 				log.Printf("warning: MCP server %q unavailable, skipping its tools: %v", srv.Name, err)
@@ -525,7 +526,7 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 				if result.Error == "" {
 					return "", fmt.Errorf("edit was not applied")
 				}
-					return "", fmt.Errorf("%s", result.Error)
+				return "", fmt.Errorf("%s", result.Error)
 			}
 			if result.Diff != "" {
 				return result.Diff, nil

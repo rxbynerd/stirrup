@@ -170,10 +170,12 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 // Close releases resources held by the client. Currently a no-op since
 // Streamable HTTP is stateless on the client side, but provides a clean
 // lifecycle boundary for future session teardown (e.g. DELETE request).
-func (c *Client) Close() {
+// Returns error to satisfy io.Closer.
+func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.sessions = make(map[string]*serverSession)
+	return nil
 }
 
 // listTools sends a tools/list JSON-RPC request and returns the discovered tools.

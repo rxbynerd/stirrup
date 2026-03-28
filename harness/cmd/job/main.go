@@ -78,6 +78,9 @@ func main() {
 	select {
 	case config = <-configCh:
 		// Got our assignment.
+	case <-time.After(5 * time.Minute):
+		fmt.Fprintln(os.Stderr, "Fatal: no task assignment received within 5 minutes")
+		os.Exit(1)
 	case <-tp.Done():
 		fmt.Fprintln(os.Stderr, "Fatal: gRPC stream closed before receiving task assignment")
 		os.Exit(1)
