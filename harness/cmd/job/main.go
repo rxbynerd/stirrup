@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
+	"github.com/rxbynerd/stirrup/harness/internal/health"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -54,6 +55,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Fatal: failed to send ready event: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Write the liveness probe file so K8s knows we are healthy.
+	if err := health.WriteProbe("/tmp/healthy"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to write health probe: %v\n", err)
+	}
+	defer health.RemoveProbe("/tmp/healthy")
 
 	// 3. Register OnControl and block until a task_assignment arrives.
 	configCh := make(chan *types.RunConfig, 1)

@@ -56,6 +56,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Start tracing.
 	l.Trace.Start(config.RunID, config)
 
+	// Start heartbeat emission so the control plane knows we are alive.
+	stopHeartbeat := l.startHeartbeat(ctx, 30*time.Second)
+
 	// Build the system prompt.
 	systemPrompt, err := l.Prompt.Build(ctx, prompt.PromptContext{
 		Mode:           config.Mode,
@@ -152,6 +155,9 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}); err != nil {
 		log.Printf("warning: transport emit done: %v", err)
 	}
+
+	// Stop heartbeat before finishing the trace.
+	stopHeartbeat()
 
 	// Finish trace.
 	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
@@ -428,6 +434,25 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			return
 		}
 	}
+}
+
+// startHeartbeat launches a background goroutine that emits heartbeat events
+// at the given interval. Returns a cancel function that stops emission.
+func (l *AgenticLoop) startHeartbeat(ctx context.Context, interval time.Duration) context.CancelFunc {
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_ = l.Transport.Emit(types.HarnessEvent{Type: "heartbeat"})
+			}
+		}
+	}()
+	return cancel
 }
 
 // finishWithError records an error outcome and finishes the trace.
