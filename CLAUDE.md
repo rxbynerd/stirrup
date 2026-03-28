@@ -29,6 +29,8 @@ stirrup/
       git/                   # GitStrategy: none, deterministic
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC)
+      observability/         # Structured logging (slog + ScrubHandler), OTel metrics
+      health/                # File-based K8s liveness probes
       security/              # SecretStore (env, file, AWS SSM), LogScrubber, input validation
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
   eval/                      # Eval framework
@@ -68,6 +70,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `-max-turns` | `20` | Maximum agentic loop turns |
 | `-timeout` | `600` | Wall-clock timeout in seconds |
 | `-trace` | (none) | Path to JSONL trace file |
+| `-log-level` | `info` | Log level: debug, info, warn, error |
 | `-transport` | `stdio` | Transport type: stdio, grpc |
 | `-transport-addr` | (none) | gRPC target address (required when transport=grpc) |
 
@@ -146,7 +149,19 @@ The LLM judge verifier (`verifier/llmjudge.go`) evaluates conversation output ag
 
 ### OpenTelemetry trace emitter
 
-The OTel trace emitter (`trace/otel.go`) implements TraceEmitter using real OTel spans exported via OTLP/gRPC. Creates a root `run` span with child `turn[N]` and `tool_call` spans. Default endpoint: `localhost:4317`.
+The OTel trace emitter (`trace/otel.go`) implements TraceEmitter using real OTel spans exported via OTLP/gRPC. Creates a root `run` span with child spans for turns, tool calls, provider streaming, context compaction, verification, permission checks, and git operations. Default endpoint: `localhost:4317`.
+
+### Structured logging
+
+The harness uses `log/slog` (stdlib) with a custom `ScrubHandler` (`observability/logger.go`) that wraps any `slog.Handler` and runs `security.Scrub()` on all string attribute values before delegation. This makes secret leakage through logs structurally impossible. JSON logs are written to stderr with a `runId` field on every line. Log level is configurable via `-log-level` flag or `RunConfig.LogLevel`.
+
+### OTel metrics
+
+The `observability/metrics.go` package emits OTel metrics via OTLP/gRPC alongside tracing. Instruments: 12 counters (`stirrup.harness.runs`, `.turns`, `.tokens.input`, `.tokens.output`, `.tool_calls`, `.tool_errors`, `.provider.requests`, `.provider.errors`, `.context.compactions`, `.security.events`, `.verification.attempts`, `.stalls`), 5 histograms (run/turn/tool-call duration, provider latency, TTFB), and 1 UpDownCounter (context token estimate). All instruments use standard attributes (`run.mode`, `provider.type`, `tool.name`, etc.). `NewNoopMetrics()` provides a zero-cost no-op when metrics are disabled.
+
+### Heartbeat and health probes
+
+The agentic loop emits `heartbeat` events on the transport every 30 seconds during execution. For K8s jobs, a file-based liveness probe (`health/probe.go`) writes `/tmp/healthy` after the ready event and removes it on shutdown.
 
 ### K8s job entrypoint
 
