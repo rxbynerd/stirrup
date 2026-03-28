@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -165,6 +167,26 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	logLevel := parseLogLevel(config.LogLevel)
 	logger := observability.NewLogger(config.RunID, logLevel, os.Stderr)
 
+	// Extract tracer for deeper span instrumentation.
+	var tracer oteltrace.Tracer
+	if otelEmitter, ok := te.(*trace.OTelTraceEmitter); ok {
+		tracer = otelEmitter.Tracer()
+	} else {
+		tracer = oteltrace.NewNoopTracerProvider().Tracer("")
+	}
+
+	// Set tracer on provider adapters for HTTP-level instrumentation.
+	for _, p := range providers {
+		switch pa := p.(type) {
+		case *provider.AnthropicAdapter:
+			pa.Tracer = tracer
+		case *provider.OpenAICompatibleAdapter:
+			pa.Tracer = tracer
+		case *provider.BedrockAdapter:
+			pa.Tracer = tracer
+		}
+	}
+
 	loop := &AgenticLoop{
 		Provider:     prov,
 		Providers:    providers,
@@ -179,6 +201,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Git:          gs,
 		Transport:    tp,
 		Trace:        te,
+		Tracer:       tracer,
 		Metrics:      metrics,
 		Security:     secLogger,
 		Logger:       logger,

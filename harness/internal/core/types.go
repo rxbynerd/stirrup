@@ -9,6 +9,10 @@ import (
 	"log/slog"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -43,6 +47,8 @@ type AgenticLoop struct {
 	Git          git.GitStrategy
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
+	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
+	TraceContext context.Context          // context carrying the root span for child span parenting
 	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
 	Security     *security.SecurityLogger // optional, for structured security event logging
 	Logger       *slog.Logger             // structured logger with secret scrubbing
@@ -84,6 +90,15 @@ func (tt *TokenTracker) CheckBudget(maxTokenBudget *int) types.BudgetCheck {
 	}
 }
 
+// traceCtx returns the context carrying the root OTel span, falling back to
+// the provided context if no trace context has been set.
+func (l *AgenticLoop) traceCtx(fallback context.Context) context.Context {
+	if l.TraceContext != nil {
+		return l.TraceContext
+	}
+	return fallback
+}
+
 // dispatchToolCall executes a single tool call, checking permissions and
 // validating input against the tool's JSON Schema. Returns the tool result
 // string and whether it succeeded.
@@ -104,10 +119,20 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 
 	// Check permissions for side-effecting tools.
 	if t.SideEffects {
+		_, permSpan := l.Tracer.Start(l.traceCtx(ctx), "permission.check",
+			oteltrace.WithAttributes(
+				attribute.String("tool.name", call.Name),
+			),
+		)
 		result, err := l.Permissions.Check(ctx, t.Definition(), call.Input)
 		if err != nil {
+			permSpan.RecordError(err)
+			permSpan.SetStatus(codes.Error, err.Error())
+			permSpan.End()
 			return "Permission check error: " + err.Error(), false
 		}
+		permSpan.SetAttributes(attribute.Bool("permission.allowed", result.Allowed))
+		permSpan.End()
 		if !result.Allowed {
 			return "Permission denied: " + result.Reason, false
 		}

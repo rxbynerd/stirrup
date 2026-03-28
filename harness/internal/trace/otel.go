@@ -185,9 +185,12 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
 	for i, tc := range e.toolCalls {
 		summaries[i] = types.ToolCallSummary{
-			Name:       tc.Name,
-			DurationMs: tc.DurationMs,
-			Success:    tc.Success,
+			Name:        tc.Name,
+			DurationMs:  tc.DurationMs,
+			Success:     tc.Success,
+			ErrorReason: tc.ErrorReason,
+			InputSize:   tc.InputSize,
+			OutputSize:  tc.OutputSize,
 		}
 	}
 
@@ -208,6 +211,23 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	}
 
 	return trace, nil
+}
+
+// Tracer returns the OTel tracer used by this emitter, allowing the loop
+// to create child spans for component calls.
+func (e *OTelTraceEmitter) Tracer() oteltrace.Tracer {
+	return e.tracer
+}
+
+// RootContext returns the context containing the root run span,
+// for use as the parent of loop-level spans.
+func (e *OTelTraceEmitter) RootContext() context.Context {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.rootCtx != nil {
+		return e.rootCtx
+	}
+	return context.Background()
 }
 
 // Close shuts down the tracer provider and exporter.

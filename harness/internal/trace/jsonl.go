@@ -78,9 +78,12 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
 	for i, tc := range e.toolCalls {
 		summaries[i] = types.ToolCallSummary{
-			Name:       tc.Name,
-			DurationMs: tc.DurationMs,
-			Success:    tc.Success,
+			Name:        tc.Name,
+			DurationMs:  tc.DurationMs,
+			Success:     tc.Success,
+			ErrorReason: tc.ErrorReason,
+			InputSize:   tc.InputSize,
+			OutputSize:  tc.OutputSize,
 		}
 	}
 

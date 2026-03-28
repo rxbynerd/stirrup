@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -22,7 +25,8 @@ const (
 type AnthropicAdapter struct {
 	apiKey     string
 	httpClient *http.Client
-	baseURL    string // overridable for testing
+	baseURL    string           // overridable for testing
+	Tracer     oteltrace.Tracer // optional, set by factory for span instrumentation
 }
 
 // NewAnthropicAdapter creates an adapter for the Anthropic Messages API.
@@ -120,6 +124,19 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("execute request: %w", err)
+	}
+
+	// Record HTTP-level metadata on the span from context (the provider.stream
+	// span created by the loop), when OTel instrumentation is enabled.
+	if a.Tracer != nil {
+		span := oteltrace.SpanFromContext(ctx)
+		span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+		if resp.StatusCode == 429 {
+			retryAfter := resp.Header.Get("Retry-After")
+			span.AddEvent("rate_limited", oteltrace.WithAttributes(
+				attribute.String("retry_after", retryAfter),
+			))
+		}
 	}
 
 	if resp.StatusCode != http.StatusOK {

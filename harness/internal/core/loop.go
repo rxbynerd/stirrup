@@ -6,11 +6,14 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -58,6 +61,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Start tracing.
 	l.Trace.Start(config.RunID, config)
 
+	// Extract the root trace context for child span parenting.
+	if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
+		l.TraceContext = otelEmitter.RootContext()
+	} else {
+		l.TraceContext = ctx
+	}
+
 	// Start heartbeat emission so the control plane knows we are alive.
 	stopHeartbeat := l.startHeartbeat(ctx, 30*time.Second)
 
@@ -73,9 +83,14 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 
 	// Set up git workspace.
+	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(ctx), "git.setup")
 	if err := l.Git.Setup(ctx, config.Executor.Workspace, config.RunID); err != nil {
+		gitSetupSpan.RecordError(err)
+		gitSetupSpan.SetStatus(codes.Error, err.Error())
+		gitSetupSpan.End()
 		return l.finishWithError(ctx, fmt.Errorf("git setup: %w", err))
 	}
+	gitSetupSpan.End()
 
 	// Initialize message history.
 	messages := buildMessages(config.Prompt)
@@ -117,15 +132,25 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 		// Run verifier.
 		l.Metrics.VerificationAttempts.Add(ctx, 1)
+		_, verifySpan := l.Tracer.Start(l.traceCtx(ctx), "verifier.verify",
+			oteltrace.WithAttributes(
+				attribute.Int("verifier.attempt", verificationAttempts),
+			),
+		)
 		vResult, verifyErr := l.Verifier.Verify(ctx, verifier.VerifyContext{
 			Mode:     config.Mode,
 			Executor: l.Executor,
 			Messages: messages,
 		})
 		if verifyErr != nil {
+			verifySpan.RecordError(verifyErr)
+			verifySpan.SetStatus(codes.Error, verifyErr.Error())
+			verifySpan.End()
 			outcome = "verification_error"
 			break
 		}
+		verifySpan.SetAttributes(attribute.Bool("verifier.passed", vResult.Passed))
+		verifySpan.End()
 		if vResult.Passed {
 			outcome = "success"
 			break
@@ -152,13 +177,16 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 
 	// Finalise git.
+	_, finaliseSpan := l.Tracer.Start(l.traceCtx(ctx), "git.finalise")
 	if _, err := l.Git.Finalise(ctx); err != nil {
+		finaliseSpan.RecordError(err)
 		l.Logger.Warn("git finalise failed", "error", err)
 		_ = l.Transport.Emit(types.HarnessEvent{
 			Type:    "warning",
 			Message: fmt.Sprintf("git finalise: %v", err),
 		})
 	}
+	finaliseSpan.End()
 
 	l.Logger.Info("run finished", "outcome", outcome)
 
@@ -240,14 +268,25 @@ func (l *AgenticLoop) runInnerLoop(
 		if config.ContextStrategy.MaxTokens > 0 {
 			maxTokens = config.ContextStrategy.MaxTokens
 		}
+		_, contextSpan := l.Tracer.Start(l.traceCtx(ctx), "context.prepare",
+			oteltrace.WithAttributes(
+				attribute.Int("messages.before", len(messages)),
+				attribute.Int("tokens.before", currentTokens),
+			),
+		)
 		preparedMessages, err := l.Context.Prepare(ctx, messages, contextpkg.TokenBudget{
 			MaxTokens:          maxTokens,
 			CurrentTokens:      currentTokens,
 			ReserveForResponse: defaultReserveForResponse,
 		})
 		if err != nil {
+			contextSpan.RecordError(err)
+			contextSpan.SetStatus(codes.Error, err.Error())
+			contextSpan.End()
 			return messages, "error"
 		}
+		contextSpan.SetAttributes(attribute.Int("messages.after", len(preparedMessages)))
+		contextSpan.End()
 
 		// Stream model response.
 		turnStart := time.Now()
@@ -278,7 +317,15 @@ func (l *AgenticLoop) runInnerLoop(
 		)
 		l.Metrics.ProviderRequests.Add(ctx, 1, providerAttrs)
 
-		ch, err := selectedProvider.Stream(ctx, types.StreamParams{
+		spanCtx, providerSpan := l.Tracer.Start(l.traceCtx(ctx), "provider.stream",
+			oteltrace.WithAttributes(
+				attribute.String("provider.type", selection.Provider),
+				attribute.String("provider.model", selection.Model),
+				attribute.Int("turn.number", turn),
+			),
+		)
+
+		ch, err := selectedProvider.Stream(spanCtx, types.StreamParams{
 			Model:       selection.Model,
 			System:      systemPrompt,
 			Messages:    preparedMessages,
@@ -287,6 +334,9 @@ func (l *AgenticLoop) runInnerLoop(
 			Temperature: 0.1,
 		})
 		if err != nil {
+			providerSpan.RecordError(err)
+			providerSpan.SetStatus(codes.Error, err.Error())
+			providerSpan.End()
 			// Rollback: don't append anything on error.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
 			l.Trace.RecordTurn(types.TurnTrace{
@@ -302,6 +352,9 @@ func (l *AgenticLoop) runInnerLoop(
 		turnDuration := time.Since(turnStart)
 
 		if streamErr != nil {
+			providerSpan.RecordError(streamErr)
+			providerSpan.SetStatus(codes.Error, streamErr.Error())
+			providerSpan.End()
 			// Rollback on stream error — don't append partial content.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
 			l.Trace.RecordTurn(types.TurnTrace{
@@ -311,6 +364,11 @@ func (l *AgenticLoop) runInnerLoop(
 			})
 			return messages, "error"
 		}
+		providerSpan.SetAttributes(
+			attribute.Int("tokens.output", sr.OutputTokens),
+			attribute.String("stop_reason", sr.StopReason),
+		)
+		providerSpan.End()
 
 		lastStopReason = sr.StopReason
 
@@ -368,13 +426,37 @@ func (l *AgenticLoop) runInnerLoop(
 			l.Logger.Info("tool dispatched", "tool", call.Name)
 			callStart := time.Now()
 
+			_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
+				oteltrace.WithAttributes(
+					attribute.String("tool.name", call.Name),
+					attribute.Int("tool.input_size", len(call.Input)),
+				),
+			)
+
 			output, success := l.dispatchToolCall(ctx, call)
 			callDuration := time.Since(callStart)
 
+			toolSpan.SetAttributes(
+				attribute.Bool("tool.success", success),
+				attribute.Int("tool.output_size", len(output)),
+				attribute.Int64("tool.duration_ms", callDuration.Milliseconds()),
+			)
+			if !success {
+				toolSpan.SetStatus(codes.Error, "tool call failed")
+			}
+			toolSpan.End()
+
+			errorReason := ""
+			if !success {
+				errorReason = output
+			}
 			l.Trace.RecordToolCall(types.ToolCallTrace{
-				Name:       call.Name,
-				DurationMs: callDuration.Milliseconds(),
-				Success:    success,
+				Name:        call.Name,
+				DurationMs:  callDuration.Milliseconds(),
+				Success:     success,
+				ErrorReason: errorReason,
+				InputSize:   len(call.Input),
+				OutputSize:  len(output),
 			})
 
 			toolNameAttr := metric.WithAttributes(attribute.String("tool.name", call.Name))
@@ -419,13 +501,16 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		// Git checkpoint after tool use.
+		_, checkpointSpan := l.Tracer.Start(l.traceCtx(ctx), "git.checkpoint")
 		if err := l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls))); err != nil {
+			checkpointSpan.RecordError(err)
 			l.Logger.Warn("git checkpoint failed", "error", err)
 			_ = l.Transport.Emit(types.HarnessEvent{
 				Type:    "warning",
 				Message: fmt.Sprintf("git checkpoint: %v", err),
 			})
 		}
+		checkpointSpan.End()
 	}
 
 	// Reached max turns.

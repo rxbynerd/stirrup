@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -31,6 +32,7 @@ type bedrockEventReader interface {
 // BedrockAdapter implements ProviderAdapter for AWS Bedrock's ConverseStream API.
 type BedrockAdapter struct {
 	client bedrockConverseStreamer
+	Tracer oteltrace.Tracer // optional, set by factory for span instrumentation
 }
 
 // NewBedrockAdapter creates an adapter that uses the ConverseStream API.
@@ -63,6 +65,11 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 
 	output, err := b.client.ConverseStream(ctx, input)
 	if err != nil {
+		// Record the error as a span event when OTel instrumentation is enabled.
+		if b.Tracer != nil {
+			span := oteltrace.SpanFromContext(ctx)
+			span.AddEvent("bedrock_error")
+		}
 		return nil, fmt.Errorf("bedrock ConverseStream: %w", err)
 	}
 

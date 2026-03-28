@@ -26,9 +26,12 @@ type RunTrace struct {
 
 // ToolCallSummary records a single tool call's outcome for the trace.
 type ToolCallSummary struct {
-	Name       string `json:"name"`
-	DurationMs int64  `json:"durationMs"`
-	Success    bool   `json:"success"`
+	Name        string `json:"name"`
+	DurationMs  int64  `json:"durationMs"`
+	Success     bool   `json:"success"`
+	ErrorReason string `json:"errorReason,omitempty"`
+	InputSize   int    `json:"inputSize,omitempty"`
+	OutputSize  int    `json:"outputSize,omitempty"`
 }
 
 // VerificationResult holds the outcome of a verification check.
@@ -49,9 +52,12 @@ type TurnTrace struct {
 
 // ToolCallTrace records telemetry for a single tool call.
 type ToolCallTrace struct {
-	Name       string `json:"name"`
-	DurationMs int64  `json:"durationMs"`
-	Success    bool   `json:"success"`
+	Name        string `json:"name"`
+	DurationMs  int64  `json:"durationMs"`
+	Success     bool   `json:"success"`
+	ErrorReason string `json:"errorReason,omitempty"`
+	InputSize   int    `json:"inputSize,omitempty"`
+	OutputSize  int    `json:"outputSize,omitempty"`
 }
 
 // TurnRecord captures the full input/output of a single agentic loop turn.

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -82,6 +84,12 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// events so we can extract the final assistant response.
 	captureTp := newCaptureTransport()
 
+	// Use the parent's tracer if available, otherwise noop.
+	tracer := parent.Tracer
+	if tracer == nil {
+		tracer = oteltrace.NewNoopTracerProvider().Tracer("")
+	}
+
 	// Build the child loop, reusing parent components where safe.
 	childLoop := &AgenticLoop{
 		Provider:    parent.Provider,
@@ -97,6 +105,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   captureTp,
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Tracer:      tracer,
 		Metrics:     parent.Metrics,
 		Logger:      parent.Logger,
 		Security:    parent.Security,
