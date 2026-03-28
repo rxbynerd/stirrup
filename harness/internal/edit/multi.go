@@ -138,15 +138,17 @@ func (m *MultiStrategy) buildCandidates(params multiInput) []strategyCandidate {
 	var candidates []strategyCandidate
 
 	if params.Diff != nil {
-		input, _ := json.Marshal(struct {
+		input, err := json.Marshal(struct {
 			Path string `json:"path"`
 			Diff string `json:"diff"`
 		}{Path: params.Path, Diff: *params.Diff})
-		candidates = append(candidates, strategyCandidate{
-			name:  "udiff",
-			strat: m.udiff,
-			input: input,
-		})
+		if err == nil {
+			candidates = append(candidates, strategyCandidate{
+				name:  "udiff",
+				strat: m.udiff,
+				input: input,
+			})
+		}
 	}
 
 	if params.OldString != nil {
@@ -154,28 +156,32 @@ func (m *MultiStrategy) buildCandidates(params multiInput) []strategyCandidate {
 		if params.NewString != nil {
 			newString = *params.NewString
 		}
-		input, _ := json.Marshal(struct {
+		input, err := json.Marshal(struct {
 			Path      string `json:"path"`
 			OldString string `json:"old_string"`
 			NewString string `json:"new_string"`
 		}{Path: params.Path, OldString: *params.OldString, NewString: newString})
-		candidates = append(candidates, strategyCandidate{
-			name:  "search-replace",
-			strat: m.searchReplace,
-			input: input,
-		})
+		if err == nil {
+			candidates = append(candidates, strategyCandidate{
+				name:  "search-replace",
+				strat: m.searchReplace,
+				input: input,
+			})
+		}
 	}
 
 	if params.Content != nil {
-		input, _ := json.Marshal(struct {
+		input, err := json.Marshal(struct {
 			Path    string `json:"path"`
 			Content string `json:"content"`
 		}{Path: params.Path, Content: *params.Content})
-		candidates = append(candidates, strategyCandidate{
-			name:  "whole-file",
-			strat: m.wholeFile,
-			input: input,
-		})
+		if err == nil {
+			candidates = append(candidates, strategyCandidate{
+				name:  "whole-file",
+				strat: m.wholeFile,
+				input: input,
+			})
+		}
 	}
 
 	return candidates

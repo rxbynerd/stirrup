@@ -17,7 +17,7 @@ A coding agent harness for building composable AI agents. Built in Go with 12 sw
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.26.1+
 - `ANTHROPIC_API_KEY` environment variable set
 
 ### Installation

@@ -51,7 +51,9 @@ func (a *APIExecutor) ReadFile(ctx context.Context, path string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("api executor: create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+a.token)
+	if a.token != "" {
+		req.Header.Set("Authorization", "Bearer "+a.token)
+	}
 	req.Header.Set("Accept", "application/vnd.github.v3.raw")
 
 	resp, err := a.client.Do(req)
@@ -93,7 +95,9 @@ func (a *APIExecutor) ListDirectory(ctx context.Context, path string) ([]string,
 	if err != nil {
 		return nil, fmt.Errorf("api executor: create request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+a.token)
+	if a.token != "" {
+		req.Header.Set("Authorization", "Bearer "+a.token)
+	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
 	resp, err := a.client.Do(req)
