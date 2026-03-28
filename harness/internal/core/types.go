@@ -13,6 +13,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -42,6 +43,7 @@ type AgenticLoop struct {
 	Git          git.GitStrategy
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
+	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
 	Security     *security.SecurityLogger // optional, for structured security event logging
 	Logger       *slog.Logger             // structured logger with secret scrubbing
 	emitReady    bool

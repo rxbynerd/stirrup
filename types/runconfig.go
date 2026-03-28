@@ -204,9 +204,10 @@ type TransportConfig struct {
 
 // TraceEmitterConfig selects the trace emitter implementation.
 type TraceEmitterConfig struct {
-	Type     string `json:"type"`               // "jsonl" | "otel"
-	FilePath string `json:"filePath,omitempty"` // for jsonl
-	Endpoint string `json:"endpoint,omitempty"` // for otel (default: localhost:4317)
+	Type            string `json:"type"`                       // "jsonl" | "otel"
+	FilePath        string `json:"filePath,omitempty"`         // for jsonl
+	Endpoint        string `json:"endpoint,omitempty"`         // for otel tracing (default: localhost:4317)
+	MetricsEndpoint string `json:"metricsEndpoint,omitempty"` // for otel metrics (defaults to Endpoint if unset)
 }
 
 // ToolsConfig holds the tool configuration.

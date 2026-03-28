@@ -10,6 +10,7 @@ import (
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
@@ -55,6 +56,7 @@ func buildSubAgentTestLoop(prov *mockProvider) *AgenticLoop {
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Metrics:     observability.NewNoopMetrics(),
 		Logger:      slog.Default(),
 	}
 }

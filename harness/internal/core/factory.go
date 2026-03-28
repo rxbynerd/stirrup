@@ -133,7 +133,24 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, closer)
 	}
 
-	// 13. Security logger (writes to stderr).
+	// 13. OTel metrics.
+	var metrics *observability.Metrics
+	metricsEndpoint := config.TraceEmitter.MetricsEndpoint
+	if metricsEndpoint == "" {
+		metricsEndpoint = config.TraceEmitter.Endpoint
+	}
+	if config.TraceEmitter.Type == "otel" && metricsEndpoint != "" {
+		metrics, err = observability.NewMetrics(ctx, metricsEndpoint)
+		if err != nil {
+			cleanup()
+			return nil, fmt.Errorf("build metrics: %w", err)
+		}
+		ownedClosers = append(ownedClosers, metrics)
+	} else {
+		metrics = observability.NewNoopMetrics()
+	}
+
+	// 14. Security logger (writes to stderr).
 	secLogger := security.NewSecurityLogger(os.Stderr, config.RunID)
 
 	// Wire security logger into executor if it supports it.
@@ -144,7 +161,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		e.Security = secLogger
 	}
 
-	// 14. Structured logger with secret scrubbing.
+	// 15. Structured logger with secret scrubbing.
 	logLevel := parseLogLevel(config.LogLevel)
 	logger := observability.NewLogger(config.RunID, logLevel, os.Stderr)
 
@@ -162,6 +179,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Git:          gs,
 		Transport:    tp,
 		Trace:        te,
+		Metrics:      metrics,
 		Security:     secLogger,
 		Logger:       logger,
 		emitReady:    emitReady,
