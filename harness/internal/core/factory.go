@@ -92,6 +92,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	es := buildEditStrategy(config.EditStrategy)
 	registry := buildToolRegistry(exec, es, config.Tools)
 
+	// Build logger early so MCP connection warnings go through the ScrubHandler.
+	logLevel := parseLogLevel(config.LogLevel)
+	logger := observability.NewLogger(config.RunID, logLevel, os.Stderr)
+
 	// 6b. MCP tool discovery — connect to remote MCP servers and register
 	// their tools into the registry alongside the built-in tools.
 	// Connection failures are non-fatal: the server's tools are skipped
@@ -101,7 +105,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, mcpClient)
 		for _, srv := range config.Tools.MCPServers {
 			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
-				slog.Warn("MCP server unavailable, skipping its tools", "server", srv.Name, "error", err)
+				logger.Warn("MCP server unavailable, skipping its tools", "server", srv.Name, "error", err)
 			}
 		}
 	}
@@ -162,10 +166,6 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	case *executor.ContainerExecutor:
 		e.Security = secLogger
 	}
-
-	// 15. Structured logger with secret scrubbing.
-	logLevel := parseLogLevel(config.LogLevel)
-	logger := observability.NewLogger(config.RunID, logLevel, os.Stderr)
 
 	// Extract tracer for deeper span instrumentation.
 	var tracer oteltrace.Tracer

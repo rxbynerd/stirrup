@@ -8,7 +8,7 @@ A coding agent harness for building composable AI agents. Built in Go with 12 sw
 - **Streaming Support**: SSE streaming from Claude API for real-time responses
 - **Security-First**: Built-in secret redaction, input validation, permission policies, HTTP client timeouts, loop stall detection
 - **Multi-Mode Operation**: execution, planning, review, research, toil modes
-- **Cost Tracking**: Runtime cost tracking, token accounting, and budget enforcement
+- **Token Accounting**: Input/output token tracking per turn with configurable budget limits
 - **Sub-Agent Spawning**: Delegate subtasks to fresh agent instances with their own context
 - **Multi-Strategy Editing**: Unified edit tool with automatic fallback (udiff → search-replace → whole-file)
 - **Extensible**: All components can be swapped out and replaced

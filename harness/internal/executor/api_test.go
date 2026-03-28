@@ -203,5 +203,50 @@ func TestAPIExecutor_EncodesPathAndRef(t *testing.T) {
 	}
 }
 
+func TestAPIExecutor_EmptyToken_OmitsAuthHeader(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("expected no Authorization header for empty token, got %q", auth)
+		}
+		w.Write([]byte("public content"))
+	}))
+	defer server.Close()
+
+	e := newTestAPIExecutor(server.URL)
+	e.token = ""
+
+	// Test ReadFile path.
+	content, err := e.ReadFile(context.Background(), "file.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if content != "public content" {
+		t.Errorf("ReadFile content = %q, want %q", content, "public content")
+	}
+}
+
+func TestAPIExecutor_EmptyToken_ListDirectory_OmitsAuthHeader(t *testing.T) {
+	entries := []githubContentEntry{{Name: "file.txt"}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("expected no Authorization header for empty token, got %q", auth)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(entries)
+	}))
+	defer server.Close()
+
+	e := newTestAPIExecutor(server.URL)
+	e.token = ""
+
+	names, err := e.ListDirectory(context.Background(), ".")
+	if err != nil {
+		t.Fatalf("ListDirectory: %v", err)
+	}
+	if len(names) != 1 || names[0] != "file.txt" {
+		t.Errorf("ListDirectory names = %v, want [file.txt]", names)
+	}
+}
+
 // Verify that APIExecutor satisfies the Executor interface.
 var _ Executor = (*APIExecutor)(nil)
