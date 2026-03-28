@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,8 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+const maxMCPResponseSize = 10 * 1024 * 1024 // 10 MB
 
 // --- JSON-RPC 2.0 wire types ---
 
@@ -120,6 +123,15 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 	}
 	if config.URI == "" {
 		return fmt.Errorf("mcp: server %q missing required URI field", config.Name)
+	}
+
+	// Validate URI scheme to prevent SSRF via file://, gopher://, etc.
+	parsed, err := url.Parse(config.URI)
+	if err != nil {
+		return fmt.Errorf("mcp: invalid URI for server %q: %w", config.Name, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("mcp: server %q URI scheme %q not allowed (must be http or https)", config.Name, parsed.Scheme)
 	}
 
 	// Resolve bearer token if configured.
@@ -271,11 +283,11 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, sess.uri, string(respBody))
 	}
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxMCPResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}

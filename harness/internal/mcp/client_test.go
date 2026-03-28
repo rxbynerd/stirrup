@@ -494,6 +494,40 @@ func containsSubstr(s, substr string) bool {
 	return false
 }
 
+func TestConnect_RejectsFileSchemeURI(t *testing.T) {
+	registry := tool.NewRegistry()
+	client := NewClient(registry, nil)
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	err := client.Connect(context.Background(), types.MCPServerConfig{
+		Name: "evil",
+		URI:  "file:///etc/passwd",
+	}, secrets)
+	if err == nil {
+		t.Fatal("expected error for file:// URI scheme")
+	}
+	if !contains(err.Error(), "not allowed") {
+		t.Errorf("error = %q, want it to contain 'not allowed'", err.Error())
+	}
+}
+
+func TestConnect_RejectsNoSchemeURI(t *testing.T) {
+	registry := tool.NewRegistry()
+	client := NewClient(registry, nil)
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	err := client.Connect(context.Background(), types.MCPServerConfig{
+		Name: "bad",
+		URI:  "localhost:8080",
+	}, secrets)
+	if err == nil {
+		t.Fatal("expected error for URI without http/https scheme")
+	}
+	if !contains(err.Error(), "not allowed") {
+		t.Errorf("error = %q, want it to contain 'not allowed'", err.Error())
+	}
+}
+
 func TestNewClient_NilHTTPClient_HasTimeout(t *testing.T) {
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
