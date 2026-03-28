@@ -47,7 +47,10 @@ func main() {
 	defer tp.Close()
 
 	// 2. Send a "ready" event so the control plane knows we are listening.
-	if err := tp.Emit(types.HarnessEvent{Type: "ready"}); err != nil {
+	//    Include the session ID (if set) so the control plane can correlate
+	//    this gRPC stream back to the session that launched the subprocess.
+	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
+	if err := tp.Emit(types.HarnessEvent{Type: "ready", ID: sessionID}); err != nil {
 		fmt.Fprintf(os.Stderr, "Fatal: failed to send ready event: %v\n", err)
 		os.Exit(1)
 	}
