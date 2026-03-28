@@ -34,7 +34,8 @@ const (
 // recentPreservedMessages) are offloaded. If writing a file fails, the
 // content is truncated in place as a fallback.
 type OffloadToFileStrategy struct {
-	writer FileWriter
+	writer         FileWriter
+	lastCompaction *CompactionEvent
 }
 
 // NewOffloadToFileStrategy creates an OffloadToFileStrategy that writes
@@ -47,6 +48,8 @@ func NewOffloadToFileStrategy(writer FileWriter) *OffloadToFileStrategy {
 // they are returned unchanged. Otherwise, large tool_result blocks in older
 // messages are offloaded to files, reducing the in-context token count.
 func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Message, budget TokenBudget) ([]types.Message, error) {
+	o.lastCompaction = nil
+
 	if len(messages) == 0 {
 		return messages, nil
 	}
@@ -54,7 +57,14 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 	available := budget.MaxTokens - budget.ReserveForResponse
 	if available <= 0 {
 		// Degenerate case: no room. Keep recent messages only.
-		return keepRecent(messages, recentPreservedMessages), nil
+		result := keepRecent(messages, recentPreservedMessages)
+		o.lastCompaction = &CompactionEvent{
+			Strategy:       "offload-to-file",
+			MessagesBefore: len(messages),
+			MessagesAfter:  len(result),
+			TokensBefore:   budget.CurrentTokens,
+		}
+		return result, nil
 	}
 
 	if budget.CurrentTokens <= available {
@@ -107,7 +117,19 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 		}
 	}
 
+	o.lastCompaction = &CompactionEvent{
+		Strategy:       "offload-to-file",
+		MessagesBefore: len(messages),
+		MessagesAfter:  len(result),
+		TokensBefore:   budget.CurrentTokens,
+	}
 	return result, nil
+}
+
+// LastCompaction returns details of the most recent compaction, or nil if
+// no compaction was needed.
+func (o *OffloadToFileStrategy) LastCompaction() *CompactionEvent {
+	return o.lastCompaction
 }
 
 // offloadFilePath returns the workspace-relative path for an offloaded content

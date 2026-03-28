@@ -31,6 +31,8 @@ type SummariseStrategy struct {
 	// Cached summary state to avoid re-summarising unchanged history.
 	cachedHash    string
 	cachedSummary string
+
+	lastCompaction *CompactionEvent
 }
 
 // NewSummariseStrategy creates a SummariseStrategy that will use the given
@@ -46,10 +48,19 @@ func NewSummariseStrategy(provider SummaryProvider, model string) *SummariseStra
 // they are returned as-is. Otherwise, older messages are summarised into a
 // single synthetic message, and recent messages are preserved verbatim.
 func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Message, budget TokenBudget) ([]types.Message, error) {
+	s.lastCompaction = nil
+
 	available := budget.MaxTokens - budget.ReserveForResponse
 	if available <= 0 {
 		// Degenerate case: no room. Keep the minimum recent messages.
-		return keepRecent(messages, minRecentMessages), nil
+		result := keepRecent(messages, minRecentMessages)
+		s.lastCompaction = &CompactionEvent{
+			Strategy:       "summarise",
+			MessagesBefore: len(messages),
+			MessagesAfter:  len(result),
+			TokensBefore:   budget.CurrentTokens,
+		}
+		return result, nil
 	}
 
 	if budget.CurrentTokens <= available {
@@ -69,21 +80,48 @@ func (s *SummariseStrategy) Prepare(ctx context.Context, messages []types.Messag
 	// Check if we already have a cached summary for these old messages.
 	hash := hashMessages(old)
 	if hash == s.cachedHash && s.cachedSummary != "" {
-		return prependSummary(s.cachedSummary, recent), nil
+		result := prependSummary(s.cachedSummary, recent)
+		s.lastCompaction = &CompactionEvent{
+			Strategy:       "summarise",
+			MessagesBefore: len(messages),
+			MessagesAfter:  len(result),
+			TokensBefore:   budget.CurrentTokens,
+		}
+		return result, nil
 	}
 
 	// Generate a summary via the provider.
 	summary, err := s.generateSummary(ctx, old)
 	if err != nil {
 		// Fallback: sliding window behavior (drop oldest, keep recent).
-		return slidingWindowFallback(messages, budget), nil
+		result := slidingWindowFallback(messages, budget)
+		s.lastCompaction = &CompactionEvent{
+			Strategy:       "summarise",
+			MessagesBefore: len(messages),
+			MessagesAfter:  len(result),
+			TokensBefore:   budget.CurrentTokens,
+		}
+		return result, nil
 	}
 
 	// Cache the result.
 	s.cachedHash = hash
 	s.cachedSummary = summary
 
-	return prependSummary(summary, recent), nil
+	result := prependSummary(summary, recent)
+	s.lastCompaction = &CompactionEvent{
+		Strategy:       "summarise",
+		MessagesBefore: len(messages),
+		MessagesAfter:  len(result),
+		TokensBefore:   budget.CurrentTokens,
+	}
+	return result, nil
+}
+
+// LastCompaction returns details of the most recent compaction, or nil if
+// no compaction was needed.
+func (s *SummariseStrategy) LastCompaction() *CompactionEvent {
+	return s.lastCompaction
 }
 
 // splitPoint determines where to split messages. We keep at least

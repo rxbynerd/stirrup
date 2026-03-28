@@ -286,6 +286,22 @@ func (l *AgenticLoop) runInnerLoop(
 			return messages, "error"
 		}
 		contextSpan.SetAttributes(attribute.Int("messages.after", len(preparedMessages)))
+		if compaction := l.Context.LastCompaction(); compaction != nil {
+			contextSpan.SetAttributes(
+				attribute.String("context.strategy", compaction.Strategy),
+				attribute.Int("context.tokens.after", compaction.TokensAfter),
+			)
+			l.Metrics.ContextCompactions.Add(ctx, 1,
+				metric.WithAttributes(attribute.String("context.strategy", compaction.Strategy)),
+			)
+			l.Logger.Info("context compacted",
+				"strategy", compaction.Strategy,
+				"messages.before", compaction.MessagesBefore,
+				"messages.after", compaction.MessagesAfter,
+				"tokens.before", compaction.TokensBefore,
+				"tokens.after", compaction.TokensAfter,
+			)
+		}
 		contextSpan.End()
 
 		// Stream model response.
