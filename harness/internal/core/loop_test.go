@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -101,6 +102,7 @@ func buildTestLoop(prov *mockProvider) *AgenticLoop {
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   transport.NewStdioTransport(&transportBuf, &bytes.Buffer{}),
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Logger:      slog.Default(),
 	}
 }
 
@@ -745,7 +747,7 @@ func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
 	ch <- types.StreamEvent{Type: "message_complete", OutputTokens: 42}
 	close(ch)
 
-	result, err := streamEventsToResult(context.Background(), ch, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	result, err := streamEventsToResult(context.Background(), ch, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}), slog.Default())
 	if err != nil {
 		t.Fatalf("streamEventsToResult() error: %v", err)
 	}

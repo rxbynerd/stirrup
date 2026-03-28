@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -54,6 +55,7 @@ func buildSubAgentTestLoop(prov *mockProvider) *AgenticLoop {
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Logger:      slog.Default(),
 	}
 }
 

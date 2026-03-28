@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"strings"
 
@@ -182,7 +181,7 @@ type streamResult struct {
 
 // streamEventsToResult consumes a stream event channel and returns the
 // accumulated content blocks, final stop reason, and token usage.
-func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport) (*streamResult, error) {
+func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, logger *slog.Logger) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
 	inText := false
@@ -205,7 +204,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				Type: "text_delta",
 				Text: event.Text,
 			}); err != nil {
-				log.Printf("warning: transport emit text_delta: %v", err)
+				logger.Warn("transport emit failed", "event", "text_delta", "error", err)
 			}
 
 		case "tool_call":

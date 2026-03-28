@@ -97,6 +97,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   captureTp,
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Logger:      parent.Logger,
 		Security:    parent.Security,
 	}
 

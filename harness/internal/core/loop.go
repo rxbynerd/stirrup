@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -86,9 +85,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		if err := l.Transport.Emit(types.HarnessEvent{
 			Type: "ready",
 		}); err != nil {
-			log.Printf("warning: transport emit ready: %v", err)
+			l.Logger.Warn("transport emit failed", "event", "ready", "error", err)
 		}
 	}
+
+	l.Logger.Info("run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
 
 	// Outer verification loop.
 	outcome := "success"
@@ -141,19 +142,21 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	// Finalise git.
 	if _, err := l.Git.Finalise(ctx); err != nil {
-		log.Printf("warning: git finalise: %v", err)
+		l.Logger.Warn("git finalise failed", "error", err)
 		_ = l.Transport.Emit(types.HarnessEvent{
 			Type:    "warning",
 			Message: fmt.Sprintf("git finalise: %v", err),
 		})
 	}
 
+	l.Logger.Info("run finished", "outcome", outcome)
+
 	// Emit done event.
 	if err := l.Transport.Emit(types.HarnessEvent{
 		Type:       "done",
 		StopReason: outcome,
 	}); err != nil {
-		log.Printf("warning: transport emit done: %v", err)
+		l.Logger.Warn("transport emit failed", "event", "done", "error", err)
 	}
 
 	// Stop heartbeat before finishing the trace.
@@ -182,6 +185,8 @@ func (l *AgenticLoop) runInnerLoop(
 	stall := &stallDetector{}
 
 	for turn := 0; turn < config.MaxTurns; turn++ {
+		l.Logger.Info("turn started", "turn", turn)
+
 		// Check budget before each turn.
 		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
@@ -268,7 +273,7 @@ func (l *AgenticLoop) runInnerLoop(
 		}
 
 		// Consume stream events.
-		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport)
+		sr, streamErr := streamEventsToResult(ctx, ch, l.Transport, l.Logger)
 		turnDuration := time.Since(turnStart)
 
 		if streamErr != nil {
@@ -301,6 +306,11 @@ func (l *AgenticLoop) runInnerLoop(
 			DurationMs: turnDuration.Milliseconds(),
 		})
 
+		l.Logger.Info("turn completed", "turn", turn,
+			"tokens.input", inputTokenEstimate,
+			"tokens.output", sr.OutputTokens,
+			"stopReason", sr.StopReason)
+
 		// Append assistant message.
 		messages = appendAssistantContent(messages, sr.Blocks)
 
@@ -323,6 +333,7 @@ func (l *AgenticLoop) runInnerLoop(
 		// Dispatch tool calls.
 		var toolResults []types.ToolResult
 		for _, call := range toolCalls {
+			l.Logger.Info("tool dispatched", "tool", call.Name)
 			callStart := time.Now()
 
 			output, success := l.dispatchToolCall(ctx, call)
@@ -345,7 +356,7 @@ func (l *AgenticLoop) runInnerLoop(
 				ToolUseID: call.ID,
 				Content:   output,
 			}); err != nil {
-				log.Printf("warning: transport emit tool_result: %v", err)
+				l.Logger.Warn("transport emit failed", "event", "tool_result", "error", err)
 			}
 
 			// Check for stall conditions after each tool call.
@@ -367,7 +378,7 @@ func (l *AgenticLoop) runInnerLoop(
 
 		// Git checkpoint after tool use.
 		if err := l.Git.Checkpoint(ctx, fmt.Sprintf("Turn %d: %d tool calls", turn, len(toolCalls))); err != nil {
-			log.Printf("warning: git checkpoint: %v", err)
+			l.Logger.Warn("git checkpoint failed", "error", err)
 			_ = l.Transport.Emit(types.HarnessEvent{
 				Type:    "warning",
 				Message: fmt.Sprintf("git checkpoint: %v", err),
@@ -461,11 +472,11 @@ func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.Ru
 		Type:    "error",
 		Message: err.Error(),
 	}); emitErr != nil {
-		log.Printf("warning: transport emit error event: %v", emitErr)
+		l.Logger.Warn("transport emit failed", "event", "error", "error", emitErr)
 	}
 	runTrace, traceErr := l.Trace.Finish(ctx, "error")
 	if traceErr != nil {
-		log.Printf("warning: trace finish: %v", traceErr)
+		l.Logger.Warn("trace finish failed", "error", traceErr)
 	}
 	return runTrace, err
 }
