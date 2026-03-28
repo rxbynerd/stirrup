@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	openaiDefaultBaseURL = "https://api.openai.com/v1"
+	openaiDefaultBaseURL     = "https://api.openai.com/v1"
+	openaiMaxToolInputSize   = 10 * 1024 * 1024 // 10 MB cap on streamed tool argument JSON
 )
 
 // OpenAICompatibleAdapter implements ProviderAdapter for the OpenAI Chat
@@ -399,6 +400,10 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 				}
 				if tc.Function.Name != "" {
 					state.name = tc.Function.Name
+				}
+				if state.argsBuf.Len()+len(tc.Function.Arguments) > openaiMaxToolInputSize {
+					ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("tool arguments exceed %d byte limit", openaiMaxToolInputSize)}
+					return
 				}
 				state.argsBuf.WriteString(tc.Function.Arguments)
 			}

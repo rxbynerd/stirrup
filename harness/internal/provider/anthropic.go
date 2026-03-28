@@ -19,6 +19,7 @@ import (
 const (
 	anthropicAPIURL     = "https://api.anthropic.com/v1/messages"
 	anthropicAPIVersion = "2023-06-01"
+	maxToolInputSize    = 10 * 1024 * 1024 // 10 MB cap on streamed tool input JSON
 )
 
 // AnthropicAdapter implements ProviderAdapter for the Anthropic Messages API.
@@ -222,6 +223,10 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 					Text: cbd.Delta.Text,
 				}
 			case "input_json_delta":
+				if bs.jsonBuf.Len()+len(cbd.Delta.PartialJSON) > maxToolInputSize {
+					ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("tool input exceeds %d byte limit", maxToolInputSize)}
+					return
+				}
 				bs.jsonBuf.WriteString(cbd.Delta.PartialJSON)
 			}
 

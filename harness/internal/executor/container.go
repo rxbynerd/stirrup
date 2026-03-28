@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	containerWorkspace = "/workspace"
+	containerWorkspace  = "/workspace"
+	maxDockerFrameSize  = 10 * 1024 * 1024 // 10 MB cap on Docker stream frames
 )
 
 // ContainerExecutorConfig holds the configuration for creating a ContainerExecutor.
@@ -378,6 +379,9 @@ func demuxDockerStream(r io.Reader) (string, string, error) {
 			continue
 		}
 
+		if frameSize > maxDockerFrameSize {
+			return stdout.String(), stderr.String(), fmt.Errorf("docker stream frame exceeds %d byte limit: %d", maxDockerFrameSize, frameSize)
+		}
 		frame := make([]byte, frameSize)
 		if _, err := io.ReadFull(r, frame); err != nil {
 			return stdout.String(), stderr.String(), fmt.Errorf("read stream frame: %w", err)
