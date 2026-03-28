@@ -123,13 +123,16 @@ func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition
 		return nil, fmt.Errorf("emit permission request: %w", err)
 	}
 
+	timer := time.NewTimer(p.Timeout)
+	defer timer.Stop()
+
 	select {
 	case resp := <-ch:
 		return &PermissionResult{
 			Allowed: resp.allowed,
 			Reason:  resp.reason,
 		}, nil
-	case <-time.After(p.Timeout):
+	case <-timer.C:
 		p.mu.Lock()
 		delete(p.pending, requestID)
 		p.mu.Unlock()

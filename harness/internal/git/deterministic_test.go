@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -164,5 +165,5 @@ func commitCount(t *testing.T, repo string) int {
 
 // trimOutput trims whitespace from command output.
 func trimOutput(b []byte) string {
-	return string(b[:len(b)-1]) // strip trailing newline
+	return strings.TrimSpace(string(b))
 }

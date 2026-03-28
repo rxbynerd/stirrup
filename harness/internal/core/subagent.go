@@ -164,10 +164,10 @@ func filterToolRegistry(source tool.ToolRegistry, excludedNames ...string) *tool
 	return filtered
 }
 
-// captureTransport wraps a NullTransport but records the last sequence of
-// text_delta events, allowing extraction of the sub-agent's final response.
-// It resets accumulated text each time a "done" event is received, so
-// lastText() returns only the text from the final agentic turn.
+// captureTransport wraps a NullTransport but records all text_delta events
+// emitted during the sub-agent run, allowing extraction of the sub-agent's
+// accumulated response text. Text is never reset, so lastText() returns the
+// concatenated output from the entire run.
 type captureTransport struct {
 	transport.NullTransport
 	segments []string

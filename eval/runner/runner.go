@@ -26,7 +26,8 @@ type RunConfig struct {
 	// OutputDir is the directory where results and traces are written.
 	OutputDir string
 
-	// Concurrency is the number of tasks to run in parallel (default 1).
+	// Concurrency is the desired number of parallel tasks.
+	// TODO: not yet implemented; tasks currently run sequentially.
 	Concurrency int
 
 	// DryRun if true, validates the suite without executing tasks.
