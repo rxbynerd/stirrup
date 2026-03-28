@@ -57,6 +57,10 @@ type RunConfig struct {
 	// the primary run completes, waiting for follow-up user_response events.
 	// A value of zero or nil disables the grace period (default behaviour).
 	FollowUpGrace *int `json:"followUpGrace,omitempty"`
+
+	// LogLevel controls the structured logger verbosity.
+	// Valid values: "debug", "info", "warn", "error". Default: "info".
+	LogLevel string `json:"logLevel,omitempty"`
 }
 
 // Redact returns a copy of the RunConfig with secret references replaced

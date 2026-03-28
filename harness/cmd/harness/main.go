@@ -30,6 +30,7 @@ func main() {
 	transportType := flag.String("transport", "stdio", "Transport type: stdio, grpc")
 	transportAddr := flag.String("transport-addr", "", "gRPC target address (required when transport is grpc)")
 	followUpGrace := flag.Int("followup-grace", 0, "Seconds to keep gRPC transport open for follow-up requests after the run completes (0 = disabled; env: STIRRUP_FOLLOWUP_GRACE)")
+	logLevel := flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	prompt := flag.String("prompt", "", "User prompt (reads from stdin if empty)")
 	flag.Parse()
 
@@ -77,6 +78,7 @@ func main() {
 		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl", FilePath: *tracePath},
 		MaxTurns:        *maxTurns,
 		Timeout:         timeout,
+		LogLevel:        *logLevel,
 	}
 	if *followUpGrace > 0 {
 		fg := *followUpGrace

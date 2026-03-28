@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/mcp"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -142,6 +144,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		e.Security = secLogger
 	}
 
+	// 14. Structured logger with secret scrubbing.
+	logLevel := parseLogLevel(config.LogLevel)
+	logger := observability.NewLogger(config.RunID, logLevel, os.Stderr)
+
 	loop := &AgenticLoop{
 		Provider:     prov,
 		Providers:    providers,
@@ -157,6 +163,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Transport:    tp,
 		Trace:        te,
 		Security:     secLogger,
+		Logger:       logger,
 		emitReady:    emitReady,
 		ownedClosers: ownedClosers,
 	}
@@ -609,5 +616,20 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig) (trace
 		return trace.NewJSONLTraceEmitter(w), nil
 	default:
 		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel)", cfg.Type)
+	}
+}
+
+// parseLogLevel converts a log level string to slog.Level.
+// Defaults to slog.LevelInfo for unrecognised values.
+func parseLogLevel(level string) slog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }

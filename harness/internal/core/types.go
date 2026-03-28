@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"strings"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -43,6 +44,7 @@ type AgenticLoop struct {
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
 	Security     *security.SecurityLogger // optional, for structured security event logging
+	Logger       *slog.Logger             // structured logger with secret scrubbing
 	emitReady    bool
 	ownedClosers []io.Closer
 }
