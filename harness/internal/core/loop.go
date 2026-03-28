@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
@@ -91,6 +94,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	l.Logger.Info("run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
 
+	runStart := time.Now()
+	l.Metrics.Runs.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("run.mode", config.Mode),
+		),
+	)
+
 	// Outer verification loop.
 	outcome := "success"
 	verificationAttempts := 0
@@ -106,6 +116,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 
 		// Run verifier.
+		l.Metrics.VerificationAttempts.Add(ctx, 1)
 		vResult, verifyErr := l.Verifier.Verify(ctx, verifier.VerifyContext{
 			Mode:     config.Mode,
 			Executor: l.Executor,
@@ -150,6 +161,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 
 	l.Logger.Info("run finished", "outcome", outcome)
+
+	l.Metrics.RunDuration.Record(ctx, float64(time.Since(runStart).Milliseconds()),
+		metric.WithAttributes(
+			attribute.String("run.mode", config.Mode),
+			attribute.String("run.outcome", outcome),
+		),
+	)
 
 	// Emit done event.
 	if err := l.Transport.Emit(types.HarnessEvent{
@@ -254,6 +272,12 @@ func (l *AgenticLoop) runInnerLoop(
 			})
 			return messages, "error"
 		}
+		providerAttrs := metric.WithAttributes(
+			attribute.String("provider.type", selection.Provider),
+			attribute.String("provider.model", selection.Model),
+		)
+		l.Metrics.ProviderRequests.Add(ctx, 1, providerAttrs)
+
 		ch, err := selectedProvider.Stream(ctx, types.StreamParams{
 			Model:       selection.Model,
 			System:      systemPrompt,
@@ -264,6 +288,7 @@ func (l *AgenticLoop) runInnerLoop(
 		})
 		if err != nil {
 			// Rollback: don't append anything on error.
+			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
 				StopReason: "error",
@@ -278,6 +303,7 @@ func (l *AgenticLoop) runInnerLoop(
 
 		if streamErr != nil {
 			// Rollback on stream error — don't append partial content.
+			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
 				StopReason: "error",
@@ -305,6 +331,12 @@ func (l *AgenticLoop) runInnerLoop(
 			StopReason: sr.StopReason,
 			DurationMs: turnDuration.Milliseconds(),
 		})
+
+		modeAttr := metric.WithAttributes(attribute.String("run.mode", config.Mode))
+		l.Metrics.Turns.Add(ctx, 1, modeAttr)
+		l.Metrics.TokensInput.Add(ctx, int64(inputTokenEstimate))
+		l.Metrics.TokensOutput.Add(ctx, int64(sr.OutputTokens))
+		l.Metrics.TurnDuration.Record(ctx, float64(turnDuration.Milliseconds()), modeAttr)
 
 		l.Logger.Info("turn completed", "turn", turn,
 			"tokens.input", inputTokenEstimate,
@@ -345,6 +377,13 @@ func (l *AgenticLoop) runInnerLoop(
 				Success:    success,
 			})
 
+			toolNameAttr := metric.WithAttributes(attribute.String("tool.name", call.Name))
+			l.Metrics.ToolCalls.Add(ctx, 1, toolNameAttr)
+			l.Metrics.ToolCallDuration.Record(ctx, float64(callDuration.Milliseconds()), toolNameAttr)
+			if !success {
+				l.Metrics.ToolErrors.Add(ctx, 1, toolNameAttr)
+			}
+
 			toolResults = append(toolResults, types.ToolResult{
 				ToolUseID: call.ID,
 				Content:   output,
@@ -361,6 +400,9 @@ func (l *AgenticLoop) runInnerLoop(
 
 			// Check for stall conditions after each tool call.
 			if outcome := stall.recordToolCall(call.Name, call.Input, success); outcome != "" {
+				l.Metrics.Stalls.Add(ctx, 1,
+					metric.WithAttributes(attribute.String("run.mode", config.Mode)),
+				)
 				messages = appendToolResults(messages, toolResults)
 				return messages, outcome
 			}
