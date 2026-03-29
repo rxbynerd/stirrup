@@ -17,6 +17,7 @@ stirrup/
     cmd/job/main.go          # K8s job entrypoint (gRPC to control plane)
     internal/
       core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, stall detection
+      credential/            # Cross-cloud credential federation (token sources + credential sources)
       provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode templates
@@ -120,8 +121,17 @@ The core loop is a pure function of its interfaces. All dependencies are injecte
 ### Provider adapters
 
 - **Anthropic** (`provider/anthropic.go`) — SSE streaming via `net/http` + `bufio.Scanner`. Hand-rolled, no SDK dependency.
-- **Bedrock** (`provider/bedrock.go`) — AWS ConverseStream API via `aws-sdk-go-v2`. Translates between internal types and Bedrock's union-type wire format. Auth is IAM (not API key); uses `config.LoadDefaultConfig()`.
+- **Bedrock** (`provider/bedrock.go`) — AWS ConverseStream API via `aws-sdk-go-v2`. Translates between internal types and Bedrock's union-type wire format. Auth is IAM (not API key); uses `config.LoadDefaultConfig()`. Accepts optional `aws.CredentialsProvider` for cross-cloud credential federation.
 - **OpenAI-compatible** (`provider/openai.go`) — OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure OpenAI, vLLM, Ollama via configurable `baseURL`.
+
+### Credential federation
+
+The `credential` package (`credential/`) enables cross-cloud authentication for provider adapters. It has two composable layers:
+
+- **TokenSource** — fetches identity tokens from the runtime environment. Implementations: `GKEMetadataTokenSource` (GKE Workload Identity metadata server), `FileTokenSource` (k8s projected volumes), `EnvTokenSource` (environment variable).
+- **credential.Source** — exchanges identity tokens (or resolves static secrets) into provider-specific credentials. Implementations: `StaticSource` (wraps SecretStore for API keys), `AWSDefaultSource` (SDK default chain), `WebIdentityAWSSource` (OIDC token → STS AssumeRoleWithWebIdentity → AWS credentials).
+
+Token sources are reusable across targets — the same GKE OIDC token can be exchanged for AWS or (future) Azure credentials. `WebIdentityAWSSource.Resolve()` is non-blocking: it sets up a lazy `aws.CredentialsCache` that calls STS on first use and automatically refreshes before expiry. Configured via `ProviderConfig.Credential` in RunConfig; when omitted, the source type is inferred from the provider type (backward compatible).
 
 ### Container executor
 
