@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -37,13 +38,19 @@ type BedrockAdapter struct {
 
 // NewBedrockAdapter creates an adapter that uses the ConverseStream API.
 // Region and profile are optional overrides for the default AWS credential chain.
-func NewBedrockAdapter(region, profile string) (*BedrockAdapter, error) {
+// credProvider, when non-nil, is injected into the AWS config to override the
+// default credential chain — used for cross-cloud federation scenarios
+// (e.g. GKE Workload Identity → STS AssumeRoleWithWebIdentity).
+func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvider) (*BedrockAdapter, error) {
 	var opts []func(*config.LoadOptions) error
 	if region != "" {
 		opts = append(opts, config.WithRegion(region))
 	}
 	if profile != "" {
 		opts = append(opts, config.WithSharedConfigProfile(profile))
+	}
+	if credProvider != nil {
+		opts = append(opts, config.WithCredentialsProvider(credProvider))
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)

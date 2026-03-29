@@ -65,6 +65,8 @@ type RunConfig struct {
 
 // Redact returns a copy of the RunConfig with secret references replaced
 // by placeholder values, safe for persistence in traces and recordings.
+// Note: CredentialConfig fields (roleArn, audience, sessionName) are not
+// secrets and are preserved for diagnostics.
 func (rc RunConfig) Redact() RunConfig {
 	redacted := rc
 	if redacted.Provider.APIKeyRef != "" {
@@ -100,11 +102,31 @@ func (rc RunConfig) Redact() RunConfig {
 
 // ProviderConfig selects the model provider implementation.
 type ProviderConfig struct {
-	Type      string `json:"type"`                // "anthropic" | "bedrock" | "openai-compatible"
-	APIKeyRef string `json:"apiKeyRef,omitempty"` // e.g. "secret://anthropic-key"
-	Region    string `json:"region,omitempty"`    // bedrock
-	Profile   string `json:"profile,omitempty"`   // bedrock
-	BaseURL   string `json:"baseUrl,omitempty"`   // openai-compatible
+	Type       string            `json:"type"`                 // "anthropic" | "bedrock" | "openai-compatible"
+	APIKeyRef  string            `json:"apiKeyRef,omitempty"`  // e.g. "secret://anthropic-key"
+	Region     string            `json:"region,omitempty"`     // bedrock
+	Profile    string            `json:"profile,omitempty"`    // bedrock
+	BaseURL    string            `json:"baseUrl,omitempty"`    // openai-compatible
+	Credential *CredentialConfig `json:"credential,omitempty"` // cross-cloud credential federation (nil = infer from provider type)
+}
+
+// CredentialConfig selects the credential acquisition method for a provider.
+// When omitted from ProviderConfig, the credential type is inferred:
+// bedrock uses "aws-default", all others use "static" (resolving APIKeyRef).
+type CredentialConfig struct {
+	Type        string             `json:"type"`                  // "static" | "aws-default" | "web-identity"
+	TokenSource *TokenSourceConfig `json:"tokenSource,omitempty"` // required for "web-identity"
+	RoleARN     string             `json:"roleArn,omitempty"`     // required for "web-identity": IAM role to assume
+	SessionName string             `json:"sessionName,omitempty"` // for "web-identity" (default: "stirrup")
+}
+
+// TokenSourceConfig selects where identity tokens are fetched from.
+// Used by credential types that require an OIDC/JWT token for exchange.
+type TokenSourceConfig struct {
+	Type     string `json:"type"`               // "gke-metadata" | "file" | "env"
+	Audience string `json:"audience,omitempty"` // for "gke-metadata": target audience claim (e.g. "sts.amazonaws.com")
+	Path     string `json:"path,omitempty"`     // for "file": filesystem path to token
+	EnvVar   string `json:"envVar,omitempty"`   // for "env": environment variable name
 }
 
 // ModelRouterConfig selects the model router implementation.
@@ -287,6 +309,18 @@ var validTraceEmitterTypes = map[string]bool{
 	"otel":  true,
 }
 
+var validCredentialTypes = map[string]bool{
+	"static":       true,
+	"aws-default":  true,
+	"web-identity": true,
+}
+
+var validTokenSourceTypes = map[string]bool{
+	"gke-metadata": true,
+	"file":         true,
+	"env":          true,
+}
+
 var validBuiltInToolNames = map[string]bool{
 	"read_file":      true,
 	"write_file":     true,
@@ -339,6 +373,10 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
 	validateProviderConfigs(config, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
+	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
+	for name, prov := range config.Providers {
+		validateCredentialConfig(prov.Credential, fmt.Sprintf("providers[%s].credential", name), &errs)
+	}
 
 	// Read-only modes must use deny-side-effects or ask-upstream
 	if readOnlyModes[config.Mode] && config.PermissionPolicy.Type == "allow-all" {
@@ -459,6 +497,43 @@ func validateBuiltInTools(builtIns []string, errs *[]string) {
 	for _, name := range builtIns {
 		if !validBuiltInToolNames[name] {
 			*errs = append(*errs, fmt.Sprintf("tools.builtIn contains unsupported tool %q", name))
+		}
+	}
+}
+
+func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	validateRequiredType(path, cfg.Type, validCredentialTypes, errs)
+
+	if cfg.Type == "web-identity" {
+		if cfg.RoleARN == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: web-identity requires roleArn", path))
+		}
+		if cfg.TokenSource == nil {
+			*errs = append(*errs, fmt.Sprintf("%s: web-identity requires tokenSource", path))
+		} else {
+			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
+		}
+	}
+}
+
+func validateTokenSourceConfig(cfg *TokenSourceConfig, path string, errs *[]string) {
+	validateRequiredType(path, cfg.Type, validTokenSourceTypes, errs)
+
+	switch cfg.Type {
+	case "gke-metadata":
+		if cfg.Audience == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: gke-metadata requires audience", path))
+		}
+	case "file":
+		if cfg.Path == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: file requires path", path))
+		}
+	case "env":
+		if cfg.EnvVar == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: env requires envVar", path))
 		}
 	}
 }

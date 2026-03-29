@@ -14,6 +14,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
+	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
@@ -251,21 +252,22 @@ func buildProviders(ctx context.Context, config *types.RunConfig, secrets securi
 }
 
 func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets security.SecretStore) (provider.ProviderAdapter, error) {
+	src, err := credential.BuildSource(cfg, secrets)
+	if err != nil {
+		return nil, fmt.Errorf("build credential source: %w", err)
+	}
+	cred, err := src.Resolve(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve credentials: %w", err)
+	}
+
 	switch cfg.Type {
 	case "anthropic":
-		apiKey, err := secrets.Resolve(ctx, cfg.APIKeyRef)
-		if err != nil {
-			return nil, fmt.Errorf("resolve API key: %w", err)
-		}
-		return provider.NewAnthropicAdapter(apiKey), nil
+		return provider.NewAnthropicAdapter(cred.BearerToken), nil
 	case "openai-compatible":
-		apiKey, err := secrets.Resolve(ctx, cfg.APIKeyRef)
-		if err != nil {
-			return nil, fmt.Errorf("resolve API key: %w", err)
-		}
-		return provider.NewOpenAICompatibleAdapter(apiKey, cfg.BaseURL), nil
+		return provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL), nil
 	case "bedrock":
-		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile)
+		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials)
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, openai-compatible)", cfg.Type)
 	}

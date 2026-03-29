@@ -387,3 +387,216 @@ func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 		t.Fatalf("expected no error for nil budget fields, got: %v", err)
 	}
 }
+
+func TestValidateRunConfig_CredentialNilPassesValidation(t *testing.T) {
+	c := validConfig()
+	c.Provider.Credential = nil
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("nil credential should pass validation, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_CredentialStaticPasses(t *testing.T) {
+	c := validConfig()
+	c.Provider.Credential = &CredentialConfig{Type: "static"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("static credential should pass validation, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_CredentialAWSDefaultPasses(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:       "bedrock",
+		Credential: &CredentialConfig{Type: "aws-default"},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("aws-default credential should pass validation, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_CredentialUnsupportedType(t *testing.T) {
+	c := validConfig()
+	c.Provider.Credential = &CredentialConfig{Type: "kerberos"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unsupported credential type")
+	}
+	if !strings.Contains(err.Error(), "kerberos") {
+		t.Errorf("error should mention unsupported type: %v", err)
+	}
+}
+
+func TestValidateRunConfig_WebIdentityValid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:   "bedrock",
+		Region: "us-east-1",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type:     "gke-metadata",
+				Audience: "sts.amazonaws.com",
+			},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("valid web-identity config should pass, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_WebIdentityMissingRoleARN(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type: "web-identity",
+			TokenSource: &TokenSourceConfig{
+				Type:     "gke-metadata",
+				Audience: "sts.amazonaws.com",
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing roleArn")
+	}
+	if !strings.Contains(err.Error(), "roleArn") {
+		t.Errorf("error should mention roleArn: %v", err)
+	}
+}
+
+func TestValidateRunConfig_WebIdentityMissingTokenSource(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing tokenSource")
+	}
+	if !strings.Contains(err.Error(), "tokenSource") {
+		t.Errorf("error should mention tokenSource: %v", err)
+	}
+}
+
+func TestValidateRunConfig_GKEMetadataMissingAudience(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "gke-metadata",
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing audience")
+	}
+	if !strings.Contains(err.Error(), "audience") {
+		t.Errorf("error should mention audience: %v", err)
+	}
+}
+
+func TestValidateRunConfig_FileTokenSourceMissingPath(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "file",
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing path")
+	}
+	if !strings.Contains(err.Error(), "path") {
+		t.Errorf("error should mention path: %v", err)
+	}
+}
+
+func TestValidateRunConfig_EnvTokenSourceMissingEnvVar(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "env",
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing envVar")
+	}
+	if !strings.Contains(err.Error(), "envVar") {
+		t.Errorf("error should mention envVar: %v", err)
+	}
+}
+
+func TestValidateRunConfig_CredentialInProvidersMap(t *testing.T) {
+	c := validConfig()
+	c.Providers = map[string]ProviderConfig{
+		"fallback": {
+			Type: "bedrock",
+			Credential: &CredentialConfig{
+				Type: "web-identity",
+				// Missing roleArn and tokenSource
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for invalid credential in providers map")
+	}
+	if !strings.Contains(err.Error(), "providers[fallback].credential") {
+		t.Errorf("error should reference providers[fallback].credential path: %v", err)
+	}
+}
+
+func TestRedact_CredentialConfigPreserved(t *testing.T) {
+	rc := RunConfig{
+		Provider: ProviderConfig{
+			Type:      "bedrock",
+			APIKeyRef: "secret://some-key",
+			Credential: &CredentialConfig{
+				Type:        "web-identity",
+				RoleARN:     "arn:aws:iam::123456789012:role/test",
+				SessionName: "stirrup",
+				TokenSource: &TokenSourceConfig{
+					Type:     "gke-metadata",
+					Audience: "sts.amazonaws.com",
+				},
+			},
+		},
+	}
+	redacted := rc.Redact()
+	// APIKeyRef should be redacted
+	if redacted.Provider.APIKeyRef != "secret://[REDACTED]" {
+		t.Errorf("APIKeyRef should be redacted, got %q", redacted.Provider.APIKeyRef)
+	}
+	// Credential config should be preserved (not sensitive)
+	if redacted.Provider.Credential == nil {
+		t.Fatal("Credential should not be nil after redaction")
+	}
+	if redacted.Provider.Credential.RoleARN != "arn:aws:iam::123456789012:role/test" {
+		t.Error("RoleARN should be preserved after redaction")
+	}
+	if redacted.Provider.Credential.TokenSource.Audience != "sts.amazonaws.com" {
+		t.Error("TokenSource.Audience should be preserved after redaction")
+	}
+}
