@@ -155,10 +155,6 @@ go build ./harness/...
 
 See [`VERSION1.md`](VERSION1.md) for the full architecture and design document.
 
-## Legacy
-
-The original Ruby prototype (`stirrup.rb`, `server.rb`) is preserved in the repo root for reference during the Go transition. The Go harness is the authoritative implementation.
-
 ## License
 
-[Add license information as needed]
+Apache 2.0
