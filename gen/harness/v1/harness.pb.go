@@ -2158,8 +2158,7 @@ var File_harness_v1_harness_proto protoreflect.FileDescriptor
 
 const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
-	"\x18harness/v1/harness.proto\x12\n" +
-	"harness.v1\"\xf6\x02\n" +
+	"\x18harness/v1/harness.proto\x12\x12stirrup.harness.v1\"\xfe\x02\n" +
 	"\fHarnessEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x0e\n" +
@@ -2170,41 +2169,41 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\acontent\x18\a \x01(\tR\acontent\x12\x1f\n" +
 	"\vstop_reason\x18\b \x01(\tR\n" +
 	"stopReason\x12\x18\n" +
-	"\amessage\x18\t \x01(\tR\amessage\x12*\n" +
+	"\amessage\x18\t \x01(\tR\amessage\x122\n" +
 	"\x05trace\x18\n" +
-	" \x01(\v2\x14.harness.v1.RunTraceR\x05trace\x12\x1d\n" +
+	" \x01(\v2\x1c.stirrup.harness.v1.RunTraceR\x05trace\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\v \x01(\tR\trequestId\x12\x1b\n" +
 	"\ttool_name\x18\f \x01(\tR\btoolName\x12'\n" +
-	"\x0fharness_version\x18\r \x01(\tR\x0eharnessVersion\"\xdd\x01\n" +
+	"\x0fharness_version\x18\r \x01(\tR\x0eharnessVersion\"\xed\x01\n" +
 	"\fControlEvent\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\x12)\n" +
-	"\x04task\x18\x02 \x01(\v2\x15.harness.v1.RunConfigR\x04task\x12#\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x121\n" +
+	"\x04task\x18\x02 \x01(\v2\x1d.stirrup.harness.v1.RunConfigR\x04task\x12#\n" +
 	"\ruser_response\x18\x03 \x01(\tR\fuserResponse\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x04 \x01(\tR\trequestId\x122\n" +
-	"\aallowed\x18\x05 \x01(\v2\x18.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
+	"request_id\x18\x04 \x01(\tR\trequestId\x12:\n" +
+	"\aallowed\x18\x05 \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xb0\v\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xa0\f\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
-	"\x06prompt\x18\x03 \x01(\tR\x06prompt\x12R\n" +
-	"\x0fdynamic_context\x18\x04 \x03(\v2).harness.v1.RunConfig.DynamicContextEntryR\x0edynamicContext\x126\n" +
-	"\bprovider\x18\x05 \x01(\v2\x1a.harness.v1.ProviderConfigR\bprovider\x12B\n" +
-	"\tproviders\x18\x14 \x03(\v2$.harness.v1.RunConfig.ProvidersEntryR\tproviders\x12@\n" +
-	"\fmodel_router\x18\x06 \x01(\v2\x1d.harness.v1.ModelRouterConfigR\vmodelRouter\x12F\n" +
-	"\x0eprompt_builder\x18\a \x01(\v2\x1f.harness.v1.PromptBuilderConfigR\rpromptBuilder\x12L\n" +
-	"\x10context_strategy\x18\b \x01(\v2!.harness.v1.ContextStrategyConfigR\x0fcontextStrategy\x126\n" +
-	"\bexecutor\x18\t \x01(\v2\x1a.harness.v1.ExecutorConfigR\bexecutor\x12C\n" +
+	"\x06prompt\x18\x03 \x01(\tR\x06prompt\x12Z\n" +
+	"\x0fdynamic_context\x18\x04 \x03(\v21.stirrup.harness.v1.RunConfig.DynamicContextEntryR\x0edynamicContext\x12>\n" +
+	"\bprovider\x18\x05 \x01(\v2\".stirrup.harness.v1.ProviderConfigR\bprovider\x12J\n" +
+	"\tproviders\x18\x14 \x03(\v2,.stirrup.harness.v1.RunConfig.ProvidersEntryR\tproviders\x12H\n" +
+	"\fmodel_router\x18\x06 \x01(\v2%.stirrup.harness.v1.ModelRouterConfigR\vmodelRouter\x12N\n" +
+	"\x0eprompt_builder\x18\a \x01(\v2'.stirrup.harness.v1.PromptBuilderConfigR\rpromptBuilder\x12T\n" +
+	"\x10context_strategy\x18\b \x01(\v2).stirrup.harness.v1.ContextStrategyConfigR\x0fcontextStrategy\x12>\n" +
+	"\bexecutor\x18\t \x01(\v2\".stirrup.harness.v1.ExecutorConfigR\bexecutor\x12K\n" +
 	"\redit_strategy\x18\n" +
-	" \x01(\v2\x1e.harness.v1.EditStrategyConfigR\feditStrategy\x126\n" +
-	"\bverifier\x18\v \x01(\v2\x1a.harness.v1.VerifierConfigR\bverifier\x12O\n" +
-	"\x11permission_policy\x18\f \x01(\v2\".harness.v1.PermissionPolicyConfigR\x10permissionPolicy\x12@\n" +
-	"\fgit_strategy\x18\r \x01(\v2\x1d.harness.v1.GitStrategyConfigR\vgitStrategy\x12C\n" +
-	"\rtrace_emitter\x18\x0e \x01(\v2\x1e.harness.v1.TraceEmitterConfigR\ftraceEmitter\x12-\n" +
-	"\x05tools\x18\x0f \x01(\v2\x17.harness.v1.ToolsConfigR\x05tools\x12\x1b\n" +
+	" \x01(\v2&.stirrup.harness.v1.EditStrategyConfigR\feditStrategy\x12>\n" +
+	"\bverifier\x18\v \x01(\v2\".stirrup.harness.v1.VerifierConfigR\bverifier\x12W\n" +
+	"\x11permission_policy\x18\f \x01(\v2*.stirrup.harness.v1.PermissionPolicyConfigR\x10permissionPolicy\x12H\n" +
+	"\fgit_strategy\x18\r \x01(\v2%.stirrup.harness.v1.GitStrategyConfigR\vgitStrategy\x12K\n" +
+	"\rtrace_emitter\x18\x0e \x01(\v2&.stirrup.harness.v1.TraceEmitterConfigR\ftraceEmitter\x125\n" +
+	"\x05tools\x18\x0f \x01(\v2\x1f.stirrup.harness.v1.ToolsConfigR\x05tools\x12\x1b\n" +
 	"\tmax_turns\x18\x10 \x01(\x05R\bmaxTurns\x12-\n" +
 	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12+\n" +
 	"\x0fmax_cost_budget\x18\x12 \x01(\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
@@ -2214,10 +2213,10 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x16system_prompt_override\x18\x17 \x01(\tR\x14systemPromptOverride\x1aA\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aX\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a`\n" +
 	"\x0eProvidersEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
-	"\x05value\x18\x02 \x01(\v2\x1a.harness.v1.ProviderConfigR\x05value:\x028\x01B\x13\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x128\n" +
+	"\x05value\x18\x02 \x01(\v2\".stirrup.harness.v1.ProviderConfigR\x05value:\x028\x01B\x13\n" +
 	"\x11_max_token_budgetB\x12\n" +
 	"\x10_max_cost_budgetB\n" +
 	"\n" +
@@ -2232,31 +2231,31 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
 	"durationMs\x12\x1f\n" +
 	"\vstop_reason\x18\a \x01(\tR\n" +
-	"stopReason\"\xcf\x01\n" +
+	"stopReason\"\xd7\x01\n" +
 	"\x0eProviderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x16\n" +
 	"\x06region\x18\x03 \x01(\tR\x06region\x12\x18\n" +
 	"\aprofile\x18\x04 \x01(\tR\aprofile\x12\x19\n" +
-	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\x12<\n" +
+	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\x12D\n" +
 	"\n" +
-	"credential\x18\x06 \x01(\v2\x1c.harness.v1.CredentialConfigR\n" +
-	"credential\"\xa6\x01\n" +
+	"credential\x18\x06 \x01(\v2$.stirrup.harness.v1.CredentialConfigR\n" +
+	"credential\"\xae\x01\n" +
 	"\x10CredentialConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\x12@\n" +
-	"\ftoken_source\x18\x02 \x01(\v2\x1d.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12H\n" +
+	"\ftoken_source\x18\x02 \x01(\v2%.stirrup.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
 	"\brole_arn\x18\x03 \x01(\tR\aroleArn\x12!\n" +
 	"\fsession_name\x18\x04 \x01(\tR\vsessionName\"p\n" +
 	"\x11TokenSourceConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x12\n" +
 	"\x04path\x18\x03 \x01(\tR\x04path\x12\x17\n" +
-	"\aenv_var\x18\x04 \x01(\tR\x06envVar\"\xac\x04\n" +
+	"\aenv_var\x18\x04 \x01(\tR\x06envVar\"\xb4\x04\n" +
 	"\x11ModelRouterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
-	"\x05model\x18\x03 \x01(\tR\x05model\x12N\n" +
-	"\vmode_models\x18\x04 \x03(\v2-.harness.v1.ModelRouterConfig.ModeModelsEntryR\n" +
+	"\x05model\x18\x03 \x01(\tR\x05model\x12V\n" +
+	"\vmode_models\x18\x04 \x03(\v25.stirrup.harness.v1.ModelRouterConfig.ModeModelsEntryR\n" +
 	"modeModels\x12%\n" +
 	"\x0echeap_provider\x18\x05 \x01(\tR\rcheapProvider\x12\x1f\n" +
 	"\vcheap_model\x18\x06 \x01(\tR\n" +
@@ -2276,15 +2275,15 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x15ContextStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1d\n" +
 	"\n" +
-	"max_tokens\x18\x02 \x01(\x05R\tmaxTokens\"\x9c\x02\n" +
+	"max_tokens\x18\x02 \x01(\x05R\tmaxTokens\"\xb4\x02\n" +
 	"\x0eExecutorConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\x12=\n" +
-	"\vvcs_backend\x18\x02 \x01(\v2\x1c.harness.v1.VcsBackendConfigR\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12E\n" +
+	"\vvcs_backend\x18\x02 \x01(\v2$.stirrup.harness.v1.VcsBackendConfigR\n" +
 	"vcsBackend\x12\x1c\n" +
 	"\tworkspace\x18\x03 \x01(\tR\tworkspace\x12\x14\n" +
-	"\x05image\x18\x04 \x01(\tR\x05image\x123\n" +
-	"\anetwork\x18\x05 \x01(\v2\x19.harness.v1.NetworkConfigR\anetwork\x128\n" +
-	"\tresources\x18\x06 \x01(\v2\x1a.harness.v1.ResourceLimitsR\tresources\x12\x14\n" +
+	"\x05image\x18\x04 \x01(\tR\x05image\x12;\n" +
+	"\anetwork\x18\x05 \x01(\v2!.stirrup.harness.v1.NetworkConfigR\anetwork\x12@\n" +
+	"\tresources\x18\x06 \x01(\v2\".stirrup.harness.v1.ResourceLimitsR\tresources\x12\x14\n" +
 	"\x05proxy\x18\a \x01(\tR\x05proxy\"l\n" +
 	"\x10VcsBackendConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
@@ -2302,12 +2301,12 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x12EditStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12,\n" +
 	"\x0ffuzzy_threshold\x18\x02 \x01(\x01H\x00R\x0efuzzyThreshold\x88\x01\x01B\x12\n" +
-	"\x10_fuzzy_threshold\"\xc4\x01\n" +
+	"\x10_fuzzy_threshold\"\xcc\x01\n" +
 	"\x0eVerifierConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
 	"\acommand\x18\x02 \x01(\tR\acommand\x12\x18\n" +
-	"\atimeout\x18\x03 \x01(\x05R\atimeout\x128\n" +
-	"\tverifiers\x18\x04 \x03(\v2\x1a.harness.v1.VerifierConfigR\tverifiers\x12\x1a\n" +
+	"\atimeout\x18\x03 \x01(\x05R\atimeout\x12@\n" +
+	"\tverifiers\x18\x04 \x03(\v2\".stirrup.harness.v1.VerifierConfigR\tverifiers\x12\x1a\n" +
 	"\bcriteria\x18\x05 \x01(\tR\bcriteria\x12\x14\n" +
 	"\x05model\x18\x06 \x01(\tR\x05model\"F\n" +
 	"\x16PermissionPolicyConfig\x12\x12\n" +
@@ -2319,20 +2318,18 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
 	"\bendpoint\x18\x03 \x01(\tR\bendpoint\x12)\n" +
-	"\x10metrics_endpoint\x18\x04 \x01(\tR\x0fmetricsEndpoint\"f\n" +
+	"\x10metrics_endpoint\x18\x04 \x01(\tR\x0fmetricsEndpoint\"n\n" +
 	"\vToolsConfig\x12\x19\n" +
-	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12<\n" +
-	"\vmcp_servers\x18\x02 \x03(\v2\x1b.harness.v1.MCPServerConfigR\n" +
+	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
+	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
 	"mcpServers\"W\n" +
 	"\x0fMCPServerConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03uri\x18\x02 \x01(\tR\x03uri\x12\x1e\n" +
-	"\vapi_key_ref\x18\x03 \x01(\tR\tapiKeyRef2S\n" +
-	"\x0eHarnessService\x12A\n" +
-	"\aRunTask\x12\x18.harness.v1.HarnessEvent\x1a\x18.harness.v1.ControlEvent(\x010\x01B\x9d\x01\n" +
-	"\x0ecom.harness.v1B\fHarnessProtoP\x01Z4github.com/rxbynerd/stirrup/gen/harness/v1;harnessv1\xa2\x02\x03HXX\xaa\x02\n" +
-	"Harness.V1\xca\x02\n" +
-	"Harness\\V1\xe2\x02\x16Harness\\V1\\GPBMetadata\xea\x02\vHarness::V1b\x06proto3"
+	"\vapi_key_ref\x18\x03 \x01(\tR\tapiKeyRef2c\n" +
+	"\x0eHarnessService\x12Q\n" +
+	"\aRunTask\x12 .stirrup.harness.v1.HarnessEvent\x1a .stirrup.harness.v1.ControlEvent(\x010\x01B\xc6\x01\n" +
+	"\x16com.stirrup.harness.v1B\fHarnessProtoP\x01Z4github.com/rxbynerd/stirrup/gen/harness/v1;harnessv1\xa2\x02\x03SHX\xaa\x02\x12Stirrup.Harness.V1\xca\x02\x12Stirrup\\Harness\\V1\xe2\x02\x1eStirrup\\Harness\\V1\\GPBMetadata\xea\x02\x14Stirrup::Harness::V1b\x06proto3"
 
 var (
 	file_harness_v1_harness_proto_rawDescOnce sync.Once
@@ -2348,60 +2345,60 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 
 var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_harness_v1_harness_proto_goTypes = []any{
-	(*HarnessEvent)(nil),           // 0: harness.v1.HarnessEvent
-	(*ControlEvent)(nil),           // 1: harness.v1.ControlEvent
-	(*OptionalBool)(nil),           // 2: harness.v1.OptionalBool
-	(*RunConfig)(nil),              // 3: harness.v1.RunConfig
-	(*RunTrace)(nil),               // 4: harness.v1.RunTrace
-	(*ProviderConfig)(nil),         // 5: harness.v1.ProviderConfig
-	(*CredentialConfig)(nil),       // 6: harness.v1.CredentialConfig
-	(*TokenSourceConfig)(nil),      // 7: harness.v1.TokenSourceConfig
-	(*ModelRouterConfig)(nil),      // 8: harness.v1.ModelRouterConfig
-	(*PromptBuilderConfig)(nil),    // 9: harness.v1.PromptBuilderConfig
-	(*ContextStrategyConfig)(nil),  // 10: harness.v1.ContextStrategyConfig
-	(*ExecutorConfig)(nil),         // 11: harness.v1.ExecutorConfig
-	(*VcsBackendConfig)(nil),       // 12: harness.v1.VcsBackendConfig
-	(*NetworkConfig)(nil),          // 13: harness.v1.NetworkConfig
-	(*ResourceLimits)(nil),         // 14: harness.v1.ResourceLimits
-	(*EditStrategyConfig)(nil),     // 15: harness.v1.EditStrategyConfig
-	(*VerifierConfig)(nil),         // 16: harness.v1.VerifierConfig
-	(*PermissionPolicyConfig)(nil), // 17: harness.v1.PermissionPolicyConfig
-	(*GitStrategyConfig)(nil),      // 18: harness.v1.GitStrategyConfig
-	(*TraceEmitterConfig)(nil),     // 19: harness.v1.TraceEmitterConfig
-	(*ToolsConfig)(nil),            // 20: harness.v1.ToolsConfig
-	(*MCPServerConfig)(nil),        // 21: harness.v1.MCPServerConfig
-	nil,                            // 22: harness.v1.RunConfig.DynamicContextEntry
-	nil,                            // 23: harness.v1.RunConfig.ProvidersEntry
-	nil,                            // 24: harness.v1.ModelRouterConfig.ModeModelsEntry
+	(*HarnessEvent)(nil),           // 0: stirrup.harness.v1.HarnessEvent
+	(*ControlEvent)(nil),           // 1: stirrup.harness.v1.ControlEvent
+	(*OptionalBool)(nil),           // 2: stirrup.harness.v1.OptionalBool
+	(*RunConfig)(nil),              // 3: stirrup.harness.v1.RunConfig
+	(*RunTrace)(nil),               // 4: stirrup.harness.v1.RunTrace
+	(*ProviderConfig)(nil),         // 5: stirrup.harness.v1.ProviderConfig
+	(*CredentialConfig)(nil),       // 6: stirrup.harness.v1.CredentialConfig
+	(*TokenSourceConfig)(nil),      // 7: stirrup.harness.v1.TokenSourceConfig
+	(*ModelRouterConfig)(nil),      // 8: stirrup.harness.v1.ModelRouterConfig
+	(*PromptBuilderConfig)(nil),    // 9: stirrup.harness.v1.PromptBuilderConfig
+	(*ContextStrategyConfig)(nil),  // 10: stirrup.harness.v1.ContextStrategyConfig
+	(*ExecutorConfig)(nil),         // 11: stirrup.harness.v1.ExecutorConfig
+	(*VcsBackendConfig)(nil),       // 12: stirrup.harness.v1.VcsBackendConfig
+	(*NetworkConfig)(nil),          // 13: stirrup.harness.v1.NetworkConfig
+	(*ResourceLimits)(nil),         // 14: stirrup.harness.v1.ResourceLimits
+	(*EditStrategyConfig)(nil),     // 15: stirrup.harness.v1.EditStrategyConfig
+	(*VerifierConfig)(nil),         // 16: stirrup.harness.v1.VerifierConfig
+	(*PermissionPolicyConfig)(nil), // 17: stirrup.harness.v1.PermissionPolicyConfig
+	(*GitStrategyConfig)(nil),      // 18: stirrup.harness.v1.GitStrategyConfig
+	(*TraceEmitterConfig)(nil),     // 19: stirrup.harness.v1.TraceEmitterConfig
+	(*ToolsConfig)(nil),            // 20: stirrup.harness.v1.ToolsConfig
+	(*MCPServerConfig)(nil),        // 21: stirrup.harness.v1.MCPServerConfig
+	nil,                            // 22: stirrup.harness.v1.RunConfig.DynamicContextEntry
+	nil,                            // 23: stirrup.harness.v1.RunConfig.ProvidersEntry
+	nil,                            // 24: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
-	4,  // 0: harness.v1.HarnessEvent.trace:type_name -> harness.v1.RunTrace
-	3,  // 1: harness.v1.ControlEvent.task:type_name -> harness.v1.RunConfig
-	2,  // 2: harness.v1.ControlEvent.allowed:type_name -> harness.v1.OptionalBool
-	22, // 3: harness.v1.RunConfig.dynamic_context:type_name -> harness.v1.RunConfig.DynamicContextEntry
-	5,  // 4: harness.v1.RunConfig.provider:type_name -> harness.v1.ProviderConfig
-	23, // 5: harness.v1.RunConfig.providers:type_name -> harness.v1.RunConfig.ProvidersEntry
-	8,  // 6: harness.v1.RunConfig.model_router:type_name -> harness.v1.ModelRouterConfig
-	9,  // 7: harness.v1.RunConfig.prompt_builder:type_name -> harness.v1.PromptBuilderConfig
-	10, // 8: harness.v1.RunConfig.context_strategy:type_name -> harness.v1.ContextStrategyConfig
-	11, // 9: harness.v1.RunConfig.executor:type_name -> harness.v1.ExecutorConfig
-	15, // 10: harness.v1.RunConfig.edit_strategy:type_name -> harness.v1.EditStrategyConfig
-	16, // 11: harness.v1.RunConfig.verifier:type_name -> harness.v1.VerifierConfig
-	17, // 12: harness.v1.RunConfig.permission_policy:type_name -> harness.v1.PermissionPolicyConfig
-	18, // 13: harness.v1.RunConfig.git_strategy:type_name -> harness.v1.GitStrategyConfig
-	19, // 14: harness.v1.RunConfig.trace_emitter:type_name -> harness.v1.TraceEmitterConfig
-	20, // 15: harness.v1.RunConfig.tools:type_name -> harness.v1.ToolsConfig
-	6,  // 16: harness.v1.ProviderConfig.credential:type_name -> harness.v1.CredentialConfig
-	7,  // 17: harness.v1.CredentialConfig.token_source:type_name -> harness.v1.TokenSourceConfig
-	24, // 18: harness.v1.ModelRouterConfig.mode_models:type_name -> harness.v1.ModelRouterConfig.ModeModelsEntry
-	12, // 19: harness.v1.ExecutorConfig.vcs_backend:type_name -> harness.v1.VcsBackendConfig
-	13, // 20: harness.v1.ExecutorConfig.network:type_name -> harness.v1.NetworkConfig
-	14, // 21: harness.v1.ExecutorConfig.resources:type_name -> harness.v1.ResourceLimits
-	16, // 22: harness.v1.VerifierConfig.verifiers:type_name -> harness.v1.VerifierConfig
-	21, // 23: harness.v1.ToolsConfig.mcp_servers:type_name -> harness.v1.MCPServerConfig
-	5,  // 24: harness.v1.RunConfig.ProvidersEntry.value:type_name -> harness.v1.ProviderConfig
-	0,  // 25: harness.v1.HarnessService.RunTask:input_type -> harness.v1.HarnessEvent
-	1,  // 26: harness.v1.HarnessService.RunTask:output_type -> harness.v1.ControlEvent
+	4,  // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
+	3,  // 1: stirrup.harness.v1.ControlEvent.task:type_name -> stirrup.harness.v1.RunConfig
+	2,  // 2: stirrup.harness.v1.ControlEvent.allowed:type_name -> stirrup.harness.v1.OptionalBool
+	22, // 3: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
+	5,  // 4: stirrup.harness.v1.RunConfig.provider:type_name -> stirrup.harness.v1.ProviderConfig
+	23, // 5: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
+	8,  // 6: stirrup.harness.v1.RunConfig.model_router:type_name -> stirrup.harness.v1.ModelRouterConfig
+	9,  // 7: stirrup.harness.v1.RunConfig.prompt_builder:type_name -> stirrup.harness.v1.PromptBuilderConfig
+	10, // 8: stirrup.harness.v1.RunConfig.context_strategy:type_name -> stirrup.harness.v1.ContextStrategyConfig
+	11, // 9: stirrup.harness.v1.RunConfig.executor:type_name -> stirrup.harness.v1.ExecutorConfig
+	15, // 10: stirrup.harness.v1.RunConfig.edit_strategy:type_name -> stirrup.harness.v1.EditStrategyConfig
+	16, // 11: stirrup.harness.v1.RunConfig.verifier:type_name -> stirrup.harness.v1.VerifierConfig
+	17, // 12: stirrup.harness.v1.RunConfig.permission_policy:type_name -> stirrup.harness.v1.PermissionPolicyConfig
+	18, // 13: stirrup.harness.v1.RunConfig.git_strategy:type_name -> stirrup.harness.v1.GitStrategyConfig
+	19, // 14: stirrup.harness.v1.RunConfig.trace_emitter:type_name -> stirrup.harness.v1.TraceEmitterConfig
+	20, // 15: stirrup.harness.v1.RunConfig.tools:type_name -> stirrup.harness.v1.ToolsConfig
+	6,  // 16: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
+	7,  // 17: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
+	24, // 18: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	12, // 19: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
+	13, // 20: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
+	14, // 21: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
+	16, // 22: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
+	21, // 23: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	5,  // 24: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 25: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	1,  // 26: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
 	26, // [26:27] is the sub-list for method output_type
 	25, // [25:26] is the sub-list for method input_type
 	25, // [25:25] is the sub-list for extension type_name

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package harness.v1;
+package stirrup.harness.v1;
 
 // HarnessService is the bidirectional streaming interface between the harness
 // (client) and the control plane (server). The harness connects outbound and

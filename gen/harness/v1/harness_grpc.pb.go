@@ -19,7 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HarnessService_RunTask_FullMethodName = "/harness.v1.HarnessService/RunTask"
+	HarnessService_RunTask_FullMethodName = "/stirrup.harness.v1.HarnessService/RunTask"
 )
 
 // HarnessServiceClient is the client API for HarnessService service.
@@ -140,7 +140,7 @@ type HarnessService_RunTaskServer = grpc.BidiStreamingServer[HarnessEvent, Contr
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var HarnessService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "harness.v1.HarnessService",
+	ServiceName: "stirrup.harness.v1.HarnessService",
 	HandlerType: (*HarnessServiceServer)(nil),
 	Methods:     []grpc.MethodDesc{},
 	Streams: []grpc.StreamDesc{
