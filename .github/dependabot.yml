@@ -15,6 +15,10 @@ updates:
       day: monday
       time: "04:00"
       timezone: UTC
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
 
   - package-ecosystem: gomod
     directory: /types
@@ -23,6 +27,10 @@ updates:
       day: monday
       time: "04:00"
       timezone: UTC
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
 
   - package-ecosystem: gomod
     directory: /eval
@@ -31,6 +39,10 @@ updates:
       day: monday
       time: "04:00"
       timezone: UTC
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
 
   - package-ecosystem: docker
     directory: /
