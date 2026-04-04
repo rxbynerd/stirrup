@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 
@@ -76,13 +77,13 @@ func TestBedrock_TextStreaming(t *testing.T) {
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta:             &brtypes.ContentBlockDeltaMemberText{Value: "Hello"},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta:             &brtypes.ContentBlockDeltaMemberText{Value: " world"},
 			},
 		},
@@ -116,38 +117,38 @@ func TestBedrock_ToolCallStreaming(t *testing.T) {
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockStart{
 			Value: brtypes.ContentBlockStartEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Start: &brtypes.ContentBlockStartMemberToolUse{
 					Value: brtypes.ToolUseBlockStart{
-						ToolUseId: strPtr("toolu_abc"),
-						Name:      strPtr("read_file"),
+						ToolUseId: aws.String("toolu_abc"),
+						Name:      aws.String("read_file"),
 					},
 				},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta: &brtypes.ContentBlockDeltaMemberToolUse{
 					Value: brtypes.ToolUseBlockDelta{
-						Input: strPtr(`{"path":`),
+						Input: aws.String(`{"path":`),
 					},
 				},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta: &brtypes.ContentBlockDeltaMemberToolUse{
 					Value: brtypes.ToolUseBlockDelta{
-						Input: strPtr(`"main.go"}`),
+						Input: aws.String(`"main.go"}`),
 					},
 				},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockStop{
 			Value: brtypes.ContentBlockStopEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberMessageStop{
@@ -190,37 +191,37 @@ func TestBedrock_MixedTextAndToolCall(t *testing.T) {
 		// Text block at index 0.
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta:             &brtypes.ContentBlockDeltaMemberText{Value: "Let me read that file."},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockStop{
-			Value: brtypes.ContentBlockStopEvent{ContentBlockIndex: int32Ptr(0)},
+			Value: brtypes.ContentBlockStopEvent{ContentBlockIndex: aws.Int32(0)},
 		},
 		// Tool use block at index 1.
 		&brtypes.ConverseStreamOutputMemberContentBlockStart{
 			Value: brtypes.ContentBlockStartEvent{
-				ContentBlockIndex: int32Ptr(1),
+				ContentBlockIndex: aws.Int32(1),
 				Start: &brtypes.ContentBlockStartMemberToolUse{
 					Value: brtypes.ToolUseBlockStart{
-						ToolUseId: strPtr("toolu_xyz"),
-						Name:      strPtr("read_file"),
+						ToolUseId: aws.String("toolu_xyz"),
+						Name:      aws.String("read_file"),
 					},
 				},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(1),
+				ContentBlockIndex: aws.Int32(1),
 				Delta: &brtypes.ContentBlockDeltaMemberToolUse{
 					Value: brtypes.ToolUseBlockDelta{
-						Input: strPtr(`{"path":"test.go"}`),
+						Input: aws.String(`{"path":"test.go"}`),
 					},
 				},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockStop{
-			Value: brtypes.ContentBlockStopEvent{ContentBlockIndex: int32Ptr(1)},
+			Value: brtypes.ContentBlockStopEvent{ContentBlockIndex: aws.Int32(1)},
 		},
 		&brtypes.ConverseStreamOutputMemberMessageStop{
 			Value: brtypes.MessageStopEvent{StopReason: brtypes.StopReasonToolUse},
@@ -303,7 +304,7 @@ func TestBedrock_StreamError(t *testing.T) {
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta:             &brtypes.ContentBlockDeltaMemberText{Value: "partial"},
 			},
 		},
@@ -341,7 +342,7 @@ func TestBedrock_ContextCancellation(t *testing.T) {
 		// Send one event, then cancel.
 		blockingCh <- &brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta:             &brtypes.ContentBlockDeltaMemberText{Value: "before cancel"},
 			},
 		}
@@ -349,7 +350,7 @@ func TestBedrock_ContextCancellation(t *testing.T) {
 		// Send another event that should trigger the ctx.Done() check.
 		blockingCh <- &brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta:             &brtypes.ContentBlockDeltaMemberText{Value: "after cancel"},
 			},
 		}
@@ -375,28 +376,28 @@ func TestBedrock_MalformedToolInputJSON(t *testing.T) {
 	events := []brtypes.ConverseStreamOutput{
 		&brtypes.ConverseStreamOutputMemberContentBlockStart{
 			Value: brtypes.ContentBlockStartEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Start: &brtypes.ContentBlockStartMemberToolUse{
 					Value: brtypes.ToolUseBlockStart{
-						ToolUseId: strPtr("toolu_bad"),
-						Name:      strPtr("read_file"),
+						ToolUseId: aws.String("toolu_bad"),
+						Name:      aws.String("read_file"),
 					},
 				},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
 			Value: brtypes.ContentBlockDeltaEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 				Delta: &brtypes.ContentBlockDeltaMemberToolUse{
 					Value: brtypes.ToolUseBlockDelta{
-						Input: strPtr(`{"path": INVALID`),
+						Input: aws.String(`{"path": INVALID`),
 					},
 				},
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberContentBlockStop{
 			Value: brtypes.ContentBlockStopEvent{
-				ContentBlockIndex: int32Ptr(0),
+				ContentBlockIndex: aws.Int32(0),
 			},
 		},
 		&brtypes.ConverseStreamOutputMemberMessageStop{
@@ -479,11 +480,11 @@ func TestBedrock_TranslateMessages(t *testing.T) {
 	if toolBlock, ok := result[1].Content[1].(*brtypes.ContentBlockMemberToolUse); !ok {
 		t.Errorf("msg[1].Content[1] type = %T, want ContentBlockMemberToolUse", result[1].Content[1])
 	} else {
-		if derefString(toolBlock.Value.Name) != "read_file" {
-			t.Errorf("tool_use.Name = %q, want read_file", derefString(toolBlock.Value.Name))
+		if aws.ToString(toolBlock.Value.Name) != "read_file" {
+			t.Errorf("tool_use.Name = %q, want read_file", aws.ToString(toolBlock.Value.Name))
 		}
-		if derefString(toolBlock.Value.ToolUseId) != "toolu_1" {
-			t.Errorf("tool_use.ToolUseId = %q, want toolu_1", derefString(toolBlock.Value.ToolUseId))
+		if aws.ToString(toolBlock.Value.ToolUseId) != "toolu_1" {
+			t.Errorf("tool_use.ToolUseId = %q, want toolu_1", aws.ToString(toolBlock.Value.ToolUseId))
 		}
 	}
 
@@ -494,8 +495,8 @@ func TestBedrock_TranslateMessages(t *testing.T) {
 	if trBlock, ok := result[2].Content[0].(*brtypes.ContentBlockMemberToolResult); !ok {
 		t.Errorf("msg[2].Content[0] type = %T, want ContentBlockMemberToolResult", result[2].Content[0])
 	} else {
-		if derefString(trBlock.Value.ToolUseId) != "toolu_1" {
-			t.Errorf("tool_result.ToolUseId = %q, want toolu_1", derefString(trBlock.Value.ToolUseId))
+		if aws.ToString(trBlock.Value.ToolUseId) != "toolu_1" {
+			t.Errorf("tool_result.ToolUseId = %q, want toolu_1", aws.ToString(trBlock.Value.ToolUseId))
 		}
 	}
 }
@@ -531,11 +532,11 @@ func TestBedrock_TranslateTools(t *testing.T) {
 	if !ok {
 		t.Fatalf("tool type = %T, want ToolMemberToolSpec", result[0])
 	}
-	if derefString(toolSpec.Value.Name) != "read_file" {
-		t.Errorf("tool.Name = %q, want read_file", derefString(toolSpec.Value.Name))
+	if aws.ToString(toolSpec.Value.Name) != "read_file" {
+		t.Errorf("tool.Name = %q, want read_file", aws.ToString(toolSpec.Value.Name))
 	}
-	if derefString(toolSpec.Value.Description) != "Read a file" {
-		t.Errorf("tool.Description = %q, want 'Read a file'", derefString(toolSpec.Value.Description))
+	if aws.ToString(toolSpec.Value.Description) != "Read a file" {
+		t.Errorf("tool.Description = %q, want 'Read a file'", aws.ToString(toolSpec.Value.Description))
 	}
 }
 
@@ -582,8 +583,8 @@ func TestBedrock_BuildConverseStreamInput(t *testing.T) {
 		t.Fatalf("buildConverseStreamInput() error: %v", err)
 	}
 
-	if derefString(input.ModelId) != "anthropic.claude-sonnet-4-6-v1" {
-		t.Errorf("ModelId = %q, want anthropic.claude-sonnet-4-6-v1", derefString(input.ModelId))
+	if aws.ToString(input.ModelId) != "anthropic.claude-sonnet-4-6-v1" {
+		t.Errorf("ModelId = %q, want anthropic.claude-sonnet-4-6-v1", aws.ToString(input.ModelId))
 	}
 	if len(input.System) != 1 {
 		t.Fatalf("System has %d blocks, want 1", len(input.System))
@@ -634,9 +635,3 @@ func TestBedrock_APIError(t *testing.T) {
 		t.Errorf("error = %q, want to contain 'access denied'", err)
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func int32Ptr(n int32) *int32 { return &n }

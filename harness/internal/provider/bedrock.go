@@ -109,17 +109,17 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 
 		switch ev := event.(type) {
 		case *brtypes.ConverseStreamOutputMemberContentBlockStart:
-			idx := aws.Int32Value(ev.Value.ContentBlockIndex)
+			idx := aws.ToInt32(ev.Value.ContentBlockIndex)
 			switch start := ev.Value.Start.(type) {
 			case *brtypes.ContentBlockStartMemberToolUse:
 				blocks[idx] = &toolBlockState{
-					id:   aws.StringValue(start.Value.ToolUseId),
-					name: aws.StringValue(start.Value.Name),
+					id:   aws.ToString(start.Value.ToolUseId),
+					name: aws.ToString(start.Value.Name),
 				}
 			}
 
 		case *brtypes.ConverseStreamOutputMemberContentBlockDelta:
-			idx := aws.Int32Value(ev.Value.ContentBlockIndex)
+			idx := aws.ToInt32(ev.Value.ContentBlockIndex)
 			switch delta := ev.Value.Delta.(type) {
 			case *brtypes.ContentBlockDeltaMemberText:
 				ch <- types.StreamEvent{
@@ -133,7 +133,7 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 			}
 
 		case *brtypes.ConverseStreamOutputMemberContentBlockStop:
-			idx := aws.Int32Value(ev.Value.ContentBlockIndex)
+			idx := aws.ToInt32(ev.Value.ContentBlockIndex)
 			if bs := blocks[idx]; bs != nil {
 				var input map[string]any
 				raw := bs.jsonBuf.String()
