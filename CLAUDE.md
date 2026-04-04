@@ -1,6 +1,8 @@
 # stirrup
 
-A coding agent harness. Go monorepo with 12 swappable components that can be composed via RunConfig. See VERSION1.md for the full design document.
+A coding agent harness. Go monorepo with 12 swappable components that can be composed via RunConfig.
+
+docs/VERSION1.md contains the summary of what was implemented during "version 1" (PR #1).
 
 ## Project Structure
 
@@ -284,7 +286,3 @@ Exceptions where external deps are accepted:
 - `aws-sdk-go-v2` for Bedrock and SSM SecretStore (IAM SigV4 auth is complex enough to justify)
 - `google.golang.org/grpc` + `google.golang.org/protobuf` for gRPC transport (the reference Go gRPC implementation)
 - `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace emitter (the reference OTel SDK)
-
-## Legacy Ruby Code
-
-The original Ruby prototype (`stirrup.rb`, `server.rb`) is still in the repo root. It is superseded by the Go harness but kept for reference during the transition.
