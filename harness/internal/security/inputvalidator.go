@@ -38,6 +38,9 @@ func ValidateJSONSchema(input json.RawMessage, schema json.RawMessage) error {
 	}
 
 	c := jsonschema.NewCompiler()
+	// Block all external resource loading (file://, http://, etc.) to prevent
+	// local file read or SSRF via $ref in untrusted schemas from MCP servers.
+	c.UseLoader(noopLoader{})
 	if err := c.AddResource("schema.json", schemaVal); err != nil {
 		return fmt.Errorf("failed to add schema resource: %w", err)
 	}
@@ -52,6 +55,15 @@ func ValidateJSONSchema(input json.RawMessage, schema json.RawMessage) error {
 	}
 
 	return nil
+}
+
+// noopLoader blocks all external resource loading. Schemas must be
+// self-contained (inline $defs/$ref only). This prevents local file reads
+// and SSRF when validating against untrusted schemas from MCP servers.
+type noopLoader struct{}
+
+func (noopLoader) Load(url string) (any, error) {
+	return nil, fmt.Errorf("external schema loading is disabled: %s", url)
 }
 
 func stripDangerousKeys(v any) any {

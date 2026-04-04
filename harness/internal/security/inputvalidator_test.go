@@ -455,3 +455,30 @@ func TestValidateJSONSchema_MinMaxLength(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateJSONSchema_ExternalRefBlocked(t *testing.T) {
+	t.Run("file ref blocked", func(t *testing.T) {
+		schema := json.RawMessage(`{"$ref": "file:///etc/passwd"}`)
+		err := ValidateJSONSchema(json.RawMessage(`{}`), schema)
+		if err == nil {
+			t.Fatal("expected error for external file:// $ref")
+		}
+	})
+	t.Run("http ref blocked", func(t *testing.T) {
+		schema := json.RawMessage(`{"$ref": "http://attacker.com/schema.json"}`)
+		err := ValidateJSONSchema(json.RawMessage(`{}`), schema)
+		if err == nil {
+			t.Fatal("expected error for external http:// $ref")
+		}
+	})
+	t.Run("inline ref still works", func(t *testing.T) {
+		schema := json.RawMessage(`{
+			"type": "object",
+			"properties": {"val": {"$ref": "#/$defs/pos"}},
+			"$defs": {"pos": {"type": "integer", "minimum": 0}}
+		}`)
+		if err := ValidateJSONSchema(json.RawMessage(`{"val": 5}`), schema); err != nil {
+			t.Fatalf("unexpected error for inline $ref: %v", err)
+		}
+	})
+}
