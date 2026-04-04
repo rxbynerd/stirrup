@@ -9,6 +9,7 @@ WORKDIR /src
 COPY go.work ./
 COPY types ./types
 COPY gen ./gen
+COPY eval ./eval
 COPY harness ./harness
 
 RUN --mount=type=cache,target=/go/pkg/mod \
