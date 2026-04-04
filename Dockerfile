@@ -11,17 +11,11 @@ COPY harness ./harness
 
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/harness ./harness/cmd/harness && \
-    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/job ./harness/cmd/job
+    CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/stirrup ./harness/cmd/stirrup
 
-FROM gcr.io/distroless/static-debian12:nonroot AS harness
+FROM gcr.io/distroless/static-debian12:nonroot
 
-COPY --from=builder /out/harness /usr/local/bin/harness
+COPY --from=builder /out/stirrup /usr/local/bin/stirrup
 
-ENTRYPOINT ["/usr/local/bin/harness"]
-
-FROM gcr.io/distroless/static-debian12:nonroot AS job
-
-COPY --from=builder /out/job /usr/local/bin/job
-
-ENTRYPOINT ["/usr/local/bin/job"]
+ENTRYPOINT ["/usr/local/bin/stirrup"]

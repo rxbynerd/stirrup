@@ -41,7 +41,7 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	}
 
 	if cfg.HarnessPath == "" {
-		cfg.HarnessPath = "stirrup-harness"
+		cfg.HarnessPath = "stirrup"
 	}
 
 	if cfg.OutputDir != "" {
@@ -134,6 +134,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig) eval.TaskR
 	traceFile := filepath.Join(tmpDir, "trace.jsonl")
 
 	args := []string{
+		"harness",
 		"-prompt", task.Prompt,
 		"-mode", taskMode(task),
 		"-workspace", workspaceDir,

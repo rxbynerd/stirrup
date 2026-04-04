@@ -34,9 +34,9 @@ jobs:
         working-directory: eval
         run: go test ./...
 
-      - name: Build harness binary
+      - name: Build stirrup binary
         working-directory: harness
-        run: go build ./cmd/harness
+        run: go build ./cmd/stirrup
 
       - name: Build eval binary
         run: go build -o stirrup-eval ./eval/cmd/eval
@@ -63,7 +63,7 @@ jobs:
 
       - name: Build binaries
         run: |
-          go build -o stirrup-harness ./harness/cmd/harness
+          go build -o stirrup ./harness/cmd/stirrup
           go build -o stirrup-eval ./eval/cmd/eval
 
       - name: Check for eval suites
@@ -86,7 +86,7 @@ jobs:
             name=$(basename "$suite" .json)
             ./stirrup-eval run \
               --suite "$suite" \
-              --harness ./stirrup-harness \
+              --harness ./stirrup \
               --output "eval/results"
           done
 

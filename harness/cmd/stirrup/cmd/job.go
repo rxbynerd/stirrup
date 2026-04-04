@@ -1,49 +1,54 @@
-// Command job is the K8s job entrypoint for the stirrup coding harness.
-// It connects to a control plane via gRPC, waits for a task_assignment
-// event containing the RunConfig, then runs the agentic loop with the
-// pre-established transport.
-package main
+package cmd
 
 import (
 	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
+	"github.com/spf13/cobra"
 )
 
-func main() {
+var jobCmd = &cobra.Command{
+	Use:   "job",
+	Short: "Run as a Kubernetes job connected to a control plane",
+	Long: `Run the stirrup harness as a Kubernetes job. Connects to a control plane
+via gRPC, waits for a task_assignment event containing the RunConfig, then
+runs the agentic loop with the pre-established transport.
+
+Required environment variables:
+  CONTROL_PLANE_ADDR          gRPC address of the control plane
+  CONTROL_PLANE_SESSION_ID    Session ID for correlation (optional)
+  STIRRUP_FOLLOWUP_GRACE      Follow-up grace period in seconds (optional)`,
+	Args: cobra.NoArgs,
+	RunE: runJob,
+}
+
+func init() {
+	rootCmd.AddCommand(jobCmd)
+}
+
+func runJob(cmd *cobra.Command, args []string) error {
 	addr := os.Getenv("CONTROL_PLANE_ADDR")
 	if addr == "" {
-		fmt.Fprintln(os.Stderr, "Fatal: CONTROL_PLANE_ADDR environment variable is required")
-		os.Exit(1)
+		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
 	}
 
 	// Top-level context with signal handling. The timeout is applied later
 	// once we receive the RunConfig (which carries the wall-clock timeout).
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		fmt.Fprintln(os.Stderr, "\nReceived interrupt, shutting down...")
-		cancel()
-	}()
+	setupSignalHandler(cancel)
 
 	// 1. Dial the control plane.
 	tp, err := transport.NewGRPCTransport(ctx, addr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Fatal: failed to connect to control plane at %s: %v\n", addr, err)
-		os.Exit(1)
+		return fmt.Errorf("failed to connect to control plane at %s: %w", addr, err)
 	}
 	defer tp.Close()
 
@@ -52,8 +57,7 @@ func main() {
 	//    this gRPC stream back to the session that launched the subprocess.
 	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
 	if err := tp.Emit(types.HarnessEvent{Type: "ready", ID: sessionID}); err != nil {
-		fmt.Fprintf(os.Stderr, "Fatal: failed to send ready event: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to send ready event: %w", err)
 	}
 
 	// Write the liveness probe file so K8s knows we are healthy.
@@ -82,14 +86,11 @@ func main() {
 	case config = <-configCh:
 		// Got our assignment.
 	case <-assignTimer.C:
-		fmt.Fprintln(os.Stderr, "Fatal: no task assignment received within 5 minutes")
-		os.Exit(1)
+		return fmt.Errorf("no task assignment received within 5 minutes")
 	case <-tp.Done():
-		fmt.Fprintln(os.Stderr, "Fatal: gRPC stream closed before receiving task assignment")
-		os.Exit(1)
+		return fmt.Errorf("gRPC stream closed before receiving task assignment")
 	case <-ctx.Done():
-		fmt.Fprintln(os.Stderr, "Fatal: interrupted before receiving task assignment")
-		os.Exit(1)
+		return fmt.Errorf("interrupted before receiving task assignment")
 	}
 
 	// 4. Apply wall-clock timeout from the RunConfig.
@@ -102,24 +103,15 @@ func main() {
 	// 5. Build and run the agentic loop, reusing the existing gRPC transport.
 	loop, err := core.BuildLoopWithTransport(ctx, config, tp)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error building harness: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("building harness: %w", err)
 	}
 	defer loop.Close()
 
 	runTrace, err := loop.Run(ctx, config)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error running harness: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("running harness: %w", err)
 	}
-
-	// Print summary to stderr (useful for K8s pod logs).
-	fmt.Fprintf(os.Stderr, "\n--- Run complete ---\n")
-	fmt.Fprintf(os.Stderr, "Outcome: %s\n", runTrace.Outcome)
-	fmt.Fprintf(os.Stderr, "Turns: %d\n", runTrace.Turns)
-	fmt.Fprintf(os.Stderr, "Tokens: %d in / %d out\n", runTrace.TokenUsage.Input, runTrace.TokenUsage.Output)
-	fmt.Fprintf(os.Stderr, "Tool calls: %d\n", len(runTrace.ToolCalls))
-	fmt.Fprintf(os.Stderr, "Duration: %s\n", runTrace.CompletedAt.Sub(runTrace.StartedAt).Round(time.Millisecond))
+	printRunSummary(runTrace)
 
 	// Honour follow-up grace from the RunConfig (set by the control plane) or
 	// fall back to the STIRRUP_FOLLOWUP_GRACE environment variable.
@@ -134,4 +126,6 @@ func main() {
 	if graceSecs > 0 {
 		core.RunFollowUpLoop(ctx, loop, config, graceSecs)
 	}
+
+	return nil
 }

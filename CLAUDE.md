@@ -15,8 +15,11 @@ stirrup/
   gen/                       # Generated Go code from proto (separate module)
   types/                     # Shared type definitions (zero dependencies)
   harness/                   # The harness binary
-    cmd/harness/main.go      # CLI entrypoint
-    cmd/job/main.go          # K8s job entrypoint (gRPC to control plane)
+    cmd/stirrup/             # Unified CLI entrypoint (cobra: harness + job subcommands)
+      main.go
+      cmd/root.go
+      cmd/harness.go
+      cmd/job.go
     internal/
       core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, stall detection
       credential/            # Cross-cloud credential federation (token sources + credential sources)
@@ -49,33 +52,34 @@ stirrup/
 ## Running
 
 ```sh
-go build -o stirrup-harness ./harness/cmd/harness
-./stirrup-harness -prompt "Your task here"
+go build -o stirrup ./harness/cmd/stirrup
+./stirrup harness --prompt "Your task here"
 ```
 
 Or directly:
 ```sh
-go run ./harness/cmd/harness -prompt "Your task here"
+go run ./harness/cmd/stirrup -- harness --prompt "Your task here"
 ```
 
 Requires `ANTHROPIC_API_KEY` environment variable.
 
-### CLI Flags
+### CLI Flags (`stirrup harness`)
 
 | Flag | Default | Description |
 |---|---|---|
-| `-prompt` | (required) | User prompt |
-| `-mode` | `execution` | Run mode: execution, planning, review, research, toil |
-| `-model` | `claude-sonnet-4-6` | Model to use |
-| `-provider` | `anthropic` | Provider type |
-| `-api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
-| `-workspace` | current directory | Workspace directory |
-| `-max-turns` | `20` | Maximum agentic loop turns |
-| `-timeout` | `600` | Wall-clock timeout in seconds |
-| `-trace` | (none) | Path to JSONL trace file |
-| `-log-level` | `info` | Log level: debug, info, warn, error |
-| `-transport` | `stdio` | Transport type: stdio, grpc |
-| `-transport-addr` | (none) | gRPC target address (required when transport=grpc) |
+| `--prompt` | (required) | User prompt (also accepted as positional arg) |
+| `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
+| `--model` | `claude-sonnet-4-6` | Model to use |
+| `--provider` | `anthropic` | Provider type |
+| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
+| `--workspace`, `-w` | current directory | Workspace directory |
+| `--max-turns` | `20` | Maximum agentic loop turns |
+| `--timeout` | `600` | Wall-clock timeout in seconds |
+| `--trace` | (none) | Path to JSONL trace file |
+| `--log-level` | `info` | Log level: debug, info, warn, error |
+| `--transport` | `stdio` | Transport type: stdio, grpc |
+| `--transport-addr` | (none) | gRPC target address (required when transport=grpc) |
+| `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups (env: STIRRUP_FOLLOWUP_GRACE) |
 
 ### Eval CLI
 
@@ -177,7 +181,7 @@ The agentic loop emits `heartbeat` events on the transport every 30 seconds duri
 
 ### K8s job entrypoint
 
-`cmd/job/main.go` is the K8s job binary. It dials the control plane at `CONTROL_PLANE_ADDR` via gRPC, emits a "ready" event, blocks until a `task_assignment` arrives, then runs the agentic loop over the pre-established transport using `BuildLoopWithTransport`.
+`stirrup job` is the K8s job subcommand. It dials the control plane at `CONTROL_PLANE_ADDR` via gRPC, emits a "ready" event, blocks until a `task_assignment` arrives, then runs the agentic loop over the pre-established transport using `BuildLoopWithTransport`.
 
 ### Protobuf / Buf toolchain
 
@@ -249,13 +253,12 @@ The `stallDetector` (`core/stall.go`) tracks consecutive identical tool calls an
 A `Justfile` is provided for common tasks (requires [just](https://github.com/casey/just)):
 ```sh
 just              # build + test (default)
-just build        # build harness + job + eval binaries
+just build        # build stirrup + eval binaries
 just test         # go test ./harness/... ./types/... ./eval/...
 just lint         # golangci-lint
 just proto        # buf generate
 just buf-lint     # buf lint
-just docker       # build harness Docker image
-just docker-job   # build job Docker image
+just docker       # build stirrup Docker image
 just clean        # remove built binaries
 ```
 
@@ -270,7 +273,7 @@ buf lint                 # Lint proto files
 ### CI
 
 GitHub Actions at `.github/workflows/ci.yml`:
-- **verify** job: runs `go test` for types, harness, and eval modules, builds the harness and eval binaries (on every push and PR)
+- **verify** job: runs `go test` for types, harness, and eval modules, builds the stirrup and eval binaries (on every push)
 - **eval-gate** job: builds binaries, runs eval suites from `eval/suites/`, compares against baselines in `eval/baselines/`, uploads results as artifacts (on main branch push, after verify passes)
 - **publish-container** job: builds and pushes Docker image to `ghcr.io/rxbynerd/stirrup` (on main branch push only, after verify passes)
 
@@ -283,6 +286,7 @@ The LSP (gopls) frequently reports false positive diagnostics due to the `go.wor
 The project follows a minimal-dependency philosophy. Provider adapters and the container executor use hand-rolled HTTP clients against well-documented REST APIs rather than pulling in large SDK dependency trees. This is deliberate — for a security-sensitive harness that holds API keys and executes code, minimising the dependency surface is worth the cost of writing a few hundred lines of HTTP client code.
 
 Exceptions where external deps are accepted:
+- `github.com/spf13/cobra` for CLI framework (production-grade subcommand routing, help generation, flag parsing)
 - `aws-sdk-go-v2` for Bedrock and SSM SecretStore (IAM SigV4 auth is complex enough to justify)
 - `google.golang.org/grpc` + `google.golang.org/protobuf` for gRPC transport (the reference Go gRPC implementation)
 - `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace emitter (the reference OTel SDK)

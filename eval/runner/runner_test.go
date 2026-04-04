@@ -72,7 +72,9 @@ func TestRunSuite_WithFakeHarness(t *testing.T) {
 	harnessPath := filepath.Join(harnessDir, "fake-harness")
 
 	// The fake harness reads -trace from args and writes a JSONL trace there.
+	// The first argument is the "harness" subcommand, which we skip.
 	script := `#!/bin/sh
+shift
 TRACE=""
 while [ $# -gt 0 ]; do
   case "$1" in
