@@ -75,7 +75,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	rtr := buildRouter(config.ModelRouter, config.Provider.Type)
 
 	// 3. Prompt builder.
-	pb := buildPromptBuilder(config.PromptBuilder)
+	pb := buildPromptBuilder(config.PromptBuilder, config.SystemPromptOverride)
 
 	// 4. Executor (built early because context strategy may need it).
 	exec, err := buildExecutor(ctx, config.Executor, secrets)
@@ -381,7 +381,10 @@ func buildDynamicRouter(cfg types.ModelRouterConfig, fallbackProvider string) *r
 	})
 }
 
-func buildPromptBuilder(cfg types.PromptBuilderConfig) prompt.PromptBuilder {
+func buildPromptBuilder(cfg types.PromptBuilderConfig, systemPromptOverride string) prompt.PromptBuilder {
+	if systemPromptOverride != "" {
+		return prompt.NewOverridePromptBuilder(systemPromptOverride)
+	}
 	switch cfg.Type {
 	case "composed":
 		return prompt.NewComposedPromptBuilder(

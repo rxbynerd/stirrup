@@ -478,9 +478,13 @@ type RunConfig struct {
 	FollowUpGrace *int32 `protobuf:"varint,21,opt,name=follow_up_grace,json=followUpGrace,proto3,oneof" json:"follow_up_grace,omitempty"`
 	// Optional. Structured log verbosity for this run.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
-	LogLevel      string `protobuf:"bytes,22,opt,name=log_level,json=logLevel,proto3" json:"log_level,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	LogLevel string `protobuf:"bytes,22,opt,name=log_level,json=logLevel,proto3" json:"log_level,omitempty"`
+	// Optional. When set, used as the complete system prompt preamble,
+	// bypassing prompt_builder mode selection. Workspace path, turn budget,
+	// and dynamic_context sections are still appended by the harness.
+	SystemPromptOverride string `protobuf:"bytes,23,opt,name=system_prompt_override,json=systemPromptOverride,proto3" json:"system_prompt_override,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *RunConfig) Reset() {
@@ -663,6 +667,13 @@ func (x *RunConfig) GetFollowUpGrace() int32 {
 func (x *RunConfig) GetLogLevel() string {
 	if x != nil {
 		return x.LogLevel
+	}
+	return ""
+}
+
+func (x *RunConfig) GetSystemPromptOverride() string {
+	if x != nil {
+		return x.SystemPromptOverride
 	}
 	return ""
 }
@@ -2175,8 +2186,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\aallowed\x18\x05 \x01(\v2\x18.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xfa\n" +
-	"\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xb0\v\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -2200,7 +2210,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0fmax_cost_budget\x18\x12 \x01(\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
 	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
 	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12\x1b\n" +
-	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x1aA\n" +
+	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x124\n" +
+	"\x16system_prompt_override\x18\x17 \x01(\tR\x14systemPromptOverride\x1aA\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aX\n" +

@@ -290,6 +290,11 @@ message RunConfig {
   // Optional. Structured log verbosity for this run.
   // Valid values: "debug", "info", "warn", "error". Default: "info".
   string log_level = 22;
+
+  // Optional. When set, used as the complete system prompt preamble,
+  // bypassing prompt_builder mode selection. Workspace path, turn budget,
+  // and dynamic_context sections are still appended by the harness.
+  string system_prompt_override = 23;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution

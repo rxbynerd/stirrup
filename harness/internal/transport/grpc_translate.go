@@ -151,6 +151,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	}
 
 	rc.LogLevel = pc.LogLevel
+	rc.SystemPromptOverride = pc.SystemPromptOverride
 
 	return rc
 }

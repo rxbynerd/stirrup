@@ -61,6 +61,11 @@ type RunConfig struct {
 	// LogLevel controls the structured logger verbosity.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
 	LogLevel string `json:"logLevel,omitempty"`
+
+	// SystemPromptOverride, when set, is used as the complete system prompt
+	// preamble, bypassing prompt_builder mode selection. Workspace path,
+	// turn budget, and dynamic_context sections are still appended.
+	SystemPromptOverride string `json:"systemPromptOverride,omitempty"`
 }
 
 // Redact returns a copy of the RunConfig with secret references replaced

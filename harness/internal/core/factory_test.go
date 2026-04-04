@@ -154,30 +154,37 @@ func TestBuildDynamicRouter_CustomThresholds(t *testing.T) {
 // --- buildPromptBuilder ---
 
 func TestBuildPromptBuilder_Default(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "default"})
+	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "default"}, "")
 	if _, ok := pb.(*prompt.DefaultPromptBuilder); !ok {
 		t.Fatalf("expected DefaultPromptBuilder, got %T", pb)
 	}
 }
 
 func TestBuildPromptBuilder_Empty(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{})
+	pb := buildPromptBuilder(types.PromptBuilderConfig{}, "")
 	if _, ok := pb.(*prompt.DefaultPromptBuilder); !ok {
 		t.Fatalf("expected DefaultPromptBuilder for empty type, got %T", pb)
 	}
 }
 
 func TestBuildPromptBuilder_Composed(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "composed"})
+	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "composed"}, "")
 	if _, ok := pb.(*prompt.ComposedPromptBuilder); !ok {
 		t.Fatalf("expected ComposedPromptBuilder, got %T", pb)
 	}
 }
 
 func TestBuildPromptBuilder_UnknownFallsBackToDefault(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "nonexistent"})
+	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "nonexistent"}, "")
 	if _, ok := pb.(*prompt.DefaultPromptBuilder); !ok {
 		t.Fatalf("expected DefaultPromptBuilder for unknown type, got %T", pb)
+	}
+}
+
+func TestBuildPromptBuilder_SystemPromptOverride(t *testing.T) {
+	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "default"}, "Custom system prompt")
+	if _, ok := pb.(*prompt.ComposedPromptBuilder); !ok {
+		t.Fatalf("expected ComposedPromptBuilder for override, got %T", pb)
 	}
 }
 
