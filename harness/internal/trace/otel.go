@@ -11,6 +11,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/version"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -78,6 +79,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	ctx, span := e.tracer.Start(ctx, "run",
 		oteltrace.WithAttributes(
 			attribute.String("run.id", runID),
+			attribute.String("harness.version", version.Version()),
 		),
 	)
 

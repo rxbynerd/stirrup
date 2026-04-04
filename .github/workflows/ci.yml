@@ -36,7 +36,7 @@ jobs:
 
       - name: Build stirrup binary
         working-directory: harness
-        run: go build ./cmd/stirrup
+        run: go build -ldflags="-X github.com/rxbynerd/stirrup/harness/internal/version.version=${{ github.sha }}" ./cmd/stirrup
 
       - name: Build eval binary
         run: go build -o stirrup-eval ./eval/cmd/eval
@@ -63,7 +63,7 @@ jobs:
 
       - name: Build binaries
         run: |
-          go build -o stirrup ./harness/cmd/stirrup
+          go build -ldflags="-X github.com/rxbynerd/stirrup/harness/internal/version.version=${{ github.sha }}" -o stirrup ./harness/cmd/stirrup
           go build -o stirrup-eval ./eval/cmd/eval
 
       - name: Check for eval suites
@@ -152,3 +152,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.sha }}

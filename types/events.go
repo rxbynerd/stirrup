@@ -38,7 +38,8 @@ type HarnessEvent struct {
 	Message    string          `json:"message,omitempty"`
 	Trace      *RunTrace       `json:"trace,omitempty"`
 	RequestID  string          `json:"requestId,omitempty"` // correlates permission_request with permission_response
-	ToolName   string          `json:"toolName,omitempty"`  // tool name in permission_request
+	ToolName       string          `json:"toolName,omitempty"`       // tool name in permission_request
+	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
 }
 
 // ControlEvent is an event received from the control plane.

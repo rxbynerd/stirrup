@@ -30,6 +30,7 @@ message HarnessEvent {
   RunTrace trace = 10;
   string request_id = 11;  // correlates permission_request/response
   string tool_name = 12;
+  string harness_version = 13; // build version of the harness binary
 }
 
 // ControlEvent is sent from the control plane to the harness.

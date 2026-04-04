@@ -10,6 +10,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
+	"github.com/rxbynerd/stirrup/harness/internal/version"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/spf13/cobra"
 )
@@ -56,7 +57,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	//    Include the session ID (if set) so the control plane can correlate
 	//    this gRPC stream back to the session that launched the subprocess.
 	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
-	if err := tp.Emit(types.HarnessEvent{Type: "ready", ID: sessionID}); err != nil {
+	if err := tp.Emit(types.HarnessEvent{Type: "ready", ID: sessionID, HarnessVersion: version.Version()}); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
 

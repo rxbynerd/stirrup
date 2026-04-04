@@ -136,6 +136,7 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	assertAttribute(t, rootSpan, "run.mode", "execution")
 	assertAttribute(t, rootSpan, "run.outcome", "success")
 	assertAttribute(t, rootSpan, "run.model", "claude-sonnet-4-6")
+	assertAttribute(t, rootSpan, "harness.version", "dev")
 }
 
 func TestOTelTraceEmitter_EmptyRun(t *testing.T) {

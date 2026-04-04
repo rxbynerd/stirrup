@@ -27,19 +27,20 @@ type HarnessEvent struct {
 	Type  string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "warning" | "heartbeat" | "ready" | "permission_request"
 	// Fields used by various event types. Only the relevant fields are
 	// populated for a given type.
-	Text          string    `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
-	Id            string    `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string    `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	Input         []byte    `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"` // JSON-encoded tool input
-	ToolUseId     string    `protobuf:"bytes,6,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"`
-	Content       string    `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
-	StopReason    string    `protobuf:"bytes,8,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
-	Message       string    `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
-	Trace         *RunTrace `protobuf:"bytes,10,opt,name=trace,proto3" json:"trace,omitempty"`
-	RequestId     string    `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // correlates permission_request/response
-	ToolName      string    `protobuf:"bytes,12,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Text           string    `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	Id             string    `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	Name           string    `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	Input          []byte    `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"` // JSON-encoded tool input
+	ToolUseId      string    `protobuf:"bytes,6,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"`
+	Content        string    `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
+	StopReason     string    `protobuf:"bytes,8,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	Message        string    `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
+	Trace          *RunTrace `protobuf:"bytes,10,opt,name=trace,proto3" json:"trace,omitempty"`
+	RequestId      string    `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // correlates permission_request/response
+	ToolName       string    `protobuf:"bytes,12,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	HarnessVersion string    `protobuf:"bytes,13,opt,name=harness_version,json=harnessVersion,proto3" json:"harness_version,omitempty"` // build version of the harness binary
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *HarnessEvent) Reset() {
@@ -152,6 +153,13 @@ func (x *HarnessEvent) GetRequestId() string {
 func (x *HarnessEvent) GetToolName() string {
 	if x != nil {
 		return x.ToolName
+	}
+	return ""
+}
+
+func (x *HarnessEvent) GetHarnessVersion() string {
+	if x != nil {
+		return x.HarnessVersion
 	}
 	return ""
 }
@@ -1580,7 +1588,7 @@ var File_harness_v1_harness_proto protoreflect.FileDescriptor
 const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
 	"\x18harness/v1/harness.proto\x12\n" +
-	"harness.v1\"\xcd\x02\n" +
+	"harness.v1\"\xf6\x02\n" +
 	"\fHarnessEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x12\n" +
 	"\x04text\x18\x02 \x01(\tR\x04text\x12\x0e\n" +
@@ -1596,7 +1604,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	" \x01(\v2\x14.harness.v1.RunTraceR\x05trace\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\v \x01(\tR\trequestId\x12\x1b\n" +
-	"\ttool_name\x18\f \x01(\tR\btoolName\"\xdd\x01\n" +
+	"\ttool_name\x18\f \x01(\tR\btoolName\x12'\n" +
+	"\x0fharness_version\x18\r \x01(\tR\x0eharnessVersion\"\xdd\x01\n" +
 	"\fControlEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12)\n" +
 	"\x04task\x18\x02 \x01(\v2\x15.harness.v1.RunConfigR\x04task\x12#\n" +

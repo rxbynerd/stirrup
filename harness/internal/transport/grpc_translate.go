@@ -18,8 +18,9 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 		Content:    e.Content,
 		StopReason: e.StopReason,
 		Message:    e.Message,
-		RequestId:  e.RequestID,
-		ToolName:   e.ToolName,
+		RequestId:      e.RequestID,
+		ToolName:       e.ToolName,
+		HarnessVersion: e.HarnessVersion,
 	}
 
 	if e.Trace != nil {
