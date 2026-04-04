@@ -72,7 +72,9 @@ func cmdRun(args []string) {
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory)")
 	concurrency := fs.Int("concurrency", 1, "Number of tasks to run in parallel")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
 
 	if *suitePath == "" {
 		log.Fatal("-suite is required")
@@ -117,7 +119,9 @@ func cmdCompare(args []string) {
 	fs := flag.NewFlagSet("compare", flag.ExitOnError)
 	currentPath := fs.String("current", "", "Path to current result JSON (required)")
 	baselinePath := fs.String("baseline", "", "Path to baseline result JSON (required)")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
 
 	if *currentPath == "" {
 		log.Fatal("-current is required")
@@ -205,7 +209,9 @@ func cmdBaseline(args []string) {
 	mode := fs.String("mode", "", "Filter by run mode")
 	model := fs.String("model", "", "Filter by model name")
 	output := fs.String("output", "", "Write TraceMetrics JSON to this file")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
 
 	if *lakehousePath == "" {
 		log.Fatal("-lakehouse is required")
@@ -215,7 +221,7 @@ func cmdBaseline(args []string) {
 	if err != nil {
 		log.Fatalf("opening lakehouse: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	filter := types.TraceFilter{
 		Mode:  *mode,
@@ -261,7 +267,9 @@ func cmdMineFailures(args []string) {
 	afterStr := fs.String("after", "", "Filter traces after this date (RFC3339 or YYYY-MM-DD)")
 	limit := fs.Int("limit", 0, "Maximum number of failures to mine")
 	output := fs.String("output", "", "Write EvalSuite JSON to this file")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
 
 	if *lakehousePath == "" {
 		log.Fatal("-lakehouse is required")
@@ -271,7 +279,7 @@ func cmdMineFailures(args []string) {
 	if err != nil {
 		log.Fatalf("opening lakehouse: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	filter := types.TraceFilter{}
 	if *afterStr != "" {
@@ -316,7 +324,9 @@ func cmdDrift(args []string) {
 	compareWindowStr := fs.String("compare-window", "", "Baseline window duration (defaults to -window)")
 	mode := fs.String("mode", "", "Filter by run mode")
 	model := fs.String("model", "", "Filter by model name")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
 
 	if *lakehousePath == "" {
 		log.Fatal("-lakehouse is required")
@@ -342,17 +352,17 @@ func cmdDrift(args []string) {
 	if err != nil {
 		log.Fatalf("opening lakehouse: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	now := time.Now()
 	currentStart := now.Add(-window)
 	baselineStart := currentStart.Add(-compareWindow)
 
 	currentFilter := types.TraceFilter{
-		After: &currentStart,
+		After:  &currentStart,
 		Before: &now,
-		Mode:  *mode,
-		Model: *model,
+		Mode:   *mode,
+		Model:  *model,
 	}
 	baselineEnd := currentStart
 	baselineFilter := types.TraceFilter{
@@ -485,7 +495,9 @@ func cmdCompareToProduction(args []string) {
 	mode := fs.String("mode", "", "Filter by run mode")
 	model := fs.String("model", "", "Filter by model name")
 	outputPath := fs.String("output", "", "Output path for report JSON")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
 
 	if *lakehousePath == "" {
 		log.Fatal("-lakehouse is required")
@@ -503,7 +515,7 @@ func cmdCompareToProduction(args []string) {
 	if err != nil {
 		log.Fatalf("opening lakehouse: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	filter := types.TraceFilter{
 		Mode:  *mode,
@@ -652,4 +664,3 @@ func parseDuration(s string) (time.Duration, error) {
 
 	return 0, fmt.Errorf("cannot parse %q as duration (use Go format like 24h or Nd for days)", s)
 }
-

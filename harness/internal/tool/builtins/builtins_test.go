@@ -260,7 +260,7 @@ func TestWebFetchTool_Truncation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, bigBody)
+		_, _ = fmt.Fprint(w, bigBody)
 	}))
 	defer srv.Close()
 

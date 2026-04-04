@@ -7,12 +7,13 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/harness/internal/version"
 	"github.com/rxbynerd/stirrup/types"
-	"github.com/spf13/cobra"
 )
 
 var jobCmd = &cobra.Command{
@@ -51,7 +52,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to control plane at %s: %w", addr, err)
 	}
-	defer tp.Close()
+	defer func() { _ = tp.Close() }()
 
 	// 2. Send a "ready" event so the control plane knows we are listening.
 	//    Include the session ID (if set) so the control plane can correlate
@@ -65,7 +66,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	if err := health.WriteProbe("/tmp/healthy"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write health probe: %v\n", err)
 	}
-	defer health.RemoveProbe("/tmp/healthy")
+	defer func() { _ = health.RemoveProbe("/tmp/healthy") }()
 
 	// 3. Register OnControl and block until a task_assignment arrives.
 	configCh := make(chan *types.RunConfig, 1)
@@ -106,7 +107,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("building harness: %w", err)
 	}
-	defer loop.Close()
+	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(ctx, config)
 	if err != nil {

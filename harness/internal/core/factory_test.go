@@ -31,7 +31,7 @@ func TestBuildRouter_Static(t *testing.T) {
 		Model:    "claude-sonnet-4-6",
 	}, "anthropic")
 
-	sel := r.Select(nil, router.RouterContext{})
+	sel := r.Select(context.TODO(), router.RouterContext{})
 	if sel.Provider != "anthropic" || sel.Model != "claude-sonnet-4-6" {
 		t.Fatalf("got %+v", sel)
 	}
@@ -43,7 +43,7 @@ func TestBuildRouter_StaticDefaultsProvider(t *testing.T) {
 		Model: "custom-model",
 	}, "bedrock")
 
-	sel := r.Select(nil, router.RouterContext{})
+	sel := r.Select(context.TODO(), router.RouterContext{})
 	if sel.Provider != "bedrock" {
 		t.Fatalf("expected provider bedrock, got %q", sel.Provider)
 	}
@@ -57,7 +57,7 @@ func TestBuildRouter_PerMode(t *testing.T) {
 		ModeModels: map[string]string{"planning": "bedrock/plan-model"},
 	}, "anthropic")
 
-	sel := r.Select(nil, router.RouterContext{Mode: "planning"})
+	sel := r.Select(context.TODO(), router.RouterContext{Mode: "planning"})
 	if sel.Provider != "bedrock" || sel.Model != "plan-model" {
 		t.Fatalf("per-mode planning: got %+v", sel)
 	}
@@ -70,7 +70,7 @@ func TestBuildRouter_Dynamic(t *testing.T) {
 		Model:    "default-model",
 	}, "anthropic")
 
-	sel := r.Select(nil, router.RouterContext{Turn: 0})
+	sel := r.Select(context.TODO(), router.RouterContext{Turn: 0})
 	if sel.Provider != "anthropic" {
 		t.Fatalf("dynamic: got %+v", sel)
 	}
@@ -79,7 +79,7 @@ func TestBuildRouter_Dynamic(t *testing.T) {
 func TestBuildRouter_DefaultFallback(t *testing.T) {
 	r := buildRouter(types.ModelRouterConfig{}, "")
 
-	sel := r.Select(nil, router.RouterContext{})
+	sel := r.Select(context.TODO(), router.RouterContext{})
 	if sel.Provider != "anthropic" || sel.Model != "claude-sonnet-4-6" {
 		t.Fatalf("default fallback: got %+v", sel)
 	}
@@ -92,7 +92,7 @@ func TestBuildPerModeRouter_ModeModelWithSlash(t *testing.T) {
 		ModeModels: map[string]string{"review": "bedrock/review-model"},
 	}, "anthropic")
 
-	sel := r.Select(nil, router.RouterContext{Mode: "review"})
+	sel := r.Select(context.TODO(), router.RouterContext{Mode: "review"})
 	if sel.Provider != "bedrock" || sel.Model != "review-model" {
 		t.Fatalf("got %+v", sel)
 	}
@@ -103,7 +103,7 @@ func TestBuildPerModeRouter_ModeModelWithoutSlash(t *testing.T) {
 		ModeModels: map[string]string{"review": "review-model"},
 	}, "anthropic")
 
-	sel := r.Select(nil, router.RouterContext{Mode: "review"})
+	sel := r.Select(context.TODO(), router.RouterContext{Mode: "review"})
 	if sel.Provider != "anthropic" || sel.Model != "review-model" {
 		t.Fatalf("got %+v", sel)
 	}
@@ -112,7 +112,7 @@ func TestBuildPerModeRouter_ModeModelWithoutSlash(t *testing.T) {
 func TestBuildPerModeRouter_DefaultsApplied(t *testing.T) {
 	r := buildPerModeRouter(types.ModelRouterConfig{}, "")
 
-	sel := r.Select(nil, router.RouterContext{Mode: "execution"})
+	sel := r.Select(context.TODO(), router.RouterContext{Mode: "execution"})
 	if sel.Provider != "anthropic" || sel.Model != "claude-sonnet-4-6" {
 		t.Fatalf("defaults: got %+v", sel)
 	}
@@ -124,7 +124,7 @@ func TestBuildDynamicRouter_Defaults(t *testing.T) {
 	r := buildDynamicRouter(types.ModelRouterConfig{}, "")
 
 	// Turn 0, no tokens — should get the default or cheap selection.
-	sel := r.Select(nil, router.RouterContext{Turn: 0})
+	sel := r.Select(context.TODO(), router.RouterContext{Turn: 0})
 	if sel.Provider != "anthropic" {
 		t.Fatalf("expected anthropic, got %q", sel.Provider)
 	}
@@ -139,13 +139,13 @@ func TestBuildDynamicRouter_CustomThresholds(t *testing.T) {
 	}, "anthropic")
 
 	// Under thresholds → cheap.
-	sel := r.Select(nil, router.RouterContext{Turn: 0, LastStopReason: "tool_use"})
+	sel := r.Select(context.TODO(), router.RouterContext{Turn: 0, LastStopReason: "tool_use"})
 	if sel.Model != "haiku" {
 		t.Fatalf("expected haiku under threshold, got %q", sel.Model)
 	}
 
 	// Over turn threshold → expensive.
-	sel = r.Select(nil, router.RouterContext{Turn: 6})
+	sel = r.Select(context.TODO(), router.RouterContext{Turn: 6})
 	if sel.Model != "opus" {
 		t.Fatalf("expected opus over threshold, got %q", sel.Model)
 	}
@@ -745,7 +745,7 @@ func TestBuildLoopWithTransport_MinimalValidConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildLoopWithTransport() error: %v", err)
 	}
-	defer loop.Close()
+	defer func() { _ = loop.Close() }()
 
 	// Verify all components were wired.
 	if loop.Provider == nil {
@@ -829,7 +829,7 @@ func TestBuildLoopWithTransport_InjectedTransportSkipsBuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildLoopWithTransport() error: %v", err)
 	}
-	defer loop.Close()
+	defer func() { _ = loop.Close() }()
 
 	if loop.Transport != injected {
 		t.Fatal("expected injected transport to be used")
@@ -869,7 +869,7 @@ func TestBuildLoopWithTransport_NoopMetricsWhenNotOTel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildLoopWithTransport() error: %v", err)
 	}
-	defer loop.Close()
+	defer func() { _ = loop.Close() }()
 
 	// Metrics should be noop (non-nil, but no-op instruments) when trace type is jsonl.
 	if loop.Metrics == nil {
@@ -906,7 +906,7 @@ func TestBuildLoopWithTransport_AllToolsRegisteredByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildLoopWithTransport() error: %v", err)
 	}
-	defer loop.Close()
+	defer func() { _ = loop.Close() }()
 
 	// With no tools.builtIn filter, all tools should be registered.
 	expectedTools := []string{"read_file", "list_directory", "search_files", "run_command", "write_file", "web_fetch", "spawn_agent"}

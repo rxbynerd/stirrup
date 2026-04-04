@@ -41,7 +41,7 @@ func TestSlidingWindow_NoTruncation(t *testing.T) {
 func TestSlidingWindow_DropsOldest(t *testing.T) {
 	s := NewSlidingWindowStrategy()
 	msgs := []types.Message{
-		makeMessage("user", strings.Repeat("a", 400)),     // ~100 tokens
+		makeMessage("user", strings.Repeat("a", 400)),      // ~100 tokens
 		makeMessage("assistant", strings.Repeat("b", 400)), // ~100 tokens
 		makeMessage("user", strings.Repeat("c", 400)),      // ~100 tokens
 		makeMessage("assistant", strings.Repeat("d", 400)), // ~100 tokens

@@ -46,7 +46,7 @@ func (sl *SecurityLogger) Emit(level, event string, data map[string]any) {
 
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
-	fmt.Fprint(sl.writer, string(b))
+	_, _ = fmt.Fprint(sl.writer, string(b))
 }
 
 // Convenience methods for the 7 spec-defined security events.

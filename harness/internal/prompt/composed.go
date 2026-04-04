@@ -126,7 +126,7 @@ func (f *dynamicContextFragment) Render(_ context.Context, pc PromptContext) (st
 	sort.Strings(keys)
 
 	for _, k := range keys {
-		sb.WriteString(fmt.Sprintf("\n<untrusted_context name=%q>\n%s\n</untrusted_context>", k, pc.DynamicContext[k]))
+		fmt.Fprintf(&sb, "\n<untrusted_context name=%q>\n%s\n</untrusted_context>", k, pc.DynamicContext[k])
 	}
 
 	return sb.String(), nil
@@ -240,4 +240,3 @@ func DefaultComposedFragments() []PromptFragment {
 		DynamicContextFragment(),
 	}
 }
-

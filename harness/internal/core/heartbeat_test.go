@@ -23,7 +23,7 @@ func (t *recordingTransport) Emit(event types.HarnessEvent) error {
 }
 
 func (t *recordingTransport) OnControl(_ func(types.ControlEvent)) {}
-func (t *recordingTransport) Close() error                        { return nil }
+func (t *recordingTransport) Close() error                         { return nil }
 
 func (t *recordingTransport) heartbeatCount() int {
 	t.mu.Lock()

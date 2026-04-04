@@ -290,7 +290,6 @@ func (l *AgenticLoop) Close() error {
 	return nil
 }
 
-
 // estimateCurrentTokens provides a calibrated token count for the message
 // history. It accounts for per-message structural overhead, per-block
 // overhead, and metadata fields (IDs, names) in addition to content.

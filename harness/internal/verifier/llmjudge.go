@@ -78,16 +78,16 @@ func (v *LLMJudgeVerifier) buildUserMessage(vc VerifyContext) string {
 	sb.WriteString("\n\n## Conversation\n\n")
 
 	for _, msg := range vc.Messages {
-		sb.WriteString(fmt.Sprintf("### %s\n\n", msg.Role))
+		fmt.Fprintf(&sb, "### %s\n\n", msg.Role)
 		for _, block := range msg.Content {
 			switch block.Type {
 			case "text":
 				sb.WriteString(block.Text)
 				sb.WriteString("\n")
 			case "tool_use":
-				sb.WriteString(fmt.Sprintf("[tool_use: %s]\n", block.Name))
+				fmt.Fprintf(&sb, "[tool_use: %s]\n", block.Name)
 			case "tool_result":
-				sb.WriteString(fmt.Sprintf("[tool_result: %s]\n", block.Content))
+				fmt.Fprintf(&sb, "[tool_result: %s]\n", block.Content)
 			}
 		}
 		sb.WriteString("\n")

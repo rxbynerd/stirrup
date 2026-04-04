@@ -77,14 +77,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 	// Convert tool call traces to summaries.
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
 	for i, tc := range e.toolCalls {
-		summaries[i] = types.ToolCallSummary{
-			Name:        tc.Name,
-			DurationMs:  tc.DurationMs,
-			Success:     tc.Success,
-			ErrorReason: tc.ErrorReason,
-			InputSize:   tc.InputSize,
-			OutputSize:  tc.OutputSize,
-		}
+		summaries[i] = types.ToolCallSummary(tc)
 	}
 
 	// Redact sensitive config fields.

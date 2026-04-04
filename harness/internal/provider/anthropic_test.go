@@ -12,11 +12,6 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// sseLines builds an SSE stream body from event/data pairs.
-func sseLines(events ...string) string {
-	return fmt.Sprintf("%s\n", joinLines(events...))
-}
-
 func joinLines(lines ...string) string {
 	out := ""
 	for _, l := range lines {
@@ -57,7 +52,7 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	defer srv.Close()
 
@@ -103,7 +98,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	defer srv.Close()
 
@@ -145,7 +140,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 func TestAnthropicAdapter_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		fmt.Fprint(w, `{"error":{"message":"invalid x-api-key"}}`)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"invalid x-api-key"}}`)
 	}))
 	defer srv.Close()
 
@@ -189,7 +184,7 @@ func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 	largeBody := strings.Repeat("x", 8192)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, largeBody)
+		_, _ = fmt.Fprint(w, largeBody)
 	}))
 	defer srv.Close()
 
@@ -222,7 +217,7 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, makeSSE("message_stop", `{}`))
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
 	}))
 	defer srv.Close()
 
@@ -268,7 +263,7 @@ func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	defer srv.Close()
 
@@ -311,7 +306,7 @@ func TestSSE_MalformedContentBlockStart(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	defer srv.Close()
 
@@ -356,7 +351,7 @@ func TestSSE_MalformedToolInput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	defer srv.Close()
 
@@ -405,7 +400,7 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	defer srv.Close()
 

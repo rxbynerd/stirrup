@@ -4,11 +4,11 @@ import "encoding/json"
 
 // StreamEvent represents a single event from the model's streaming response.
 type StreamEvent struct {
-	Type       string         `json:"type"` // "text_delta" | "tool_call" | "message_complete" | "error"
-	Text       string         `json:"text,omitempty"`
-	ID         string         `json:"id,omitempty"`
-	Name       string         `json:"name,omitempty"`
-	Input      map[string]any `json:"input,omitempty"`
+	Type         string         `json:"type"` // "text_delta" | "tool_call" | "message_complete" | "error"
+	Text         string         `json:"text,omitempty"`
+	ID           string         `json:"id,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Input        map[string]any `json:"input,omitempty"`
 	StopReason   string         `json:"stopReason,omitempty"`
 	OutputTokens int            `json:"outputTokens,omitempty"`
 	Content      []ContentBlock `json:"content,omitempty"`
@@ -27,17 +27,17 @@ type StreamParams struct {
 
 // HarnessEvent is an event emitted by the harness to the control plane.
 type HarnessEvent struct {
-	Type       string          `json:"type"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "heartbeat" | "ready" | "permission_request"
-	Text       string          `json:"text,omitempty"`
-	ID         string          `json:"id,omitempty"`
-	Name       string          `json:"name,omitempty"`
-	Input      json.RawMessage `json:"input,omitempty"`
-	ToolUseID  string          `json:"toolUseId,omitempty"`
-	Content    string          `json:"content,omitempty"`
-	StopReason string          `json:"stopReason,omitempty"`
-	Message    string          `json:"message,omitempty"`
-	Trace      *RunTrace       `json:"trace,omitempty"`
-	RequestID  string          `json:"requestId,omitempty"` // correlates permission_request with permission_response
+	Type           string          `json:"type"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "heartbeat" | "ready" | "permission_request"
+	Text           string          `json:"text,omitempty"`
+	ID             string          `json:"id,omitempty"`
+	Name           string          `json:"name,omitempty"`
+	Input          json.RawMessage `json:"input,omitempty"`
+	ToolUseID      string          `json:"toolUseId,omitempty"`
+	Content        string          `json:"content,omitempty"`
+	StopReason     string          `json:"stopReason,omitempty"`
+	Message        string          `json:"message,omitempty"`
+	Trace          *RunTrace       `json:"trace,omitempty"`
+	RequestID      string          `json:"requestId,omitempty"`      // correlates permission_request with permission_response
 	ToolName       string          `json:"toolName,omitempty"`       // tool name in permission_request
 	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
 }

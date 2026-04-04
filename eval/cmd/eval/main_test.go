@@ -46,7 +46,7 @@ func TestLoadSuite_Missing(t *testing.T) {
 func TestLoadSuite_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
-	os.WriteFile(path, []byte("not json"), 0o644)
+	_ = os.WriteFile(path, []byte("not json"), 0o644)
 
 	_, err := loadSuite(path)
 	if err == nil {
@@ -439,7 +439,7 @@ func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
 	os.Stderr = devNull
 	defer func() {
 		os.Stderr = origStderr
-		devNull.Close()
+		_ = devNull.Close()
 	}()
 
 	// Should not panic.
@@ -463,7 +463,7 @@ func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
 	os.Stderr = devNull
 	defer func() {
 		os.Stderr = origStderr
-		devNull.Close()
+		_ = devNull.Close()
 	}()
 
 	// Should not panic with zero variants.

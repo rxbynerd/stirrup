@@ -33,7 +33,7 @@ func TestNewLocalExecutor_InvalidPaths(t *testing.T) {
 
 	// File, not directory.
 	f := filepath.Join(t.TempDir(), "file.txt")
-	os.WriteFile(f, []byte("x"), 0o644)
+	_ = os.WriteFile(f, []byte("x"), 0o644)
 	_, err = NewLocalExecutor(f)
 	if err == nil {
 		t.Fatal("expected error for file workspace")
@@ -107,7 +107,7 @@ func TestResolvePath_AbsoluteInsideWorkspace(t *testing.T) {
 
 	// Create a file inside the workspace.
 	testFile := filepath.Join(dir, "inner.txt")
-	os.WriteFile(testFile, []byte("hi"), 0o644)
+	_ = os.WriteFile(testFile, []byte("hi"), 0o644)
 
 	// An absolute path that falls inside the workspace should be accepted.
 	resolved, err := exec.ResolvePath(testFile)
@@ -122,7 +122,7 @@ func TestResolvePath_AbsoluteInsideWorkspace(t *testing.T) {
 func TestReadFile(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 	content := "hello world"
-	os.WriteFile(filepath.Join(dir, "test.txt"), []byte(content), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "test.txt"), []byte(content), 0o644)
 
 	got, err := exec.ReadFile(context.Background(), "test.txt")
 	if err != nil {
@@ -135,7 +135,7 @@ func TestReadFile(t *testing.T) {
 
 func TestReadFile_Directory(t *testing.T) {
 	exec, dir := newTestExecutor(t)
-	os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
+	_ = os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
 
 	_, err := exec.ReadFile(context.Background(), "subdir")
 	if err == nil {
@@ -147,8 +147,8 @@ func TestReadFile_TooLarge(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 	// Create a file just over the limit.
 	f, _ := os.Create(filepath.Join(dir, "big.bin"))
-	f.Truncate(maxFileSize + 1)
-	f.Close()
+	_ = f.Truncate(maxFileSize + 1)
+	_ = f.Close()
 
 	_, err := exec.ReadFile(context.Background(), "big.bin")
 	if err == nil {
@@ -192,8 +192,8 @@ func TestWriteFile_TraversalRejected(t *testing.T) {
 
 func TestListDirectory(t *testing.T) {
 	exec, dir := newTestExecutor(t)
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte(""), 0o644)
-	os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte(""), 0o644)
+	_ = os.MkdirAll(filepath.Join(dir, "subdir"), 0o755)
 
 	entries, err := exec.ListDirectory(context.Background(), ".")
 	if err != nil {
@@ -270,7 +270,7 @@ func TestExec_OutputTruncation(t *testing.T) {
 	// Create a file larger than maxOutputSize and cat it.
 	bigFile := filepath.Join(dir, "big.txt")
 	data := strings.Repeat("A", maxOutputSize+1000)
-	os.WriteFile(bigFile, []byte(data), 0o644)
+	_ = os.WriteFile(bigFile, []byte(data), 0o644)
 
 	result, err := exec.Exec(context.Background(), "cat big.txt", 10*time.Second)
 	if err != nil {

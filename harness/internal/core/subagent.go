@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
@@ -87,7 +87,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// Use the parent's tracer if available, otherwise noop.
 	tracer := parent.Tracer
 	if tracer == nil {
-		tracer = oteltrace.NewNoopTracerProvider().Tracer("")
+		tracer = noop.NewTracerProvider().Tracer("")
 	}
 
 	// Build the child loop, reusing parent components where safe.

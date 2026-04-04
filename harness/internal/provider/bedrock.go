@@ -89,7 +89,7 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 // translates them into stirrup StreamEvents. It closes ch when done.
 func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch chan<- types.StreamEvent) {
 	defer close(ch)
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	// Track in-flight tool_use blocks by content block index.
 	type toolBlockState struct {

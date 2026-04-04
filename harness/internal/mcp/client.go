@@ -34,10 +34,10 @@ type jsonRPCRequest struct {
 }
 
 type jsonRPCResponse struct {
-	JSONRPC string           `json:"jsonrpc"`
-	ID      int64            `json:"id"`
-	Result  json.RawMessage  `json:"result,omitempty"`
-	Error   *jsonRPCError    `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      int64           `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *jsonRPCError   `json:"error,omitempty"`
 }
 
 type jsonRPCError struct {
@@ -275,7 +275,7 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request to %s: %w", sess.uri, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Capture session ID from response.
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {

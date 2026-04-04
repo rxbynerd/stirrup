@@ -65,8 +65,8 @@ func TestPerModeRouter_MultipleModesConfigured(t *testing.T) {
 	)
 
 	tests := []struct {
-		mode     string
-		wantProv string
+		mode      string
+		wantProv  string
 		wantModel string
 	}{
 		{"planning", "anthropic", "claude-opus-4-6"},

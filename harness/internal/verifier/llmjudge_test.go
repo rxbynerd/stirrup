@@ -183,7 +183,7 @@ func TestLLMJudgeVerifier_UserMessageContainsCriteria(t *testing.T) {
 
 	criteria := "output must include test results"
 	v := NewLLMJudgeVerifier(prov, "test-model", criteria)
-	v.Verify(context.Background(), VerifyContext{
+	_, _ = v.Verify(context.Background(), VerifyContext{
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hello"}}},
 			{Role: "assistant", Content: []types.ContentBlock{

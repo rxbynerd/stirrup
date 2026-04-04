@@ -63,7 +63,7 @@ func fakeMCPServer(t *testing.T, tools []mcpTool, sessionID string) (*httptest.S
 				Arguments json.RawMessage `json:"arguments"`
 			}
 			raw, _ := json.Marshal(req.Params)
-			json.Unmarshal(raw, &params)
+			_ = json.Unmarshal(raw, &params)
 
 			result := toolsCallResult{
 				Content: []contentItem{{Type: "text", Text: "result from " + params.Name}},
@@ -101,7 +101,7 @@ func writeJSONRPCResult(w http.ResponseWriter, id int64, result interface{}) {
 	raw, _ := json.Marshal(result)
 	resp := jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: raw}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func writeJSONRPCError(w http.ResponseWriter, id int64, code int, message string) {
@@ -111,7 +111,7 @@ func writeJSONRPCError(w http.ResponseWriter, id int64, code int, message string
 		Error:   &jsonRPCError{Code: code, Message: message},
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func TestConnect_ToolDiscovery(t *testing.T) {
@@ -230,7 +230,7 @@ func TestConnect_SessionIDManagement(t *testing.T) {
 	if resolved == nil {
 		t.Fatal("tool not found")
 	}
-	resolved.Handler(context.Background(), json.RawMessage(`{}`))
+	_, _ = resolved.Handler(context.Background(), json.RawMessage(`{}`))
 
 	reqs = log.get()
 	if len(reqs) < 2 {
@@ -295,7 +295,7 @@ func TestConnect_JSONRPCError(t *testing.T) {
 	// Create a server that returns an error for tools/list.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonRPCRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		writeJSONRPCError(w, req.ID, -32600, "invalid request")
 	}))
 	t.Cleanup(srv.Close)
@@ -418,7 +418,7 @@ func TestConnect_ToolCallError(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonRPCRequest
-		json.NewDecoder(r.Body).Decode(&req)
+		_ = json.NewDecoder(r.Body).Decode(&req)
 
 		switch req.Method {
 		case "tools/list":
@@ -471,7 +471,7 @@ func TestClose(t *testing.T) {
 		t.Fatalf("Connect: %v", err)
 	}
 
-	client.Close()
+	_ = client.Close()
 
 	client.mu.Lock()
 	n := len(client.sessions)

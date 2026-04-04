@@ -40,7 +40,7 @@ func TestStoreAndQueryTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}
-	defer fs.Close()
+	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
 	trace := makeTrace("t1", "success", "execution", "claude-sonnet-4-6", time.Now(), 1000, 3, types.TokenUsage{Input: 100, Output: 200})
@@ -67,7 +67,7 @@ func TestStoreAndQueryRecording(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore: %v", err)
 	}
-	defer fs.Close()
+	defer func() { _ = fs.Close() }()
 
 	ctx := context.Background()
 	trace := makeTrace("r1", "success", "execution", "claude-sonnet-4-6", time.Now(), 500, 2, types.TokenUsage{Input: 50, Output: 100})

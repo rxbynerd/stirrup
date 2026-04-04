@@ -35,7 +35,7 @@ func TestAPIExecutor_ReadFile_Success(t *testing.T) {
 			t.Errorf("unexpected accept header: %s", r.Header.Get("Accept"))
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(content))
+		_, _ = w.Write([]byte(content))
 	}))
 	defer server.Close()
 
@@ -52,7 +52,7 @@ func TestAPIExecutor_ReadFile_Success(t *testing.T) {
 func TestAPIExecutor_ReadFile_NotFound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte(`{"message": "Not Found"}`))
+		_, _ = w.Write([]byte(`{"message": "Not Found"}`))
 	}))
 	defer server.Close()
 
@@ -77,7 +77,7 @@ func TestAPIExecutor_ListDirectory_Success(t *testing.T) {
 			t.Errorf("unexpected accept header: %s", r.Header.Get("Accept"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(entries)
+		_ = json.NewEncoder(w).Encode(entries)
 	}))
 	defer server.Close()
 
@@ -100,7 +100,7 @@ func TestAPIExecutor_ListDirectory_Success(t *testing.T) {
 func TestAPIExecutor_ListDirectory_Empty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("[]"))
+		_, _ = w.Write([]byte("[]"))
 	}))
 	defer server.Close()
 
@@ -170,7 +170,7 @@ func TestAPIExecutor_ReadFile_NoRef(t *testing.T) {
 		if r.URL.Query().Get("ref") != "" {
 			t.Errorf("expected no ref query param, got %q", r.URL.Query().Get("ref"))
 		}
-		w.Write([]byte("content"))
+		_, _ = w.Write([]byte("content"))
 	}))
 	defer server.Close()
 
@@ -190,7 +190,7 @@ func TestAPIExecutor_EncodesPathAndRef(t *testing.T) {
 		if got := r.URL.Query().Get("ref"); got != "feature/bugfix?one=1" {
 			t.Fatalf("unexpected ref query: %q", got)
 		}
-		w.Write([]byte("content"))
+		_, _ = w.Write([]byte("content"))
 	}))
 	defer server.Close()
 
@@ -208,7 +208,7 @@ func TestAPIExecutor_EmptyToken_OmitsAuthHeader(t *testing.T) {
 		if auth := r.Header.Get("Authorization"); auth != "" {
 			t.Errorf("expected no Authorization header for empty token, got %q", auth)
 		}
-		w.Write([]byte("public content"))
+		_, _ = w.Write([]byte("public content"))
 	}))
 	defer server.Close()
 
@@ -232,7 +232,7 @@ func TestAPIExecutor_EmptyToken_ListDirectory_OmitsAuthHeader(t *testing.T) {
 			t.Errorf("expected no Authorization header for empty token, got %q", auth)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(entries)
+		_ = json.NewEncoder(w).Encode(entries)
 	}))
 	defer server.Close()
 

@@ -186,14 +186,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
 	for i, tc := range e.toolCalls {
-		summaries[i] = types.ToolCallSummary{
-			Name:        tc.Name,
-			DurationMs:  tc.DurationMs,
-			Success:     tc.Success,
-			ErrorReason: tc.ErrorReason,
-			InputSize:   tc.InputSize,
-			OutputSize:  tc.OutputSize,
-		}
+		summaries[i] = types.ToolCallSummary(tc)
 	}
 
 	var redactedConfig types.RunConfig

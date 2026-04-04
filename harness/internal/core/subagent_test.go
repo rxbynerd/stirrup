@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"testing"
 
-	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
@@ -58,7 +58,7 @@ func buildSubAgentTestLoop(prov *mockProvider) *AgenticLoop {
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
-		Tracer:      oteltrace.NewNoopTracerProvider().Tracer(""),
+		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     observability.NewNoopMetrics(),
 		Logger:      slog.Default(),
 	}

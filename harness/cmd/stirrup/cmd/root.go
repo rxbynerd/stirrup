@@ -8,9 +8,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/rxbynerd/stirrup/harness/internal/version"
 	"github.com/rxbynerd/stirrup/types"
-	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{

@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	openaiDefaultBaseURL     = "https://api.openai.com/v1"
-	openaiMaxToolInputSize   = 10 * 1024 * 1024 // 10 MB cap on streamed tool argument JSON
+	openaiDefaultBaseURL   = "https://api.openai.com/v1"
+	openaiMaxToolInputSize = 10 * 1024 * 1024 // 10 MB cap on streamed tool argument JSON
 )
 
 // OpenAICompatibleAdapter implements ProviderAdapter for the OpenAI Chat
@@ -90,8 +90,8 @@ type openaiToolFunction struct {
 
 // openaiTool describes a tool in OpenAI's function calling format.
 type openaiTool struct {
-	Type     string                 `json:"type"` // "function"
-	Function openaiToolDefinition   `json:"function"`
+	Type     string               `json:"type"` // "function"
+	Function openaiToolDefinition `json:"function"`
 }
 
 // openaiToolDefinition is the function definition inside an openaiTool.
@@ -112,24 +112,24 @@ type openaiChunk struct {
 
 // openaiChunkChoice is a single choice within a streaming chunk.
 type openaiChunkChoice struct {
-	Index        int              `json:"index"`
-	Delta        openaiDelta      `json:"delta"`
-	FinishReason *string          `json:"finish_reason"`
+	Index        int         `json:"index"`
+	Delta        openaiDelta `json:"delta"`
+	FinishReason *string     `json:"finish_reason"`
 }
 
 // openaiDelta is the incremental content in a streaming chunk.
 type openaiDelta struct {
-	Role      string                  `json:"role,omitempty"`
-	Content   *string                 `json:"content,omitempty"`
-	ToolCalls []openaiToolCallDelta   `json:"tool_calls,omitempty"`
+	Role      string                `json:"role,omitempty"`
+	Content   *string               `json:"content,omitempty"`
+	ToolCalls []openaiToolCallDelta `json:"tool_calls,omitempty"`
 }
 
 // openaiToolCallDelta is an incremental tool call in a streaming chunk.
 type openaiToolCallDelta struct {
-	Index    int                        `json:"index"`
-	ID       string                     `json:"id,omitempty"`
-	Type     string                     `json:"type,omitempty"`
-	Function openaiToolFunctionDelta    `json:"function"`
+	Index    int                     `json:"index"`
+	ID       string                  `json:"id,omitempty"`
+	Type     string                  `json:"type,omitempty"`
+	Function openaiToolFunctionDelta `json:"function"`
 }
 
 // openaiToolFunctionDelta is the incremental function data in a tool call delta.
@@ -322,7 +322,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var errResp openaiErrorResponse
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && errResp.Error.Message != "" {
 			return nil, fmt.Errorf("openai API returned status %d: %s", resp.StatusCode, errResp.Error.Message)
@@ -339,7 +339,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 // to the channel. It closes the channel and the response body when done.
 func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent) {
 	defer close(ch)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Track in-flight tool calls by index for argument accumulation.
 	toolCalls := make(map[int]*openaiToolCallState)

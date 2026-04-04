@@ -122,7 +122,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig) eval.TaskR
 	if err != nil {
 		return errorResult(task.ID, start, fmt.Errorf("creating temp directory: %w", err))
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	workspaceDir := tmpDir
 	if task.Repo != "" {
@@ -202,7 +202,7 @@ func parseTraceFile(path string) (*types.RunTrace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening trace file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var lastLine string
 	scanner := bufio.NewScanner(f)

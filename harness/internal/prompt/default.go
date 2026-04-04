@@ -27,11 +27,11 @@ func (b *DefaultPromptBuilder) Build(_ context.Context, pc PromptContext) (strin
 	sb.WriteString(tmpl)
 
 	if pc.Workspace != "" {
-		sb.WriteString(fmt.Sprintf("\n\nWorking directory: %s", pc.Workspace))
+		fmt.Fprintf(&sb, "\n\nWorking directory: %s", pc.Workspace)
 	}
 
 	if pc.MaxTurns > 0 {
-		sb.WriteString(fmt.Sprintf("\n\nTurn budget: %d turns. Use them efficiently.", pc.MaxTurns))
+		fmt.Fprintf(&sb, "\n\nTurn budget: %d turns. Use them efficiently.", pc.MaxTurns)
 	}
 
 	if len(pc.DynamicContext) > 0 {
@@ -44,7 +44,7 @@ func (b *DefaultPromptBuilder) Build(_ context.Context, pc PromptContext) (strin
 		sort.Strings(keys)
 
 		for _, k := range keys {
-			sb.WriteString(fmt.Sprintf("<untrusted_context name=%q>\n%s\n</untrusted_context>\n", k, pc.DynamicContext[k]))
+			fmt.Fprintf(&sb, "<untrusted_context name=%q>\n%s\n</untrusted_context>\n", k, pc.DynamicContext[k])
 		}
 	}
 

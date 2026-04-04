@@ -15,17 +15,17 @@ import (
 )
 
 const (
-	containerWorkspace  = "/workspace"
-	maxDockerFrameSize  = 10 * 1024 * 1024 // 10 MB cap on Docker stream frames
+	containerWorkspace = "/workspace"
+	maxDockerFrameSize = 10 * 1024 * 1024 // 10 MB cap on Docker stream frames
 )
 
 // ContainerExecutorConfig holds the configuration for creating a ContainerExecutor.
 type ContainerExecutorConfig struct {
 	Image      string
-	HostDir    string              // host directory to bind-mount at /workspace
+	HostDir    string // host directory to bind-mount at /workspace
 	Network    *types.NetworkConfig
 	Resources  *types.ResourceLimits
-	SocketPath string              // override auto-detection; empty = auto-detect
+	SocketPath string // override auto-detection; empty = auto-detect
 }
 
 // ContainerExecutor implements Executor by running operations inside a
@@ -166,35 +166,33 @@ func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (stri
 	if err != nil {
 		return "", fmt.Errorf("get archive: %w", err)
 	}
-	defer tarStream.Close()
+	defer func() { _ = tarStream.Close() }()
 
 	tr := tar.NewReader(tarStream)
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			return "", fmt.Errorf("file not found in archive: %s", filePath)
-		}
-		if err != nil {
-			return "", fmt.Errorf("read tar header: %w", err)
-		}
-
-		if header.Typeflag == tar.TypeDir {
-			return "", fmt.Errorf("path is a directory, not a file: %s", filePath)
-		}
-
-		if header.Size > maxFileSize {
-			if e.Security != nil {
-				e.Security.FileSizeLimitExceeded(filePath, header.Size, maxFileSize)
-			}
-			return "", fmt.Errorf("file too large: %d bytes (max %d)", header.Size, maxFileSize)
-		}
-
-		data, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
-		if err != nil {
-			return "", fmt.Errorf("read file from tar: %w", err)
-		}
-		return string(data), nil
+	header, err := tr.Next()
+	if err == io.EOF {
+		return "", fmt.Errorf("file not found in archive: %s", filePath)
 	}
+	if err != nil {
+		return "", fmt.Errorf("read tar header: %w", err)
+	}
+
+	if header.Typeflag == tar.TypeDir {
+		return "", fmt.Errorf("path is a directory, not a file: %s", filePath)
+	}
+
+	if header.Size > maxFileSize {
+		if e.Security != nil {
+			e.Security.FileSizeLimitExceeded(filePath, header.Size, maxFileSize)
+		}
+		return "", fmt.Errorf("file too large: %d bytes (max %d)", header.Size, maxFileSize)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read file from tar: %w", err)
+	}
+	return string(data), nil
 }
 
 // WriteFile writes content to a file inside the container using the archive API.
@@ -337,7 +335,7 @@ func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, w
 	if err != nil {
 		return nil, fmt.Errorf("start exec: %w", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	stdout, stderr, err := demuxDockerStream(stream)
 	if err != nil {

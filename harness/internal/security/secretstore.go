@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	secretPrefix     = "secret://"
-	fileSchemePrefix  = "secret://file://"
+	secretPrefix        = "secret://"
+	fileSchemePrefix    = "secret://file://"
 	redactedPlaceholder = "[REDACTED]"
 )
 

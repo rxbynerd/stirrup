@@ -12,6 +12,7 @@ import (
 	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
@@ -173,7 +174,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	if otelEmitter, ok := te.(*trace.OTelTraceEmitter); ok {
 		tracer = otelEmitter.Tracer()
 	} else {
-		tracer = oteltrace.NewNoopTracerProvider().Tracer("")
+		tracer = noop.NewTracerProvider().Tracer("")
 	}
 
 	// Set tracer on provider adapters for HTTP-level instrumentation.

@@ -7,9 +7,10 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/types"
-	"github.com/spf13/cobra"
 )
 
 var harnessCmd = &cobra.Command{
@@ -123,7 +124,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("building harness: %w", err)
 	}
-	defer loop.Close()
+	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(ctx, config)
 	if err != nil {

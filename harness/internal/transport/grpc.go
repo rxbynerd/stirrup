@@ -6,12 +6,13 @@ import (
 	"io"
 	"sync"
 
-	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
-	"github.com/rxbynerd/stirrup/harness/internal/security"
-	"github.com/rxbynerd/stirrup/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+
+	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // GRPCTransport implements Transport over a gRPC bidirectional stream.
@@ -24,7 +25,7 @@ type GRPCTransport struct {
 	handlerMu sync.Mutex // serialises handler registration
 	handlers  []func(types.ControlEvent)
 	done      chan struct{} // closed when the read loop exits
-	startOnce sync.Once    // ensures the read goroutine is started exactly once
+	startOnce sync.Once     // ensures the read goroutine is started exactly once
 }
 
 // GRPCTransportOption configures a GRPCTransport.
@@ -79,7 +80,7 @@ func NewGRPCTransport(ctx context.Context, target string, opts ...GRPCTransportO
 	client := pb.NewHarnessServiceClient(conn)
 	stream, err := client.RunTask(ctx)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("open RunTask stream: %w", err)
 	}
 
@@ -88,16 +89,6 @@ func NewGRPCTransport(ctx context.Context, target string, opts ...GRPCTransportO
 		stream: stream,
 		done:   make(chan struct{}),
 	}, nil
-}
-
-// newGRPCTransportFromStream creates a GRPCTransport from an existing stream
-// and connection. This is used internally for testing.
-func newGRPCTransportFromStream(conn *grpc.ClientConn, stream pb.HarnessService_RunTaskClient) *GRPCTransport {
-	return &GRPCTransport{
-		conn:   conn,
-		stream: stream,
-		done:   make(chan struct{}),
-	}
 }
 
 // Emit scrubs secret patterns from the event's string fields, translates
@@ -166,7 +157,7 @@ func (g *GRPCTransport) Close() error {
 
 	if err := g.stream.CloseSend(); err != nil {
 		// Still close the connection even if CloseSend fails.
-		g.conn.Close()
+		_ = g.conn.Close()
 		return fmt.Errorf("close send: %w", err)
 	}
 

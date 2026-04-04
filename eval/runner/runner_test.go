@@ -208,7 +208,7 @@ func TestParseTraceFile(t *testing.T) {
 		trace := types.RunTrace{ID: "t1", Turns: 5}
 		data, _ := json.Marshal(trace)
 		path := filepath.Join(dir, "valid.jsonl")
-		os.WriteFile(path, append([]byte("ignored first line\n"), append(data, '\n')...), 0o644)
+		_ = os.WriteFile(path, append([]byte("ignored first line\n"), append(data, '\n')...), 0o644)
 
 		got, err := parseTraceFile(path)
 		if err != nil {
@@ -224,7 +224,7 @@ func TestParseTraceFile(t *testing.T) {
 
 	t.Run("empty file", func(t *testing.T) {
 		path := filepath.Join(dir, "empty.jsonl")
-		os.WriteFile(path, []byte(""), 0o644)
+		_ = os.WriteFile(path, []byte(""), 0o644)
 
 		_, err := parseTraceFile(path)
 		if err == nil {

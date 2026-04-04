@@ -102,7 +102,7 @@ func TestNewOverridePromptBuilder_AppendsWorkspaceTree(t *testing.T) {
 	b := NewOverridePromptBuilder("Custom agent.")
 
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
 
 	result, err := b.Build(context.Background(), PromptContext{
 		Mode:      "execution",

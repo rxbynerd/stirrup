@@ -56,7 +56,7 @@ func TestBuildLoop_UsesSelectedProviderAlias(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildLoopWithTransport() error: %v", err)
 	}
-	defer loop.Close()
+	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
 	if err != nil {
@@ -121,7 +121,7 @@ func TestBuildLoop_HonorsEditStrategyAndBuiltInSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildLoopWithTransport() error: %v", err)
 	}
-	defer loop.Close()
+	defer func() { _ = loop.Close() }()
 
 	if loop.Tools.Resolve("search_replace") == nil {
 		t.Fatal("expected search_replace tool to be registered")
@@ -249,7 +249,7 @@ func newOpenAIServer(t *testing.T, hits *atomic.Int32, responses []string, reque
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, responses[idx])
+		_, _ = fmt.Fprint(w, responses[idx])
 	}))
 }
 

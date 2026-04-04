@@ -166,4 +166,3 @@ func TestRunFollowUpLoop_ContextCancelledDuringWait(t *testing.T) {
 		t.Fatal("RunFollowUpLoop did not return within 2s of context cancellation")
 	}
 }
-

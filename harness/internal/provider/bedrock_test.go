@@ -52,8 +52,6 @@ func (m *mockEventReader) Err() error   { return m.finalErr }
 // and returns events from a mock event reader.
 type mockBedrockClient struct {
 	capturedInput *bedrockruntime.ConverseStreamInput
-	events        []brtypes.ConverseStreamOutput
-	streamErr     error // error from event reader after drain
 	apiErr        error // error from ConverseStream call itself
 }
 

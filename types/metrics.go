@@ -32,10 +32,10 @@ type VariantResults struct {
 
 // TaskResult holds the result of a single task within a variant.
 type TaskResult struct {
-	TaskID  string     `json:"taskId"`
-	Runs    []RunTrace `json:"runs"`
-	Passed  int        `json:"passed"`
-	Total   int        `json:"total"`
+	TaskID string     `json:"taskId"`
+	Runs   []RunTrace `json:"runs"`
+	Passed int        `json:"passed"`
+	Total  int        `json:"total"`
 }
 
 // ProductionTrace extends RunTrace with production-specific metadata.
@@ -49,7 +49,7 @@ type ProductionTrace struct {
 
 // BaselineMetrics holds aggregate production metrics for comparison.
 type BaselineMetrics struct {
-	PassRate    float64    `json:"passRate"`
+	PassRate   float64    `json:"passRate"`
 	MeanTurns  float64    `json:"meanTurns"`
 	MeanTokens TokenUsage `json:"meanTokens"`
 	SampleSize int        `json:"sampleSize"`

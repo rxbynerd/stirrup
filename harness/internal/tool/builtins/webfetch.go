@@ -86,7 +86,7 @@ func newWebFetchTool(opts webFetchOptions) *tool.Tool {
 			if err != nil {
 				return "", fmt.Errorf("fetch URL: %w", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				return "", fmt.Errorf("HTTP %d %s", resp.StatusCode, resp.Status)
@@ -174,10 +174,10 @@ func validatePublicHost(host string) error {
 }
 
 func isPublicIP(ip net.IP) bool {
-	return !(ip.IsLoopback() ||
-		ip.IsPrivate() ||
-		ip.IsMulticast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsUnspecified())
+	return !ip.IsLoopback() &&
+		!ip.IsPrivate() &&
+		!ip.IsMulticast() &&
+		!ip.IsLinkLocalMulticast() &&
+		!ip.IsLinkLocalUnicast() &&
+		!ip.IsUnspecified()
 }

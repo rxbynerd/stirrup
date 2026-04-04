@@ -51,19 +51,19 @@ func NewAnthropicAdapter(apiKey string) *AnthropicAdapter {
 
 // anthropicRequest is the JSON body sent to the Anthropic Messages API.
 type anthropicRequest struct {
-	Model       string               `json:"model"`
-	System      string               `json:"system,omitempty"`
-	Messages    []types.Message      `json:"messages"`
+	Model       string                 `json:"model"`
+	System      string                 `json:"system,omitempty"`
+	Messages    []types.Message        `json:"messages"`
 	Tools       []types.ToolDefinition `json:"tools,omitempty"`
-	MaxTokens   int                  `json:"max_tokens"`
-	Temperature float64              `json:"temperature"`
-	Stream      bool                 `json:"stream"`
+	MaxTokens   int                    `json:"max_tokens"`
+	Temperature float64                `json:"temperature"`
+	Stream      bool                   `json:"stream"`
 }
 
 // SSE event types from the Anthropic API.
 type sseContentBlockStart struct {
-	Index        int              `json:"index"`
-	ContentBlock sseContentBlock  `json:"content_block"`
+	Index        int             `json:"index"`
+	ContentBlock sseContentBlock `json:"content_block"`
 }
 
 type sseContentBlock struct {
@@ -142,7 +142,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if len(body) > 0 {
 			return nil, fmt.Errorf("anthropic API returned status %d: %s", resp.StatusCode, body)
 		}
@@ -158,7 +158,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 // to the channel. It closes the channel and the response body when done.
 func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent) {
 	defer close(ch)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Track in-flight content blocks by index for tool_use JSON accumulation.
 	type blockState struct {

@@ -54,7 +54,7 @@ func (g *GKEMetadataTokenSource) Token(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GKE metadata request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

@@ -60,7 +60,7 @@ func (a *APIExecutor) ReadFile(ctx context.Context, path string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("api executor: read file %q: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("api executor: read file %q: HTTP %d", path, resp.StatusCode)
@@ -104,7 +104,7 @@ func (a *APIExecutor) ListDirectory(ctx context.Context, path string) ([]string,
 	if err != nil {
 		return nil, fmt.Errorf("api executor: list directory %q: %w", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("api executor: list directory %q: HTTP %d", path, resp.StatusCode)

@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
-	"github.com/rxbynerd/stirrup/types"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
+
+	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 const bufSize = 1024 * 1024
@@ -80,9 +81,7 @@ func setupTestTransport(t *testing.T, srv *testServer) (*GRPCTransport, *testSer
 	pb.RegisterHarnessServiceServer(grpcServer, srv)
 
 	go func() {
-		if err := grpcServer.Serve(lis); err != nil {
-			// Server stopped — expected during cleanup.
-		}
+		_ = grpcServer.Serve(lis)
 	}()
 
 	ctx := context.Background()
@@ -100,7 +99,7 @@ func setupTestTransport(t *testing.T, srv *testServer) (*GRPCTransport, *testSer
 	}
 
 	cleanup := func() {
-		tr.Close()
+		_ = tr.Close()
 		grpcServer.Stop()
 	}
 
@@ -122,7 +121,7 @@ func TestGRPCTransport_Emit(t *testing.T) {
 	}
 
 	// Close send side so server's Recv loop finishes.
-	tr.stream.CloseSend()
+	_ = tr.stream.CloseSend()
 
 	// Give the server goroutine a moment to process.
 	time.Sleep(50 * time.Millisecond)
@@ -156,7 +155,7 @@ func TestGRPCTransport_EmitWithInput(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 
-	tr.stream.CloseSend()
+	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
@@ -393,7 +392,7 @@ func TestGRPCTransport_EmitScrubsSecrets(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 
-	tr.stream.CloseSend()
+	_ = tr.stream.CloseSend()
 	time.Sleep(50 * time.Millisecond)
 
 	received := srv.getReceived()
@@ -424,7 +423,7 @@ func TestGRPCTransport_StreamErrorStopsReadLoop(t *testing.T) {
 	})
 
 	// Force-close the connection to trigger stream error.
-	tr.conn.Close()
+	_ = tr.conn.Close()
 
 	// The done channel should close within a reasonable time.
 	select {

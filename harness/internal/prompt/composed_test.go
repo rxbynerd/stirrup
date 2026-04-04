@@ -184,9 +184,9 @@ func TestComposedPromptBuilder_WorkspaceTreeFragment(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create some files and a directory.
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
-	os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0o644)
-	os.Mkdir(filepath.Join(dir, "pkg"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0o644)
+	_ = os.Mkdir(filepath.Join(dir, "pkg"), 0o755)
 
 	fragment := WorkspaceTreeFragment()
 	result, err := fragment.Render(context.Background(), PromptContext{
@@ -258,7 +258,7 @@ func TestComposedPromptBuilder_GitStatusFragment(t *testing.T) {
 	}
 
 	// Create an untracked file.
-	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "new.txt"), []byte("hello"), 0o644)
 
 	result, err = fragment.Render(context.Background(), PromptContext{
 		Mode:      "execution",
@@ -366,7 +366,7 @@ func TestComposedPromptBuilder_DefaultFragments(t *testing.T) {
 
 	// Build with a temp workspace so workspace/git fragments can resolve.
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "test.go"), []byte("package main"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "test.go"), []byte("package main"), 0o644)
 
 	b := NewComposedPromptBuilder(WithFragments(fragments...))
 

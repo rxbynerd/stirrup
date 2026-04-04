@@ -203,20 +203,20 @@ func buildSummaryMessages(messages []types.Message) []types.Message {
 	sb.WriteString("Summarise the following conversation history. Preserve all important details including file paths, decisions made, code changes, tool calls and their results, and errors encountered.\n\n")
 
 	for _, msg := range messages {
-		sb.WriteString(fmt.Sprintf("[%s]: ", msg.Role))
+		fmt.Fprintf(&sb, "[%s]: ", msg.Role)
 		for _, block := range msg.Content {
 			switch block.Type {
 			case "text":
 				sb.WriteString(block.Text)
 			case "tool_use":
-				sb.WriteString(fmt.Sprintf("<tool_use name=%q id=%q />", block.Name, block.ID))
+				fmt.Fprintf(&sb, "<tool_use name=%q id=%q />", block.Name, block.ID)
 			case "tool_result":
 				// Truncate very long tool results to keep the summary prompt manageable.
 				content := block.Content
 				if len(content) > 2000 {
 					content = content[:2000] + "... [truncated]"
 				}
-				sb.WriteString(fmt.Sprintf("<tool_result id=%q>%s</tool_result>", block.ToolUseID, content))
+				fmt.Fprintf(&sb, "<tool_result id=%q>%s</tool_result>", block.ToolUseID, content)
 			}
 		}
 		sb.WriteString("\n")

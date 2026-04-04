@@ -34,7 +34,7 @@ func mockEngineServer(t *testing.T, handlers map[string]http.HandlerFunc) (socke
 
 	listener, err := net.Listen("unix", sock)
 	if err != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		t.Fatalf("listen on unix socket: %v", err)
 	}
 
@@ -67,12 +67,12 @@ func mockEngineServer(t *testing.T, handlers map[string]http.HandlerFunc) (socke
 	})
 
 	srv := &http.Server{Handler: mux}
-	go srv.Serve(listener)
+	go func() { _ = srv.Serve(listener) }()
 
 	return sock, func() {
-		srv.Close()
-		listener.Close()
-		os.RemoveAll(dir)
+		_ = srv.Close()
+		_ = listener.Close()
+		_ = os.RemoveAll(dir)
 	}
 }
 
@@ -96,9 +96,9 @@ func TestContainerAPIClient_CreateContainer(t *testing.T) {
 			if ct := r.Header.Get("Content-Type"); ct != "application/json" {
 				t.Errorf("expected Content-Type application/json, got %q", ct)
 			}
-			json.NewDecoder(r.Body).Decode(&receivedBody)
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(containerCreateResponse{ID: "abc123"})
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "abc123"})
 		},
 	})
 	defer cleanup()
@@ -143,7 +143,7 @@ func TestContainerAPIClient_APIError(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(apiError{Message: "image not found"})
+			_ = json.NewEncoder(w).Encode(apiError{Message: "image not found"})
 		},
 	})
 	defer cleanup()
@@ -162,12 +162,12 @@ func TestContainerAPIClient_ExecFlow(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			var req execCreateRequest
-			json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewDecoder(r.Body).Decode(&req)
 			if !req.AttachStdout || !req.AttachStderr {
 				t.Error("exec should attach stdout and stderr")
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execCreateResponse{ID: "exec123"})
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec123"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			// Write a multiplexed stream: stdout frame with "hello\n".
@@ -177,7 +177,7 @@ func TestContainerAPIClient_ExecFlow(t *testing.T) {
 		},
 		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0, Running: false})
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0, Running: false})
 		},
 	})
 	defer cleanup()
@@ -196,7 +196,7 @@ func TestContainerAPIClient_ExecFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startExec: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	stdout, stderr, err := demuxDockerStream(stream)
 	if err != nil {
@@ -223,8 +223,8 @@ func writeDockerFrame(w io.Writer, streamType byte, data []byte) {
 	header := make([]byte, 8)
 	header[0] = streamType
 	binary.BigEndian.PutUint32(header[4:], uint32(len(data)))
-	w.Write(header)
-	w.Write(data)
+	_, _ = w.Write(header)
+	_, _ = w.Write(data)
 }
 
 // --- ContainerExecutor tests (with mock server) ---
@@ -237,7 +237,7 @@ func newMockContainerExecutor(t *testing.T, extraHandlers map[string]http.Handle
 	handlers := map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-container-id"})
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-container-id"})
 		},
 		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
@@ -321,13 +321,13 @@ func TestContainerExecutor_ReadFile(t *testing.T) {
 		"GET /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/x-tar")
 			tw := tar.NewWriter(w)
-			tw.WriteHeader(&tar.Header{
+			_ = tw.WriteHeader(&tar.Header{
 				Name: "test.txt",
 				Size: int64(len(fileContent)),
 				Mode: 0o644,
 			})
-			tw.Write([]byte(fileContent))
-			tw.Close()
+			_, _ = tw.Write([]byte(fileContent))
+			_ = tw.Close()
 		},
 	})
 	defer cleanup()
@@ -346,13 +346,13 @@ func TestContainerExecutor_ReadFile_TooLarge(t *testing.T) {
 		"GET /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/x-tar")
 			tw := tar.NewWriter(w)
-			tw.WriteHeader(&tar.Header{
+			_ = tw.WriteHeader(&tar.Header{
 				Name: "big.bin",
 				Size: maxFileSize + 1,
 				Mode: 0o644,
 			})
 			// Don't need to write the actual data; the header size check catches it.
-			tw.Close()
+			_ = tw.Close()
 		},
 	})
 	defer cleanup()
@@ -371,12 +371,12 @@ func TestContainerExecutor_ReadFile_Directory(t *testing.T) {
 		"GET /containers/*/archive": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/x-tar")
 			tw := tar.NewWriter(w)
-			tw.WriteHeader(&tar.Header{
+			_ = tw.WriteHeader(&tar.Header{
 				Name:     "subdir/",
 				Typeflag: tar.TypeDir,
 				Mode:     0o755,
 			})
-			tw.Close()
+			_ = tw.Close()
 		},
 	})
 	defer cleanup()
@@ -421,14 +421,14 @@ func TestContainerExecutor_WriteFile(t *testing.T) {
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			// mkdir -p call
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execCreateResponse{ID: "mkdir-exec"})
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "mkdir-exec"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
 		},
 		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
 		},
 	})
 	defer cleanup()
@@ -473,13 +473,13 @@ func TestContainerExecutor_Exec(t *testing.T) {
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			var req execCreateRequest
-			json.NewDecoder(r.Body).Decode(&req)
+			_ = json.NewDecoder(r.Body).Decode(&req)
 			// Verify it wraps in sh -c
 			if len(req.Cmd) != 3 || req.Cmd[0] != "sh" || req.Cmd[1] != "-c" {
 				t.Errorf("exec cmd should be sh -c ..., got %v", req.Cmd)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-run"})
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-run"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
@@ -487,7 +487,7 @@ func TestContainerExecutor_Exec(t *testing.T) {
 		},
 		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 42})
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 42})
 		},
 	})
 	defer cleanup()
@@ -510,7 +510,7 @@ func TestContainerExecutor_Exec_OutputTruncation(t *testing.T) {
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-big"})
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-big"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
@@ -519,7 +519,7 @@ func TestContainerExecutor_Exec_OutputTruncation(t *testing.T) {
 		},
 		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
 		},
 	})
 	defer cleanup()
@@ -537,7 +537,7 @@ func TestContainerExecutor_ListDirectory(t *testing.T) {
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-ls"})
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-ls"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
@@ -545,7 +545,7 @@ func TestContainerExecutor_ListDirectory(t *testing.T) {
 		},
 		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
 		},
 	})
 	defer cleanup()
@@ -632,7 +632,7 @@ func TestContainerExecutor_CreateFailure(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(apiError{Message: "image not found"})
+			_ = json.NewEncoder(w).Encode(apiError{Message: "image not found"})
 		},
 	})
 	defer cleanup()
@@ -656,11 +656,11 @@ func TestContainerExecutor_StartFailureCleanup(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(containerCreateResponse{ID: "orphan-container"})
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "orphan-container"})
 		},
 		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(apiError{Message: "start failed"})
+			_ = json.NewEncoder(w).Encode(apiError{Message: "start failed"})
 		},
 		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
 			removeCalled = true
@@ -687,9 +687,9 @@ func TestContainerExecutor_ResourceLimits(t *testing.T) {
 
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
-			json.NewDecoder(r.Body).Decode(&receivedBody)
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
 		},
 		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
@@ -716,7 +716,7 @@ func TestContainerExecutor_ResourceLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContainerExecutor: %v", err)
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	if receivedBody.HostConfig.NanoCPUs != 2000000000 {
 		t.Errorf("NanoCPUs: got %d, want 2000000000", receivedBody.HostConfig.NanoCPUs)
@@ -734,9 +734,9 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
-			json.NewDecoder(r.Body).Decode(&receivedBody)
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
 		},
 		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
@@ -759,7 +759,7 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContainerExecutor: %v", err)
 	}
-	exec.Close()
+	_ = exec.Close()
 
 	if receivedBody.HostConfig.NetworkMode != "none" {
 		t.Errorf("default network mode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "none")
@@ -775,7 +775,7 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewContainerExecutor: %v", err)
 	}
-	exec.Close()
+	_ = exec.Close()
 
 	if receivedBody.HostConfig.NetworkMode != "bridge" {
 		t.Errorf("allowlist network mode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "bridge")
@@ -804,7 +804,7 @@ func TestDetectSocket(t *testing.T) {
 	// Create a temp file to simulate a socket.
 	dir := t.TempDir()
 	fakeSock := filepath.Join(dir, "docker.sock")
-	os.WriteFile(fakeSock, nil, 0o600)
+	_ = os.WriteFile(fakeSock, nil, 0o600)
 
 	// Set DOCKER_HOST to point at it.
 	t.Setenv("DOCKER_HOST", "unix://"+fakeSock)
@@ -893,7 +893,7 @@ func TestContainerAPIClient_ArchivePathEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getArchive: %v", err)
 	}
-	body.Close()
+	_ = body.Close()
 	if getPath != specialPath {
 		t.Errorf("getArchive path: got %q, want %q", getPath, specialPath)
 	}

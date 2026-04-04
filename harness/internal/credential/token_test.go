@@ -23,7 +23,7 @@ func TestGKEMetadataTokenSource_Success(t *testing.T) {
 			t.Errorf("unexpected query: %s", r.URL.RawQuery)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fakeToken))
+		_, _ = w.Write([]byte(fakeToken))
 	}))
 	defer srv.Close()
 
@@ -39,7 +39,7 @@ func TestGKEMetadataTokenSource_Success(t *testing.T) {
 
 func TestGKEMetadataTokenSource_TrimsWhitespace(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("  token-value  \n"))
+		_, _ = w.Write([]byte("  token-value  \n"))
 	}))
 	defer srv.Close()
 

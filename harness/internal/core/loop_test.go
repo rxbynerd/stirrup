@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
@@ -40,22 +40,6 @@ func (m *mockProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan t
 	close(ch)
 	return ch, nil
 }
-
-// mockExecutor satisfies the executor.Executor interface for tests.
-type mockExecutor struct{}
-
-func (m *mockExecutor) ReadFile(_ context.Context, path string) (string, error) {
-	return "file content of " + path, nil
-}
-func (m *mockExecutor) WriteFile(_ context.Context, _ string, _ string) error { return nil }
-func (m *mockExecutor) ListDirectory(_ context.Context, _ string) ([]string, error) {
-	return []string{"a.go", "b.go"}, nil
-}
-func (m *mockExecutor) Exec(_ context.Context, _ string, _ interface{}) (interface{}, error) {
-	return nil, nil
-}
-func (m *mockExecutor) ResolvePath(p string) (string, error) { return "/workspace/" + p, nil }
-func (m *mockExecutor) Capabilities() interface{}            { return nil }
 
 func buildTestConfig() *types.RunConfig {
 	timeout := 60
@@ -105,7 +89,7 @@ func buildTestLoop(prov *mockProvider) *AgenticLoop {
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   transport.NewStdioTransport(&transportBuf, &bytes.Buffer{}),
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
-		Tracer:      oteltrace.NewNoopTracerProvider().Tracer(""),
+		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     observability.NewNoopMetrics(),
 		Logger:      slog.Default(),
 	}
@@ -645,7 +629,6 @@ func TestLoop_PromptBuildError(t *testing.T) {
 	}
 }
 
-
 func TestEstimateCurrentTokens(t *testing.T) {
 	// Empty messages should return 1 (minimum).
 	if got := estimateCurrentTokens(nil); got != 1 {
@@ -668,8 +651,8 @@ func TestEstimateCurrentTokens(t *testing.T) {
 		Role: "assistant",
 		Content: []types.ContentBlock{{
 			Type:  "tool_use",
-			ID:    "toolu_1234567890", // 16 chars → 4 tokens
-			Name:  "read_file",        // 9 chars → 2 tokens
+			ID:    "toolu_1234567890",                 // 16 chars → 4 tokens
+			Name:  "read_file",                        // 9 chars → 2 tokens
 			Input: json.RawMessage(`{"path":"/foo"}`), // 15 chars → 3 tokens
 		}},
 	}}
@@ -696,8 +679,8 @@ func TestEstimateToolDefinitionTokens(t *testing.T) {
 	}
 
 	tools := []types.ToolDefinition{{
-		Name:        "read_file",                                        // 9 → 2
-		Description: "Reads a file from the filesystem",                 // 34 → 8
+		Name:        "read_file",                                          // 9 → 2
+		Description: "Reads a file from the filesystem",                   // 34 → 8
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`), // 35 → 8
 	}}
 	got := estimateToolDefinitionTokens(tools)

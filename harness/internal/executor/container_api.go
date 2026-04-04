@@ -84,7 +84,7 @@ func (c *containerAPIClient) doRequest(req *http.Request) (*http.Response, error
 		return nil, fmt.Errorf("docker API request %s %s: %w", req.Method, req.URL.Path, err)
 	}
 	if resp.StatusCode >= 400 {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		var apiErr apiError
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
@@ -136,7 +136,7 @@ func (c *containerAPIClient) createContainer(ctx context.Context, cfg containerC
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result containerCreateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -154,7 +154,7 @@ func (c *containerAPIClient) startContainer(ctx context.Context, id string) erro
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -172,7 +172,7 @@ func (c *containerAPIClient) stopContainer(ctx context.Context, id string, timeo
 		}
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -186,7 +186,7 @@ func (c *containerAPIClient) removeContainer(ctx context.Context, id string, for
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -226,7 +226,7 @@ func (c *containerAPIClient) createExec(ctx context.Context, containerID string,
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result execCreateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -271,7 +271,7 @@ func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (in
 	if err != nil {
 		return -1, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result execInspectResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -295,7 +295,7 @@ func (c *containerAPIClient) putArchive(ctx context.Context, containerID, destPa
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
