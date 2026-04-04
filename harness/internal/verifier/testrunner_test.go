@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // mockExecutor implements the commandExecutor interface for testing.
@@ -263,5 +264,5 @@ func TestTestRunnerVerifier_ReturnsCorrectType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	_ = result
+	var _ *types.VerificationResult = result //nolint:staticcheck // intentional compile-time type check
 }
