@@ -290,3 +290,14 @@ Exceptions where external deps are accepted:
 - `aws-sdk-go-v2` for Bedrock and SSM SecretStore (IAM SigV4 auth is complex enough to justify)
 - `google.golang.org/grpc` + `google.golang.org/protobuf` for gRPC transport (the reference Go gRPC implementation)
 - `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace emitter (the reference OTel SDK)
+
+## Lint policy
+
+golangci-lint v2 is configured via `.golangci.yml`. `just lint` runs the linter across all workspace modules.
+
+When resolving lint findings, understand the code's intent before changing it:
+
+- **Linter suggestions are not mandates.** Diagnostics prefixed `QF` (quick-fix), `S` (simplification), or `SA` (static analysis suggestion) may conflict with deliberate patterns like compile-time type assertions, intentional sentinel patterns, or defensive coding. If suppressing with `//nolint:<linter> // <reason>` preserves the original intent better than the suggested rewrite, prefer the nolint directive.
+- **Never weaken a safety mechanism to satisfy a linter.** Compile-time type checks (`var _ T = expr`), interface satisfaction guards (`var _ Interface = (*Impl)(nil)`), and deliberate panics in unreachable branches exist for a reason. If a linter flags them, suppress with a comment explaining the intent.
+- **Treat auto-fix output as a draft.** `golangci-lint fmt` and `--fix` can rewrite code mechanically. Review the diff for semantic changes beyond formatting, especially in test assertions and type-checked expressions.
+- **Check for cascading breakage.** Removing an "unused" symbol may break a compile-time contract or a test helper reserved for future use in an in-progress branch. Grep for the symbol and read surrounding comments before deleting.
