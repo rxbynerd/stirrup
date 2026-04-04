@@ -1,6 +1,6 @@
 # VERSION1: Go Harness
 
-This document describes what was built for Version 1 of Stirrup, a coding agent harness rewritten from Ruby to Go. It covers the architectural decisions, what shipped, what was deferred, and the security posture at merge time. For post-V1 security hardening plans, see `SECURITY_HARDENING.md`.
+This document describes what was built for Version 1 of Stirrup, a coding agent harness rewritten from Ruby to Go. It covers the architectural decisions, what shipped, what was deferred, and the security posture at merge time. Post-V1 hardening is tracked in GitHub Issues.
 
 ---
 
@@ -223,7 +223,7 @@ The MCP client (`mcp/client.go`) connects to remote MCP servers via Streamable H
 
 ### V1 security fixes applied
 
-These were originally identified as bugs in the `SECURITY_HARDENING.md` "Section 0" review and fixed before merge:
+These were identified during code review and fixed before merge:
 
 1. **Search tool path traversal** (0.1) — `ResolvePath` called before constructing grep commands.
 2. **Web fetch SSRF** (0.2) — private IP/reserved range blocking with DNS resolution pinning.
@@ -239,12 +239,7 @@ The input validator (`security/inputvalidator.go`) supports `type`, `required`, 
 
 ### Post-V1 hardening
 
-`SECURITY_HARDENING.md` documents the full roadmap for hardening beyond V1, prioritised by deployment milestone:
-
-- **Before processing untrusted inputs**: container image supply chain (digest pinning, registry allowlist), volume mount security (.git read-only), full container security profile, MCP tool allowlisting, MCP URI SSRF protection, ToolCallGuard anomaly detection, network phase splitting.
-- **Before multi-tenant deployment**: MCP server sandboxing, gRPC mutual authentication (session tokens), sequence numbers and replay protection, RunRecording encryption, ProductionTrace classification.
-- **Before regulated/compliance environments**: Docker socket isolation (K8s pod sandboxing), DNS exfiltration mitigation, egress proxy, side-channel mitigations.
-- **Ongoing**: multi-turn injection resistance, dynamic context sanitisation, dependency supply chain hygiene, mined task quarantine.
+Post-V1 security hardening is tracked in GitHub Issues, prioritised by deployment milestone. See issues labelled `security` for the full roadmap, covering: container sandbox hardening, MCP server trust model, prompt injection defense in depth, network egress hardening, gRPC transport security, observability security, eval framework security, dependency supply chain, and DoS resilience.
 
 ---
 
@@ -317,7 +312,7 @@ GitHub Actions at `.github/workflows/ci.yml`:
 | Cost estimation / pricing tables | Deliberately excluded. Pricing is a control plane concern. Harness retains `TokenTracker` for budget enforcement only. |
 | Scheduling / toil triggering | Control plane responsibility. Harness supports the toil mode; the control plane decides when to dispatch jobs. |
 | A2A (Agent-to-Agent Protocol) adapter | Control plane concern. Harness speaks gRPC; control plane translates for external interop. |
-| Container image supply chain, MCP sandboxing, gRPC mutual auth | Post-V1 hardening. See `SECURITY_HARDENING.md`. |
+| Container image supply chain, MCP sandboxing, gRPC mutual auth | Post-V1 hardening. Tracked in GitHub Issues. |
 
 ---
 
