@@ -29,6 +29,18 @@ const (
 // HarnessService is the bidirectional streaming interface between the harness
 // (client) and the control plane (server). The harness connects outbound and
 // opens a single bidi stream for the lifetime of a task run.
+//
+// Lifecycle:
+//  1. Harness connects and opens a RunTask stream.
+//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version).
+//  3. Control plane sends a ControlEvent with type "task_assignment" containing
+//     a RunConfig in the task field.
+//  4. Harness streams HarnessEvents as it works (text_delta, tool_call,
+//     tool_result, heartbeat, permission_request, warning).
+//  5. Control plane sends ControlEvents as needed (user_response,
+//     permission_response, cancel).
+//  6. Harness sends a final HarnessEvent with type "done" (includes trace)
+//     or "error", then the stream closes.
 type HarnessServiceClient interface {
 	// RunTask opens a bidirectional stream. The control plane sends a
 	// TaskAssignment as the first ControlEvent; the harness streams
@@ -65,6 +77,18 @@ type HarnessService_RunTaskClient = grpc.BidiStreamingClient[HarnessEvent, Contr
 // HarnessService is the bidirectional streaming interface between the harness
 // (client) and the control plane (server). The harness connects outbound and
 // opens a single bidi stream for the lifetime of a task run.
+//
+// Lifecycle:
+//  1. Harness connects and opens a RunTask stream.
+//  2. Harness sends a HarnessEvent with type "ready" (includes harness_version).
+//  3. Control plane sends a ControlEvent with type "task_assignment" containing
+//     a RunConfig in the task field.
+//  4. Harness streams HarnessEvents as it works (text_delta, tool_call,
+//     tool_result, heartbeat, permission_request, warning).
+//  5. Control plane sends ControlEvents as needed (user_response,
+//     permission_response, cancel).
+//  6. Harness sends a final HarnessEvent with type "done" (includes trace)
+//     or "error", then the stream closes.
 type HarnessServiceServer interface {
 	// RunTask opens a bidirectional stream. The control plane sends a
 	// TaskAssignment as the first ControlEvent; the harness streams

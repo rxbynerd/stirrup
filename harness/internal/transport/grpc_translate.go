@@ -140,26 +140,50 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	}
 	if pc.TraceEmitter != nil {
 		rc.TraceEmitter = types.TraceEmitterConfig{
-			Type:     pc.TraceEmitter.Type,
-			FilePath: pc.TraceEmitter.FilePath,
-			Endpoint: pc.TraceEmitter.Endpoint,
+			Type:            pc.TraceEmitter.Type,
+			FilePath:        pc.TraceEmitter.FilePath,
+			Endpoint:        pc.TraceEmitter.Endpoint,
+			MetricsEndpoint: pc.TraceEmitter.MetricsEndpoint,
 		}
 	}
 	if pc.Tools != nil {
 		rc.Tools = toolsConfigFromProto(pc.Tools)
 	}
 
+	rc.LogLevel = pc.LogLevel
+
 	return rc
 }
 
 func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
-	return types.ProviderConfig{
+	cfg := types.ProviderConfig{
 		Type:      pc.Type,
 		APIKeyRef: pc.ApiKeyRef,
 		Region:    pc.Region,
 		Profile:   pc.Profile,
 		BaseURL:   pc.BaseUrl,
 	}
+	if pc.Credential != nil {
+		cfg.Credential = credentialConfigFromProto(pc.Credential)
+	}
+	return cfg
+}
+
+func credentialConfigFromProto(pc *pb.CredentialConfig) *types.CredentialConfig {
+	cfg := &types.CredentialConfig{
+		Type:        pc.Type,
+		RoleARN:     pc.RoleArn,
+		SessionName: pc.SessionName,
+	}
+	if pc.TokenSource != nil {
+		cfg.TokenSource = &types.TokenSourceConfig{
+			Type:     pc.TokenSource.Type,
+			Audience: pc.TokenSource.Audience,
+			Path:     pc.TokenSource.Path,
+			EnvVar:   pc.TokenSource.EnvVar,
+		}
+	}
+	return cfg
 }
 
 func modelRouterConfigFromProto(pc *pb.ModelRouterConfig) types.ModelRouterConfig {

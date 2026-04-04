@@ -22,23 +22,85 @@ const (
 )
 
 // HarnessEvent is sent from the harness to the control plane.
+//
+// Each event has a type discriminator; only the fields relevant to that type
+// are populated. The table below documents which fields are set per type:
+//
+//	"ready"
+//	  - harness_version: build version string of the harness binary.
+//
+//	"text_delta"
+//	  - text: incremental text fragment from the model's response.
+//
+//	"tool_call"
+//	  - id:    unique tool-use ID assigned by the model.
+//	  - name:  tool name (e.g. "read_file", "run_command", "mcp_server_tool").
+//	  - input: JSON-encoded tool input parameters.
+//
+//	"tool_result"
+//	  - tool_use_id: the tool-use ID this result corresponds to.
+//	  - content:     string result returned by the tool.
+//
+//	"permission_request"
+//	  - request_id: unique ID for this request; the control plane must echo it
+//	                back in the corresponding permission_response ControlEvent.
+//	  - tool_name:  the tool requesting permission.
+//	  - input:      JSON-encoded tool input (so the control plane can display
+//	                what the tool wants to do).
+//
+//	"done"
+//	  - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
+//	                 "stalled", "tool_failures", "cancelled", "budget_exceeded").
+//	  - trace:       RunTrace with execution metrics.
+//
+//	"error"
+//	  - message: human-readable error description.
+//
+//	"warning"
+//	  - message: human-readable warning (non-fatal).
+//
+//	"heartbeat"
+//	  - (no additional fields) Sent every 30 seconds during execution to
+//	    signal liveness. The control plane should treat absence of heartbeats
+//	    as a potential hang.
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Type  string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "warning" | "heartbeat" | "ready" | "permission_request"
-	// Fields used by various event types. Only the relevant fields are
-	// populated for a given type.
-	Text           string    `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
-	Id             string    `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
-	Name           string    `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	Input          []byte    `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"` // JSON-encoded tool input
-	ToolUseId      string    `protobuf:"bytes,6,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"`
-	Content        string    `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
-	StopReason     string    `protobuf:"bytes,8,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
-	Message        string    `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
-	Trace          *RunTrace `protobuf:"bytes,10,opt,name=trace,proto3" json:"trace,omitempty"`
-	RequestId      string    `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // correlates permission_request/response
-	ToolName       string    `protobuf:"bytes,12,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
-	HarnessVersion string    `protobuf:"bytes,13,opt,name=harness_version,json=harnessVersion,proto3" json:"harness_version,omitempty"` // build version of the harness binary
+	// Required. The event type discriminator.
+	// Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
+	//
+	//	"warning", "heartbeat", "ready", "permission_request".
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Incremental text fragment from the model. Set on "text_delta" events.
+	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
+	// Unique tool-use ID assigned by the model. Set on "tool_call" events.
+	Id string `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
+	// Tool name. Set on "tool_call" events.
+	Name string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
+	// JSON-encoded tool input parameters. Set on "tool_call" and
+	// "permission_request" events.
+	Input []byte `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
+	// The tool-use ID this result corresponds to. Set on "tool_result" events.
+	ToolUseId string `protobuf:"bytes,6,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"`
+	// Tool execution result. Set on "tool_result" events.
+	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
+	// Why the run ended. Set on "done" events.
+	// Values: "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
+	//
+	//	"cancelled", "budget_exceeded".
+	StopReason string `protobuf:"bytes,8,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	// Human-readable message. Set on "error" and "warning" events.
+	Message string `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
+	// Execution metrics. Set on "done" events.
+	Trace *RunTrace `protobuf:"bytes,10,opt,name=trace,proto3" json:"trace,omitempty"`
+	// Unique request ID for permission correlation. Set on "permission_request"
+	// events. The control plane must echo this back in the permission_response
+	// ControlEvent's request_id field.
+	RequestId string `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// The tool requesting permission. Set on "permission_request" events.
+	ToolName string `protobuf:"bytes,12,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
+	// Build version of the harness binary. Set on "ready" events. The control
+	// plane may use this to verify compatibility before sending a task.
+	HarnessVersion string `protobuf:"bytes,13,opt,name=harness_version,json=harnessVersion,proto3" json:"harness_version,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -165,14 +227,52 @@ func (x *HarnessEvent) GetHarnessVersion() string {
 }
 
 // ControlEvent is sent from the control plane to the harness.
+//
+// Each event has a type discriminator; only the fields relevant to that type
+// are populated. The table below documents which fields are set per type:
+//
+//	"task_assignment"
+//	  - task: the RunConfig describing the work to execute. This must be
+//	          the first ControlEvent sent after the stream opens.
+//
+//	"user_response"
+//	  - user_response: free-text response to a model prompt that asked for
+//	                   user input. Injected into the conversation as a user
+//	                   message on the next turn.
+//
+//	"permission_response"
+//	  - request_id: must match the request_id from the corresponding
+//	                permission_request HarnessEvent.
+//	  - allowed:    the permission decision (true = allow, false = deny).
+//	  - reason:     optional human-readable explanation for denial; passed
+//	                back to the model as context.
+//
+//	"cancel"
+//	  - (no additional fields) Signals that the run should be aborted.
+//	    NOTE: cancel is defined in the protocol but is not yet handled by
+//	    the harness main loop (no-op on receipt).
 type ControlEvent struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"` // "task_assignment" | "user_response" | "cancel" | "permission_response"
-	Task          *RunConfig             `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
-	UserResponse  string                 `protobuf:"bytes,3,opt,name=user_response,json=userResponse,proto3" json:"user_response,omitempty"`
-	RequestId     string                 `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // correlates permission_response with permission_request
-	Allowed       *OptionalBool          `protobuf:"bytes,5,opt,name=allowed,proto3" json:"allowed,omitempty"`                      // permission decision
-	Reason        string                 `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`                        // explanation for denial
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. The event type discriminator.
+	// Valid values: "task_assignment", "user_response", "cancel",
+	//
+	//	"permission_response".
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// The run configuration. Set on "task_assignment" events only. This is the
+	// composition root that drives all harness behaviour for the run.
+	Task *RunConfig `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
+	// Free-text user response. Set on "user_response" events.
+	UserResponse string `protobuf:"bytes,3,opt,name=user_response,json=userResponse,proto3" json:"user_response,omitempty"`
+	// Correlates a permission_response with the originating permission_request.
+	// Set on "permission_response" events. Must match a previously received
+	// HarnessEvent.request_id.
+	RequestId string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	// The permission decision. Set on "permission_response" events.
+	// True = allow the tool call to proceed. False = deny.
+	Allowed *OptionalBool `protobuf:"bytes,5,opt,name=allowed,proto3" json:"allowed,omitempty"`
+	// Human-readable explanation for a denial. Set on "permission_response"
+	// events when allowed is false. Passed to the model as context.
+	Reason        string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -249,7 +349,8 @@ func (x *ControlEvent) GetReason() string {
 	return ""
 }
 
-// OptionalBool wraps a boolean so we can distinguish "not set" from "false".
+// OptionalBool wraps a boolean so we can distinguish "not set" from "false"
+// in proto3 (where scalar fields have implicit zero-value defaults).
 type OptionalBool struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Value         bool                   `protobuf:"varint,1,opt,name=value,proto3" json:"value,omitempty"`
@@ -294,35 +395,92 @@ func (x *OptionalBool) GetValue() bool {
 	return false
 }
 
-// RunConfig describes a single harness run. This is the wire-format version
-// sent in TaskAssignment; it is translated to the internal types.RunConfig.
+// RunConfig fully describes a single harness run. It is the composition root:
+// the control plane sends it via TaskAssignment and it drives all component
+// initialisation inside the harness.
+//
+// Cross-field constraints (enforced by the harness at startup):
+//   - Read-only modes ("planning", "review", "research", "toil") must use
+//     permission_policy type "deny-side-effects" or "ask-upstream" (not
+//     "allow-all"), and tools.built_in must not include "write_file" or
+//     "run_command".
+//   - All provider references in model_router (provider, cheap_provider,
+//     expensive_provider, mode_models values) must match a key in the
+//     providers map or the default provider type.
 type RunConfig struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	RunId          string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	Mode           string                 `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
-	Prompt         string                 `protobuf:"bytes,3,opt,name=prompt,proto3" json:"prompt,omitempty"`
-	DynamicContext map[string]string      `protobuf:"bytes,4,rep,name=dynamic_context,json=dynamicContext,proto3" json:"dynamic_context,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Component selections
-	Provider         *ProviderConfig            `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`
-	Providers        map[string]*ProviderConfig `protobuf:"bytes,20,rep,name=providers,proto3" json:"providers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	ModelRouter      *ModelRouterConfig         `protobuf:"bytes,6,opt,name=model_router,json=modelRouter,proto3" json:"model_router,omitempty"`
-	PromptBuilder    *PromptBuilderConfig       `protobuf:"bytes,7,opt,name=prompt_builder,json=promptBuilder,proto3" json:"prompt_builder,omitempty"`
-	ContextStrategy  *ContextStrategyConfig     `protobuf:"bytes,8,opt,name=context_strategy,json=contextStrategy,proto3" json:"context_strategy,omitempty"`
-	Executor         *ExecutorConfig            `protobuf:"bytes,9,opt,name=executor,proto3" json:"executor,omitempty"`
-	EditStrategy     *EditStrategyConfig        `protobuf:"bytes,10,opt,name=edit_strategy,json=editStrategy,proto3" json:"edit_strategy,omitempty"`
-	Verifier         *VerifierConfig            `protobuf:"bytes,11,opt,name=verifier,proto3" json:"verifier,omitempty"`
-	PermissionPolicy *PermissionPolicyConfig    `protobuf:"bytes,12,opt,name=permission_policy,json=permissionPolicy,proto3" json:"permission_policy,omitempty"`
-	GitStrategy      *GitStrategyConfig         `protobuf:"bytes,13,opt,name=git_strategy,json=gitStrategy,proto3" json:"git_strategy,omitempty"`
-	TraceEmitter     *TraceEmitterConfig        `protobuf:"bytes,14,opt,name=trace_emitter,json=traceEmitter,proto3" json:"trace_emitter,omitempty"`
-	Tools            *ToolsConfig               `protobuf:"bytes,15,opt,name=tools,proto3" json:"tools,omitempty"`
-	// Limits
-	MaxTurns       int32    `protobuf:"varint,16,opt,name=max_turns,json=maxTurns,proto3" json:"max_turns,omitempty"`
-	MaxTokenBudget *int32   `protobuf:"varint,17,opt,name=max_token_budget,json=maxTokenBudget,proto3,oneof" json:"max_token_budget,omitempty"`
-	MaxCostBudget  *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
-	Timeout        *int32   `protobuf:"varint,19,opt,name=timeout,proto3,oneof" json:"timeout,omitempty"`
-	FollowUpGrace  *int32   `protobuf:"varint,21,opt,name=follow_up_grace,json=followUpGrace,proto3,oneof" json:"follow_up_grace,omitempty"` // seconds; 0 means disabled; max 3600; maps to types.RunConfig.FollowUpGrace
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. Unique identifier for this run. Used in logs, traces, and to
+	// correlate events across the stream.
+	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Required. The run mode, which determines prompt templates and security
+	// constraints.
+	// Valid values:
+	//
+	//	"execution" — full read/write agent mode (default for CLI).
+	//	"planning"  — read-only; produces a plan without making changes.
+	//	"review"    — read-only; reviews code and provides feedback.
+	//	"research"  — read-only; investigates questions without side effects.
+	//	"toil"      — read-only; automates repetitive read tasks.
+	Mode string `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	// Required. The user task/prompt to execute.
+	Prompt string `protobuf:"bytes,3,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	// Optional. Key-value pairs injected into the system prompt as
+	// <untrusted_context> blocks. Keys are context labels; values are the
+	// content. Use this for repo metadata, issue descriptions, etc.
+	DynamicContext map[string]string `protobuf:"bytes,4,rep,name=dynamic_context,json=dynamicContext,proto3" json:"dynamic_context,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Optional. The default (or only) provider configuration. If providers map
+	// is also set, this serves as the unnamed default provider.
+	Provider *ProviderConfig `protobuf:"bytes,5,opt,name=provider,proto3" json:"provider,omitempty"`
+	// Optional. Named provider configurations for multi-provider setups. Keys
+	// are provider names referenced by model_router fields (provider,
+	// cheap_provider, expensive_provider, mode_models values).
+	Providers map[string]*ProviderConfig `protobuf:"bytes,20,rep,name=providers,proto3" json:"providers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Optional. Model routing strategy. Controls which provider+model is used
+	// per turn. When omitted, defaults to static routing with the default
+	// provider and model.
+	ModelRouter *ModelRouterConfig `protobuf:"bytes,6,opt,name=model_router,json=modelRouter,proto3" json:"model_router,omitempty"`
+	// Optional. System prompt assembly strategy.
+	PromptBuilder *PromptBuilderConfig `protobuf:"bytes,7,opt,name=prompt_builder,json=promptBuilder,proto3" json:"prompt_builder,omitempty"`
+	// Optional. Message history management strategy.
+	ContextStrategy *ContextStrategyConfig `protobuf:"bytes,8,opt,name=context_strategy,json=contextStrategy,proto3" json:"context_strategy,omitempty"`
+	// Optional. Sandboxed file I/O and command execution backend.
+	Executor *ExecutorConfig `protobuf:"bytes,9,opt,name=executor,proto3" json:"executor,omitempty"`
+	// Optional. How file edits are applied.
+	EditStrategy *EditStrategyConfig `protobuf:"bytes,10,opt,name=edit_strategy,json=editStrategy,proto3" json:"edit_strategy,omitempty"`
+	// Optional. Post-run output validation.
+	Verifier *VerifierConfig `protobuf:"bytes,11,opt,name=verifier,proto3" json:"verifier,omitempty"`
+	// Optional. Permission gating for side-effecting tools.
+	PermissionPolicy *PermissionPolicyConfig `protobuf:"bytes,12,opt,name=permission_policy,json=permissionPolicy,proto3" json:"permission_policy,omitempty"`
+	// Optional. Git branch/commit management.
+	GitStrategy *GitStrategyConfig `protobuf:"bytes,13,opt,name=git_strategy,json=gitStrategy,proto3" json:"git_strategy,omitempty"`
+	// Optional. Telemetry recording.
+	TraceEmitter *TraceEmitterConfig `protobuf:"bytes,14,opt,name=trace_emitter,json=traceEmitter,proto3" json:"trace_emitter,omitempty"`
+	// Optional. Tool selection and MCP server connections.
+	Tools *ToolsConfig `protobuf:"bytes,15,opt,name=tools,proto3" json:"tools,omitempty"`
+	// Required. Maximum number of agentic loop turns before the run stops.
+	// Range: 1-100. CLI default: 20.
+	MaxTurns int32 `protobuf:"varint,16,opt,name=max_turns,json=maxTurns,proto3" json:"max_turns,omitempty"`
+	// Optional. Maximum total tokens (input + output) for the run. The loop
+	// terminates with stop_reason "budget_exceeded" if this is hit.
+	// Max: 50,000,000.
+	MaxTokenBudget *int32 `protobuf:"varint,17,opt,name=max_token_budget,json=maxTokenBudget,proto3,oneof" json:"max_token_budget,omitempty"`
+	// Optional. Maximum cost in USD for the run. The loop terminates with
+	// stop_reason "budget_exceeded" if this is hit. Max: 100.00.
+	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
+	// Required. Wall-clock timeout in seconds for the entire run. The loop
+	// terminates with stop_reason "timeout" when this expires.
+	// Range: 1-3600.
+	Timeout *int32 `protobuf:"varint,19,opt,name=timeout,proto3,oneof" json:"timeout,omitempty"`
+	// Optional. Seconds to keep the gRPC transport open after the primary run
+	// completes, waiting for follow-up user_response events that trigger
+	// additional runs. 0 or unset means disabled (stream closes after done).
+	// Max: 3600.
+	FollowUpGrace *int32 `protobuf:"varint,21,opt,name=follow_up_grace,json=followUpGrace,proto3,oneof" json:"follow_up_grace,omitempty"`
+	// Optional. Structured log verbosity for this run.
+	// Valid values: "debug", "info", "warn", "error". Default: "info".
+	LogLevel      string `protobuf:"bytes,22,opt,name=log_level,json=logLevel,proto3" json:"log_level,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunConfig) Reset() {
@@ -502,16 +660,33 @@ func (x *RunConfig) GetFollowUpGrace() int32 {
 	return 0
 }
 
-// RunTrace is included with "done" events.
+func (x *RunConfig) GetLogLevel() string {
+	if x != nil {
+		return x.LogLevel
+	}
+	return ""
+}
+
+// RunTrace is included with "done" HarnessEvents. It provides execution
+// metrics for the completed run.
 type RunTrace struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	RunId         string                 `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	Turns         int32                  `protobuf:"varint,2,opt,name=turns,proto3" json:"turns,omitempty"`
-	InputTokens   int32                  `protobuf:"varint,3,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
-	OutputTokens  int32                  `protobuf:"varint,4,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
-	CostUsd       float64                `protobuf:"fixed64,5,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
-	DurationMs    int64                  `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	StopReason    string                 `protobuf:"bytes,7,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The run_id from the RunConfig that produced this trace.
+	RunId string `protobuf:"bytes,1,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Number of agentic loop turns completed.
+	Turns int32 `protobuf:"varint,2,opt,name=turns,proto3" json:"turns,omitempty"`
+	// Total input tokens consumed across all provider calls.
+	InputTokens int32 `protobuf:"varint,3,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
+	// Total output tokens consumed across all provider calls.
+	OutputTokens int32 `protobuf:"varint,4,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
+	// Estimated total cost in USD for the run (based on per-model pricing).
+	CostUsd float64 `protobuf:"fixed64,5,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
+	// Wall-clock duration of the run in milliseconds.
+	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	// Why the run ended. Same values as HarnessEvent.stop_reason:
+	// "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
+	// "cancelled", "budget_exceeded".
+	StopReason    string `protobuf:"bytes,7,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -595,13 +770,36 @@ func (x *RunTrace) GetStopReason() string {
 	return ""
 }
 
+// ProviderConfig selects the LLM provider implementation and its connection
+// parameters. Used both as the default provider (RunConfig.provider) and as
+// entries in the named providers map.
 type ProviderConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	ApiKeyRef     string                 `protobuf:"bytes,2,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
-	Region        string                 `protobuf:"bytes,3,opt,name=region,proto3" json:"region,omitempty"`
-	Profile       string                 `protobuf:"bytes,4,opt,name=profile,proto3" json:"profile,omitempty"`
-	BaseUrl       string                 `protobuf:"bytes,5,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. The provider implementation.
+	// Valid values:
+	//
+	//	"anthropic"         — Anthropic Messages API (SSE streaming, hand-rolled HTTP).
+	//	"bedrock"           — AWS Bedrock ConverseStream API (via aws-sdk-go-v2).
+	//	"openai-compatible" — OpenAI chat completions (works with OpenAI, LiteLLM,
+	//	                      Azure OpenAI, vLLM, Ollama via configurable base_url).
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Secret reference for the API key (e.g. "secret://ANTHROPIC_API_KEY").
+	// Required for "anthropic" and "openai-compatible" when credential is
+	// omitted or uses type "static". Resolved at runtime via the SecretStore
+	// (supports env vars, files, AWS SSM via "secret://ssm:///param-name").
+	ApiKeyRef string `protobuf:"bytes,2,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
+	// For "bedrock": the AWS region (e.g. "us-east-1").
+	Region string `protobuf:"bytes,3,opt,name=region,proto3" json:"region,omitempty"`
+	// For "bedrock": the AWS CLI profile name. Optional; uses default config
+	// resolution when omitted.
+	Profile string `protobuf:"bytes,4,opt,name=profile,proto3" json:"profile,omitempty"`
+	// For "openai-compatible": the base URL of the API endpoint
+	// (e.g. "https://api.openai.com/v1" or a LiteLLM proxy URL).
+	BaseUrl string `protobuf:"bytes,5,opt,name=base_url,json=baseUrl,proto3" json:"base_url,omitempty"`
+	// Optional. Cross-cloud credential federation configuration. When omitted,
+	// the credential type is inferred from the provider type: "bedrock" defaults
+	// to "aws-default"; all others default to "static" (resolving api_key_ref).
+	Credential    *CredentialConfig `protobuf:"bytes,6,opt,name=credential,proto3" json:"credential,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -671,26 +869,229 @@ func (x *ProviderConfig) GetBaseUrl() string {
 	return ""
 }
 
+func (x *ProviderConfig) GetCredential() *CredentialConfig {
+	if x != nil {
+		return x.Credential
+	}
+	return nil
+}
+
+// CredentialConfig selects the credential acquisition method for a provider.
+// Used for cross-cloud authentication scenarios (e.g. a GKE-hosted harness
+// accessing Bedrock via OIDC federation).
+type CredentialConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. The credential acquisition strategy.
+	// Valid values:
+	//
+	//	"static"       — resolve api_key_ref via SecretStore (default for
+	//	                 anthropic/openai-compatible).
+	//	"aws-default"  — use the AWS SDK default credential chain (env vars,
+	//	                 shared config, IMDS). Default for bedrock.
+	//	"web-identity" — exchange an OIDC identity token for AWS credentials
+	//	                 via STS AssumeRoleWithWebIdentity. Requires role_arn
+	//	                 and token_source.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Required when type is "web-identity". Configuration for the identity
+	// token source used in the OIDC token exchange.
+	TokenSource *TokenSourceConfig `protobuf:"bytes,2,opt,name=token_source,json=tokenSource,proto3" json:"token_source,omitempty"`
+	// Required when type is "web-identity". The IAM role ARN to assume via
+	// STS AssumeRoleWithWebIdentity (e.g. "arn:aws:iam::123456789012:role/StirrupBedrock").
+	RoleArn string `protobuf:"bytes,3,opt,name=role_arn,json=roleArn,proto3" json:"role_arn,omitempty"`
+	// Optional. Session name for STS AssumeRole calls. Default: "stirrup".
+	// Only used when type is "web-identity".
+	SessionName   string `protobuf:"bytes,4,opt,name=session_name,json=sessionName,proto3" json:"session_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CredentialConfig) Reset() {
+	*x = CredentialConfig{}
+	mi := &file_harness_v1_harness_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CredentialConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CredentialConfig) ProtoMessage() {}
+
+func (x *CredentialConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_harness_v1_harness_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CredentialConfig.ProtoReflect.Descriptor instead.
+func (*CredentialConfig) Descriptor() ([]byte, []int) {
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CredentialConfig) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetTokenSource() *TokenSourceConfig {
+	if x != nil {
+		return x.TokenSource
+	}
+	return nil
+}
+
+func (x *CredentialConfig) GetRoleArn() string {
+	if x != nil {
+		return x.RoleArn
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetSessionName() string {
+	if x != nil {
+		return x.SessionName
+	}
+	return ""
+}
+
+// TokenSourceConfig selects where identity tokens are fetched from.
+// Used by credential types that require an OIDC/JWT token for exchange
+// (e.g. web-identity credential federation).
+type TokenSourceConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. The token source implementation.
+	// Valid values:
+	//
+	//	"gke-metadata" — fetch from the GKE Workload Identity metadata server.
+	//	                 Requires audience.
+	//	"file"         — read from a file (e.g. Kubernetes projected service
+	//	                 account token volume). Requires path.
+	//	"env"          — read from an environment variable. Requires env_var.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Required when type is "gke-metadata". The target audience claim for the
+	// identity token (e.g. "sts.amazonaws.com" for AWS federation).
+	Audience string `protobuf:"bytes,2,opt,name=audience,proto3" json:"audience,omitempty"`
+	// Required when type is "file". Filesystem path to a file containing the
+	// identity token (e.g. "/var/run/secrets/tokens/oidc-token").
+	Path string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
+	// Required when type is "env". Name of the environment variable containing
+	// the identity token.
+	EnvVar        string `protobuf:"bytes,4,opt,name=env_var,json=envVar,proto3" json:"env_var,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TokenSourceConfig) Reset() {
+	*x = TokenSourceConfig{}
+	mi := &file_harness_v1_harness_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TokenSourceConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TokenSourceConfig) ProtoMessage() {}
+
+func (x *TokenSourceConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_harness_v1_harness_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TokenSourceConfig.ProtoReflect.Descriptor instead.
+func (*TokenSourceConfig) Descriptor() ([]byte, []int) {
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *TokenSourceConfig) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *TokenSourceConfig) GetAudience() string {
+	if x != nil {
+		return x.Audience
+	}
+	return ""
+}
+
+func (x *TokenSourceConfig) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *TokenSourceConfig) GetEnvVar() string {
+	if x != nil {
+		return x.EnvVar
+	}
+	return ""
+}
+
+// ModelRouterConfig selects the model routing strategy, controlling which
+// provider and model are used on each turn.
 type ModelRouterConfig struct {
-	state                   protoimpl.MessageState `protogen:"open.v1"`
-	Type                    string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Provider                string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
-	Model                   string                 `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
-	ModeModels              map[string]string      `protobuf:"bytes,4,rep,name=mode_models,json=modeModels,proto3" json:"mode_models,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	CheapProvider           string                 `protobuf:"bytes,5,opt,name=cheap_provider,json=cheapProvider,proto3" json:"cheap_provider,omitempty"`
-	CheapModel              string                 `protobuf:"bytes,6,opt,name=cheap_model,json=cheapModel,proto3" json:"cheap_model,omitempty"`
-	ExpensiveProvider       string                 `protobuf:"bytes,7,opt,name=expensive_provider,json=expensiveProvider,proto3" json:"expensive_provider,omitempty"`
-	ExpensiveModel          string                 `protobuf:"bytes,8,opt,name=expensive_model,json=expensiveModel,proto3" json:"expensive_model,omitempty"`
-	ExpensiveTurnThreshold  int32                  `protobuf:"varint,9,opt,name=expensive_turn_threshold,json=expensiveTurnThreshold,proto3" json:"expensive_turn_threshold,omitempty"`
-	ExpensiveTokenThreshold int32                  `protobuf:"varint,10,opt,name=expensive_token_threshold,json=expensiveTokenThreshold,proto3" json:"expensive_token_threshold,omitempty"`
-	CheapStopReasons        []string               `protobuf:"bytes,11,rep,name=cheap_stop_reasons,json=cheapStopReasons,proto3" json:"cheap_stop_reasons,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The routing strategy.
+	// Valid values:
+	//
+	//	"static"   — use the same provider+model for every turn (default).
+	//	"per-mode" — override provider+model based on the run mode.
+	//	"dynamic"  — switch between cheap and expensive models based on turn
+	//	             count and token usage.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Default provider name. Used by all router types as the base provider.
+	// Must match a key in RunConfig.providers or the default provider type.
+	Provider string `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	// Default model identifier (e.g. "claude-sonnet-4-6-20250514").
+	Model string `protobuf:"bytes,3,opt,name=model,proto3" json:"model,omitempty"`
+	// For "per-mode" and "dynamic": mode-specific overrides.
+	// Keys are mode names (e.g. "planning", "review"); values are
+	// "provider/model" strings (e.g. "anthropic/claude-haiku-4-5-20251001").
+	ModeModels map[string]string `protobuf:"bytes,4,rep,name=mode_models,json=modeModels,proto3" json:"mode_models,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// For "dynamic": the provider to use for cheaper/simpler turns.
+	CheapProvider string `protobuf:"bytes,5,opt,name=cheap_provider,json=cheapProvider,proto3" json:"cheap_provider,omitempty"`
+	// For "dynamic": the model to use for cheaper/simpler turns.
+	CheapModel string `protobuf:"bytes,6,opt,name=cheap_model,json=cheapModel,proto3" json:"cheap_model,omitempty"`
+	// For "dynamic": the provider to use for expensive/complex turns.
+	ExpensiveProvider string `protobuf:"bytes,7,opt,name=expensive_provider,json=expensiveProvider,proto3" json:"expensive_provider,omitempty"`
+	// For "dynamic": the model to use for expensive/complex turns.
+	ExpensiveModel string `protobuf:"bytes,8,opt,name=expensive_model,json=expensiveModel,proto3" json:"expensive_model,omitempty"`
+	// For "dynamic": switch to expensive model after this many turns.
+	ExpensiveTurnThreshold int32 `protobuf:"varint,9,opt,name=expensive_turn_threshold,json=expensiveTurnThreshold,proto3" json:"expensive_turn_threshold,omitempty"`
+	// For "dynamic": switch to expensive model after this many total tokens.
+	ExpensiveTokenThreshold int32 `protobuf:"varint,10,opt,name=expensive_token_threshold,json=expensiveTokenThreshold,proto3" json:"expensive_token_threshold,omitempty"`
+	// For "dynamic": stop reasons that indicate the cheap model is sufficient
+	// (e.g. ["end_turn"]). If the cheap model stops for a reason NOT in this
+	// list, the router escalates to the expensive model.
+	CheapStopReasons []string `protobuf:"bytes,11,rep,name=cheap_stop_reasons,json=cheapStopReasons,proto3" json:"cheap_stop_reasons,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ModelRouterConfig) Reset() {
 	*x = ModelRouterConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[6]
+	mi := &file_harness_v1_harness_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -702,7 +1103,7 @@ func (x *ModelRouterConfig) String() string {
 func (*ModelRouterConfig) ProtoMessage() {}
 
 func (x *ModelRouterConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[6]
+	mi := &file_harness_v1_harness_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -715,7 +1116,7 @@ func (x *ModelRouterConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ModelRouterConfig.ProtoReflect.Descriptor instead.
 func (*ModelRouterConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{6}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ModelRouterConfig) GetType() string {
@@ -795,17 +1196,25 @@ func (x *ModelRouterConfig) GetCheapStopReasons() []string {
 	return nil
 }
 
+// PromptBuilderConfig selects the system prompt assembly strategy.
 type PromptBuilderConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Template      string                 `protobuf:"bytes,2,opt,name=template,proto3" json:"template,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The prompt builder implementation.
+	// Valid values:
+	//
+	//	"default"  — built-in per-mode templates (default).
+	//	"composed" — combines the default template with a custom suffix.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// For "composed": the custom template text appended to the default
+	// per-mode system prompt.
+	Template      string `protobuf:"bytes,2,opt,name=template,proto3" json:"template,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PromptBuilderConfig) Reset() {
 	*x = PromptBuilderConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[7]
+	mi := &file_harness_v1_harness_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -817,7 +1226,7 @@ func (x *PromptBuilderConfig) String() string {
 func (*PromptBuilderConfig) ProtoMessage() {}
 
 func (x *PromptBuilderConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[7]
+	mi := &file_harness_v1_harness_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -830,7 +1239,7 @@ func (x *PromptBuilderConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromptBuilderConfig.ProtoReflect.Descriptor instead.
 func (*PromptBuilderConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{7}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PromptBuilderConfig) GetType() string {
@@ -847,17 +1256,29 @@ func (x *PromptBuilderConfig) GetTemplate() string {
 	return ""
 }
 
+// ContextStrategyConfig selects how message history is managed as the
+// context window fills up.
 type ContextStrategyConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	MaxTokens     int32                  `protobuf:"varint,2,opt,name=max_tokens,json=maxTokens,proto3" json:"max_tokens,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The context management strategy.
+	// Valid values:
+	//
+	//	"sliding-window"  — drop oldest messages to stay under max_tokens
+	//	                    (default).
+	//	"summarise"       — replace old messages with an LLM-generated summary.
+	//	"offload-to-file" — write old messages to a file and replace with a
+	//	                    pointer.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Token budget for the context window. When the conversation exceeds this
+	// limit, the strategy is applied to compact it.
+	MaxTokens     int32 `protobuf:"varint,2,opt,name=max_tokens,json=maxTokens,proto3" json:"max_tokens,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ContextStrategyConfig) Reset() {
 	*x = ContextStrategyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[8]
+	mi := &file_harness_v1_harness_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -869,7 +1290,7 @@ func (x *ContextStrategyConfig) String() string {
 func (*ContextStrategyConfig) ProtoMessage() {}
 
 func (x *ContextStrategyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[8]
+	mi := &file_harness_v1_harness_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -882,7 +1303,7 @@ func (x *ContextStrategyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextStrategyConfig.ProtoReflect.Descriptor instead.
 func (*ContextStrategyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{8}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ContextStrategyConfig) GetType() string {
@@ -899,22 +1320,41 @@ func (x *ContextStrategyConfig) GetMaxTokens() int32 {
 	return 0
 }
 
+// ExecutorConfig selects the sandboxed execution environment for file I/O
+// and command execution.
 type ExecutorConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	VcsBackend    *VcsBackendConfig      `protobuf:"bytes,2,opt,name=vcs_backend,json=vcsBackend,proto3" json:"vcs_backend,omitempty"`
-	Workspace     string                 `protobuf:"bytes,3,opt,name=workspace,proto3" json:"workspace,omitempty"`
-	Image         string                 `protobuf:"bytes,4,opt,name=image,proto3" json:"image,omitempty"`
-	Network       *NetworkConfig         `protobuf:"bytes,5,opt,name=network,proto3" json:"network,omitempty"`
-	Resources     *ResourceLimits        `protobuf:"bytes,6,opt,name=resources,proto3" json:"resources,omitempty"`
-	Proxy         string                 `protobuf:"bytes,7,opt,name=proxy,proto3" json:"proxy,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The executor implementation.
+	// Valid values:
+	//
+	//	"local"     — direct filesystem and subprocess access (default).
+	//	"container" — Docker/Podman container sandbox (hardened: CapDrop ALL,
+	//	              no-new-privileges, NetworkMode none by default).
+	//	"api"       — read-only, backed by a VCS API (e.g. GitHub Contents).
+	//	              WriteFile and Exec return errors.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Required when type is "api". Configures the VCS backend for read-only
+	// file access.
+	VcsBackend *VcsBackendConfig `protobuf:"bytes,2,opt,name=vcs_backend,json=vcsBackend,proto3" json:"vcs_backend,omitempty"`
+	// For "local" and "container": the working directory. For "local", this
+	// defaults to the current directory. For "container", this is the path
+	// inside the container where the workspace is mounted.
+	Workspace string `protobuf:"bytes,3,opt,name=workspace,proto3" json:"workspace,omitempty"`
+	// For "container": the container image to use (e.g. "ghcr.io/rxbynerd/stirrup:latest").
+	Image string `protobuf:"bytes,4,opt,name=image,proto3" json:"image,omitempty"`
+	// For "container": network egress policy. Defaults to no network access.
+	Network *NetworkConfig `protobuf:"bytes,5,opt,name=network,proto3" json:"network,omitempty"`
+	// For "container": resource limits (CPU, memory, disk, PIDs).
+	Resources *ResourceLimits `protobuf:"bytes,6,opt,name=resources,proto3" json:"resources,omitempty"`
+	// For "container": HTTP proxy URL for network requests inside the container.
+	Proxy         string `protobuf:"bytes,7,opt,name=proxy,proto3" json:"proxy,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExecutorConfig) Reset() {
 	*x = ExecutorConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[9]
+	mi := &file_harness_v1_harness_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -926,7 +1366,7 @@ func (x *ExecutorConfig) String() string {
 func (*ExecutorConfig) ProtoMessage() {}
 
 func (x *ExecutorConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[9]
+	mi := &file_harness_v1_harness_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -939,7 +1379,7 @@ func (x *ExecutorConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecutorConfig.ProtoReflect.Descriptor instead.
 func (*ExecutorConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{9}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ExecutorConfig) GetType() string {
@@ -991,19 +1431,25 @@ func (x *ExecutorConfig) GetProxy() string {
 	return ""
 }
 
+// VcsBackendConfig selects the VCS API backend for the "api" executor.
 type VcsBackendConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	ApiKeyRef     string                 `protobuf:"bytes,2,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
-	Repo          string                 `protobuf:"bytes,3,opt,name=repo,proto3" json:"repo,omitempty"`
-	Ref           string                 `protobuf:"bytes,4,opt,name=ref,proto3" json:"ref,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. The VCS provider.
+	// Valid values: "github", "gitlab".
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// Secret reference for the VCS API token (e.g. "secret://GITHUB_TOKEN").
+	ApiKeyRef string `protobuf:"bytes,2,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
+	// Repository identifier (e.g. "owner/repo").
+	Repo string `protobuf:"bytes,3,opt,name=repo,proto3" json:"repo,omitempty"`
+	// Git ref to read from (e.g. "main", "refs/heads/feature-branch", a commit SHA).
+	Ref           string `protobuf:"bytes,4,opt,name=ref,proto3" json:"ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VcsBackendConfig) Reset() {
 	*x = VcsBackendConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[10]
+	mi := &file_harness_v1_harness_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1015,7 +1461,7 @@ func (x *VcsBackendConfig) String() string {
 func (*VcsBackendConfig) ProtoMessage() {}
 
 func (x *VcsBackendConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[10]
+	mi := &file_harness_v1_harness_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1028,7 +1474,7 @@ func (x *VcsBackendConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VcsBackendConfig.ProtoReflect.Descriptor instead.
 func (*VcsBackendConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{10}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *VcsBackendConfig) GetType() string {
@@ -1059,17 +1505,24 @@ func (x *VcsBackendConfig) GetRef() string {
 	return ""
 }
 
+// NetworkConfig controls network egress for sandboxed executors.
 type NetworkConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Mode          string                 `protobuf:"bytes,1,opt,name=mode,proto3" json:"mode,omitempty"`
-	Allowlist     []string               `protobuf:"bytes,2,rep,name=allowlist,proto3" json:"allowlist,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. The network mode.
+	// Valid values:
+	//
+	//	"none"      — no network access (default for container executor).
+	//	"allowlist" — allow egress only to hosts in the allowlist.
+	Mode string `protobuf:"bytes,1,opt,name=mode,proto3" json:"mode,omitempty"`
+	// For "allowlist": list of allowed hostnames or IP addresses.
+	Allowlist     []string `protobuf:"bytes,2,rep,name=allowlist,proto3" json:"allowlist,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *NetworkConfig) Reset() {
 	*x = NetworkConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[11]
+	mi := &file_harness_v1_harness_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1081,7 +1534,7 @@ func (x *NetworkConfig) String() string {
 func (*NetworkConfig) ProtoMessage() {}
 
 func (x *NetworkConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[11]
+	mi := &file_harness_v1_harness_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1094,7 +1547,7 @@ func (x *NetworkConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkConfig.ProtoReflect.Descriptor instead.
 func (*NetworkConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{11}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *NetworkConfig) GetMode() string {
@@ -1111,19 +1564,24 @@ func (x *NetworkConfig) GetAllowlist() []string {
 	return nil
 }
 
+// ResourceLimits constrains resource usage for sandboxed executors.
 type ResourceLimits struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Cpus          float64                `protobuf:"fixed64,1,opt,name=cpus,proto3" json:"cpus,omitempty"`
-	MemoryMb      int32                  `protobuf:"varint,2,opt,name=memory_mb,json=memoryMb,proto3" json:"memory_mb,omitempty"`
-	DiskMb        int32                  `protobuf:"varint,3,opt,name=disk_mb,json=diskMb,proto3" json:"disk_mb,omitempty"`
-	Pids          int32                  `protobuf:"varint,4,opt,name=pids,proto3" json:"pids,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// CPU limit (e.g. 2.0 = two cores).
+	Cpus float64 `protobuf:"fixed64,1,opt,name=cpus,proto3" json:"cpus,omitempty"`
+	// Memory limit in megabytes.
+	MemoryMb int32 `protobuf:"varint,2,opt,name=memory_mb,json=memoryMb,proto3" json:"memory_mb,omitempty"`
+	// Disk space limit in megabytes.
+	DiskMb int32 `protobuf:"varint,3,opt,name=disk_mb,json=diskMb,proto3" json:"disk_mb,omitempty"`
+	// Maximum number of processes/threads.
+	Pids          int32 `protobuf:"varint,4,opt,name=pids,proto3" json:"pids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ResourceLimits) Reset() {
 	*x = ResourceLimits{}
-	mi := &file_harness_v1_harness_proto_msgTypes[12]
+	mi := &file_harness_v1_harness_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1135,7 +1593,7 @@ func (x *ResourceLimits) String() string {
 func (*ResourceLimits) ProtoMessage() {}
 
 func (x *ResourceLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[12]
+	mi := &file_harness_v1_harness_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1148,7 +1606,7 @@ func (x *ResourceLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceLimits.ProtoReflect.Descriptor instead.
 func (*ResourceLimits) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{12}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ResourceLimits) GetCpus() float64 {
@@ -1179,17 +1637,29 @@ func (x *ResourceLimits) GetPids() int32 {
 	return 0
 }
 
+// EditStrategyConfig selects how file edits from the model are applied.
 type EditStrategyConfig struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Type           string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	FuzzyThreshold *float64               `protobuf:"fixed64,2,opt,name=fuzzy_threshold,json=fuzzyThreshold,proto3,oneof" json:"fuzzy_threshold,omitempty"` // minimum similarity ratio for fuzzy matching; default 0.80; maps to types.EditStrategyConfig.FuzzyThreshold
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The edit strategy implementation.
+	// Valid values:
+	//
+	//	"whole-file"     — replace entire file contents.
+	//	"search-replace" — find and replace text blocks.
+	//	"udiff"          — apply unified diff patches.
+	//	"multi"          — unified edit_file tool that auto-routes to the
+	//	                   appropriate strategy based on which fields the model
+	//	                   provides, with automatic fallback on failure.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// For "udiff" and "multi": minimum similarity ratio for fuzzy matching
+	// when applying diffs. Range: 0.0-1.0. Default: 0.80.
+	FuzzyThreshold *float64 `protobuf:"fixed64,2,opt,name=fuzzy_threshold,json=fuzzyThreshold,proto3,oneof" json:"fuzzy_threshold,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *EditStrategyConfig) Reset() {
 	*x = EditStrategyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[13]
+	mi := &file_harness_v1_harness_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1201,7 +1671,7 @@ func (x *EditStrategyConfig) String() string {
 func (*EditStrategyConfig) ProtoMessage() {}
 
 func (x *EditStrategyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[13]
+	mi := &file_harness_v1_harness_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1214,7 +1684,7 @@ func (x *EditStrategyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EditStrategyConfig.ProtoReflect.Descriptor instead.
 func (*EditStrategyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{13}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *EditStrategyConfig) GetType() string {
@@ -1231,21 +1701,38 @@ func (x *EditStrategyConfig) GetFuzzyThreshold() float64 {
 	return 0
 }
 
+// VerifierConfig selects post-run output validation. Multiple verifiers can
+// be composed via the "composite" type.
 type VerifierConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Command       string                 `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
-	Timeout       int32                  `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
-	Verifiers     []*VerifierConfig      `protobuf:"bytes,4,rep,name=verifiers,proto3" json:"verifiers,omitempty"`
-	Criteria      string                 `protobuf:"bytes,5,opt,name=criteria,proto3" json:"criteria,omitempty"` // llm-judge: evaluation criteria string
-	Model         string                 `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`       // llm-judge: model identifier to use as judge
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The verifier implementation.
+	// Valid values:
+	//
+	//	"none"        — no verification (default).
+	//	"test-runner" — run a shell command; pass if exit code is 0.
+	//	"llm-judge"   — evaluate output against criteria using a cheap LLM.
+	//	"composite"   — chain multiple verifiers (all must pass).
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// For "test-runner": the shell command to execute (e.g. "go test ./...").
+	Command string `protobuf:"bytes,2,opt,name=command,proto3" json:"command,omitempty"`
+	// For "test-runner": command timeout in seconds. Default: 300.
+	Timeout int32 `protobuf:"varint,3,opt,name=timeout,proto3" json:"timeout,omitempty"`
+	// For "composite": list of sub-verifier configs. All must pass for the
+	// composite to pass. Each entry is a full VerifierConfig (recursive).
+	Verifiers []*VerifierConfig `protobuf:"bytes,4,rep,name=verifiers,proto3" json:"verifiers,omitempty"`
+	// For "llm-judge": natural-language evaluation criteria describing what
+	// constitutes a passing result.
+	Criteria string `protobuf:"bytes,5,opt,name=criteria,proto3" json:"criteria,omitempty"`
+	// For "llm-judge": model identifier to use as the judge
+	// (e.g. "claude-haiku-4-5-20251001"). Defaults to a cheap model.
+	Model         string `protobuf:"bytes,6,opt,name=model,proto3" json:"model,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *VerifierConfig) Reset() {
 	*x = VerifierConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[14]
+	mi := &file_harness_v1_harness_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1257,7 +1744,7 @@ func (x *VerifierConfig) String() string {
 func (*VerifierConfig) ProtoMessage() {}
 
 func (x *VerifierConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[14]
+	mi := &file_harness_v1_harness_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1270,7 +1757,7 @@ func (x *VerifierConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifierConfig.ProtoReflect.Descriptor instead.
 func (*VerifierConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{14}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *VerifierConfig) GetType() string {
@@ -1315,17 +1802,35 @@ func (x *VerifierConfig) GetModel() string {
 	return ""
 }
 
+// PermissionPolicyConfig selects the permission gating strategy for
+// side-effecting tools (write_file, run_command, etc.).
+//
+// Cross-field constraint: read-only modes ("planning", "review", "research",
+// "toil") must use "deny-side-effects" or "ask-upstream" — never "allow-all".
 type PermissionPolicyConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	Timeout       int32                  `protobuf:"varint,2,opt,name=timeout,proto3" json:"timeout,omitempty"` // seconds before auto-deny; 0 means use harness default (60s); maps to types.PermissionPolicyConfig.Timeout
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The permission policy implementation.
+	// Valid values:
+	//
+	//	"allow-all"         — all tool calls are allowed without gating. Only
+	//	                      valid for "execution" mode.
+	//	"deny-side-effects" — read tools are allowed; write tools are denied
+	//	                      automatically.
+	//	"ask-upstream"      — side-effecting tool calls trigger a
+	//	                      permission_request HarnessEvent. The control plane
+	//	                      must respond with a permission_response ControlEvent
+	//	                      within the timeout.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// For "ask-upstream": seconds to wait for a permission_response before
+	// auto-denying. 0 means use the harness default (60 seconds).
+	Timeout       int32 `protobuf:"varint,2,opt,name=timeout,proto3" json:"timeout,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PermissionPolicyConfig) Reset() {
 	*x = PermissionPolicyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[15]
+	mi := &file_harness_v1_harness_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1337,7 +1842,7 @@ func (x *PermissionPolicyConfig) String() string {
 func (*PermissionPolicyConfig) ProtoMessage() {}
 
 func (x *PermissionPolicyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[15]
+	mi := &file_harness_v1_harness_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1350,7 +1855,7 @@ func (x *PermissionPolicyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PermissionPolicyConfig.ProtoReflect.Descriptor instead.
 func (*PermissionPolicyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{15}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *PermissionPolicyConfig) GetType() string {
@@ -1367,16 +1872,23 @@ func (x *PermissionPolicyConfig) GetTimeout() int32 {
 	return 0
 }
 
+// GitStrategyConfig selects git branch and commit management behaviour.
 type GitStrategyConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The git strategy implementation.
+	// Valid values:
+	//
+	//	"none"          — no git operations (default).
+	//	"deterministic" — creates a branch from run_id and commits changes
+	//	                  at the end of the run.
+	Type          string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GitStrategyConfig) Reset() {
 	*x = GitStrategyConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[16]
+	mi := &file_harness_v1_harness_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1388,7 +1900,7 @@ func (x *GitStrategyConfig) String() string {
 func (*GitStrategyConfig) ProtoMessage() {}
 
 func (x *GitStrategyConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[16]
+	mi := &file_harness_v1_harness_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1401,7 +1913,7 @@ func (x *GitStrategyConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GitStrategyConfig.ProtoReflect.Descriptor instead.
 func (*GitStrategyConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{16}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *GitStrategyConfig) GetType() string {
@@ -1411,18 +1923,32 @@ func (x *GitStrategyConfig) GetType() string {
 	return ""
 }
 
+// TraceEmitterConfig selects the telemetry recording backend.
 type TraceEmitterConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	FilePath      string                 `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
-	Endpoint      string                 `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"` // otel: gRPC exporter address; empty means localhost:4317; maps to types.TraceEmitterConfig.Endpoint
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. The trace emitter implementation.
+	// Valid values:
+	//
+	//	"jsonl" — append events as JSON lines to a file. Requires file_path.
+	//	"otel"  — export as OpenTelemetry spans via OTLP/gRPC. Creates a root
+	//	          "run" span with child spans for turns, tool calls, provider
+	//	          streaming, context compaction, verification, permission checks,
+	//	          and git operations.
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// For "jsonl": filesystem path to the output trace file.
+	FilePath string `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
+	// For "otel": gRPC exporter address for traces. Default: "localhost:4317".
+	Endpoint string `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	// For "otel": gRPC exporter address for metrics. Defaults to the value of
+	// endpoint if unset.
+	MetricsEndpoint string `protobuf:"bytes,4,opt,name=metrics_endpoint,json=metricsEndpoint,proto3" json:"metrics_endpoint,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TraceEmitterConfig) Reset() {
 	*x = TraceEmitterConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[17]
+	mi := &file_harness_v1_harness_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1434,7 +1960,7 @@ func (x *TraceEmitterConfig) String() string {
 func (*TraceEmitterConfig) ProtoMessage() {}
 
 func (x *TraceEmitterConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[17]
+	mi := &file_harness_v1_harness_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1447,7 +1973,7 @@ func (x *TraceEmitterConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TraceEmitterConfig.ProtoReflect.Descriptor instead.
 func (*TraceEmitterConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{17}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *TraceEmitterConfig) GetType() string {
@@ -1471,17 +1997,44 @@ func (x *TraceEmitterConfig) GetEndpoint() string {
 	return ""
 }
 
+func (x *TraceEmitterConfig) GetMetricsEndpoint() string {
+	if x != nil {
+		return x.MetricsEndpoint
+	}
+	return ""
+}
+
+// ToolsConfig selects which tools are available to the model during the run.
 type ToolsConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	BuiltIn       []string               `protobuf:"bytes,1,rep,name=built_in,json=builtIn,proto3" json:"built_in,omitempty"`
-	McpServers    []*MCPServerConfig     `protobuf:"bytes,2,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Optional. List of built-in tools to enable. When omitted, all built-in
+	// tools are enabled (except in read-only modes, which require an explicit
+	// list excluding write tools).
+	//
+	// Valid built-in tool names:
+	//
+	//	"read_file"      — read file contents (up to 10MB).
+	//	"write_file"     — write/overwrite a file (side-effecting).
+	//	"search_replace" — find-and-replace within a file.
+	//	"apply_diff"     — apply a unified diff patch.
+	//	"edit_file"      — multi-strategy edit (routes to appropriate strategy).
+	//	"list_directory"  — list directory contents.
+	//	"search_files"   — search file contents with regex.
+	//	"run_command"    — execute a shell command (side-effecting).
+	//	"web_fetch"      — fetch a URL via HTTP GET.
+	//	"spawn_agent"    — spawn a sub-agent with its own conversation loop.
+	BuiltIn []string `protobuf:"bytes,1,rep,name=built_in,json=builtIn,proto3" json:"built_in,omitempty"`
+	// Optional. MCP (Model Context Protocol) server connections for remote
+	// tool discovery. Tools from MCP servers are prefixed as
+	// "mcp_{serverName}_{toolName}" to avoid naming collisions.
+	McpServers    []*MCPServerConfig `protobuf:"bytes,2,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ToolsConfig) Reset() {
 	*x = ToolsConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[18]
+	mi := &file_harness_v1_harness_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1493,7 +2046,7 @@ func (x *ToolsConfig) String() string {
 func (*ToolsConfig) ProtoMessage() {}
 
 func (x *ToolsConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[18]
+	mi := &file_harness_v1_harness_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1506,7 +2059,7 @@ func (x *ToolsConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolsConfig.ProtoReflect.Descriptor instead.
 func (*ToolsConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{18}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ToolsConfig) GetBuiltIn() []string {
@@ -1523,18 +2076,25 @@ func (x *ToolsConfig) GetMcpServers() []*MCPServerConfig {
 	return nil
 }
 
+// MCPServerConfig describes a single MCP server connection. The harness
+// connects via Streamable HTTP transport (JSON-RPC 2.0 over HTTP POST).
 type MCPServerConfig struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Uri           string                 `protobuf:"bytes,2,opt,name=uri,proto3" json:"uri,omitempty"`
-	ApiKeyRef     string                 `protobuf:"bytes,3,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. Display name for the server (used as the prefix in tool names).
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Required. The Streamable HTTP endpoint URI
+	// (e.g. "https://mcp.example.com/v1").
+	Uri string `protobuf:"bytes,2,opt,name=uri,proto3" json:"uri,omitempty"`
+	// Optional. Secret reference for server authentication
+	// (e.g. "secret://MCP_API_KEY"). Sent as a Bearer token.
+	ApiKeyRef     string `protobuf:"bytes,3,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MCPServerConfig) Reset() {
 	*x = MCPServerConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[19]
+	mi := &file_harness_v1_harness_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1546,7 +2106,7 @@ func (x *MCPServerConfig) String() string {
 func (*MCPServerConfig) ProtoMessage() {}
 
 func (x *MCPServerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[19]
+	mi := &file_harness_v1_harness_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1559,7 +2119,7 @@ func (x *MCPServerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerConfig.ProtoReflect.Descriptor instead.
 func (*MCPServerConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{19}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *MCPServerConfig) GetName() string {
@@ -1615,7 +2175,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\aallowed\x18\x05 \x01(\v2\x18.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xdd\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xfa\n" +
 	"\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
@@ -1639,7 +2199,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12+\n" +
 	"\x0fmax_cost_budget\x18\x12 \x01(\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
 	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
-	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x1aA\n" +
+	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12\x1b\n" +
+	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x1aA\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aX\n" +
@@ -1660,13 +2221,26 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
 	"durationMs\x12\x1f\n" +
 	"\vstop_reason\x18\a \x01(\tR\n" +
-	"stopReason\"\x91\x01\n" +
+	"stopReason\"\xcf\x01\n" +
 	"\x0eProviderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x16\n" +
 	"\x06region\x18\x03 \x01(\tR\x06region\x12\x18\n" +
 	"\aprofile\x18\x04 \x01(\tR\aprofile\x12\x19\n" +
-	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\"\xac\x04\n" +
+	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\x12<\n" +
+	"\n" +
+	"credential\x18\x06 \x01(\v2\x1c.harness.v1.CredentialConfigR\n" +
+	"credential\"\xa6\x01\n" +
+	"\x10CredentialConfig\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12@\n" +
+	"\ftoken_source\x18\x02 \x01(\v2\x1d.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
+	"\brole_arn\x18\x03 \x01(\tR\aroleArn\x12!\n" +
+	"\fsession_name\x18\x04 \x01(\tR\vsessionName\"p\n" +
+	"\x11TokenSourceConfig\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
+	"\baudience\x18\x02 \x01(\tR\baudience\x12\x12\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\x12\x17\n" +
+	"\aenv_var\x18\x04 \x01(\tR\x06envVar\"\xac\x04\n" +
 	"\x11ModelRouterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
@@ -1729,11 +2303,12 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
 	"\atimeout\x18\x02 \x01(\x05R\atimeout\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"a\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\x8c\x01\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
-	"\bendpoint\x18\x03 \x01(\tR\bendpoint\"f\n" +
+	"\bendpoint\x18\x03 \x01(\tR\bendpoint\x12)\n" +
+	"\x10metrics_endpoint\x18\x04 \x01(\tR\x0fmetricsEndpoint\"f\n" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12<\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2\x1b.harness.v1.MCPServerConfigR\n" +
@@ -1760,7 +2335,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),           // 0: harness.v1.HarnessEvent
 	(*ControlEvent)(nil),           // 1: harness.v1.ControlEvent
@@ -1768,55 +2343,59 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	(*RunConfig)(nil),              // 3: harness.v1.RunConfig
 	(*RunTrace)(nil),               // 4: harness.v1.RunTrace
 	(*ProviderConfig)(nil),         // 5: harness.v1.ProviderConfig
-	(*ModelRouterConfig)(nil),      // 6: harness.v1.ModelRouterConfig
-	(*PromptBuilderConfig)(nil),    // 7: harness.v1.PromptBuilderConfig
-	(*ContextStrategyConfig)(nil),  // 8: harness.v1.ContextStrategyConfig
-	(*ExecutorConfig)(nil),         // 9: harness.v1.ExecutorConfig
-	(*VcsBackendConfig)(nil),       // 10: harness.v1.VcsBackendConfig
-	(*NetworkConfig)(nil),          // 11: harness.v1.NetworkConfig
-	(*ResourceLimits)(nil),         // 12: harness.v1.ResourceLimits
-	(*EditStrategyConfig)(nil),     // 13: harness.v1.EditStrategyConfig
-	(*VerifierConfig)(nil),         // 14: harness.v1.VerifierConfig
-	(*PermissionPolicyConfig)(nil), // 15: harness.v1.PermissionPolicyConfig
-	(*GitStrategyConfig)(nil),      // 16: harness.v1.GitStrategyConfig
-	(*TraceEmitterConfig)(nil),     // 17: harness.v1.TraceEmitterConfig
-	(*ToolsConfig)(nil),            // 18: harness.v1.ToolsConfig
-	(*MCPServerConfig)(nil),        // 19: harness.v1.MCPServerConfig
-	nil,                            // 20: harness.v1.RunConfig.DynamicContextEntry
-	nil,                            // 21: harness.v1.RunConfig.ProvidersEntry
-	nil,                            // 22: harness.v1.ModelRouterConfig.ModeModelsEntry
+	(*CredentialConfig)(nil),       // 6: harness.v1.CredentialConfig
+	(*TokenSourceConfig)(nil),      // 7: harness.v1.TokenSourceConfig
+	(*ModelRouterConfig)(nil),      // 8: harness.v1.ModelRouterConfig
+	(*PromptBuilderConfig)(nil),    // 9: harness.v1.PromptBuilderConfig
+	(*ContextStrategyConfig)(nil),  // 10: harness.v1.ContextStrategyConfig
+	(*ExecutorConfig)(nil),         // 11: harness.v1.ExecutorConfig
+	(*VcsBackendConfig)(nil),       // 12: harness.v1.VcsBackendConfig
+	(*NetworkConfig)(nil),          // 13: harness.v1.NetworkConfig
+	(*ResourceLimits)(nil),         // 14: harness.v1.ResourceLimits
+	(*EditStrategyConfig)(nil),     // 15: harness.v1.EditStrategyConfig
+	(*VerifierConfig)(nil),         // 16: harness.v1.VerifierConfig
+	(*PermissionPolicyConfig)(nil), // 17: harness.v1.PermissionPolicyConfig
+	(*GitStrategyConfig)(nil),      // 18: harness.v1.GitStrategyConfig
+	(*TraceEmitterConfig)(nil),     // 19: harness.v1.TraceEmitterConfig
+	(*ToolsConfig)(nil),            // 20: harness.v1.ToolsConfig
+	(*MCPServerConfig)(nil),        // 21: harness.v1.MCPServerConfig
+	nil,                            // 22: harness.v1.RunConfig.DynamicContextEntry
+	nil,                            // 23: harness.v1.RunConfig.ProvidersEntry
+	nil,                            // 24: harness.v1.ModelRouterConfig.ModeModelsEntry
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	4,  // 0: harness.v1.HarnessEvent.trace:type_name -> harness.v1.RunTrace
 	3,  // 1: harness.v1.ControlEvent.task:type_name -> harness.v1.RunConfig
 	2,  // 2: harness.v1.ControlEvent.allowed:type_name -> harness.v1.OptionalBool
-	20, // 3: harness.v1.RunConfig.dynamic_context:type_name -> harness.v1.RunConfig.DynamicContextEntry
+	22, // 3: harness.v1.RunConfig.dynamic_context:type_name -> harness.v1.RunConfig.DynamicContextEntry
 	5,  // 4: harness.v1.RunConfig.provider:type_name -> harness.v1.ProviderConfig
-	21, // 5: harness.v1.RunConfig.providers:type_name -> harness.v1.RunConfig.ProvidersEntry
-	6,  // 6: harness.v1.RunConfig.model_router:type_name -> harness.v1.ModelRouterConfig
-	7,  // 7: harness.v1.RunConfig.prompt_builder:type_name -> harness.v1.PromptBuilderConfig
-	8,  // 8: harness.v1.RunConfig.context_strategy:type_name -> harness.v1.ContextStrategyConfig
-	9,  // 9: harness.v1.RunConfig.executor:type_name -> harness.v1.ExecutorConfig
-	13, // 10: harness.v1.RunConfig.edit_strategy:type_name -> harness.v1.EditStrategyConfig
-	14, // 11: harness.v1.RunConfig.verifier:type_name -> harness.v1.VerifierConfig
-	15, // 12: harness.v1.RunConfig.permission_policy:type_name -> harness.v1.PermissionPolicyConfig
-	16, // 13: harness.v1.RunConfig.git_strategy:type_name -> harness.v1.GitStrategyConfig
-	17, // 14: harness.v1.RunConfig.trace_emitter:type_name -> harness.v1.TraceEmitterConfig
-	18, // 15: harness.v1.RunConfig.tools:type_name -> harness.v1.ToolsConfig
-	22, // 16: harness.v1.ModelRouterConfig.mode_models:type_name -> harness.v1.ModelRouterConfig.ModeModelsEntry
-	10, // 17: harness.v1.ExecutorConfig.vcs_backend:type_name -> harness.v1.VcsBackendConfig
-	11, // 18: harness.v1.ExecutorConfig.network:type_name -> harness.v1.NetworkConfig
-	12, // 19: harness.v1.ExecutorConfig.resources:type_name -> harness.v1.ResourceLimits
-	14, // 20: harness.v1.VerifierConfig.verifiers:type_name -> harness.v1.VerifierConfig
-	19, // 21: harness.v1.ToolsConfig.mcp_servers:type_name -> harness.v1.MCPServerConfig
-	5,  // 22: harness.v1.RunConfig.ProvidersEntry.value:type_name -> harness.v1.ProviderConfig
-	0,  // 23: harness.v1.HarnessService.RunTask:input_type -> harness.v1.HarnessEvent
-	1,  // 24: harness.v1.HarnessService.RunTask:output_type -> harness.v1.ControlEvent
-	24, // [24:25] is the sub-list for method output_type
-	23, // [23:24] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	23, // 5: harness.v1.RunConfig.providers:type_name -> harness.v1.RunConfig.ProvidersEntry
+	8,  // 6: harness.v1.RunConfig.model_router:type_name -> harness.v1.ModelRouterConfig
+	9,  // 7: harness.v1.RunConfig.prompt_builder:type_name -> harness.v1.PromptBuilderConfig
+	10, // 8: harness.v1.RunConfig.context_strategy:type_name -> harness.v1.ContextStrategyConfig
+	11, // 9: harness.v1.RunConfig.executor:type_name -> harness.v1.ExecutorConfig
+	15, // 10: harness.v1.RunConfig.edit_strategy:type_name -> harness.v1.EditStrategyConfig
+	16, // 11: harness.v1.RunConfig.verifier:type_name -> harness.v1.VerifierConfig
+	17, // 12: harness.v1.RunConfig.permission_policy:type_name -> harness.v1.PermissionPolicyConfig
+	18, // 13: harness.v1.RunConfig.git_strategy:type_name -> harness.v1.GitStrategyConfig
+	19, // 14: harness.v1.RunConfig.trace_emitter:type_name -> harness.v1.TraceEmitterConfig
+	20, // 15: harness.v1.RunConfig.tools:type_name -> harness.v1.ToolsConfig
+	6,  // 16: harness.v1.ProviderConfig.credential:type_name -> harness.v1.CredentialConfig
+	7,  // 17: harness.v1.CredentialConfig.token_source:type_name -> harness.v1.TokenSourceConfig
+	24, // 18: harness.v1.ModelRouterConfig.mode_models:type_name -> harness.v1.ModelRouterConfig.ModeModelsEntry
+	12, // 19: harness.v1.ExecutorConfig.vcs_backend:type_name -> harness.v1.VcsBackendConfig
+	13, // 20: harness.v1.ExecutorConfig.network:type_name -> harness.v1.NetworkConfig
+	14, // 21: harness.v1.ExecutorConfig.resources:type_name -> harness.v1.ResourceLimits
+	16, // 22: harness.v1.VerifierConfig.verifiers:type_name -> harness.v1.VerifierConfig
+	21, // 23: harness.v1.ToolsConfig.mcp_servers:type_name -> harness.v1.MCPServerConfig
+	5,  // 24: harness.v1.RunConfig.ProvidersEntry.value:type_name -> harness.v1.ProviderConfig
+	0,  // 25: harness.v1.HarnessService.RunTask:input_type -> harness.v1.HarnessEvent
+	1,  // 26: harness.v1.HarnessService.RunTask:output_type -> harness.v1.ControlEvent
+	26, // [26:27] is the sub-list for method output_type
+	25, // [25:26] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -1825,14 +2404,14 @@ func file_harness_v1_harness_proto_init() {
 		return
 	}
 	file_harness_v1_harness_proto_msgTypes[3].OneofWrappers = []any{}
-	file_harness_v1_harness_proto_msgTypes[13].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[15].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   23,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
