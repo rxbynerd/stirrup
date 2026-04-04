@@ -109,17 +109,17 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 
 		switch ev := event.(type) {
 		case *brtypes.ConverseStreamOutputMemberContentBlockStart:
-			idx := derefInt32(ev.Value.ContentBlockIndex)
+			idx := aws.Int32Value(ev.Value.ContentBlockIndex)
 			switch start := ev.Value.Start.(type) {
 			case *brtypes.ContentBlockStartMemberToolUse:
 				blocks[idx] = &toolBlockState{
-					id:   derefString(start.Value.ToolUseId),
-					name: derefString(start.Value.Name),
+					id:   aws.StringValue(start.Value.ToolUseId),
+					name: aws.StringValue(start.Value.Name),
 				}
 			}
 
 		case *brtypes.ConverseStreamOutputMemberContentBlockDelta:
-			idx := derefInt32(ev.Value.ContentBlockIndex)
+			idx := aws.Int32Value(ev.Value.ContentBlockIndex)
 			switch delta := ev.Value.Delta.(type) {
 			case *brtypes.ContentBlockDeltaMemberText:
 				ch <- types.StreamEvent{
@@ -133,7 +133,7 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 			}
 
 		case *brtypes.ConverseStreamOutputMemberContentBlockStop:
-			idx := derefInt32(ev.Value.ContentBlockIndex)
+			idx := aws.Int32Value(ev.Value.ContentBlockIndex)
 			if bs := blocks[idx]; bs != nil {
 				var input map[string]any
 				raw := bs.jsonBuf.String()
@@ -185,7 +185,7 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 // ConverseStreamInput.
 func buildConverseStreamInput(params types.StreamParams) (*bedrockruntime.ConverseStreamInput, error) {
 	input := &bedrockruntime.ConverseStreamInput{
-		ModelId: strPtr(params.Model),
+		ModelId: aws.String(params.Model),
 	}
 
 	// System prompt.
@@ -264,15 +264,15 @@ func bedrockTranslateContentBlocks(blocks []types.ContentBlock) ([]brtypes.Conte
 			}
 			out = append(out, &brtypes.ContentBlockMemberToolUse{
 				Value: brtypes.ToolUseBlock{
-					ToolUseId: strPtr(cb.ID),
-					Name:      strPtr(cb.Name),
+					ToolUseId: aws.String(cb.ID),
+					Name:      aws.String(cb.Name),
 					Input:     document.NewLazyDocument(inputMap),
 				},
 			})
 
 		case "tool_result":
 			resultBlock := brtypes.ToolResultBlock{
-				ToolUseId: strPtr(cb.ToolUseID),
+				ToolUseId: aws.String(cb.ToolUseID),
 				Content: []brtypes.ToolResultContentBlock{
 					&brtypes.ToolResultContentBlockMemberText{Value: cb.Content},
 				},
@@ -301,8 +301,8 @@ func bedrockTranslateTools(tools []types.ToolDefinition) ([]brtypes.Tool, error)
 		}
 		out = append(out, &brtypes.ToolMemberToolSpec{
 			Value: brtypes.ToolSpecification{
-				Name:        strPtr(td.Name),
-				Description: strPtr(td.Description),
+				Name:        aws.String(td.Name),
+				Description: aws.String(td.Description),
 				InputSchema: &brtypes.ToolInputSchemaMemberJson{
 					Value: document.NewLazyDocument(schemaMap),
 				},
@@ -342,20 +342,4 @@ func mapStopReason(reason brtypes.StopReason) string {
 	default:
 		return string(reason)
 	}
-}
-
-func strPtr(s string) *string { return &s }
-
-func derefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
-}
-
-func derefInt32(p *int32) int32 {
-	if p == nil {
-		return 0
-	}
-	return *p
 }
