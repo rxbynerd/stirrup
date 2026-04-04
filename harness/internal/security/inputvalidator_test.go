@@ -482,3 +482,23 @@ func TestValidateJSONSchema_ExternalRefBlocked(t *testing.T) {
 		}
 	})
 }
+
+func TestValidateJSONSchema_NilAndEmptySchema(t *testing.T) {
+	input := json.RawMessage(`{"any": "input"}`)
+
+	t.Run("nil schema accepts any input", func(t *testing.T) {
+		if err := ValidateJSONSchema(input, nil); err != nil {
+			t.Fatalf("unexpected error for nil schema: %v", err)
+		}
+	})
+	t.Run("empty schema accepts any input", func(t *testing.T) {
+		if err := ValidateJSONSchema(input, json.RawMessage("")); err != nil {
+			t.Fatalf("unexpected error for empty schema: %v", err)
+		}
+	})
+	t.Run("invalid schema JSON returns error", func(t *testing.T) {
+		if err := ValidateJSONSchema(input, json.RawMessage("{bad")); err == nil {
+			t.Fatal("expected error for invalid schema JSON")
+		}
+	})
+}

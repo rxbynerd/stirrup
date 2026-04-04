@@ -1,9 +1,9 @@
 package security
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
@@ -23,6 +23,11 @@ var dangerousKeys = map[string]bool{
 // Dangerous keys (__proto__, constructor) are stripped from input before
 // validation to prevent prototype pollution attacks.
 func ValidateJSONSchema(input json.RawMessage, schema json.RawMessage) error {
+	// No schema to validate against — accept any input.
+	if len(schema) == 0 {
+		return nil
+	}
+
 	var inputVal any
 	if err := json.Unmarshal(input, &inputVal); err != nil {
 		return fmt.Errorf("invalid input JSON: %w", err)
@@ -32,7 +37,7 @@ func ValidateJSONSchema(input json.RawMessage, schema json.RawMessage) error {
 	inputVal = stripDangerousKeys(inputVal)
 
 	// Unmarshal the schema into the format the compiler expects.
-	schemaVal, err := jsonschema.UnmarshalJSON(strings.NewReader(string(schema)))
+	schemaVal, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
 	if err != nil {
 		return fmt.Errorf("invalid schema JSON: %w", err)
 	}
