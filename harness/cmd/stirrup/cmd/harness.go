@@ -13,6 +13,79 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// harnessCLIOptions captures every CLI-surfaced setting that influences the
+// RunConfig built by buildHarnessRunConfig. Extracted so the construction
+// path is testable without booting cobra.
+type harnessCLIOptions struct {
+	RunID         string
+	Mode          string
+	Prompt        string
+	ProviderType  string
+	APIKeyRef     string
+	Model         string
+	Workspace     string
+	MaxTurns      int
+	Timeout       int
+	TracePath     string
+	TransportType string
+	TransportAddr string
+	FollowUpGrace int
+	LogLevel      string
+}
+
+// buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
+// It is the single place that encodes defaults such as the per-mode
+// permission policy and the fall-back built-in tool list required by
+// read-only modes. Kept pure so tests can exercise every --mode value
+// without invoking the agentic loop.
+func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
+	timeout := opts.Timeout
+	config := &types.RunConfig{
+		RunID:  opts.RunID,
+		Mode:   opts.Mode,
+		Prompt: opts.Prompt,
+		Provider: types.ProviderConfig{
+			Type:      opts.ProviderType,
+			APIKeyRef: opts.APIKeyRef,
+		},
+		ModelRouter: types.ModelRouterConfig{
+			Type:     "static",
+			Provider: opts.ProviderType,
+			Model:    opts.Model,
+		},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+		Executor:        types.ExecutorConfig{Type: "local", Workspace: opts.Workspace},
+		EditStrategy:    types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:        types.VerifierConfig{Type: "none"},
+		GitStrategy:     types.GitStrategyConfig{Type: "none"},
+		Transport:       types.TransportConfig{Type: opts.TransportType, Address: opts.TransportAddr},
+		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl", FilePath: opts.TracePath},
+		MaxTurns:        opts.MaxTurns,
+		Timeout:         &timeout,
+		LogLevel:        opts.LogLevel,
+	}
+	if opts.FollowUpGrace > 0 {
+		grace := opts.FollowUpGrace
+		config.FollowUpGrace = &grace
+	}
+
+	// Set permission policy based on mode. Read-only modes additionally
+	// need an explicit Tools.BuiltIn list so validation passes: the
+	// validator rejects an empty list for read-only modes to force callers
+	// to opt specific tools in rather than accidentally inheriting the
+	// full set.
+	if types.IsReadOnlyMode(config.Mode) {
+		config.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
+		if len(config.Tools.BuiltIn) == 0 {
+			config.Tools.BuiltIn = types.DefaultReadOnlyBuiltInTools()
+		}
+	} else {
+		config.PermissionPolicy = types.PermissionPolicyConfig{Type: "allow-all"}
+	}
+	return config
+}
+
 var harnessCmd = &cobra.Command{
 	Use:   "harness [flags] [prompt]",
 	Short: "Run the coding agent harness",
@@ -75,44 +148,22 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	config := &types.RunConfig{
-		RunID:  generateRunID(),
-		Mode:   mode,
-		Prompt: prompt,
-		Provider: types.ProviderConfig{
-			Type:      providerType,
-			APIKeyRef: apiKeyRef,
-		},
-		ModelRouter: types.ModelRouterConfig{
-			Type:     "static",
-			Provider: providerType,
-			Model:    model,
-		},
-		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
-		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
-		Executor:        types.ExecutorConfig{Type: "local", Workspace: workspace},
-		EditStrategy:    types.EditStrategyConfig{Type: "whole-file"},
-		Verifier:        types.VerifierConfig{Type: "none"},
-		GitStrategy:     types.GitStrategyConfig{Type: "none"},
-		Transport:       types.TransportConfig{Type: transportType, Address: transportAddr},
-		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl", FilePath: tracePath},
-		MaxTurns:        maxTurns,
-		Timeout:         &timeout,
-		LogLevel:        logLevel,
-	}
-	if followUpGrace > 0 {
-		config.FollowUpGrace = &followUpGrace
-	}
-
-	// Set permission policy based on mode.
-	readOnlyModes := map[string]bool{
-		"planning": true, "review": true, "research": true, "toil": true,
-	}
-	if readOnlyModes[config.Mode] {
-		config.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
-	} else {
-		config.PermissionPolicy = types.PermissionPolicyConfig{Type: "allow-all"}
-	}
+	config := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         generateRunID(),
+		Mode:          mode,
+		Prompt:        prompt,
+		ProviderType:  providerType,
+		APIKeyRef:     apiKeyRef,
+		Model:         model,
+		Workspace:     workspace,
+		MaxTurns:      maxTurns,
+		Timeout:       timeout,
+		TracePath:     tracePath,
+		TransportType: transportType,
+		TransportAddr: transportAddr,
+		FollowUpGrace: followUpGrace,
+		LogLevel:      logLevel,
+	})
 
 	// Create context with timeout and signal handling.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
