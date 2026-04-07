@@ -1,3 +1,6 @@
 .env
-stirrup
-stirrup-eval
+# Anchor these patterns to the repo root so they match the built binaries
+# only, not the `harness/cmd/stirrup/` source directory (which otherwise
+# has all of its files silently ignored by git).
+/stirrup
+/stirrup-eval
