@@ -330,6 +330,60 @@ func TestValidateRunConfig_ReadOnlyModeWithOnlyReadTools(t *testing.T) {
 	}
 }
 
+// TestDefaultReadOnlyBuiltInTools_PassesValidation locks in the invariant
+// that DefaultReadOnlyBuiltInTools() is always a valid Tools.BuiltIn list
+// for every read-only mode. Callers (notably the stirrup CLI) rely on
+// this: if someone adds a new mode to readOnlyModes, or adds a new tool
+// to writeCapableTools that happens to also live in the default list,
+// this test catches it before ValidateRunConfig starts rejecting every
+// run booted in that mode.
+func TestDefaultReadOnlyBuiltInTools_PassesValidation(t *testing.T) {
+	defaults := DefaultReadOnlyBuiltInTools()
+	if len(defaults) == 0 {
+		t.Fatal("DefaultReadOnlyBuiltInTools returned an empty list")
+	}
+
+	// Sanity: none of the defaults should be a known write-capable tool.
+	for _, tool := range defaults {
+		if writeCapableTools[tool] {
+			t.Errorf("DefaultReadOnlyBuiltInTools contains write-capable tool %q", tool)
+		}
+		if !validBuiltInToolNames[tool] {
+			t.Errorf("DefaultReadOnlyBuiltInTools contains unknown tool %q", tool)
+		}
+	}
+
+	// Validation: the defaults must satisfy ValidateRunConfig for every
+	// mode the validator treats as read-only. Iterate over the actual
+	// readOnlyModes map so adding a new read-only mode without updating
+	// the defaults (or vice versa) fails loudly.
+	for mode := range readOnlyModes {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: DefaultReadOnlyBuiltInTools()}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("DefaultReadOnlyBuiltInTools should pass validation for mode %q, got: %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestIsReadOnlyMode(t *testing.T) {
+	readOnly := []string{"planning", "review", "research", "toil"}
+	for _, m := range readOnly {
+		if !IsReadOnlyMode(m) {
+			t.Errorf("IsReadOnlyMode(%q) = false, want true", m)
+		}
+	}
+	for _, m := range []string{"execution", "", "unknown"} {
+		if IsReadOnlyMode(m) {
+			t.Errorf("IsReadOnlyMode(%q) = true, want false", m)
+		}
+	}
+}
+
 func TestValidateRunConfig_ExecutionModeWithWriteTools(t *testing.T) {
 	c := validConfig()
 	c.Mode = "execution"

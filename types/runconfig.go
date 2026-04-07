@@ -343,6 +343,27 @@ var readOnlyModes = map[string]bool{
 	"planning": true, "review": true, "research": true, "toil": true,
 }
 
+// IsReadOnlyMode reports whether the named run mode is a read-only mode
+// (one that must not enable write-capable tools).
+func IsReadOnlyMode(mode string) bool {
+	return readOnlyModes[mode]
+}
+
+// DefaultReadOnlyBuiltInTools returns the default set of built-in tools
+// enabled for read-only modes when the caller has not supplied an explicit
+// Tools.BuiltIn list. The list deliberately excludes every tool in
+// writeCapableTools so the result always passes ValidateRunConfig for a
+// read-only mode.
+func DefaultReadOnlyBuiltInTools() []string {
+	return []string{
+		"read_file",
+		"list_directory",
+		"search_files",
+		"web_fetch",
+		"spawn_agent",
+	}
+}
+
 var writeCapableTools = map[string]bool{
 	"write_file":  true,
 	"run_command": true,
