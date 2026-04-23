@@ -117,6 +117,13 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false
 	}
 
+	if findings := security.GuardToolCall(call.Name, t.SideEffects, call.Input); len(findings) > 0 {
+		if l.Security != nil {
+			l.Security.ToolCallGuardTriggered(call.Name, findings)
+		}
+		return fmt.Sprintf("Tool call rejected by security guard for %s", call.Name), false
+	}
+
 	// Check permissions for side-effecting tools.
 	if t.SideEffects {
 		_, permSpan := l.Tracer.Start(l.traceCtx(ctx), "permission.check",
