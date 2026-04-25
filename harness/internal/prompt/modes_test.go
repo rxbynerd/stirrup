@@ -36,7 +36,7 @@ func TestModePrompts_ExpectedPhrases(t *testing.T) {
 		{"planning", []string{"planning agent", "read-only access", "step-by-step implementation plan"}},
 		{"review", []string{"code review agent", "Review the provided changes", "severity"}},
 		{"research", []string{"research agent", "read-only access", "actionable recommendations"}},
-		{"toil", []string{"monitoring agent", "trigger condition", "run shell commands"}},
+		{"toil", []string{"monitoring agent", "trigger condition", "fetch URLs"}},
 	}
 
 	for _, tc := range cases {

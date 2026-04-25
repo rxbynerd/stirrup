@@ -20,10 +20,10 @@ import (
 // RunConfig configures how the runner executes tasks.
 type RunConfig struct {
 	// HarnessPath is the path to the harness binary for live runs.
-	// If empty, defaults to "stirrup-harness" on PATH.
+	// If empty, defaults to "stirrup" on PATH.
 	HarnessPath string
 
-	// OutputDir is the directory where results and traces are written.
+	// OutputDir is created before running so callers can write suite artifacts there.
 	OutputDir string
 
 	// Concurrency is the desired number of parallel tasks.
@@ -135,11 +135,11 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig) eval.TaskR
 
 	args := []string{
 		"harness",
-		"-prompt", task.Prompt,
-		"-mode", taskMode(task),
-		"-workspace", workspaceDir,
-		"-trace", traceFile,
-		"-timeout", "300",
+		"--prompt", task.Prompt,
+		"--mode", taskMode(task),
+		"--workspace", workspaceDir,
+		"--trace", traceFile,
+		"--timeout", "300",
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)

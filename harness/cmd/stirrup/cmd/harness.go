@@ -101,7 +101,7 @@ func init() {
 	f := harnessCmd.Flags()
 	f.StringP("mode", "m", "execution", "Run mode: execution, planning, review, research, toil")
 	f.String("model", "claude-sonnet-4-6", "Model to use")
-	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, openai")
+	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, openai-compatible")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "Secret reference for API key")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
