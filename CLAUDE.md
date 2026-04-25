@@ -2,7 +2,7 @@
 
 A coding agent harness. Go monorepo with 12 swappable components that can be composed via RunConfig.
 
-docs/VERSION1.md contains the summary of what was implemented during "version 1" (PR #1).
+VERSION1.md contains the summary of what was implemented during "version 1" (PR #1).
 
 ## Project Structure
 
@@ -20,15 +20,16 @@ stirrup/
       cmd/root.go
       cmd/harness.go
       cmd/job.go
+    harnessapi/              # Public embedding API
     internal/
       core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, stall detection
       credential/            # Cross-cloud credential federation (token sources + credential sources)
       provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode templates
-      context/               # ContextStrategy: sliding window, summarise, offload
+      context/               # ContextStrategy: sliding window, summarise, offload-to-file
       tool/                  # ToolRegistry + built-in tools (incl. spawn_agent)
-      executor/              # Executor: local, container (Docker/Podman), API (GitHub)
+      executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay
       edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy
       verifier/              # Verifier: none, test-runner, composite, llm-judge
       permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream
@@ -58,7 +59,7 @@ go build -o stirrup ./harness/cmd/stirrup
 
 Or directly:
 ```sh
-go run ./harness/cmd/stirrup -- harness --prompt "Your task here"
+go run ./harness/cmd/stirrup harness --prompt "Your task here"
 ```
 
 Requires `ANTHROPIC_API_KEY` environment variable.
@@ -70,7 +71,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--prompt` | (required) | User prompt (also accepted as positional arg) |
 | `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
 | `--model` | `claude-sonnet-4-6` | Model to use |
-| `--provider` | `anthropic` | Provider type |
+| `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible |
 | `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
 | `--workspace`, `-w` | current directory | Workspace directory |
 | `--max-turns` | `20` | Maximum agentic loop turns |
@@ -169,7 +170,7 @@ The OTel trace emitter (`trace/otel.go`) implements TraceEmitter using real OTel
 
 ### Structured logging
 
-The harness uses `log/slog` (stdlib) with a custom `ScrubHandler` (`observability/logger.go`) that wraps any `slog.Handler` and runs `security.Scrub()` on all string attribute values before delegation. This makes secret leakage through logs structurally impossible. JSON logs are written to stderr with a `runId` field on every line. Log level is configurable via `-log-level` flag or `RunConfig.LogLevel`.
+The harness uses `log/slog` (stdlib) with a custom `ScrubHandler` (`observability/logger.go`) that wraps any `slog.Handler` and runs `security.Scrub()` on all string attribute values before delegation. This makes secret leakage through logs structurally impossible. JSON logs are written to stderr with a `runId` field on every line. Log level is configurable via `--log-level` flag or `RunConfig.LogLevel`.
 
 ### OTel metrics
 
@@ -231,8 +232,8 @@ The `stallDetector` (`core/stall.go`) tracks consecutive identical tool calls an
 
 - **SecretStore**: resolves `secret://` references (env vars, files, AWS SSM via `secret://ssm:///param-name`). `AutoSecretStore` routes by scheme, only initialising SSM client when config refs require it. API keys never stored in RunConfig.
 - **LogScrubber**: regex-based redaction of 7 secret patterns in all log/trace output.
-- **Input validation**: JSON Schema validation on all tool inputs. Prototype pollution protection.
-- **RunConfig validation**: hard security invariants (read-only modes must use restrictive permissions, bounded maxTurns/timeout, FollowUpGrace ≤ 3600s, MaxTokenBudget ≤ 50M).
+- **Input validation**: JSON Schema Draft 2020-12 validation via `santhosh-tekuri/jsonschema`, with external schema loading disabled and prototype pollution keys stripped.
+- **RunConfig validation**: hard security invariants (read-only modes must use restrictive permissions, bounded maxTurns/timeout, FollowUpGrace <= 3600s, MaxCostBudget <= $100, MaxTokenBudget <= 50M).
 - **HTTP client timeouts**: all provider adapters (Anthropic, OpenAI, Bedrock) and MCP client use explicit HTTP clients with timeouts (120s streaming, 30s MCP) — never `http.DefaultClient`.
 - **Environment filtering**: command execution allowlists 27 safe env vars; blocks all API keys and cloud credentials.
 - **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.
@@ -241,12 +242,15 @@ The `stallDetector` (`core/stall.go`) tracks consecutive identical tool calls an
 
 ## Key Constants
 
-- `MAX_TURNS = 20` (configurable via RunConfig/CLI)
+- `MaxTurns`: 20 by default, hard-capped at 100 by `ValidateRunConfig`
 - Default model: `claude-sonnet-4-6`
 - `max_tokens: 64000`, `temperature: 0.1`
 - File size limit: 10MB (read/write)
 - Command output cap: 1MB
 - Command timeout: 30s default, 5min max
+- Follow-up grace cap: 3600s
+- Token budget cap: 50M
+- Cost budget cap: $100
 
 ## Development
 
@@ -264,8 +268,8 @@ just clean        # remove built binaries
 
 Or directly:
 ```sh
-go test ./harness/... ./eval/...    # Run all tests
-go build ./harness/...   # Build all packages
+go test ./harness/... ./types/... ./eval/...    # Run all tests
+go build ./harness/... ./types/... ./eval/...   # Build all packages
 buf generate             # Regenerate proto code (after editing .proto files)
 buf lint                 # Lint proto files
 ```
@@ -287,9 +291,10 @@ The project follows a minimal-dependency philosophy. Provider adapters and the c
 
 Exceptions where external deps are accepted:
 - `github.com/spf13/cobra` for CLI framework (production-grade subcommand routing, help generation, flag parsing)
+- `github.com/santhosh-tekuri/jsonschema/v6` for full JSON Schema validation
 - `aws-sdk-go-v2` for Bedrock and SSM SecretStore (IAM SigV4 auth is complex enough to justify)
 - `google.golang.org/grpc` + `google.golang.org/protobuf` for gRPC transport (the reference Go gRPC implementation)
-- `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace emitter (the reference OTel SDK)
+- `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace and metrics (the reference OTel SDK)
 
 ## Lint policy
 

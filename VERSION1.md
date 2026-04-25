@@ -48,11 +48,11 @@ Five modes shipped, each a partial `RunConfig` preset selecting the appropriate 
 
 | Mode | Tools | Permission policy | Output |
 |---|---|---|---|
-| Execution | All (read, write, shell, git, search) | Allow-all | Code changes (committed to branch) |
-| Planning | Read-only | Deny-side-effects | Structured plan (markdown) |
-| Review | Read-only + git diff | Deny-side-effects | Structured review |
+| Execution | Read, write, shell, search, web fetch, sub-agent | Allow-all | Code changes |
+| Planning | Read-only | Deny-side-effects | Structured plan |
+| Review | Read-only | Deny-side-effects | Structured review |
 | Research | Read-only + web fetch | Deny-side-effects | Research brief |
-| Toil | Git/API tools | Deny-side-effects | Structured briefing |
+| Toil | Read-only + web fetch | Deny-side-effects | Structured briefing |
 
 Modes are not special — they are saved configurations. Any field can be overridden per-task via the `RunConfig`.
 
@@ -67,8 +67,11 @@ stirrup/
   gen/                       # Generated Go code from proto (separate module)
   types/                     # Shared type definitions (zero dependencies)
   harness/                   # The harness binary
-    cmd/harness/main.go      # CLI entrypoint
-    cmd/job/main.go          # K8s job entrypoint (gRPC to control plane)
+    cmd/stirrup/             # Unified CLI entrypoint (harness + job subcommands)
+      main.go
+      cmd/root.go
+      cmd/harness.go
+      cmd/job.go
     internal/
       core/                  # AgenticLoop, factory, token tracking, sub-agent, stall detection
       credential/            # Cross-cloud credential federation
@@ -110,7 +113,7 @@ All three adapters use hand-rolled HTTP clients against documented REST APIs, co
 
 **OpenAI-compatible** (`provider/openai.go`) — OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure OpenAI, vLLM, Ollama via configurable `baseURL`.
 
-All three providers have comprehensive streaming implementations with tool JSON accumulation across delta events, context cancellation, and 40+ tests between them. Error response bodies are capped at 1MB via `io.LimitReader`.
+All three providers have comprehensive streaming implementations with tool JSON accumulation across delta events and context cancellation. Anthropic and OpenAI-compatible error response bodies are bounded with `io.LimitReader` to avoid unbounded memory use.
 
 ### Credential federation
 
@@ -133,7 +136,7 @@ The `Executor` interface abstracts where commands run and how files are accessed
 
 **Tier 2 — Container** (`executor/container.go`, `executor/container_api.go`): Uses Docker Engine REST API directly over a Unix socket, with zero external dependencies. Both Docker and Podman are supported (same Engine API). Container lifecycle: created at executor init with `sleep infinity`, all operations go through exec or archive API, destroyed on `Close()`. Hardened with `--cap-drop ALL`, `--security-opt no-new-privileges`, `--network none` by default. API keys never enter the container.
 
-All executors enforce: 10MB file size limits, 1MB command output cap, 30s default command timeout (5min max), and symlink-aware workspace containment.
+Filesystem executors enforce: 10MB file size limits, 1MB command output cap, 30s default command timeout (5min max), and symlink-aware workspace containment. The API executor is read-only and validates workspace-relative paths before using the GitHub Contents API.
 
 **Tier 3 — MicroVM** (Firecracker/E2B/Kata) was designed but not implemented. The `Executor` interface means it can be added as a drop-in without touching the loop, tools, or anything else.
 
@@ -184,7 +187,7 @@ The loop checks token budgets before each turn and again after tool results are 
 
 ### Follow-up loop
 
-After the main agentic loop completes, an optional follow-up grace period allows the control plane to send additional user messages. Configurable via `RunConfig.FollowUpGraceSecs` (bounded to <= 3600s).
+After the main agentic loop completes, an optional follow-up grace period allows the control plane to send additional user messages. Configurable via `RunConfig.FollowUpGrace` (bounded to <= 3600s).
 
 ---
 
@@ -196,7 +199,7 @@ After the main agentic loop completes, an optional follow-up grace period allows
 
 **Null** (`transport/null.go`): No-op transport used by sub-agents.
 
-The K8s job entrypoint (`cmd/job/main.go`) dials the control plane at `CONTROL_PLANE_ADDR` via gRPC, emits a "ready" event, blocks until a `task_assignment` arrives, then runs the loop over the pre-established transport.
+The K8s job subcommand (`cmd/stirrup/cmd/job.go`, invoked as `stirrup job`) dials the control plane at `CONTROL_PLANE_ADDR` via gRPC, emits a "ready" event, blocks until a `task_assignment` arrives, then runs the loop over the pre-established transport.
 
 ### MCP client
 
@@ -209,13 +212,13 @@ The MCP client (`mcp/client.go`) connects to remote MCP servers via Streamable H
 ### Foundations shipped in V1
 
 - **SecretStore**: resolves `secret://` references. Backends: environment variables, files, AWS SSM (`secret://ssm:///param-name`). `AutoSecretStore` routes by scheme, only initialising SSM client when config refs require it. API keys never stored in `RunConfig`.
-- **RunConfig validation**: hard invariants enforced before any component is constructed. Read-only modes must provide an explicit tool list excluding `write_file` and `run_command`. `maxTurns` bounded [1, 100], `timeout` bounded [1, 3600], `FollowUpGraceSecs` <= 3600, `MaxCostBudget` <= $100, `MaxTokenBudget` <= 50M.
+- **RunConfig validation**: hard invariants enforced before any component is constructed. Read-only modes must provide an explicit tool list excluding `write_file` and `run_command`. `maxTurns` bounded [1, 100], `timeout` bounded [1, 3600], `FollowUpGrace` <= 3600, `MaxCostBudget` <= $100, `MaxTokenBudget` <= 50M.
 - **Path traversal prevention**: symlink-aware containment in all 3 executors. Search tool calls `ResolvePath` before constructing commands. Tested with `../../../`, symlink escapes, absolute paths.
 - **Command injection**: `shellQuote()` in search_files with explicit tests.
 - **Web fetch SSRF protection**: private IP blocking (RFC 1918, loopback, link-local, multicast), scheme whitelisting (http/https only), DNS resolution validation, 100KB response cap.
 - **Environment filtering**: command execution allowlists 27 safe env vars; blocks all API keys and cloud credentials.
 - **Log scrubbing**: 7-pattern regex scrubber (Anthropic keys, OpenAI keys, GitHub PATs/app tokens, AWS access keys, Bearer tokens including JWTs, PEM keys, secret:// refs). Applied via `ScrubHandler` wrapper around `slog.Handler` — makes secret leakage through logs structurally impossible.
-- **Input validation**: simplified JSON Schema validation on all tool inputs (supports `type`, `required`, `additionalProperties`, `properties`). Prototype pollution protection (`__proto__`/`constructor` keys stripped).
+- **Input validation**: JSON Schema validation on all tool inputs, with prototype pollution protection (`__proto__`/`constructor` keys stripped). The current implementation uses `santhosh-tekuri/jsonschema` for Draft 2020-12 support with external schema loading disabled.
 - **Untrusted context**: dynamic context wrapped in `<untrusted_context>` tags with model instructions to treat as data.
 - **RunConfig.Redact()**: strips secret references before trace/recording persistence.
 - **HTTP client timeouts**: all provider adapters and MCP client use explicit HTTP clients (120s streaming, 30s MCP). Never `http.DefaultClient`.
@@ -233,9 +236,9 @@ These were identified during code review and fixed before merge:
 6. **API executor URL encoding** (0.6) — `url.PathEscape` on path parameters.
 7. **RunConfig validation bounds** (0.7) — upper bounds on grace period, cost budget, and token budget.
 
-### Known limitation: JSON Schema validator
+### JSON Schema validator
 
-The input validator (`security/inputvalidator.go`) supports `type`, `required`, `additionalProperties`, and `properties` but not `$ref`, `oneOf`, `anyOf`, `allOf`, or `format`. MCP tools with complex schemas could pass invalid input through validation. A TODO notes the intent to adopt `santhosh-tekuri/jsonschema` when MCP tool schemas grow more complex.
+The input validator (`security/inputvalidator.go`) uses `santhosh-tekuri/jsonschema` v6 for JSON Schema Draft 2020-12 support, including inline `$ref`/`$defs`, `oneOf`/`anyOf`/`allOf`, `format`, `enum`, `pattern`, numeric bounds, and array item validation. External schema loading is disabled to prevent local file reads or SSRF through untrusted MCP schemas, and dangerous keys such as `__proto__` and `constructor` are stripped before validation.
 
 ### Post-V1 hardening
 
@@ -306,7 +309,6 @@ GitHub Actions at `.github/workflows/ci.yml`:
 | Tier 3 microVM executor (Firecracker/E2B) | Not needed until multi-tenant SaaS deployment. `Executor` interface means drop-in addition. |
 | `diff-review` judge (LLM judge for eval) | Requires LLM judge integration; stubbed in eval framework. |
 | First mined eval suite (10-20 tasks from real PRs) | CI infrastructure is in place; needs suite files mined from a real repo. |
-| Full JSON Schema validation (`santhosh-tekuri/jsonschema`) | Simplified validator is adequate for current built-in tool schemas. Needed when MCP tool schemas grow complex. |
 | Postgres/BigQuery lakehouse adapter | File-based adapter covers dev/CI. Production adapter depends on control plane choices. |
 | End-to-end smoke test with real provider | Would catch wire-format regressions but requires API key in CI. |
 | Cost estimation / pricing tables | Deliberately excluded. Pricing is a control plane concern. Harness retains `TokenTracker` for budget enforcement only. |
@@ -318,14 +320,15 @@ GitHub Actions at `.github/workflows/ci.yml`:
 
 ## External dependencies
 
-5 external dependency families, all justified:
+External dependency families are deliberately small and justified:
 
 | Dependency | Rationale |
 |---|---|
+| `github.com/spf13/cobra` | CLI framework for subcommands, flag parsing, and help generation. |
+| `github.com/santhosh-tekuri/jsonschema/v6` | Full JSON Schema validation for built-in and MCP tool inputs. |
 | `aws-sdk-go-v2` | Bedrock provider (IAM SigV4) and SSM SecretStore. SigV4 auth is too complex to hand-roll. |
 | `google.golang.org/grpc` + `google.golang.org/protobuf` | gRPC transport. The reference Go gRPC implementation. |
 | `go.opentelemetry.io/otel` + OTLP exporter | OpenTelemetry trace emitter. The reference OTel SDK. |
-| (stdlib) | Everything else: HTTP clients, JSON, SSE parsing, crypto, testing, regexp, compression. |
 
 The container executor uses the Docker Engine REST API directly over a Unix socket rather than the official Docker Go SDK, avoiding its massive transitive dependency tree (moby, containerd, OCI specs).
 
@@ -336,12 +339,12 @@ The container executor uses the Docker Engine REST API directly over a Unix sock
 | Metric | Value |
 |---|---|
 | Go modules | 4 (types, harness, eval, gen) |
-| Packages with tests | 26/26 (100%) |
-| Test functions | 673 |
+| Go packages | 30 |
+| Packages with tests | 27 |
+| Test functions | 701 |
 | All passing | Yes |
 | External dep families | 5 |
-| Known vulnerabilities | 0 |
-| TODOs in production code | 1 (JSON Schema validator) |
+| TODOs in production code | 1 (eval runner concurrency is currently sequential) |
 | Components | 12/12 implemented |
 
 ---

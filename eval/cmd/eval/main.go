@@ -70,7 +70,7 @@ func cmdRun(args []string) {
 	suitePath := fs.String("suite", "", "Path to eval suite JSON file (required)")
 	harnessPath := fs.String("harness", "", "Path to stirrup binary (default: stirrup)")
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory)")
-	concurrency := fs.Int("concurrency", 1, "Number of tasks to run in parallel")
+	concurrency := fs.Int("concurrency", 1, "Requested task concurrency (currently tasks run sequentially)")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
