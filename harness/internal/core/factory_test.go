@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -713,6 +714,61 @@ func TestBuildLoopWithTransport_InvalidConfigReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "config validation") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestFactory_ConfigValidationFailed_EmitsSecurityEvent asserts that the
+// SecurityLogger constructed inside BuildLoopWithTransport emits a
+// config_validation_failed event when ValidateRunConfig rejects the config.
+// We capture os.Stderr (where the logger writes) for the duration of the
+// call and assert the event reaches the buffer.
+func TestFactory_ConfigValidationFailed_EmitsSecurityEvent(t *testing.T) {
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = origStderr
+	})
+
+	// MaxTurns of 1000 exceeds the validator's hard cap of 100.
+	config := &types.RunConfig{
+		RunID:            "factory-validation-fail",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://TEST"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		MaxTurns:         1000, // exceeds the validator's cap
+	}
+
+	_, buildErr := BuildLoopWithTransport(context.Background(), config, nil)
+	// Close the writer so the read side returns EOF cleanly.
+	_ = w.Close()
+	os.Stderr = origStderr
+
+	if buildErr == nil {
+		t.Fatal("expected error from BuildLoopWithTransport")
+	}
+	if !strings.Contains(buildErr.Error(), "config validation") {
+		t.Fatalf("unexpected error: %v", buildErr)
+	}
+
+	captured, readErr := io.ReadAll(r)
+	if readErr != nil {
+		t.Fatalf("read captured stderr: %v", readErr)
+	}
+	if !strings.Contains(string(captured), `"event":"config_validation_failed"`) {
+		t.Errorf("expected config_validation_failed event in captured stderr, got: %s", string(captured))
 	}
 }
 

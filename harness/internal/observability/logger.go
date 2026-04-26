@@ -12,15 +12,39 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
+// SecurityNotifier is the minimal interface ScrubHandler uses to emit a
+// SecretRedactedInOutput event when an attribute scrub redacts a secret.
+// security.SecurityLogger satisfies this interface directly. Defining the
+// interface here (rather than importing security.SecurityLogger as a
+// concrete type) avoids tightly coupling the log handler to a specific
+// implementation and keeps the dependency optional.
+type SecurityNotifier interface {
+	SecretRedactedInOutput(pattern, location string)
+}
+
 // ScrubHandler wraps any slog.Handler and redacts known secret patterns from
 // all string attribute values before delegating to the inner handler.
+//
+// Optionally accepts a SecurityNotifier (typically *security.SecurityLogger)
+// so the harness emits a structured SecretRedactedInOutput event each time
+// the log scrubber actually fires. The implementation choice (a) per the
+// brief: plumb a SecurityLogger into the log handler so log-side redactions
+// produce the same audit trail as transport-side redactions.
 type ScrubHandler struct {
-	inner slog.Handler
+	inner    slog.Handler
+	security SecurityNotifier // optional; nil means no event emission
 }
 
 // NewScrubHandler creates a ScrubHandler wrapping the given inner handler.
 func NewScrubHandler(inner slog.Handler) *ScrubHandler {
 	return &ScrubHandler{inner: inner}
+}
+
+// NewScrubHandlerWithSecurity is like NewScrubHandler but also wires a
+// SecurityNotifier. Pass nil to disable emission (equivalent to
+// NewScrubHandler).
+func NewScrubHandlerWithSecurity(inner slog.Handler, sec SecurityNotifier) *ScrubHandler {
+	return &ScrubHandler{inner: inner, security: sec}
 }
 
 // Enabled delegates to the inner handler.
@@ -33,7 +57,7 @@ func (h *ScrubHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *ScrubHandler) Handle(ctx context.Context, r slog.Record) error {
 	scrubbed := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
 	r.Attrs(func(a slog.Attr) bool {
-		scrubbed.AddAttrs(scrubAttr(a))
+		scrubbed.AddAttrs(h.scrubAttrAndReport(a))
 		return true
 	})
 	return h.inner.Handle(ctx, scrubbed)
@@ -43,27 +67,35 @@ func (h *ScrubHandler) Handle(ctx context.Context, r slog.Record) error {
 func (h *ScrubHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	scrubbed := make([]slog.Attr, len(attrs))
 	for i, a := range attrs {
-		scrubbed[i] = scrubAttr(a)
+		scrubbed[i] = h.scrubAttrAndReport(a)
 	}
-	return &ScrubHandler{inner: h.inner.WithAttrs(scrubbed)}
+	return &ScrubHandler{inner: h.inner.WithAttrs(scrubbed), security: h.security}
 }
 
 // WithGroup delegates to the inner handler.
 func (h *ScrubHandler) WithGroup(name string) slog.Handler {
-	return &ScrubHandler{inner: h.inner.WithGroup(name)}
+	return &ScrubHandler{inner: h.inner.WithGroup(name), security: h.security}
 }
 
-// scrubAttr recursively scrubs string values within an slog.Attr. Group
-// attributes have their sub-attributes scrubbed individually.
-func scrubAttr(a slog.Attr) slog.Attr {
+// scrubAttrAndReport recursively scrubs string values within an slog.Attr.
+// Group attributes have their sub-attributes scrubbed individually. When the
+// handler has a SecurityNotifier wired, every redaction produces a
+// SecretRedactedInOutput event.
+func (h *ScrubHandler) scrubAttrAndReport(a slog.Attr) slog.Attr {
 	switch a.Value.Kind() {
 	case slog.KindString:
-		return slog.Attr{Key: a.Key, Value: slog.StringValue(security.Scrub(a.Value.String()))}
+		scrubbed, stats := security.ScrubWithStats(a.Value.String())
+		if stats.Count > 0 && h.security != nil {
+			for _, p := range stats.Patterns {
+				h.security.SecretRedactedInOutput(p, "logger.attr."+a.Key)
+			}
+		}
+		return slog.Attr{Key: a.Key, Value: slog.StringValue(scrubbed)}
 	case slog.KindGroup:
 		attrs := a.Value.Group()
 		scrubbed := make([]slog.Attr, len(attrs))
 		for i, ga := range attrs {
-			scrubbed[i] = scrubAttr(ga)
+			scrubbed[i] = h.scrubAttrAndReport(ga)
 		}
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(scrubbed...)}
 	default:
@@ -74,9 +106,17 @@ func scrubAttr(a slog.Attr) slog.Attr {
 // NewLogger creates a structured JSON logger that scrubs secrets from all
 // output. The logger writes to w and includes the runId as a default attribute.
 func NewLogger(runID string, level slog.Level, w io.Writer) *slog.Logger {
+	return NewLoggerWithSecurity(runID, level, w, nil)
+}
+
+// NewLoggerWithSecurity is like NewLogger but additionally wires a
+// SecurityNotifier so the structured log scrubber emits a
+// SecretRedactedInOutput event each time it redacts a value. Pass nil to
+// disable (equivalent to NewLogger).
+func NewLoggerWithSecurity(runID string, level slog.Level, w io.Writer, sec SecurityNotifier) *slog.Logger {
 	jsonHandler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: level,
 	})
-	scrubHandler := NewScrubHandler(jsonHandler)
+	scrubHandler := NewScrubHandlerWithSecurity(jsonHandler, sec)
 	return slog.New(scrubHandler).With("runId", runID)
 }

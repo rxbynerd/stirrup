@@ -144,3 +144,131 @@ func TestScrubMap_Nil(t *testing.T) {
 		t.Errorf("expected nil, got %v", got)
 	}
 }
+
+func TestScrubWithStats_NoSecrets(t *testing.T) {
+	scrubbed, stats := ScrubWithStats("nothing to redact here")
+	if scrubbed != "nothing to redact here" {
+		t.Errorf("scrubbed = %q, want unchanged", scrubbed)
+	}
+	if stats.Count != 0 {
+		t.Errorf("stats.Count = %d, want 0", stats.Count)
+	}
+	if len(stats.Patterns) != 0 {
+		t.Errorf("stats.Patterns = %v, want empty", stats.Patterns)
+	}
+}
+
+func TestScrubWithStats_SingleAnthropicKey(t *testing.T) {
+	scrubbed, stats := ScrubWithStats("token sk-ant-abc123")
+	if scrubbed != "token [REDACTED]" {
+		t.Errorf("scrubbed = %q, want token [REDACTED]", scrubbed)
+	}
+	if stats.Count != 1 {
+		t.Errorf("stats.Count = %d, want 1", stats.Count)
+	}
+	if len(stats.Patterns) != 1 || stats.Patterns[0] != "anthropic_api_key" {
+		t.Errorf("stats.Patterns = %v, want [anthropic_api_key]", stats.Patterns)
+	}
+}
+
+func TestScrubWithStats_MultipleSecretsCounted(t *testing.T) {
+	scrubbed, stats := ScrubWithStats("a=sk-ant-aaa, b=ghp_bbb, c=sk-ant-ccc")
+	if scrubbed != "a=[REDACTED], b=[REDACTED], c=[REDACTED]" {
+		t.Errorf("scrubbed = %q", scrubbed)
+	}
+	// 2 anthropic + 1 github = 3 total replacements; 2 distinct pattern names.
+	if stats.Count != 3 {
+		t.Errorf("stats.Count = %d, want 3", stats.Count)
+	}
+	if len(stats.Patterns) != 2 {
+		t.Errorf("stats.Patterns count = %d (%v), want 2", len(stats.Patterns), stats.Patterns)
+	}
+}
+
+// TestScrubWithStats_PatternNames asserts that ScrubWithStats reports the
+// correct pattern name for every supported secret pattern. The pattern name
+// flows into the SecretRedactedInOutput audit event; a typo here breaks
+// dashboard queries silently, so it is worth exhaustively enumerated.
+//
+// The fixtures below are crafted so that exactly one pattern matches each
+// input; subsequent patterns run against the already-redacted "[REDACTED]"
+// string and (intentionally) do not match it.
+func TestScrubWithStats_PatternNames(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		pattern string
+	}{
+		{
+			name:    "anthropic_api_key",
+			input:   "sk-ant-abc123_DEF-456",
+			pattern: "anthropic_api_key",
+		},
+		{
+			name:    "openai_api_key",
+			input:   "sk-abcdefghijklmnop12345",
+			pattern: "openai_api_key",
+		},
+		{
+			name:    "github_pat",
+			input:   "ghp_abcdefghijklmnop123456",
+			pattern: "github_pat",
+		},
+		{
+			name:    "github_app_token",
+			input:   "ghs_appTokenValue123",
+			pattern: "github_app_token",
+		},
+		{
+			name:    "aws_access_key_id",
+			input:   "AKIAIOSFODNN7EXAMPLE",
+			pattern: "aws_access_key_id",
+		},
+		{
+			name:    "bearer_token",
+			input:   "Bearer eyJhbGciOiJSUzI1NiJ9.abc",
+			pattern: "bearer_token",
+		},
+		{
+			name:    "pem_private_key",
+			input:   "-----BEGIN RSA PRIVATE KEY-----",
+			pattern: "pem_private_key",
+		},
+		{
+			name:    "secret_ref",
+			input:   "secret://ANTHROPIC_KEY",
+			pattern: "secret_ref",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, stats := ScrubWithStats(tc.input)
+			if stats.Count == 0 {
+				t.Fatalf("expected at least one redaction for %q, got 0", tc.input)
+			}
+			if len(stats.Patterns) == 0 || stats.Patterns[0] != tc.pattern {
+				t.Errorf("stats.Patterns = %v, want first entry %q", stats.Patterns, tc.pattern)
+			}
+		})
+	}
+}
+
+// The legacy Scrub wrapper must still behave identically so existing
+// callers are unaffected.
+func TestScrubWithStats_ScrubWrapperParity(t *testing.T) {
+	cases := []string{
+		"plain",
+		"sk-ant-xxx",
+		"AKIAABCDEFGHIJKLMNOP",
+		"Bearer aaa.bbb.ccc",
+		"-----BEGIN RSA PRIVATE KEY-----",
+		"secret://foo",
+	}
+	for _, in := range cases {
+		got := Scrub(in)
+		want, _ := ScrubWithStats(in)
+		if got != want {
+			t.Errorf("Scrub(%q) = %q; ScrubWithStats(%q) = %q — must match", in, got, in, want)
+		}
+	}
+}

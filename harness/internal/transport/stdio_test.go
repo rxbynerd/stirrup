@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -115,5 +116,49 @@ func TestStdioTransport_Close(t *testing.T) {
 	tr := NewStdioTransport(&bytes.Buffer{}, strings.NewReader(""))
 	if err := tr.Close(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStdioTransport_EmitFiresSecretRedactedInOutput(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewStdioTransport(&buf, strings.NewReader(""))
+
+	var secBuf bytes.Buffer
+	secLogger := security.NewSecurityLogger(&secBuf, "run-1")
+	tr.Security = secLogger
+
+	if err := tr.Emit(types.HarnessEvent{
+		Type:    "tool_result",
+		Content: "key=sk-ant-abc123-secret",
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	got := secBuf.String()
+	if !strings.Contains(got, `"event":"secret_redacted_in_output"`) {
+		t.Errorf("expected secret_redacted_in_output event, got %q", got)
+	}
+	if !strings.Contains(got, `"pattern":"anthropic_api_key"`) {
+		t.Errorf("expected pattern=anthropic_api_key, got %q", got)
+	}
+	if !strings.Contains(got, `"location":"transport.stdio.event.content"`) {
+		t.Errorf("expected location=transport.stdio.event.content, got %q", got)
+	}
+}
+
+func TestStdioTransport_EmitNoEventWhenNoSecret(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewStdioTransport(&buf, strings.NewReader(""))
+	var secBuf bytes.Buffer
+	tr.Security = security.NewSecurityLogger(&secBuf, "run-1")
+
+	if err := tr.Emit(types.HarnessEvent{
+		Type: "text_delta",
+		Text: "hello world",
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if secBuf.Len() != 0 {
+		t.Errorf("expected no security event, got %q", secBuf.String())
 	}
 }

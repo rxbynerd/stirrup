@@ -24,8 +24,9 @@ type GRPCTransport struct {
 	mu        sync.Mutex // serialises writes to the stream
 	handlerMu sync.Mutex // serialises handler registration
 	handlers  []func(types.ControlEvent)
-	done      chan struct{} // closed when the read loop exits
-	startOnce sync.Once     // ensures the read goroutine is started exactly once
+	done      chan struct{}            // closed when the read loop exits
+	startOnce sync.Once                // ensures the read goroutine is started exactly once
+	Security  *security.SecurityLogger // optional; emits SecretRedactedInOutput when scrubbing fires
 }
 
 // GRPCTransportOption configures a GRPCTransport.
@@ -93,11 +94,13 @@ func NewGRPCTransport(ctx context.Context, target string, opts ...GRPCTransportO
 
 // Emit scrubs secret patterns from the event's string fields, translates
 // the event to its proto representation, and sends it on the gRPC stream.
+// When the optional Security logger is wired and any redaction occurs,
+// emits a SecretRedactedInOutput event with the matched pattern name and a
+// stable location string identifying the call site.
 func (g *GRPCTransport) Emit(event types.HarnessEvent) error {
-	// Scrub known secret patterns from all string fields.
-	event.Text = security.Scrub(event.Text)
-	event.Content = security.Scrub(event.Content)
-	event.Message = security.Scrub(event.Message)
+	event.Text = g.scrubAndReport(event.Text, "transport.grpc.event.text")
+	event.Content = g.scrubAndReport(event.Content, "transport.grpc.event.content")
+	event.Message = g.scrubAndReport(event.Message, "transport.grpc.event.message")
 
 	pe := harnessEventToProto(event)
 
@@ -108,6 +111,19 @@ func (g *GRPCTransport) Emit(event types.HarnessEvent) error {
 		return fmt.Errorf("send harness event: %w", err)
 	}
 	return nil
+}
+
+// scrubAndReport scrubs value and, if any redaction happened, fires a
+// SecretRedactedInOutput event for each distinct pattern that matched.
+// Silently skips the event when no Security logger is wired.
+func (g *GRPCTransport) scrubAndReport(value, location string) string {
+	scrubbed, stats := security.ScrubWithStats(value)
+	if stats.Count > 0 && g.Security != nil {
+		for _, p := range stats.Patterns {
+			g.Security.SecretRedactedInOutput(p, location)
+		}
+	}
+	return scrubbed
 }
 
 // OnControl registers a handler for incoming control events. Multiple calls

@@ -32,6 +32,8 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	m.ProviderErrors.Add(ctx, 0)
 	m.VerificationAttempts.Add(ctx, 2)
 	m.Stalls.Add(ctx, 1)
+	m.ContextCompactions.Add(ctx, 2)
+	m.SecurityEvents.Add(ctx, 4, metric.WithAttributes(attribute.String("event", "test")))
 
 	// Collect metrics.
 	var rm metricdata.ResourceMetrics
@@ -52,6 +54,8 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	assertInt64Sum(t, sums, "stirrup.harness.provider_errors", 0)
 	assertInt64Sum(t, sums, "stirrup.harness.verification_attempts", 2)
 	assertInt64Sum(t, sums, "stirrup.harness.stalls", 1)
+	assertInt64Sum(t, sums, "stirrup.harness.context_compactions", 2)
+	assertInt64Sum(t, sums, "stirrup.harness.security_events", 4)
 }
 
 func TestMetricsRecording_Histograms(t *testing.T) {
@@ -109,8 +113,16 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	m.ToolCallDuration.Record(ctx, 50.0)
 	m.ProviderLatency.Record(ctx, 100.0)
 	m.ProviderTTFB.Record(ctx, 30.0)
-	m.ContextTokens.Add(ctx, 5000)
-	m.ContextTokens.Add(ctx, -3000)
+
+	// ContextTokens is an observable gauge; registering and unregistering
+	// a callback on a no-op meter must not panic.
+	unregister, err := m.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatalf("RegisterContextTokensCallback on noop: %v", err)
+	}
+	unregister()
 }
 
 func TestNoopMetrics_CloseIsNoop(t *testing.T) {

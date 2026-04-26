@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -26,8 +28,9 @@ const (
 type AnthropicAdapter struct {
 	apiKey     string
 	httpClient *http.Client
-	baseURL    string           // overridable for testing
-	Tracer     oteltrace.Tracer // optional, set by factory for span instrumentation
+	baseURL    string                 // overridable for testing
+	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
+	Metrics    *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
 }
 
 // NewAnthropicAdapter creates an adapter for the Anthropic Messages API.
@@ -98,6 +101,12 @@ type sseMessageDelta struct {
 // a channel of StreamEvents. The channel is closed when the stream ends or
 // an error occurs. Cancelling the context terminates the stream.
 func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	start := time.Now()
+	metricAttrs := metric.WithAttributes(
+		attribute.String("provider.type", "anthropic"),
+		attribute.String("provider.model", params.Model),
+	)
+
 	reqBody := anthropicRequest{
 		Model:       params.Model,
 		System:      params.System,
@@ -110,11 +119,13 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
+		a.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
+		a.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
@@ -124,6 +135,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
+		a.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
 
@@ -143,6 +155,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
+		a.recordLatency(ctx, start, metricAttrs)
 		if len(body) > 0 {
 			return nil, fmt.Errorf("anthropic API returned status %d: %s", resp.StatusCode, body)
 		}
@@ -150,15 +163,43 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	}
 
 	ch := make(chan types.StreamEvent, 64)
-	go a.consumeSSE(ctx, resp, ch)
+	go func() {
+		a.consumeSSE(ctx, resp, ch, start, metricAttrs)
+		a.recordLatency(ctx, start, metricAttrs)
+	}()
 	return ch, nil
+}
+
+// recordLatency records the total provider request latency to the
+// ProviderLatency histogram. Safe to call when Metrics is nil.
+func (a *AnthropicAdapter) recordLatency(ctx context.Context, start time.Time, attrs metric.MeasurementOption) {
+	if a.Metrics == nil {
+		return
+	}
+	a.Metrics.ProviderLatency.Record(ctx, float64(time.Since(start).Milliseconds()), attrs)
 }
 
 // consumeSSE reads SSE events from the response body and sends StreamEvents
 // to the channel. It closes the channel and the response body when done.
-func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent) {
+//
+// streamStart and metricAttrs are forwarded for ProviderTTFB measurement: the
+// first non-empty stream event observed marks "time to first byte" for this
+// request. TTFB is recorded at most once per stream.
+func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
+
+	// emitEvent sends an event on the output channel and records TTFB on the
+	// first non-empty event observed. Closes around ttfbRecorded so each call
+	// site does not need to check.
+	ttfbRecorded := false
+	emitEvent := func(ev types.StreamEvent) {
+		if !ttfbRecorded && a.Metrics != nil {
+			a.Metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+			ttfbRecorded = true
+		}
+		ch <- ev
+	}
 
 	// Track in-flight content blocks by index for tool_use JSON accumulation.
 	type blockState struct {
@@ -175,7 +216,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			ch <- types.StreamEvent{Type: "error", Error: ctx.Err()}
+			emitEvent(types.StreamEvent{Type: "error", Error: ctx.Err()})
 			return
 		default:
 		}
@@ -197,7 +238,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 		case "content_block_start":
 			var cbs sseContentBlockStart
 			if err := json.Unmarshal([]byte(data), &cbs); err != nil {
-				ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_start: %w", err)}
+				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_start: %w", err)})
 				return
 			}
 			blocks[cbs.Index] = &blockState{
@@ -209,7 +250,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 		case "content_block_delta":
 			var cbd sseContentBlockDelta
 			if err := json.Unmarshal([]byte(data), &cbd); err != nil {
-				ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_delta: %w", err)}
+				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_delta: %w", err)})
 				return
 			}
 			bs := blocks[cbd.Index]
@@ -218,13 +259,13 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			}
 			switch cbd.Delta.Type {
 			case "text_delta":
-				ch <- types.StreamEvent{
+				emitEvent(types.StreamEvent{
 					Type: "text_delta",
 					Text: cbd.Delta.Text,
-				}
+				})
 			case "input_json_delta":
 				if bs.jsonBuf.Len()+len(cbd.Delta.PartialJSON) > maxToolInputSize {
-					ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("tool input exceeds %d byte limit", maxToolInputSize)}
+					emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("tool input exceeds %d byte limit", maxToolInputSize)})
 					return
 				}
 				bs.jsonBuf.WriteString(cbd.Delta.PartialJSON)
@@ -236,7 +277,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				Index int `json:"index"`
 			}
 			if err := json.Unmarshal([]byte(data), &stopData); err != nil {
-				ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_stop: %w", err)}
+				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse content_block_stop: %w", err)})
 				return
 			}
 			bs := blocks[stopData.Index]
@@ -245,23 +286,23 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 				raw := bs.jsonBuf.String()
 				if raw != "" {
 					if err := json.Unmarshal([]byte(raw), &input); err != nil {
-						ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool input JSON: %w", err)}
+						emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool input JSON: %w", err)})
 						return
 					}
 				}
-				ch <- types.StreamEvent{
+				emitEvent(types.StreamEvent{
 					Type:  "tool_call",
 					ID:    bs.id,
 					Name:  bs.name,
 					Input: input,
-				}
+				})
 			}
 			delete(blocks, stopData.Index)
 
 		case "message_delta":
 			var md sseMessageDelta
 			if err := json.Unmarshal([]byte(data), &md); err != nil {
-				ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("parse message_delta: %w", err)}
+				emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse message_delta: %w", err)})
 				return
 			}
 			ev := types.StreamEvent{
@@ -271,7 +312,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 			if md.Usage != nil {
 				ev.OutputTokens = md.Usage.OutputTokens
 			}
-			ch <- ev
+			emitEvent(ev)
 
 		case "message_stop":
 			// Stream is done; the goroutine will exit and close the channel.
@@ -282,6 +323,6 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	}
 
 	if err := scanner.Err(); err != nil {
-		ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)}
+		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
 	}
 }

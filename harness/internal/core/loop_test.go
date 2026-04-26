@@ -9,8 +9,12 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -20,6 +24,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -759,5 +764,348 @@ func TestAgenticLoopClose_ClosesOwnedResources(t *testing.T) {
 	}
 	if !first.closed || !second.closed {
 		t.Fatalf("expected both closers to run, got first=%v second=%v", first.closed, second.closed)
+	}
+}
+
+// TestDispatchToolCall_EmitsPrototypePollutionBlocked confirms that when a
+// tool call's input contains __proto__ or constructor keys, dispatchToolCall
+// emits the PrototypePollutionBlocked security event before validation AND
+// passes a CLEANED input (without the dangerous keys) to the tool handler.
+// The handler-receives-cleaned-input assertion guards the production
+// contract: a refactor accidentally passing call.Input instead of
+// inputForCall would be caught here.
+func TestDispatchToolCall_EmitsPrototypePollutionBlocked(t *testing.T) {
+	registry := tool.NewRegistry()
+
+	var capturedInput json.RawMessage
+	registry.Register(&tool.Tool{
+		Name:        "test_tool",
+		Description: "test",
+		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":true}`),
+		Handler: func(_ context.Context, input json.RawMessage) (string, error) {
+			// Copy so the slice the loop owns is not aliased.
+			capturedInput = append(json.RawMessage(nil), input...)
+			return "ok", nil
+		},
+	})
+
+	var secBuf bytes.Buffer
+	secLogger := security.NewSecurityLogger(&secBuf, "run-1")
+
+	loop := &AgenticLoop{
+		Tools:       registry,
+		Permissions: permission.NewAllowAll(),
+		Tracer:      noop.NewTracerProvider().Tracer(""),
+		Metrics:     observability.NewNoopMetrics(),
+		Logger:      slog.Default(),
+		Security:    secLogger,
+	}
+
+	out, ok := loop.dispatchToolCall(context.Background(), types.ToolCall{
+		ID:    "tc1",
+		Name:  "test_tool",
+		Input: json.RawMessage(`{"__proto__":{"admin":true},"safe":"v"}`),
+	})
+	if !ok {
+		t.Fatalf("dispatchToolCall returned !ok: %s", out)
+	}
+
+	got := secBuf.String()
+	if !strings.Contains(got, `"event":"prototype_pollution_blocked"`) {
+		t.Errorf("expected prototype_pollution_blocked event, got %q", got)
+	}
+	if !strings.Contains(got, "__proto__") {
+		t.Errorf("expected __proto__ in dropped keys, got %q", got)
+	}
+	if !strings.Contains(got, `"tool":"test_tool"`) {
+		t.Errorf("expected tool name in event, got %q", got)
+	}
+
+	// The handler must receive a cleaned input: no __proto__ key, but still
+	// carrying the safe sibling.
+	if len(capturedInput) == 0 {
+		t.Fatal("handler was not invoked or received empty input")
+	}
+	if strings.Contains(string(capturedInput), "__proto__") {
+		t.Errorf("handler received pollution key in input: %s", capturedInput)
+	}
+	if !strings.Contains(string(capturedInput), `"safe":"v"`) {
+		t.Errorf("handler input missing safe key, got: %s", capturedInput)
+	}
+}
+
+// recordingContextStrategy wraps another ContextStrategy and snapshots the
+// loop's lastContextTokens atomic AFTER each Prepare returns. This lets a
+// test reconstruct the per-turn gauge trajectory inside a synchronous Run
+// without depending on the OTel SDK's collection cadence.
+type recordingContextStrategy struct {
+	inner    contextpkg.ContextStrategy
+	loop     *AgenticLoop
+	prepared []int   // number of messages returned per Prepare invocation
+	atomics  []int64 // value of loop.lastContextTokens AFTER each Prepare
+}
+
+func (r *recordingContextStrategy) Prepare(ctx context.Context, messages []types.Message, budget contextpkg.TokenBudget) ([]types.Message, error) {
+	out, err := r.inner.Prepare(ctx, messages, budget)
+	r.prepared = append(r.prepared, len(out))
+	// The loop stores lastContextTokens *after* Prepare returns, so
+	// snapshot via a deferred read-back at the start of the NEXT
+	// invocation. We do that by reading the previous value here BEFORE
+	// the loop has a chance to overwrite it again — but since this method
+	// returns to the loop which then calls .Store(), we must snapshot in
+	// a deferred goroutine. Instead: snapshot the current value here
+	// (which reflects the previous turn's Store), and rely on the test
+	// to read the final value from the atomic post-Run.
+	if r.loop != nil {
+		r.atomics = append(r.atomics, r.loop.lastContextTokens.Load())
+	}
+	return out, err
+}
+
+func (r *recordingContextStrategy) LastCompaction() *contextpkg.CompactionEvent {
+	return r.inner.LastCompaction()
+}
+
+// TestLoop_ContextTokensGaugeReflectsCompaction asserts that when a
+// SlidingWindowStrategy compacts the message history, the lastContextTokens
+// atomic (which the ContextTokens gauge reads) DECREASES vs the
+// pre-compaction observation. This is the negative-delta semantic: a
+// successful compaction shrinks the absolute context-window estimate, the
+// observable gauge surfaces that drop, and downstream dashboards see a
+// downward step rather than an opaque negative delta on a counter.
+//
+// The recordingContextStrategy snapshots loop.lastContextTokens at each
+// Prepare call. Because the loop stores into the atomic AFTER Prepare
+// returns, snapshot[N] reflects the value stored after turn N-1's Prepare
+// (the snapshot for turn 0's Prepare is the pre-run zero). The final
+// post-Run atomic read gives the value stored after the LAST Prepare.
+func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
+	// We need a multi-turn run where the OLDEST messages dominate the
+	// token count and get dropped by compaction. Strategy: a heavy user
+	// prompt followed by short assistant turns. With MaxTokens far
+	// below defaultReserveForResponse, the sliding-window strategy
+	// preserves only the last minPreservedMessages on every Prepare call
+	// where len(messages) > 2 — and after enough short turns the heavy
+	// prompt falls off the kept window, shrinking the absolute count.
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "text_delta", Text: "ok1"},
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "ok2"},
+				{Type: "tool_call", ID: "tc_2", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "Done!"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+
+	// Override the default test config's small prompt with a heavy one
+	// AFTER buildTestLoop returns; this lets us shape the message
+	// history so the heaviest message is the oldest, which compaction
+	// can then drop.
+
+	rec := &recordingContextStrategy{
+		inner: contextpkg.NewSlidingWindowStrategy(),
+		loop:  loop,
+	}
+	loop.Context = rec
+
+	config := buildTestConfig()
+	// Heavy initial prompt; subsequent assistant turns are short so the
+	// heavy prompt dominates the early absolute count and gets dropped
+	// by sliding-window compaction once it falls off the preserved tail.
+	config.Prompt = strings.Repeat("a", 8000) // ~2000 tokens worth of chars
+	// available = MaxTokens (50) - defaultReserveForResponse (64000) < 0.
+	// SlidingWindow returns the last minPreservedMessages (2) when
+	// available <= 0 and len(messages) > minPreservedMessages.
+	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 50}
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// rec.atomics[i] reflects loop.lastContextTokens at the START of turn
+	// i's Prepare invocation — i.e. the value stored AFTER turn (i-1)'s
+	// Prepare. The very first entry is 0 (pre-run reset).
+	if len(rec.atomics) < 2 {
+		t.Fatalf("expected at least 2 Prepare invocations, got %d (atomics=%v)", len(rec.atomics), rec.atomics)
+	}
+	if rec.atomics[0] != 0 {
+		t.Errorf("rec.atomics[0] = %d, want 0 (pre-run reset)", rec.atomics[0])
+	}
+	// Value after turn 0's Prepare (atomic at start of turn 1's Prepare).
+	afterTurn0 := rec.atomics[1]
+	if afterTurn0 <= 0 {
+		t.Fatalf("afterTurn0 = %d, expected > 0", afterTurn0)
+	}
+
+	// Read the value stored after the LAST Prepare directly from the
+	// atomic; the loop has finished by now, so this is stable.
+	finalValue := loop.lastContextTokens.Load()
+
+	// Compaction in turn 1 must have trimmed the message history. That
+	// means turn 1's compute of (messages + sysprompt + tools) is
+	// strictly less than what turn 0's compute would extrapolate to —
+	// but more directly, the recording strategy gives us proof of
+	// compaction (prepared count drops to 2).
+	t.Logf("prepared lengths: %v", rec.prepared)
+	t.Logf("atomic snapshots: %v (final=%d)", rec.atomics, finalValue)
+
+	if len(rec.prepared) < 2 {
+		t.Fatalf("expected >= 2 Prepare invocations, got %v", rec.prepared)
+	}
+	// The very first call may pass through unchanged (only 1 message).
+	// Subsequent calls with growing histories should compact under our
+	// pathologically-low MaxTokens. We require that the final Prepare
+	// returned 2 messages (the minimum), confirming compaction fired.
+	if rec.prepared[len(rec.prepared)-1] != 2 {
+		t.Fatalf("expected last Prepare to compact to 2 messages, got %d (full sequence=%v)", rec.prepared[len(rec.prepared)-1], rec.prepared)
+	}
+
+	// Compaction shrinks the message contribution. The final absolute
+	// count must be strictly less than the pre-compaction count
+	// (afterTurn0 includes the bigText payload; the post-compaction count
+	// preserves only 2 small messages out of the larger history).
+	if finalValue >= afterTurn0 {
+		t.Errorf("expected final gauge value < afterTurn0; got final=%d afterTurn0=%d", finalValue, afterTurn0)
+	}
+}
+
+// TestLoop_RecordsContextTokensGauge asserts that runInnerLoop publishes the
+// absolute (post-Prepare) context token estimate to the lastContextTokens
+// atomic, and that the registered observable gauge callback yields that
+// value to a ManualReader collection. We collect WHILE the run is still
+// active (via a synchronous Run that ends before Collect is called) so that
+// the registration is unwound by defer — but the SDK has the chance to
+// observe at least once via the ManualReader path because we collect after
+// Run completes BUT the gauge value is captured by the loop's stored value;
+// since unregister fires on defer at Run return, we must collect as the
+// callback is still registered. To exercise this we register our own
+// callback inside the loop's lifetime, asserting the absolute count
+// directly via the lastContextTokens atomic.
+func TestLoop_RecordsContextTokensGauge(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	// Register a probe callback that captures the gauge observation each
+	// time the SDK collects. We use a multiCallProvider so the loop runs
+	// two turns: after each Context.Prepare the loop stores the absolute
+	// token count, and the SDK observes via our probe.
+	var (
+		observedMu     sync.Mutex
+		observedValues []int64
+		observedAttrs  []attribute.Set
+	)
+	unregister, err := metrics.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
+		// Return 0 here; the value we care about is whatever the loop's own
+		// callback reports. We use this only to force a Collect cycle to
+		// surface ALL registered callbacks (incl. the loop's).
+		return 0, nil
+	})
+	if err != nil {
+		t.Fatalf("RegisterContextTokensCallback: %v", err)
+	}
+	defer unregister()
+
+	// Use a multi-call provider that drives 2 turns: first turn issues a
+	// tool call, second turn ends. After each turn, the inner loop calls
+	// Context.Prepare and stores the absolute token estimate, then we
+	// drive a Collect at the END of the run to assert the final value.
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "Done!"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.Metrics = metrics
+
+	// Hook in a separate observer that captures whatever the loop's
+	// per-run callback reports during a Collect. We register this BEFORE
+	// Run so it is alive across Run; the loop registers its own callback
+	// at run start. The two callbacks yield independent observations.
+	captureUnreg, err := metrics.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
+		v := loop.lastContextTokens.Load()
+		observedMu.Lock()
+		observedValues = append(observedValues, v)
+		observedMu.Unlock()
+		return v, []attribute.KeyValue{
+			attribute.String("source", "test-probe"),
+		}
+	})
+	if err != nil {
+		t.Fatalf("RegisterContextTokensCallback (probe): %v", err)
+	}
+	defer captureUnreg()
+
+	config := buildTestConfig()
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// At this point the run has completed and unregistered its callback,
+	// but our probe callback is still active. Collect to drive an
+	// observation against the post-run lastContextTokens value (which the
+	// loop populated on the final turn).
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	// Find the gauge in the output and assert it has the expected shape.
+	var gaugeDataPoints []metricdata.DataPoint[int64]
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "stirrup.harness.context_tokens" {
+				continue
+			}
+			g, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("context_tokens has unexpected data type %T (want Gauge[int64])", m.Data)
+			}
+			gaugeDataPoints = append(gaugeDataPoints, g.DataPoints...)
+		}
+	}
+	if len(gaugeDataPoints) == 0 {
+		t.Fatal("expected at least one context_tokens gauge data point")
+	}
+
+	// The probe captured the loop's atomic on the final Collect; assert
+	// it matches what the loop should have stored after the second turn.
+	observedMu.Lock()
+	probeValues := append([]int64(nil), observedValues...)
+	probeAttrs := append([]attribute.Set(nil), observedAttrs...)
+	observedMu.Unlock()
+	_ = probeAttrs
+	if len(probeValues) == 0 {
+		t.Fatal("probe callback never fired")
+	}
+	finalValue := probeValues[len(probeValues)-1]
+	if finalValue <= 0 {
+		t.Errorf("expected lastContextTokens > 0 after run, got %d", finalValue)
+	}
+	if finalValue != loop.lastContextTokens.Load() {
+		t.Errorf("probe captured %d but atomic now reads %d", finalValue, loop.lastContextTokens.Load())
 	}
 }

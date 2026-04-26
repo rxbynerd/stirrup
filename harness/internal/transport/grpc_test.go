@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -411,6 +413,53 @@ func TestGRPCTransport_EmitScrubsSecrets(t *testing.T) {
 	}
 	if !strings.Contains(received[0].Message, "[REDACTED]") {
 		t.Error("expected [REDACTED] in Message")
+	}
+}
+
+func TestGRPCTransport_EmitFiresSecretRedactedInOutput(t *testing.T) {
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	var secBuf bytes.Buffer
+	tr.Security = security.NewSecurityLogger(&secBuf, "run-1")
+
+	if err := tr.Emit(types.HarnessEvent{
+		Type:    "tool_result",
+		Content: "key=sk-ant-abc123-secret",
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	_ = tr.stream.CloseSend()
+	time.Sleep(50 * time.Millisecond)
+
+	got := secBuf.String()
+	if !strings.Contains(got, `"event":"secret_redacted_in_output"`) {
+		t.Errorf("expected secret_redacted_in_output event, got %q", got)
+	}
+	if !strings.Contains(got, `"location":"transport.grpc.event.content"`) {
+		t.Errorf("expected location=transport.grpc.event.content, got %q", got)
+	}
+	if !strings.Contains(got, `"pattern":"anthropic_api_key"`) {
+		t.Errorf("expected pattern=anthropic_api_key, got %q", got)
+	}
+}
+
+func TestGRPCTransport_NoSecretEventForCleanText(t *testing.T) {
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	var secBuf bytes.Buffer
+	tr.Security = security.NewSecurityLogger(&secBuf, "run-1")
+
+	if err := tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "hello"}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	_ = tr.stream.CloseSend()
+	time.Sleep(50 * time.Millisecond)
+	if secBuf.Len() != 0 {
+		t.Errorf("expected no security events, got %q", secBuf.String())
 	}
 }
 
