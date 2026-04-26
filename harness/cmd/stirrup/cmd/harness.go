@@ -120,21 +120,42 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 		config.FollowUpGrace = &grace
 	}
 
-	// Set permission policy based on mode. Read-only modes additionally
-	// need an explicit Tools.BuiltIn list so validation passes: the
-	// validator rejects an empty list for read-only modes to force callers
-	// to opt specific tools in rather than accidentally inheriting the
-	// full set.
-	if types.IsReadOnlyMode(config.Mode) {
-		config.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
-		if len(config.Tools.BuiltIn) == 0 {
-			config.Tools.BuiltIn = types.DefaultReadOnlyBuiltInTools()
-		}
-	} else {
-		config.PermissionPolicy = types.PermissionPolicyConfig{Type: "allow-all"}
-	}
+	applyModeDefaults(config)
 	return config
 }
+
+// applyModeDefaults fills in PermissionPolicy and the read-only Tools.BuiltIn
+// list based on cfg.Mode, but only for fields the caller has not set
+// explicitly. This is shared between the flag-only path (buildHarnessRunConfig)
+// and the --config path (runHarness, after applyOverrides) so the two paths
+// produce architecturally consistent configs.
+//
+// The function never strips an explicit configuration — if the caller set
+// allow-all on a read-only mode, ValidateRunConfig will reject it with a
+// clear error rather than this function silently rewriting the choice.
+// That keeps user intent visible: a wrong combination fails loudly.
+func applyModeDefaults(cfg *types.RunConfig) {
+	if types.IsReadOnlyMode(cfg.Mode) {
+		if cfg.PermissionPolicy.Type == "" {
+			cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
+		}
+		// Read-only modes need an explicit Tools.BuiltIn list so validation
+		// passes: the validator rejects an empty list for read-only modes
+		// to force callers to opt specific tools in rather than accidentally
+		// inheriting the full set.
+		if len(cfg.Tools.BuiltIn) == 0 {
+			cfg.Tools.BuiltIn = types.DefaultReadOnlyBuiltInTools()
+		}
+	} else if cfg.PermissionPolicy.Type == "" {
+		cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "allow-all"}
+	}
+}
+
+// maxConfigFileBytes caps the size of a --config file we will read into
+// memory before parsing. A RunConfig is at most a few KB; anything in the
+// MB range is almost certainly a mistake (a symlink to /dev/zero, a binary
+// pasted into the path, etc.). The cap prevents OOM on a malformed input.
+const maxConfigFileBytes int64 = 1 << 20 // 1 MiB
 
 // loadRunConfigFile reads a JSON file at path and unmarshals it into a
 // RunConfig. The file is expected to mirror the proto schema in
@@ -142,9 +163,22 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 // JSON fields are rejected so that typos in the config file surface as
 // errors rather than being silently ignored.
 func loadRunConfigFile(path string) (*types.RunConfig, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("reading config file %q: is a directory", path)
+	}
+	if info.Size() > maxConfigFileBytes {
+		return nil, fmt.Errorf("reading config file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxConfigFileBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("parsing config file %q: file is empty", path)
 	}
 	var cfg types.RunConfig
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -175,13 +209,13 @@ func init() {
 	f := harnessCmd.Flags()
 	f.String("config", "", "Path to a JSON RunConfig file (mirrors proto/harness/v1/harness.proto). Explicit flags still override individual fields; unset flags do not.")
 	f.StringP("mode", "m", "execution", "Run mode: execution, planning, review, research, toil")
-	f.String("model", "claude-sonnet-4-6", "Model to use")
+	f.String("model", "claude-sonnet-4-6", "Model to use (sets ModelRouter.Model; for dynamic/per-mode routers in --config files this only sets the default-model field, not the cheap/expensive override)")
 	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, openai-compatible")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "Secret reference for API key")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
 	f.Int("timeout", 600, "Wall-clock timeout in seconds")
-	f.String("trace", "", "Path to JSONL trace file (optional)")
+	f.String("trace", "", "Path to JSONL trace file (sets --trace-emitter to jsonl unless --trace-emitter is explicitly set)")
 	f.String("transport", "stdio", "Transport type: stdio, grpc")
 	f.String("transport-addr", "", "gRPC target address (required when transport is grpc)")
 	f.Int("followup-grace", 0, "Seconds to keep gRPC transport open for follow-up requests (0 = disabled; env: STIRRUP_FOLLOWUP_GRACE)")
@@ -227,10 +261,14 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) {
 	}
 	if changed("trace") {
 		path, _ := f.GetString("trace")
-		// Only meaningful for the jsonl emitter; the validator handles
-		// type validation, not field cross-checks, so we just write the
-		// field and let the user's intent stand.
 		cfg.TraceEmitter.FilePath = path
+		// --trace is the JSONL trace path; if the file uses the otel emitter
+		// FilePath would be ignored. To make the user's intent stand, coerce
+		// the emitter type to jsonl unless the user also set --trace-emitter
+		// explicitly (in which case their explicit choice wins).
+		if !changed("trace-emitter") {
+			cfg.TraceEmitter.Type = "jsonl"
+		}
 	}
 	if changed("workspace") {
 		cfg.Executor.Workspace, _ = f.GetString("workspace")
@@ -295,6 +333,12 @@ func runHarness(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		applyOverrides(cmd, cfg, args)
+
+		// After overrides, derive any unset mode-driven defaults
+		// (PermissionPolicy, read-only Tools.BuiltIn). Mirrors what
+		// buildHarnessRunConfig does in the flag-only path so the two
+		// code paths produce architecturally consistent configs.
+		applyModeDefaults(cfg)
 
 		// Generate a RunID if the file omitted one. We never let the file
 		// dictate identity, but we do honour an explicit RunID for replay
@@ -387,13 +431,10 @@ func runHarness(cmd *cobra.Command, args []string) error {
 
 // runWithConfig is the shared run path for both --config and flag-only
 // invocations. Both code paths converge here once they have a validated
-// RunConfig.
+// RunConfig — ValidateRunConfig rejects nil Timeout, so the dereference
+// below is safe.
 func runWithConfig(config *types.RunConfig) error {
-	timeoutSecs := 600
-	if config.Timeout != nil {
-		timeoutSecs = *config.Timeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSecs)*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*config.Timeout)*time.Second)
 	defer cancel()
 	setupSignalHandler(cancel)
 

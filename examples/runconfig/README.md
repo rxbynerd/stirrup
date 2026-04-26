@@ -18,7 +18,7 @@ fails fast with a clear error rather than being silently dropped.
 
 | File | What it demonstrates |
 |---|---|
-| [`full.json`](full.json) | Container executor, multi edit strategy, OTel trace emitter, deterministic git, dynamic model router, ask-upstream permission policy, and one MCP server. Passes `types.ValidateRunConfig` end-to-end. |
+| [`full.json`](full.json) | Container executor, multi edit strategy, OTel trace emitter, deterministic git, dynamic model router, allow-all permission policy, and one MCP server. Passes `types.ValidateRunConfig` end-to-end. |
 
 ## Precedence
 
@@ -101,11 +101,13 @@ not reachable through the historical CLI flag set:
     "timeout": 300
   },
 
-  // Permission policy. "ask-upstream" prompts the control plane
-  // before any side-effecting tool call; "deny-side-effects" blocks
-  // them outright (used by read-only modes); "allow-all" is the
-  // default for execution mode.
-  "permissionPolicy": { "type": "ask-upstream", "timeout": 60 },
+  // Permission policy. "allow-all" is the default for execution mode.
+  // "deny-side-effects" blocks side-effecting tools outright and is the
+  // default for read-only modes. "ask-upstream" prompts the control
+  // plane before any side-effecting tool call — only useful with the
+  // grpc transport, since stdio has no upstream to ask and would hang
+  // on the first side-effecting tool call.
+  "permissionPolicy": { "type": "allow-all" },
 
   // Deterministic git: writes commits with stable author/date so
   // diffs are reproducible.
