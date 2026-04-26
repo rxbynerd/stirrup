@@ -68,6 +68,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 
 | Flag | Default | Description |
 |---|---|---|
+| `--config` | (none) | Path to a JSON RunConfig file (mirrors `proto/harness/v1/harness.proto`). Explicit flags still override individual fields; unset flags do not. |
 | `--prompt` | (required) | User prompt (also accepted as positional arg) |
 | `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
 | `--model` | `claude-sonnet-4-6` | Model to use |
@@ -81,6 +82,20 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--transport` | `stdio` | Transport type: stdio, grpc |
 | `--transport-addr` | (none) | gRPC target address (required when transport=grpc) |
 | `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups (env: STIRRUP_FOLLOWUP_GRACE) |
+| `--executor` | `local` | Executor: local, container, api |
+| `--edit-strategy` | `multi` | Edit strategy: whole-file, search-replace, udiff, multi (composite via `--config` only) |
+| `--verifier` | `none` | Verifier: none, test-runner, llm-judge (composite via `--config` only) |
+| `--git-strategy` | `none` | Git strategy: none, deterministic |
+| `--trace-emitter` | `jsonl` | Trace emitter: jsonl, otel |
+| `--otel-endpoint` | (none) | OTLP endpoint for the otel trace emitter (default: localhost:4317) |
+
+Precedence: `--config` file → explicit flags → defaults. Flags left at
+their default value do NOT override the file. The default edit strategy
+is `multi`; legacy tool names (`write_file`, `search_replace`,
+`apply_diff`) in `tools.builtIn` are aliased to the multi-strategy's
+`edit_file` tool by `core/factory.go::editToolEnabled`.
+
+A fully-populated example lives at `examples/runconfig/full.json`.
 
 ### Eval CLI
 

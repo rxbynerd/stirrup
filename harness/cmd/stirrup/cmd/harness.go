@@ -61,7 +61,13 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	}
 	editStrategyType := opts.EditStrategyType
 	if editStrategyType == "" {
-		editStrategyType = "whole-file"
+		// Default changed from "whole-file" to "multi" because the
+		// multi-strategy edit tool is the highest-leverage configuration
+		// for production use (see VERSION1.md). Existing callers that
+		// still ask for write_file/search_replace/apply_diff are preserved
+		// by core/factory.go::editToolEnabled, which aliases those names
+		// to the multi-strategy's edit_file tool.
+		editStrategyType = "multi"
 	}
 	verifierType := opts.VerifierType
 	if verifierType == "" {
@@ -186,7 +192,7 @@ func init() {
 	// a full --config file but need to switch a single component. These
 	// are still honoured (as overrides) when --config is set.
 	f.String("executor", "local", "Executor: local, container, api")
-	f.String("edit-strategy", "whole-file", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config)")
+	f.String("edit-strategy", "multi", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config)")
 	f.String("verifier", "none", "Verifier: none, test-runner, llm-judge (composite available only via --config)")
 	f.String("git-strategy", "none", "Git strategy: none, deterministic")
 	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel")

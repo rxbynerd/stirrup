@@ -141,9 +141,8 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 
 // TestBuildHarnessRunConfig_EmptyComponentDefaults exercises the
 // fallback values for component-selection fields. These defaults are the
-// historical CLI behaviour; tests pin them explicitly so a refactor that
-// changes them by accident fails loudly. Note: the EditStrategy default
-// is changed to "multi" in the follow-up commit.
+// shipped CLI behaviour; tests pin them explicitly so a refactor that
+// changes them by accident fails loudly.
 func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 	cfg := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -160,6 +159,9 @@ func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 	})
 	if cfg.Executor.Type != "local" {
 		t.Errorf("default executor should be 'local', got %q", cfg.Executor.Type)
+	}
+	if cfg.EditStrategy.Type != "multi" {
+		t.Errorf("default edit strategy should be 'multi', got %q", cfg.EditStrategy.Type)
 	}
 	if cfg.Verifier.Type != "none" {
 		t.Errorf("default verifier should be 'none', got %q", cfg.Verifier.Type)
@@ -307,7 +309,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("log-level", "info", "")
 	f.String("prompt", "", "")
 	f.String("executor", "local", "")
-	f.String("edit-strategy", "whole-file", "")
+	f.String("edit-strategy", "multi", "")
 	f.String("verifier", "none", "")
 	f.String("git-strategy", "none", "")
 	f.String("trace-emitter", "jsonl", "")
@@ -532,6 +534,48 @@ func TestApplyOverrides_ExplicitFlagBeatsPositional(t *testing.T) {
 
 	if cfg.Prompt != "from-flag" {
 		t.Errorf("explicit --prompt should win, got %q", cfg.Prompt)
+	}
+}
+
+// TestExampleFullJSONLoadsAndValidates is the integration test for the
+// shipped examples/runconfig/full.json: it must round-trip through
+// loadRunConfigFile and pass ValidateRunConfig without modification. If
+// the example drifts out of sync with the schema, this test fails before
+// users hit the same error.
+func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
+	// The repo layout puts examples/ at the workspace root. Tests run with
+	// the package directory as cwd, so walk up until we find the example.
+	candidates := []string{
+		"../../../../examples/runconfig/full.json",
+		"../../../examples/runconfig/full.json",
+		"examples/runconfig/full.json",
+	}
+	var path string
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			path = c
+			break
+		}
+	}
+	if path == "" {
+		t.Skip("examples/runconfig/full.json not found from package cwd; skipping")
+	}
+
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/full.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.EditStrategy.Type != "multi" {
+		t.Errorf("example should demonstrate multi edit strategy, got %q", cfg.EditStrategy.Type)
+	}
+	if cfg.Executor.Type != "container" {
+		t.Errorf("example should demonstrate container executor, got %q", cfg.Executor.Type)
+	}
+	if cfg.TraceEmitter.Type != "otel" {
+		t.Errorf("example should demonstrate otel trace emitter, got %q", cfg.TraceEmitter.Type)
 	}
 }
 
