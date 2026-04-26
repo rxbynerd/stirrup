@@ -5,8 +5,43 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// notifierCall records a single SecretRedactedInOutput invocation made
+// against the spy notifier.
+type notifierCall struct {
+	pattern  string
+	location string
+}
+
+// spyNotifier captures every SecretRedactedInOutput call so tests can
+// assert that the logger fired the security event when a secret was
+// redacted from an attribute. It satisfies the SecurityNotifier interface.
+type spyNotifier struct {
+	mu    sync.Mutex
+	calls []notifierCall
+}
+
+func (s *spyNotifier) SecretRedactedInOutput(pattern, location string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, notifierCall{pattern: pattern, location: location})
+}
+
+func (s *spyNotifier) snapshot() []notifierCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]notifierCall, len(s.calls))
+	copy(out, s.calls)
+	return out
+}
+
+// anthropicKeyFixture is a syntactically-valid Anthropic API key fixture
+// with the prefix that secretPatterns matches. The body is 46
+// alphanumeric characters; ScrubWithStats must redact it.
+const anthropicKeyFixture = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 func TestScrubHandler_RedactsAnthropicKey(t *testing.T) {
 	var buf bytes.Buffer
@@ -193,4 +228,98 @@ func TestNewLogger_RespectsLevel(t *testing.T) {
 	if !strings.Contains(output, "should appear") {
 		t.Errorf("warn message not logged: %s", output)
 	}
+}
+
+// TestScrubHandlerWithSecurity_FiresSecretRedactedInOutput asserts that the
+// logger emits a SecretRedactedInOutput event (via the wired notifier) when
+// the scrubber redacts a secret from an attribute value.
+func TestScrubHandlerWithSecurity_FiresSecretRedactedInOutput(t *testing.T) {
+	var buf bytes.Buffer
+	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	spy := &spyNotifier{}
+	scrub := NewScrubHandlerWithSecurity(jsonHandler, spy)
+	logger := slog.New(scrub)
+
+	logger.Info("api call", slog.String("token", anthropicKeyFixture))
+
+	calls := spy.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("spy received %d calls, want 1: %+v", len(calls), calls)
+	}
+	if calls[0].pattern != "anthropic_api_key" {
+		t.Errorf("calls[0].pattern = %q, want anthropic_api_key", calls[0].pattern)
+	}
+	if !strings.Contains(calls[0].location, "token") {
+		t.Errorf("calls[0].location = %q, want it to contain 'token'", calls[0].location)
+	}
+
+	// The redacted value must not appear in the JSON output.
+	if strings.Contains(buf.String(), anthropicKeyFixture) {
+		t.Errorf("secret leaked into log output: %s", buf.String())
+	}
+}
+
+// TestScrubHandlerWithSecurity_NoEventOnCleanAttr asserts that emitting an
+// attribute with no secret content does not produce a notifier call.
+func TestScrubHandlerWithSecurity_NoEventOnCleanAttr(t *testing.T) {
+	var buf bytes.Buffer
+	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	spy := &spyNotifier{}
+	scrub := NewScrubHandlerWithSecurity(jsonHandler, spy)
+	logger := slog.New(scrub)
+
+	logger.Info("plain log", slog.String("ok", "hello"))
+
+	if calls := spy.snapshot(); len(calls) != 0 {
+		t.Errorf("spy received %d calls, want 0: %+v", len(calls), calls)
+	}
+}
+
+// TestScrubHandlerWithSecurity_WithGroupPropagatesNotifier asserts that
+// WithGroup returns a handler that still notifies on redactions, i.e. the
+// security field survives the group-binding code path.
+func TestScrubHandlerWithSecurity_WithGroupPropagatesNotifier(t *testing.T) {
+	var buf bytes.Buffer
+	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	spy := &spyNotifier{}
+	scrub := NewScrubHandlerWithSecurity(jsonHandler, spy)
+	grouped := scrub.WithGroup("g")
+	logger := slog.New(grouped)
+
+	logger.Info("with group", slog.String("token", anthropicKeyFixture))
+
+	calls := spy.snapshot()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one notifier call after WithGroup, got 0")
+	}
+	if calls[0].pattern != "anthropic_api_key" {
+		t.Errorf("calls[0].pattern = %q, want anthropic_api_key", calls[0].pattern)
+	}
+}
+
+// TestScrubHandlerWithSecurity_WithAttrsPropagatesNotifier asserts that
+// WithAttrs scrubs and notifies at bind time (and that the resulting
+// child handler retains the notifier so subsequent emissions also fire).
+func TestScrubHandlerWithSecurity_WithAttrsPropagatesNotifier(t *testing.T) {
+	var buf bytes.Buffer
+	jsonHandler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	spy := &spyNotifier{}
+	scrub := NewScrubHandlerWithSecurity(jsonHandler, spy)
+
+	child := scrub.WithAttrs([]slog.Attr{
+		slog.String("k", anthropicKeyFixture),
+	})
+	logger := slog.New(child)
+
+	// WithAttrs scrubs at bind time → notifier fired during the call.
+	preEmitCalls := spy.snapshot()
+	if len(preEmitCalls) == 0 {
+		t.Fatal("expected notifier to fire during WithAttrs bind, got 0 calls")
+	}
+	if preEmitCalls[0].pattern != "anthropic_api_key" {
+		t.Errorf("preEmitCalls[0].pattern = %q, want anthropic_api_key", preEmitCalls[0].pattern)
+	}
+
+	// Sanity: emitting through the child handler still works.
+	logger.Info("child emit")
 }

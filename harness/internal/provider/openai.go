@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -28,7 +30,8 @@ type OpenAICompatibleAdapter struct {
 	apiKey     string
 	httpClient *http.Client
 	baseURL    string
-	Tracer     oteltrace.Tracer // optional, set by factory for span instrumentation
+	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
+	Metrics    *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
 }
 
 // NewOpenAICompatibleAdapter creates an adapter for an OpenAI-compatible
@@ -279,6 +282,12 @@ func mapFinishReason(reason string) string {
 // returns a channel of StreamEvents. The channel is closed when the stream
 // ends or an error occurs. Cancelling the context terminates the stream.
 func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	start := time.Now()
+	metricAttrs := metric.WithAttributes(
+		attribute.String("provider.type", "openai-compatible"),
+		attribute.String("provider.model", params.Model),
+	)
+
 	reqBody := openaiRequest{
 		Model:       params.Model,
 		Messages:    translateMessages(params.System, params.Messages),
@@ -290,12 +299,14 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
 	url := o.baseURL + "/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(bodyBytes)))
 	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
@@ -306,6 +317,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
 
@@ -323,6 +335,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
+		o.recordLatency(ctx, start, metricAttrs)
 		var errResp openaiErrorResponse
 		if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&errResp); err == nil && errResp.Error.Message != "" {
 			return nil, fmt.Errorf("openai API returned status %d: %s", resp.StatusCode, errResp.Error.Message)
@@ -331,15 +344,43 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	}
 
 	ch := make(chan types.StreamEvent, 64)
-	go o.consumeSSE(ctx, resp, ch)
+	go func() {
+		o.consumeSSE(ctx, resp, ch, start, metricAttrs)
+		o.recordLatency(ctx, start, metricAttrs)
+	}()
 	return ch, nil
+}
+
+// recordLatency records the total provider request latency to the
+// ProviderLatency histogram. Safe to call when Metrics is nil.
+func (o *OpenAICompatibleAdapter) recordLatency(ctx context.Context, start time.Time, attrs metric.MeasurementOption) {
+	if o.Metrics == nil {
+		return
+	}
+	o.Metrics.ProviderLatency.Record(ctx, float64(time.Since(start).Milliseconds()), attrs)
 }
 
 // consumeSSE reads SSE lines from the response body and sends StreamEvents
 // to the channel. It closes the channel and the response body when done.
-func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent) {
+//
+// streamStart and metricAttrs are forwarded for ProviderTTFB measurement: the
+// first non-empty stream event observed marks "time to first byte" for this
+// request. TTFB is recorded at most once per stream.
+func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
+
+	// emitEvent sends an event on the output channel and records TTFB on the
+	// first non-empty event observed. flushToolCalls invokes this via the
+	// closure passed in.
+	ttfbRecorded := false
+	emitEvent := func(ev types.StreamEvent) {
+		if !ttfbRecorded && o.Metrics != nil {
+			o.Metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+			ttfbRecorded = true
+		}
+		ch <- ev
+	}
 
 	// Track in-flight tool calls by index for argument accumulation.
 	toolCalls := make(map[int]*openaiToolCallState)
@@ -348,7 +389,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			ch <- types.StreamEvent{Type: "error", Error: ctx.Err()}
+			emitEvent(types.StreamEvent{Type: "error", Error: ctx.Err()})
 			return
 		default:
 		}
@@ -369,23 +410,23 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		// The stream terminator.
 		if data == "[DONE]" {
 			// Flush any remaining tool calls before ending.
-			o.flushToolCalls(toolCalls, ch)
+			o.flushToolCallsVia(toolCalls, emitEvent)
 			return
 		}
 
 		var chunk openaiChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("parse chunk: %w", err)}
+			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse chunk: %w", err)})
 			return
 		}
 
 		for _, choice := range chunk.Choices {
 			// Text content delta.
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-				ch <- types.StreamEvent{
+				emitEvent(types.StreamEvent{
 					Type: "text_delta",
 					Text: *choice.Delta.Content,
-				}
+				})
 			}
 
 			// Tool call deltas — accumulate arguments by index.
@@ -402,7 +443,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 					state.name = tc.Function.Name
 				}
 				if state.argsBuf.Len()+len(tc.Function.Arguments) > openaiMaxToolInputSize {
-					ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("tool arguments exceed %d byte limit", openaiMaxToolInputSize)}
+					emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("tool arguments exceed %d byte limit", openaiMaxToolInputSize)})
 					return
 				}
 				state.argsBuf.WriteString(tc.Function.Arguments)
@@ -411,7 +452,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 			// finish_reason signals the end of this choice.
 			if choice.FinishReason != nil {
 				// Flush accumulated tool calls when the model is done.
-				o.flushToolCalls(toolCalls, ch)
+				o.flushToolCallsVia(toolCalls, emitEvent)
 
 				stopReason := mapFinishReason(*choice.FinishReason)
 				ev := types.StreamEvent{
@@ -421,19 +462,20 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 				if chunk.Usage != nil {
 					ev.OutputTokens = chunk.Usage.CompletionTokens
 				}
-				ch <- ev
+				emitEvent(ev)
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)}
+		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
 	}
 }
 
-// flushToolCalls emits tool_call events for all accumulated tool calls and
-// clears the state map. Called when the stream signals completion.
-func (o *OpenAICompatibleAdapter) flushToolCalls(toolCalls map[int]*openaiToolCallState, ch chan<- types.StreamEvent) {
+// flushToolCallsVia emits tool_call events for all accumulated tool calls via
+// the supplied emit function (which may also record TTFB), then clears the
+// state map. Called when the stream signals completion.
+func (o *OpenAICompatibleAdapter) flushToolCallsVia(toolCalls map[int]*openaiToolCallState, emit func(types.StreamEvent)) {
 	// Emit in index order for determinism.
 	for idx := 0; idx < len(toolCalls); idx++ {
 		state, ok := toolCalls[idx]
@@ -444,16 +486,16 @@ func (o *OpenAICompatibleAdapter) flushToolCalls(toolCalls map[int]*openaiToolCa
 		raw := state.argsBuf.String()
 		if raw != "" {
 			if err := json.Unmarshal([]byte(raw), &input); err != nil {
-				ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool arguments JSON: %w", err)}
+				emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse tool arguments JSON: %w", err)})
 				return
 			}
 		}
-		ch <- types.StreamEvent{
+		emit(types.StreamEvent{
 			Type:  "tool_call",
 			ID:    state.id,
 			Name:  state.name,
 			Input: input,
-		}
+		})
 	}
 	// Clear the map.
 	for k := range toolCalls {

@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -631,5 +636,68 @@ func TestBedrock_APIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "access denied") {
 		t.Errorf("error = %q, want to contain 'access denied'", err)
+	}
+}
+
+func TestBedrock_APIError_RecordsLatency(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	client := &mockBedrockClient{apiErr: fmt.Errorf("boom")}
+	adapter := &BedrockAdapter{client: client, Metrics: metrics}
+
+	_, err = adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "anthropic.claude-sonnet-4-6-v1",
+		MaxTokens: 1024,
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
+		t.Errorf("provider_latency count = %d, want 1 (error path still records)", got)
+	}
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 0 {
+		t.Errorf("provider_ttfb count = %d, want 0", got)
+	}
+}
+
+func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
+	events := []brtypes.ConverseStreamOutput{
+		&brtypes.ConverseStreamOutputMemberContentBlockDelta{
+			Value: brtypes.ContentBlockDeltaEvent{
+				ContentBlockIndex: aws.Int32(0),
+				Delta:             &brtypes.ContentBlockDeltaMemberText{Value: "Hi"},
+			},
+		},
+		&brtypes.ConverseStreamOutputMemberMessageStop{
+			Value: brtypes.MessageStopEvent{StopReason: brtypes.StopReasonEndTurn},
+		},
+	}
+	ch := make(chan types.StreamEvent, 64)
+	stream := newMockEventReader(events, nil)
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	attrs := metric.WithAttributes(
+		attribute.String("provider.type", "bedrock"),
+		attribute.String("provider.model", "anthropic.claude-sonnet-4-6-v1"),
+	)
+	go consumeBedrockStreamMetered(context.Background(), stream, ch, metrics, time.Now(), attrs)
+	for range ch {
+	}
+
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 1 {
+		t.Errorf("provider_ttfb count = %d, want 1", got)
 	}
 }

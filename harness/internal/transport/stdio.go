@@ -20,7 +20,8 @@ type StdioTransport struct {
 	handlerMu sync.Mutex // serialises handler registration
 	handlers  []func(types.ControlEvent)
 	done      chan struct{}
-	startOnce sync.Once // ensures the read goroutine is started exactly once
+	startOnce sync.Once                // ensures the read goroutine is started exactly once
+	Security  *security.SecurityLogger // optional; emits SecretRedactedInOutput when scrubbing fires
 }
 
 // NewStdioTransport creates a StdioTransport that writes harness events to
@@ -35,12 +36,15 @@ func NewStdioTransport(w io.Writer, r io.Reader) *StdioTransport {
 }
 
 // Emit scrubs secret patterns from the event's string fields, marshals it as
-// a single JSON line, and writes it to the output stream.
+// a single JSON line, and writes it to the output stream. When the optional
+// Security logger is wired and any redaction occurs, emits a
+// SecretRedactedInOutput event with the matched pattern name and a stable
+// location string identifying the call site.
 func (s *StdioTransport) Emit(event types.HarnessEvent) error {
-	// Scrub known secret patterns from all string fields.
-	event.Text = security.Scrub(event.Text)
-	event.Content = security.Scrub(event.Content)
-	event.Message = security.Scrub(event.Message)
+	// Scrub known secret patterns from all string fields and report stats.
+	event.Text = s.scrubAndReport(event.Text, "transport.stdio.event.text")
+	event.Content = s.scrubAndReport(event.Content, "transport.stdio.event.content")
+	event.Message = s.scrubAndReport(event.Message, "transport.stdio.event.message")
 
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -53,6 +57,20 @@ func (s *StdioTransport) Emit(event types.HarnessEvent) error {
 	data = append(data, '\n')
 	_, err = s.writer.Write(data)
 	return err
+}
+
+// scrubAndReport scrubs s and, if any redaction happened, fires a
+// SecretRedactedInOutput event for each distinct pattern that matched.
+// Reporting failures (no Security logger) silently skip the event but do not
+// affect scrubbing.
+func (s *StdioTransport) scrubAndReport(value, location string) string {
+	scrubbed, stats := security.ScrubWithStats(value)
+	if stats.Count > 0 && s.Security != nil {
+		for _, p := range stats.Patterns {
+			s.Security.SecretRedactedInOutput(p, location)
+		}
+	}
+	return scrubbed
 }
 
 // OnControl registers a handler for incoming control events. Multiple calls
