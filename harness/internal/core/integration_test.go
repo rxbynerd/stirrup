@@ -423,6 +423,22 @@ func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
 		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
 	}
 
+	// H1: the wire-level contract is that done.stop_reason matches the
+	// RunTrace outcome. Assert the transport received exactly one done
+	// event carrying stop_reason="cancelled".
+	var doneEvents []types.HarnessEvent
+	for _, ev := range tr.Events() {
+		if ev.Type == "done" {
+			doneEvents = append(doneEvents, ev)
+		}
+	}
+	if len(doneEvents) != 1 {
+		t.Fatalf("expected exactly one 'done' event, got %d", len(doneEvents))
+	}
+	if doneEvents[0].StopReason != "cancelled" {
+		t.Errorf("expected done.stop_reason 'cancelled', got %q", doneEvents[0].StopReason)
+	}
+
 	// Sanity: the replay provider should have been consumed at most once.
 	// The second turn must not have been executed.
 	if runTrace.Turns > 1 {
