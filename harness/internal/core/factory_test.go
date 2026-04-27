@@ -680,24 +680,50 @@ func TestEditToolEnabled_NoMatch(t *testing.T) {
 	}
 }
 
-// --- sideEffectingToolSet ---
+// --- mutatingToolSet ---
 
-func TestSideEffectingToolSet(t *testing.T) {
+func TestMutatingToolSet(t *testing.T) {
 	exec, _ := executor.NewLocalExecutor(t.TempDir())
 	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{})
 
-	sideEffecting := sideEffectingToolSet(registry)
+	mutating := mutatingToolSet(registry)
 
-	// write_file and run_command are workspace-mutating and require approval.
-	if !sideEffecting["write_file"] {
-		t.Fatal("write_file should be in the gating set")
+	// write_file and run_command mutate the workspace.
+	if !mutating["write_file"] {
+		t.Fatal("write_file should be workspace-mutating")
 	}
-	if !sideEffecting["run_command"] {
-		t.Fatal("run_command should be in the gating set")
+	if !mutating["run_command"] {
+		t.Fatal("run_command should be workspace-mutating")
 	}
-	// read_file does not need gating.
-	if sideEffecting["read_file"] {
-		t.Fatal("read_file should not be in the gating set")
+	// Read-only tools are not mutating. (spawn_agent is registered
+	// after the loop is built and is therefore not in this set; see
+	// BuildLoopWithTransport.)
+	for _, name := range []string{"read_file", "list_directory", "search_files", "web_fetch"} {
+		if mutating[name] {
+			t.Errorf("%s should not be workspace-mutating", name)
+		}
+	}
+}
+
+// --- approvalRequiredToolSet ---
+
+func TestApprovalRequiredToolSet(t *testing.T) {
+	exec, _ := executor.NewLocalExecutor(t.TempDir())
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+
+	approval := approvalRequiredToolSet(registry)
+
+	// All tools that touch the world require approval: writes, shell, network.
+	for _, name := range []string{"write_file", "run_command", "web_fetch"} {
+		if !approval[name] {
+			t.Errorf("%s should require approval", name)
+		}
+	}
+	// Pure-read tools never require approval.
+	for _, name := range []string{"read_file", "list_directory", "search_files"} {
+		if approval[name] {
+			t.Errorf("%s should not require approval", name)
+		}
 	}
 }
 
@@ -944,6 +970,60 @@ func TestBuildLoopWithTransport_SecretResolutionFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "build providers") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBuildLoopWithTransport_ResearchModeAllowsWebFetch is the WP1
+// regression: research mode (a read-only mode) must enable web_fetch
+// and the deny-side-effects policy must allow it through. Before WP1
+// the conflated SideEffects flag caused the same policy to reject
+// web_fetch as a "side effect", breaking documented research-mode
+// semantics.
+func TestBuildLoopWithTransport_ResearchModeAllowsWebFetch(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-research",
+		Mode:             "research",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	// web_fetch must be registered in research mode.
+	wf := loop.Tools.Resolve("web_fetch")
+	if wf == nil {
+		t.Fatal("expected web_fetch to be registered in research mode")
+	}
+
+	// And the resulting permission policy must let web_fetch through.
+	result, err := loop.Permissions.Check(context.Background(), wf.Definition(), nil)
+	if err != nil {
+		t.Fatalf("permission check returned error: %v", err)
+	}
+	if !result.Allowed {
+		t.Fatalf("research mode permission policy denied web_fetch: %q", result.Reason)
 	}
 }
 

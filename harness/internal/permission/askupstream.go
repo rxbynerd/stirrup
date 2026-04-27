@@ -22,10 +22,14 @@ type Transport interface {
 	OnControl(handler func(event types.ControlEvent))
 }
 
-// AskUpstreamPolicy is a PermissionPolicy that auto-allows read-only tools
-// and sends side-effecting tool calls to the control plane for approval via
-// the Transport. It blocks until a permission_response control event arrives
-// or the context is cancelled.
+// AskUpstreamPolicy is a PermissionPolicy that auto-allows tool calls which
+// do not require operator approval and forwards approval-required tool
+// calls to the control plane via the Transport. It blocks until a
+// permission_response control event arrives or the context is cancelled.
+//
+// The set of approval-required tools is built from the registry by
+// collecting tools whose Tool.RequiresApproval flag is true (see
+// core.factory.approvalRequiredToolSet).
 type AskUpstreamPolicy struct {
 	transport Transport
 
@@ -34,9 +38,10 @@ type AskUpstreamPolicy struct {
 	// window, Check returns an error.
 	Timeout time.Duration
 
-	// sideEffectingTools maps tool names that have side effects. Tools in
-	// this set require upstream approval; all others are auto-allowed.
-	sideEffectingTools map[string]bool
+	// approvalTools maps tool names that require upstream approval. Tools
+	// in this set are forwarded to the control plane; all others are
+	// auto-allowed.
+	approvalTools map[string]bool
 
 	mu       sync.Mutex
 	nextID   int
@@ -49,22 +54,34 @@ type permissionResponse struct {
 	reason  string
 }
 
-// NewAskUpstreamPolicy creates a new AskUpstreamPolicy. The sideEffectingTools
-// map keys are tool names considered to have side effects; calls to those tools
-// are forwarded to the control plane for approval. If timeout is zero,
+// NewAskUpstreamPolicy creates a new AskUpstreamPolicy. The approvalTools
+// map keys are tool names whose calls must be approved by the control
+// plane; calls to those tools are forwarded as permission_request events
+// and block until a permission_response arrives. If timeout is zero,
 // DefaultAskUpstreamTimeout (60s) is used.
-func NewAskUpstreamPolicy(transport Transport, sideEffectingTools map[string]bool, timeout time.Duration) *AskUpstreamPolicy {
+func NewAskUpstreamPolicy(transport Transport, approvalTools map[string]bool, timeout time.Duration) *AskUpstreamPolicy {
 	if timeout <= 0 {
 		timeout = DefaultAskUpstreamTimeout
 	}
 	p := &AskUpstreamPolicy{
-		transport:          transport,
-		Timeout:            timeout,
-		sideEffectingTools: sideEffectingTools,
-		pending:            make(map[string]chan permissionResponse),
+		transport:     transport,
+		Timeout:       timeout,
+		approvalTools: approvalTools,
+		pending:       make(map[string]chan permissionResponse),
 	}
 	p.attachHandler()
 	return p
+}
+
+// ApprovalToolNames returns a snapshot of tool names that require upstream
+// approval. The returned slice is owned by the caller; modifications do
+// not affect the policy. Order is not guaranteed.
+func (p *AskUpstreamPolicy) ApprovalToolNames() []string {
+	names := make([]string, 0, len(p.approvalTools))
+	for name := range p.approvalTools {
+		names = append(names, name)
+	}
+	return names
 }
 
 // attachHandler registers a control event handler on the transport to route
@@ -95,11 +112,12 @@ func (p *AskUpstreamPolicy) attachHandler() {
 	})
 }
 
-// Check implements PermissionPolicy. Read-only tools are auto-allowed.
-// Side-effecting tools emit a permission_request event via Transport and
-// block until the control plane responds or the context is cancelled.
+// Check implements PermissionPolicy. Tools that do not require upstream
+// approval are auto-allowed. Approval-required tools emit a
+// permission_request event via Transport and block until the control plane
+// responds or the context is cancelled.
 func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition, input json.RawMessage) (*PermissionResult, error) {
-	if !p.sideEffectingTools[tool.Name] {
+	if !p.approvalTools[tool.Name] {
 		return &PermissionResult{Allowed: true}, nil
 	}
 

@@ -118,7 +118,7 @@ go build -o stirrup-eval ./eval/cmd/eval
 6. **Executor** — sandboxed file I/O and command execution (local, container, API)
 7. **EditStrategy** — how file changes are applied (whole-file, search-replace, udiff, multi-strategy)
 8. **Verifier** — validates run output (none, test-runner, composite, llm-judge)
-9. **PermissionPolicy** — gates side-effecting tools (allow-all, deny-side-effects, ask-upstream)
+9. **PermissionPolicy** — gates tools that mutate the workspace or require operator approval (allow-all, deny-side-effects, ask-upstream). `deny-side-effects` rejects only workspace-mutating tools (write_file, run_command, edit_file); read-only-but-network/budget-touching tools like web_fetch and spawn_agent are still allowed and are gated separately by `ask-upstream`.
 10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null for sub-agents)
 11. **GitStrategy** — manages branches/commits (none, deterministic)
 12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry)
