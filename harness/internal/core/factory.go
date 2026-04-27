@@ -228,6 +228,17 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return json.Marshal(result)
 		}
 		registry.Register(builtins.SpawnAgentTool(spawner))
+
+		// The ask-upstream policy snapshots the approval-required tool
+		// set at construction time, but spawn_agent is registered
+		// after the policy is built. Refresh it here so spawn_agent
+		// calls are gated by the control plane rather than silently
+		// auto-allowed. (See TestApprovalRequiredToolSet which asserts
+		// the load-bearing absence of spawn_agent in the unrefreshed
+		// set.)
+		if ask, ok := pp.(*permission.AskUpstreamPolicy); ok {
+			ask.AddApprovalTool("spawn_agent")
+		}
 	}
 
 	return loop, nil
