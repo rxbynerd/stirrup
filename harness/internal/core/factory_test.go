@@ -726,6 +726,66 @@ func TestApprovalRequiredToolSet(t *testing.T) {
 			t.Errorf("%s should not require approval", name)
 		}
 	}
+	// spawn_agent is registered post-loop-construction in factory.go (see
+	// BuildLoopWithTransport). Its absence here is load-bearing: if it
+	// ever appears in this set, the AddApprovalTool refresh has become
+	// redundant and the post-registration step in the factory should
+	// be removed.
+	if approval["spawn_agent"] {
+		t.Error("spawn_agent should not be in approvalRequiredToolSet — it is added post-loop-construction in BuildLoopWithTransport")
+	}
+}
+
+// TestBuildLoopWithTransport_AskUpstreamIncludesSpawnAgent asserts the
+// post-registration refresh in BuildLoopWithTransport: spawn_agent must
+// appear in the AskUpstreamPolicy approval set even though it is
+// registered after the policy is built. Without the refresh, spawn_agent
+// calls would bypass the control plane approval gate.
+func TestBuildLoopWithTransport_AskUpstreamIncludesSpawnAgent(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-ask-upstream",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "ask-upstream", Timeout: 60},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	ask, ok := loop.Permissions.(*permission.AskUpstreamPolicy)
+	if !ok {
+		t.Fatalf("expected AskUpstreamPolicy, got %T", loop.Permissions)
+	}
+
+	approval := make(map[string]bool)
+	for _, name := range ask.ApprovalToolNames() {
+		approval[name] = true
+	}
+	for _, name := range []string{"write_file", "run_command", "web_fetch", "spawn_agent"} {
+		if !approval[name] {
+			t.Errorf("ask-upstream policy missing %q in approval set; got %v", name, approval)
+		}
+	}
 }
 
 // --- BuildLoopWithTransport integration ---
@@ -1080,6 +1140,62 @@ func TestBuildLoopWithTransport_ResearchModeAllowsWebFetch(t *testing.T) {
 	}
 	if !result.Allowed {
 		t.Fatalf("research mode permission policy denied web_fetch: %q", result.Reason)
+	}
+}
+
+// TestBuildLoopWithTransport_ReadOnlyModesAllowWebFetch is the WP1
+// regression covering all four read-only modes (research, review, toil,
+// planning). Each must enable web_fetch and have a permission policy
+// that allows it through. Without table coverage, a future change that
+// special-cases just one mode would silently break the others.
+func TestBuildLoopWithTransport_ReadOnlyModesAllowWebFetch(t *testing.T) {
+	modes := []string{"research", "review", "toil", "planning"}
+	for _, mode := range modes {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("TEST_OPENAI_KEY", "test-key")
+			server := newOpenAIServer(t, nil, nil, nil)
+			defer server.Close()
+
+			timeout := 30
+			config := &types.RunConfig{
+				RunID:            "factory-test-readonly-" + mode,
+				Mode:             mode,
+				Prompt:           "hello",
+				Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+				ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+				PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+				ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+				Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+				EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+				Verifier:         types.VerifierConfig{Type: "none"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				GitStrategy:      types.GitStrategyConfig{Type: "none"},
+				TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+				Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+				MaxTurns:         2,
+				Timeout:          &timeout,
+			}
+
+			tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+			loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+			if err != nil {
+				t.Fatalf("BuildLoopWithTransport(mode=%q) error: %v", mode, err)
+			}
+			defer func() { _ = loop.Close() }()
+
+			wf := loop.Tools.Resolve("web_fetch")
+			if wf == nil {
+				t.Fatalf("expected web_fetch to be registered in mode %q", mode)
+			}
+
+			result, err := loop.Permissions.Check(context.Background(), wf.Definition(), nil)
+			if err != nil {
+				t.Fatalf("permission check returned error in mode %q: %v", mode, err)
+			}
+			if !result.Allowed {
+				t.Fatalf("mode %q permission policy denied web_fetch: %q", mode, result.Reason)
+			}
+		})
 	}
 }
 

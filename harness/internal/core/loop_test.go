@@ -68,6 +68,15 @@ func buildTestConfig() *types.RunConfig {
 }
 
 func buildTestLoop(prov *mockProvider) *AgenticLoop {
+	return buildTestLoopWithSecurity(prov, nil)
+}
+
+// buildTestLoopWithSecurity is identical to buildTestLoop but wires a
+// SecurityLogger writing to the provided sink. Pass nil to skip security
+// instrumentation. This is required for tests that assert security events
+// are emitted (e.g. PermissionDenied), which the production loop guards
+// behind a nil check.
+func buildTestLoopWithSecurity(prov *mockProvider, securitySink io.Writer) *AgenticLoop {
 	var transportBuf bytes.Buffer
 	registry := tool.NewRegistry()
 	// Register a simple test tool.
@@ -81,6 +90,11 @@ func buildTestLoop(prov *mockProvider) *AgenticLoop {
 			return "tool result", nil
 		},
 	})
+
+	var secLogger *security.SecurityLogger
+	if securitySink != nil {
+		secLogger = security.NewSecurityLogger(securitySink, "test-run")
+	}
 
 	return &AgenticLoop{
 		Provider:    prov,
@@ -97,6 +111,7 @@ func buildTestLoop(prov *mockProvider) *AgenticLoop {
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
 		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     observability.NewNoopMetrics(),
+		Security:    secLogger,
 		Logger:      slog.Default(),
 	}
 }
@@ -429,7 +444,8 @@ func (c *closeTracker) Close() error {
 }
 
 func TestDispatchToolCall_PermissionDenied(t *testing.T) {
-	loop := buildTestLoop(&mockProvider{})
+	var secBuf bytes.Buffer
+	loop := buildTestLoopWithSecurity(&mockProvider{}, &secBuf)
 
 	// Register a workspace-mutating tool.
 	registry := tool.NewRegistry()
@@ -462,6 +478,16 @@ func TestDispatchToolCall_PermissionDenied(t *testing.T) {
 	}
 	if !strings.Contains(output, "Permission denied") {
 		t.Errorf("expected output to contain 'Permission denied', got %q", output)
+	}
+
+	// Assert the SecurityLogger was actually called. Without this, a
+	// regression that nil-skips the call would silently pass.
+	logged := secBuf.String()
+	if !strings.Contains(logged, "permission_denied") {
+		t.Errorf("expected security log to contain 'permission_denied', got %q", logged)
+	}
+	if !strings.Contains(logged, "dangerous_tool") {
+		t.Errorf("expected security log to contain tool name 'dangerous_tool', got %q", logged)
 	}
 }
 

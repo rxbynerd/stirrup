@@ -77,11 +77,24 @@ func NewAskUpstreamPolicy(transport Transport, approvalTools map[string]bool, ti
 // approval. The returned slice is owned by the caller; modifications do
 // not affect the policy. Order is not guaranteed.
 func (p *AskUpstreamPolicy) ApprovalToolNames() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	names := make([]string, 0, len(p.approvalTools))
 	for name := range p.approvalTools {
 		names = append(names, name)
 	}
 	return names
+}
+
+// AddApprovalTool registers an additional tool name that must be forwarded
+// to the control plane for approval. This is used by the factory to add
+// tools that are registered post-loop-construction (e.g. spawn_agent),
+// which would otherwise miss the snapshot taken at policy creation time.
+// Safe to call concurrently with Check.
+func (p *AskUpstreamPolicy) AddApprovalTool(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.approvalTools[name] = true
 }
 
 // attachHandler registers a control event handler on the transport to route
@@ -117,7 +130,10 @@ func (p *AskUpstreamPolicy) attachHandler() {
 // permission_request event via Transport and block until the control plane
 // responds or the context is cancelled.
 func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition, input json.RawMessage) (*PermissionResult, error) {
-	if !p.approvalTools[tool.Name] {
+	p.mu.Lock()
+	required := p.approvalTools[tool.Name]
+	p.mu.Unlock()
+	if !required {
 		return &PermissionResult{Allowed: true}, nil
 	}
 
