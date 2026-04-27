@@ -680,24 +680,110 @@ func TestEditToolEnabled_NoMatch(t *testing.T) {
 	}
 }
 
-// --- sideEffectingToolSet ---
+// --- mutatingToolSet ---
 
-func TestSideEffectingToolSet(t *testing.T) {
+func TestMutatingToolSet(t *testing.T) {
 	exec, _ := executor.NewLocalExecutor(t.TempDir())
 	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{})
 
-	sideEffecting := sideEffectingToolSet(registry)
+	mutating := mutatingToolSet(registry)
 
-	// write_file and run_command are side-effecting.
-	if !sideEffecting["write_file"] {
-		t.Fatal("write_file should be side-effecting")
+	// write_file and run_command mutate the workspace.
+	if !mutating["write_file"] {
+		t.Fatal("write_file should be workspace-mutating")
 	}
-	if !sideEffecting["run_command"] {
-		t.Fatal("run_command should be side-effecting")
+	if !mutating["run_command"] {
+		t.Fatal("run_command should be workspace-mutating")
 	}
-	// read_file is not side-effecting.
-	if sideEffecting["read_file"] {
-		t.Fatal("read_file should not be side-effecting")
+	// Read-only tools are not mutating. (spawn_agent is registered
+	// after the loop is built and is therefore not in this set; see
+	// BuildLoopWithTransport.)
+	for _, name := range []string{"read_file", "list_directory", "search_files", "web_fetch"} {
+		if mutating[name] {
+			t.Errorf("%s should not be workspace-mutating", name)
+		}
+	}
+}
+
+// --- approvalRequiredToolSet ---
+
+func TestApprovalRequiredToolSet(t *testing.T) {
+	exec, _ := executor.NewLocalExecutor(t.TempDir())
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+
+	approval := approvalRequiredToolSet(registry)
+
+	// All tools that touch the world require approval: writes, shell, network.
+	for _, name := range []string{"write_file", "run_command", "web_fetch"} {
+		if !approval[name] {
+			t.Errorf("%s should require approval", name)
+		}
+	}
+	// Pure-read tools never require approval.
+	for _, name := range []string{"read_file", "list_directory", "search_files"} {
+		if approval[name] {
+			t.Errorf("%s should not require approval", name)
+		}
+	}
+	// spawn_agent is registered post-loop-construction in factory.go (see
+	// BuildLoopWithTransport). Its absence here is load-bearing: if it
+	// ever appears in this set, the AddApprovalTool refresh has become
+	// redundant and the post-registration step in the factory should
+	// be removed.
+	if approval["spawn_agent"] {
+		t.Error("spawn_agent should not be in approvalRequiredToolSet — it is added post-loop-construction in BuildLoopWithTransport")
+	}
+}
+
+// TestBuildLoopWithTransport_AskUpstreamIncludesSpawnAgent asserts the
+// post-registration refresh in BuildLoopWithTransport: spawn_agent must
+// appear in the AskUpstreamPolicy approval set even though it is
+// registered after the policy is built. Without the refresh, spawn_agent
+// calls would bypass the control plane approval gate.
+func TestBuildLoopWithTransport_AskUpstreamIncludesSpawnAgent(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-ask-upstream",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "ask-upstream", Timeout: 60},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	ask, ok := loop.Permissions.(*permission.AskUpstreamPolicy)
+	if !ok {
+		t.Fatalf("expected AskUpstreamPolicy, got %T", loop.Permissions)
+	}
+
+	approval := make(map[string]bool)
+	for _, name := range ask.ApprovalToolNames() {
+		approval[name] = true
+	}
+	for _, name := range []string{"write_file", "run_command", "web_fetch", "spawn_agent"} {
+		if !approval[name] {
+			t.Errorf("ask-upstream policy missing %q in approval set; got %v", name, approval)
+		}
 	}
 }
 
@@ -944,6 +1030,116 @@ func TestBuildLoopWithTransport_SecretResolutionFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "build providers") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBuildLoopWithTransport_ResearchModeAllowsWebFetch is the WP1
+// regression: research mode (a read-only mode) must enable web_fetch
+// and the deny-side-effects policy must allow it through. Before WP1
+// the conflated SideEffects flag caused the same policy to reject
+// web_fetch as a "side effect", breaking documented research-mode
+// semantics.
+func TestBuildLoopWithTransport_ResearchModeAllowsWebFetch(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-research",
+		Mode:             "research",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	// web_fetch must be registered in research mode.
+	wf := loop.Tools.Resolve("web_fetch")
+	if wf == nil {
+		t.Fatal("expected web_fetch to be registered in research mode")
+	}
+
+	// And the resulting permission policy must let web_fetch through.
+	result, err := loop.Permissions.Check(context.Background(), wf.Definition(), nil)
+	if err != nil {
+		t.Fatalf("permission check returned error: %v", err)
+	}
+	if !result.Allowed {
+		t.Fatalf("research mode permission policy denied web_fetch: %q", result.Reason)
+	}
+}
+
+// TestBuildLoopWithTransport_ReadOnlyModesAllowWebFetch is the WP1
+// regression covering all four read-only modes (research, review, toil,
+// planning). Each must enable web_fetch and have a permission policy
+// that allows it through. Without table coverage, a future change that
+// special-cases just one mode would silently break the others.
+func TestBuildLoopWithTransport_ReadOnlyModesAllowWebFetch(t *testing.T) {
+	modes := []string{"research", "review", "toil", "planning"}
+	for _, mode := range modes {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("TEST_OPENAI_KEY", "test-key")
+			server := newOpenAIServer(t, nil, nil, nil)
+			defer server.Close()
+
+			timeout := 30
+			config := &types.RunConfig{
+				RunID:            "factory-test-readonly-" + mode,
+				Mode:             mode,
+				Prompt:           "hello",
+				Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+				ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+				PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+				ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+				Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+				EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+				Verifier:         types.VerifierConfig{Type: "none"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				GitStrategy:      types.GitStrategyConfig{Type: "none"},
+				TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+				Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+				MaxTurns:         2,
+				Timeout:          &timeout,
+			}
+
+			tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+			loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+			if err != nil {
+				t.Fatalf("BuildLoopWithTransport(mode=%q) error: %v", mode, err)
+			}
+			defer func() { _ = loop.Close() }()
+
+			wf := loop.Tools.Resolve("web_fetch")
+			if wf == nil {
+				t.Fatalf("expected web_fetch to be registered in mode %q", mode)
+			}
+
+			result, err := loop.Permissions.Check(context.Background(), wf.Definition(), nil)
+			if err != nil {
+				t.Fatalf("permission check returned error in mode %q: %v", mode, err)
+			}
+			if !result.Allowed {
+				t.Fatalf("mode %q permission policy denied web_fetch: %q", mode, result.Reason)
+			}
+		})
 	}
 }
 

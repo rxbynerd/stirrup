@@ -107,3 +107,13 @@ func (sl *SecurityLogger) OutputTruncated(command string, originalSize, limit in
 		"limit":        limit,
 	})
 }
+
+// PermissionDenied emits when a permission policy refuses a tool call.
+// This is distinct from a tool error: the tool was never invoked. The
+// reason field is the human-readable string returned by the policy.
+func (sl *SecurityLogger) PermissionDenied(toolName, reason string) {
+	sl.Emit("warn", "permission_denied", map[string]any{
+		"tool":   toolName,
+		"reason": reason,
+	})
+}

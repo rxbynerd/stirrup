@@ -103,10 +103,11 @@ func TestRegistry_ReplaceExisting(t *testing.T) {
 
 func TestTool_Definition(t *testing.T) {
 	tool := &Tool{
-		Name:        "my_tool",
-		Description: "My tool description",
-		InputSchema: json.RawMessage(`{"type": "object", "properties": {}}`),
-		SideEffects: true,
+		Name:              "my_tool",
+		Description:       "My tool description",
+		InputSchema:       json.RawMessage(`{"type": "object", "properties": {}}`),
+		WorkspaceMutating: true,
+		RequiresApproval:  true,
 	}
 
 	def := tool.Definition()

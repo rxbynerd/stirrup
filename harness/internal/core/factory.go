@@ -228,6 +228,17 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return json.Marshal(result)
 		}
 		registry.Register(builtins.SpawnAgentTool(spawner))
+
+		// The ask-upstream policy snapshots the approval-required tool
+		// set at construction time, but spawn_agent is registered
+		// after the policy is built. Refresh it here so spawn_agent
+		// calls are gated by the control plane rather than silently
+		// auto-allowed. (See TestApprovalRequiredToolSet which asserts
+		// the load-bearing absence of spawn_agent in the unrefreshed
+		// set.)
+		if ask, ok := pp.(*permission.AskUpstreamPolicy); ok {
+			ask.AddApprovalTool("spawn_agent")
+		}
 	}
 
 	return loop, nil
@@ -515,10 +526,11 @@ func editToolEnabled(enabled []string, actualName string) bool {
 func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 	definition := es.ToolDefinition()
 	return &tool.Tool{
-		Name:        definition.Name,
-		Description: definition.Description,
-		InputSchema: definition.InputSchema,
-		SideEffects: true,
+		Name:              definition.Name,
+		Description:       definition.Description,
+		InputSchema:       definition.InputSchema,
+		WorkspaceMutating: true,
+		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			result, err := es.Apply(ctx, input, exec)
 			if err != nil {
@@ -590,29 +602,47 @@ func buildPermissionPolicy(cfg types.PermissionPolicyConfig, registry *tool.Regi
 	case "allow-all":
 		return permission.NewAllowAll()
 	case "deny-side-effects":
-		// Build the set of side-effecting tool names from the registry.
-		sideEffecting := sideEffectingToolSet(registry)
-		return permission.NewDenySideEffects(sideEffecting)
+		// DenySideEffects rejects only tools that mutate workspace
+		// state. Tools whose only sensitivity is "operator should
+		// approve" (web_fetch, spawn_agent) are still allowed —
+		// research-mode users explicitly enable them.
+		return permission.NewDenySideEffects(mutatingToolSet(registry))
 	case "ask-upstream":
-		sideEffecting := sideEffectingToolSet(registry)
+		// AskUpstreamPolicy prompts on tools whose RequiresApproval
+		// flag is set. This includes mutating tools but also covers
+		// non-mutating-but-sensitive tools.
 		timeout := time.Duration(cfg.Timeout) * time.Second
-		return permission.NewAskUpstreamPolicy(tp, sideEffecting, timeout)
+		return permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout)
 	default:
 		return permission.NewAllowAll()
 	}
 }
 
-// sideEffectingToolSet builds a set of tool names that have side effects
-// from the tool registry.
-func sideEffectingToolSet(registry *tool.Registry) map[string]bool {
-	sideEffecting := make(map[string]bool)
+// mutatingToolSet returns the names of registered tools that mutate
+// workspace state. DenySideEffects denies exactly this set.
+func mutatingToolSet(registry *tool.Registry) map[string]bool {
+	out := make(map[string]bool)
 	for _, td := range registry.List() {
 		t := registry.Resolve(td.Name)
-		if t != nil && t.SideEffects {
-			sideEffecting[td.Name] = true
+		if t != nil && t.WorkspaceMutating {
+			out[td.Name] = true
 		}
 	}
-	return sideEffecting
+	return out
+}
+
+// approvalRequiredToolSet returns the names of registered tools that
+// require upstream operator approval before being executed.
+// AskUpstreamPolicy prompts on exactly this set.
+func approvalRequiredToolSet(registry *tool.Registry) map[string]bool {
+	out := make(map[string]bool)
+	for _, td := range registry.List() {
+		t := registry.Resolve(td.Name)
+		if t != nil && t.RequiresApproval {
+			out[td.Name] = true
+		}
+	}
+	return out
 }
 
 func buildTransport(ctx context.Context, cfg types.TransportConfig) (transport.Transport, error) {

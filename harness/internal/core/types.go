@@ -117,8 +117,11 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false
 	}
 
-	// Check permissions for side-effecting tools.
-	if t.SideEffects {
+	// Check permissions for tools that mutate the workspace or that
+	// otherwise require upstream approval (e.g. network-touching tools
+	// like web_fetch, or budget-consuming tools like spawn_agent). The
+	// permission policy decides what to actually do with each flag.
+	if t.WorkspaceMutating || t.RequiresApproval {
 		_, permSpan := l.Tracer.Start(l.traceCtx(ctx), "permission.check",
 			oteltrace.WithAttributes(
 				attribute.String("tool.name", call.Name),
@@ -134,6 +137,9 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		permSpan.SetAttributes(attribute.Bool("permission.allowed", result.Allowed))
 		permSpan.End()
 		if !result.Allowed {
+			if l.Security != nil {
+				l.Security.PermissionDenied(call.Name, result.Reason)
+			}
 			return "Permission denied: " + result.Reason, false
 		}
 	}

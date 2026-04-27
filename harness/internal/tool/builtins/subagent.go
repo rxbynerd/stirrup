@@ -46,7 +46,13 @@ func SpawnAgentTool(spawner SubAgentSpawner) *tool.Tool {
 		Name:        "spawn_agent",
 		Description: "Spawn a sub-agent to handle a subtask. The sub-agent has access to the same workspace and tools but runs independently with its own conversation history. Use for tasks that benefit from a fresh context or that can be performed independently.",
 		InputSchema: spawnAgentSchema,
-		SideEffects: true,
+		// The spawn_agent tool itself does not mutate the workspace —
+		// the sub-agent it launches is gated by its own permission
+		// policy. We do however require upstream approval because
+		// spawning an agent consumes additional model budget and the
+		// operator may want to opt in to that.
+		WorkspaceMutating: false,
+		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				Prompt   string `json:"prompt"`
