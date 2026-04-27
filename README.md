@@ -45,6 +45,7 @@ go run ./harness/cmd/stirrup harness --prompt "Your task here"
 
 | Flag | Default | Description |
 |---|---|---|
+| `--config` | (none) | Path to a JSON `RunConfig` file (mirrors `proto/harness/v1/harness.proto`). When set, explicitly-set flags override individual fields; unset flags do not. |
 | `--prompt` | (required) | User prompt, also accepted as a positional argument |
 | `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
 | `--model` | `claude-sonnet-4-6` | Model to use |
@@ -58,6 +59,29 @@ go run ./harness/cmd/stirrup harness --prompt "Your task here"
 | `--transport-addr` | (none) | gRPC target address, required when transport is grpc |
 | `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups, also configurable via `STIRRUP_FOLLOWUP_GRACE` |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
+| `--executor` | `local` | Executor: local, container, api |
+| `--edit-strategy` | `multi` | Edit strategy: whole-file, search-replace, udiff, multi (composite available only via `--config`) |
+| `--verifier` | `none` | Verifier: none, test-runner, llm-judge (composite available only via `--config`) |
+| `--git-strategy` | `none` | Git strategy: none, deterministic |
+| `--trace-emitter` | `jsonl` | Trace emitter: jsonl, otel |
+| `--otel-endpoint` | (none) | OTLP endpoint for the otel trace emitter (default: localhost:4317) |
+
+#### Configuration precedence
+
+When `--config <path>` is set, the file populates the full `RunConfig`.
+Explicitly-set flags then override individual fields; flags left at their
+default value do **not** override the file. When `--config` is not
+provided, flags + their defaults build the `RunConfig` directly.
+
+The default edit strategy is `multi` — the unified `edit_file` tool with
+fallback across udiff, search-replace, and whole-file. Callers that
+configure `write_file`, `search_replace`, or `apply_diff` in `tools.builtIn`
+are aliased to the multi-strategy's `edit_file` tool, so the behavioural
+contract is preserved.
+
+See [`examples/runconfig/`](examples/runconfig/) for a fully-populated
+config that exercises the container executor, OTel emitter, deterministic
+git, dynamic router, and an MCP server.
 
 ### Example
 
@@ -67,6 +91,10 @@ ANTHROPIC_API_KEY=sk-ant-... ./stirrup harness \
   --mode execution \
   --max-turns 10 \
   --trace trace.jsonl
+
+# Or load a full RunConfig from a file:
+./stirrup harness --config examples/runconfig/full.json \
+  --prompt "Fix the failing test in main_test.go"
 ```
 
 ## Eval CLI
