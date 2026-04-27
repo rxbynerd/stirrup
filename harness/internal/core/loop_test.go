@@ -530,7 +530,8 @@ func TestLoop_ContextCancelled(t *testing.T) {
 	loop := buildTestLoop(prov)
 	config := buildTestConfig()
 
-	// Cancel the context before running.
+	// Cancel the context before running. With no cause attached this is a
+	// plain/signal-style cancel and maps to outcome="cancelled".
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -541,8 +542,8 @@ func TestLoop_ContextCancelled(t *testing.T) {
 	if runTrace == nil {
 		t.Fatal("expected non-nil RunTrace even on context cancellation")
 	}
-	if runTrace.Outcome != "error" {
-		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
+	if runTrace.Outcome != "cancelled" {
+		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
 	}
 }
 

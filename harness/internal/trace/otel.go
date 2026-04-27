@@ -63,6 +63,15 @@ func newOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
 	}
 }
 
+// NewOTelTraceEmitterForTest is the exported wrapper of the test-only
+// constructor. It lets tests in other packages (notably core) build an
+// OTelTraceEmitter around an in-memory TracerProvider so they can assert
+// on emitted spans without spinning up an OTLP collector. Not intended for
+// production use.
+func NewOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
+	return newOTelTraceEmitterForTest(tp)
+}
+
 // Start initialises a new trace with the given run ID and configuration.
 // It creates the root "run" span.
 func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {

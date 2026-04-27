@@ -21,8 +21,9 @@ import (
 
 // outcomeCtxDone is a sentinel outcome returned by runInnerLoop when the
 // loop observes ctx.Done(). The outer Run loop inspects context.Cause to
-// translate this into a user-visible outcome: "cancelled" (control plane),
-// "timeout" (deadline), or "error" (caller/unknown).
+// translate this into a user-visible outcome: "cancelled" (control plane
+// or plain/signal cancel), "timeout" (deadline), or "error" (non-nil but
+// unrecognised cause).
 const outcomeCtxDone = "_ctx_done"
 
 const (
@@ -200,12 +201,24 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		})
 	}
 
+	// Cancellation wins over verification-path outcomes. A cancel arriving
+	// between the inner loop returning and Verify completing can otherwise
+	// cause Verify to return a ctx-cancelled error and set
+	// outcome="verification_error", masking the true termination reason on
+	// the wire. If the run context is done, reclassify so the cancel/timeout
+	// path below runs.
+	if runCtx.Err() != nil && outcome != outcomeCtxDone {
+		outcome = outcomeCtxDone
+	}
+
 	// If the inner loop exited because the context was cancelled, inspect
 	// the cause to distinguish control-plane cancellation ("cancelled"),
-	// deadline expiry ("timeout"), and anything else ("error").
+	// deadline expiry ("timeout"), plain/signal cancel ("cancelled"), and
+	// anything else ("error").
 	if outcome == outcomeCtxDone {
-		outcome = classifyCtxOutcome(context.Cause(runCtx))
-		l.setRootCancelAttribute(outcome)
+		cause := context.Cause(runCtx)
+		outcome = classifyCtxOutcome(cause)
+		l.setRootCancelAttribute(cause)
 	}
 
 	// Finalise git. Use the parent ctx here: if the run was cancelled, we
@@ -254,17 +267,25 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 // classifyCtxOutcome maps a context cancellation cause onto the outcome
 // string reported on the "done" event and recorded in RunTrace.Outcome.
+//
+// A nil cause or a bare context.Canceled indicates the run was cancelled
+// via a plain cancel() without a cause attached — e.g. SIGINT/SIGTERM via
+// the root cobra signal handler, or a caller invoking context.WithCancel
+// on a parent and then cancel() (which propagates context.Canceled as the
+// cause of our WithCancelCause child). The spec treats this as a
+// user-initiated cancellation, distinct from a deadline-driven timeout or
+// an internal error. A non-nil cause that is neither a recognised cancel
+// sentinel nor a deadline is surfaced as "error" since we cannot attribute
+// it to a known cancel or timeout path.
 func classifyCtxOutcome(cause error) string {
 	switch {
 	case errors.Is(cause, ErrCancelledByControlPlane):
 		return "cancelled"
 	case errors.Is(cause, context.DeadlineExceeded):
 		return "timeout"
-	case cause != nil:
-		// context.Canceled from the caller or any other wrapped cause.
-		return "error"
+	case cause == nil, errors.Is(cause, context.Canceled):
+		return "cancelled"
 	default:
-		// Unexpected: the inner loop saw ctx.Done() but no cause was set.
 		return "error"
 	}
 }
@@ -273,7 +294,17 @@ func classifyCtxOutcome(cause error) string {
 // context cancellation so operators can filter cancelled runs from timed-out
 // or errored runs in tracing backends. Only applied when the run actually
 // ended via ctx cancellation.
-func (l *AgenticLoop) setRootCancelAttribute(outcome string) {
+//
+// The attribute is derived from the context cause so that a plain/signal
+// cancel and a control-plane cancel are distinguished on the span even
+// though both map to outcome="cancelled".
+//
+//	run.cancelled_by="control_plane" — ErrCancelledByControlPlane cause
+//	run.cancelled_by="deadline"      — context.DeadlineExceeded cause
+//	run.cancelled_by="signal"        — nil cause or bare context.Canceled
+//	                                   (plain cancel(), SIGINT, etc.)
+//	(no attribute)                   — non-nil unrecognised cause ("error")
+func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 	otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter)
 	if !ok {
 		return
@@ -283,14 +314,15 @@ func (l *AgenticLoop) setRootCancelAttribute(outcome string) {
 		return
 	}
 	var reason string
-	switch outcome {
-	case "cancelled":
+	switch {
+	case errors.Is(cause, ErrCancelledByControlPlane):
 		reason = "control_plane"
-	case "timeout":
+	case errors.Is(cause, context.DeadlineExceeded):
 		reason = "deadline"
-	case "error":
+	case cause == nil, errors.Is(cause, context.Canceled):
 		reason = "signal"
 	default:
+		// Non-nil unrecognised cause → outcome=="error"; no attribute.
 		return
 	}
 	span.SetAttributes(attribute.String("run.cancelled_by", reason))
