@@ -57,10 +57,11 @@ var listDirectorySchema = json.RawMessage(`{
 // ReadFileTool returns a tool that reads a file from the workspace.
 func ReadFileTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:        "read_file",
-		Description: "Read the contents of a file from the workspace.",
-		InputSchema: readFileSchema,
-		SideEffects: false,
+		Name:              "read_file",
+		Description:       "Read the contents of a file from the workspace.",
+		InputSchema:       readFileSchema,
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				Path string `json:"path"`
@@ -79,10 +80,11 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 // WriteFileTool returns a tool that writes content to a file in the workspace.
 func WriteFileTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:        "write_file",
-		Description: "Write content to a file in the workspace. Creates parent directories as needed.",
-		InputSchema: writeFileSchema,
-		SideEffects: true,
+		Name:              "write_file",
+		Description:       "Write content to a file in the workspace. Creates parent directories as needed.",
+		InputSchema:       writeFileSchema,
+		WorkspaceMutating: true,
+		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				Path    string `json:"path"`
@@ -105,10 +107,11 @@ func WriteFileTool(exec executor.Executor) *tool.Tool {
 // ListDirectoryTool returns a tool that lists the contents of a directory.
 func ListDirectoryTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:        "list_directory",
-		Description: "List the contents of a directory in the workspace. Directories have a trailing slash.",
-		InputSchema: listDirectorySchema,
-		SideEffects: false,
+		Name:              "list_directory",
+		Description:       "List the contents of a directory in the workspace. Directories have a trailing slash.",
+		InputSchema:       listDirectorySchema,
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				Path string `json:"path"`

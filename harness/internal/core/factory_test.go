@@ -689,16 +689,16 @@ func TestSideEffectingToolSet(t *testing.T) {
 
 	sideEffecting := sideEffectingToolSet(registry)
 
-	// write_file and run_command are side-effecting.
+	// write_file and run_command are workspace-mutating and require approval.
 	if !sideEffecting["write_file"] {
-		t.Fatal("write_file should be side-effecting")
+		t.Fatal("write_file should be in the gating set")
 	}
 	if !sideEffecting["run_command"] {
-		t.Fatal("run_command should be side-effecting")
+		t.Fatal("run_command should be in the gating set")
 	}
-	// read_file is not side-effecting.
+	// read_file does not need gating.
 	if sideEffecting["read_file"] {
-		t.Fatal("read_file should not be side-effecting")
+		t.Fatal("read_file should not be in the gating set")
 	}
 }
 

@@ -26,20 +26,22 @@ import (
 func buildSubAgentTestLoop(prov *mockProvider) *AgenticLoop {
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "test_tool",
-		Description: "A test tool",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		SideEffects: false,
+		Name:              "test_tool",
+		Description:       "A test tool",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "tool result", nil
 		},
 	})
 	// Register a spawn_agent tool to verify it gets filtered for the child.
 	registry.Register(&tool.Tool{
-		Name:        "spawn_agent",
-		Description: "Spawn a sub-agent",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		SideEffects: true,
+		Name:              "spawn_agent",
+		Description:       "Spawn a sub-agent",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  true,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "should not be called", nil
 		},

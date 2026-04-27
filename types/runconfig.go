@@ -352,7 +352,7 @@ func IsReadOnlyMode(mode string) bool {
 // DefaultReadOnlyBuiltInTools returns the default set of built-in tools
 // enabled for read-only modes when the caller has not supplied an explicit
 // Tools.BuiltIn list. The list deliberately excludes every tool in
-// writeCapableTools so the result always passes ValidateRunConfig for a
+// mutatingTools so the result always passes ValidateRunConfig for a
 // read-only mode.
 func DefaultReadOnlyBuiltInTools() []string {
 	return []string{
@@ -364,7 +364,13 @@ func DefaultReadOnlyBuiltInTools() []string {
 	}
 }
 
-var writeCapableTools = map[string]bool{
+// mutatingTools enumerates built-in tools that mutate workspace state and
+// must therefore be excluded from read-only modes (research, review,
+// planning, toil). Other policy-relevant attributes (such as whether a
+// tool requires upstream approval) live on the Tool struct itself; this
+// list exists purely so RunConfig validation can reject impossible
+// combinations before the harness boots.
+var mutatingTools = map[string]bool{
 	"write_file":  true,
 	"run_command": true,
 }
@@ -417,7 +423,7 @@ func ValidateRunConfig(config *RunConfig) error {
 				config.Mode))
 		} else {
 			for _, tool := range config.Tools.BuiltIn {
-				if writeCapableTools[tool] {
+				if mutatingTools[tool] {
 					errs = append(errs, fmt.Sprintf("read-only mode %q must not enable write tool %q", config.Mode, tool))
 				}
 			}

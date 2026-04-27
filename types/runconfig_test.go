@@ -334,7 +334,7 @@ func TestValidateRunConfig_ReadOnlyModeWithOnlyReadTools(t *testing.T) {
 // that DefaultReadOnlyBuiltInTools() is always a valid Tools.BuiltIn list
 // for every read-only mode. Callers (notably the stirrup CLI) rely on
 // this: if someone adds a new mode to readOnlyModes, or adds a new tool
-// to writeCapableTools that happens to also live in the default list,
+// to mutatingTools that happens to also live in the default list,
 // this test catches it before ValidateRunConfig starts rejecting every
 // run booted in that mode.
 func TestDefaultReadOnlyBuiltInTools_PassesValidation(t *testing.T) {
@@ -343,10 +343,10 @@ func TestDefaultReadOnlyBuiltInTools_PassesValidation(t *testing.T) {
 		t.Fatal("DefaultReadOnlyBuiltInTools returned an empty list")
 	}
 
-	// Sanity: none of the defaults should be a known write-capable tool.
+	// Sanity: none of the defaults should be a known mutating tool.
 	for _, tool := range defaults {
-		if writeCapableTools[tool] {
-			t.Errorf("DefaultReadOnlyBuiltInTools contains write-capable tool %q", tool)
+		if mutatingTools[tool] {
+			t.Errorf("DefaultReadOnlyBuiltInTools contains mutating tool %q", tool)
 		}
 		if !validBuiltInToolNames[tool] {
 			t.Errorf("DefaultReadOnlyBuiltInTools contains unknown tool %q", tool)
