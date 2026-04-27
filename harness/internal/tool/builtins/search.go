@@ -39,10 +39,11 @@ const searchTimeout = 30 * time.Second
 // name pattern (glob) within the workspace.
 func SearchFilesTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:        "search_files",
-		Description: "Search for files in the workspace. Use type 'grep' to search file contents with a regex, or 'glob' to find files matching a name pattern.",
-		InputSchema: searchFilesSchema,
-		SideEffects: false,
+		Name:              "search_files",
+		Description:       "Search for files in the workspace. Use type 'grep' to search file contents with a regex, or 'glob' to find files matching a name pattern.",
+		InputSchema:       searchFilesSchema,
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				Pattern string `json:"pattern"`

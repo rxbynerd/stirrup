@@ -157,8 +157,11 @@ func TestConnect_ToolDiscovery(t *testing.T) {
 	if resolved == nil {
 		t.Fatal("Resolve returned nil for mcp_docs_search")
 	}
-	if !resolved.SideEffects {
-		t.Error("MCP tools should default to SideEffects=true")
+	if !resolved.WorkspaceMutating {
+		t.Error("MCP tools should default to WorkspaceMutating=true")
+	}
+	if !resolved.RequiresApproval {
+		t.Error("MCP tools should default to RequiresApproval=true")
 	}
 }
 

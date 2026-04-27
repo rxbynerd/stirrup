@@ -67,10 +67,11 @@ func buildTestLoop(prov *mockProvider) *AgenticLoop {
 	registry := tool.NewRegistry()
 	// Register a simple test tool.
 	registry.Register(&tool.Tool{
-		Name:        "test_tool",
-		Description: "A test tool",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		SideEffects: false,
+		Name:              "test_tool",
+		Description:       "A test tool",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "tool result", nil
 		},
@@ -370,13 +371,14 @@ func (c *closeTracker) Close() error {
 func TestDispatchToolCall_PermissionDenied(t *testing.T) {
 	loop := buildTestLoop(&mockProvider{})
 
-	// Register a side-effecting tool.
+	// Register a workspace-mutating tool.
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "dangerous_tool",
-		Description: "A tool with side effects",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		SideEffects: true,
+		Name:              "dangerous_tool",
+		Description:       "A tool that mutates the workspace",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: true,
+		RequiresApproval:  true,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "should not reach here", nil
 		},
@@ -409,10 +411,11 @@ func TestDispatchToolCall_ToolHandlerError(t *testing.T) {
 	// Register a tool whose handler returns an error.
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "broken_tool",
-		Description: "A tool that always errors",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		SideEffects: false,
+		Name:              "broken_tool",
+		Description:       "A tool that always errors",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "", errors.New("handler exploded")
 		},
@@ -440,10 +443,11 @@ func TestDispatchToolCall_InvalidInput(t *testing.T) {
 	// Register a tool that requires a "path" field.
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "strict_tool",
-		Description: "A tool with required fields",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
-		SideEffects: false,
+		Name:              "strict_tool",
+		Description:       "A tool with required fields",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "should not reach here", nil
 		},

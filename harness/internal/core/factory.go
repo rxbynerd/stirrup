@@ -515,10 +515,11 @@ func editToolEnabled(enabled []string, actualName string) bool {
 func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 	definition := es.ToolDefinition()
 	return &tool.Tool{
-		Name:        definition.Name,
-		Description: definition.Description,
-		InputSchema: definition.InputSchema,
-		SideEffects: true,
+		Name:              definition.Name,
+		Description:       definition.Description,
+		InputSchema:       definition.InputSchema,
+		WorkspaceMutating: true,
+		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			result, err := es.Apply(ctx, input, exec)
 			if err != nil {
@@ -603,12 +604,15 @@ func buildPermissionPolicy(cfg types.PermissionPolicyConfig, registry *tool.Regi
 }
 
 // sideEffectingToolSet builds a set of tool names that have side effects
-// from the tool registry.
+// from the tool registry. After the WP1 split this combines the
+// WorkspaceMutating and RequiresApproval flags so that legacy callers
+// continue to receive a superset of "tools that need gating". The factory
+// will replace this with the more specific helpers in a follow-up commit.
 func sideEffectingToolSet(registry *tool.Registry) map[string]bool {
 	sideEffecting := make(map[string]bool)
 	for _, td := range registry.List() {
 		t := registry.Resolve(td.Name)
-		if t != nil && t.SideEffects {
+		if t != nil && (t.WorkspaceMutating || t.RequiresApproval) {
 			sideEffecting[td.Name] = true
 		}
 	}
