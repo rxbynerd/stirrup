@@ -166,6 +166,9 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		permSpan.SetAttributes(attribute.Bool("permission.allowed", result.Allowed))
 		permSpan.End()
 		if !result.Allowed {
+			if l.Security != nil {
+				l.Security.PermissionDenied(call.Name, result.Reason)
+			}
 			return "Permission denied: " + result.Reason, false
 		}
 	}

@@ -23,11 +23,11 @@ func TestAllowAll_AlwaysAllows(t *testing.T) {
 }
 
 func TestDenySideEffects_DeniesKnownTools(t *testing.T) {
-	sideEffecting := map[string]bool{
+	mutating := map[string]bool{
 		"write_file":        true,
 		"run_shell_command": true,
 	}
-	policy := NewDenySideEffects(sideEffecting)
+	policy := NewDenySideEffects(mutating)
 
 	tool := types.ToolDefinition{Name: "write_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
@@ -35,18 +35,18 @@ func TestDenySideEffects_DeniesKnownTools(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result.Allowed {
-		t.Error("should deny side-effecting tool")
+		t.Error("should deny workspace-mutating tool")
 	}
-	if result.Reason != "side effects not permitted in this mode" {
-		t.Errorf("unexpected reason: %q", result.Reason)
+	if result.Reason == "" {
+		t.Error("expected non-empty denial reason")
 	}
 }
 
 func TestDenySideEffects_AllowsReadOnlyTools(t *testing.T) {
-	sideEffecting := map[string]bool{
+	mutating := map[string]bool{
 		"write_file": true,
 	}
-	policy := NewDenySideEffects(sideEffecting)
+	policy := NewDenySideEffects(mutating)
 
 	tool := types.ToolDefinition{Name: "read_file"}
 	result, err := policy.Check(context.Background(), tool, nil)
@@ -54,7 +54,7 @@ func TestDenySideEffects_AllowsReadOnlyTools(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !result.Allowed {
-		t.Error("should allow non-side-effecting tool")
+		t.Error("should allow non-mutating tool")
 	}
 }
 

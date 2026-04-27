@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -255,4 +257,101 @@ func newOpenAIServer(t *testing.T, hits *atomic.Int32, responses []string, reque
 
 func openAIChunk(payload string) string {
 	return "data: " + payload + "\n\n"
+}
+
+// TestBuildLoop_ResearchModeWebFetchEndToEnd is the WP1 end-to-end
+// regression. With deny-side-effects active, a research-mode run that
+// asks the model to call web_fetch must not record any
+// "Permission denied" tool result. Before the WP1 fix the conflated
+// SideEffects flag caused every web_fetch to be denied.
+//
+// We replace the real web_fetch handler with a stub after the loop is
+// built so the test does not need network access; the permission gate
+// runs *before* the handler, so this still exercises the policy path.
+func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+
+	server := newOpenAIServer(t, nil, []string{
+		// Turn 1: model requests web_fetch.
+		openAIChunk(`{"id":"rs-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"web_fetch","arguments":"{\"url\":\"https://example.com/\"}"}}]},"finish_reason":null}]}`) +
+			openAIChunk(`{"id":"rs-1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`) +
+			"data: [DONE]\n\n",
+		// Turn 2: model produces final answer.
+		openAIChunk(`{"id":"rs-2","choices":[{"index":0,"delta":{"content":"summary"},"finish_reason":null}]}`) +
+			openAIChunk(`{"id":"rs-2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) +
+			"data: [DONE]\n\n",
+	}, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "integration-research-webfetch",
+		Mode:             "research",
+		Prompt:           "Look up example.com",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "gpt-4o-mini"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		MaxTurns:         4,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	// Replace web_fetch with a stub so the test does not depend on
+	// network access. The permission policy runs *before* the handler,
+	// so this still exercises the WP1 gating path.
+	registry, ok := loop.Tools.(*tool.Registry)
+	if !ok {
+		t.Fatalf("expected *tool.Registry, got %T", loop.Tools)
+	}
+	original := registry.Resolve("web_fetch")
+	if original == nil {
+		t.Fatal("expected web_fetch tool to be registered in research mode")
+	}
+	registry.Register(&tool.Tool{
+		Name:              original.Name,
+		Description:       original.Description,
+		InputSchema:       original.InputSchema,
+		WorkspaceMutating: original.WorkspaceMutating,
+		RequiresApproval:  original.RequiresApproval,
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "stubbed body", nil
+		},
+	})
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if runTrace.Outcome != "success" {
+		t.Fatalf("expected research run to succeed, got outcome %q", runTrace.Outcome)
+	}
+	// At least one web_fetch call should have been recorded, and none
+	// of the recorded calls should report a permission denial.
+	var sawWebFetch bool
+	for _, call := range runTrace.ToolCalls {
+		if call.Name == "web_fetch" {
+			sawWebFetch = true
+		}
+		if !call.Success && strings.Contains(call.ErrorReason, "Permission denied") {
+			t.Errorf("tool call %q was denied by permission policy: %s", call.Name, call.ErrorReason)
+		}
+	}
+	if !sawWebFetch {
+		t.Fatal("expected at least one web_fetch call in run trace")
+	}
 }

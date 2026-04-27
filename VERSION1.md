@@ -37,7 +37,7 @@ Every run is fully described by a `RunConfig` — a declarative specification of
 | 6 | Executor (sandbox) | `Executor` | Local (tier 1), container/Docker (tier 2), API/GitHub (tier 0), replay (eval) |
 | 7 | Edit strategy | `EditStrategy` | Whole-file, search-replace, unified diff, multi-strategy with fallback |
 | 8 | Verifier | `Verifier` | None, test-runner, LLM-as-judge, composite |
-| 9 | Permission policy | `PermissionPolicy` | Allow-all, deny-side-effects, ask-upstream (with configurable timeout) |
+| 9 | Permission policy | `PermissionPolicy` | Allow-all, deny-side-effects (denies workspace-mutating tools only), ask-upstream (prompts on tools whose `RequiresApproval` flag is set) |
 | 10 | Transport | `Transport` | Stdio (NDJSON), gRPC bidi streaming, null (sub-agents) |
 | 11 | Git strategy | `GitStrategy` | None, deterministic |
 | 12 | Trace emitter | `TraceEmitter` | JSONL, OpenTelemetry (OTLP/gRPC) |
