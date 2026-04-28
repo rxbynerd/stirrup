@@ -66,6 +66,33 @@ func TestDefaultPromptBuilder_DynamicContext(t *testing.T) {
 	}
 }
 
+func TestDefaultPromptBuilder_DynamicContextSanitization(t *testing.T) {
+	b := NewDefaultPromptBuilder()
+	longValue := "<evil>safe</evil><!-- hidden --><?xml version=\"1.0\"?><!DOCTYPE html>" + strings.Repeat("a", 50001)
+
+	result, err := b.Build(context.Background(), PromptContext{
+		Mode: "execution",
+		DynamicContext: map[string]string{
+			"issue": longValue,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build() error: %v", err)
+	}
+
+	for _, forbidden := range []string{"<evil>", "</evil>", "<!-- hidden -->", "<?xml", "<!DOCTYPE"} {
+		if strings.Contains(result, forbidden) {
+			t.Fatalf("dynamic context should not contain %q:\n%s", forbidden, result)
+		}
+	}
+	if strings.Contains(result, strings.Repeat("a", 50001)) {
+		t.Fatal("dynamic context should be truncated")
+	}
+	if !strings.Contains(result, "safe"+strings.Repeat("a", 49996)) {
+		t.Fatal("dynamic context should preserve sanitized content up to 50K chars")
+	}
+}
+
 func TestDefaultPromptBuilder_DynamicContextOrder(t *testing.T) {
 	b := NewDefaultPromptBuilder()
 

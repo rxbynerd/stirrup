@@ -107,3 +107,31 @@ func (sl *SecurityLogger) OutputTruncated(command string, originalSize, limit in
 		"limit":        limit,
 	})
 }
+
+// ToolCallGuardTriggered emits when the prompt-injection tripwire rejects a
+// tool call before dispatch.
+func (sl *SecurityLogger) ToolCallGuardTriggered(toolName string, findings []ToolGuardFinding) {
+	serialized := make([]any, 0, len(findings))
+	for _, finding := range findings {
+		serialized = append(serialized, map[string]any{
+			"rule":   finding.Rule,
+			"field":  finding.Field,
+			"reason": finding.Reason,
+		})
+	}
+	sl.Emit("warn", "tool_call_guard_triggered", map[string]any{
+		"tool":     toolName,
+		"findings": serialized,
+	})
+}
+
+// DynamicContextSanitized emits when dynamic context is modified before prompt
+// construction. The event intentionally includes metadata only.
+func (sl *SecurityLogger) DynamicContextSanitized(event DynamicContextSanitizationEvent) {
+	sl.Emit("warn", "dynamic_context_sanitized", map[string]any{
+		"key":             event.Key,
+		"originalLength":  event.OriginalLength,
+		"sanitizedLength": event.SanitizedLength,
+		"reasons":         event.Reasons,
+	})
+}
