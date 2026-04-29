@@ -97,11 +97,43 @@ ANTHROPIC_API_KEY=sk-ant-... ./stirrup harness \
   --prompt "Fix the failing test in main_test.go"
 ```
 
-## Eval CLI
+## Evaluation framework
+
+Stirrup ships a deterministic eval framework (`eval/` module, built
+as `stirrup-eval`) for catching behavioural regressions, mining
+production failures into reproducible test cases, and detecting drift
+in real-world metrics. Runs are made deterministic by replaying
+recorded model outputs (`ReplayProvider`) and tool results
+(`ReplayExecutor`) instead of hitting live providers.
+
+A run is described by an `EvalSuite` JSON file: a list of tasks, each
+with an optional repo+ref, a prompt, a mode, and a judge that decides
+whether the run passed. Judges supported in V1 are `test-command`
+(shell exit code), `file-exists`, `file-contains` (regex), and
+`composite` (`all`/`any`). Production traces and recordings are read
+through the `TraceLakehouse` interface, with a file-based adapter
+shipped for dev and CI.
+
+### Building
 
 ```bash
 go build -o stirrup-eval ./eval/cmd/eval
+```
 
+### Subcommands
+
+| Command | Purpose |
+|---|---|
+| `run` | Execute a suite: clone task repos, invoke the harness binary per task, apply judges, write `result.json`. |
+| `compare` | Diff two `result.json` files; flag regressions and improvements; **exits 1 on regressions** (this is the CI gate). |
+| `baseline` | Pull aggregate metrics (pass rate, mean turns, p50/p95 duration) from a lakehouse for use as experiment baselines. |
+| `mine-failures` | Query non-success runs from a lakehouse and emit them as an `EvalSuite` JSON file. |
+| `drift` | Compare metrics between two adjacent time windows; **exits 1** when pass rate drops >5pp or mean turns increase >20%. |
+| `compare-to-production` | Diff a `SuiteResult` against production metrics from a lakehouse. |
+
+Quick examples:
+
+```bash
 ./stirrup-eval run --suite path/to/suite.json --output results/ --harness ./stirrup
 ./stirrup-eval compare --current results/result.json --baseline baseline/result.json
 ./stirrup-eval baseline --lakehouse path/to/lakehouse --output metrics.json
@@ -109,6 +141,15 @@ go build -o stirrup-eval ./eval/cmd/eval
 ./stirrup-eval drift --lakehouse path/to/lakehouse --window 7d
 ./stirrup-eval compare-to-production --results results/result.json --lakehouse path/to/lakehouse
 ```
+
+CI runs every suite in `eval/suites/` against committed baselines in
+`eval/baselines/` via the `eval-gate` job (after `verify` passes on
+`main`). A non-zero exit from `compare` blocks the container publish.
+
+See [`docs/eval.md`](docs/eval.md) for the full reference: suite
+schema, judge semantics, replay model, lakehouse interface, every
+flag for every subcommand, and recommended workflows for adding a
+regression suite, monitoring drift, and iterating on judges.
 
 ## Architecture
 
