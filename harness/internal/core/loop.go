@@ -13,6 +13,7 @@ import (
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
@@ -72,11 +73,21 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	stopHeartbeat := l.startHeartbeat(ctx, 30*time.Second)
 
 	// Build the system prompt.
+	dynamicContext := config.DynamicContext
+	if len(dynamicContext) > 0 {
+		var events []security.DynamicContextSanitizationEvent
+		dynamicContext, events = security.SanitizeDynamicContext(dynamicContext)
+		if l.Security != nil {
+			for _, event := range events {
+				l.Security.DynamicContextSanitized(event)
+			}
+		}
+	}
 	systemPrompt, err := l.Prompt.Build(ctx, prompt.PromptContext{
 		Mode:           config.Mode,
 		Workspace:      config.Executor.Workspace,
 		MaxTurns:       config.MaxTurns,
-		DynamicContext: config.DynamicContext,
+		DynamicContext: dynamicContext,
 	})
 	if err != nil {
 		return l.finishWithError(ctx, fmt.Errorf("build system prompt: %w", err))

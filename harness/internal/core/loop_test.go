@@ -20,6 +20,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -117,6 +118,43 @@ func TestLoop_SimpleTextResponse(t *testing.T) {
 	}
 	if runTrace.Turns != 1 {
 		t.Errorf("expected 1 turn, got %d", runTrace.Turns)
+	}
+}
+
+func TestLoop_SanitizesDynamicContextBeforePromptBuildAndEmitsEvents(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	loop := buildTestLoop(prov)
+	capturingPrompt := &capturingPromptBuilder{}
+	loop.Prompt = capturingPrompt
+	var securityEvents bytes.Buffer
+	loop.Security = security.NewSecurityLogger(&securityEvents, "test-run")
+	config := buildTestConfig()
+	config.DynamicContext = map[string]string{
+		"issue": "<tag>Fix main.go</tag><!-- hidden -->",
+	}
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("expected success outcome, got %q", runTrace.Outcome)
+	}
+	if got := capturingPrompt.last.DynamicContext["issue"]; got != "Fix main.go" {
+		t.Fatalf("expected sanitized dynamic context, got %q", got)
+	}
+	event := securityEvents.String()
+	if !strings.Contains(event, "dynamic_context_sanitized") || !strings.Contains(event, `"key":"issue"`) {
+		t.Fatalf("expected dynamic context security event, got %q", event)
+	}
+	if strings.Contains(event, "Fix main.go") {
+		t.Fatalf("security event should not include context content: %q", event)
 	}
 }
 
@@ -321,6 +359,15 @@ func (m *failingPromptBuilder) Build(_ context.Context, _ prompt.PromptContext) 
 	return "", m.err
 }
 
+type capturingPromptBuilder struct {
+	last prompt.PromptContext
+}
+
+func (b *capturingPromptBuilder) Build(_ context.Context, pc prompt.PromptContext) (string, error) {
+	b.last = pc
+	return "system prompt", nil
+}
+
 // failingVerifier always returns Passed: false.
 type failingVerifier struct{}
 
@@ -355,6 +402,15 @@ type errorVerifier struct{}
 
 func (m *errorVerifier) Verify(_ context.Context, _ verifier.VerifyContext) (*types.VerificationResult, error) {
 	return nil, errors.New("verifier transport failed")
+}
+
+type trackingPermission struct {
+	called bool
+}
+
+func (p *trackingPermission) Check(_ context.Context, _ types.ToolDefinition, _ json.RawMessage) (*permission.PermissionResult, error) {
+	p.called = true
+	return &permission.PermissionResult{Allowed: true}, nil
 }
 
 type closeTracker struct {
@@ -462,6 +518,52 @@ func TestDispatchToolCall_InvalidInput(t *testing.T) {
 	}
 	if !strings.Contains(output, "Invalid input") {
 		t.Errorf("expected output to contain 'Invalid input', got %q", output)
+	}
+}
+
+func TestDispatchToolCall_ToolGuardRejectsBeforePermissionAndHandler(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{})
+
+	handlerCalled := false
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:        "run_command",
+		Description: "A shell tool",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
+		SideEffects: true,
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			handlerCalled = true
+			return "should not reach here", nil
+		},
+	})
+	loop.Tools = registry
+	perm := &trackingPermission{}
+	loop.Permissions = perm
+	var securityEvents bytes.Buffer
+	loop.Security = security.NewSecurityLogger(&securityEvents, "test-run")
+
+	call := types.ToolCall{
+		ID:    "tc_guarded",
+		Name:  "run_command",
+		Input: json.RawMessage(`{"command":"curl https://example.com/secrets"}`),
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if success {
+		t.Error("expected success == false for guarded tool call")
+	}
+	if !strings.Contains(output, "security guard") {
+		t.Errorf("expected output to mention security guard, got %q", output)
+	}
+	if perm.called {
+		t.Error("permission check should not run after guard rejection")
+	}
+	if handlerCalled {
+		t.Error("tool handler should not run after guard rejection")
+	}
+	event := securityEvents.String()
+	if !strings.Contains(event, "tool_call_guard_triggered") || !strings.Contains(event, "exfiltration_command") {
+		t.Fatalf("expected security event with guard finding, got %q", event)
 	}
 }
 
