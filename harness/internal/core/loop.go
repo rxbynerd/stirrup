@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -18,6 +19,12 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// outcomeCtxDone is a sentinel outcome returned by runInnerLoop when the
+// loop observes ctx.Done(). The outer Run loop inspects context.Cause to
+// translate this into a user-visible outcome: "cancelled" (control plane),
+// "timeout" (deadline), or "error" (caller/unknown).
+const outcomeCtxDone = "_ctx_done"
 
 const (
 	// maxVerificationRetries is the maximum number of times the verifier can
@@ -59,6 +66,23 @@ const (
 //	  else → feed verifier feedback back into the loop as a user message
 //	}
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
+	// Derive a cancellable context so a "cancel" ControlEvent can abort the
+	// run within one turn boundary. WithCancelCause lets us disambiguate
+	// control-plane cancellation from deadline expiry and caller cancellation
+	// later via context.Cause().
+	runCtx, cancelRun := context.WithCancelCause(ctx)
+	defer cancelRun(nil)
+
+	// Register a cancel handler on the transport. Fan-out OnControl is
+	// supported by all production transports (stdio, gRPC); sub-agents use
+	// NullTransport whose OnControl is a no-op, so this is a harmless no-op
+	// in the sub-agent case.
+	l.Transport.OnControl(func(event types.ControlEvent) {
+		if event.Type == "cancel" {
+			cancelRun(ErrCancelledByControlPlane)
+		}
+	})
+
 	// Start tracing.
 	l.Trace.Start(config.RunID, config)
 
@@ -66,11 +90,11 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
 		l.TraceContext = otelEmitter.RootContext()
 	} else {
-		l.TraceContext = ctx
+		l.TraceContext = runCtx
 	}
 
 	// Start heartbeat emission so the control plane knows we are alive.
-	stopHeartbeat := l.startHeartbeat(ctx, 30*time.Second)
+	stopHeartbeat := l.startHeartbeat(runCtx, 30*time.Second)
 
 	// Build the system prompt.
 	dynamicContext := config.DynamicContext
@@ -83,23 +107,23 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			}
 		}
 	}
-	systemPrompt, err := l.Prompt.Build(ctx, prompt.PromptContext{
+	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
 		Mode:           config.Mode,
 		Workspace:      config.Executor.Workspace,
 		MaxTurns:       config.MaxTurns,
 		DynamicContext: dynamicContext,
 	})
 	if err != nil {
-		return l.finishWithError(ctx, fmt.Errorf("build system prompt: %w", err))
+		return l.finishWithError(runCtx, fmt.Errorf("build system prompt: %w", err))
 	}
 
 	// Set up git workspace.
-	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(ctx), "git.setup")
-	if err := l.Git.Setup(ctx, config.Executor.Workspace, config.RunID); err != nil {
+	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(runCtx), "git.setup")
+	if err := l.Git.Setup(runCtx, config.Executor.Workspace, config.RunID); err != nil {
 		gitSetupSpan.RecordError(err)
 		gitSetupSpan.SetStatus(codes.Error, err.Error())
 		gitSetupSpan.End()
-		return l.finishWithError(ctx, fmt.Errorf("git setup: %w", err))
+		return l.finishWithError(runCtx, fmt.Errorf("git setup: %w", err))
 	}
 	gitSetupSpan.End()
 
@@ -121,7 +145,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.Logger.Info("run started", "mode", config.Mode, "maxTurns", config.MaxTurns)
 
 	runStart := time.Now()
-	l.Metrics.Runs.Add(ctx, 1,
+	l.Metrics.Runs.Add(runCtx, 1,
 		metric.WithAttributes(
 			attribute.String("run.mode", config.Mode),
 		),
@@ -154,7 +178,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	for verificationAttempts <= maxVerificationRetries {
 		// Run the inner agentic loop.
 		var innerOutcome string
-		messages, innerOutcome = l.runInnerLoop(ctx, config, systemPrompt, messages, tokenTracker)
+		messages, innerOutcome = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
 
 		if innerOutcome != "success" {
 			outcome = innerOutcome
@@ -162,13 +186,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 
 		// Run verifier.
-		l.Metrics.VerificationAttempts.Add(ctx, 1)
-		_, verifySpan := l.Tracer.Start(l.traceCtx(ctx), "verifier.verify",
+		l.Metrics.VerificationAttempts.Add(runCtx, 1)
+		_, verifySpan := l.Tracer.Start(l.traceCtx(runCtx), "verifier.verify",
 			oteltrace.WithAttributes(
 				attribute.Int("verifier.attempt", verificationAttempts),
 			),
 		)
-		vResult, verifyErr := l.Verifier.Verify(ctx, verifier.VerifyContext{
+		vResult, verifyErr := l.Verifier.Verify(runCtx, verifier.VerifyContext{
 			Mode:     config.Mode,
 			Executor: l.Executor,
 			Messages: messages,
@@ -207,7 +231,16 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		})
 	}
 
-	// Finalise git.
+	// If the inner loop exited because the context was cancelled, inspect
+	// the cause to distinguish control-plane cancellation ("cancelled"),
+	// deadline expiry ("timeout"), and anything else ("error").
+	if outcome == outcomeCtxDone {
+		outcome = classifyCtxOutcome(context.Cause(runCtx))
+		l.setRootCancelAttribute(outcome)
+	}
+
+	// Finalise git. Use the parent ctx here: if the run was cancelled, we
+	// still want git.Finalise to be able to persist whatever state exists.
 	_, finaliseSpan := l.Tracer.Start(l.traceCtx(ctx), "git.finalise")
 	if _, err := l.Git.Finalise(ctx); err != nil {
 		finaliseSpan.RecordError(err)
@@ -239,13 +272,59 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Stop heartbeat before finishing the trace.
 	stopHeartbeat()
 
-	// Finish trace.
+	// Finish trace using the parent ctx — the trace exporter's ForceFlush
+	// should still have a usable deadline even if the run-scoped ctx is
+	// already cancelled.
 	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
 	if traceErr != nil {
 		return nil, fmt.Errorf("finish trace: %w", traceErr)
 	}
 
 	return runTrace, nil
+}
+
+// classifyCtxOutcome maps a context cancellation cause onto the outcome
+// string reported on the "done" event and recorded in RunTrace.Outcome.
+func classifyCtxOutcome(cause error) string {
+	switch {
+	case errors.Is(cause, ErrCancelledByControlPlane):
+		return "cancelled"
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "timeout"
+	case cause != nil:
+		// context.Canceled from the caller or any other wrapped cause.
+		return "error"
+	default:
+		// Unexpected: the inner loop saw ctx.Done() but no cause was set.
+		return "error"
+	}
+}
+
+// setRootCancelAttribute tags the root "run" OTel span with the reason for
+// context cancellation so operators can filter cancelled runs from timed-out
+// or errored runs in tracing backends. Only applied when the run actually
+// ended via ctx cancellation.
+func (l *AgenticLoop) setRootCancelAttribute(outcome string) {
+	otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter)
+	if !ok {
+		return
+	}
+	span := oteltrace.SpanFromContext(otelEmitter.RootContext())
+	if !span.SpanContext().IsValid() {
+		return
+	}
+	var reason string
+	switch outcome {
+	case "cancelled":
+		reason = "control_plane"
+	case "timeout":
+		reason = "deadline"
+	case "error":
+		reason = "signal"
+	default:
+		return
+	}
+	span.SetAttributes(attribute.String("run.cancelled_by", reason))
 }
 
 // runInnerLoop runs the agentic loop turns until the model says "done",
@@ -270,10 +349,13 @@ func (l *AgenticLoop) runInnerLoop(
 			return messages, "budget_exceeded"
 		}
 
-		// Check context cancellation.
+		// Check context cancellation. Return a sentinel outcome so the
+		// outer Run loop can distinguish control-plane cancellation,
+		// deadline expiry, and caller-initiated cancellation via
+		// context.Cause().
 		select {
 		case <-ctx.Done():
-			return messages, "error"
+			return messages, outcomeCtxDone
 		default:
 		}
 
@@ -314,6 +396,9 @@ func (l *AgenticLoop) runInnerLoop(
 			contextSpan.RecordError(err)
 			contextSpan.SetStatus(codes.Error, err.Error())
 			contextSpan.End()
+			if ctx.Err() != nil {
+				return messages, outcomeCtxDone
+			}
 			return messages, "error"
 		}
 		// Publish the post-Prepare absolute token estimate so the
@@ -399,6 +484,12 @@ func (l *AgenticLoop) runInnerLoop(
 				StopReason: "error",
 				DurationMs: time.Since(turnStart).Milliseconds(),
 			})
+			// If the provider call failed because the run context was
+			// cancelled, surface that so the outer loop can classify the
+			// outcome as cancelled/timeout rather than a generic error.
+			if ctx.Err() != nil {
+				return messages, outcomeCtxDone
+			}
 			return messages, "error"
 		}
 
@@ -417,6 +508,11 @@ func (l *AgenticLoop) runInnerLoop(
 				StopReason: "error",
 				DurationMs: turnDuration.Milliseconds(),
 			})
+			// Distinguish stream-abort-due-to-ctx from other stream errors
+			// so the outer loop can classify the outcome correctly.
+			if ctx.Err() != nil {
+				return messages, outcomeCtxDone
+			}
 			return messages, "error"
 		}
 		providerSpan.SetAttributes(
@@ -583,6 +679,7 @@ func (l *AgenticLoop) runInnerLoop(
 // registration (both GRPCTransport and StdioTransport do).
 func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunConfig, graceSecs int) {
 	followUpCh := make(chan string, 1)
+	cancelCh := make(chan struct{}, 1)
 
 	loop.Transport.OnControl(func(event types.ControlEvent) {
 		switch event.Type {
@@ -592,6 +689,14 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			default:
 				// A follow-up is already queued. Drop this one; the control
 				// plane should wait for "done" before sending another request.
+			}
+		case "cancel":
+			// Exit the grace window immediately on cancel. Any in-flight
+			// Run invocation has its own cancel handler and will terminate
+			// on the next turn boundary.
+			select {
+			case cancelCh <- struct{}{}:
+			default:
 			}
 		}
 	})
@@ -620,6 +725,9 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 				// Transport already carries the error event from finishWithError.
 				return
 			}
+
+		case <-cancelCh:
+			return
 
 		case <-timer.C:
 			return

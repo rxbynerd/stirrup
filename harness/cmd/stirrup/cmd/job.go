@@ -69,13 +69,25 @@ func runJob(cmd *cobra.Command, args []string) error {
 	defer func() { _ = health.RemoveProbe("/tmp/healthy") }()
 
 	// 3. Register OnControl and block until a task_assignment arrives.
+	//    Also honour a cancel event received before any task is assigned by
+	//    exiting cleanly — the control plane may want to abort a pod that
+	//    hasn't been dispatched yet.
 	configCh := make(chan *types.RunConfig, 1)
+	preTaskCancelCh := make(chan struct{}, 1)
 	tp.OnControl(func(event types.ControlEvent) {
-		if event.Type == "task_assignment" && event.Task != nil {
+		switch event.Type {
+		case "task_assignment":
+			if event.Task != nil {
+				select {
+				case configCh <- event.Task:
+				default:
+					// Already received a task; ignore duplicates.
+				}
+			}
+		case "cancel":
 			select {
-			case configCh <- event.Task:
+			case preTaskCancelCh <- struct{}{}:
 			default:
-				// Already received a task; ignore duplicates.
 			}
 		}
 	})
@@ -87,6 +99,9 @@ func runJob(cmd *cobra.Command, args []string) error {
 	select {
 	case config = <-configCh:
 		// Got our assignment.
+	case <-preTaskCancelCh:
+		fmt.Fprintln(os.Stderr, "cancel received before task assignment; exiting")
+		return nil
 	case <-assignTimer.C:
 		return fmt.Errorf("no task assignment received within 5 minutes")
 	case <-tp.Done():
