@@ -248,9 +248,13 @@ func (x *HarnessEvent) GetHarnessVersion() string {
 //	                back to the model as context.
 //
 //	"cancel"
-//	  - (no additional fields) Signals that the run should be aborted.
-//	    NOTE: cancel is defined in the protocol but is not yet handled by
-//	    the harness main loop (no-op on receipt).
+//	  - (no additional fields) Signals that the run should be aborted. The
+//	    harness terminates the run within one turn boundary: any in-flight
+//	    provider stream or tool call is cancelled via context propagation,
+//	    no further turns are started, git finalisation still runs, and the
+//	    final "done" HarnessEvent carries stop_reason="cancelled". If the
+//	    harness is in the follow-up grace window (no active run), the
+//	    stream closes promptly without an additional "done" event.
 type ControlEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.

@@ -21,7 +21,7 @@ type RunTrace struct {
 	TokenUsage          TokenUsage           `json:"tokenUsage"`
 	ToolCalls           []ToolCallSummary    `json:"toolCalls"`
 	VerificationResults []VerificationResult `json:"verificationResults"`
-	Outcome             string               `json:"outcome"` // "success" | "error" | "max_turns" | "verification_failed" | "budget_exceeded"
+	Outcome             string               `json:"outcome"` // "success" | "error" | "max_turns" | "verification_failed" | "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" | "cancelled" | "timeout" | "max_tokens"
 }
 
 // ToolCallSummary records a single tool call's outcome for the trace.

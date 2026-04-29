@@ -17,6 +17,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
@@ -353,5 +354,94 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 	}
 	if !sawWebFetch {
 		t.Fatal("expected at least one web_fetch call in run trace")
+	}
+}
+
+// TestLoop_ReplayProvider_CancelledAfterFirstTurn drives the agentic loop
+// with a ReplayProvider (no network) and injects a cancel ControlEvent via
+// the transport after the first turn completes. The next turn should be
+// aborted and RunTrace.Outcome should be "cancelled".
+func TestLoop_ReplayProvider_CancelledAfterFirstTurn(t *testing.T) {
+	// Two-turn recording: turn 0 calls a read-only tool, turn 1 ends the
+	// run. We inject a cancel between them.
+	turns := []types.TurnRecord{
+		{
+			Turn: 0,
+			ModelOutput: []types.ContentBlock{
+				{
+					Type:  "tool_use",
+					ID:    "tc_1",
+					Name:  "test_tool",
+					Input: json.RawMessage(`{}`),
+				},
+			},
+		},
+		{
+			Turn: 1,
+			ModelOutput: []types.ContentBlock{
+				{Type: "text", Text: "All done."},
+			},
+		},
+	}
+
+	rp := provider.NewReplayProvider(turns)
+	tr := &cancellableTransport{}
+
+	loop := buildTestLoop(nil)
+	loop.Provider = rp
+	loop.Transport = tr
+
+	// The stock "test_tool" in buildTestLoop returns "tool result". Hook the
+	// tool handler so that after it runs, we fire the cancel ControlEvent —
+	// this causes the outer turn-boundary ctx check to trip on the next
+	// iteration.
+	originalRegistry := loop.Tools
+	_ = originalRegistry
+	fireCancel := func() {
+		tr.FireControl(types.ControlEvent{Type: "cancel"})
+	}
+	// Replace the tool handler to fire cancel on completion.
+	if tool := loop.Tools.Resolve("test_tool"); tool != nil {
+		prev := tool.Handler
+		tool.Handler = func(ctx context.Context, input json.RawMessage) (string, error) {
+			out, err := prev(ctx, input)
+			fireCancel()
+			return out, err
+		}
+	}
+
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	if runTrace == nil {
+		t.Fatal("expected non-nil RunTrace")
+	}
+	if runTrace.Outcome != "cancelled" {
+		t.Errorf("expected outcome 'cancelled', got %q", runTrace.Outcome)
+	}
+
+	// H1: the wire-level contract is that done.stop_reason matches the
+	// RunTrace outcome. Assert the transport received exactly one done
+	// event carrying stop_reason="cancelled".
+	var doneEvents []types.HarnessEvent
+	for _, ev := range tr.Events() {
+		if ev.Type == "done" {
+			doneEvents = append(doneEvents, ev)
+		}
+	}
+	if len(doneEvents) != 1 {
+		t.Fatalf("expected exactly one 'done' event, got %d", len(doneEvents))
+	}
+	if doneEvents[0].StopReason != "cancelled" {
+		t.Errorf("expected done.stop_reason 'cancelled', got %q", doneEvents[0].StopReason)
+	}
+
+	// Sanity: the replay provider should have been consumed at most once.
+	// The second turn must not have been executed.
+	if runTrace.Turns > 1 {
+		t.Errorf("expected at most 1 recorded turn, got %d", runTrace.Turns)
 	}
 }

@@ -166,3 +166,33 @@ func TestRunFollowUpLoop_ContextCancelledDuringWait(t *testing.T) {
 		t.Fatal("RunFollowUpLoop did not return within 2s of context cancellation")
 	}
 }
+
+// TestRunFollowUpLoop_CancelControlEventExitsWait verifies that a "cancel"
+// ControlEvent arriving during the grace window causes RunFollowUpLoop to
+// exit promptly via its cancelCh select arm, without waiting for the grace
+// timer to expire. This exercises both the cancel handler registered
+// inside RunFollowUpLoop and the <-cancelCh receive in its select loop.
+func TestRunFollowUpLoop_CancelControlEventExitsWait(t *testing.T) {
+	loop, tr := buildFollowUpTestLoop(t)
+	config := buildTestConfig()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Long grace period — if the cancel arm is not wired correctly,
+		// the test will hang for the full 30s and the timeout below fires.
+		RunFollowUpLoop(context.Background(), loop, config, 30)
+	}()
+
+	// Give OnControl registration a moment to take effect.
+	time.Sleep(50 * time.Millisecond)
+
+	tr.FireControl(types.ControlEvent{Type: "cancel"})
+
+	select {
+	case <-done:
+		// Good — returned promptly via the cancelCh select arm.
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunFollowUpLoop did not return within 2s of cancel ControlEvent")
+	}
+}
