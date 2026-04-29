@@ -561,10 +561,10 @@ func TestDispatchToolCall_ToolGuardRejectsBeforePermissionAndHandler(t *testing.
 	handlerCalled := false
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "run_command",
-		Description: "A shell tool",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
-		SideEffects: true,
+		Name:              "run_command",
+		Description:       "A shell tool",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
+		WorkspaceMutating: true,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			handlerCalled = true
 			return "should not reach here", nil
