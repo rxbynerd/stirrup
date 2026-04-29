@@ -60,7 +60,11 @@ func newWebFetchTool(opts webFetchOptions) *tool.Tool {
 		Name:        "web_fetch",
 		Description: "Fetch a URL via HTTP GET and return the response body as text. Response is truncated at 100KB.",
 		InputSchema: webFetchSchema,
-		SideEffects: true,
+		// web_fetch does not mutate the workspace, but it makes outbound
+		// network requests on the user's behalf — gate it behind
+		// upstream approval where one is configured.
+		WorkspaceMutating: false,
+		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				URL string `json:"url"`

@@ -31,10 +31,11 @@ var runCommandSchema = json.RawMessage(`{
 // RunCommandTool returns a tool that executes a shell command in the workspace.
 func RunCommandTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:        "run_command",
-		Description: "Execute a shell command in the workspace directory. Returns stdout and stderr. The command is killed if it exceeds the timeout.",
-		InputSchema: runCommandSchema,
-		SideEffects: true,
+		Name:              "run_command",
+		Description:       "Execute a shell command in the workspace directory. Returns stdout and stderr. The command is killed if it exceeds the timeout.",
+		InputSchema:       runCommandSchema,
+		WorkspaceMutating: true,
+		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			var params struct {
 				Command string `json:"command"`

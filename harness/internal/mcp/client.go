@@ -318,7 +318,13 @@ func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpT
 		Name:        prefixedName,
 		Description: mt.Description,
 		InputSchema: mt.InputSchema,
-		SideEffects: true, // MCP tools default to side-effecting
+		// MCP tools are remote and opaque to the harness: we cannot
+		// statically tell whether they mutate the workspace, so be
+		// conservative and assume they do. They also require upstream
+		// approval for the same reason — the operator should be in the
+		// loop on remote tool execution.
+		WorkspaceMutating: true,
+		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
 			return c.callTool(ctx, remoteSess, remoteName, input)
 		},

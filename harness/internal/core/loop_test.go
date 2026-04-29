@@ -68,18 +68,33 @@ func buildTestConfig() *types.RunConfig {
 }
 
 func buildTestLoop(prov *mockProvider) *AgenticLoop {
+	return buildTestLoopWithSecurity(prov, nil)
+}
+
+// buildTestLoopWithSecurity is identical to buildTestLoop but wires a
+// SecurityLogger writing to the provided sink. Pass nil to skip security
+// instrumentation. This is required for tests that assert security events
+// are emitted (e.g. PermissionDenied), which the production loop guards
+// behind a nil check.
+func buildTestLoopWithSecurity(prov *mockProvider, securitySink io.Writer) *AgenticLoop {
 	var transportBuf bytes.Buffer
 	registry := tool.NewRegistry()
 	// Register a simple test tool.
 	registry.Register(&tool.Tool{
-		Name:        "test_tool",
-		Description: "A test tool",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		SideEffects: false,
+		Name:              "test_tool",
+		Description:       "A test tool",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "tool result", nil
 		},
 	})
+
+	var secLogger *security.SecurityLogger
+	if securitySink != nil {
+		secLogger = security.NewSecurityLogger(securitySink, "test-run")
+	}
 
 	return &AgenticLoop{
 		Provider:    prov,
@@ -96,6 +111,7 @@ func buildTestLoop(prov *mockProvider) *AgenticLoop {
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
 		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     observability.NewNoopMetrics(),
+		Security:    secLogger,
 		Logger:      slog.Default(),
 	}
 }
@@ -428,15 +444,17 @@ func (c *closeTracker) Close() error {
 }
 
 func TestDispatchToolCall_PermissionDenied(t *testing.T) {
-	loop := buildTestLoop(&mockProvider{})
+	var secBuf bytes.Buffer
+	loop := buildTestLoopWithSecurity(&mockProvider{}, &secBuf)
 
-	// Register a side-effecting tool.
+	// Register a workspace-mutating tool.
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "dangerous_tool",
-		Description: "A tool with side effects",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		SideEffects: true,
+		Name:              "dangerous_tool",
+		Description:       "A tool that mutates the workspace",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: true,
+		RequiresApproval:  true,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "should not reach here", nil
 		},
@@ -461,6 +479,16 @@ func TestDispatchToolCall_PermissionDenied(t *testing.T) {
 	if !strings.Contains(output, "Permission denied") {
 		t.Errorf("expected output to contain 'Permission denied', got %q", output)
 	}
+
+	// Assert the SecurityLogger was actually called. Without this, a
+	// regression that nil-skips the call would silently pass.
+	logged := secBuf.String()
+	if !strings.Contains(logged, "permission_denied") {
+		t.Errorf("expected security log to contain 'permission_denied', got %q", logged)
+	}
+	if !strings.Contains(logged, "dangerous_tool") {
+		t.Errorf("expected security log to contain tool name 'dangerous_tool', got %q", logged)
+	}
 }
 
 func TestDispatchToolCall_ToolHandlerError(t *testing.T) {
@@ -469,10 +497,11 @@ func TestDispatchToolCall_ToolHandlerError(t *testing.T) {
 	// Register a tool whose handler returns an error.
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "broken_tool",
-		Description: "A tool that always errors",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		SideEffects: false,
+		Name:              "broken_tool",
+		Description:       "A tool that always errors",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "", errors.New("handler exploded")
 		},
@@ -500,10 +529,11 @@ func TestDispatchToolCall_InvalidInput(t *testing.T) {
 	// Register a tool that requires a "path" field.
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "strict_tool",
-		Description: "A tool with required fields",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
-		SideEffects: false,
+		Name:              "strict_tool",
+		Description:       "A tool with required fields",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			return "should not reach here", nil
 		},
@@ -531,10 +561,10 @@ func TestDispatchToolCall_ToolGuardRejectsBeforePermissionAndHandler(t *testing.
 	handlerCalled := false
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{
-		Name:        "run_command",
-		Description: "A shell tool",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
-		SideEffects: true,
+		Name:              "run_command",
+		Description:       "A shell tool",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
+		WorkspaceMutating: true,
 		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
 			handlerCalled = true
 			return "should not reach here", nil
