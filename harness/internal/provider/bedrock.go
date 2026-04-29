@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -32,8 +36,9 @@ type bedrockEventReader interface {
 
 // BedrockAdapter implements ProviderAdapter for AWS Bedrock's ConverseStream API.
 type BedrockAdapter struct {
-	client bedrockConverseStreamer
-	Tracer oteltrace.Tracer // optional, set by factory for span instrumentation
+	client  bedrockConverseStreamer
+	Tracer  oteltrace.Tracer       // optional, set by factory for span instrumentation
+	Metrics *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
 }
 
 // NewBedrockAdapter creates an adapter that uses the ConverseStream API.
@@ -65,8 +70,15 @@ func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvi
 // Stream sends a ConverseStream request to Bedrock and returns a channel of
 // StreamEvents. The channel is closed when the stream ends or an error occurs.
 func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	start := time.Now()
+	metricAttrs := metric.WithAttributes(
+		attribute.String("provider.type", "bedrock"),
+		attribute.String("provider.model", params.Model),
+	)
+
 	input, err := buildConverseStreamInput(params)
 	if err != nil {
+		b.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build converse input: %w", err)
 	}
 
@@ -77,19 +89,52 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 			span := oteltrace.SpanFromContext(ctx)
 			span.AddEvent("bedrock_error")
 		}
+		b.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("bedrock ConverseStream: %w", err)
 	}
 
 	ch := make(chan types.StreamEvent, 64)
-	go consumeBedrockStream(ctx, output.GetStream(), ch)
+	go func() {
+		consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs)
+		b.recordLatency(ctx, start, metricAttrs)
+	}()
 	return ch, nil
+}
+
+// recordLatency records the total provider request latency to the
+// ProviderLatency histogram. Safe to call when Metrics is nil.
+func (b *BedrockAdapter) recordLatency(ctx context.Context, start time.Time, attrs metric.MeasurementOption) {
+	if b.Metrics == nil {
+		return
+	}
+	b.Metrics.ProviderLatency.Record(ctx, float64(time.Since(start).Milliseconds()), attrs)
 }
 
 // consumeBedrockStream reads events from the Bedrock event stream and
 // translates them into stirrup StreamEvents. It closes ch when done.
+//
+// Equivalent to consumeBedrockStreamMetered with nil metrics; preserved as a
+// stable entry point for tests.
 func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch chan<- types.StreamEvent) {
+	consumeBedrockStreamMetered(ctx, stream, ch, nil, time.Time{}, metric.WithAttributes())
+}
+
+// consumeBedrockStreamMetered reads events from the Bedrock event stream and
+// translates them into stirrup StreamEvents. It closes ch when done. When
+// metrics is non-nil, records ProviderTTFB on the first non-empty stream
+// event observed (TTFB is recorded at most once per stream).
+func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader, ch chan<- types.StreamEvent, metrics *observability.Metrics, streamStart time.Time, metricAttrs metric.MeasurementOption) {
 	defer close(ch)
 	defer func() { _ = stream.Close() }()
+
+	ttfbRecorded := false
+	emitEvent := func(ev types.StreamEvent) {
+		if !ttfbRecorded && metrics != nil {
+			metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+			ttfbRecorded = true
+		}
+		ch <- ev
+	}
 
 	// Track in-flight tool_use blocks by content block index.
 	type toolBlockState struct {
@@ -102,7 +147,7 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 	for event := range stream.Events() {
 		select {
 		case <-ctx.Done():
-			ch <- types.StreamEvent{Type: "error", Error: ctx.Err()}
+			emitEvent(types.StreamEvent{Type: "error", Error: ctx.Err()})
 			return
 		default:
 		}
@@ -122,10 +167,10 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 			idx := aws.ToInt32(ev.Value.ContentBlockIndex)
 			switch delta := ev.Value.Delta.(type) {
 			case *brtypes.ContentBlockDeltaMemberText:
-				ch <- types.StreamEvent{
+				emitEvent(types.StreamEvent{
 					Type: "text_delta",
 					Text: delta.Value,
-				}
+				})
 			case *brtypes.ContentBlockDeltaMemberToolUse:
 				if bs := blocks[idx]; bs != nil && delta.Value.Input != nil {
 					bs.jsonBuf.WriteString(*delta.Value.Input)
@@ -139,41 +184,41 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 				raw := bs.jsonBuf.String()
 				if raw != "" {
 					if err := json.Unmarshal([]byte(raw), &input); err != nil {
-						ch <- types.StreamEvent{
+						emitEvent(types.StreamEvent{
 							Type:  "error",
 							Error: fmt.Errorf("parse tool input JSON: %w", err),
-						}
+						})
 						return
 					}
 				}
-				ch <- types.StreamEvent{
+				emitEvent(types.StreamEvent{
 					Type:  "tool_call",
 					ID:    bs.id,
 					Name:  bs.name,
 					Input: input,
-				}
+				})
 				delete(blocks, idx)
 			}
 
 		case *brtypes.ConverseStreamOutputMemberMessageStop:
-			ch <- types.StreamEvent{
+			emitEvent(types.StreamEvent{
 				Type:       "message_complete",
 				StopReason: mapStopReason(ev.Value.StopReason),
-			}
+			})
 
 		case *brtypes.ConverseStreamOutputMemberMetadata:
 			if ev.Value.Usage != nil && ev.Value.Usage.OutputTokens != nil {
-				ch <- types.StreamEvent{
+				emitEvent(types.StreamEvent{
 					Type:         "message_complete",
 					OutputTokens: int(*ev.Value.Usage.OutputTokens),
-				}
+				})
 			}
 		}
 	}
 
 	// Check for stream errors after the event channel drains.
 	if err := stream.Err(); err != nil {
-		ch <- types.StreamEvent{Type: "error", Error: fmt.Errorf("bedrock stream: %w", err)}
+		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("bedrock stream: %w", err)})
 	}
 }
 

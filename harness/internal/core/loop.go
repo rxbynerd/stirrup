@@ -127,6 +127,26 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		),
 	)
 
+	// Reset the per-run absolute token estimate before registering the
+	// gauge callback so the first observation (before any Context.Prepare)
+	// is 0 rather than the value from a previous run.
+	l.lastContextTokens.Store(0)
+
+	// Register the ContextTokens observable gauge callback. The callback
+	// returns the current absolute token estimate tagged with run.id and
+	// run.mode. Unregister at run end so the OTel SDK does not continue
+	// observing this run after it has finished.
+	unregisterCtxTokens, err := l.Metrics.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
+		return l.lastContextTokens.Load(), []attribute.KeyValue{
+			attribute.String("run.mode", config.Mode),
+			attribute.String("run.id", config.RunID),
+		}
+	})
+	if err != nil {
+		l.Logger.Warn("register context_tokens callback failed", "error", err)
+	}
+	defer unregisterCtxTokens()
+
 	// Outer verification loop.
 	outcome := "success"
 	verificationAttempts := 0
@@ -296,6 +316,14 @@ func (l *AgenticLoop) runInnerLoop(
 			contextSpan.End()
 			return messages, "error"
 		}
+		// Publish the post-Prepare absolute token estimate so the
+		// ContextTokens observable gauge callback (registered in Run)
+		// observes the live context window utilisation. A successful
+		// compaction shrinks the value; new messages grow it.
+		tokensAfterPrepare := estimateCurrentTokens(preparedMessages) +
+			estimateSystemPromptTokens(systemPrompt) +
+			estimateToolDefinitionTokens(toolDefs)
+		l.lastContextTokens.Store(int64(tokensAfterPrepare))
 		contextSpan.SetAttributes(attribute.Int("messages.after", len(preparedMessages)))
 		if compaction := l.Context.LastCompaction(); compaction != nil {
 			contextSpan.SetAttributes(

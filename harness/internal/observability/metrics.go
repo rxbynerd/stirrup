@@ -2,7 +2,9 @@ package observability
 
 import (
 	"context"
+	"sync"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
@@ -14,6 +16,7 @@ import (
 // noop.MeterProvider. The provider field is nil for no-op instances.
 type Metrics struct {
 	provider *sdkmetric.MeterProvider // nil for noop
+	meter    metric.Meter             // retained for late callback registration
 
 	// Counters
 	Runs                 metric.Int64Counter
@@ -36,8 +39,16 @@ type Metrics struct {
 	ProviderLatency  metric.Float64Histogram
 	ProviderTTFB     metric.Float64Histogram
 
-	// UpDownCounter (gauge-like)
-	ContextTokens metric.Int64UpDownCounter
+	// Observable gauge: per-run callbacks supply the live absolute token
+	// estimate. Multiple concurrent runs each register their own callback;
+	// observations are tagged with run.id and run.mode so they can be
+	// distinguished downstream.
+	ContextTokens metric.Int64ObservableGauge
+
+	// callbacksMu guards ctxTokenCallbacks (rare writes; tests/factories
+	// register one per run, then unregister at run end).
+	callbacksMu       sync.Mutex
+	ctxTokenCallbacks map[*ctxTokenCallback]metric.Registration
 }
 
 // NewMetrics creates a Metrics instance backed by an OTLP/gRPC metric exporter
@@ -79,7 +90,11 @@ func NewNoopMetrics() *Metrics {
 // This constructor is unexported so tests can inject a ManualReader-backed
 // MeterProvider for in-memory metric collection.
 func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) (*Metrics, error) {
-	m := &Metrics{provider: provider}
+	m := &Metrics{
+		provider:          provider,
+		meter:             meter,
+		ctxTokenCallbacks: make(map[*ctxTokenCallback]metric.Registration),
+	}
 	var err error
 
 	// --- Counters ---
@@ -222,17 +237,74 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	// --- UpDownCounter ---
-
-	m.ContextTokens, err = meter.Int64UpDownCounter("stirrup.harness.context_tokens",
+	// --- Observable gauge ---
+	//
+	// ContextTokens reports the live (absolute) context-window token
+	// estimate per run. Each AgenticLoop registers a callback at run start
+	// via RegisterContextTokensCallback and unregisters it at run end. The
+	// gauge value is tagged with run.id and run.mode so concurrent runs can
+	// be distinguished downstream — there is no shared cumulative counter
+	// to confuse with delta sums.
+	m.ContextTokens, err = meter.Int64ObservableGauge("stirrup.harness.context_tokens",
 		metric.WithUnit("{token}"),
-		metric.WithDescription("Current context window token usage"),
+		metric.WithDescription("Live context window token usage per run"),
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	return m, nil
+}
+
+// ctxTokenCallback is the function signature for ContextTokens gauge
+// callbacks. It returns the current absolute token count and the attribute
+// set to attach to the observation (typically run.id and run.mode).
+type ctxTokenCallback func() (val int64, attrs []attribute.KeyValue)
+
+// RegisterContextTokensCallback registers a callback that the OTel SDK will
+// invoke at each collection cycle to observe the current ContextTokens
+// value. Returns an unregister function the caller MUST invoke when the
+// run finishes — otherwise the callback continues firing after the run
+// ends.
+//
+// Multiple concurrent registrations are supported (one per active run).
+// A nil callback is rejected; the returned unregister function is always
+// safe to call (it is a no-op when registration failed).
+func (m *Metrics) RegisterContextTokensCallback(fn ctxTokenCallback) (unregister func(), err error) {
+	if fn == nil {
+		return func() {}, nil
+	}
+
+	// Capture the callback identity so we can remove it from the map when
+	// the unregister function fires.
+	key := &fn
+
+	cb := func(_ context.Context, o metric.Observer) error {
+		val, attrs := fn()
+		o.ObserveInt64(m.ContextTokens, val, metric.WithAttributes(attrs...))
+		return nil
+	}
+
+	reg, err := m.meter.RegisterCallback(cb, m.ContextTokens)
+	if err != nil {
+		return func() {}, err
+	}
+
+	m.callbacksMu.Lock()
+	m.ctxTokenCallbacks[key] = reg
+	m.callbacksMu.Unlock()
+
+	return func() {
+		m.callbacksMu.Lock()
+		stored, ok := m.ctxTokenCallbacks[key]
+		if ok {
+			delete(m.ctxTokenCallbacks, key)
+		}
+		m.callbacksMu.Unlock()
+		if ok {
+			_ = stored.Unregister()
+		}
+	}, nil
 }
 
 // Close shuts down the underlying MeterProvider, flushing any buffered metrics.
@@ -242,4 +314,18 @@ func (m *Metrics) Close() error {
 		return nil
 	}
 	return m.provider.Shutdown(context.Background())
+}
+
+// NewMetricsForTesting builds a Metrics instance backed by the supplied
+// MeterProvider (typically a ManualReader-backed provider). This is exposed
+// so tests in dependent packages (provider, core, transport, security) can
+// assert that instruments are recorded without requiring an OTLP endpoint.
+//
+// The returned Metrics does not own provider; callers are responsible for
+// shutting it down.
+func NewMetricsForTesting(provider *sdkmetric.MeterProvider) (*Metrics, error) {
+	meter := provider.Meter("stirrup-harness-test")
+	// Pass nil so Close() on the returned Metrics is a no-op — the caller
+	// owns the provider.
+	return newMetricsFromMeter(meter, nil)
 }

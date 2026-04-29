@@ -1,11 +1,15 @@
 package security
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // SecurityEvent represents a structured security event for monitoring/alerting.
@@ -17,11 +21,22 @@ type SecurityEvent struct {
 	Data      map[string]any `json:"data,omitempty"`
 }
 
+// EventCounter is the minimal interface SecurityLogger needs to record an
+// OTel SecurityEvents counter without importing the observability package
+// (which would create an import cycle: observability -> security via Scrub).
+//
+// The contract matches metric.Int64Counter's Add method exactly so callers
+// can pass observability.Metrics.SecurityEvents directly.
+type EventCounter interface {
+	Add(ctx context.Context, incr int64, options ...metric.AddOption)
+}
+
 // SecurityLogger emits structured security events as JSON lines.
 type SecurityLogger struct {
-	writer io.Writer
-	mu     sync.Mutex
-	runID  string
+	writer  io.Writer
+	mu      sync.Mutex
+	runID   string
+	counter EventCounter // optional; nil means no metric recording
 }
 
 // NewSecurityLogger creates a SecurityLogger that writes to w.
@@ -29,7 +44,24 @@ func NewSecurityLogger(w io.Writer, runID string) *SecurityLogger {
 	return &SecurityLogger{writer: w, runID: runID}
 }
 
-// Emit writes a security event as a JSON line.
+// SetEventCounter wires an OTel counter (typically Metrics.SecurityEvents)
+// that is incremented once per Emit call, tagged with the event name. Pass
+// nil to disable. Safe to call concurrently with Emit: writes to sl.counter
+// are guarded by sl.mu, the same mutex Emit acquires before reading it.
+func (sl *SecurityLogger) SetEventCounter(c EventCounter) {
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	sl.counter = c
+}
+
+// Emit writes a security event as a JSON line and, if a counter was wired
+// via SetEventCounter, increments it tagged with the event name.
+//
+// Counter increment uses context.Background() because security events are
+// fire-and-forget: callers do not pass a ctx (e.g. the executor calls
+// PathTraversalBlocked deep in a non-ctx-bearing helper). The counter
+// implementations we use (OTel) treat ctx primarily for cancellation, which
+// is not meaningful for a single Add call.
 func (sl *SecurityLogger) Emit(level, event string, data map[string]any) {
 	se := SecurityEvent{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -47,6 +79,12 @@ func (sl *SecurityLogger) Emit(level, event string, data map[string]any) {
 	sl.mu.Lock()
 	defer sl.mu.Unlock()
 	_, _ = fmt.Fprint(sl.writer, string(b))
+
+	if sl.counter != nil {
+		sl.counter.Add(context.Background(), 1,
+			metric.WithAttributes(attribute.String("event", event)),
+		)
+	}
 }
 
 // Convenience methods for the 7 spec-defined security events.

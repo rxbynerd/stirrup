@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -54,6 +55,13 @@ type AgenticLoop struct {
 	Logger       *slog.Logger             // structured logger with secret scrubbing
 	emitReady    bool
 	ownedClosers []io.Closer
+
+	// lastContextTokens holds the most recent absolute context-window token
+	// estimate for the in-flight run. It is published from runInnerLoop
+	// after each Context.Prepare and read from the ContextTokens gauge
+	// callback registered in Run. atomic ensures the read in the OTel
+	// collection goroutine sees a complete value.
+	lastContextTokens atomic.Int64
 }
 
 // TokenTracker tracks cumulative token usage per run and enforces token budgets.
@@ -108,9 +116,23 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		return "Unknown tool: " + call.Name, false
 	}
 
+	// Strip prototype-pollution keys before validation so we can both notify
+	// the SecurityLogger AND continue validating the cleaned form. ValidateJSONSchema
+	// also strips internally; calling here in addition is harmless and gives us
+	// a chance to surface the security event. Errors here mean unparseable JSON,
+	// which ValidateJSONSchema will report with its own message.
+	cleaned, droppedKeys, stripErr := security.StripDangerousKeysFromInput(call.Input)
+	if stripErr == nil && len(droppedKeys) > 0 && l.Security != nil {
+		l.Security.PrototypePollutionBlocked(call.Name, droppedKeys)
+	}
+	inputForCall := call.Input
+	if stripErr == nil && len(droppedKeys) > 0 {
+		inputForCall = cleaned
+	}
+
 	// Validate input against the tool's JSON Schema. This is mandatory and
 	// cannot be disabled (VERSION1.md section 7: "Tool input validation").
-	if err := security.ValidateJSONSchema(call.Input, t.InputSchema); err != nil {
+	if err := security.ValidateJSONSchema(inputForCall, t.InputSchema); err != nil {
 		if l.Security != nil {
 			l.Security.ToolInputRejected(call.Name, []string{err.Error()})
 		}
@@ -131,7 +153,7 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 				attribute.String("tool.name", call.Name),
 			),
 		)
-		result, err := l.Permissions.Check(ctx, t.Definition(), call.Input)
+		result, err := l.Permissions.Check(ctx, t.Definition(), inputForCall)
 		if err != nil {
 			permSpan.RecordError(err)
 			permSpan.SetStatus(codes.Error, err.Error())
@@ -145,8 +167,9 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		}
 	}
 
-	// Execute the tool handler.
-	output, err := t.Handler(ctx, call.Input)
+	// Execute the tool handler with the cleaned input so the handler does not
+	// see prototype-pollution keys either.
+	output, err := t.Handler(ctx, inputForCall)
 	if err != nil {
 		return "Tool error: " + err.Error(), false
 	}

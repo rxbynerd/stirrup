@@ -502,3 +502,81 @@ func TestValidateJSONSchema_NilAndEmptySchema(t *testing.T) {
 		}
 	})
 }
+
+func TestStripDangerousKeysFromInput(t *testing.T) {
+	t.Run("no dangerous keys returns input unchanged with nil dropped", func(t *testing.T) {
+		in := json.RawMessage(`{"a":1,"b":[2,3]}`)
+		out, dropped, err := StripDangerousKeysFromInput(in)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if len(dropped) != 0 {
+			t.Errorf("dropped = %v, want empty", dropped)
+		}
+		if string(out) != string(in) {
+			t.Errorf("out = %s, want unchanged input %s", out, in)
+		}
+	})
+
+	t.Run("top-level __proto__ is reported and stripped", func(t *testing.T) {
+		in := json.RawMessage(`{"name":"alice","__proto__":{"admin":true}}`)
+		_, dropped, err := StripDangerousKeysFromInput(in)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if !contains(dropped, "__proto__") {
+			t.Errorf("dropped = %v, want to contain __proto__", dropped)
+		}
+	})
+
+	t.Run("nested constructor is reported", func(t *testing.T) {
+		in := json.RawMessage(`{"outer":{"constructor":"x","keep":1}}`)
+		_, dropped, err := StripDangerousKeysFromInput(in)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if !contains(dropped, "constructor") {
+			t.Errorf("dropped = %v, want to contain constructor", dropped)
+		}
+	})
+
+	t.Run("both dangerous keys reported", func(t *testing.T) {
+		in := json.RawMessage(`{"__proto__":1,"constructor":2,"x":3}`)
+		_, dropped, err := StripDangerousKeysFromInput(in)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if !contains(dropped, "__proto__") || !contains(dropped, "constructor") {
+			t.Errorf("dropped = %v, want both keys", dropped)
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		_, _, err := StripDangerousKeysFromInput(json.RawMessage(`{bad`))
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("empty input returns nil dropped", func(t *testing.T) {
+		out, dropped, err := StripDangerousKeysFromInput(nil)
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if len(dropped) != 0 {
+			t.Errorf("dropped = %v, want empty", dropped)
+		}
+		if out != nil {
+			t.Errorf("out = %v, want nil", out)
+		}
+	})
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}

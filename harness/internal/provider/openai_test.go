@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -643,5 +646,89 @@ func TestOpenAIAdapter_HasTimeout(t *testing.T) {
 	}
 	if tr.ResponseHeaderTimeout == 0 {
 		t.Error("ResponseHeaderTimeout should be non-zero")
+	}
+}
+
+func TestOpenAIAdapter_RecordsLatencyAndTTFB(t *testing.T) {
+	body := strings.Join([]string{
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`),
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`),
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+		"data: [DONE]\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter.Metrics = metrics
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-4o",
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
+		t.Errorf("provider_latency count = %d, want 1", got)
+	}
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 1 {
+		t.Errorf("provider_ttfb count = %d, want 1", got)
+	}
+	h, ok := providerHistogramFinder(t, reader, "stirrup.harness.provider_latency")
+	if !ok || len(h.DataPoints) == 0 {
+		t.Fatal("expected provider_latency data point")
+	}
+	attrs := h.DataPoints[0].Attributes
+	if v, ok := attrs.Value("provider.type"); !ok || v.AsString() != "openai-compatible" {
+		t.Errorf("provider.type = %v ok=%v, want openai-compatible", v.AsString(), ok)
+	}
+	if v, ok := attrs.Value("provider.model"); !ok || v.AsString() != "gpt-4o" {
+		t.Errorf("provider.model = %v ok=%v, want gpt-4o", v.AsString(), ok)
+	}
+}
+
+func TestOpenAIAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"bad"}}`)
+	}))
+	defer srv.Close()
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	adapter := NewOpenAICompatibleAdapter("bad-key", srv.URL)
+	adapter.Metrics = metrics
+
+	if _, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024}); err == nil {
+		t.Fatal("expected error")
+	}
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
+		t.Errorf("provider_latency count = %d, want 1", got)
+	}
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 0 {
+		t.Errorf("provider_ttfb count = %d, want 0", got)
 	}
 }

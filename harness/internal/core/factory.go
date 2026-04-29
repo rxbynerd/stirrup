@@ -54,8 +54,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
+	// Construct the security logger before config validation so we can emit
+	// a config_validation_failed event when the invariants check fails.
+	// Only runID and an io.Writer are needed at this point; the metric
+	// counter is wired further down once Metrics is available.
+	secLogger := security.NewSecurityLogger(os.Stderr, config.RunID)
+
 	// Validate RunConfig security invariants.
 	if err := types.ValidateRunConfig(config); err != nil {
+		secLogger.ConfigValidationFailed([]string{err.Error()})
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
 
@@ -94,9 +101,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	es := buildEditStrategy(config.EditStrategy)
 	registry := buildToolRegistry(exec, es, config.Tools)
 
+	// secLogger was constructed above (before ValidateRunConfig) so it can
+	// emit config_validation_failed before we know whether we have a
+	// MeterProvider. Wire it into the structured logger here so log-side
+	// secret redactions also produce SecretRedactedInOutput events; the
+	// metric counter is set once Metrics is available further below.
+	//
 	// Build logger early so MCP connection warnings go through the ScrubHandler.
 	logLevel := parseLogLevel(config.LogLevel)
-	logger := observability.NewLogger(config.RunID, logLevel, os.Stderr)
+	logger := observability.NewLoggerWithSecurity(config.RunID, logLevel, os.Stderr, secLogger)
 
 	// 6b. MCP tool discovery — connect to remote MCP servers and register
 	// their tools into the registry alongside the built-in tools.
@@ -123,6 +136,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return nil, fmt.Errorf("build transport: %w", err)
 		}
 		ownedClosers = append(ownedClosers, tp)
+	}
+
+	// Wire the security logger into the transport so Emit can fire
+	// SecretRedactedInOutput events whenever the scrubber redacts a value.
+	switch t := tp.(type) {
+	case *transport.StdioTransport:
+		t.Security = secLogger
+	case *transport.GRPCTransport:
+		t.Security = secLogger
 	}
 
 	// 10. Permission policy.
@@ -158,8 +180,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		metrics = observability.NewNoopMetrics()
 	}
 
-	// 14. Security logger (writes to stderr).
-	secLogger := security.NewSecurityLogger(os.Stderr, config.RunID)
+	// 14. Wire the SecurityEvents counter into the security logger so every
+	// Emit increments OTel metrics with an "event" attribute. The
+	// EventCounter interface is satisfied by metric.Int64Counter, which is
+	// the concrete type of metrics.SecurityEvents.
+	if metrics != nil {
+		secLogger.SetEventCounter(metrics.SecurityEvents)
+	}
 
 	// Wire security logger into executor if it supports it.
 	switch e := exec.(type) {
@@ -177,15 +204,18 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		tracer = noop.NewTracerProvider().Tracer("")
 	}
 
-	// Set tracer on provider adapters for HTTP-level instrumentation.
+	// Set tracer + metrics on provider adapters for HTTP-level instrumentation.
 	for _, p := range providers {
 		switch pa := p.(type) {
 		case *provider.AnthropicAdapter:
 			pa.Tracer = tracer
+			pa.Metrics = metrics
 		case *provider.OpenAICompatibleAdapter:
 			pa.Tracer = tracer
+			pa.Metrics = metrics
 		case *provider.BedrockAdapter:
 			pa.Tracer = tracer
+			pa.Metrics = metrics
 		}
 	}
 

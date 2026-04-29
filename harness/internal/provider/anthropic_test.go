@@ -9,6 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -509,5 +513,138 @@ func TestAnthropicAdapter_HasTimeout(t *testing.T) {
 	}
 	if tr.ResponseHeaderTimeout == 0 {
 		t.Error("ResponseHeaderTimeout should be non-zero")
+	}
+}
+
+// providerHistogramFinder collects a named float64 histogram from a
+// ManualReader-backed MeterProvider; used by the per-adapter metric tests.
+func providerHistogramFinder(t *testing.T, reader *sdkmetric.ManualReader, name string) (metricdata.Histogram[float64], bool) {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect(): %v", err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			if h, ok := m.Data.(metricdata.Histogram[float64]); ok {
+				return h, true
+			}
+		}
+	}
+	return metricdata.Histogram[float64]{}, false
+}
+
+// providerHistogramTotalCount sums DataPoint counts for a named histogram.
+// Returns 0 when the histogram is absent.
+func providerHistogramTotalCount(t *testing.T, reader *sdkmetric.ManualReader, name string) uint64 {
+	t.Helper()
+	h, ok := providerHistogramFinder(t, reader, name)
+	if !ok {
+		return 0
+	}
+	var total uint64
+	for _, dp := range h.DataPoints {
+		total += dp.Count
+	}
+	return total
+}
+
+func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
+	body := joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"Hi"}}`),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
+		makeSSE("message_stop", `{}`),
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	adapter := NewAnthropicAdapter("test-key")
+	adapter.baseURL = srv.URL
+	adapter.Metrics = metrics
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch { // drain to allow goroutine to record latency
+	}
+
+	// Both histograms should record exactly one observation per Stream call.
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
+		t.Errorf("provider_latency count = %d, want 1", got)
+	}
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 1 {
+		t.Errorf("provider_ttfb count = %d, want 1", got)
+	}
+
+	// Confirm provider.type / provider.model attributes are set on the latency
+	// histogram. We pick the first data point and verify both keys.
+	h, ok := providerHistogramFinder(t, reader, "stirrup.harness.provider_latency")
+	if !ok || len(h.DataPoints) == 0 {
+		t.Fatal("expected at least one provider_latency data point")
+	}
+	attrs := h.DataPoints[0].Attributes
+	if v, ok := attrs.Value("provider.type"); !ok || v.AsString() != "anthropic" {
+		t.Errorf("provider.type attr = %v ok=%v, want anthropic", v.AsString(), ok)
+	}
+	if v, ok := attrs.Value("provider.model"); !ok || v.AsString() != "claude-sonnet-4-6" {
+		t.Errorf("provider.model attr = %v ok=%v, want claude-sonnet-4-6", v.AsString(), ok)
+	}
+}
+
+// On HTTP error, latency must still be recorded (one sample) but TTFB must not
+// fire because no stream events were observed.
+func TestAnthropicAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"bad key"}}`)
+	}))
+	defer srv.Close()
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	adapter := NewAnthropicAdapter("bad-key")
+	adapter.baseURL = srv.URL
+	adapter.Metrics = metrics
+
+	if _, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	}); err == nil {
+		t.Fatal("expected error")
+	}
+
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got != 1 {
+		t.Errorf("provider_latency count = %d, want 1 (error path still records)", got)
+	}
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 0 {
+		t.Errorf("provider_ttfb count = %d, want 0 (no stream observed)", got)
 	}
 }
