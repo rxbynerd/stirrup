@@ -1,0 +1,84 @@
+{
+  "runId": "example-full-runconfig",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "anthropic",
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+  },
+  "modelRouter": {
+    "type": "dynamic",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "cheapProvider": "anthropic",
+    "cheapModel": "claude-haiku-4-6",
+    "expensiveProvider": "anthropic",
+    "expensiveModel": "claude-sonnet-4-6",
+    "expensiveTurnThreshold": 5,
+    "expensiveTokenThreshold": 50000
+  },
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 200000
+  },
+  "executor": {
+    "type": "container",
+    "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "network": {
+      "mode": "none"
+    },
+    "resources": {
+      "cpus": 2.0,
+      "memoryMb": 2048,
+      "diskMb": 8192,
+      "pids": 256
+    }
+  },
+  "editStrategy": {
+    "type": "multi",
+    "fuzzyThreshold": 0.85
+  },
+  "verifier": {
+    "type": "test-runner",
+    "command": "go test ./...",
+    "timeout": 300
+  },
+  "permissionPolicy": {
+    "type": "allow-all"
+  },
+  "gitStrategy": {
+    "type": "deterministic"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "traceEmitter": {
+    "type": "otel",
+    "endpoint": "localhost:4317",
+    "metricsEndpoint": "localhost:4317"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory",
+      "search_files",
+      "edit_file",
+      "run_command",
+      "web_fetch",
+      "spawn_agent"
+    ],
+    "mcpServers": [
+      {
+        "name": "example",
+        "uri": "https://example.com/mcp",
+        "apiKeyRef": "secret://EXAMPLE_MCP_KEY"
+      }
+    ]
+  },
+  "maxTurns": 20,
+  "timeout": 600,
+  "logLevel": "info"
+}
