@@ -8,8 +8,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
@@ -675,13 +678,16 @@ func TestOpenAIResponsesAdapter_ContextCancellation(t *testing.T) {
 	}
 	cancel()
 
+	// After cancellation, the channel must close in bounded time. We
+	// don't strictly require an error event: the new emit-with-cancel
+	// path may discard the trailing error if the consumer was already
+	// gone. The contract is that the goroutine must not leak; the
+	// closed channel below proves it.
 	events := collectEvents(t, ch)
-	if len(events) == 0 {
-		t.Fatal("expected at least one event after cancellation")
-	}
-	last := events[len(events)-1]
-	if last.Type != "error" {
-		t.Errorf("last event type = %q, want error", last.Type)
+	for _, ev := range events {
+		if ev.Type == "message_complete" {
+			t.Errorf("unexpected message_complete after cancel: %+v", ev)
+		}
 	}
 }
 
@@ -992,5 +998,658 @@ func TestOpenAIResponsesAdapter_NoAPIKey(t *testing.T) {
 		t.Fatalf("Stream() error: %v", err)
 	}
 	for range ch {
+	}
+}
+
+// --- B1: backpressure / cancellation ---
+
+// TestOpenAIResponsesAdapter_BackpressureCancellation verifies that the
+// streaming goroutine does not leak when the consumer cancels context
+// while the producer is still trying to send. Pre-fix, emitEvent did an
+// unconditional send; with the channel buffer full, the goroutine would
+// block on the send forever because nothing else was draining the
+// channel.
+func TestOpenAIResponsesAdapter_BackpressureCancellation(t *testing.T) {
+	// Continuously stream small SSE records as fast as possible so the
+	// channel buffer fills before the consumer gets a chance to drain.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, err := fmt.Fprint(w, makeResponsesEvent("response.output_text.delta",
+				`{"item_id":"msg_1","output_index":0,"delta":"x"}`))
+			if err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	// Drain a handful of events so the goroutine starts producing, then
+	// stop reading and cancel. The goroutine must observe ctx.Done()
+	// instead of blocking on the channel.
+	for i := 0; i < 4; i++ {
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out reading initial events")
+		}
+	}
+	cancel()
+
+	// The channel must close in bounded time. If emitEvent still did an
+	// unconditional send, the consumer-cancelled goroutine would never
+	// reach the close(ch) defer and this would deadlock.
+	closed := make(chan struct{})
+	go func() {
+		for range ch {
+		}
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("channel did not close within 3s after cancel — goroutine likely leaked")
+	}
+}
+
+// --- B2: SSE record size cap ---
+
+// TestOpenAIResponsesAdapter_SSERecordSizeCapEnforced verifies that when
+// a single SSE record's accumulated `data:` lines exceed the input cap,
+// the adapter emits a bounded error event and tears down the stream
+// without materialising the full concatenated payload in memory.
+func TestOpenAIResponsesAdapter_SSERecordSizeCapEnforced(t *testing.T) {
+	// Two data: lines, each just under 6MB, totalling > 10MB.
+	const half = 6 * 1024 * 1024
+	bigChunk := strings.Repeat("z", half)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "event: response.output_text.delta\n")
+		_, _ = fmt.Fprintf(w, "data: %s\n", bigChunk)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", bigChunk)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	events := collectEvents(t, ch)
+
+	if len(events) != 1 {
+		t.Fatalf("expected exactly 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "error" {
+		t.Errorf("event[0].Type = %q, want error", events[0].Type)
+	}
+	if events[0].Error == nil || !strings.Contains(events[0].Error.Error(), "byte limit") {
+		t.Errorf("expected error citing byte limit, got: %v", events[0].Error)
+	}
+}
+
+// --- H1: latency recorded across context cancellation ---
+
+// TestOpenAIResponsesAdapter_LatencyRecordedAfterContextCancel verifies
+// that provider_latency is recorded even when the caller cancels their
+// context after Stream() returns. Pre-fix, the deferred recordLatency
+// call ran on the (now-cancelled) caller context, and OTel exporters
+// that drop measurements on cancelled contexts would silently lose the
+// measurement.
+func TestOpenAIResponsesAdapter_LatencyRecordedAfterContextCancel(t *testing.T) {
+	body := strings.Join([]string{
+		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant"}}`),
+		makeResponsesEvent("response.output_text.delta", `{"item_id":"msg_1","output_index":0,"delta":"hi"}`),
+		makeResponsesEvent("response.completed", `{"response":{"status":"completed","output":[{"type":"message","id":"msg_1"}]}}`),
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	reader := sdkmetric.NewManualReader()
+	prov := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(prov)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	adapter.Metrics = metrics
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	// Cancel BEFORE draining the channel — exposes the case where the
+	// caller's ctx is dead by the time the goroutine reaches the
+	// deferred recordLatency call.
+	cancel()
+	for range ch {
+	}
+
+	// Give the goroutine a moment to record latency.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("provider_latency count = %d, want 1 (latency must be recorded against background ctx)",
+		providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"))
+}
+
+// --- H2: malformed terminal event emits error ---
+
+// TestOpenAIResponsesAdapter_MalformedCompletedEvent verifies that a
+// malformed JSON payload on response.completed surfaces as an error
+// event rather than silently dropping the terminal message_complete.
+func TestOpenAIResponsesAdapter_MalformedCompletedEvent(t *testing.T) {
+	body := makeResponsesEvent("response.completed", `NOT_VALID_JSON`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	events := collectEvents(t, ch)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "error" {
+		t.Errorf("event[0].Type = %q, want error", events[0].Type)
+	}
+	if events[0].Error == nil || !strings.Contains(events[0].Error.Error(), "parse response.completed") {
+		t.Errorf("expected error mentioning parse response.completed, got: %v", events[0].Error)
+	}
+	for _, ev := range events {
+		if ev.Type == "message_complete" {
+			t.Errorf("message_complete must not be emitted on malformed completed: %+v", ev)
+		}
+	}
+}
+
+// TestOpenAIResponsesAdapter_MalformedDispatchEvents covers parse-error
+// branches across every dispatch case that captures the unmarshal
+// error. Each variant must emit an error event and terminate the stream.
+func TestOpenAIResponsesAdapter_MalformedDispatchEvents(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventName string
+		errSubstr string
+	}{
+		{"output_item.added", "response.output_item.added", "parse output_item.added"},
+		{"output_text.delta", "response.output_text.delta", "parse output_text.delta"},
+		{"function_call_arguments.delta", "response.function_call_arguments.delta", "parse function_call_arguments.delta"},
+		{"function_call_arguments.done", "response.function_call_arguments.done", "parse function_call_arguments.done"},
+		{"output_item.done", "response.output_item.done", "parse output_item.done"},
+		{"response.incomplete", "response.incomplete", "parse response.incomplete"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			body := makeResponsesEvent(tc.eventName, "{NOT JSON")
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, body)
+			}))
+			defer srv.Close()
+
+			adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			events := collectEvents(t, ch)
+			if len(events) != 1 {
+				t.Fatalf("expected 1 event, got %d: %+v", len(events), events)
+			}
+			if events[0].Type != "error" {
+				t.Errorf("event[0].Type = %q, want error", events[0].Type)
+			}
+			if events[0].Error == nil || !strings.Contains(events[0].Error.Error(), tc.errSubstr) {
+				t.Errorf("expected error mentioning %q, got: %v", tc.errSubstr, events[0].Error)
+			}
+		})
+	}
+}
+
+// --- H3: callKey fallback ---
+
+// TestCallKey_FallbackToIndex verifies the idx: fallback when item_id
+// is empty (some partner gateways omit the ID).
+func TestCallKey_FallbackToIndex(t *testing.T) {
+	if got := callKey("", 3); got != "idx:3" {
+		t.Errorf("callKey(\"\", 3) = %q, want idx:3", got)
+	}
+	if got := callKey("real_id", 3); got != "real_id" {
+		t.Errorf("callKey(real_id, 3) = %q, want real_id", got)
+	}
+}
+
+// TestOpenAIResponsesAdapter_DeltaBeforeAdded verifies the lazy state
+// creation when an arguments delta arrives before its corresponding
+// output_item.added (defensive for partner gateways that abbreviate the
+// stream). The adapter must accumulate the delta and still emit the
+// tool_call when the .done event fires.
+func TestOpenAIResponsesAdapter_DeltaBeforeAdded(t *testing.T) {
+	body := strings.Join([]string{
+		// No output_item.added — straight to delta. The state should be
+		// created on first delta.
+		makeResponsesEvent("response.function_call_arguments.delta", `{"item_id":"fc_lazy","output_index":0,"delta":"{\"k\":1}"}`),
+		// done event echoes the call metadata so we have a callID/name.
+		makeResponsesEvent("response.output_item.done", `{"output_index":0,"item":{"type":"function_call","id":"fc_lazy","call_id":"call_lazy","name":"noop"}}`),
+		makeResponsesEvent("response.completed", `{"response":{"status":"completed","output":[{"type":"function_call","id":"fc_lazy","call_id":"call_lazy","name":"noop"}]}}`),
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	events := collectEvents(t, ch)
+
+	var toolCall *types.StreamEvent
+	for i := range events {
+		if events[i].Type == "tool_call" {
+			toolCall = &events[i]
+			break
+		}
+	}
+	if toolCall == nil {
+		t.Fatalf("expected a tool_call event, got: %+v", events)
+	}
+	if toolCall.ID != "call_lazy" || toolCall.Name != "noop" {
+		t.Errorf("toolCall = %+v, want call_lazy/noop", toolCall)
+	}
+	if v, _ := toolCall.Input["k"].(float64); v != 1 {
+		t.Errorf("toolCall.Input[k] = %v, want 1", toolCall.Input["k"])
+	}
+}
+
+// TestOpenAIResponsesAdapter_DeltaBeforeAddedNoItemIDFallback exercises
+// the callKey fallback path inline in dispatchEvent: the delta arrives
+// without an item_id, so the call must be keyed on idx:N and still
+// produce a tool_call when .done arrives (with item_id, but matching
+// the same output_index — the .done path also falls back).
+func TestOpenAIResponsesAdapter_DeltaBeforeAddedNoItemIDFallback(t *testing.T) {
+	body := strings.Join([]string{
+		makeResponsesEvent("response.function_call_arguments.delta", `{"output_index":2,"delta":"{\"a\":\"b\"}"}`),
+		makeResponsesEvent("response.function_call_arguments.done", `{"output_index":2,"arguments":"{\"a\":\"b\"}"}`),
+		// Note: no item_id, no echoed call_id/name. The .done event
+		// state still flushes a tool_call with empty ID/Name. We assert
+		// that no error event fires and the args parse cleanly.
+		makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`),
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	events := collectEvents(t, ch)
+
+	var sawToolCall bool
+	for _, ev := range events {
+		if ev.Type == "error" {
+			t.Errorf("unexpected error event: %v", ev.Error)
+		}
+		if ev.Type == "tool_call" {
+			sawToolCall = true
+			if v, _ := ev.Input["a"].(string); v != "b" {
+				t.Errorf("Input[a] = %v, want b", ev.Input["a"])
+			}
+		}
+	}
+	if !sawToolCall {
+		t.Errorf("expected tool_call event, got: %+v", events)
+	}
+}
+
+// TestDeriveStopReason_DefaultUnknownStatus exercises the default branch
+// of deriveStopReason — an unknown Responses status (e.g. cancelled)
+// passes through verbatim so the agentic loop can surface it as the
+// run outcome.
+func TestDeriveStopReason_DefaultUnknownStatus(t *testing.T) {
+	got := deriveStopReason(responsesResponse{Status: "cancelled"})
+	if got != "cancelled" {
+		t.Errorf("deriveStopReason(cancelled) = %q, want cancelled", got)
+	}
+	// Default branch with no status and a function_call → tool_use.
+	got = deriveStopReason(responsesResponse{Status: "", Output: []responsesOutputItem{{Type: "function_call"}}})
+	if got != "tool_use" {
+		t.Errorf("deriveStopReason(empty,function_call) = %q, want tool_use", got)
+	}
+	// Default branch with no status and only message → end_turn.
+	got = deriveStopReason(responsesResponse{Status: ""})
+	if got != "end_turn" {
+		t.Errorf("deriveStopReason(empty) = %q, want end_turn", got)
+	}
+}
+
+// TestDeriveStopReason_MaxTokensSpelling exercises the second OR arm
+// of the max_tokens detection (`max_tokens` literal, not
+// `max_output_tokens`).
+func TestDeriveStopReason_MaxTokensSpelling(t *testing.T) {
+	in := responsesResponse{
+		Status: "incomplete",
+		IncompleteDetails: &struct {
+			Reason string `json:"reason"`
+		}{Reason: "max_tokens"},
+	}
+	if got := deriveStopReason(in); got != "max_tokens" {
+		t.Errorf("deriveStopReason(max_tokens spelling) = %q, want max_tokens", got)
+	}
+}
+
+// TestOpenAIResponsesAdapter_IncompleteMaxTokensAlternateSpelling
+// covers the same alternate spelling path inside the SSE dispatch for
+// response.incomplete.
+func TestOpenAIResponsesAdapter_IncompleteMaxTokensAlternateSpelling(t *testing.T) {
+	body := makeResponsesEvent("response.incomplete",
+		`{"response":{"status":"incomplete","incomplete_details":{"reason":"max_tokens"}}}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	events := collectEvents(t, ch)
+	if len(events) == 0 {
+		t.Fatalf("expected at least 1 event")
+	}
+	last := events[len(events)-1]
+	if last.Type != "message_complete" || last.StopReason != "max_tokens" {
+		t.Errorf("last = %+v, want message_complete/max_tokens", last)
+	}
+}
+
+// TestOpenAIResponsesAdapter_SSEParserDefensiveBranches exercises the
+// SSE parser's tolerant branches: comment lines (`:` prefix), header
+// lines without trailing space (`event:`/`data:`), and trailing record
+// flushed at EOF without a terminating blank line.
+func TestOpenAIResponsesAdapter_SSEParserDefensiveBranches(t *testing.T) {
+	// Note: no terminating blank line on the last record — relies on
+	// the EOF-flush path.
+	body := ":heartbeat\n" +
+		":another comment\n" +
+		"event:response.output_item.added\n" +
+		"data:{\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\"}}\n" +
+		"\n" +
+		"event:response.output_text.delta\n" +
+		"data:{\"item_id\":\"msg_1\",\"output_index\":0,\"delta\":\"hi\"}\n" +
+		"\n" +
+		// Trailing record without final blank line — must still flush.
+		"event:response.completed\n" +
+		"data:{\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_1\"}]}}\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	events := collectEvents(t, ch)
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events (text_delta, message_complete), got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "text_delta" || events[0].Text != "hi" {
+		t.Errorf("event[0] = %+v, want text_delta/hi", events[0])
+	}
+	if events[1].Type != "message_complete" || events[1].StopReason != "end_turn" {
+		t.Errorf("event[1] = %+v, want message_complete/end_turn", events[1])
+	}
+}
+
+// TestOpenAIResponsesAdapter_NetworkError exercises the httpClient.Do
+// connection-level failure path (server closed before request).
+func TestOpenAIResponsesAdapter_NetworkError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	addr := srv.URL
+	srv.Close() // close before any request fires.
+
+	adapter := NewOpenAIResponsesAdapter("test-key", addr)
+	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err == nil {
+		t.Fatal("expected network error, got nil")
+	}
+	if !strings.Contains(err.Error(), "execute request") {
+		t.Errorf("expected execute-request error, got: %v", err)
+	}
+}
+
+// TestOpenAIResponsesAdapter_5xxNoBody exercises the 5xx fallback path
+// where the body is absent or unparseable: the adapter returns the
+// generic status-code error rather than crashing.
+func TestOpenAIResponsesAdapter_5xxNoBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	_, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err == nil {
+		t.Fatal("expected error for 503, got nil")
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("expected status code in error, got: %v", err)
+	}
+}
+
+// TestOpenAIResponsesAdapter_429RetryAfterSpanEvent verifies the 429
+// rate-limit branch attaches a span event with the Retry-After header.
+func TestOpenAIResponsesAdapter_429RetryAfterSpanEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "42")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"slow down"}}`)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	adapter.Tracer = tracer
+
+	// We need the span to be in ctx so SpanFromContext finds it.
+	ctx, span := tracer.Start(context.Background(), "test")
+
+	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err == nil {
+		t.Fatal("expected error for 429, got nil")
+	}
+	span.End()
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var found bool
+	for _, s := range stubs {
+		for _, ev := range s.Events {
+			if ev.Name == "rate_limited" {
+				found = true
+				var retryAfter string
+				for _, attr := range ev.Attributes {
+					if string(attr.Key) == "retry_after" {
+						retryAfter = attr.Value.AsString()
+					}
+				}
+				if retryAfter != "42" {
+					t.Errorf("rate_limited.retry_after = %q, want 42", retryAfter)
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("expected a rate_limited span event")
+	}
+}
+
+// Note: the dispatch-level arg cap on `.function_call_arguments.done`
+// (lines 559–563) and `.output_item.done` (lines 601–606) is defensive
+// only. The same byte limit is enforced by the SSE scanner's per-line
+// cap and by the B2 dataParts aggregate cap, both of which trip before
+// dispatch is reached. The brief flagged these as coverage gaps; they
+// are unreachable in production with the current cap configuration. We
+// keep the checks for defense-in-depth (so any future relaxation of the
+// scanner cap does not silently uncap tool arguments) but do not
+// fabricate tests for unreachable paths.
+
+// TestOpenAIResponsesAdapter_UnknownEventSpanEvent verifies that an
+// unknown SSE event type emits a span event for production
+// observability (M1).
+func TestOpenAIResponsesAdapter_UnknownEventSpanEvent(t *testing.T) {
+	body := strings.Join([]string{
+		// Unknown event type — must be ignored but tagged on the span.
+		makeResponsesEvent("response.reasoning_summary.delta", `{"text":"thinking..."}`),
+		makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`),
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	adapter := NewOpenAIResponsesAdapter("test-key", srv.URL)
+	adapter.Tracer = tracer
+
+	ctx, span := tracer.Start(context.Background(), "test")
+	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4.1", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+	span.End()
+
+	stubs := exporter.GetSpans()
+	var foundUnknown bool
+	for _, s := range stubs {
+		for _, ev := range s.Events {
+			if ev.Name == "openai_responses.unknown_sse_event" {
+				foundUnknown = true
+				var typ string
+				for _, attr := range ev.Attributes {
+					if string(attr.Key) == "event.type" {
+						typ = attr.Value.AsString()
+					}
+				}
+				if typ != "response.reasoning_summary.delta" {
+					t.Errorf("event.type = %q, want response.reasoning_summary.delta", typ)
+				}
+			}
+		}
+	}
+	if !foundUnknown {
+		t.Error("expected an openai_responses.unknown_sse_event span event")
+	}
+}
+
+// TestTranslateMessagesResponses_UserTextAndToolResultOrder pins the
+// emission ordering for a user message containing
+// [text, tool_result, text]. The current contract is: function_call_output
+// items emit first (in their document order); user text is batched into
+// a single trailing input_text item. See the comment in
+// translateMessagesResponses for rationale (M4).
+func TestTranslateMessagesResponses_UserTextAndToolResultOrder(t *testing.T) {
+	messages := []types.Message{
+		{
+			Role: "user",
+			Content: []types.ContentBlock{
+				{Type: "text", Text: "Before. "},
+				{Type: "tool_result", ToolUseID: "call_1", Content: "first result"},
+				{Type: "text", Text: "After."},
+			},
+		},
+	}
+	result := translateMessagesResponses(messages)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 items, got %d: %+v", len(result), result)
+	}
+	if result[0].Type != "function_call_output" {
+		t.Errorf("result[0].Type = %q, want function_call_output", result[0].Type)
+	}
+	if result[1].Type != "message" || result[1].Role != "user" {
+		t.Errorf("result[1] = %+v, want message/user", result[1])
+	}
+	if len(result[1].Content) == 0 || result[1].Content[0].Text != "Before. After." {
+		t.Errorf("result[1].Content = %+v, want concatenated 'Before. After.'", result[1].Content)
 	}
 }
