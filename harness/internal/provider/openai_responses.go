@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -167,7 +168,6 @@ type responsesCallState struct {
 	callID    string
 	name      string
 	argsBuf   strings.Builder
-	done      bool // set when arguments.done or output_item.done has fired
 	emitted   bool // emitted at most once even if both done events fire
 }
 
@@ -342,7 +342,12 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
 		o.consumeSSE(ctx, resp, ch, start, metricAttrs)
-		o.recordLatency(ctx, start, metricAttrs)
+		// Record latency on a background context: the caller's `ctx` may
+		// already have been cancelled by the time the stream completes
+		// (the agentic loop has moved on), and some OTel exporters drop
+		// measurements on cancelled contexts. Synchronous error paths
+		// above use the live `ctx` because the caller is still waiting.
+		o.recordLatency(context.Background(), start, metricAttrs)
 	}()
 	return ch, nil
 }
@@ -366,12 +371,24 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	defer func() { _ = resp.Body.Close() }()
 
 	ttfbRecorded := false
-	emitEvent := func(ev types.StreamEvent) {
-		if !ttfbRecorded && o.Metrics != nil {
+	// emitEvent forwards an event to the consumer, recording TTFB on the
+	// first substantive event. Returns false if the consumer has gone
+	// away (context cancelled) so the caller can unwind without leaking
+	// the goroutine on the open HTTP body.
+	emitEvent := func(ev types.StreamEvent) bool {
+		// TTFB is meant to capture time-to-first-substantive-output; gate
+		// it on event types that represent actual model inference output
+		// so error-path zero latencies do not pollute the histogram.
+		if !ttfbRecorded && o.Metrics != nil && (ev.Type == "text_delta" || ev.Type == "tool_call") {
 			o.Metrics.ProviderTTFB.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
 			ttfbRecorded = true
 		}
-		ch <- ev
+		select {
+		case ch <- ev:
+			return true
+		case <-ctx.Done():
+			return false
+		}
 	}
 
 	// Track in-flight function calls. Indexed by a stable key (item_id when
@@ -387,6 +404,7 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 
 	var currentEvent string
 	var dataParts []string
+	var dataLen int // aggregate byte length of dataParts; capped to prevent OOM
 
 	flushRecord := func() bool {
 		// Reset event-record state on return; defer-style guard so any
@@ -397,11 +415,12 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		data := strings.Join(dataParts, "\n")
 		currentEvent = ""
 		dataParts = dataParts[:0]
+		dataLen = 0
 
 		if eventName == "" || data == "" {
 			return true
 		}
-		return o.dispatchEvent(eventName, data, calls, emitEvent)
+		return o.dispatchEvent(ctx, eventName, data, calls, emitEvent)
 	}
 
 	for scanner.Scan() {
@@ -428,15 +447,35 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 			continue
 		}
 
+		// appendData stages a data payload chunk, enforcing the aggregate
+		// size cap before allocating. Returns false if the cap was hit
+		// (caller should stop reading the stream).
+		appendData := func(chunk string) bool {
+			if dataLen+len(chunk) > openaiMaxToolInputSize {
+				emitEvent(types.StreamEvent{
+					Type:  "error",
+					Error: fmt.Errorf("SSE record data exceeds %d byte limit", openaiMaxToolInputSize),
+				})
+				return false
+			}
+			dataLen += len(chunk)
+			dataParts = append(dataParts, chunk)
+			return true
+		}
+
 		switch {
 		case strings.HasPrefix(line, "event: "):
 			currentEvent = strings.TrimPrefix(line, "event: ")
 		case strings.HasPrefix(line, "event:"):
 			currentEvent = strings.TrimPrefix(line, "event:")
 		case strings.HasPrefix(line, "data: "):
-			dataParts = append(dataParts, strings.TrimPrefix(line, "data: "))
+			if !appendData(strings.TrimPrefix(line, "data: ")) {
+				return
+			}
 		case strings.HasPrefix(line, "data:"):
-			dataParts = append(dataParts, strings.TrimPrefix(line, "data:"))
+			if !appendData(strings.TrimPrefix(line, "data:")) {
+				return
+			}
 		}
 	}
 
@@ -444,7 +483,9 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 	// well-behaved server will not do this, but tolerating it avoids
 	// dropped final events on premature EOF.
 	if currentEvent != "" || len(dataParts) > 0 {
-		_ = flushRecord()
+		if !flushRecord() {
+			return
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -453,8 +494,13 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 }
 
 // dispatchEvent handles a single completed SSE record. It returns false to
-// signal the caller to stop reading (terminal event), true to continue.
-func (o *OpenAIResponsesAdapter) dispatchEvent(name, data string, calls map[string]*responsesCallState, emit func(types.StreamEvent)) bool {
+// signal the caller to stop reading (terminal event or consumer cancelled),
+// true to continue.
+//
+// `emit` returns false when the consumer has gone away (context cancelled);
+// every emit call site propagates that to abandon the stream rather than
+// pretending to keep going.
+func (o *OpenAIResponsesAdapter) dispatchEvent(ctx context.Context, name, data string, calls map[string]*responsesCallState, emit func(types.StreamEvent) bool) bool {
 	switch name {
 	case "response.created":
 		// Optional metadata; nothing to emit.
@@ -503,7 +549,9 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(name, data string, calls map[stri
 			return false
 		}
 		if payload.Delta != "" {
-			emit(types.StreamEvent{Type: "text_delta", Text: payload.Delta})
+			if !emit(types.StreamEvent{Type: "text_delta", Text: payload.Delta}) {
+				return false
+			}
 		}
 		return true
 
@@ -563,7 +611,6 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(name, data string, calls map[stri
 			}
 			st.argsBuf.WriteString(payload.Arguments)
 		}
-		st.done = true
 		if !flushOneCall(st, emit) {
 			return false
 		}
@@ -605,7 +652,6 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(name, data string, calls map[stri
 			}
 			st.argsBuf.WriteString(payload.Item.Arguments)
 		}
-		st.done = true
 		if !flushOneCall(st, emit) {
 			return false
 		}
@@ -631,6 +677,8 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(name, data string, calls map[stri
 			ev.OutputTokens = payload.Response.Usage.OutputTokens
 		}
 		emit(ev)
+		// Terminal event: signal caller to stop reading regardless of
+		// whether the consumer accepted the message_complete event.
 		return false
 
 	case "response.incomplete":
@@ -681,7 +729,7 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(name, data string, calls map[stri
 		if payload.Response.Error != nil && payload.Response.Error.Message != "" {
 			msg = "openai responses API: " + payload.Response.Error.Message
 		}
-		emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("%s", msg)})
+		emit(types.StreamEvent{Type: "error", Error: errors.New(msg)})
 		return false
 
 	case "error":
@@ -695,12 +743,20 @@ func (o *OpenAIResponsesAdapter) dispatchEvent(name, data string, calls map[stri
 		if payload.Message != "" {
 			msg = "openai responses API stream error: " + payload.Message
 		}
-		emit(types.StreamEvent{Type: "error", Error: fmt.Errorf("%s", msg)})
+		emit(types.StreamEvent{Type: "error", Error: errors.New(msg)})
 		return false
 
 	default:
 		// Forward-compatible: unknown events (e.g. reasoning summaries,
-		// content_part lifecycle, partial-image deltas) are ignored.
+		// content_part lifecycle, partial-image deltas) are ignored. We
+		// add a span event so production operators can spot a flood of
+		// new event types from a future API revision instead of silently
+		// dropping content.
+		if span := oteltrace.SpanFromContext(ctx); span != nil && span.IsRecording() {
+			span.AddEvent("openai_responses.unknown_sse_event",
+				oteltrace.WithAttributes(attribute.String("event.type", name)),
+			)
+		}
 		return true
 	}
 }
@@ -716,10 +772,11 @@ func callKey(itemID string, outputIndex int) string {
 }
 
 // flushOneCall emits a tool_call event for the supplied call state, parsing
-// its accumulated arguments JSON. Returns false on a fatal parse error
-// (caller should stop reading the stream). Marks the call as emitted so a
-// duplicate .done event does not fire it twice.
-func flushOneCall(st *responsesCallState, emit func(types.StreamEvent)) bool {
+// its accumulated arguments JSON. Returns false on a fatal parse error or
+// when the consumer has gone away (caller should stop reading the stream).
+// Marks the call as emitted so a duplicate .done event does not fire it
+// twice.
+func flushOneCall(st *responsesCallState, emit func(types.StreamEvent) bool) bool {
 	if st.emitted {
 		return true
 	}
@@ -732,19 +789,18 @@ func flushOneCall(st *responsesCallState, emit func(types.StreamEvent)) bool {
 			return false
 		}
 	}
-	emit(types.StreamEvent{
+	return emit(types.StreamEvent{
 		Type:  "tool_call",
 		ID:    st.callID,
 		Name:  st.name,
 		Input: input,
 	})
-	return true
 }
 
 // flushPendingCalls emits any tool calls that were left in flight when the
 // terminal response.completed / response.incomplete event arrived. Order is
 // stable by output_index so multi-call responses are deterministic.
-func flushPendingCalls(calls map[string]*responsesCallState, emit func(types.StreamEvent)) bool {
+func flushPendingCalls(calls map[string]*responsesCallState, emit func(types.StreamEvent) bool) bool {
 	pending := make([]*responsesCallState, 0, len(calls))
 	for _, st := range calls {
 		if !st.emitted {
