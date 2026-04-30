@@ -948,12 +948,16 @@ func TestDeriveStopReason(t *testing.T) {
 		},
 		{
 			name: "incomplete due to max_output_tokens",
-			in:   responsesResponse{Status: "incomplete", IncompleteDetails: &struct{ Reason string `json:"reason"` }{Reason: "max_output_tokens"}},
+			in: responsesResponse{Status: "incomplete", IncompleteDetails: &struct {
+				Reason string `json:"reason"`
+			}{Reason: "max_output_tokens"}},
 			want: "max_tokens",
 		},
 		{
 			name: "incomplete with other reason",
-			in:   responsesResponse{Status: "incomplete", IncompleteDetails: &struct{ Reason string `json:"reason"` }{Reason: "content_filter"}},
+			in: responsesResponse{Status: "incomplete", IncompleteDetails: &struct {
+				Reason string `json:"reason"`
+			}{Reason: "content_filter"}},
 			want: "content_filter",
 		},
 		{

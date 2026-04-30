@@ -19,6 +19,7 @@ fails fast with a clear error rather than being silently dropped.
 | File | What it demonstrates |
 |---|---|
 | [`full.json`](full.json) | Container executor, multi edit strategy, OTel trace emitter, deterministic git, dynamic model router, allow-all permission policy, and one MCP server. Passes `types.ValidateRunConfig` end-to-end. |
+| [`openai_responses.json`](openai_responses.json) | OpenAI Responses API provider (`POST /v1/responses`), local executor, multi edit strategy, JSONL trace emitter, static router on `gpt-4.1`. Use this template when you want the Responses wire format (top-level `instructions`, typed `input[]` items, `max_output_tokens`) rather than Chat Completions. |
 
 ## Precedence
 

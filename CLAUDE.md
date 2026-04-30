@@ -24,7 +24,7 @@ stirrup/
     internal/
       core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, stall detection
       credential/            # Cross-cloud credential federation (token sources + credential sources)
-      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible
+      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode templates
       context/               # ContextStrategy: sliding window, summarise, offload-to-file
@@ -72,7 +72,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--prompt` | (required) | User prompt (also accepted as positional arg) |
 | `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
 | `--model` | `claude-sonnet-4-6` | Model to use |
-| `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible |
+| `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API) |
 | `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
 | `--workspace`, `-w` | current directory | Workspace directory |
 | `--max-turns` | `20` | Maximum agentic loop turns |
@@ -125,7 +125,7 @@ go build -o stirrup-eval ./eval/cmd/eval
 
 12 swappable components, all interface-based:
 
-1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible)
+1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses)
 2. **ModelRouter** — selects provider+model per turn (static, per-mode, dynamic)
 3. **PromptBuilder** — assembles system prompt (default per-mode templates, composed)
 4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file)
@@ -145,6 +145,7 @@ The core loop is a pure function of its interfaces. All dependencies are injecte
 - **Anthropic** (`provider/anthropic.go`) — SSE streaming via `net/http` + `bufio.Scanner`. Hand-rolled, no SDK dependency.
 - **Bedrock** (`provider/bedrock.go`) — AWS ConverseStream API via `aws-sdk-go-v2`. Translates between internal types and Bedrock's union-type wire format. Auth is IAM (not API key); uses `config.LoadDefaultConfig()`. Accepts optional `aws.CredentialsProvider` for cross-cloud credential federation.
 - **OpenAI-compatible** (`provider/openai.go`) — OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure OpenAI, vLLM, Ollama via configurable `baseURL`.
+- **OpenAI Responses** (`provider/openai_responses.go`) — OpenAI Responses API (`POST /v1/responses`) streaming. Distinct wire format from Chat Completions: top-level `instructions` field, typed `input[]` items (`message` / `function_call` / `function_call_output`), flat tool schema, `max_output_tokens`, explicit `store: false`, and named SSE events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.completed`, `response.incomplete`, `response.failed`). Selected explicitly via `provider.type: "openai-responses"` — there is no auto-detection between the two OpenAI adapters because silent fallback would mask configuration errors. Built-in OpenAI-side tools (`web_search`, `file_search`, `computer_use`, `code_interpreter`), server-side state via `previous_response_id`, and reasoning controls are intentionally not supported in this adapter; the harness manages its own conversation history.
 
 ### Credential federation
 

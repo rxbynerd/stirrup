@@ -88,13 +88,13 @@ type responsesRequest struct {
 // field selects which other fields are populated; this matches the
 // discriminated-union shape OpenAI publishes for typed input items.
 type responsesInput struct {
-	Type      string                  `json:"type"`               // "message" | "function_call" | "function_call_output"
-	Role      string                  `json:"role,omitempty"`     // for "message"
-	Content   []responsesContentBlock `json:"content,omitempty"`  // for "message"
-	Name      string                  `json:"name,omitempty"`     // for "function_call"
-	CallID    string                  `json:"call_id,omitempty"`  // for "function_call" / "function_call_output"
+	Type      string                  `json:"type"`                // "message" | "function_call" | "function_call_output"
+	Role      string                  `json:"role,omitempty"`      // for "message"
+	Content   []responsesContentBlock `json:"content,omitempty"`   // for "message"
+	Name      string                  `json:"name,omitempty"`      // for "function_call"
+	CallID    string                  `json:"call_id,omitempty"`   // for "function_call" / "function_call_output"
 	Arguments string                  `json:"arguments,omitempty"` // for "function_call" — JSON string
-	Output    string                  `json:"output,omitempty"`   // for "function_call_output"
+	Output    string                  `json:"output,omitempty"`    // for "function_call_output"
 }
 
 // responsesContentBlock is one part inside a message item.
@@ -138,7 +138,7 @@ type responsesUsage struct {
 // responsesResponse is the response object delivered on response.completed
 // and response.incomplete. Only the fields stirrup acts on are unmarshalled.
 type responsesResponse struct {
-	Status            string                `json:"status"`
+	Status            string `json:"status"`
 	IncompleteDetails *struct {
 		Reason string `json:"reason"`
 	} `json:"incomplete_details,omitempty"`
