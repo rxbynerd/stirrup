@@ -3,6 +3,21 @@ package types
 import "encoding/json"
 
 // StreamEvent represents a single event from the model's streaming response.
+//
+// StopReason is only populated on a "message_complete" event. The harness
+// recognises these canonical values:
+//
+//   - "end_turn"   — model finished a normal turn with no further action
+//   - "tool_use"   — model emitted one or more tool calls; the agentic
+//     loop should dispatch them and continue the conversation
+//   - "max_tokens" — provider stopped because of an output token budget
+//   - "error"      — provider returned an empty stop reason (defensive)
+//   - "incomplete" — Responses-API status with no specific reason
+//
+// Any other value is passed through verbatim to the agentic loop and
+// surfaces as the run's outcome string. The authoritative consumer is
+// harness/internal/core/loop.go (see the run loop's stop-reason switch
+// near the end of the turn handler).
 type StreamEvent struct {
 	Type         string         `json:"type"` // "text_delta" | "tool_call" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`

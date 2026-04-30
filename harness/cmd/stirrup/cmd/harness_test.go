@@ -66,6 +66,35 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRunConfig_OpenAIResponsesProvider verifies that the
+// openai-responses provider type is accepted by both the CLI option-to-
+// RunConfig path and ValidateRunConfig. Before this case existed, picking
+// --provider openai-responses would crash at validation.
+func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "openai-responses",
+		APIKeyRef:     "secret://OPENAI_API_KEY",
+		Model:         "gpt-4.1",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+
+	if cfg.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
+	}
+	if cfg.ModelRouter.Provider != "openai-responses" {
+		t.Errorf("ModelRouter.Provider = %q, want openai-responses", cfg.ModelRouter.Provider)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig rejected openai-responses: %v", err)
+	}
+}
+
 // TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList verifies that
 // when no explicit Tools.BuiltIn list is supplied, read-only modes get
 // the documented default list rather than passing validation by accident.

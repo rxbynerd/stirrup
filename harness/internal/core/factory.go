@@ -213,6 +213,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		case *provider.OpenAICompatibleAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
+		case *provider.OpenAIResponsesAdapter:
+			pa.Tracer = tracer
+			pa.Metrics = metrics
 		case *provider.BedrockAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
@@ -308,10 +311,12 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		return provider.NewAnthropicAdapter(cred.BearerToken), nil
 	case "openai-compatible":
 		return provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL), nil
+	case "openai-responses":
+		return provider.NewOpenAIResponsesAdapter(cred.BearerToken, cfg.BaseURL), nil
 	case "bedrock":
 		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials)
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, openai-compatible)", cfg.Type)
+		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, openai-compatible, openai-responses)", cfg.Type)
 	}
 }
 

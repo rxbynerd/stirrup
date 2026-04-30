@@ -107,11 +107,11 @@ func (rc RunConfig) Redact() RunConfig {
 
 // ProviderConfig selects the model provider implementation.
 type ProviderConfig struct {
-	Type       string            `json:"type"`                 // "anthropic" | "bedrock" | "openai-compatible"
+	Type       string            `json:"type"`                 // "anthropic" | "bedrock" | "openai-compatible" | "openai-responses"
 	APIKeyRef  string            `json:"apiKeyRef,omitempty"`  // e.g. "secret://anthropic-key"
 	Region     string            `json:"region,omitempty"`     // bedrock
 	Profile    string            `json:"profile,omitempty"`    // bedrock
-	BaseURL    string            `json:"baseUrl,omitempty"`    // openai-compatible
+	BaseURL    string            `json:"baseUrl,omitempty"`    // openai-compatible, openai-responses
 	Credential *CredentialConfig `json:"credential,omitempty"` // cross-cloud credential federation (nil = infer from provider type)
 }
 
@@ -254,6 +254,7 @@ var validProviderTypes = map[string]bool{
 	"anthropic":         true,
 	"bedrock":           true,
 	"openai-compatible": true,
+	"openai-responses":  true,
 }
 
 var validModelRouterTypes = map[string]bool{

@@ -6,7 +6,7 @@ A coding agent harness for building composable AI agents. Built in Go with 12 sw
 
 - **Modular architecture**: 12 interface-based components for LLM providers, routing, prompts, context, tools, execution, editing, verification, permissions, transport, git, and tracing
 - **Unified CLI**: `stirrup harness` for local runs and `stirrup job` for Kubernetes control-plane jobs
-- **Streaming support**: Anthropic SSE, AWS Bedrock ConverseStream, OpenAI-compatible chat completions, stdio transport, and gRPC bidi streaming
+- **Streaming support**: Anthropic SSE, AWS Bedrock ConverseStream, OpenAI-compatible chat completions, OpenAI Responses API, stdio transport, and gRPC bidi streaming
 - **Security-first**: secret redaction, full JSON Schema validation, restrictive read-only modes, environment filtering, SSRF protection, path containment, HTTP timeouts, and loop stall detection
 - **Multi-mode operation**: execution, planning, review, research, and toil modes
 - **Token accounting**: input/output token tracking with configurable budget limits
@@ -49,7 +49,7 @@ go run ./harness/cmd/stirrup harness --prompt "Your task here"
 | `--prompt` | (required) | User prompt, also accepted as a positional argument |
 | `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
 | `--model` | `claude-sonnet-4-6` | Model to use |
-| `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible |
+| `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API) |
 | `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
 | `--workspace`, `-w` | current directory | Workspace directory |
 | `--max-turns` | `20` | Maximum agentic loop turns |
@@ -155,7 +155,7 @@ regression suite, monitoring drift, and iterating on judges.
 
 The harness is composed of 12 swappable, interface-based components:
 
-1. **ProviderAdapter** - Streams completions from LLMs: Anthropic, Bedrock, OpenAI-compatible
+1. **ProviderAdapter** - Streams completions from LLMs: Anthropic, Bedrock, OpenAI-compatible (Chat Completions), OpenAI Responses
 2. **ModelRouter** - Selects provider and model per turn: static, per-mode, dynamic
 3. **PromptBuilder** - Assembles system prompts: default per-mode templates, composed fragments, overrides
 4. **ContextStrategy** - Manages conversation history: sliding window, summarise, offload-to-file
@@ -186,7 +186,7 @@ stirrup/
     internal/
       core/                  # AgenticLoop, factory, token tracking, sub-agents, stall detection
       credential/            # Cross-cloud credential federation
-      provider/              # Anthropic, Bedrock, OpenAI-compatible adapters
+      provider/              # Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses adapters
       router/                # Static, per-mode, dynamic model routers
       prompt/                # Prompt builders and system prompt templates
       context/               # Sliding window, summarise, offload-to-file

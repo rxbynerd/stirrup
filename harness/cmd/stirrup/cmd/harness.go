@@ -210,7 +210,7 @@ func init() {
 	f.String("config", "", "Path to a JSON RunConfig file (mirrors proto/harness/v1/harness.proto). Explicit flags still override individual fields; unset flags do not.")
 	f.StringP("mode", "m", "execution", "Run mode: execution, planning, review, research, toil")
 	f.String("model", "claude-sonnet-4-6", "Model to use (sets ModelRouter.Model; for dynamic/per-mode routers in --config files this only sets the default-model field, not the cheap/expensive override)")
-	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, openai-compatible")
+	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API). The two OpenAI variants speak different wire formats and must be selected explicitly.")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "Secret reference for API key")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
