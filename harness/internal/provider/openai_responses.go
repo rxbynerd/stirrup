@@ -220,6 +220,18 @@ func translateMessagesResponses(messages []types.Message) []responsesInput {
 			out = append(out, calls...)
 
 		case "user":
+			// User message emission order is deliberate and contract-pinned:
+			// function_call_output items are emitted first in document order
+			// as they appear in msg.Content, and any text blocks are batched
+			// into a single trailing input_text message item. This ordering
+			// is documented (rather than fixed to strict document order)
+			// because the harness's own message construction never produces
+			// mixed user messages — text-then-tool_result-then-text inputs
+			// only arise from external callers, and reordering text after
+			// tool results matches the Responses API's preference for
+			// function_call_output items to precede the next user turn's
+			// instructions. See TestTranslateMessagesResponses_UserTextAndToolResultOrder
+			// for the pinned behaviour.
 			var textParts []string
 			for _, block := range msg.Content {
 				switch block.Type {
