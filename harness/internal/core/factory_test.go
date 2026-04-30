@@ -16,6 +16,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -1196,6 +1197,51 @@ func TestBuildLoopWithTransport_ReadOnlyModesAllowWebFetch(t *testing.T) {
 				t.Fatalf("mode %q permission policy denied web_fetch: %q", mode, result.Reason)
 			}
 		})
+	}
+}
+
+// --- buildProvider ---
+
+func TestBuildProvider_OpenAIResponses(t *testing.T) {
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:      "openai-responses",
+		APIKeyRef: "secret://OPENAI_KEY",
+		BaseURL:   "https://api.openai.com/v1",
+	}, secrets)
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	if _, ok := prov.(*provider.OpenAIResponsesAdapter); !ok {
+		t.Errorf("buildProvider type = %T, want *provider.OpenAIResponsesAdapter", prov)
+	}
+}
+
+func TestBuildProvider_OpenAICompatibleStillWorks(t *testing.T) {
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:      "openai-compatible",
+		APIKeyRef: "secret://OPENAI_KEY",
+	}, secrets)
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	if _, ok := prov.(*provider.OpenAICompatibleAdapter); !ok {
+		t.Errorf("buildProvider type = %T, want *provider.OpenAICompatibleAdapter", prov)
+	}
+}
+
+func TestBuildProvider_UnknownTypeMentionsResponses(t *testing.T) {
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+	_, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:      "nonsense",
+		APIKeyRef: "secret://OPENAI_KEY",
+	}, secrets)
+	if err == nil {
+		t.Fatal("expected error for unknown provider type")
+	}
+	if !strings.Contains(err.Error(), "openai-responses") {
+		t.Errorf("error message should advertise openai-responses, got: %v", err)
 	}
 }
 

@@ -442,6 +442,17 @@ func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_OpenAIResponsesProvider(t *testing.T) {
+	// The new openai-responses provider type must be accepted by validation.
+	// Before this case existed, callers who configured a Responses adapter
+	// would be rejected at validation time.
+	c := validConfig()
+	c.Provider = ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected openai-responses to be accepted, got: %v", err)
+	}
+}
+
 func TestValidateRunConfig_CredentialNilPassesValidation(t *testing.T) {
 	c := validConfig()
 	c.Provider.Credential = nil
