@@ -333,9 +333,24 @@ func jsonToCedarValue(raw json.RawMessage) (cedartypes.Value, error) {
 	return goValueToCedar(v)
 }
 
+// maxCedarDepth caps recursion through tool input JSON when converting it
+// to a Cedar Value. Go's encoding/json decoder allows ~10000 levels of
+// nesting, well past what fits on the goroutine stack for downstream
+// recursion; an attacker-controlled tool input can therefore reach
+// goValueToCedar with a depth that crashes the harness. Cap conservatively
+// — 64 levels is far deeper than any legitimate tool schema (M5).
+const maxCedarDepth = 64
+
 // goValueToCedar maps a decoded JSON value to a Cedar Value. JSON null
 // becomes a Cedar nil (the caller treats this as "absent").
 func goValueToCedar(v any) (cedartypes.Value, error) {
+	return goValueToCedarDepth(v, 0)
+}
+
+func goValueToCedarDepth(v any, depth int) (cedartypes.Value, error) {
+	if depth > maxCedarDepth {
+		return nil, fmt.Errorf("policy-engine: tool input too deeply nested for Cedar evaluation (limit %d)", maxCedarDepth)
+	}
 	switch t := v.(type) {
 	case nil:
 		return nil, nil
@@ -355,7 +370,7 @@ func goValueToCedar(v any) (cedartypes.Value, error) {
 	case []any:
 		items := make([]cedartypes.Value, 0, len(t))
 		for _, item := range t {
-			cv, err := goValueToCedar(item)
+			cv, err := goValueToCedarDepth(item, depth+1)
 			if err != nil {
 				return nil, err
 			}
@@ -368,7 +383,7 @@ func goValueToCedar(v any) (cedartypes.Value, error) {
 	case map[string]any:
 		m := make(cedartypes.RecordMap, len(t))
 		for k, val := range t {
-			cv, err := goValueToCedar(val)
+			cv, err := goValueToCedarDepth(val, depth+1)
 			if err != nil {
 				return nil, err
 			}

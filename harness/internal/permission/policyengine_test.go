@@ -312,6 +312,38 @@ func TestPolicyEngine_SubAgentCap(t *testing.T) {
 	}
 }
 
+// TestGoValueToCedar_DeepNestingReturnsError covers M5: a tool input
+// nested past maxCedarDepth must produce a clean error rather than
+// recursing far enough to exhaust the goroutine stack and panic. The
+// JSON decoder permits ~10000 levels of nesting on its own, so the
+// depth check has to live in goValueToCedar.
+func TestGoValueToCedar_DeepNestingReturnsError(t *testing.T) {
+	// Build a 100-deep nest. 100 > maxCedarDepth (64) so the limit
+	// should fire well before any stack growth becomes a concern.
+	var nested any = "leaf"
+	for i := 0; i < 100; i++ {
+		nested = map[string]any{"k": nested}
+	}
+
+	_, err := goValueToCedar(nested)
+	if err == nil {
+		t.Fatal("expected error on deeply-nested input, got nil")
+	}
+	if want := "too deeply nested"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("expected error to mention %q, got %q", want, err.Error())
+	}
+
+	// Sanity: input at exactly the limit should still parse without
+	// a depth error so legitimate nested objects keep working.
+	var atLimit any = "leaf"
+	for i := 0; i < maxCedarDepth-1; i++ {
+		atLimit = map[string]any{"k": atLimit}
+	}
+	if _, err := goValueToCedar(atLimit); err != nil {
+		t.Fatalf("unexpected error at depth %d: %v", maxCedarDepth-1, err)
+	}
+}
+
 // TestPolicyEngine_ForChildRun_PopulatesParentRunID exercises the M3
 // fix: a sub-agent's permission policy must be a clone with
 // parentRunId set to the parent's runID. The same Cedar policy that
