@@ -459,23 +459,119 @@ func TestEmitRuleOfTwoEvents_AllThreeWithoutOverrideStaysSilent(t *testing.T) {
 }
 
 func TestEmitRuleOfTwoEvents_TwoOfThreeEmitsWarning(t *testing.T) {
-	// Untrusted (DynamicContext) + sensitive (APIKeyRef) but no
-	// external-communication tools.
+	// All three two-of-three pairs must each emit rule_of_two_warning
+	// with the payload booleans set to (true, true, false) for the two
+	// flags that hold and false for the third. Pre-S6 only the
+	// untrusted+sensitive pair was tested, so a regression in the
+	// untrusted+external or sensitive+external branches would slip
+	// past CI silently.
+	cases := []struct {
+		name    string
+		cfg     *types.RunConfig
+		wantU   bool
+		wantS   bool
+		wantE   bool
+	}{
+		{
+			name: "untrusted+sensitive",
+			cfg: &types.RunConfig{
+				Mode:             "execution",
+				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+				DynamicContext:   map[string]string{"x": "y"},
+			},
+			wantU: true, wantS: true, wantE: false,
+		},
+		{
+			name: "untrusted+external",
+			cfg: &types.RunConfig{
+				Mode: "execution",
+				// APIKeyRef referencing a name without
+				// key/token/secret/password and not via SSM does not
+				// trip ruleOfTwoSensitiveData; use a placeholder.
+				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://CONFIG_VALUE"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				// web_fetch = untrusted AND external; explicit BuiltIn
+				// list so APIKeyRef stays the only sensitivity vector.
+				Tools: types.ToolsConfig{BuiltIn: []string{"web_fetch"}},
+			},
+			wantU: true, wantS: false, wantE: true,
+		},
+		{
+			name: "sensitive+external",
+			cfg: &types.RunConfig{
+				Mode:             "execution",
+				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				// run_command via bridge = external comm; sensitive APIKeyRef.
+				// No web_fetch / DynamicContext / MCP servers ⇒ not untrusted.
+				Tools: types.ToolsConfig{BuiltIn: []string{"run_command"}},
+				Executor: types.ExecutorConfig{
+					Type: "container", Image: "x",
+					Network: &types.NetworkConfig{Mode: "bridge"},
+				},
+			},
+			wantU: false, wantS: true, wantE: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sec, buf := captureSecLogger(t)
+			emitRuleOfTwoEvents(tc.cfg, sec)
+			out := buf.String()
+			if !strings.Contains(out, `"event":"rule_of_two_warning"`) {
+				t.Fatalf("expected rule_of_two_warning event, got: %s", out)
+			}
+			// Payload field assertions. The booleans are emitted as
+			// JSON true/false so a substring search is sufficient and
+			// keeps this test independent of map-key ordering.
+			assertPayloadBool(t, out, "untrustedInput", tc.wantU)
+			assertPayloadBool(t, out, "sensitiveData", tc.wantS)
+			assertPayloadBool(t, out, "externalCommunication", tc.wantE)
+		})
+	}
+}
+
+// assertPayloadBool checks that a JSON line in out names key with the
+// expected boolean value. The SecurityLogger output uses standard
+// json.Marshal so the encoding is `"key":true`/`"key":false`.
+func assertPayloadBool(t *testing.T, out, key string, want bool) {
+	t.Helper()
+	var phrase string
+	if want {
+		phrase = `"` + key + `":true`
+	} else {
+		phrase = `"` + key + `":false`
+	}
+	if !strings.Contains(out, phrase) {
+		t.Errorf("expected %q in payload, got: %s", phrase, out)
+	}
+}
+
+// TestEmitRuleOfTwoEvents_DisabledPayloadShape extends the override
+// path to assert the same payload booleans appear on rule_of_two_disabled
+// events. The audit consumer gets a single shape across both events.
+func TestEmitRuleOfTwoEvents_DisabledPayloadShape(t *testing.T) {
 	sec, buf := captureSecLogger(t)
+	enforce := false
 	cfg := &types.RunConfig{
 		Mode:             "execution",
 		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
-		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
 		DynamicContext:   map[string]string{"x": "y"},
+		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
 	}
-
 	emitRuleOfTwoEvents(cfg, sec)
-
 	out := buf.String()
-	if !strings.Contains(out, `"event":"rule_of_two_warning"`) {
-		t.Errorf("expected rule_of_two_warning event, got: %s", out)
+	if !strings.Contains(out, `"event":"rule_of_two_disabled"`) {
+		t.Fatalf("expected rule_of_two_disabled, got: %s", out)
 	}
+	assertPayloadBool(t, out, "untrustedInput", true)
+	assertPayloadBool(t, out, "sensitiveData", true)
+	assertPayloadBool(t, out, "externalCommunication", true)
 }
 
 func TestEmitRuleOfTwoEvents_NoneOrOneStaysSilent(t *testing.T) {
