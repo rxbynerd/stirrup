@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -17,6 +18,10 @@ const DefaultAskUpstreamTimeout = 60 * time.Second
 // Transport is a minimal interface matching the subset of transport.Transport
 // needed by AskUpstreamPolicy. Defined locally to avoid a circular import
 // between the permission and transport packages.
+//
+// (The transport package itself does not import permission, so this is
+// strictly a hygiene measure: it keeps callers free to substitute a fake
+// in tests without depending on the full transport.Transport interface.)
 type Transport interface {
 	Emit(event types.HarnessEvent) error
 	OnControl(handler func(event types.ControlEvent))
@@ -43,10 +48,12 @@ type AskUpstreamPolicy struct {
 	// auto-allowed.
 	approvalTools map[string]bool
 
-	mu       sync.Mutex
-	nextID   int
-	pending  map[string]chan permissionResponse
-	attached bool
+	mu sync.Mutex
+
+	// correlator pairs outbound permission_request events with their
+	// corresponding permission_response control events. It owns the
+	// pending-channel map and the request-ID counter.
+	correlator *transport.Correlator
 }
 
 type permissionResponse struct {
@@ -59,18 +66,31 @@ type permissionResponse struct {
 // plane; calls to those tools are forwarded as permission_request events
 // and block until a permission_response arrives. If timeout is zero,
 // DefaultAskUpstreamTimeout (60s) is used.
-func NewAskUpstreamPolicy(transport Transport, approvalTools map[string]bool, timeout time.Duration) *AskUpstreamPolicy {
+func NewAskUpstreamPolicy(t Transport, approvalTools map[string]bool, timeout time.Duration) *AskUpstreamPolicy {
 	if timeout <= 0 {
 		timeout = DefaultAskUpstreamTimeout
 	}
 	p := &AskUpstreamPolicy{
-		transport:     transport,
+		transport:     t,
 		Timeout:       timeout,
 		approvalTools: approvalTools,
-		pending:       make(map[string]chan permissionResponse),
+		correlator:    transport.NewCorrelator("perm"),
 	}
-	p.attachHandler()
+	p.correlator.AttachTo(t, extractPermissionResponse)
 	return p
+}
+
+// extractPermissionResponse turns a control event into a permissionResponse
+// payload, or returns an empty id to ignore unrelated events.
+func extractPermissionResponse(event types.ControlEvent) (string, any) {
+	if event.Type != "permission_response" {
+		return "", nil
+	}
+	allowed := event.Allowed != nil && *event.Allowed
+	return event.RequestID, permissionResponse{
+		allowed: allowed,
+		reason:  event.Reason,
+	}
 }
 
 // ApprovalToolNames returns a snapshot of tool names that require upstream
@@ -97,34 +117,6 @@ func (p *AskUpstreamPolicy) AddApprovalTool(name string) {
 	p.approvalTools[name] = true
 }
 
-// attachHandler registers a control event handler on the transport to route
-// permission_response events to their waiting Check calls.
-func (p *AskUpstreamPolicy) attachHandler() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.attached {
-		return
-	}
-	p.attached = true
-
-	p.transport.OnControl(func(event types.ControlEvent) {
-		if event.Type != "permission_response" {
-			return
-		}
-		p.mu.Lock()
-		ch, ok := p.pending[event.RequestID]
-		if ok {
-			delete(p.pending, event.RequestID)
-		}
-		p.mu.Unlock()
-
-		if ok {
-			allowed := event.Allowed != nil && *event.Allowed
-			ch <- permissionResponse{allowed: allowed, reason: event.Reason}
-		}
-	})
-}
-
 // Check implements PermissionPolicy. Tools that do not require upstream
 // approval are auto-allowed. Approval-required tools emit a
 // permission_request event via Transport and block until the control plane
@@ -137,51 +129,31 @@ func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition
 		return &PermissionResult{Allowed: true}, nil
 	}
 
-	requestID := p.nextRequestID()
-	ch := make(chan permissionResponse, 1)
-
-	p.mu.Lock()
-	p.pending[requestID] = ch
-	p.mu.Unlock()
-
-	err := p.transport.Emit(types.HarnessEvent{
-		Type:      "permission_request",
-		RequestID: requestID,
-		ToolName:  tool.Name,
-		Input:     input,
+	payload, err := p.correlator.Await(ctx, p.Timeout, func(requestID string) error {
+		return p.transport.Emit(types.HarnessEvent{
+			Type:      "permission_request",
+			RequestID: requestID,
+			ToolName:  tool.Name,
+			Input:     input,
+		})
 	})
 	if err != nil {
-		p.mu.Lock()
-		delete(p.pending, requestID)
-		p.mu.Unlock()
-		return nil, fmt.Errorf("emit permission request: %w", err)
+		// Surface a domain-specific error message while preserving the
+		// underlying cause (timeout, ctx, emit failure) for callers that
+		// inspect the chain via errors.Is.
+		return nil, fmt.Errorf("permission check: %w", err)
 	}
 
-	timer := time.NewTimer(p.Timeout)
-	defer timer.Stop()
-
-	select {
-	case resp := <-ch:
-		return &PermissionResult{
-			Allowed: resp.allowed,
-			Reason:  resp.reason,
-		}, nil
-	case <-timer.C:
-		p.mu.Lock()
-		delete(p.pending, requestID)
-		p.mu.Unlock()
-		return nil, fmt.Errorf("permission check timed out after %s waiting for upstream response", p.Timeout)
-	case <-ctx.Done():
-		p.mu.Lock()
-		delete(p.pending, requestID)
-		p.mu.Unlock()
-		return nil, fmt.Errorf("permission check cancelled: %w", ctx.Err())
+	resp, ok := payload.(permissionResponse)
+	if !ok {
+		// Defensive: extractPermissionResponse only ever delivers
+		// permissionResponse, so reaching this branch means the
+		// correlator was wired with a different extractor than we
+		// installed. Treat as a hard error rather than panicking.
+		return nil, fmt.Errorf("permission check: unexpected payload type %T", payload)
 	}
-}
-
-func (p *AskUpstreamPolicy) nextRequestID() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.nextID++
-	return fmt.Sprintf("perm-%d", p.nextID)
+	return &PermissionResult{
+		Allowed: resp.allowed,
+		Reason:  resp.reason,
+	}, nil
 }

@@ -227,10 +227,7 @@ func TestAskUpstream_ContextCancellation(t *testing.T) {
 	}
 
 	// Verify that the pending request was cleaned up.
-	policy.mu.Lock()
-	pendingCount := len(policy.pending)
-	policy.mu.Unlock()
-	if pendingCount != 0 {
+	if pendingCount := policy.correlator.PendingCount(); pendingCount != 0 {
 		t.Errorf("expected 0 pending requests after cancellation, got %d", pendingCount)
 	}
 }
@@ -250,10 +247,7 @@ func TestAskUpstream_EmitError(t *testing.T) {
 	}
 
 	// Verify pending map is cleaned up.
-	policy.mu.Lock()
-	pendingCount := len(policy.pending)
-	policy.mu.Unlock()
-	if pendingCount != 0 {
+	if pendingCount := policy.correlator.PendingCount(); pendingCount != 0 {
 		t.Errorf("expected 0 pending requests after emit error, got %d", pendingCount)
 	}
 }
@@ -321,10 +315,7 @@ func TestAskUpstream_Timeout(t *testing.T) {
 	}
 
 	// Verify that the pending request was cleaned up.
-	policy.mu.Lock()
-	pendingCount := len(policy.pending)
-	policy.mu.Unlock()
-	if pendingCount != 0 {
+	if pendingCount := policy.correlator.PendingCount(); pendingCount != 0 {
 		t.Errorf("expected 0 pending requests after timeout, got %d", pendingCount)
 	}
 }
