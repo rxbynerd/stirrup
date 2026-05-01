@@ -121,6 +121,15 @@ type CodeScannerConfig struct {
 	Type        string   `json:"type"`
 	Scanners    []string `json:"scanners,omitempty"`
 	BlockOnWarn bool     `json:"blockOnWarn,omitempty"`
+
+	// SemgrepConfigPath, when non-empty, is passed to semgrep as
+	// `--config <path>` instead of the default `--config auto`. Set
+	// this to a local rules bundle (e.g. /etc/stirrup/semgrep-rules/)
+	// to disable the implicit network fetch of rule packs from
+	// semgrep.dev — required for air-gapped deployments and the only
+	// way to pin the scanner against supply-chain shifts (M7). Empty
+	// preserves the historical default of "auto".
+	SemgrepConfigPath string `json:"semgrepConfigPath,omitempty"`
 }
 
 // Redact returns a copy of the RunConfig with secret references replaced

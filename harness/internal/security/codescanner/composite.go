@@ -42,8 +42,11 @@ func (c *CompositeScanner) Scan(ctx context.Context, path string, content []byte
 // supported by ValidateRunConfig (none, patterns, semgrep) and bundles
 // them. Composite-of-composite is intentionally not supported here — the
 // types validator rejects it earlier — but we defend against it again to
-// keep this constructor usable from tests or future callers.
-func newComposite(names []string) (CodeScanner, error) {
+// keep this constructor usable from tests or future callers. The
+// semgrepConfigPath argument is threaded through to any semgrep child;
+// it is shared rather than per-child because v1 supports a single
+// composite config object.
+func newComposite(names []string, semgrepConfigPath string) (CodeScanner, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("codescanner: composite requires at least one scanner")
 	}
@@ -55,7 +58,7 @@ func newComposite(names []string) (CodeScanner, error) {
 		case "patterns":
 			children = append(children, NewPatternScanner())
 		case "semgrep":
-			children = append(children, NewSemgrepScanner())
+			children = append(children, NewSemgrepScanner(semgrepConfigPath))
 		case "composite":
 			return nil, fmt.Errorf("codescanner: composite cannot contain another composite")
 		default:

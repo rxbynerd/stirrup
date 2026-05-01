@@ -800,9 +800,16 @@ type CodeScannerConfig struct {
 	// When true, "warn" findings also fail the edit. When false (the
 	// default), only "block" findings fail; "warn" findings emit a
 	// security event but the edit succeeds.
-	BlockOnWarn   bool `protobuf:"varint,3,opt,name=block_on_warn,json=blockOnWarn,proto3" json:"block_on_warn,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	BlockOnWarn bool `protobuf:"varint,3,opt,name=block_on_warn,json=blockOnWarn,proto3" json:"block_on_warn,omitempty"`
+	// For "semgrep" / "composite": value passed to `semgrep --config`.
+	// Empty preserves the historical default of "auto", which causes
+	// semgrep to fetch rule packs from semgrep.dev at scan time. Set
+	// to a local rules-bundle path (e.g. /etc/stirrup/semgrep-rules)
+	// for air-gapped deployments and to pin against supply-chain
+	// shifts in the upstream registry.
+	SemgrepConfigPath string `protobuf:"bytes,4,opt,name=semgrep_config_path,json=semgrepConfigPath,proto3" json:"semgrep_config_path,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CodeScannerConfig) Reset() {
@@ -854,6 +861,13 @@ func (x *CodeScannerConfig) GetBlockOnWarn() bool {
 		return x.BlockOnWarn
 	}
 	return false
+}
+
+func (x *CodeScannerConfig) GetSemgrepConfigPath() string {
+	if x != nil {
+		return x.SemgrepConfigPath
+	}
+	return ""
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution
@@ -2485,11 +2499,12 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0fRuleOfTwoConfig\x12\x1d\n" +
 	"\aenforce\x18\x01 \x01(\bH\x00R\aenforce\x88\x01\x01B\n" +
 	"\n" +
-	"\b_enforce\"g\n" +
+	"\b_enforce\"\x97\x01\n" +
 	"\x11CodeScannerConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bscanners\x18\x02 \x03(\tR\bscanners\x12\"\n" +
-	"\rblock_on_warn\x18\x03 \x01(\bR\vblockOnWarn\"\xdc\x01\n" +
+	"\rblock_on_warn\x18\x03 \x01(\bR\vblockOnWarn\x12.\n" +
+	"\x13semgrep_config_path\x18\x04 \x01(\tR\x11semgrepConfigPath\"\xdc\x01\n" +
 	"\bRunTrace\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x14\n" +
 	"\x05turns\x18\x02 \x01(\x05R\x05turns\x12!\n" +

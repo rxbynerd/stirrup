@@ -88,9 +88,9 @@ func New(cfg *types.CodeScannerConfig) (CodeScanner, error) {
 	case "patterns":
 		return NewPatternScanner(), nil
 	case "semgrep":
-		return NewSemgrepScanner(), nil
+		return NewSemgrepScanner(cfg.SemgrepConfigPath), nil
 	case "composite":
-		return newComposite(cfg.Scanners)
+		return newComposite(cfg.Scanners, cfg.SemgrepConfigPath)
 	default:
 		return nil, fmt.Errorf("codescanner: unknown type %q", cfg.Type)
 	}

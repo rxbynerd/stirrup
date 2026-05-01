@@ -24,6 +24,14 @@ const defaultSemgrepTimeout = 30 * time.Second
 // that emits canned JSON) without rewriting the constructor contract.
 var semgrepBinary = "semgrep"
 
+// defaultSemgrepConfigArg is the value passed to `semgrep --config`
+// when the operator does not configure ConfigPath explicitly. "auto"
+// preserves pre-#42 behaviour (semgrep fetches the matching rule
+// packs for each detected language from semgrep.dev) but is the
+// supply-chain risk M7 surfaces; operators who care should set a
+// local path.
+const defaultSemgrepConfigArg = "auto"
+
 // SemgrepScanner shells out to a local `semgrep` binary, piping the file
 // content on stdin and parsing the JSON result. If the binary is not on
 // PATH at construction time we return a no-op so the harness keeps
@@ -33,12 +41,20 @@ type SemgrepScanner struct {
 	// defaultSemgrepTimeout (30s).
 	Timeout time.Duration
 
+	// ConfigPath is the value passed to `semgrep --config`. Empty
+	// means "auto" (download rule packs from semgrep.dev, the
+	// historical default). Set to a local rules-bundle path to
+	// disable the network dependency — required for air-gapped
+	// deployments and the only way to pin against supply-chain
+	// shifts in the upstream registry (M7).
+	ConfigPath string
+
 	// path is the resolved absolute path to the semgrep binary.
 	path string
 
 	// runFn is the exec hook. Tests substitute it; production passes nil
 	// and the default exec.CommandContext is used.
-	runFn func(ctx context.Context, path, language string, stdin []byte) ([]byte, error)
+	runFn func(ctx context.Context, path, language, configArg string, stdin []byte) ([]byte, error)
 }
 
 // NoopSemgrepScanner is returned by NewSemgrepScanner when the binary is
@@ -60,8 +76,9 @@ var noopWarnOnce sync.Once
 
 // NewSemgrepScanner returns a CodeScanner backed by the semgrep binary if
 // present on PATH. Returns NoopSemgrepScanner otherwise (with a single
-// startup warning routed through slog).
-func NewSemgrepScanner() CodeScanner {
+// startup warning routed through slog). configPath is forwarded to
+// `semgrep --config`; empty falls back to "auto" (the pre-#42 default).
+func NewSemgrepScanner(configPath string) CodeScanner {
 	resolved, err := exec.LookPath(semgrepBinary)
 	if err != nil {
 		noopWarnOnce.Do(func() {
@@ -73,8 +90,9 @@ func NewSemgrepScanner() CodeScanner {
 		return NoopSemgrepScanner{}
 	}
 	return &SemgrepScanner{
-		Timeout: defaultSemgrepTimeout,
-		path:    resolved,
+		Timeout:    defaultSemgrepTimeout,
+		ConfigPath: configPath,
+		path:       resolved,
 	}
 }
 
@@ -95,22 +113,27 @@ func (s *SemgrepScanner) Scan(ctx context.Context, path string, content []byte) 
 
 	language := languageFromPath(path)
 
+	configArg := s.ConfigPath
+	if configArg == "" {
+		configArg = defaultSemgrepConfigArg
+	}
+
 	run := s.runFn
 	if run == nil {
 		run = defaultSemgrepRun
 	}
-	out, err := run(ctx, s.path, language, content)
+	out, err := run(ctx, s.path, language, configArg, content)
 	if err != nil {
 		return nil, fmt.Errorf("codescanner: semgrep run failed: %w", err)
 	}
 	return parseSemgrepOutput(out)
 }
 
-// defaultSemgrepRun executes semgrep against stdin with `--config auto`.
-// The `--lang` flag is set when we can infer it from the path; otherwise
-// semgrep does its own detection on the buffer.
-func defaultSemgrepRun(ctx context.Context, binPath, language string, stdin []byte) ([]byte, error) {
-	args := []string{"--config", "auto", "--json", "--quiet", "-"}
+// defaultSemgrepRun executes semgrep against stdin with the configured
+// --config value. The `--lang` flag is set when we can infer it from
+// the path; otherwise semgrep does its own detection on the buffer.
+func defaultSemgrepRun(ctx context.Context, binPath, language, configArg string, stdin []byte) ([]byte, error) {
+	args := []string{"--config", configArg, "--json", "--quiet", "-"}
 	if language != "" {
 		args = append([]string{"--lang", language}, args...)
 	}

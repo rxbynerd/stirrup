@@ -47,21 +47,21 @@ func TestCompositeScanner_PropagatesErrors(t *testing.T) {
 }
 
 func TestNewComposite_RejectsEmpty(t *testing.T) {
-	_, err := newComposite(nil)
+	_, err := newComposite(nil, "")
 	if err == nil {
 		t.Fatal("expected error for empty scanners list")
 	}
 }
 
 func TestNewComposite_RejectsUnknownChild(t *testing.T) {
-	_, err := newComposite([]string{"patterns", "nope"})
+	_, err := newComposite([]string{"patterns", "nope"}, "")
 	if err == nil {
 		t.Fatal("expected error for unknown child name")
 	}
 }
 
 func TestNewComposite_BuildsKnownChildren(t *testing.T) {
-	c, err := newComposite([]string{"patterns", "none"})
+	c, err := newComposite([]string{"patterns", "none"}, "")
 	if err != nil {
 		t.Fatalf("newComposite: %v", err)
 	}

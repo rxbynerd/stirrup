@@ -12,7 +12,7 @@ func TestNewSemgrepScanner_NoopWhenBinaryMissing(t *testing.T) {
 	semgrepBinary = "stirrup-semgrep-does-not-exist-xyz"
 	t.Cleanup(func() { semgrepBinary = prev })
 
-	s := NewSemgrepScanner()
+	s := NewSemgrepScanner("")
 	if _, ok := s.(NoopSemgrepScanner); !ok {
 		t.Fatalf("expected NoopSemgrepScanner, got %T", s)
 	}
@@ -111,7 +111,7 @@ func TestSemgrepScanner_RunFnHookIsHonoured(t *testing.T) {
 	canned := []byte(`{"results":[{"check_id":"fake/rule","start":{"line":3},"extra":{"severity":"ERROR","message":"hi"}}]}`)
 	s := &SemgrepScanner{
 		path: "/fake/semgrep",
-		runFn: func(ctx context.Context, p, lang string, stdin []byte) ([]byte, error) {
+		runFn: func(ctx context.Context, p, lang, configArg string, stdin []byte) ([]byte, error) {
 			return canned, nil
 		},
 	}
@@ -124,6 +124,48 @@ func TestSemgrepScanner_RunFnHookIsHonoured(t *testing.T) {
 	}
 	if res.Findings[0].Severity != SeverityBlock {
 		t.Errorf("expected block severity, got %q", res.Findings[0].Severity)
+	}
+}
+
+// TestSemgrepScanner_ConfigPathUsed covers M7: a non-empty
+// ConfigPath flows into the runFn argv as the value of --config.
+// This is the supply-chain pin: operators set a local rules bundle
+// (e.g. /etc/stirrup/semgrep-rules) so semgrep stops fetching from
+// semgrep.dev at scan time.
+func TestSemgrepScanner_ConfigPathUsed(t *testing.T) {
+	var captured string
+	s := &SemgrepScanner{
+		path:       "/fake/semgrep",
+		ConfigPath: "/etc/stirrup/semgrep-rules",
+		runFn: func(ctx context.Context, p, lang, configArg string, stdin []byte) ([]byte, error) {
+			captured = configArg
+			return []byte(`{"results":[]}`), nil
+		},
+	}
+	if _, err := s.Scan(context.Background(), "x.py", []byte("ok")); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if want := "/etc/stirrup/semgrep-rules"; captured != want {
+		t.Errorf("configArg: got %q, want %q", captured, want)
+	}
+}
+
+// TestSemgrepScanner_DefaultConfigIsAuto ensures the historical
+// behaviour is preserved when ConfigPath is left empty.
+func TestSemgrepScanner_DefaultConfigIsAuto(t *testing.T) {
+	var captured string
+	s := &SemgrepScanner{
+		path: "/fake/semgrep",
+		runFn: func(ctx context.Context, p, lang, configArg string, stdin []byte) ([]byte, error) {
+			captured = configArg
+			return []byte(`{"results":[]}`), nil
+		},
+	}
+	if _, err := s.Scan(context.Background(), "x.py", []byte("ok")); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if captured != "auto" {
+		t.Errorf("configArg: got %q, want auto", captured)
 	}
 }
 

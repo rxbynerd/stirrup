@@ -269,7 +269,7 @@ edit succeeds.
 |------|----------------|----------------------|
 | `none` | no-op | always |
 | `patterns` | pure-Go regex pack covering hardcoded secrets + eval/exec sinks | always — default for execution mode |
-| `semgrep` | shells out to `semgrep --config auto --json` | requires `semgrep` on `$PATH` |
+| `semgrep` | shells out to `semgrep --config <semgrepConfigPath\|auto> --json` | requires `semgrep` on `$PATH` |
 | `composite` | runs all configured child scanners and unions findings | requires `codeScanner.scanners` list |
 
 ### Configuration
@@ -298,6 +298,37 @@ be a non-composite type — composite-of-composite is rejected):
   }
 }
 ```
+
+### Semgrep network behaviour and air-gapped deployments
+
+Semgrep's default `--config auto` pulls rule packs from `semgrep.dev`
+on the first scan (and refreshes them periodically). This is an
+**outbound HTTP request from the host process** — the egress proxy
+running inside the container does not see it, because semgrep runs
+on the harness host, not inside the sandbox. There are two
+implications:
+
+1. **Air-gapped deployments:** `--config auto` will hang or fail
+   when no route to `semgrep.dev` exists. Set
+   `codeScanner.semgrepConfigPath` to a local rules-bundle path
+   (e.g. `/etc/stirrup/semgrep-rules`) so semgrep loads rules from
+   disk and never reaches the network.
+2. **Supply-chain pinning:** `auto` resolves to whatever rule pack
+   `semgrep.dev` returns at scan time. A registry compromise (or a
+   well-meaning but breaking rule update) silently changes scanner
+   behaviour. A local bundle pins the rule set.
+
+```json
+{
+  "codeScanner": {
+    "type": "semgrep",
+    "semgrepConfigPath": "/etc/stirrup/semgrep-rules"
+  }
+}
+```
+
+The same field works for `composite` scanners; it is forwarded to
+the semgrep child only.
 
 ### Mode-aware default
 

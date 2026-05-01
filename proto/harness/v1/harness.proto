@@ -362,6 +362,14 @@ message CodeScannerConfig {
   // default), only "block" findings fail; "warn" findings emit a
   // security event but the edit succeeds.
   bool block_on_warn = 3;
+
+  // For "semgrep" / "composite": value passed to `semgrep --config`.
+  // Empty preserves the historical default of "auto", which causes
+  // semgrep to fetch rule packs from semgrep.dev at scan time. Set
+  // to a local rules-bundle path (e.g. /etc/stirrup/semgrep-rules)
+  // for air-gapped deployments and to pin against supply-chain
+  // shifts in the upstream registry.
+  string semgrep_config_path = 4;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution

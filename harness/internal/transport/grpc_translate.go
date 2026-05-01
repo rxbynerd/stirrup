@@ -145,9 +145,10 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	}
 	if pc.CodeScanner != nil {
 		rc.CodeScanner = &types.CodeScannerConfig{
-			Type:        pc.CodeScanner.Type,
-			Scanners:    pc.CodeScanner.Scanners,
-			BlockOnWarn: pc.CodeScanner.BlockOnWarn,
+			Type:              pc.CodeScanner.Type,
+			Scanners:          pc.CodeScanner.Scanners,
+			BlockOnWarn:       pc.CodeScanner.BlockOnWarn,
+			SemgrepConfigPath: pc.CodeScanner.SemgrepConfigPath,
 		}
 	}
 	if pc.GitStrategy != nil {
