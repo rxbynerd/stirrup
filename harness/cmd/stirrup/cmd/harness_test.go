@@ -358,6 +358,9 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("model", "claude-sonnet-4-6", "")
 	f.String("provider", "anthropic", "")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "")
+	f.String("base-url", "", "")
+	f.String("api-key-header", "", "")
+	f.StringArray("query-param", nil, "")
 	f.StringP("workspace", "w", "", "")
 	f.Int("max-turns", 20, "")
 	f.Int("timeout", 600, "")
@@ -930,3 +933,136 @@ func TestApplyModeDefaults_FillsAfterModeOverride(t *testing.T) {
 
 // intPtr is a small helper to take the address of an int literal.
 func intPtr(n int) *int { return &n }
+
+// TestApplyOverrides_AzureProviderFlags verifies that --base-url,
+// --api-key-header, and --query-param flags propagate into Provider.*
+// fields and override the file values for those flags. The file's
+// QueryParams entry is wholesale replaced (rather than merged) so users
+// who reach for --query-param to override a stale file entry get the
+// expected behaviour.
+func TestApplyOverrides_AzureProviderFlags(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider.BaseURL = "https://file-base-url.example/v1"
+	cfg.Provider.APIKeyHeader = "x-stale-header"
+	cfg.Provider.QueryParams = map[string]string{"api-version": "stale", "deployment-id": "stale"}
+
+	must := func(name, value string) {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	must("base-url", "https://example.openai.azure.com/openai/v1")
+	must("api-key-header", "api-key")
+	must("query-param", "api-version=preview")
+	must("query-param", "deployment-id=gpt4-prod")
+
+	applyOverrides(cmd, cfg, nil)
+
+	if got, want := cfg.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
+		t.Errorf("Provider.BaseURL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
+		t.Errorf("Provider.APIKeyHeader = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
+		t.Errorf("QueryParams[api-version] = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.QueryParams["deployment-id"], "gpt4-prod"; got != want {
+		t.Errorf("QueryParams[deployment-id] = %q, want %q", got, want)
+	}
+}
+
+// TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset verifies the
+// precedence rule for the new flags: a flag that the user did not pass
+// MUST NOT clobber a file-provided value.
+func TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider.BaseURL = "https://file-base-url.example/v1"
+	cfg.Provider.APIKeyHeader = "api-key"
+	cfg.Provider.QueryParams = map[string]string{"api-version": "preview"}
+
+	applyOverrides(cmd, cfg, nil)
+
+	if got, want := cfg.Provider.BaseURL, "https://file-base-url.example/v1"; got != want {
+		t.Errorf("Provider.BaseURL: file value should survive, got %q", got)
+	}
+	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
+		t.Errorf("Provider.APIKeyHeader: file value should survive, got %q", got)
+	}
+	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
+		t.Errorf("QueryParams: file value should survive, got %q", got)
+	}
+}
+
+// TestParseQueryParam_ValidAndInvalid pins the syntactic split rule used
+// by the --query-param flag parser. Empty keys and missing "=" are rejected.
+// Charset/length validation lives in ValidateRunConfig — this helper only
+// owns the syntax.
+func TestParseQueryParam_ValidAndInvalid(t *testing.T) {
+	cases := []struct {
+		entry   string
+		wantK   string
+		wantV   string
+		wantErr bool
+	}{
+		{"api-version=preview", "api-version", "preview", false},
+		{"empty-value=", "empty-value", "", false},
+		{"with=equals=in=value", "with", "equals=in=value", false},
+		{"=missing-key", "", "", true},
+		{"no-equals", "", "", true},
+		{"", "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.entry, func(t *testing.T) {
+			k, v, err := parseQueryParam(tc.entry)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error for %q, got nil", tc.entry)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseQueryParam(%q) error: %v", tc.entry, err)
+			}
+			if k != tc.wantK || v != tc.wantV {
+				t.Errorf("parseQueryParam(%q) = (%q, %q), want (%q, %q)", tc.entry, k, v, tc.wantK, tc.wantV)
+			}
+		})
+	}
+}
+
+// TestBuildHarnessRunConfig_AzureProviderFields verifies that the new
+// CLI options propagate from harnessCLIOptions into the generated
+// ProviderConfig.
+func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "openai-responses",
+		APIKeyRef:     "secret://AZURE_KEY",
+		BaseURL:       "https://example.openai.azure.com/openai/v1",
+		APIKeyHeader:  "api-key",
+		QueryParams:   map[string]string{"api-version": "preview"},
+		Model:         "gpt-4o",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+
+	if got, want := cfg.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
+		t.Errorf("Provider.BaseURL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
+		t.Errorf("Provider.APIKeyHeader = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
+		t.Errorf("Provider.QueryParams[api-version] = %q, want %q", got, want)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig: %v", err)
+	}
+}
