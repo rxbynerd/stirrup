@@ -525,7 +525,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 				return nil, fmt.Errorf("get working directory: %w", err)
 			}
 		}
-		return executor.NewContainerExecutor(executor.ContainerExecutorConfig{
+		return executor.NewContainerExecutorWithContext(ctx, executor.ContainerExecutorConfig{
 			Image:          cfg.Image,
 			HostDir:        workspace,
 			Network:        cfg.Network,

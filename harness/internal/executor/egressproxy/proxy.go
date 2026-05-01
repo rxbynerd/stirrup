@@ -65,9 +65,10 @@ type Proxy struct {
 
 	dialer *net.Dialer
 
-	mu      sync.Mutex
-	stopped bool
-	stopErr error
+	mu       sync.Mutex
+	stopped  bool
+	stopErr  error
+	shutdown chan struct{} // closed by Stop to release the ctx-watcher goroutine
 }
 
 // Start parses the allowlist, opens (or adopts) a listener, and begins
@@ -76,8 +77,11 @@ type Proxy struct {
 //
 // Start fails if the allowlist contains malformed entries or the listener
 // cannot be opened. The returned Proxy must be stopped via Stop() to release
-// the listener.
-func Start(_ context.Context, cfg Config) (*Proxy, error) {
+// the listener — except when the supplied ctx is cancelled, in which case
+// the proxy stops itself with a bounded grace period (5 seconds). This
+// guarantees a leaked listener cannot outlive the caller scope even if the
+// caller forgets to call Stop or panics before the defer fires (M4).
+func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	matcher, err := NewMatcher(cfg.Allowlist)
 	if err != nil {
 		return nil, err
@@ -119,6 +123,7 @@ func Start(_ context.Context, cfg Config) (*Proxy, error) {
 		dialTimeout: dialTimeout,
 		readTimeout: readTimeout,
 		dialer:      &net.Dialer{Timeout: dialTimeout},
+		shutdown:    make(chan struct{}),
 	}
 
 	p.server = &http.Server{
@@ -135,6 +140,22 @@ func Start(_ context.Context, cfg Config) (*Proxy, error) {
 			p.logger.Error("proxy server stopped with error", slog.String("err", err.Error()))
 		}
 	}()
+
+	// Tie the proxy lifetime to the caller's context. When ctx is
+	// cancelled we trigger Stop with a bounded timeout so the listener
+	// is always released; this defends against early-return paths in
+	// the caller that skip a manual Stop call.
+	if ctx != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = p.Stop(stopCtx)
+			case <-p.shutdown:
+			}
+		}()
+	}
 
 	return p, nil
 }
@@ -157,6 +178,13 @@ func (p *Proxy) Stop(ctx context.Context) error {
 		return err
 	}
 	p.stopped = true
+	// Release the ctx-watcher goroutine started by Start so it does not
+	// linger after Stop returns. Closing under the lock ensures the
+	// "already stopped" early return above never closes twice.
+	if p.shutdown != nil {
+		close(p.shutdown)
+		p.shutdown = nil
+	}
 	p.mu.Unlock()
 
 	err := p.server.Shutdown(ctx)

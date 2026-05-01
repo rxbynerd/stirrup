@@ -67,7 +67,19 @@ type ContainerExecutor struct {
 // NewContainerExecutor creates and starts a container, returning an executor
 // that runs all operations inside it. Call Close() when done to destroy the
 // container.
+//
+// Deprecated: use NewContainerExecutorWithContext to ensure the egress proxy
+// goroutine is bounded by the caller's lifetime. This wrapper preserves the
+// pre-#42 signature for callers that have not migrated yet.
 func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, error) {
+	return NewContainerExecutorWithContext(context.Background(), cfg)
+}
+
+// NewContainerExecutorWithContext is the context-aware variant. The proxy's
+// listener and server goroutine are released when ctx is cancelled, so the
+// caller cannot leak a listening socket by forgetting to call Close on an
+// early-return path.
+func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorConfig) (*ContainerExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("container executor requires an image")
 	}
@@ -100,7 +112,11 @@ func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, erro
 	)
 	if cfg.Network != nil && cfg.Network.Mode == "allowlist" {
 		var err error
-		proxy, err = egressproxy.Start(context.Background(), egressproxy.Config{
+		// Plumb the caller's ctx into Start so the proxy goroutine is
+		// torn down when the build path is cancelled. Pre-#42 this was
+		// context.Background(), which leaked listeners on slow boots and
+		// on early-return failure paths (M4).
+		proxy, err = egressproxy.Start(ctx, egressproxy.Config{
 			Allowlist: cfg.Network.Allowlist,
 			Security:  cfg.EgressSecurity,
 		})
@@ -113,7 +129,7 @@ func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, erro
 		// host.docker.internal name (resolved by ExtraHosts below).
 		_, port, splitErr := splitListenAddr(proxy.Addr())
 		if splitErr != nil {
-			_ = proxy.Stop(context.Background())
+			stopProxyBounded(proxy)
 			return nil, fmt.Errorf("parse proxy listen addr: %w", splitErr)
 		}
 		proxyURL := fmt.Sprintf("http://%s:%s", hostGatewayHost, port)
@@ -149,8 +165,6 @@ func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, erro
 		}
 	}
 
-	ctx := context.Background()
-
 	containerID, err := api.createContainer(ctx, containerCreateRequest{
 		Image:      cfg.Image,
 		Cmd:        []string{"sleep", "infinity"},
@@ -160,7 +174,7 @@ func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, erro
 	})
 	if err != nil {
 		if proxy != nil {
-			_ = proxy.Stop(context.Background())
+			stopProxyBounded(proxy)
 		}
 		return nil, fmt.Errorf("create container: %w", err)
 	}
@@ -169,7 +183,7 @@ func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, erro
 		// Best-effort cleanup on start failure.
 		_ = api.removeContainer(ctx, containerID, true)
 		if proxy != nil {
-			_ = proxy.Stop(context.Background())
+			stopProxyBounded(proxy)
 		}
 		return nil, fmt.Errorf("start container: %w", err)
 	}
@@ -183,6 +197,17 @@ func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, erro
 		Security:    nil,
 		proxy:       proxy,
 	}, nil
+}
+
+// stopProxyBounded shuts the egress proxy down with a 5-second deadline.
+// We never want a hung Engine on the host to wedge an executor build's
+// error-path cleanup, and we never want to leak a listener if Stop never
+// returns. The bounded timeout is the only correct knob here: passing
+// context.Background() unbounded was the M4 leak risk.
+func stopProxyBounded(p *egressproxy.Proxy) {
+	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = p.Stop(stopCtx)
 }
 
 // splitListenAddr splits a host:port pair, accepting the special form

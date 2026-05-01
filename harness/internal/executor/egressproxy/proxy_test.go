@@ -285,6 +285,45 @@ func TestProxy_Stop_IsIdempotent(t *testing.T) {
 	}
 }
 
+// TestEgressProxy_StopsOnContextCancel covers M4: the proxy goroutine
+// must shut down when the caller's ctx is cancelled. Pre-fix, Start
+// took a context but ignored it (`_ context.Context`), so a build path
+// that cancelled mid-startup leaked a listener.
+func TestEgressProxy_StopsOnContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	p, err := Start(ctx, Config{
+		Allowlist: []string{"example.com"},
+		Security:  &fakeEmitter{},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	addr := p.Addr()
+	if addr == "" {
+		t.Fatal("expected listener addr")
+	}
+
+	cancel()
+
+	// Poll for the listener to close. A bounded loop is fine here —
+	// the ctx-watcher goroutine wakes up immediately.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		// net.Dial against a closed listener returns an error fast on
+		// every supported platform; the proxy is stopped when this
+		// dial starts to fail with "connection refused".
+		c, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err != nil {
+			return
+		}
+		_ = c.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("proxy listener at %s still accepting after ctx cancel", addr)
+}
+
 func TestProxy_ParsesHostHeaderForPlainHTTP(t *testing.T) {
 	upstream := startUpstreamHTTP(t, "x")
 	emitter := &fakeEmitter{}
