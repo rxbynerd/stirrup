@@ -20,11 +20,11 @@ func TestNewMatcher_ParsesEntries(t *testing.T) {
 
 	got := m.Entries()
 	want := map[string]bool{
-		"example.com:443":     true,
-		"*.example.com:443":   true,
-		"api.github.com:443":  true,
-		"apt.example.org:80":  true,
-		"example.net:443":     true,
+		"example.com:443":    true,
+		"*.example.com:443":  true,
+		"api.github.com:443": true,
+		"apt.example.org:80": true,
+		"example.net:443":    true,
 	}
 
 	if len(got) != len(want) {
@@ -39,12 +39,12 @@ func TestNewMatcher_ParsesEntries(t *testing.T) {
 
 func TestNewMatcher_RejectsMalformed(t *testing.T) {
 	cases := []string{
-		"example.com:abc",        // non-numeric port
-		"example.com:0",          // out of range
-		"example.com:99999",      // out of range
-		"foo bar.com",            // whitespace inside host
-		":443",                   // empty host
-		"*.:443",                 // empty host with wildcard
+		"example.com:abc",   // non-numeric port
+		"example.com:0",     // out of range
+		"example.com:99999", // out of range
+		"foo bar.com",       // whitespace inside host
+		":443",              // empty host
+		"*.:443",            // empty host with wildcard
 	}
 	for _, c := range cases {
 		if _, err := NewMatcher([]string{c}); err == nil {
@@ -181,11 +181,11 @@ func TestMatcher_MixedEntries(t *testing.T) {
 		host string
 		port int
 	}{
-		{"github.com", 443},          // not allowlisted apex
-		{"api.github.com", 80},       // wrong port
+		{"github.com", 443},            // not allowlisted apex
+		{"api.github.com", 80},         // wrong port
 		{"githubusercontent.com", 443}, // wildcard apex not allowed
 		{"npmjs.org", 443},
-		{"apt.example.org", 443},     // port-80 entry must not allow 443
+		{"apt.example.org", 443}, // port-80 entry must not allow 443
 	}
 	for _, c := range deny {
 		if m.Match(c.host, c.port) {

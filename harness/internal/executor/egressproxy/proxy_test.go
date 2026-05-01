@@ -263,7 +263,9 @@ func TestProxy_CONNECT_SNIMismatchIsDropped(t *testing.T) {
 
 	// Read should fail with EOF (or a fixed-byte echo if the splice
 	// happened — we assert the latter does NOT happen).
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
 	buf := make([]byte, 32)
 	n, err := conn.Read(buf)
 	if err == nil && n > 0 {

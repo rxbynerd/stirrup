@@ -99,9 +99,9 @@ func (c *containerAPIClient) doRequest(req *http.Request) (*http.Response, error
 
 // containerCreateRequest is the JSON body for POST /containers/create.
 type containerCreateRequest struct {
-	Image      string      `json:"Image"`
-	Cmd        []string    `json:"Cmd"`
-	WorkingDir string      `json:"WorkingDir"`
+	Image      string   `json:"Image"`
+	Cmd        []string `json:"Cmd"`
+	WorkingDir string   `json:"WorkingDir"`
 	// Env is the list of "KEY=value" environment-variable pairs to set on
 	// the container. Used to propagate HTTP_PROXY / HTTPS_PROXY / NO_PROXY
 	// when an egress proxy is in front of the container.
