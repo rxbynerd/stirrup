@@ -537,3 +537,135 @@ func TestGRPCTransport_StreamErrorStopsReadLoop(t *testing.T) {
 		t.Fatal("timed out waiting for read loop to exit after stream error")
 	}
 }
+
+func TestGRPCTransport_OnControl_ToolResultResponse_Success(t *testing.T) {
+	// Locks in the gRPC translation of a successful async tool result:
+	// IsError must be omitted (or unset) when the proto wire field is
+	// nil, and Content must round-trip verbatim. A regression in
+	// controlEventFromProto's mapping (e.g. wrong proto tag, dropped
+	// field) is the exact failure mode this guards.
+	srv := newTestServer(&pb.ControlEvent{
+		Type:      "tool_result_response",
+		RequestId: "async-tool-7",
+		Content:   "result body for the model",
+	})
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	received := make(chan types.ControlEvent, 1)
+	tr.OnControl(func(event types.ControlEvent) {
+		received <- event
+	})
+
+	select {
+	case ev := <-received:
+		if ev.Type != "tool_result_response" {
+			t.Fatalf("got type %q, want tool_result_response", ev.Type)
+		}
+		if ev.RequestID != "async-tool-7" {
+			t.Errorf("got RequestID %q, want async-tool-7", ev.RequestID)
+		}
+		if ev.Content != "result body for the model" {
+			t.Errorf("got Content %q, want 'result body for the model'", ev.Content)
+		}
+		if ev.IsError != nil {
+			t.Errorf("expected IsError nil for success response, got %v", *ev.IsError)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for tool_result_response")
+	}
+}
+
+func TestGRPCTransport_OnControl_ToolResultResponse_IsError(t *testing.T) {
+	// Locks in the IsError=true translation. The proto field is an
+	// OptionalBool wrapper; controlEventFromProto must dereference and
+	// produce a *bool whose value is true. A nil-pointer bug or wrong
+	// field copy would silently downgrade upstream errors to
+	// successes — exactly the kind of regression the harness's error
+	// taxonomy depends on catching.
+	yes := true
+	srv := newTestServer(&pb.ControlEvent{
+		Type:      "tool_result_response",
+		RequestId: "async-tool-9",
+		Content:   "upstream said no",
+		IsError:   &pb.OptionalBool{Value: yes},
+	})
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	received := make(chan types.ControlEvent, 1)
+	tr.OnControl(func(event types.ControlEvent) {
+		received <- event
+	})
+
+	select {
+	case ev := <-received:
+		if ev.Type != "tool_result_response" {
+			t.Fatalf("got type %q, want tool_result_response", ev.Type)
+		}
+		if ev.RequestID != "async-tool-9" {
+			t.Errorf("got RequestID %q, want async-tool-9", ev.RequestID)
+		}
+		if ev.Content != "upstream said no" {
+			t.Errorf("got Content %q, want 'upstream said no'", ev.Content)
+		}
+		if ev.IsError == nil {
+			t.Fatal("expected IsError non-nil for error response")
+		}
+		if !*ev.IsError {
+			t.Errorf("expected IsError=true, got false")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for tool_result_response")
+	}
+}
+
+func TestGRPCTransport_EmitToolResultRequest(t *testing.T) {
+	// The harness emits tool_result_request when an async tool defers
+	// its result. Lock in the four wire fields the control plane needs
+	// to route the request and emit the matching tool_result_response:
+	// RequestID, ToolUseID, ToolName, and Input. A drop or rename in
+	// harnessEventToProto would silently break async tool dispatch on
+	// the gRPC path.
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	input := json.RawMessage(`{"prompt":"hello"}`)
+	event := types.HarnessEvent{
+		Type:      "tool_result_request",
+		RequestID: "async-tool-1",
+		ToolUseID: "tc_1",
+		ToolName:  "async_echo",
+		Input:     input,
+	}
+
+	if err := tr.Emit(event); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	// Close send side so the server's Recv loop completes.
+	_ = tr.stream.CloseSend()
+	time.Sleep(50 * time.Millisecond)
+
+	received := srv.getReceived()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 received event, got %d", len(received))
+	}
+	got := received[0]
+	if got.Type != "tool_result_request" {
+		t.Errorf("got Type %q, want tool_result_request", got.Type)
+	}
+	if got.RequestId != "async-tool-1" {
+		t.Errorf("got RequestId %q, want async-tool-1", got.RequestId)
+	}
+	if got.ToolUseId != "tc_1" {
+		t.Errorf("got ToolUseId %q, want tc_1", got.ToolUseId)
+	}
+	if got.ToolName != "async_echo" {
+		t.Errorf("got ToolName %q, want async_echo", got.ToolName)
+	}
+	if string(got.Input) != `{"prompt":"hello"}` {
+		t.Errorf("got Input %q, want %q", string(got.Input), `{"prompt":"hello"}`)
+	}
+}
