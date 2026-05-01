@@ -251,8 +251,20 @@ type VerifierConfig struct {
 
 // PermissionPolicyConfig selects the permission policy implementation.
 type PermissionPolicyConfig struct {
-	Type    string `json:"type"`              // "allow-all" | "deny-side-effects" | "ask-upstream"
+	Type    string `json:"type"`              // "allow-all" | "deny-side-effects" | "ask-upstream" | "policy-engine"
 	Timeout int    `json:"timeout,omitempty"` // ask-upstream: seconds to wait for a response (0 = 60s default)
+
+	// PolicyFile is the filesystem path to a Cedar policy file
+	// (`.cedar`). Required when Type == "policy-engine"; ignored
+	// otherwise.
+	PolicyFile string `json:"policyFile,omitempty"`
+
+	// Fallback names the permission policy to consult when the Cedar
+	// engine returns "no decision" for a request. Must be one of the
+	// non-policy-engine types ("allow-all", "deny-side-effects",
+	// "ask-upstream"). When unset, callers should treat the default as
+	// "deny-side-effects" — fail closed.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // GitStrategyConfig selects the git strategy implementation.
@@ -367,6 +379,17 @@ var validPermissionPolicyTypes = map[string]bool{
 	"allow-all":         true,
 	"deny-side-effects": true,
 	"ask-upstream":      true,
+	"policy-engine":     true,
+}
+
+// validFallbackPolicyTypes is the set of permission policies that may be
+// referenced from PermissionPolicyConfig.Fallback. The policy-engine
+// itself is excluded — chained policy engines are explicitly out of
+// scope and would loop on a no-decision response.
+var validFallbackPolicyTypes = map[string]bool{
+	"allow-all":         true,
+	"deny-side-effects": true,
+	"ask-upstream":      true,
 }
 
 var validGitStrategyTypes = map[string]bool{
@@ -473,6 +496,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	}
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
+	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
 	validateOptionalType("transport", config.Transport.Type, validTransportTypes, &errs)
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
@@ -552,6 +576,26 @@ func validateOptionalType(name, value string, valid map[string]bool, errs *[]str
 	}
 	if !valid[value] {
 		*errs = append(*errs, fmt.Sprintf("unsupported %s type %q", name, value))
+	}
+}
+
+// validatePermissionPolicyFields enforces the cross-field constraints on
+// PermissionPolicyConfig that the closed-set validation in
+// validateOptionalType cannot express on its own.
+//
+//   - Type "policy-engine" requires a PolicyFile path so the harness has
+//     something concrete to load at boot. A missing file path is almost
+//     always a config-typo and we want to fail loudly rather than fall
+//     through silently to the fallback policy.
+//   - Fallback, when set, must name one of the three non-policy-engine
+//     policies. policy-engine -> policy-engine fallback would loop on a
+//     no-decision response, so it's rejected here.
+func validatePermissionPolicyFields(cfg PermissionPolicyConfig, errs *[]string) {
+	if cfg.Type == "policy-engine" && cfg.PolicyFile == "" {
+		*errs = append(*errs, "permissionPolicy type \"policy-engine\" requires policyFile")
+	}
+	if cfg.Fallback != "" && !validFallbackPolicyTypes[cfg.Fallback] {
+		*errs = append(*errs, fmt.Sprintf("permissionPolicy.fallback %q is not a valid fallback policy type", cfg.Fallback))
 	}
 }
 
