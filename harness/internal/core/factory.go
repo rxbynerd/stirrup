@@ -502,6 +502,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			HostDir:   workspace,
 			Network:   cfg.Network,
 			Resources: cfg.Resources,
+			Runtime:   cfg.Runtime,
 		})
 	case "api":
 		if cfg.VcsBackend == nil {

@@ -113,6 +113,11 @@ type hostConfig struct {
 	PidsLimit   *int64   `json:"PidsLimit,omitempty"`
 	CapDrop     []string `json:"CapDrop,omitempty"`
 	SecurityOpt []string `json:"SecurityOpt,omitempty"`
+	// Runtime selects the OCI runtime (e.g. "runsc" for gVisor,
+	// "kata-qemu" for Kata Containers). Empty means "use the engine
+	// default", in which case the field is omitted from the wire so the
+	// engine picks runc.
+	Runtime string `json:"Runtime,omitempty"`
 }
 
 type containerCreateResponse struct {

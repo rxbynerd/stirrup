@@ -26,6 +26,12 @@ type ContainerExecutorConfig struct {
 	Network    *types.NetworkConfig
 	Resources  *types.ResourceLimits
 	SocketPath string // override auto-detection; empty = auto-detect
+	// Runtime selects the OCI runtime for the container (e.g. "runsc",
+	// "kata", "kata-qemu", "kata-fc"). Empty means "use the engine
+	// default" — the field is omitted from the create-container request,
+	// which yields runc on stock Docker. Validation of the closed set is
+	// performed by types.ValidateRunConfig before the executor is built.
+	Runtime string
 }
 
 // ContainerExecutor implements Executor by running operations inside a
@@ -77,6 +83,7 @@ func NewContainerExecutor(cfg ContainerExecutorConfig) (*ContainerExecutor, erro
 		NetworkMode: networkMode,
 		CapDrop:     []string{"ALL"},
 		SecurityOpt: []string{"no-new-privileges"},
+		Runtime:     cfg.Runtime,
 	}
 
 	if cfg.Resources != nil {
