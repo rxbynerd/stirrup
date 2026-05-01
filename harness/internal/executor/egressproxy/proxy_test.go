@@ -148,6 +148,14 @@ func TestProxy_CONNECT_AllowedSplices(t *testing.T) {
 		t.Fatalf("write CONNECT: %v", err)
 	}
 
+	// Send a ClientHello whose SNI matches the CONNECT host. The proxy
+	// peeks SNI before writing the 200, so the hello must come before
+	// we read the response. Absent or mismatched SNI is a drop (M2).
+	hello := clientHelloWithSNI(upstreamHost)
+	if _, err := conn.Write(hello); err != nil {
+		t.Fatalf("write hello: %v", err)
+	}
+
 	r := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
 	if err != nil {
@@ -155,16 +163,6 @@ func TestProxy_CONNECT_AllowedSplices(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status: got %d, want 200", resp.StatusCode)
-	}
-
-	// Send a synthetic ClientHello whose SNI points at upstreamHost (well,
-	// canonicalised — hostnames in SNI are RFC-mandated to be DNS names,
-	// not IP literals; the proxy treats SNI mismatch as a drop, but if SNI
-	// is absent it allows the splice). We use the "absent SNI" path for
-	// simplicity here.
-	hello := minimalClientHelloNoSNI()
-	if _, err := conn.Write(hello); err != nil {
-		t.Fatalf("write hello: %v", err)
 	}
 
 	got := make([]byte, len(hello))
@@ -243,33 +241,23 @@ func TestProxy_CONNECT_SNIMismatchIsDropped(t *testing.T) {
 		t.Fatalf("write CONNECT: %v", err)
 	}
 
-	r := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
-	if err != nil {
-		t.Fatalf("read CONNECT response: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("CONNECT status: got %d, want 200", resp.StatusCode)
-	}
-
 	// Send a ClientHello whose SNI is "evil.example", which does NOT match
-	// the allowlisted CONNECT host. The proxy should drop the connection.
+	// the allowlisted CONNECT host. The proxy should drop the connection
+	// BEFORE writing the 200 — sending it first would falsely tell the
+	// client the tunnel is open and emit a misleading audit event (M2).
 	hello := clientHelloWithSNI("evil.example")
 	if _, err := conn.Write(hello); err != nil {
-		// Write may succeed because the proxy hasn't closed yet, but the
-		// follow-up read should hit EOF.
 		t.Logf("write hello: %v", err)
 	}
 
-	// Read should fail with EOF (or a fixed-byte echo if the splice
-	// happened — we assert the latter does NOT happen).
+	// Read should fail with EOF without ever seeing the 200 line.
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
-	buf := make([]byte, 32)
-	n, err := conn.Read(buf)
-	if err == nil && n > 0 {
-		t.Errorf("expected EOF after SNI mismatch, got %d echoed bytes", n)
+	buf := make([]byte, 64)
+	n, _ := conn.Read(buf)
+	if n > 0 && bytes.Contains(buf[:n], []byte("200")) {
+		t.Errorf("expected no 200 response on SNI mismatch, got %q", string(buf[:n]))
 	}
 
 	// Wait for the egress_blocked event to land.

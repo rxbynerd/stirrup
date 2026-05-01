@@ -211,15 +211,23 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// goroutines below.
 	defer func() { _ = clientConn.Close() }()
 
-	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		p.logger.Debug("write 200 to client failed", slog.String("err", err.Error()))
-		return
+	// Clear both deadlines that net/http inherited from
+	// {Read,Write}Timeout. They were intended for the request/response
+	// turn — once we hijack and splice we own the lifetime, and the
+	// per-stream upstream timeouts handle health. Failing to clear the
+	// write deadline here truncates long CONNECT tunnels at 60s (S1).
+	if err := clientConn.SetDeadline(time.Time{}); err != nil {
+		p.logger.Debug("clear deadlines failed", slog.String("err", err.Error()))
 	}
 
 	// Peek the ClientHello so we can verify SNI matches the CONNECT host
-	// before opening a connection upstream. This defeats the case where
-	// a misbehaving client CONNECTs to an allowlisted host but then
-	// negotiates TLS for a different hostname.
+	// BEFORE writing the 200 response. Sending the 200 first would force
+	// us to deny() on a hijacked connection that the client already saw
+	// as "tunnel established" — confusing both audit logs and clients —
+	// and would also count an "egress allowed" tunnel that we then tore
+	// down. A short read deadline keeps a misbehaving client from
+	// holding a hijacked socket forever. We restore the cleared deadline
+	// after the peek succeeds.
 	if err := clientConn.SetReadDeadline(time.Now().Add(p.readTimeout)); err != nil {
 		p.logger.Debug("set read deadline failed", slog.String("err", err.Error()))
 		return
@@ -235,16 +243,28 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	rawHello, sni, sniErr := peekTLSClientHello(clientReader)
 
-	if sniErr != nil && !errors.Is(sniErr, errSNINotPresent) {
+	// Treat absent SNI as a deny: every modern TLS 1.2/1.3 client emits
+	// SNI for HTTPS, so the absence is a tampering signal — most likely
+	// a crafted client suppressing SNI to bypass the cross-check below.
+	// Without this, a CONNECT to an allowlisted host could tunnel TLS
+	// for a different hostname (M2).
+	if errors.Is(sniErr, errSNINotPresent) {
+		p.deny(w, r, host, port, "sni_absent", 0)
+		return
+	}
+	if sniErr != nil {
 		p.deny(w, r, host, port, "tls_parse_failed", 0)
 		return
 	}
-	if sniErr == nil && sni != "" {
-		canonical := canonicaliseHost(sni)
-		if canonical != canonicaliseHost(host) {
-			p.deny(w, r, host, port, "sni_mismatch", 0)
-			return
-		}
+	if canonicaliseHost(sni) != canonicaliseHost(host) {
+		p.deny(w, r, host, port, "sni_mismatch", 0)
+		return
+	}
+
+	// SNI checks out: tell the client the tunnel is open.
+	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		p.logger.Debug("write 200 to client failed", slog.String("err", err.Error()))
+		return
 	}
 
 	// Reset the deadline before we splice — the upstream may legitimately
