@@ -5,6 +5,19 @@ for the `policy-engine` permission policy (issue #42, Wave 2.3 — B3).
 
 ## Loading a policy file
 
+### From the CLI
+
+```sh
+stirrup harness --permission-policy-file examples/policies/destructive-shell.cedar ...
+```
+
+The `--permission-policy-file` flag is a convenience shortcut: it sets
+`permissionPolicy.policyFile` and (when the type is unset elsewhere)
+also implies `permissionPolicy.type=policy-engine`. The fallback policy
+defaults to `deny-side-effects` when not specified.
+
+### From a RunConfig file
+
 Configure `RunConfig.permissionPolicy` in your run config JSON:
 
 ```json
@@ -20,6 +33,10 @@ Configure `RunConfig.permissionPolicy` in your run config JSON:
 `policyFile` must point to a single `.cedar` file. To compose multiple
 files, concatenate them — `cedar-go` accepts any number of `permit` /
 `forbid` statements per document.
+
+`fallback` must be one of `allow-all`, `deny-side-effects`, or
+`ask-upstream`. Chained policy engines are intentionally rejected to
+avoid no-decision loops.
 
 ## Entity model (Cedar schema v1)
 
