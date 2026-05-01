@@ -226,8 +226,119 @@ func TestAsyncDispatch_UpstreamError(t *testing.T) {
 	if success {
 		t.Fatalf("expected success=false on is_error response")
 	}
-	if output != "upstream said no" {
-		t.Fatalf("expected upstream content verbatim, got %q", output)
+	// The is_error path must wrap the control-plane content with a
+	// structured prefix so the model can disambiguate upstream failures
+	// from harness-side failures (transport_disconnect, timeout,
+	// internal error). Without the prefix, the four error categories
+	// are not textually distinguishable.
+	if !strings.Contains(output, "upstream_error:") {
+		t.Fatalf("expected output to contain 'upstream_error:' prefix, got %q", output)
+	}
+	if !strings.Contains(output, "async_echo") {
+		t.Fatalf("expected output to mention tool name, got %q", output)
+	}
+	if !strings.Contains(output, "upstream said no") {
+		t.Fatalf("expected upstream content preserved after the prefix, got %q", output)
+	}
+}
+
+func TestAsyncDispatch_UpstreamError_ScrubsSecrets(t *testing.T) {
+	// The control plane is partially trusted. A misbehaving or
+	// compromised control plane could embed secret-shaped strings in
+	// the error payload; the failure path forwards content into the
+	// JSONL trace via RecordToolCall.ErrorReason without going through
+	// the transport's outbound scrub, so scrubbing must happen at the
+	// point of entry. Use an Anthropic-API-key-shaped secret so the
+	// existing security.LogScrubber pattern catches it.
+	tr := newAsyncTestTransport()
+	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
+
+	const rawSecret = "sk-ant-api03-1234567890abcdefXYZ"
+	call := types.ToolCall{
+		ID:    "tc_async_err_secret",
+		Name:  "async_echo",
+		Input: json.RawMessage(`{}`),
+	}
+
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if id := tr.lastRequestID("tool_result_request"); id != "" {
+				yes := true
+				tr.FireControl(types.ControlEvent{
+					Type:      "tool_result_response",
+					RequestID: id,
+					Content:   "auth failed: token=" + rawSecret + " is invalid",
+					IsError:   &yes,
+				})
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if success {
+		t.Fatalf("expected success=false on is_error response")
+	}
+	if strings.Contains(output, rawSecret) {
+		t.Fatalf("raw secret leaked into tool output: %q", output)
+	}
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Fatalf("expected [REDACTED] marker in scrubbed output, got %q", output)
+	}
+	if !strings.Contains(output, "upstream_error:") {
+		t.Fatalf("expected upstream_error: prefix on scrubbed output, got %q", output)
+	}
+}
+
+func TestAsyncDispatch_ContentTruncation(t *testing.T) {
+	// The control plane supplies tool result content as an unbounded
+	// string. The harness must cap it before the value flows into tool
+	// output, message history, or the wire — same discipline as the
+	// 1MB run_command output cap. Send 1MB+1 bytes and assert the
+	// returned content is truncated and carries the harness suffix.
+	tr := newAsyncTestTransport()
+	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
+
+	const cap = 1 << 20 // matches maxAsyncToolResultBytes
+	oversize := strings.Repeat("a", cap+512)
+
+	call := types.ToolCall{
+		ID:    "tc_async_oversize",
+		Name:  "async_echo",
+		Input: json.RawMessage(`{}`),
+	}
+
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if id := tr.lastRequestID("tool_result_request"); id != "" {
+				tr.FireControl(types.ControlEvent{
+					Type:      "tool_result_response",
+					RequestID: id,
+					Content:   oversize,
+				})
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if !success {
+		t.Fatalf("expected success on truncated success-path content; got %q", output)
+	}
+	const suffix = "... [truncated by harness]"
+	if !strings.HasSuffix(output, suffix) {
+		tail := output
+		if len(tail) > len(suffix)+16 {
+			tail = tail[len(tail)-len(suffix)-16:]
+		}
+		t.Fatalf("expected output to end with %q, got tail %q", suffix, tail)
+	}
+	if len(output) != cap+len(suffix) {
+		t.Fatalf("expected output length %d (cap+suffix), got %d", cap+len(suffix), len(output))
 	}
 }
 

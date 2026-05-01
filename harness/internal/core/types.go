@@ -40,6 +40,16 @@ import (
 // "wait for a control-plane response" timeouts.
 const DefaultAsyncToolTimeout = 60 * time.Second
 
+// maxAsyncToolResultBytes caps the length of control-plane-supplied tool
+// result content. The control plane is partially trusted; an unbounded
+// string here is a DoS vector (CWE-400). 1MB matches the existing command
+// output cap used by the run_command sync tool.
+const maxAsyncToolResultBytes = 1 << 20 // 1MB
+
+// asyncResultTruncationSuffix is appended when content exceeds
+// maxAsyncToolResultBytes. The model and the trace see this marker.
+const asyncResultTruncationSuffix = "... [truncated by harness]"
+
 // AgenticLoop drives the ReAct loop. All dependencies are injected as struct
 // fields — the loop has no imports from concrete implementations, no environment
 // variable reads, no direct file system access.
@@ -91,14 +101,23 @@ type asyncToolResult struct {
 
 // extractAsyncToolResult is the PayloadExtractor for tool_result_response
 // control events. Returns an empty id (and so is ignored) for any other
-// event type.
+// event type. Content is truncated at maxAsyncToolResultBytes before
+// flowing into tool output, message history, or the wire — the cap is
+// applied here, at the extraction boundary, so it is enforced regardless
+// of how the payload is later consumed (success path, error path, trace).
+// Truncation happens in bytes (not runes) to keep the bound predictable;
+// downstream consumers do not assume valid UTF-8.
 func extractAsyncToolResult(event types.ControlEvent) (string, any) {
 	if event.Type != "tool_result_response" {
 		return "", nil
 	}
+	content := event.Content
+	if len(content) > maxAsyncToolResultBytes {
+		content = content[:maxAsyncToolResultBytes] + asyncResultTruncationSuffix
+	}
 	isErr := event.IsError != nil && *event.IsError
 	return event.RequestID, asyncToolResult{
-		content: event.Content,
+		content: content,
 		isError: isErr,
 	}
 }
@@ -343,7 +362,18 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		return fmt.Sprintf("async tool %s internal error: unexpected payload type %T", call.Name, payload), false
 	}
 	if resp.isError {
-		return resp.content, false
+		// The control plane is partially trusted: a compromised or
+		// misbehaving control plane could embed secret-shaped strings
+		// in the error payload, and the failure path forwards this
+		// content into the JSONL trace via RecordToolCall.ErrorReason
+		// without going through the transport's outbound scrub. Scrub
+		// at the point of entry so both the model context and the
+		// trace see the redacted form. The structured prefix matches
+		// the other three error taxonomy paths (transport_disconnect,
+		// timeout, internal error) so the model can disambiguate
+		// upstream failures from harness-side failures.
+		scrubbed := security.Scrub(resp.content)
+		return fmt.Sprintf("async tool %s upstream_error: %s", call.Name, scrubbed), false
 	}
 	return resp.content, true
 }
