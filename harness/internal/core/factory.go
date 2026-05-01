@@ -168,7 +168,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	// 10. Permission policy.
-	pp := buildPermissionPolicy(config.PermissionPolicy, registry, tp)
+	pp, err := buildPermissionPolicy(config, registry, tp, secLogger)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("build permission policy: %w", err)
+	}
 
 	// 11. Git strategy.
 	gs := buildGitStrategy(config.GitStrategy)
@@ -678,24 +682,74 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter) veri
 	}
 }
 
-func buildPermissionPolicy(cfg types.PermissionPolicyConfig, registry *tool.Registry, tp transport.Transport) permission.PermissionPolicy {
+// buildPermissionPolicy constructs the configured PermissionPolicy.
+//
+// The policy-engine arm requires loading a Cedar policy file from disk
+// and wiring a fallback policy in case Cedar returns "no decision". The
+// FallbackBuilder closure is the seam between the permission package
+// (which doesn't know about the registry / transport / secLogger) and
+// the factory (which has all of those in scope) — it maps a fallback
+// type name back to the same construction logic the non-policy-engine
+// arms use, so a policy-engine config with fallback="ask-upstream"
+// behaves identically to top-level ask-upstream when Cedar abstains.
+//
+// Errors are bubbled because policy-engine construction can fail on a
+// missing or malformed policy file; the legacy arms cannot fail and
+// could remain non-error-returning, but a single signature is simpler.
+func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp transport.Transport, secLogger *security.SecurityLogger) (permission.PermissionPolicy, error) {
+	cfg := config.PermissionPolicy
 	switch cfg.Type {
 	case "allow-all":
-		return permission.NewAllowAll()
+		return permission.NewAllowAll(), nil
 	case "deny-side-effects":
 		// DenySideEffects rejects only tools that mutate workspace
 		// state. Tools whose only sensitivity is "operator should
 		// approve" (web_fetch, spawn_agent) are still allowed —
 		// research-mode users explicitly enable them.
-		return permission.NewDenySideEffects(mutatingToolSet(registry))
+		return permission.NewDenySideEffects(mutatingToolSet(registry)), nil
 	case "ask-upstream":
 		// AskUpstreamPolicy prompts on tools whose RequiresApproval
 		// flag is set. This includes mutating tools but also covers
 		// non-mutating-but-sensitive tools.
 		timeout := time.Duration(cfg.Timeout) * time.Second
-		return permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout)
+		return permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout), nil
+	case "policy-engine":
+		env := permission.PolicyEngineEnv{
+			RunID:          config.RunID,
+			Mode:           config.Mode,
+			Workspace:      config.Executor.Workspace,
+			DynamicContext: config.DynamicContext,
+			Security:       secLogger,
+			// ParentRunID and Capabilities are reserved for sub-agent
+			// wiring and capability propagation respectively; both
+			// are populated by the spawn_agent path in a future wave.
+		}
+		// The fallback closure maps a fallback type name to the same
+		// constructor the non-policy-engine arms use. We deliberately
+		// re-route through this switch (via a recursive nested call)
+		// so any future change to a fallback policy's construction
+		// (e.g. a new ask-upstream timeout default) lands in one place.
+		fallback := func(typeName string) (permission.PermissionPolicy, error) {
+			if typeName == "policy-engine" {
+				return nil, fmt.Errorf("policy-engine fallback may not itself be policy-engine")
+			}
+			fallbackCfg := types.PermissionPolicyConfig{
+				Type:    typeName,
+				Timeout: cfg.Timeout,
+			}
+			return buildPermissionPolicy(&types.RunConfig{
+				PermissionPolicy: fallbackCfg,
+				// The recursive call uses the same identity context;
+				// only the Type is different.
+				RunID:          config.RunID,
+				Mode:           config.Mode,
+				Executor:       config.Executor,
+				DynamicContext: config.DynamicContext,
+			}, registry, tp, secLogger)
+		}
+		return permission.New(cfg, env, fallback)
 	default:
-		return permission.NewAllowAll()
+		return permission.NewAllowAll(), nil
 	}
 }
 

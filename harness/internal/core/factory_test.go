@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -20,11 +21,26 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// repoRootForTests returns the absolute repo root by walking up from
+// this test file's path. Mirrors the helper in harness/cmd/stirrup/cmd/
+// so tests can locate examples/ regardless of working directory.
+func repoRootForTests(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	// thisFile is .../harness/internal/core/factory_test.go; walk up four
+	// levels to reach the repo root.
+	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", ".."))
+}
 
 // disableRuleOfTwo returns a RuleOfTwoConfig that overrides the Rule-of-Two
 // invariant. The factory and integration tests in this file build configs
@@ -392,8 +408,25 @@ func TestBuildVerifier_UnknownFallsBack(t *testing.T) {
 
 // --- buildPermissionPolicy ---
 
+// buildPermissionPolicyForTest is a thin wrapper that fabricates a
+// minimal RunConfig from a bare PermissionPolicyConfig so the existing
+// table tests don't have to spell out a full config every call.
+func buildPermissionPolicyForTest(t *testing.T, cfg types.PermissionPolicyConfig, registry *tool.Registry, tp transport.Transport) permission.PermissionPolicy {
+	t.Helper()
+	rc := &types.RunConfig{
+		RunID:            "test-run",
+		Mode:             "execution",
+		PermissionPolicy: cfg,
+	}
+	pp, err := buildPermissionPolicy(rc, registry, tp, nil)
+	if err != nil {
+		t.Fatalf("buildPermissionPolicy: %v", err)
+	}
+	return pp
+}
+
 func TestBuildPermissionPolicy_AllowAll(t *testing.T) {
-	pp := buildPermissionPolicy(types.PermissionPolicyConfig{Type: "allow-all"}, nil, nil)
+	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{Type: "allow-all"}, nil, nil)
 	if _, ok := pp.(*permission.AllowAll); !ok {
 		t.Fatalf("expected AllowAll, got %T", pp)
 	}
@@ -403,7 +436,7 @@ func TestBuildPermissionPolicy_DenySideEffects(t *testing.T) {
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
 	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
-	pp := buildPermissionPolicy(types.PermissionPolicyConfig{Type: "deny-side-effects"}, registry, nil)
+	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{Type: "deny-side-effects"}, registry, nil)
 	if _, ok := pp.(*permission.DenySideEffects); !ok {
 		t.Fatalf("expected DenySideEffects, got %T", pp)
 	}
@@ -414,16 +447,96 @@ func TestBuildPermissionPolicy_AskUpstream(t *testing.T) {
 		caps: executor.ExecutorCapabilities{CanRead: true},
 	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
-	pp := buildPermissionPolicy(types.PermissionPolicyConfig{Type: "ask-upstream", Timeout: 60}, registry, tp)
+	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{Type: "ask-upstream", Timeout: 60}, registry, tp)
 	if _, ok := pp.(*permission.AskUpstreamPolicy); !ok {
 		t.Fatalf("expected AskUpstreamPolicy, got %T", pp)
 	}
 }
 
 func TestBuildPermissionPolicy_DefaultFallback(t *testing.T) {
-	pp := buildPermissionPolicy(types.PermissionPolicyConfig{}, nil, nil)
+	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{}, nil, nil)
 	if _, ok := pp.(*permission.AllowAll); !ok {
 		t.Fatalf("expected AllowAll for empty type, got %T", pp)
+	}
+}
+
+// TestBuildPermissionPolicy_PolicyEngine verifies the policy-engine arm
+// loads a Cedar policy file from disk and constructs a PolicyEnginePolicy
+// with the configured fallback. Uses an in-tree starter policy so we
+// exercise the real LoadPolicySetFromFile path.
+func TestBuildPermissionPolicy_PolicyEngine(t *testing.T) {
+	policyPath := filepath.Join(repoRootForTests(t), "examples", "policies", "destructive-shell.cedar")
+	if _, err := os.Stat(policyPath); err != nil {
+		t.Skipf("starter policy missing at %q: %v", policyPath, err)
+	}
+	registry := buildToolRegistry(&registryExecutor{
+		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	rc := &types.RunConfig{
+		RunID: "test-run",
+		Mode:  "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type:       "policy-engine",
+			PolicyFile: policyPath,
+			// Omit fallback to exercise the deny-side-effects default.
+		},
+	}
+	pp, err := buildPermissionPolicy(rc, registry, nil, nil)
+	if err != nil {
+		t.Fatalf("buildPermissionPolicy: %v", err)
+	}
+	if _, ok := pp.(*permission.PolicyEnginePolicy); !ok {
+		t.Fatalf("expected PolicyEnginePolicy, got %T", pp)
+	}
+}
+
+// TestBuildPermissionPolicy_PolicyEngineFallbackIsBuilt verifies the
+// fallback closure threads through the same buildPermissionPolicy
+// dispatch — i.e. an explicit fallback="ask-upstream" really constructs
+// an AskUpstreamPolicy under the hood. This is what makes the
+// no-decision path behave like a top-level ask-upstream config.
+func TestBuildPermissionPolicy_PolicyEngineFallbackIsBuilt(t *testing.T) {
+	policyPath := filepath.Join(repoRootForTests(t), "examples", "policies", "destructive-shell.cedar")
+	if _, err := os.Stat(policyPath); err != nil {
+		t.Skipf("starter policy missing at %q: %v", policyPath, err)
+	}
+	registry := buildToolRegistry(&registryExecutor{
+		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	rc := &types.RunConfig{
+		RunID: "test-run",
+		Mode:  "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type:       "policy-engine",
+			PolicyFile: policyPath,
+			Fallback:   "ask-upstream",
+			Timeout:    30,
+		},
+	}
+	pp, err := buildPermissionPolicy(rc, registry, tp, nil)
+	if err != nil {
+		t.Fatalf("buildPermissionPolicy: %v", err)
+	}
+	if _, ok := pp.(*permission.PolicyEnginePolicy); !ok {
+		t.Fatalf("expected PolicyEnginePolicy, got %T", pp)
+	}
+}
+
+// TestBuildPermissionPolicy_PolicyEngineMissingFile asserts that a
+// missing policy file fails fast with a clear error.
+func TestBuildPermissionPolicy_PolicyEngineMissingFile(t *testing.T) {
+	rc := &types.RunConfig{
+		RunID: "test-run",
+		Mode:  "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type:       "policy-engine",
+			PolicyFile: "/this/path/does/not/exist.cedar",
+		},
+	}
+	_, err := buildPermissionPolicy(rc, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing policy file, got nil")
 	}
 }
 
