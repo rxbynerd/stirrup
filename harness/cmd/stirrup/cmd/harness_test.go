@@ -367,6 +367,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Int("followup-grace", 0, "")
 	f.String("log-level", "info", "")
 	f.String("prompt", "", "")
+	f.String("name", "", "")
 	f.String("executor", "local", "")
 	f.String("edit-strategy", "multi", "")
 	f.String("verifier", "none", "")
@@ -546,6 +547,66 @@ func TestApplyOverrides_ExplicitFlagsOverride(t *testing.T) {
 	}
 	if cfg.TraceEmitter.Endpoint != "otel.flag:4317" {
 		t.Errorf("OTel endpoint override failed: %q", cfg.TraceEmitter.Endpoint)
+	}
+}
+
+// TestApplyOverrides_SessionNameExplicit verifies that --name is wired
+// through applyOverrides: when set on the command line, the flag value
+// must overwrite the file's SessionName.
+func TestApplyOverrides_SessionNameExplicit(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.SessionName = "from-file"
+
+	if err := cmd.Flags().Set("name", "from-flag"); err != nil {
+		t.Fatalf("set name: %v", err)
+	}
+	applyOverrides(cmd, cfg, nil)
+
+	if cfg.SessionName != "from-flag" {
+		t.Errorf("explicit --name should win, got %q", cfg.SessionName)
+	}
+}
+
+// TestApplyOverrides_SessionNameFilePreserved guards the precedence rule
+// for --name: when the user does NOT pass the flag, a SessionName loaded
+// from --config must survive applyOverrides intact. This is the central
+// "default flag does not clobber file value" invariant for the new flag.
+func TestApplyOverrides_SessionNameFilePreserved(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.SessionName = "from-file"
+
+	applyOverrides(cmd, cfg, nil)
+
+	if cfg.SessionName != "from-file" {
+		t.Errorf("SessionName from file should survive, got %q", cfg.SessionName)
+	}
+}
+
+// TestBuildHarnessRunConfig_SessionNamePropagates verifies the flag-only
+// build path: a SessionName provided in harnessCLIOptions must end up on
+// the constructed RunConfig.
+func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		SessionName:   "nightly-eval",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+
+	if cfg.SessionName != "nightly-eval" {
+		t.Errorf("SessionName: got %q, want %q", cfg.SessionName, "nightly-eval")
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig: %v", err)
 	}
 }
 

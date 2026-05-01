@@ -21,6 +21,7 @@ import (
 type harnessCLIOptions struct {
 	RunID         string
 	Mode          string
+	SessionName   string
 	Prompt        string
 	ProviderType  string
 	APIKeyRef     string
@@ -91,9 +92,10 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	}
 
 	config := &types.RunConfig{
-		RunID:  opts.RunID,
-		Mode:   opts.Mode,
-		Prompt: opts.Prompt,
+		RunID:       opts.RunID,
+		Mode:        opts.Mode,
+		SessionName: opts.SessionName,
+		Prompt:      opts.Prompt,
 		Provider: types.ProviderConfig{
 			Type:      opts.ProviderType,
 			APIKeyRef: opts.APIKeyRef,
@@ -221,6 +223,7 @@ func init() {
 	f.Int("followup-grace", 0, "Seconds to keep gRPC transport open for follow-up requests (0 = disabled; env: STIRRUP_FOLLOWUP_GRACE)")
 	f.String("log-level", "info", "Log level: debug, info, warn, error")
 	f.String("prompt", "", "User prompt (can also be passed as a positional argument)")
+	f.String("name", "", "Human-readable session label (metadata only, not injected into prompt)")
 
 	// Component-selection flags. Escape hatches for callers who don't want
 	// a full --config file but need to switch a single component. These
@@ -244,6 +247,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) {
 
 	if changed("mode") {
 		cfg.Mode, _ = f.GetString("mode")
+	}
+	if changed("name") {
+		cfg.SessionName, _ = f.GetString("name")
 	}
 	if changed("prompt") {
 		cfg.Prompt, _ = f.GetString("prompt")
@@ -373,6 +379,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	mode, _ := f.GetString("mode")
+	sessionName, _ := f.GetString("name")
 	model, _ := f.GetString("model")
 	providerType, _ := f.GetString("provider")
 	apiKeyRef, _ := f.GetString("api-key-ref")
@@ -403,6 +410,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	config := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:            generateRunID(),
 		Mode:             mode,
+		SessionName:      sessionName,
 		Prompt:           prompt,
 		ProviderType:     providerType,
 		APIKeyRef:        apiKeyRef,
