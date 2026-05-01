@@ -102,6 +102,10 @@ type containerCreateRequest struct {
 	Image      string      `json:"Image"`
 	Cmd        []string    `json:"Cmd"`
 	WorkingDir string      `json:"WorkingDir"`
+	// Env is the list of "KEY=value" environment-variable pairs to set on
+	// the container. Used to propagate HTTP_PROXY / HTTPS_PROXY / NO_PROXY
+	// when an egress proxy is in front of the container.
+	Env        []string    `json:"Env,omitempty"`
 	HostConfig *hostConfig `json:"HostConfig"`
 }
 
@@ -118,6 +122,11 @@ type hostConfig struct {
 	// default", in which case the field is omitted from the wire so the
 	// engine picks runc.
 	Runtime string `json:"Runtime,omitempty"`
+	// ExtraHosts adds entries to the container's /etc/hosts. Used to
+	// inject "host.docker.internal:host-gateway" so the container can
+	// reach the host's egress proxy on Docker Engine >=20.10 and
+	// Podman >=4.0.
+	ExtraHosts []string `json:"ExtraHosts,omitempty"`
 }
 
 type containerCreateResponse struct {
