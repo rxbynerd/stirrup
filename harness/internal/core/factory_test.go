@@ -21,6 +21,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -403,6 +404,91 @@ func TestBuildVerifier_UnknownFallsBack(t *testing.T) {
 	v := buildVerifier(types.VerifierConfig{Type: "nonexistent"}, nil)
 	if _, ok := v.(*verifier.NoneVerifier); !ok {
 		t.Fatalf("expected NoneVerifier for unknown type, got %T", v)
+	}
+}
+
+// --- emitRuleOfTwoEvents ---
+
+// captureSecLogger writes to a buffer so tests can inspect the JSON-line
+// stream emitted by SecurityLogger. We use the real SecurityLogger
+// rather than a hand-rolled mock so the JSON shape exercised here is
+// the same one downstream tooling would see.
+func captureSecLogger(t *testing.T) (*security.SecurityLogger, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	return security.NewSecurityLogger(buf, "test-run"), buf
+}
+
+func TestEmitRuleOfTwoEvents_AllThreeWithOverrideEmitsDisabled(t *testing.T) {
+	sec, buf := captureSecLogger(t)
+	enforce := false
+	cfg := &types.RunConfig{
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
+		DynamicContext:   map[string]string{"x": "y"},
+		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
+	}
+
+	emitRuleOfTwoEvents(cfg, sec)
+
+	out := buf.String()
+	if !strings.Contains(out, `"event":"rule_of_two_disabled"`) {
+		t.Errorf("expected rule_of_two_disabled event, got: %s", out)
+	}
+}
+
+func TestEmitRuleOfTwoEvents_AllThreeWithoutOverrideStaysSilent(t *testing.T) {
+	// All three flags + ask-upstream is legal without an explicit
+	// override; we should NOT emit rule_of_two_disabled in that case.
+	sec, buf := captureSecLogger(t)
+	cfg := &types.RunConfig{
+		Mode:             "research",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "ask-upstream"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
+		DynamicContext:   map[string]string{"x": "y"},
+	}
+
+	emitRuleOfTwoEvents(cfg, sec)
+
+	if strings.Contains(buf.String(), "rule_of_two_disabled") {
+		t.Errorf("ask-upstream all-three path must not emit rule_of_two_disabled, got: %s", buf.String())
+	}
+}
+
+func TestEmitRuleOfTwoEvents_TwoOfThreeEmitsWarning(t *testing.T) {
+	// Untrusted (DynamicContext) + sensitive (APIKeyRef) but no
+	// external-communication tools.
+	sec, buf := captureSecLogger(t)
+	cfg := &types.RunConfig{
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+		DynamicContext:   map[string]string{"x": "y"},
+	}
+
+	emitRuleOfTwoEvents(cfg, sec)
+
+	out := buf.String()
+	if !strings.Contains(out, `"event":"rule_of_two_warning"`) {
+		t.Errorf("expected rule_of_two_warning event, got: %s", out)
+	}
+}
+
+func TestEmitRuleOfTwoEvents_NoneOrOneStaysSilent(t *testing.T) {
+	sec, buf := captureSecLogger(t)
+	cfg := &types.RunConfig{
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+	}
+	emitRuleOfTwoEvents(cfg, sec)
+	if buf.Len() > 0 {
+		t.Errorf("zero-or-one flag config should emit nothing, got: %s", buf.String())
 	}
 }
 

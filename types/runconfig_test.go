@@ -1238,6 +1238,45 @@ func TestValidateRunConfig_RuleOfTwo_TwoOfThreePasses(t *testing.T) {
 	}
 }
 
+// TestRuleOfTwoState_MatchesValidator pins the public RuleOfTwoState
+// helper to the same booleans the internal validator reasons over.
+// Factory wiring uses this helper to decide when to emit
+// rule_of_two_disabled / rule_of_two_warning events.
+func TestRuleOfTwoState_MatchesValidator(t *testing.T) {
+	cases := []struct {
+		name                                              string
+		untrusted, sensitive, external                    bool
+		wantUntrusted, wantSensitive, wantCanCommExternal bool
+	}{
+		{"all_off", false, false, false, false, false, false},
+		{"untrusted_only", true, false, false, true, false, false},
+		{"sensitive_only", false, true, false, false, true, false},
+		{"external_only", false, false, true, false, false, true},
+		{"all_on", true, true, true, true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ruleOfTwoConfig(tc.untrusted, tc.sensitive, tc.external, "deny-side-effects")
+			gotU, gotS, gotE := RuleOfTwoState(c)
+			if gotU != tc.wantUntrusted || gotS != tc.wantSensitive || gotE != tc.wantCanCommExternal {
+				t.Errorf("RuleOfTwoState = (%v, %v, %v), want (%v, %v, %v)",
+					gotU, gotS, gotE,
+					tc.wantUntrusted, tc.wantSensitive, tc.wantCanCommExternal)
+			}
+		})
+	}
+}
+
+// TestRuleOfTwoState_NilSafe documents the contract: passing nil
+// returns the all-false state rather than panicking. Factory wiring
+// relies on this for defensive emission paths.
+func TestRuleOfTwoState_NilSafe(t *testing.T) {
+	u, s, e := RuleOfTwoState(nil)
+	if u || s || e {
+		t.Errorf("nil config should return (false, false, false), got (%v, %v, %v)", u, s, e)
+	}
+}
+
 func TestValidateRunConfig_RuleOfTwo_OneOrZeroPasses(t *testing.T) {
 	cases := []struct {
 		name      string

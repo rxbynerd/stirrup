@@ -671,6 +671,20 @@ func validatePermissionPolicyFields(cfg PermissionPolicyConfig, errs *[]string) 
 	}
 }
 
+// RuleOfTwoState reports the three Rule-of-Two booleans for a config:
+// holdsUntrusted (untrusted input ingress), holdsSensitive (sensitive
+// data on hand), and canCommExternal (external communication).
+//
+// Exposed so factory wiring can emit security events without
+// re-implementing the heuristics. Returns the same booleans the
+// validator computes internally — single source of truth.
+func RuleOfTwoState(config *RunConfig) (holdsUntrusted, holdsSensitive, canCommExternal bool) {
+	if config == nil {
+		return false, false, false
+	}
+	return ruleOfTwoUntrustedInput(config), ruleOfTwoSensitiveData(config), ruleOfTwoExternalComm(config)
+}
+
 // validateRuleOfTwo enforces Meta's "Agents Rule of Two": a single
 // session must not simultaneously hold (a) untrusted input, (b)
 // sensitive data, and (c) the ability to communicate externally —

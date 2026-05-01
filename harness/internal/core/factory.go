@@ -67,6 +67,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
 
+	// Emit Rule-of-Two audit events. The validator already accepted the
+	// config, so any all-three case here implies an explicit operator
+	// override (RuleOfTwo.Enforce: false) or the ask-upstream policy.
+	// Recording the event keeps the override auditable; the two-of-three
+	// warning surfaces a heads-up that future capability creep would
+	// trip the invariant.
+	emitRuleOfTwoEvents(config, secLogger)
+
 	// Secret store for resolving credential references. AutoSecretStore routes
 	// to SSM for "secret://ssm:///..." refs, falling back to env/file otherwise.
 	secrets, err := security.NewAutoSecretStore(ctx, config)
@@ -623,6 +631,61 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 			}
 			return fmt.Sprintf("Successfully edited %s", result.Path), nil
 		},
+	}
+}
+
+// emitRuleOfTwoEvents records two security events at run start:
+//
+//   - rule_of_two_disabled when all three Rule-of-Two flags hold AND the
+//     operator explicitly disabled enforcement via RuleOfTwo.Enforce:false.
+//     This is the audit trail for the override; the validator would
+//     otherwise have rejected the config.
+//   - rule_of_two_warning when exactly two of the three flags hold. The
+//     run is legal, but any added capability would tip it into all-three.
+//     The event names which two so reviewers can spot capability creep.
+//
+// The event names "untrusted-input", "sensitive-data", and
+// "external-communication" mirror the validator's rejection message so
+// downstream tooling can grep for the same identifiers in both places.
+func emitRuleOfTwoEvents(config *types.RunConfig, sec *security.SecurityLogger) {
+	if sec == nil || config == nil {
+		return
+	}
+	u, s, e := types.RuleOfTwoState(config)
+
+	if u && s && e {
+		// All three hold: validator only accepted because of the
+		// ask-upstream policy or an explicit Enforce:false override.
+		// Only the override case is interesting for audit — the
+		// ask-upstream path is the documented happy case.
+		if config.RuleOfTwo != nil && config.RuleOfTwo.Enforce != nil && !*config.RuleOfTwo.Enforce {
+			sec.Emit("warn", "rule_of_two_disabled", map[string]any{
+				"reason":               "operator override via RuleOfTwo.Enforce: false",
+				"untrustedInput":       u,
+				"sensitiveData":        s,
+				"externalCommunication": e,
+			})
+		}
+		return
+	}
+
+	// Exactly two hold: structural warning so reviewers can spot drift.
+	count := 0
+	if u {
+		count++
+	}
+	if s {
+		count++
+	}
+	if e {
+		count++
+	}
+	if count == 2 {
+		sec.Emit("warn", "rule_of_two_warning", map[string]any{
+			"untrustedInput":        u,
+			"sensitiveData":         s,
+			"externalCommunication": e,
+		})
 	}
 }
 
