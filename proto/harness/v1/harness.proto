@@ -305,6 +305,60 @@ message RunConfig {
   // and OTel root spans (run.session_name). Metadata only — never injected
   // into the model's prompt or conversation history.
   optional string session_name = 24;
+
+  // Optional. Operator override for the "Agents Rule of Two"
+  // structural invariant. When unset (the default) the harness rejects
+  // any config that simultaneously holds untrusted-input, sensitive-
+  // data, and external-communication unless the permission policy is
+  // ask-upstream. Setting RuleOfTwoConfig{enforce: false} bypasses the
+  // rejection; the harness emits a rule_of_two_disabled security event
+  // at run start so the override is auditable.
+  RuleOfTwoConfig rule_of_two = 25;
+
+  // Optional. Static-analysis pass run after every successful file
+  // edit. When unset, ValidateRunConfig fills a sensible default for
+  // the mode: "patterns" (active scanning) for execution mode, "none"
+  // for read-only modes (no edits happen).
+  CodeScannerConfig code_scanner = 26;
+}
+
+// RuleOfTwoConfig carries the operator override for the Rule-of-Two
+// structural invariant. The invariant: a single run must not
+// simultaneously hold (a) untrusted input, (b) sensitive data, and
+// (c) the ability to communicate externally — unless gated by the
+// ask-upstream permission policy.
+message RuleOfTwoConfig {
+  // When false, the validator silently accepts the all-three case;
+  // the harness emits a rule_of_two_disabled security event. Wrap
+  // in google.protobuf.BoolValue if you need to distinguish "unset"
+  // from "explicit true" — for now an unset proto bool is treated
+  // identically to true (enforce).
+  bool enforce = 1;
+}
+
+// CodeScannerConfig selects the static-analysis pass run after every
+// successful file edit.
+message CodeScannerConfig {
+  // The scanner implementation.
+  // Valid values:
+  //   "none"      — disable scanning (default for read-only modes).
+  //   "patterns"  — pure-Go regex pack over secret patterns and
+  //                 eval/exec sinks. Always available; default for
+  //                 execution mode.
+  //   "semgrep"   — shell out to a local semgrep binary if present.
+  //   "composite" — union of multiple named scanners; requires a
+  //                 non-empty scanners list.
+  string type = 1;
+
+  // For "composite": the non-composite scanner types to run. Each
+  // entry must be one of "none", "patterns", "semgrep". Composite-of-
+  // composite is rejected at validation time.
+  repeated string scanners = 2;
+
+  // When true, "warn" findings also fail the edit. When false (the
+  // default), only "block" findings fail; "warn" findings emit a
+  // security event but the edit succeeds.
+  bool block_on_warn = 3;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution
@@ -563,6 +617,13 @@ message ExecutorConfig {
 
   // For "container": HTTP proxy URL for network requests inside the container.
   string proxy = 7;
+
+  // Optional. OCI runtime override for the container executor.
+  // Empty string means "engine default" (typically runc) and the
+  // harness omits the Runtime field on the create-container request.
+  // Closed set: "", "runc", "runsc" (gVisor), "kata", "kata-qemu",
+  // "kata-fc". ValidateRunConfig rejects every other value.
+  string runtime = 8;
 }
 
 // VcsBackendConfig selects the VCS API backend for the "api" executor.
@@ -687,11 +748,25 @@ message PermissionPolicyConfig {
   //                         plane must respond with a permission_response
   //                         ControlEvent within the timeout. Tools that
   //                         do not require approval are auto-allowed.
+  //   "policy-engine"     — Cedar-backed policy engine. Decisions are
+  //                         driven by the policy file at policy_file;
+  //                         no-decision responses fall through to the
+  //                         policy named in fallback.
   string type = 1;
 
   // For "ask-upstream": seconds to wait for a permission_response before
   // auto-denying. 0 means use the harness default (60 seconds).
   int32 timeout = 2;
+
+  // For "policy-engine": filesystem path to the Cedar policy file to
+  // load at boot. Required when type is "policy-engine".
+  string policy_file = 3;
+
+  // For "policy-engine": the permission policy to consult when the
+  // Cedar engine returns "no decision". Must be one of "allow-all",
+  // "deny-side-effects", or "ask-upstream" — chained policy engines
+  // are not supported. Defaults to "deny-side-effects" (fail closed).
+  string fallback = 4;
 }
 
 // GitStrategyConfig selects git branch and commit management behaviour.
