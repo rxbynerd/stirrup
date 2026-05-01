@@ -197,6 +197,18 @@ type ExecutorConfig struct {
 	Network    *NetworkConfig    `json:"network,omitempty"`
 	Resources  *ResourceLimits   `json:"resources,omitempty"`
 	Proxy      string            `json:"proxy,omitempty"`
+
+	// Runtime selects the OCI runtime for the container executor. Empty
+	// string means "use the engine default" — i.e. the harness does not
+	// pass a Runtime field on the create-container request. The closed set
+	// of accepted values is enforced by ValidateRunConfig.
+	//   ""           — engine default (typically runc)
+	//   "runc"       — vanilla runc
+	//   "runsc"      — gVisor (user-space kernel)
+	//   "kata"       — Kata Containers (default flavour)
+	//   "kata-qemu"  — Kata Containers backed by QEMU
+	//   "kata-fc"    — Kata Containers backed by Firecracker
+	Runtime string `json:"runtime,omitempty"`
 }
 
 // VcsBackendConfig selects the VCS backend for the API executor.
@@ -323,6 +335,20 @@ var validExecutorTypes = map[string]bool{
 	"container": true,
 }
 
+// validExecutorRuntimes is the closed set of OCI runtimes the container
+// executor may select. The empty string is accepted and means "use the
+// engine default" — the harness omits the Runtime field on the create
+// request. Adding a new runtime here is the only supported way to extend
+// the set; ValidateRunConfig rejects everything else.
+var validExecutorRuntimes = map[string]bool{
+	"":          true,
+	"runc":      true,
+	"runsc":     true,
+	"kata":      true,
+	"kata-qemu": true,
+	"kata-fc":   true,
+}
+
 var validEditStrategyTypes = map[string]bool{
 	"whole-file":     true,
 	"search-replace": true,
@@ -442,6 +468,9 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
 	validateOptionalType("contextStrategy", config.ContextStrategy.Type, validContextStrategyTypes, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
+	if !validExecutorRuntimes[config.Executor.Runtime] {
+		errs = append(errs, fmt.Sprintf("unsupported executor.runtime %q", config.Executor.Runtime))
+	}
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
