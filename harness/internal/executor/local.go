@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 const (
@@ -34,10 +36,32 @@ type LocalExecutor struct {
 	Security  SecurityEventEmitter
 }
 
+// LocalExecutorConfig configures NewLocalExecutorWithConfig. NewLocalExecutor
+// is preserved for callers that do not need the additional fields.
+type LocalExecutorConfig struct {
+	// Workspace is the directory the executor is rooted at.
+	Workspace string
+	// Network describes the network policy the harness intends. The local
+	// executor cannot enforce an egress allowlist (no sandbox boundary) so
+	// constructing one with Mode == "allowlist" returns an error here.
+	Network *types.NetworkConfig
+}
+
 // NewLocalExecutor creates an executor rooted at the given workspace directory.
 // The workspace path is resolved to an absolute, symlink-free canonical form.
 func NewLocalExecutor(workspace string) (*LocalExecutor, error) {
-	abs, err := filepath.Abs(workspace)
+	return NewLocalExecutorWithConfig(LocalExecutorConfig{Workspace: workspace})
+}
+
+// NewLocalExecutorWithConfig is the configurable constructor. It currently
+// adds the Network policy check; future fields will continue to be added
+// here rather than as positional arguments to NewLocalExecutor.
+func NewLocalExecutorWithConfig(cfg LocalExecutorConfig) (*LocalExecutor, error) {
+	if cfg.Network != nil && cfg.Network.Mode == "allowlist" {
+		return nil, fmt.Errorf("local executor does not support allowlist networking; use a container executor")
+	}
+
+	abs, err := filepath.Abs(cfg.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace path: %w", err)
 	}
