@@ -81,6 +81,22 @@ func TestRedact_MCPServersAPIKeys(t *testing.T) {
 	}
 }
 
+// TestRedact_SessionNamePreserved pins that SessionName survives Redact().
+// SessionName is not a secret — it's the operator's chosen label and it
+// must appear in persisted traces so logs and traces can be cross-
+// referenced. If Redact() ever starts stripping SessionName, downstream
+// trace consumers (eval lakehouse, JSONL replay) lose the link.
+func TestRedact_SessionNamePreserved(t *testing.T) {
+	rc := RunConfig{
+		SessionName: "nightly-eval",
+		Provider:    ProviderConfig{APIKeyRef: "secret://k"},
+	}
+	redacted := rc.Redact()
+	if redacted.SessionName != "nightly-eval" {
+		t.Errorf("SessionName should be preserved, got %q", redacted.SessionName)
+	}
+}
+
 func TestRedact_EmptyConfig(t *testing.T) {
 	rc := RunConfig{}
 	redacted := rc.Redact()
@@ -454,8 +470,8 @@ func TestValidateRunConfig_SessionNameValid(t *testing.T) {
 	cases := []string{
 		"nightly-eval",
 		"PR #123 sweep",
-		"café-run",            // unicode letter with diacritic
-		"文字列-test",            // CJK characters are printable
+		"café-run",              // unicode letter with diacritic
+		"文字列-test",              // CJK characters are printable
 		"emoji-ok-\xe2\x9c\x85", // U+2705 white heavy check mark (valid printable symbol)
 		strings.Repeat("a", 255),
 	}
