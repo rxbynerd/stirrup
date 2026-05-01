@@ -27,6 +27,7 @@
   "executor": {
     "type": "container",
     "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "runtime": "runsc",
     "network": {
       "mode": "none"
     },
@@ -47,7 +48,9 @@
     "timeout": 300
   },
   "permissionPolicy": {
-    "type": "allow-all"
+    "type": "policy-engine",
+    "policyFile": "examples/policies/destructive-shell.cedar",
+    "fallback": "deny-side-effects"
   },
   "gitStrategy": {
     "type": "deterministic"
@@ -80,6 +83,10 @@
   },
   "ruleOfTwo": {
     "enforce": false
+  },
+  "codeScanner": {
+    "type": "patterns",
+    "blockOnWarn": false
   },
   "maxTurns": 20,
   "timeout": 600,
