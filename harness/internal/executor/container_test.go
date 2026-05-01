@@ -782,6 +782,80 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 	}
 }
 
+func TestContainerExecutor_Runtime(t *testing.T) {
+	// Capture the raw POST body so we can assert exactly what bytes go on
+	// the wire. The Engine API treats a missing Runtime field as "use the
+	// daemon default", so it matters that we (a) include "Runtime":"runsc"
+	// when set and (b) omit the field entirely when not set — otherwise
+	// older Docker versions can fail with `runtime "" not registered`.
+	var rawBody []byte
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			rawBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	defer cleanup()
+
+	// Configured runtime must appear in the create-container body.
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:22.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+		Runtime:    "runsc",
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	_ = exec.Close()
+
+	if !strings.Contains(string(rawBody), `"Runtime":"runsc"`) {
+		t.Errorf("create body missing Runtime=runsc; got: %s", string(rawBody))
+	}
+
+	// Hardening defaults must still be present alongside the runtime.
+	var parsed containerCreateRequest
+	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+		t.Fatalf("unmarshal create body: %v", err)
+	}
+	if parsed.HostConfig.Runtime != "runsc" {
+		t.Errorf("HostConfig.Runtime: got %q, want %q", parsed.HostConfig.Runtime, "runsc")
+	}
+	if parsed.HostConfig.NetworkMode != "none" {
+		t.Errorf("HostConfig.NetworkMode: got %q, want %q", parsed.HostConfig.NetworkMode, "none")
+	}
+	if len(parsed.HostConfig.CapDrop) != 1 || parsed.HostConfig.CapDrop[0] != "ALL" {
+		t.Errorf("HostConfig.CapDrop: got %v, want [ALL]", parsed.HostConfig.CapDrop)
+	}
+
+	// Empty runtime must be omitted entirely (engine picks its default).
+	rawBody = nil
+	exec, err = NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:22.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	_ = exec.Close()
+
+	if strings.Contains(string(rawBody), `"Runtime"`) {
+		t.Errorf("create body should omit Runtime when unset; got: %s", string(rawBody))
+	}
+}
+
 func TestNewContainerExecutor_MissingImage(t *testing.T) {
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
 		HostDir: "/tmp/workspace",
