@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1214,6 +1216,100 @@ func TestBuildProvider_OpenAIResponses(t *testing.T) {
 	}
 	if _, ok := prov.(*provider.OpenAIResponsesAdapter); !ok {
 		t.Errorf("buildProvider type = %T, want *provider.OpenAIResponsesAdapter", prov)
+	}
+}
+
+// TestBuildProvider_OpenAIResponsesAzureFields is the factory-level
+// regression guard for issue #48: a RunConfig with APIKeyHeader / QueryParams
+// populated must produce an adapter that, when invoked, sends the configured
+// header and URL. The Stream call uses an httptest.Server stand-in so we can
+// inspect the live HTTP request without depending on the live OpenAI API.
+//
+// Mirrors the wire-level round-trip test in
+// harness/internal/transport/grpc_test.go (which only confirms proto field
+// passthrough), closing the loop end-to-end: gRPC carries the fields →
+// factory propagates them into the adapter → adapter applies them on the
+// wire.
+func TestBuildProvider_OpenAIResponsesAzureFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("api-key"), "AZURE-KEY"; got != want {
+			t.Errorf("api-key header = %q, want %q", got, want)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization header should be empty, got %q", got)
+		}
+		if got, want := r.URL.Path, "/openai/v1/responses"; got != want {
+			t.Errorf("URL.Path = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Query().Get("api-version"), "preview"; got != want {
+			t.Errorf("api-version = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://AZURE_KEY": "AZURE-KEY"}}
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:         "openai-responses",
+		APIKeyRef:    "secret://AZURE_KEY",
+		BaseURL:      srv.URL + "/openai/v1",
+		APIKeyHeader: "api-key",
+		QueryParams:  map[string]string{"api-version": "preview"},
+	}, secrets)
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+
+	ch, err := prov.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 16})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for range ch { //nolint:revive // drain stream so the goroutine completes
+	}
+}
+
+// TestBuildProvider_OpenAICompatibleAzureFields is the same factory-level
+// regression guard for the Chat Completions adapter — see
+// TestBuildProvider_OpenAIResponsesAzureFields for context.
+func TestBuildProvider_OpenAICompatibleAzureFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("api-key"), "AZURE-KEY"; got != want {
+			t.Errorf("api-key header = %q, want %q", got, want)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization header should be empty, got %q", got)
+		}
+		if got, want := r.URL.Path, "/openai/v1/chat/completions"; got != want {
+			t.Errorf("URL.Path = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Query().Get("api-version"), "preview"; got != want {
+			t.Errorf("api-version = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://AZURE_KEY": "AZURE-KEY"}}
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:         "openai-compatible",
+		APIKeyRef:    "secret://AZURE_KEY",
+		BaseURL:      srv.URL + "/openai/v1",
+		APIKeyHeader: "api-key",
+		QueryParams:  map[string]string{"api-version": "preview"},
+	}, secrets)
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+
+	ch, err := prov.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 16})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for range ch { //nolint:revive // drain stream so the goroutine completes
 	}
 }
 

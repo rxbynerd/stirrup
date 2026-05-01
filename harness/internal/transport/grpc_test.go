@@ -463,6 +463,61 @@ func TestGRPCTransport_NoSecretEventForCleanText(t *testing.T) {
 	}
 }
 
+// TestGRPCTransport_OnControlTaskAssignmentAzureFields is the gRPC-side
+// regression guard for issue #48: a task_assignment carrying APIKeyHeader
+// and QueryParams must round-trip through the proto wire format without
+// losing data, so "stirrup job" mode receives the same RunConfig that
+// "stirrup harness" sees from --config. The acceptance test for the actual
+// adapter behaviour (header value, URL composition) lives in
+// harness/internal/provider; this test only pins the wire-level passthrough.
+func TestGRPCTransport_OnControlTaskAssignmentAzureFields(t *testing.T) {
+	timeout := int32(300)
+	srv := newTestServer(&pb.ControlEvent{
+		Type: "task_assignment",
+		Task: &pb.RunConfig{
+			RunId:    "run-azure",
+			Mode:     "execution",
+			Prompt:   "test",
+			MaxTurns: 10,
+			Timeout:  &timeout,
+			Provider: &pb.ProviderConfig{
+				Type:         "openai-responses",
+				ApiKeyRef:    "secret://AZURE_OPENAI_KEY",
+				BaseUrl:      "https://example.openai.azure.com/openai/v1",
+				ApiKeyHeader: "api-key",
+				QueryParams: map[string]string{
+					"api-version": "preview",
+				},
+			},
+		},
+	})
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	received := make(chan types.ControlEvent, 1)
+	tr.OnControl(func(event types.ControlEvent) {
+		received <- event
+	})
+
+	select {
+	case ev := <-received:
+		if ev.Task == nil {
+			t.Fatal("expected Task to be non-nil")
+		}
+		if got, want := ev.Task.Provider.APIKeyHeader, "api-key"; got != want {
+			t.Errorf("Provider.APIKeyHeader = %q, want %q", got, want)
+		}
+		if got, want := ev.Task.Provider.QueryParams["api-version"], "preview"; got != want {
+			t.Errorf("Provider.QueryParams[api-version] = %q, want %q", got, want)
+		}
+		if got, want := ev.Task.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
+			t.Errorf("Provider.BaseURL = %q, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task assignment")
+	}
+}
+
 func TestGRPCTransport_StreamErrorStopsReadLoop(t *testing.T) {
 	srv := newTestServer()
 	tr, _, _ := setupTestTransport(t, srv)

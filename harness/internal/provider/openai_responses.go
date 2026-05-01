@@ -33,20 +33,35 @@ import (
 // users who have explicitly opted into one or the other shape want it to be
 // honoured deterministically — silent fallback would mask configuration
 // errors and complicate observability.
+//
+// Azure Foundry's "/openai/v1/responses" endpoint is wire-compatible with
+// the OpenAI Responses request/response body, SSE event names, tool schema,
+// and previous_response_id semantics. It is supported by pointing BaseURL
+// at the Azure resource ("https://<resource>.openai.azure.com/openai/v1"),
+// setting APIKeyHeader to "api-key" when authenticating with a plain Azure
+// OpenAI key (Entra ID bearer tokens still work with the empty default),
+// and adding the required api-version through QueryParams (e.g.
+// {"api-version": "preview"}). Azure-only Responses extensions such as
+// server-side state and content_part lifecycle events ride the same
+// forward-compatible "unknown SSE event" path implemented in dispatchEvent.
 type OpenAIResponsesAdapter struct {
-	apiKey     string
-	httpClient *http.Client
-	baseURL    string
-	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
-	Metrics    *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	apiKey       string
+	httpClient   *http.Client
+	baseURL      string
+	apiKeyHeader string
+	queryParams  map[string]string
+	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
+	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
 }
 
 // NewOpenAIResponsesAdapter creates an adapter for the OpenAI Responses API.
 // The baseURL should be the API root (e.g. "https://api.openai.com/v1");
 // the /responses path is appended automatically. Pass an empty string for
 // the default OpenAI URL — kept consistent with NewOpenAICompatibleAdapter
-// so callers can switch the provider type without re-deriving the URL.
-func NewOpenAIResponsesAdapter(apiKey, baseURL string) *OpenAIResponsesAdapter {
+// so callers can switch the provider type without re-deriving the URL. The
+// auth argument carries optional header-name and query-parameter overrides;
+// pass a zero value for OpenAI-default behaviour.
+func NewOpenAIResponsesAdapter(apiKey, baseURL string, auth OpenAIAuthConfig) *OpenAIResponsesAdapter {
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
 	}
@@ -61,7 +76,9 @@ func NewOpenAIResponsesAdapter(apiKey, baseURL string) *OpenAIResponsesAdapter {
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
-		baseURL: baseURL,
+		baseURL:      baseURL,
+		apiKeyHeader: auth.APIKeyHeader,
+		queryParams:  auth.QueryParams,
 	}
 }
 
@@ -311,8 +328,12 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := o.baseURL + "/responses"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(bodyBytes)))
+	requestURL, err := composeOpenAIURL(o.baseURL, "/responses", o.queryParams)
+	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, fmt.Errorf("compose request URL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("create request: %w", err)
@@ -320,9 +341,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	if o.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	}
+	setOpenAIAuthHeader(req, o.apiKey, o.apiKeyHeader)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -18,6 +19,22 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// OpenAIAuthConfig carries the optional auth/URL knobs both OpenAI adapters
+// share. It is a separate struct so the adapter constructors do not grow an
+// unbounded number of positional arguments. A zero value preserves today's
+// behaviour: Authorization: Bearer auth and no extra query parameters.
+type OpenAIAuthConfig struct {
+	// APIKeyHeader, when non-empty, replaces the default
+	// "Authorization: Bearer <key>" header with "<APIKeyHeader>: <key>".
+	// Used by Azure OpenAI key auth ("api-key") and similar gateways.
+	APIKeyHeader string
+
+	// QueryParams are appended to every request URL. Keys here override any
+	// duplicate keys already present in BaseURL's query string — explicit
+	// configuration always wins over BaseURL-encoded defaults.
+	QueryParams map[string]string
+}
+
 const (
 	openaiDefaultBaseURL   = "https://api.openai.com/v1"
 	openaiMaxToolInputSize = 10 * 1024 * 1024 // 10 MB cap on streamed tool argument JSON
@@ -26,19 +43,30 @@ const (
 // OpenAICompatibleAdapter implements ProviderAdapter for the OpenAI Chat
 // Completions API. It works with any OpenAI-compatible endpoint: OpenAI,
 // LiteLLM, Azure OpenAI, vLLM, Ollama, llama.cpp server.
+//
+// Azure OpenAI deployments accept either Entra ID bearer tokens (default
+// behaviour: empty APIKeyHeader → "Authorization: Bearer <token>") or a
+// plain API key (set APIKeyHeader: "api-key"). Required api-version pins
+// (and similar gateway parameters) are conveyed through OpenAIAuthConfig's
+// QueryParams; values supplied there override any duplicate keys present
+// in baseURL's query string.
 type OpenAICompatibleAdapter struct {
-	apiKey     string
-	httpClient *http.Client
-	baseURL    string
-	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
-	Metrics    *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	apiKey       string
+	httpClient   *http.Client
+	baseURL      string
+	apiKeyHeader string
+	queryParams  map[string]string
+	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
+	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
 }
 
 // NewOpenAICompatibleAdapter creates an adapter for an OpenAI-compatible
 // Chat Completions endpoint. The baseURL should be the API root
 // (e.g. "https://api.openai.com/v1"); the /chat/completions path is appended
-// automatically. Pass an empty string for the default OpenAI URL.
-func NewOpenAICompatibleAdapter(apiKey, baseURL string) *OpenAICompatibleAdapter {
+// automatically. Pass an empty string for the default OpenAI URL. The auth
+// argument carries optional header-name and query-parameter overrides; pass
+// a zero value for OpenAI-default behaviour.
+func NewOpenAICompatibleAdapter(apiKey, baseURL string, auth OpenAIAuthConfig) *OpenAICompatibleAdapter {
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
 	}
@@ -54,7 +82,9 @@ func NewOpenAICompatibleAdapter(apiKey, baseURL string) *OpenAICompatibleAdapter
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
-		baseURL: baseURL,
+		baseURL:      baseURL,
+		apiKeyHeader: auth.APIKeyHeader,
+		queryParams:  auth.QueryParams,
 	}
 }
 
@@ -303,17 +333,19 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	url := o.baseURL + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(bodyBytes)))
+	requestURL, err := composeOpenAIURL(o.baseURL, "/chat/completions", o.queryParams)
+	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, fmt.Errorf("compose request URL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if o.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	}
+	setOpenAIAuthHeader(req, o.apiKey, o.apiKeyHeader)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -470,6 +502,47 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	if err := scanner.Err(); err != nil {
 		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
 	}
+}
+
+// composeOpenAIURL parses baseURL, appends path (using Path so existing
+// path components survive a trailing slash), then merges queryParams into
+// the existing query string. Keys present in queryParams override any
+// duplicates already encoded on baseURL — explicit configuration always
+// wins over BaseURL-encoded defaults. Shared by both OpenAI adapters so
+// switching between provider.type "openai-compatible" and "openai-responses"
+// produces identical URL composition behaviour.
+func composeOpenAIURL(baseURL, path string, queryParams map[string]string) (string, error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("parse baseURL: %w", err)
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + path
+	if len(queryParams) > 0 {
+		q := u.Query()
+		for k, v := range queryParams {
+			q.Set(k, v)
+		}
+		u.RawQuery = q.Encode()
+	}
+	return u.String(), nil
+}
+
+// setOpenAIAuthHeader applies the configured auth header to req. With an
+// empty apiKey this is a no-op (some local gateways accept anonymous
+// requests). With a non-empty apiKeyHeader, the resolved key is sent under
+// that header name verbatim — caller-side validation (ValidateRunConfig)
+// is responsible for rejecting header names containing CRLF or whitespace.
+// With an empty apiKeyHeader, today's "Authorization: Bearer <key>"
+// behaviour is preserved.
+func setOpenAIAuthHeader(req *http.Request, apiKey, apiKeyHeader string) {
+	if apiKey == "" {
+		return
+	}
+	if apiKeyHeader == "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		return
+	}
+	req.Header.Set(apiKeyHeader, apiKey)
 }
 
 // flushToolCallsVia emits tool_call events for all accumulated tool calls via

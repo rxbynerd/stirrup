@@ -42,7 +42,7 @@ func TestOpenAIAdapter_StreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -89,7 +89,7 @@ func TestOpenAIAdapter_StreamToolCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -140,7 +140,7 @@ func TestOpenAIAdapter_MultipleToolCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -189,7 +189,7 @@ func TestOpenAIAdapter_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("bad-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("bad-key", srv.URL, OpenAIAuthConfig{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -209,7 +209,7 @@ func TestOpenAIAdapter_HTTPErrorNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("key", srv.URL, OpenAIAuthConfig{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -234,7 +234,7 @@ func TestOpenAIAdapter_HTTPErrorLargeBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("key", srv.URL, OpenAIAuthConfig{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -263,7 +263,7 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 
 	tools := []types.ToolDefinition{
 		{
@@ -342,7 +342,7 @@ func TestOpenAIAdapter_ContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -379,7 +379,7 @@ func TestOpenAIAdapter_MalformedChunk(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -421,7 +421,7 @@ func TestOpenAIAdapter_MalformedToolArguments(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -450,14 +450,14 @@ func TestOpenAIAdapter_MalformedToolArguments(t *testing.T) {
 }
 
 func TestOpenAIAdapter_DefaultBaseURL(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter("key", "")
+	adapter := NewOpenAICompatibleAdapter("key", "", OpenAIAuthConfig{})
 	if adapter.baseURL != openaiDefaultBaseURL {
 		t.Errorf("baseURL = %q, want %q", adapter.baseURL, openaiDefaultBaseURL)
 	}
 }
 
 func TestOpenAIAdapter_TrailingSlashBaseURL(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter("key", "https://example.com/v1/")
+	adapter := NewOpenAICompatibleAdapter("key", "https://example.com/v1/", OpenAIAuthConfig{})
 	if adapter.baseURL != "https://example.com/v1" {
 		t.Errorf("baseURL = %q, want https://example.com/v1", adapter.baseURL)
 	}
@@ -475,7 +475,7 @@ func TestOpenAIAdapter_NoAPIKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("", srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "llama3",
@@ -605,7 +605,7 @@ func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -633,7 +633,7 @@ func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
 }
 
 func TestOpenAIAdapter_HasTimeout(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter("test-key", "")
+	adapter := NewOpenAICompatibleAdapter("test-key", "", OpenAIAuthConfig{})
 	if adapter.httpClient.Timeout == 0 {
 		t.Error("HTTP client should have a non-zero timeout")
 	}
@@ -672,7 +672,7 @@ func TestOpenAIAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
 	adapter.Metrics = metrics
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -719,7 +719,7 @@ func TestOpenAIAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewOpenAICompatibleAdapter("bad-key", srv.URL)
+	adapter := NewOpenAICompatibleAdapter("bad-key", srv.URL, OpenAIAuthConfig{})
 	adapter.Metrics = metrics
 
 	if _, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024}); err == nil {
@@ -730,5 +730,122 @@ func TestOpenAIAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 	}
 	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 0 {
 		t.Errorf("provider_ttfb count = %d, want 0", got)
+	}
+}
+
+// TestOpenAIAdapter_AzureKeyHeaderAndQueryParam is the Azure OpenAI key-auth
+// regression guard for the Chat Completions adapter. It verifies that
+// providing OpenAIAuthConfig{APIKeyHeader: "api-key", QueryParams: {...}}
+// causes the request to:
+//   - hit /openai/v1/chat/completions?api-version=preview (path appended,
+//     query string preserved);
+//   - carry header "api-key: <KEY>"; and
+//   - omit the "Authorization" header entirely (no fallback Bearer).
+func TestOpenAIAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
+	body := strings.Join([]string{
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`),
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+		"data: [DONE]\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/openai/v1/chat/completions"; got != want {
+			t.Errorf("URL.Path = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Query().Get("api-version"), "preview"; got != want {
+			t.Errorf("api-version query = %q, want %q", got, want)
+		}
+		if got, want := r.Header.Get("api-key"), "AZURE-KEY"; got != want {
+			t.Errorf("api-key header = %q, want %q", got, want)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization header should be empty, got %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter("AZURE-KEY", srv.URL+"/openai/v1", OpenAIAuthConfig{
+		APIKeyHeader: "api-key",
+		QueryParams:  map[string]string{"api-version": "preview"},
+	})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-4o",
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for range ch { //nolint:revive // drain stream
+	}
+}
+
+// TestOpenAIAdapter_QueryParamsOverrideBaseURL pins the documented precedence
+// rule: when both BaseURL's query string and OpenAIAuthConfig.QueryParams
+// supply the same key, QueryParams wins. Other keys present in BaseURL are
+// preserved in the final URL.
+func TestOpenAIAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
+	body := strings.Join([]string{
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+		"data: [DONE]\n\n",
+	}, "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if got, want := q.Get("api-version"), "preview"; got != want {
+			t.Errorf("api-version = %q, want %q (QueryParams should override BaseURL)", got, want)
+		}
+		if got, want := q.Get("deployment-id"), "gpt4-prod"; got != want {
+			t.Errorf("deployment-id = %q, want %q (BaseURL key should survive)", got, want)
+		}
+		// Exactly one value per key — no duplicate-key trail.
+		if got := q["api-version"]; len(got) != 1 {
+			t.Errorf("api-version values = %v, want exactly 1 entry", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter("KEY", srv.URL+"/v1?api-version=2024-10-01-preview&deployment-id=gpt4-prod", OpenAIAuthConfig{
+		QueryParams: map[string]string{"api-version": "preview"},
+	})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for range ch { //nolint:revive // drain stream
+	}
+}
+
+// TestComposeOpenAIURL_TrimsAndAppends covers the URL-building helper in
+// isolation: trailing slashes are trimmed, the path is appended, and
+// duplicate keys collapse to a single QueryParams-controlled value.
+func TestComposeOpenAIURL_TrimsAndAppends(t *testing.T) {
+	got, err := composeOpenAIURL("https://api.example.com/openai/v1/", "/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("composeOpenAIURL error: %v", err)
+	}
+	if want := "https://api.example.com/openai/v1/chat/completions"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	got, err = composeOpenAIURL("https://api.example.com/v1?api-version=stable", "/responses", map[string]string{"api-version": "preview"})
+	if err != nil {
+		t.Fatalf("composeOpenAIURL error: %v", err)
+	}
+	// QueryParams should override the BaseURL-encoded api-version.
+	if !strings.Contains(got, "api-version=preview") {
+		t.Errorf("got %q, want it to contain api-version=preview", got)
+	}
+	if strings.Contains(got, "api-version=stable") {
+		t.Errorf("got %q, should not contain stale api-version=stable", got)
+	}
+	if !strings.Contains(got, "/v1/responses") {
+		t.Errorf("got %q, want it to contain /v1/responses", got)
 	}
 }
