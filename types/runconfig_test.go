@@ -911,6 +911,99 @@ func TestValidateRunConfig_FallbackRejectsUnknown(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_PolicyFile_PathTraversalRejected covers M6:
+// a forged policyFile containing ".." must be rejected before any
+// os.ReadFile happens. Without this, a malicious control plane could
+// trick the harness into reading host files outside the workspace
+// and leaking partial content via Cedar parser error messages.
+func TestValidateRunConfig_PolicyFile_PathTraversalRejected(t *testing.T) {
+	cases := []string{
+		"../../etc/passwd",
+		"policies/../../etc/passwd",
+		"/policies/../../etc/passwd",
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			c := validConfig()
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "policy-engine", PolicyFile: p}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for traversal path %q", p)
+			}
+			if !strings.Contains(err.Error(), "policyFile") {
+				t.Errorf("expected error to mention policyFile, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_PolicyFile_RelativePathAllowed confirms that
+// relative paths without traversal segments still validate. The shipped
+// example RunConfig uses one (examples/policies/destructive-shell.cedar)
+// and we don't want to break it for operators who run against the repo
+// checkout. M6's stricter "absolute-only" alternative was rejected for
+// this reason.
+func TestValidateRunConfig_PolicyFile_RelativePathAllowed(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{
+		Type:       "policy-engine",
+		PolicyFile: "examples/policies/destructive-shell.cedar",
+	}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected workspace-relative policyFile to validate, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError covers
+// S7: a policyFile set with a non-policy-engine type is silently
+// dropped today, leaving the operator believing they have applied a
+// Cedar policy. Reject the misconfiguration loudly.
+func TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{
+		Type:       "deny-side-effects",
+		PolicyFile: "/policies/main.cedar",
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for policyFile set with deny-side-effects")
+	}
+	if !strings.Contains(err.Error(), "policyFile") || !strings.Contains(err.Error(), "policy-engine") {
+		t.Errorf("expected error to mention policyFile and policy-engine, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_RuntimeRequiresContainerExecutor covers S8:
+// executor.runtime only changes behaviour for the container executor.
+// A "local" run that sets runtime: "runsc" looks like gVisor isolation
+// is enabled but the field is silently ignored — fail loudly instead.
+func TestValidateRunConfig_RuntimeRequiresContainerExecutor(t *testing.T) {
+	cases := []string{"local", "api"}
+	for _, execType := range cases {
+		t.Run(execType, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: execType, Runtime: "runsc"}
+			if execType == "api" {
+				c.Executor.VcsBackend = &VcsBackendConfig{
+					Type: "github", APIKeyRef: "secret://gh", Repo: "x/y", Ref: "main",
+				}
+				c.Mode = "research"
+				c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+				c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for runtime=runsc with executor.type=%q", execType)
+			}
+			if !strings.Contains(err.Error(), "executor.runtime") || !strings.Contains(err.Error(), "container") {
+				t.Errorf("expected error to mention executor.runtime and container, got: %v", err)
+			}
+		})
+	}
+}
+
 // --- CodeScannerConfig ---
 
 func TestValidateRunConfig_CodeScannerAcceptsClosedSet(t *testing.T) {

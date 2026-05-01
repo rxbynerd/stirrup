@@ -3,6 +3,7 @@ package types
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
@@ -113,7 +114,7 @@ type RuleOfTwoConfig struct {
 //
 //   - "none"      — disable scanning (default for read-only modes).
 //   - "patterns"  — pure-Go regex pack (always available; default for
-//                   execution mode).
+//     execution mode).
 //   - "semgrep"   — shell out to a local semgrep binary if present.
 //   - "composite" — union of multiple named scanners.
 type CodeScannerConfig struct {
@@ -563,6 +564,13 @@ func ValidateRunConfig(config *RunConfig) error {
 	if !validExecutorRuntimes[config.Executor.Runtime] {
 		errs = append(errs, fmt.Sprintf("unsupported executor.runtime %q", config.Executor.Runtime))
 	}
+	// executor.runtime only changes behaviour for the container executor;
+	// silently dropping it on a "local" or "api" run lets an operator
+	// believe they have gVisor isolation when in fact the workload is
+	// running on the host (S8).
+	if config.Executor.Runtime != "" && config.Executor.Type != "container" && config.Executor.Type != "" {
+		errs = append(errs, "executor.runtime is only valid when executor.type is \"container\"")
+	}
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
 	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
@@ -651,6 +659,22 @@ func validateOptionalType(name, value string, valid map[string]bool, errs *[]str
 	}
 }
 
+// pathHasDotDotSegment reports whether path contains a literal ".."
+// component when split on either '/' or '\'. A substring check on
+// `..` would also match harmless filenames like "foo..bar.cedar"; we
+// only want to reject paths whose individual segments are ".." — the
+// shape that turns `os.ReadFile(p)` into a host-file traversal.
+func pathHasDotDotSegment(path string) bool {
+	for _, sep := range []string{"/", "\\"} {
+		for _, seg := range strings.Split(path, sep) {
+			if seg == ".." {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // validatePermissionPolicyFields enforces the cross-field constraints on
 // PermissionPolicyConfig that the closed-set validation in
 // validateOptionalType cannot express on its own.
@@ -659,12 +683,36 @@ func validateOptionalType(name, value string, valid map[string]bool, errs *[]str
 //     something concrete to load at boot. A missing file path is almost
 //     always a config-typo and we want to fail loudly rather than fall
 //     through silently to the fallback policy.
+//   - PolicyFile is operator-supplied and may arrive over gRPC. Reject
+//     traversal sequences (e.g. "../../etc/passwd") so a malicious
+//     control plane cannot trick the harness into reading sensitive
+//     host files and surfacing chunks of their content via Cedar
+//     parser error messages (M6).
+//   - PolicyFile set with a non-policy-engine type is a misconfiguration
+//     footgun: the file is silently ignored and the operator believes
+//     they have applied a Cedar policy. Reject it loudly (S7).
 //   - Fallback, when set, must name one of the three non-policy-engine
 //     policies. policy-engine -> policy-engine fallback would loop on a
 //     no-decision response, so it's rejected here.
 func validatePermissionPolicyFields(cfg PermissionPolicyConfig, errs *[]string) {
 	if cfg.Type == "policy-engine" && cfg.PolicyFile == "" {
 		*errs = append(*errs, "permissionPolicy type \"policy-engine\" requires policyFile")
+	}
+	if cfg.PolicyFile != "" && cfg.Type != "policy-engine" {
+		*errs = append(*errs, fmt.Sprintf(
+			"permissionPolicy.policyFile is set but permissionPolicy.type is %q — policyFile is only used with type=policy-engine",
+			cfg.Type))
+	}
+	if cfg.PolicyFile != "" {
+		// We accept either absolute paths (operator-managed) or
+		// workspace-relative paths (used by examples/runconfig/full.json)
+		// — but never a path that contains ".." segments. Both the raw
+		// and cleaned forms are checked: filepath.Clean rewrites
+		// "/a/../b" to "/b", which would slip past a post-clean check
+		// even though the operator clearly intended traversal.
+		if pathHasDotDotSegment(cfg.PolicyFile) || pathHasDotDotSegment(filepath.Clean(cfg.PolicyFile)) {
+			*errs = append(*errs, "permissionPolicy.policyFile must not contain \"..\" path segments")
+		}
 	}
 	if cfg.Fallback != "" && !validFallbackPolicyTypes[cfg.Fallback] {
 		*errs = append(*errs, fmt.Sprintf("permissionPolicy.fallback %q is not a valid fallback policy type", cfg.Fallback))
