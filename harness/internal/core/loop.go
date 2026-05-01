@@ -506,8 +506,17 @@ func (l *AgenticLoop) runInnerLoop(
 			Temperature: 0.1,
 		})
 		if err != nil {
+			// Scrub the status string before it lands on the OTel span.
+			// On HTTP transport failures Go wraps the underlying error in
+			// *url.Error, which embeds the full request URL — including
+			// any query parameters configured via Provider.QueryParams.
+			// OTel spans bypass ScrubHandler (which only intercepts slog),
+			// so without scrubbing here a future sensitive QueryParams
+			// value would land in OTLP exports unredacted. RecordError
+			// keeps the raw error so the span retains type information;
+			// only the user-visible status message is scrubbed.
 			providerSpan.RecordError(err)
-			providerSpan.SetStatus(codes.Error, err.Error())
+			providerSpan.SetStatus(codes.Error, security.Scrub(err.Error()))
 			providerSpan.End()
 			// Rollback: don't append anything on error.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
@@ -530,8 +539,12 @@ func (l *AgenticLoop) runInnerLoop(
 		turnDuration := time.Since(turnStart)
 
 		if streamErr != nil {
+			// See the matching scrub above the Stream() call for rationale:
+			// stream errors can wrap *url.Error or other strings derived
+			// from HTTP transport state, and the OTel span status string
+			// is not covered by ScrubHandler.
 			providerSpan.RecordError(streamErr)
-			providerSpan.SetStatus(codes.Error, streamErr.Error())
+			providerSpan.SetStatus(codes.Error, security.Scrub(streamErr.Error()))
 			providerSpan.End()
 			// Rollback on stream error — don't append partial content.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)

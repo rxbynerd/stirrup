@@ -3,15 +3,18 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -847,5 +850,104 @@ func TestComposeOpenAIURL_TrimsAndAppends(t *testing.T) {
 	}
 	if !strings.Contains(got, "/v1/responses") {
 		t.Errorf("got %q, want it to contain /v1/responses", got)
+	}
+}
+
+// TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed pins the F2
+// remediation from the issue #48 review: when httpClient.Do fails, Go
+// wraps the underlying transport error in *url.Error which embeds the
+// full request URL — including any QueryParams the operator configured.
+// Today's QueryParams (e.g. api-version=preview) are non-sensitive, but
+// the harness now accepts arbitrary user-controlled values there. OTel
+// span status messages bypass ScrubHandler (which only intercepts slog),
+// so loop.go scrubs streamErr.Error() before SetStatus to close the
+// architectural gap.
+//
+// This test confirms two things in concert:
+//  1. An httpClient.Do failure produces a *url.Error whose string
+//     representation contains the request URL with QueryParams encoded.
+//     This is the channel by which a sensitive QueryParams value would
+//     reach an unscrubbed telemetry sink.
+//  2. security.Scrub strips known sensitive patterns from that string.
+//     We seed a scrubber-recognised secret into the URL via QueryParams
+//     to demonstrate the architectural fix actively redacts when fed a
+//     sensitive value, rather than relying on the current happy-path
+//     where QueryParams values do not happen to match any pattern.
+//
+// The matching scrub call lives at harness/internal/core/loop.go in the
+// provider.stream span error path; verifying its presence directly via
+// the OTel test exporter requires standing up the full agentic loop, so
+// this test exercises the same security.Scrub call against the same
+// shape of error string that loop.go would receive.
+func TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed(t *testing.T) {
+	// httptest.Server with a Hijack handler that closes the underlying
+	// TCP connection mid-request. http.Client.Do returns a *url.Error
+	// wrapping the transport-layer failure with the request URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("ResponseWriter does not support Hijack")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	// Seed a scrubber-recognised secret into QueryParams. The pattern
+	// must survive net/url's percent-encoding so it can still be matched
+	// in the *url.Error string — Anthropic and OpenAI API keys are
+	// alphanumeric (with `-` and `_`) so they pass through unchanged. We
+	// craft a synthetic `sk-ant-...` string here purely to give the
+	// scrubber something deterministic to match; this is not a real key.
+	const sensitive = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	queryParams := map[string]string{
+		"api-version": "preview",
+		"deployment":  sensitive, // crafted to match the anthropic_api_key pattern
+	}
+
+	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{
+		QueryParams: queryParams,
+	})
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-4o",
+		MaxTokens: 1024,
+	})
+	if err == nil {
+		t.Fatal("expected an error from connection-close, got nil")
+	}
+
+	// Step 1: the error must wrap *url.Error and the URL string must
+	// contain the encoded QueryParams. If this assertion fails the
+	// premise of F2 (URL leaks via *url.Error) no longer holds and the
+	// scrub mitigation can be reconsidered.
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		t.Fatalf("expected error wrapping *url.Error, got %T: %v", err, err)
+	}
+	rawMessage := err.Error()
+	if !strings.Contains(rawMessage, "api-version=preview") {
+		t.Errorf("expected raw error to contain encoded QueryParams, got: %s", rawMessage)
+	}
+	// The sensitive value should be present pre-scrub (the very leak
+	// we are guarding against in OTel span status).
+	if !strings.Contains(rawMessage, url.QueryEscape(sensitive)) && !strings.Contains(rawMessage, sensitive) {
+		t.Errorf("expected raw error to contain sensitive QueryParams value, got: %s", rawMessage)
+	}
+
+	// Step 2: security.Scrub strips the secret-ref pattern. This is
+	// the same call the provider.stream span site in loop.go applies
+	// before passing the string to SetStatus.
+	scrubbed := security.Scrub(rawMessage)
+	if strings.Contains(scrubbed, sensitive) {
+		t.Errorf("scrubbed error still contains sensitive value: %s", scrubbed)
+	}
+	// Confirm scrub did something — the redacted placeholder is the
+	// canonical signal that a pattern fired.
+	if !strings.Contains(scrubbed, "[REDACTED]") {
+		t.Errorf("scrubbed error missing [REDACTED] marker: %s", scrubbed)
 	}
 }
