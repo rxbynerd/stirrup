@@ -84,6 +84,13 @@ type RunConfig struct {
 	// human reviewer can sign off on a config that legitimately needs
 	// all three capabilities at once — it should not be set lightly.
 	RuleOfTwo *RuleOfTwoConfig `json:"ruleOfTwo,omitempty"`
+
+	// CodeScanner configures the post-edit static analysis pass that
+	// scans every successful EditStrategy.Apply for hardcoded secrets,
+	// eval/exec sinks, and other known-bad patterns. When nil,
+	// ValidateRunConfig fills in a sensible default per mode
+	// (patterns for execution, none for read-only modes).
+	CodeScanner *CodeScannerConfig `json:"codeScanner,omitempty"`
 }
 
 // RuleOfTwoConfig configures the Rule-of-Two structural invariant. The
@@ -96,6 +103,23 @@ type RunConfig struct {
 // equivalent to leaving the field unset.
 type RuleOfTwoConfig struct {
 	Enforce *bool `json:"enforce,omitempty"`
+}
+
+// CodeScannerConfig selects the static-analysis pass run after every
+// successful file edit. The scanner inspects the edited content for
+// hardcoded secrets, eval/exec sinks, and known-malicious patterns;
+// findings labelled "block" turn into edit failures, "warn" findings
+// just emit a security event.
+//
+//   - "none"      — disable scanning (default for read-only modes).
+//   - "patterns"  — pure-Go regex pack (always available; default for
+//                   execution mode).
+//   - "semgrep"   — shell out to a local semgrep binary if present.
+//   - "composite" — union of multiple named scanners.
+type CodeScannerConfig struct {
+	Type        string   `json:"type"`
+	Scanners    []string `json:"scanners,omitempty"`
+	BlockOnWarn bool     `json:"blockOnWarn,omitempty"`
 }
 
 // Redact returns a copy of the RunConfig with secret references replaced
@@ -439,6 +463,23 @@ var validTokenSourceTypes = map[string]bool{
 	"env":          true,
 }
 
+// validCodeScannerTypes is the closed set of CodeScanner.Type values.
+var validCodeScannerTypes = map[string]bool{
+	"none":      true,
+	"patterns":  true,
+	"semgrep":   true,
+	"composite": true,
+}
+
+// validCompositeCodeScannerTypes is the subset of scanner types that
+// may appear in CodeScannerConfig.Scanners. Composite-of-composite is
+// excluded so the config cannot recurse.
+var validCompositeCodeScannerTypes = map[string]bool{
+	"none":     true,
+	"patterns": true,
+	"semgrep":  true,
+}
+
 var validBuiltInToolNames = map[string]bool{
 	"read_file":      true,
 	"write_file":     true,
@@ -502,7 +543,15 @@ type ModePreset struct {
 
 // ValidateRunConfig enforces hard security constraints that cannot be
 // overridden by the control plane or CLI flags.
+//
+// As a side-effect, ValidateRunConfig fills in a default
+// CodeScannerConfig when the caller has left it nil, so downstream
+// consumers always see a populated value: "patterns" for execution
+// mode (active scanning) and "none" for read-only modes (no edits
+// happen anyway).
 func ValidateRunConfig(config *RunConfig) error {
+	applyCodeScannerDefault(config)
+
 	var errs []string
 
 	validateSessionName(config.SessionName, &errs)
@@ -577,6 +626,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	}
 
 	validateRuleOfTwo(config, &errs)
+	validateCodeScannerConfig(config.CodeScanner, &errs)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
@@ -760,6 +810,49 @@ func isSensitiveSecretRef(ref string) bool {
 		strings.Contains(upper, "TOKEN") ||
 		strings.Contains(upper, "SECRET") ||
 		strings.Contains(upper, "PASSWORD")
+}
+
+// applyCodeScannerDefault fills CodeScanner with a sensible default
+// when the caller has not set one. The default is "patterns" for
+// execution mode (active scanning on every successful edit) and
+// "none" for read-only modes (no edits happen so there's nothing to
+// scan). Defaulting at validation time means downstream consumers
+// always see a populated value and can avoid nil-checking.
+func applyCodeScannerDefault(config *RunConfig) {
+	if config.CodeScanner != nil {
+		return
+	}
+	if readOnlyModes[config.Mode] {
+		config.CodeScanner = &CodeScannerConfig{Type: "none"}
+		return
+	}
+	config.CodeScanner = &CodeScannerConfig{Type: "patterns"}
+}
+
+// validateCodeScannerConfig enforces the closed-set Type and the
+// composite-only Scanners field. A composite scanner with an empty
+// Scanners list is always a config error (no work to do); each
+// scanner referenced must be a known non-composite type to prevent
+// the config from recursing.
+func validateCodeScannerConfig(cfg *CodeScannerConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if !validCodeScannerTypes[cfg.Type] {
+		*errs = append(*errs, fmt.Sprintf("unsupported codeScanner.type %q", cfg.Type))
+		return
+	}
+	if cfg.Type == "composite" {
+		if len(cfg.Scanners) == 0 {
+			*errs = append(*errs, "codeScanner.type \"composite\" requires a non-empty scanners list")
+			return
+		}
+		for i, name := range cfg.Scanners {
+			if !validCompositeCodeScannerTypes[name] {
+				*errs = append(*errs, fmt.Sprintf("codeScanner.scanners[%d] %q is not a valid scanner type", i, name))
+			}
+		}
+	}
 }
 
 func validateVerifierConfig(cfg VerifierConfig, path string, errs *[]string) {
