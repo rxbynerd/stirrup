@@ -198,6 +198,65 @@ func TestOTelTraceEmitter_ToolCallAttributes(t *testing.T) {
 	assertAttribute(t, toolSpan, "tool.name", "shell")
 }
 
+// TestOTelTraceEmitter_SessionNameAttribute verifies that SessionName, when
+// set on the RunConfig, appears as run.session_name on the root span.
+// Child spans inherit access to it via context, so setting it on the root
+// is sufficient.
+func TestOTelTraceEmitter_SessionNameAttribute(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+
+	timeout := 60
+	config := &types.RunConfig{
+		RunID:       "run-session-1",
+		Mode:        "execution",
+		SessionName: "nightly-eval",
+		MaxTurns:    5,
+		Timeout:     &timeout,
+		Provider:    types.ProviderConfig{Type: "anthropic"},
+	}
+	emitter.Start("run-session-1", config)
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	assertAttribute(t, spans[0], "run.session_name", "nightly-eval")
+}
+
+// TestOTelTraceEmitter_SessionNameAbsentWhenEmpty pins the inverse: when
+// no session name is set, the run.session_name attribute must not appear
+// on the root span. Empty attributes pollute downstream filtering and
+// would cost real money on usage-billed backends.
+func TestOTelTraceEmitter_SessionNameAbsentWhenEmpty(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+
+	timeout := 60
+	config := &types.RunConfig{
+		RunID:    "run-no-session",
+		Mode:     "execution",
+		MaxTurns: 5,
+		Timeout:  &timeout,
+		Provider: types.ProviderConfig{Type: "anthropic"},
+	}
+	emitter.Start("run-no-session", config)
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+	for _, attr := range spans[0].Attributes {
+		if string(attr.Key) == "run.session_name" {
+			t.Errorf("run.session_name should be absent when SessionName is empty, found value %q", attr.Value.AsString())
+		}
+	}
+}
+
 // assertAttribute checks that a span has the expected string attribute value.
 func assertAttribute(t *testing.T, span tracetest.SpanStub, key, want string) {
 	t.Helper()
