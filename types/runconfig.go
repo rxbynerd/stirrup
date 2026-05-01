@@ -2,6 +2,8 @@ package types
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -272,6 +274,33 @@ var validProviderTypes = map[string]bool{
 	"openai-responses":  true,
 }
 
+// openaiProviderTypes is the set of provider.type values for which the
+// optional APIKeyHeader / QueryParams fields are honoured. Other provider
+// types still pass validation when these fields are set (for forward
+// compatibility), but validateOpenAIAuthFields warns rather than rejects.
+var openaiProviderTypes = map[string]bool{
+	"openai-compatible": true,
+	"openai-responses":  true,
+}
+
+// apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
+// HTTP token characters so a user cannot inject CRLF / colon / whitespace
+// into the request. The pattern intentionally excludes "_" and "."; if a
+// future gateway header requires them, expand here with an explicit
+// rationale rather than relaxing to a broader RFC 7230 token.
+var apiKeyHeaderPattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
+// queryParamKeyPattern restricts QueryParams keys to a conservative subset.
+// Allows "_" and "." which are common in vendor-defined parameter names
+// (e.g. "deployment.id").
+var queryParamKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// maxQueryStringBytes caps the encoded-form size of QueryParams to bound
+// the URL we eventually emit. 2 KiB is comfortably above what any real
+// gateway-pin scenario needs while still rejecting a footgun like
+// "QueryParams: <some_program_dumped_a_megabyte_in_here>".
+const maxQueryStringBytes = 2048
+
 var validModelRouterTypes = map[string]bool{
 	"static":   true,
 	"per-mode": true,
@@ -509,6 +538,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 	if config.Provider.Type != "" {
 		knownProviders[config.Provider.Type] = true
 	}
+	validateOpenAIAuthFields("provider", config.Provider, errs)
 	for name, provider := range config.Providers {
 		if name == "" {
 			*errs = append(*errs, "providers map contains an empty provider name")
@@ -520,6 +550,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 		}
 		knownProviders[name] = true
 		validateRequiredType(fmt.Sprintf("providers[%s]", name), provider.Type, validProviderTypes, errs)
+		validateOpenAIAuthFields(fmt.Sprintf("providers[%s]", name), provider, errs)
 	}
 
 	checkProviderRef := func(path, name string) {
@@ -582,6 +613,48 @@ func validateTokenSourceConfig(cfg *TokenSourceConfig, path string, errs *[]stri
 	case "env":
 		if cfg.EnvVar == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: env requires envVar", path))
+		}
+	}
+}
+
+// validateOpenAIAuthFields enforces the safety invariants on the optional
+// APIKeyHeader and QueryParams fields. The fields are only meaningful for
+// the OpenAI-shaped adapters; for other provider types they are ignored
+// at runtime, but we still validate the values so a stale config does
+// not silently keep a bad value alive across a provider-type change.
+//
+// Header values are never logged anywhere — these checks bound only the
+// header name, which the request emits in clear; CRLF or whitespace there
+// would let an attacker who controls config inject extra headers.
+func validateOpenAIAuthFields(path string, cfg ProviderConfig, errs *[]string) {
+	if cfg.APIKeyHeader != "" {
+		// Reject CR/LF and whitespace explicitly so the error message names
+		// the failure mode rather than just "invalid pattern". Anyone who
+		// hits this is likely a misuse, not a charset surprise.
+		if strings.ContainsAny(cfg.APIKeyHeader, "\r\n\t ") || strings.ContainsRune(cfg.APIKeyHeader, ':') {
+			*errs = append(*errs, fmt.Sprintf("%s.apiKeyHeader must not contain whitespace, ':' or CR/LF", path))
+		} else if !apiKeyHeaderPattern.MatchString(cfg.APIKeyHeader) {
+			*errs = append(*errs, fmt.Sprintf("%s.apiKeyHeader %q must match %s", path, cfg.APIKeyHeader, apiKeyHeaderPattern.String()))
+		}
+	}
+
+	if len(cfg.QueryParams) > 0 {
+		encoded := url.Values{}
+		for k, v := range cfg.QueryParams {
+			if k == "" {
+				*errs = append(*errs, fmt.Sprintf("%s.queryParams contains an empty key", path))
+				continue
+			}
+			if !queryParamKeyPattern.MatchString(k) {
+				*errs = append(*errs, fmt.Sprintf("%s.queryParams key %q must match %s", path, k, queryParamKeyPattern.String()))
+			}
+			if strings.ContainsAny(v, "\r\n") {
+				*errs = append(*errs, fmt.Sprintf("%s.queryParams[%s] value must not contain CR/LF", path, k))
+			}
+			encoded.Set(k, v)
+		}
+		if size := len(encoded.Encode()); size > maxQueryStringBytes {
+			*errs = append(*errs, fmt.Sprintf("%s.queryParams encoded form is %d bytes, exceeds %d byte cap", path, size, maxQueryStringBytes))
 		}
 	}
 }
