@@ -41,8 +41,20 @@ type StreamParams struct {
 }
 
 // HarnessEvent is an event emitted by the harness to the control plane.
+//
+// Type discriminates the event shape. Recognised values:
+//
+//   - "text_delta", "tool_call", "tool_result", "done", "error", "warning",
+//     "heartbeat", "ready"
+//   - "permission_request"   — emitted by the AskUpstreamPolicy when a tool
+//     call needs operator approval; correlated by RequestID with the
+//     incoming "permission_response" ControlEvent.
+//   - "tool_result_request"  — emitted by the agentic loop when an async
+//     tool defers its result; correlated by RequestID with the incoming
+//     "tool_result_response" ControlEvent. Carries ToolUseID, ToolName and
+//     Input so the control plane can correlate to the original tool_call.
 type HarnessEvent struct {
-	Type           string          `json:"type"` // "text_delta" | "tool_call" | "tool_result" | "done" | "error" | "heartbeat" | "ready" | "permission_request"
+	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
 	ID             string          `json:"id,omitempty"`
 	Name           string          `json:"name,omitempty"`
@@ -52,19 +64,32 @@ type HarnessEvent struct {
 	StopReason     string          `json:"stopReason,omitempty"`
 	Message        string          `json:"message,omitempty"`
 	Trace          *RunTrace       `json:"trace,omitempty"`
-	RequestID      string          `json:"requestId,omitempty"`      // correlates permission_request with permission_response
-	ToolName       string          `json:"toolName,omitempty"`       // tool name in permission_request
+	RequestID      string          `json:"requestId,omitempty"`      // correlates permission/tool-result requests with their responses
+	ToolName       string          `json:"toolName,omitempty"`       // tool name on permission_request and tool_result_request
 	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
 }
 
 // ControlEvent is an event received from the control plane.
+//
+// Type discriminates the event shape. Recognised values:
+//
+//   - "task_assignment", "user_response", "cancel"
+//   - "permission_response"   — completes a "permission_request" HarnessEvent.
+//     RequestID echoes the originating request; Allowed (and optional Reason)
+//     carry the decision.
+//   - "tool_result_response"  — completes a "tool_result_request" HarnessEvent
+//     for an async tool. RequestID echoes the originating request; Content
+//     carries the result payload; IsError, when set, marks the result as a
+//     tool failure (the model sees IsError=true on the ToolResult).
 type ControlEvent struct {
-	Type         string     `json:"type"` // "task_assignment" | "user_response" | "cancel" | "permission_response"
+	Type         string     `json:"type"`
 	Task         *RunConfig `json:"task,omitempty"`
 	UserResponse string     `json:"userResponse,omitempty"`
-	RequestID    string     `json:"requestId,omitempty"` // correlates permission_response with permission_request
-	Allowed      *bool      `json:"allowed,omitempty"`   // permission decision
-	Reason       string     `json:"reason,omitempty"`    // explanation for denial
+	RequestID    string     `json:"requestId,omitempty"` // correlates response with the originating request
+	Allowed      *bool      `json:"allowed,omitempty"`   // permission decision (permission_response only)
+	Reason       string     `json:"reason,omitempty"`    // explanation for denial (permission_response only)
+	Content      string     `json:"content,omitempty"`   // async tool result payload (tool_result_response only)
+	IsError      *bool      `json:"isError,omitempty"`   // mark async tool result as an error (tool_result_response only)
 }
 
 // HarnessLifecycleEvent represents lifecycle signals sent on the transport.
