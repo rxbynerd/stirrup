@@ -274,15 +274,6 @@ var validProviderTypes = map[string]bool{
 	"openai-responses":  true,
 }
 
-// openaiProviderTypes is the set of provider.type values for which the
-// optional APIKeyHeader / QueryParams fields are honoured. Other provider
-// types still pass validation when these fields are set (for forward
-// compatibility), but validateOpenAIAuthFields warns rather than rejects.
-var openaiProviderTypes = map[string]bool{
-	"openai-compatible": true,
-	"openai-responses":  true,
-}
-
 // apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
 // HTTP token characters so a user cannot inject CRLF / colon / whitespace
 // into the request. The pattern intentionally excludes "_" and "."; if a
