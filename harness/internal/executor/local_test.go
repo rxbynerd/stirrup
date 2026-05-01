@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 func newTestExecutor(t *testing.T) (*LocalExecutor, string) {
@@ -303,6 +305,53 @@ func TestExec_FiltersSecretEnvironment(t *testing.T) {
 	}
 	if result.Stdout != "" {
 		t.Fatalf("expected secret env to be filtered, got %q", result.Stdout)
+	}
+}
+
+// TestNewLocalExecutorWithConfig_RejectsAllowlist confirms that the local
+// executor cannot be constructed when the operator asks for an egress
+// allowlist. The local executor has no sandbox boundary so it could not
+// enforce the allowlist even if asked; the harness should refuse the
+// configuration up front rather than run unenforced.
+func TestNewLocalExecutorWithConfig_RejectsAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	_, err = NewLocalExecutorWithConfig(LocalExecutorConfig{
+		Workspace: resolved,
+		Network:   &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for allowlist mode on local executor")
+	}
+	if !strings.Contains(err.Error(), "allowlist") {
+		t.Errorf("error should mention allowlist, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "container executor") {
+		t.Errorf("error should hint at container executor, got: %v", err)
+	}
+}
+
+// TestNewLocalExecutorWithConfig_AllowsNoneAndNil confirms that the
+// allowlist gate does not block other valid configurations.
+func TestNewLocalExecutorWithConfig_AllowsNoneAndNil(t *testing.T) {
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+
+	if _, err := NewLocalExecutorWithConfig(LocalExecutorConfig{Workspace: resolved}); err != nil {
+		t.Errorf("nil network: %v", err)
+	}
+	if _, err := NewLocalExecutorWithConfig(LocalExecutorConfig{
+		Workspace: resolved,
+		Network:   &types.NetworkConfig{Mode: "none"},
+	}); err != nil {
+		t.Errorf("mode=none: %v", err)
 	}
 }
 
