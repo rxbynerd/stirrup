@@ -609,6 +609,21 @@ func TestNew_PolicyEngine_MissingFile(t *testing.T) {
 	}
 }
 
+// TestPermissionNew_EmptyTypeReturnsError covers S3: a zero-value
+// PermissionPolicyConfig used to coerce silently to allow-all,
+// handing a misconfigured caller the most permissive policy with no
+// signal. Make the omission an explicit error so a future migration
+// or zero-valued direct-call cannot quietly drop permissions.
+func TestPermissionNew_EmptyTypeReturnsError(t *testing.T) {
+	_, err := New(types.PermissionPolicyConfig{}, PolicyEngineEnv{}, nil)
+	if err == nil {
+		t.Fatal("expected error for empty cfg.Type")
+	}
+	if !strings.Contains(err.Error(), "type is required") {
+		t.Errorf("expected error to mention required type, got: %v", err)
+	}
+}
+
 // TestNew_PolicyEngine_RequiresPolicyFile fails fast when policyFile is
 // empty even if the type is policy-engine.
 func TestNew_PolicyEngine_RequiresPolicyFile(t *testing.T) {

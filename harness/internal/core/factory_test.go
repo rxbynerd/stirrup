@@ -539,10 +539,25 @@ func TestBuildPermissionPolicy_AskUpstream(t *testing.T) {
 	}
 }
 
-func TestBuildPermissionPolicy_DefaultFallback(t *testing.T) {
-	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{}, nil, nil)
-	if _, ok := pp.(*permission.AllowAll); !ok {
-		t.Fatalf("expected AllowAll for empty type, got %T", pp)
+// TestBuildPermissionPolicy_UnknownTypeReturnsError covers S2: an
+// unrecognised PermissionPolicy.Type used to fall through to allow-all,
+// which silently dropped permissions on a config that ValidateRunConfig
+// would have rejected on the normal path. Direct callers (tests,
+// future tooling) that bypass validation must now get an explicit
+// error so a misconfigured run cannot proceed under allow-all.
+func TestBuildPermissionPolicy_UnknownTypeReturnsError(t *testing.T) {
+	registry := buildToolRegistry(&registryExecutor{
+		caps: executor.ExecutorCapabilities{CanRead: true},
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	rc := &types.RunConfig{
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "bogus"},
+	}
+	if _, err := buildPermissionPolicy(rc, registry, nil, nil); err == nil {
+		t.Fatal("expected error for unknown permissionPolicy.type")
+	}
+	rc2 := &types.RunConfig{PermissionPolicy: types.PermissionPolicyConfig{}}
+	if _, err := buildPermissionPolicy(rc2, registry, nil, nil); err == nil {
+		t.Fatal("expected error for empty permissionPolicy.type")
 	}
 }
 

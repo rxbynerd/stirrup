@@ -66,8 +66,15 @@ func New(cfg types.PermissionPolicyConfig, env PolicyEngineEnv, fallback Fallbac
 	switch cfg.Type {
 	case "policy-engine":
 		return newPolicyEngineFromConfig(cfg, env, fallback)
-	case "allow-all", "":
+	case "allow-all":
 		return NewAllowAll(), nil
+	case "":
+		// Empty type used to silently coerce to allow-all, which is the
+		// most permissive policy. A misconfigured caller (e.g. a test
+		// that forgot to populate cfg, or a future migration that
+		// dropped the field) would be handed unrestricted access with
+		// no error to investigate. Make the omission explicit (S3).
+		return nil, errors.New("permission.New: type is required")
 	default:
 		// Other types (deny-side-effects, ask-upstream) require
 		// registry/transport context the permission package does not

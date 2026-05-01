@@ -817,7 +817,11 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 		}
 		return permission.New(cfg, env, fallback)
 	default:
-		return permission.NewAllowAll(), nil
+		// Pre-fix this returned NewAllowAll() — silent permission
+		// bypass for any unknown type when callers skipped
+		// ValidateRunConfig. Match the rest of buildExecutor /
+		// buildVerifier and surface an explicit error (S2).
+		return nil, fmt.Errorf("unsupported permissionPolicy.type %q", cfg.Type)
 	}
 }
 
