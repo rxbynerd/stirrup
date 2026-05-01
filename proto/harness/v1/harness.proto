@@ -365,6 +365,21 @@ message ProviderConfig {
   // the credential type is inferred from the provider type: "bedrock" defaults
   // to "aws-default"; all others default to "static" (resolving api_key_ref).
   CredentialConfig credential = 6;
+
+  // Optional. Custom header name for sending the API key. Empty string means
+  // "Authorization: Bearer <key>" (default OpenAI / Anthropic behaviour). Set
+  // to "api-key" for Azure OpenAI key auth, or to a vendor-specific header
+  // name (e.g. "x-api-key", "Ocp-Apim-Subscription-Key") for gateways that
+  // expect it. Only consulted by "openai-compatible" and "openai-responses";
+  // ignored by "anthropic" and "bedrock".
+  string api_key_header = 7;
+
+  // Optional. Query parameters appended to every request URL by the
+  // "openai-compatible" and "openai-responses" adapters. Used for Azure
+  // OpenAI's api-version pin (e.g. {"api-version": "preview"}) and similar
+  // gateway parameters. Keys supplied here override any duplicate keys
+  // present in base_url's query string.
+  map<string, string> query_params = 8;
 }
 
 // CredentialConfig selects the credential acquisition method for a provider.

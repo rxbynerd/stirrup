@@ -113,6 +113,21 @@ type ProviderConfig struct {
 	Profile    string            `json:"profile,omitempty"`    // bedrock
 	BaseURL    string            `json:"baseUrl,omitempty"`    // openai-compatible, openai-responses
 	Credential *CredentialConfig `json:"credential,omitempty"` // cross-cloud credential federation (nil = infer from provider type)
+
+	// APIKeyHeader overrides the HTTP header used to send the resolved API
+	// key. Empty string preserves today's "Authorization: Bearer <key>"
+	// behaviour. Set to "api-key" for Azure OpenAI key auth, or to a
+	// vendor-specific header name (e.g. "x-api-key") for other gateways.
+	// Only consulted by the openai-compatible and openai-responses adapters;
+	// ignored by anthropic and bedrock (which derive auth from CredentialConfig).
+	APIKeyHeader string `json:"apiKeyHeader,omitempty"`
+
+	// QueryParams are appended to every request URL by the openai-compatible
+	// and openai-responses adapters. Used for Azure OpenAI's api-version pin
+	// (e.g. {"api-version": "preview"}) and similar gateway parameters. Keys
+	// supplied here override any duplicate keys present in BaseURL's query
+	// string. Ignored by other provider types.
+	QueryParams map[string]string `json:"queryParams,omitempty"`
 }
 
 // CredentialConfig selects the credential acquisition method for a provider.
