@@ -3,13 +3,76 @@ package edit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/security/codescanner"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// fakeEditStrategy stands in for an EditStrategy that we control
+// completely: a fixed result, an optional error, and a tool definition
+// the wrapper does not actually inspect.
+type fakeEditStrategy struct {
+	result   *EditResult
+	applyErr error
+}
+
+func (f *fakeEditStrategy) ToolDefinition() types.ToolDefinition {
+	return types.ToolDefinition{Name: "edit_file"}
+}
+
+func (f *fakeEditStrategy) Apply(ctx context.Context, input json.RawMessage, exec executor.Executor) (*EditResult, error) {
+	if f.applyErr != nil {
+		return nil, f.applyErr
+	}
+	return f.result, nil
+}
+
+// fakeScanner returns canned findings or an error and counts calls so
+// tests can assert the wrapper invoked it (or did not).
+type fakeScanner struct {
+	findings []codescanner.Finding
+	err      error
+	calls    int
+}
+
+func (f *fakeScanner) Scan(ctx context.Context, path string, content []byte) (*codescanner.ScanResult, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &codescanner.ScanResult{Findings: f.findings}, nil
+}
+
+// readFailExec satisfies executor.Executor with a controllable ReadFile
+// failure. WriteFile is a no-op (the rollback path may invoke it after
+// a block) and the rest are stubs. We do not embed a real LocalExecutor
+// because we need the read failure to be deterministic.
+type readFailExec struct {
+	readErr error
+}
+
+func (r *readFailExec) ReadFile(ctx context.Context, path string) (string, error) {
+	return "", r.readErr
+}
+func (r *readFailExec) WriteFile(ctx context.Context, path string, content string) error {
+	return nil
+}
+func (r *readFailExec) ListDirectory(ctx context.Context, path string) ([]string, error) {
+	return nil, nil
+}
+func (r *readFailExec) Exec(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
+	return nil, errors.New("exec unsupported in test")
+}
+func (r *readFailExec) ResolvePath(p string) (string, error) { return p, nil }
+func (r *readFailExec) Capabilities() executor.ExecutorCapabilities {
+	return executor.ExecutorCapabilities{CanRead: true, CanWrite: true}
+}
 
 // recordingEmitter captures Emit calls for assertions.
 type recordingEmitter struct {
@@ -231,5 +294,81 @@ func TestScannedStrategy_CleanContent_NoEvents(t *testing.T) {
 	}
 	if len(emitter.snapshot()) != 0 {
 		t.Errorf("clean edit must not emit events: %+v", emitter.snapshot())
+	}
+}
+
+// TestScannedStrategy_InnerApplyError covers S5: an error from the
+// inner strategy must propagate verbatim and the scanner must not
+// run. A scanner that fires after a failed inner.Apply would scan
+// stale (or nonexistent) content and either crash or report
+// nonsense findings.
+func TestScannedStrategy_InnerApplyError(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	innerErr := errors.New("inner failed")
+	inner := &fakeEditStrategy{applyErr: innerErr}
+	scanner := &fakeScanner{}
+	strat := NewScannedStrategy(inner, scanner, &types.CodeScannerConfig{Type: "patterns"}, nil)
+
+	_, err := strat.Apply(context.Background(), json.RawMessage(`{"path":"x.go"}`), exec)
+	if !errors.Is(err, innerErr) {
+		t.Fatalf("expected inner error to propagate, got: %v", err)
+	}
+	if scanner.calls != 0 {
+		t.Errorf("scanner must not run after inner failure, got %d calls", scanner.calls)
+	}
+}
+
+// TestScannedStrategy_ScannerError covers S5: a hard error from
+// the scanner must surface as a hard error, not as a silent passthrough
+// of the inner result. This is the path that fires when semgrep
+// cannot reach its rule registry, when the patterns scanner panics
+// on a malformed input, etc.
+func TestScannedStrategy_ScannerError(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	inner := &fakeEditStrategy{
+		result: &EditResult{Path: "x.go", Applied: true},
+	}
+	scanErr := errors.New("scan failed")
+	scanner := &fakeScanner{err: scanErr}
+	// Plant a file so inner.Apply's "successful" result has something
+	// for ScannedStrategy to read back before invoking the scanner.
+	writeTestFile(t, dir, "x.go", "package x\n")
+	strat := NewScannedStrategy(inner, scanner, &types.CodeScannerConfig{Type: "patterns"}, nil)
+
+	_, err := strat.Apply(context.Background(), json.RawMessage(`{"path":"x.go"}`), exec)
+	if err == nil {
+		t.Fatal("expected scanner error to propagate, got nil")
+	}
+	if !errors.Is(err, scanErr) {
+		t.Errorf("expected wrapped %v, got %v", scanErr, err)
+	}
+}
+
+// TestScannedStrategy_PostApplyReadError covers S5: if the executor
+// can no longer read the file just-written by the inner strategy,
+// the wrapper must fail closed rather than skip the scan. A silent
+// passthrough here would mean the operator's "every edit is scanned"
+// guarantee depends on the underlying file system never glitching.
+func TestScannedStrategy_PostApplyReadError(t *testing.T) {
+	inner := &fakeEditStrategy{
+		result: &EditResult{Path: "missing.go", Applied: true},
+	}
+	scanner := &fakeScanner{}
+	exec := &readFailExec{readErr: errors.New("read flaked")}
+	strat := NewScannedStrategy(inner, scanner, &types.CodeScannerConfig{Type: "patterns"}, nil)
+
+	_, err := strat.Apply(context.Background(), json.RawMessage(`{"path":"missing.go"}`), exec)
+	if err == nil {
+		t.Fatal("expected read-back error to surface, got nil")
+	}
+	if !strings.Contains(err.Error(), "read") {
+		t.Errorf("expected error to mention the read failure, got %v", err)
+	}
+	if scanner.calls != 0 {
+		t.Errorf("scanner must not run when post-apply read fails, got %d calls", scanner.calls)
 	}
 }
