@@ -87,7 +87,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	pb := buildPromptBuilder(config.PromptBuilder, config.SystemPromptOverride)
 
 	// 4. Executor (built early because context strategy may need it).
-	exec, err := buildExecutor(ctx, config.Executor, secrets)
+	// Thread the security logger into the container executor so the
+	// in-process egress proxy (started when network.mode == "allowlist")
+	// can emit egress_allowed / egress_blocked events through the same
+	// SecurityLogger used for path/file events.
+	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger)
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -489,7 +493,7 @@ func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.Provide
 	}
 }
 
-func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore) (executor.Executor, error) {
+func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger) (executor.Executor, error) {
 	switch cfg.Type {
 	case "local", "":
 		workspace := cfg.Workspace
@@ -514,11 +518,12 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			}
 		}
 		return executor.NewContainerExecutor(executor.ContainerExecutorConfig{
-			Image:     cfg.Image,
-			HostDir:   workspace,
-			Network:   cfg.Network,
-			Resources: cfg.Resources,
-			Runtime:   cfg.Runtime,
+			Image:          cfg.Image,
+			HostDir:        workspace,
+			Network:        cfg.Network,
+			Resources:      cfg.Resources,
+			Runtime:        cfg.Runtime,
+			EgressSecurity: secLogger,
 		})
 	case "api":
 		if cfg.VcsBackend == nil {

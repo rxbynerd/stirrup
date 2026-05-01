@@ -634,7 +634,7 @@ func TestBuildExecutor_Local(t *testing.T) {
 	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:      "local",
 		Workspace: workspace,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -646,7 +646,7 @@ func TestBuildExecutor_Local(t *testing.T) {
 func TestBuildExecutor_EmptyTypeDefaultsToLocal(t *testing.T) {
 	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Workspace: t.TempDir(),
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -656,7 +656,7 @@ func TestBuildExecutor_EmptyTypeDefaultsToLocal(t *testing.T) {
 }
 
 func TestBuildExecutor_LocalDefaultsWorkspaceToCwd(t *testing.T) {
-	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "local"}, nil)
+	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "local"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestBuildExecutor_LocalDefaultsWorkspaceToCwd(t *testing.T) {
 }
 
 func TestBuildExecutor_API_MissingVcsBackend(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "api"}, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "api"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for api without vcsBackend")
 	}
@@ -684,7 +684,7 @@ func TestBuildExecutor_API_BadRepoFormat(t *testing.T) {
 			Repo:      "invalid-no-slash",
 			Ref:       "main",
 		},
-	}, secrets)
+	}, secrets, nil)
 	if err == nil {
 		t.Fatal("expected error for bad repo format")
 	}
@@ -702,7 +702,7 @@ func TestBuildExecutor_API_ValidConfig(t *testing.T) {
 			Repo:      "owner/repo",
 			Ref:       "main",
 		},
-	}, secrets)
+	}, secrets, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -712,7 +712,7 @@ func TestBuildExecutor_API_ValidConfig(t *testing.T) {
 }
 
 func TestBuildExecutor_Container_MissingImage(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for container without image")
 	}
@@ -722,7 +722,7 @@ func TestBuildExecutor_Container_MissingImage(t *testing.T) {
 }
 
 func TestBuildExecutor_UnsupportedType(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
