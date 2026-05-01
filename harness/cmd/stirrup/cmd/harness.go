@@ -49,6 +49,13 @@ type harnessCLIOptions struct {
 	GitStrategyType  string
 	TraceEmitterType string
 	OTelEndpoint     string
+
+	// Safety-ring escape hatches (issue #42). These set RunConfig fields
+	// on the matching sub-config; an empty string leaves the field unset
+	// so ValidateRunConfig's mode-aware defaulting can take over.
+	ContainerRuntime     string
+	PermissionPolicyFile string
+	CodeScannerType      string
 }
 
 // buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
@@ -113,7 +120,7 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 		},
 		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
 		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
-		Executor:        types.ExecutorConfig{Type: executorType, Workspace: opts.Workspace},
+		Executor:        types.ExecutorConfig{Type: executorType, Workspace: opts.Workspace, Runtime: opts.ContainerRuntime},
 		EditStrategy:    types.EditStrategyConfig{Type: editStrategyType},
 		Verifier:        types.VerifierConfig{Type: verifierType},
 		GitStrategy:     types.GitStrategyConfig{Type: gitStrategyType},
@@ -126,6 +133,22 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	if opts.FollowUpGrace > 0 {
 		grace := opts.FollowUpGrace
 		config.FollowUpGrace = &grace
+	}
+
+	// Safety-ring fields are wired only when the caller supplied them
+	// so ValidateRunConfig's mode-aware defaulting (e.g. CodeScanner
+	// "patterns" for execution mode) still kicks in for unset values.
+	if opts.PermissionPolicyFile != "" {
+		// --permission-policy-file implies type=policy-engine when the
+		// caller has not explicitly chosen a policy elsewhere; this is
+		// the convenience shortcut documented in the flag help.
+		config.PermissionPolicy.PolicyFile = opts.PermissionPolicyFile
+		if config.PermissionPolicy.Type == "" {
+			config.PermissionPolicy.Type = "policy-engine"
+		}
+	}
+	if opts.CodeScannerType != "" {
+		config.CodeScanner = &types.CodeScannerConfig{Type: opts.CodeScannerType}
 	}
 
 	applyModeDefaults(config)
@@ -261,6 +284,14 @@ func init() {
 	f.String("git-strategy", "none", "Git strategy: none, deterministic")
 	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel")
 	f.String("otel-endpoint", "", "OTLP endpoint for the otel trace emitter (default: localhost:4317)")
+
+	// Safety-ring flags (issue #42). Each maps to a single RunConfig
+	// field; precedence with --config is the same as the rest of the
+	// override surface (file -> flag -> default; unset flags don't
+	// override the file).
+	f.String("container-runtime", "", "OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty means engine default (typically runc). Requires the runtime to be registered with the host Docker/Podman daemon — see docs/sandbox.md.")
+	f.String("permission-policy-file", "", "Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and --permission-policy is unset elsewhere, also implies permissionPolicy.type=policy-engine. See examples/policies/ for starters.")
+	f.String("code-scanner", "", "CodeScanner type: none, patterns, semgrep, composite. Composite requires --config (codeScanner.scanners). Empty defers to the mode-aware default (patterns for execution, none for read-only modes).")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -393,7 +424,32 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("otel-endpoint") {
 		cfg.TraceEmitter.Endpoint, _ = f.GetString("otel-endpoint")
 	}
-	return nil
+	if changed("container-runtime") {
+		cfg.Executor.Runtime, _ = f.GetString("container-runtime")
+	}
+	if changed("permission-policy-file") {
+		path, _ := f.GetString("permission-policy-file")
+		cfg.PermissionPolicy.PolicyFile = path
+		// If the file already names a non-policy-engine type, leave it
+		// alone — the user is fine-tuning a config that ships its own
+		// policy choice. Only flip to policy-engine when the type was
+		// not set by the file. This mirrors the buildHarnessRunConfig
+		// convenience shortcut.
+		if path != "" && cfg.PermissionPolicy.Type == "" {
+			cfg.PermissionPolicy.Type = "policy-engine"
+		}
+	}
+	if changed("code-scanner") {
+		typ, _ := f.GetString("code-scanner")
+		if typ == "" {
+			// Empty flag means "fall back to the mode default";
+			// represent that by clearing the field so applyCodeScannerDefault
+			// can re-fill it during validation.
+			cfg.CodeScanner = nil
+		} else {
+			cfg.CodeScanner = &types.CodeScannerConfig{Type: typ}
+		}
+	}
 }
 
 func runHarness(cmd *cobra.Command, args []string) error {
@@ -470,6 +526,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	gitStrategyType, _ := f.GetString("git-strategy")
 	traceEmitterType, _ := f.GetString("trace-emitter")
 	otelEndpoint, _ := f.GetString("otel-endpoint")
+	containerRuntime, _ := f.GetString("container-runtime")
+	permissionPolicyFile, _ := f.GetString("permission-policy-file")
+	codeScannerType, _ := f.GetString("code-scanner")
 
 	var queryParams map[string]string
 	for _, entry := range queryParamRaw {
@@ -493,30 +552,33 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	config := buildHarnessRunConfig(harnessCLIOptions{
-		RunID:            generateRunID(),
-		Mode:             mode,
-		SessionName:      sessionName,
-		Prompt:           prompt,
-		ProviderType:     providerType,
-		APIKeyRef:        apiKeyRef,
-		BaseURL:          baseURL,
-		APIKeyHeader:     apiKeyHeader,
-		QueryParams:      queryParams,
-		Model:            model,
-		Workspace:        workspace,
-		MaxTurns:         maxTurns,
-		Timeout:          timeout,
-		TracePath:        tracePath,
-		TransportType:    transportType,
-		TransportAddr:    transportAddr,
-		FollowUpGrace:    followUpGrace,
-		LogLevel:         logLevel,
-		ExecutorType:     executorType,
-		EditStrategyType: editStrategyType,
-		VerifierType:     verifierType,
-		GitStrategyType:  gitStrategyType,
-		TraceEmitterType: traceEmitterType,
-		OTelEndpoint:     otelEndpoint,
+		RunID:                generateRunID(),
+		Mode:                 mode,
+		SessionName:          sessionName,
+		Prompt:               prompt,
+		ProviderType:         providerType,
+		BaseURL:              baseURL,
+		APIKeyHeader:         apiKeyHeader,
+		QueryParams:          queryParams,
+		APIKeyRef:            apiKeyRef,
+		Model:                model,
+		Workspace:            workspace,
+		MaxTurns:             maxTurns,
+		Timeout:              timeout,
+		TracePath:            tracePath,
+		TransportType:        transportType,
+		TransportAddr:        transportAddr,
+		FollowUpGrace:        followUpGrace,
+		LogLevel:             logLevel,
+		ExecutorType:         executorType,
+		EditStrategyType:     editStrategyType,
+		VerifierType:         verifierType,
+		GitStrategyType:      gitStrategyType,
+		TraceEmitterType:     traceEmitterType,
+		OTelEndpoint:         otelEndpoint,
+		ContainerRuntime:     containerRuntime,
+		PermissionPolicyFile: permissionPolicyFile,
+		CodeScannerType:      codeScannerType,
 	})
 
 	if err := types.ValidateRunConfig(config); err != nil {

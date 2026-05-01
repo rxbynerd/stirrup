@@ -91,6 +91,9 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--git-strategy` | `none` | Git strategy: none, deterministic |
 | `--trace-emitter` | `jsonl` | Trace emitter: jsonl, otel |
 | `--otel-endpoint` | (none) | OTLP endpoint for the otel trace emitter (default: localhost:4317) |
+| `--container-runtime` | (none) | OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. See `docs/sandbox.md`. |
+| `--permission-policy-file` | (none) | Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and the policy type is unset elsewhere, also implies `permissionPolicy.type=policy-engine`. Starters live under `examples/policies/`. |
+| `--code-scanner` | (none) | CodeScanner type: none, patterns, semgrep, composite. Composite requires `--config` (`codeScanner.scanners`). Empty defers to the mode-aware default (patterns for execution, none for read-only modes). |
 
 Precedence: `--config` file → explicit flags → defaults. Flags left at
 their default value do NOT override the file. The default edit strategy
