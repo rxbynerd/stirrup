@@ -75,9 +75,11 @@ type AgenticLoop struct {
 	// asyncOnce guards lazy construction of asyncCorrelator. The
 	// correlator is created and attached to the transport on the first
 	// async tool dispatch — most runs never use any async tools and pay
-	// no cost.
+	// no cost. The pointer is held in an atomic so non-dispatcher
+	// goroutines (e.g. tests, diagnostics) can read it safely without
+	// going through Once.Do.
 	asyncOnce       sync.Once
-	asyncCorrelator *transport.Correlator
+	asyncCorrelator atomic.Pointer[transport.Correlator]
 }
 
 // asyncToolResult carries the resolved payload of an async tool call from
@@ -113,9 +115,18 @@ func (l *AgenticLoop) ensureAsyncCorrelator() *transport.Correlator {
 	l.asyncOnce.Do(func() {
 		c := transport.NewCorrelator("async-tool")
 		c.AttachTo(l.Transport, extractAsyncToolResult)
-		l.asyncCorrelator = c
+		l.asyncCorrelator.Store(c)
 	})
-	return l.asyncCorrelator
+	return l.asyncCorrelator.Load()
+}
+
+// asyncCorrelatorForTest returns the loop's async tool correlator if it
+// has been constructed, nil otherwise. Race-safe with concurrent
+// dispatchAsyncToolCall calls because the underlying field is an
+// atomic.Pointer. Used by tests that want to assert correlator state
+// (e.g. PendingCount) without forcing construction.
+func (l *AgenticLoop) asyncCorrelatorForTest() *transport.Correlator {
+	return l.asyncCorrelator.Load()
 }
 
 // TokenTracker tracks cumulative token usage per run and enforces token budgets.

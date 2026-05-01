@@ -190,8 +190,8 @@ func TestAsyncDispatch_HappyPath(t *testing.T) {
 	}
 
 	// Pending entry must be cleaned up after resolution.
-	if loop.asyncCorrelator.PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits, got %d", loop.asyncCorrelator.PendingCount())
+	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
+		t.Fatalf("expected 0 pending awaits, got %d", loop.asyncCorrelatorForTest().PendingCount())
 	}
 }
 
@@ -264,8 +264,8 @@ func TestAsyncDispatch_Timeout(t *testing.T) {
 		t.Fatalf("returned too slowly (%s); per-call timeout override was ignored", elapsed)
 	}
 	// Cleanup: pending entry must be removed.
-	if loop.asyncCorrelator.PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits after timeout, got %d", loop.asyncCorrelator.PendingCount())
+	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
+		t.Fatalf("expected 0 pending awaits after timeout, got %d", loop.asyncCorrelatorForTest().PendingCount())
 	}
 }
 
@@ -301,8 +301,8 @@ func TestAsyncDispatch_CtxCancellation(t *testing.T) {
 	if !strings.Contains(output, "cancelled") {
 		t.Fatalf("expected output to mention 'cancelled', got %q", output)
 	}
-	if loop.asyncCorrelator.PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits after ctx cancel, got %d", loop.asyncCorrelator.PendingCount())
+	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
+		t.Fatalf("expected 0 pending awaits after ctx cancel, got %d", loop.asyncCorrelatorForTest().PendingCount())
 	}
 }
 
@@ -325,8 +325,8 @@ func TestAsyncDispatch_TransportEmitFailure(t *testing.T) {
 		t.Fatalf("expected output to contain 'transport_disconnect', got %q", output)
 	}
 	// Correlator must clean up the pending entry on emit failure.
-	if loop.asyncCorrelator.PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits after emit failure, got %d", loop.asyncCorrelator.PendingCount())
+	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
+		t.Fatalf("expected 0 pending awaits after emit failure, got %d", loop.asyncCorrelatorForTest().PendingCount())
 	}
 }
 
@@ -360,17 +360,32 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 		r2 <- res{out, ok}
 	}()
 
-	// Wait until both pending awaits are registered (PendingCount == 2)
-	// and both request events have been emitted.
+	// Wait until both pending awaits are registered. We poll the count of
+	// emitted tool_result_request events as a proxy: each in-flight async
+	// dispatch emits exactly one such event before blocking on the
+	// correlator. Reading loop.asyncCorrelator directly from this
+	// goroutine would race with the dispatch goroutines writing it under
+	// sync.Once; the correlator's own state is fine to inspect via
+	// PendingCount() once construction is established.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if loop.asyncCorrelator != nil && loop.asyncCorrelator.PendingCount() == 2 {
+		count := 0
+		for _, e := range tr.Events() {
+			if e.Type == "tool_result_request" {
+				count++
+			}
+		}
+		if count == 2 {
 			break
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if loop.asyncCorrelator == nil || loop.asyncCorrelator.PendingCount() != 2 {
-		t.Fatalf("expected 2 pending awaits, got %d", loop.asyncCorrelator.PendingCount())
+	correlator := loop.ensureAsyncCorrelator()
+	if correlator == nil {
+		t.Fatalf("expected async correlator to be constructed by now")
+	}
+	if got := correlator.PendingCount(); got != 2 {
+		t.Fatalf("expected 2 pending awaits, got %d", got)
 	}
 
 	// Pull request IDs out of the emitted events. Map them to the tool
@@ -407,9 +422,9 @@ func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 	if !res2.success || res2.output != "result-for-tc2" {
 		t.Fatalf("call2 wrong: success=%v output=%q", res2.success, res2.output)
 	}
-	if loop.asyncCorrelator.PendingCount() != 0 {
+	if loop.asyncCorrelatorForTest().PendingCount() != 0 {
 		t.Fatalf("expected 0 pending awaits after both resolutions, got %d",
-			loop.asyncCorrelator.PendingCount())
+			loop.asyncCorrelatorForTest().PendingCount())
 	}
 }
 
@@ -437,7 +452,7 @@ func TestAsyncDispatch_NullTransportFailsFast(t *testing.T) {
 	if elapsed > 200*time.Millisecond {
 		t.Fatalf("dispatch should fail fast, but took %s", elapsed)
 	}
-	if loop.asyncCorrelator != nil {
+	if loop.asyncCorrelatorForTest() != nil {
 		t.Fatalf("async correlator should not have been constructed for a NullTransport")
 	}
 }
@@ -466,8 +481,8 @@ func TestAsyncDispatch_AsyncHandlerInternalError(t *testing.T) {
 	if len(tr.Events()) != 0 {
 		t.Fatalf("expected no events emitted on preflight error, got %d", len(tr.Events()))
 	}
-	if loop.asyncCorrelator != nil && loop.asyncCorrelator.PendingCount() != 0 {
-		t.Fatalf("expected 0 pending awaits, got %d", loop.asyncCorrelator.PendingCount())
+	if loop.asyncCorrelatorForTest() != nil && loop.asyncCorrelatorForTest().PendingCount() != 0 {
+		t.Fatalf("expected 0 pending awaits, got %d", loop.asyncCorrelatorForTest().PendingCount())
 	}
 }
 
@@ -501,7 +516,7 @@ func TestSyncToolPath_Unchanged(t *testing.T) {
 		}
 	}
 	// Async correlator must not be constructed for a sync-only call.
-	if loop.asyncCorrelator != nil {
+	if loop.asyncCorrelatorForTest() != nil {
 		t.Fatalf("async correlator should not have been constructed for a sync tool")
 	}
 }
