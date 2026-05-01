@@ -210,6 +210,30 @@ func (p *PolicyEnginePolicy) Check(ctx context.Context, tool types.ToolDefinitio
 	}
 }
 
+// ForChildRun returns a shallow clone of the receiver bound to a new
+// child run identity. The Cedar policy set, fallback policy, and
+// security emitter are reused unchanged; runID is replaced with the
+// child's ID and parentRunID is set to the parent's ID. This is the
+// only supported way to populate Cedar's principal.parentRunId
+// attribute, which the subagent-capability-cap.cedar starter policy
+// keys off (M3).
+//
+// The receiver is not mutated. Capabilities and dynamicContext are
+// inherited from the parent — sub-agents do not currently downgrade
+// their capability set, but they do gain the parentRunId marker that
+// distinguishes them from top-level runs.
+func (p *PolicyEnginePolicy) ForChildRun(childRunID string) *PolicyEnginePolicy {
+	if p == nil {
+		return nil
+	}
+	clone := *p
+	clone.parentRunID = p.runID
+	if childRunID != "" {
+		clone.runID = childRunID
+	}
+	return &clone
+}
+
 // emit forwards a security event when a SecurityEventEmitter is configured.
 // Callers must provide a non-nil data map.
 func (p *PolicyEnginePolicy) emit(level, event string, data map[string]any) {

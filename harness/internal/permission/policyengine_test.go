@@ -312,6 +312,68 @@ func TestPolicyEngine_SubAgentCap(t *testing.T) {
 	}
 }
 
+// TestPolicyEngine_ForChildRun_PopulatesParentRunID exercises the M3
+// fix: a sub-agent's permission policy must be a clone with
+// parentRunId set to the parent's runID. The same Cedar policy that
+// permits run_command from the parent must deny it from the child.
+func TestPolicyEngine_ForChildRun_PopulatesParentRunID(t *testing.T) {
+	policy := `forbid (
+		principal,
+		action == Action::"tool:run_command",
+		resource == Tool::"run_command"
+	) when {
+		principal has parentRunId && principal.parentRunId != ""
+	};`
+
+	parent := newTestPolicy(t, PolicyEngineConfig{
+		PolicySet: mustParse(t, policy),
+		Fallback:  NewAllowAll(),
+		RunID:     "run-parent-1",
+	})
+
+	tool := types.ToolDefinition{Name: "run_command"}
+
+	parentResult, err := parent.Check(context.Background(), tool, json.RawMessage(`{"cmd":"echo hi"}`))
+	if err != nil {
+		t.Fatalf("parent Check: %v", err)
+	}
+	if !parentResult.Allowed {
+		t.Fatalf("parent run_command should fall through to allow-all fallback (no parentRunId), got deny: %q", parentResult.Reason)
+	}
+
+	child := parent.ForChildRun("run-child-1")
+	if child == nil {
+		t.Fatal("ForChildRun returned nil")
+	}
+	if child == parent {
+		t.Fatal("ForChildRun should return a clone, not the receiver")
+	}
+	if child.parentRunID != "run-parent-1" {
+		t.Errorf("child.parentRunID: got %q, want run-parent-1", child.parentRunID)
+	}
+	if child.runID != "run-child-1" {
+		t.Errorf("child.runID: got %q, want run-child-1", child.runID)
+	}
+
+	childResult, err := child.Check(context.Background(), tool, json.RawMessage(`{"cmd":"echo hi"}`))
+	if err != nil {
+		t.Fatalf("child Check: %v", err)
+	}
+	if childResult.Allowed {
+		t.Fatalf("child run_command should be denied by subagent-capability-cap, got allow")
+	}
+
+	// Cloning twice with no-op IDs leaves the parent's runID untouched
+	// — guards against a future regression that mutates the receiver.
+	child2 := parent.ForChildRun("")
+	if child2.runID != parent.runID {
+		t.Errorf("ForChildRun(\"\") should preserve runID; got %q", child2.runID)
+	}
+	if parent.parentRunID != "" {
+		t.Errorf("parent parentRunID was mutated to %q", parent.parentRunID)
+	}
+}
+
 // TestPolicyEngine_StarterPolicies round-trips the four shipped starter
 // policy files and exercises one assertion per file. This confirms the
 // shipped .cedar files remain syntactically and semantically correct.
