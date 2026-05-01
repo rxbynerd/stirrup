@@ -294,6 +294,52 @@ func TestBuildEditStrategy_UnknownFallsBack(t *testing.T) {
 	}
 }
 
+// --- wrapWithCodeScanner ---
+
+func TestWrapWithCodeScanner_NilLeavesInnerUnchanged(t *testing.T) {
+	inner := edit.NewWholeFileStrategy()
+	got, err := wrapWithCodeScanner(inner, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != inner {
+		t.Errorf("nil cfg should return inner unchanged, got %T", got)
+	}
+}
+
+func TestWrapWithCodeScanner_NoneLeavesInnerUnchanged(t *testing.T) {
+	inner := edit.NewWholeFileStrategy()
+	got, err := wrapWithCodeScanner(inner, &types.CodeScannerConfig{Type: "none"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != inner {
+		t.Errorf("type=none should return inner unchanged, got %T", got)
+	}
+}
+
+func TestWrapWithCodeScanner_PatternsWraps(t *testing.T) {
+	inner := edit.NewWholeFileStrategy()
+	got, err := wrapWithCodeScanner(inner, &types.CodeScannerConfig{Type: "patterns"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == inner {
+		t.Errorf("patterns scanner should wrap inner, got identity")
+	}
+	if _, ok := got.(*edit.ScannedStrategy); !ok {
+		t.Errorf("expected *edit.ScannedStrategy, got %T", got)
+	}
+}
+
+func TestWrapWithCodeScanner_UnknownTypeReturnsError(t *testing.T) {
+	inner := edit.NewWholeFileStrategy()
+	_, err := wrapWithCodeScanner(inner, &types.CodeScannerConfig{Type: "nope"}, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown scanner type")
+	}
+}
+
 // --- buildVerifier ---
 
 func TestBuildVerifier_None(t *testing.T) {

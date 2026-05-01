@@ -26,6 +26,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/security/codescanner"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/tool/builtins"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
@@ -98,7 +99,18 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
 
 	// 6. Tool registry.
+	// The base edit strategy is constructed first, then optionally wrapped
+	// with a CodeScanner pass when one is configured. ValidateRunConfig
+	// fills CodeScanner with a sensible default per mode (patterns for
+	// execution, none for read-only) so cfg.CodeScanner is never nil at
+	// this point — but defend in depth in case a non-CLI caller passes a
+	// raw RunConfig that bypasses that defaulting.
 	es := buildEditStrategy(config.EditStrategy)
+	es, err = wrapWithCodeScanner(es, config.CodeScanner, secLogger)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("build code scanner: %w", err)
+	}
 	registry := buildToolRegistry(exec, es, config.Tools)
 
 	// secLogger was constructed above (before ValidateRunConfig) so it can
@@ -603,6 +615,23 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 			return fmt.Sprintf("Successfully edited %s", result.Path), nil
 		},
 	}
+}
+
+// wrapWithCodeScanner builds a CodeScanner from cfg and wraps inner with a
+// ScannedStrategy when scanning is enabled. A nil cfg, an empty Type, or
+// Type=="none" short-circuits and returns inner unchanged so the no-scan
+// path has zero overhead. The supplied emitter receives code_scan_warning
+// events on warn findings; pass nil to disable security event emission
+// (warnings still log via slog).
+func wrapWithCodeScanner(inner edit.EditStrategy, cfg *types.CodeScannerConfig, emitter edit.SecurityEventEmitter) (edit.EditStrategy, error) {
+	if cfg == nil || cfg.Type == "" || cfg.Type == "none" {
+		return inner, nil
+	}
+	scanner, err := codescanner.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return edit.NewScannedStrategy(inner, scanner, cfg, emitter), nil
 }
 
 func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
