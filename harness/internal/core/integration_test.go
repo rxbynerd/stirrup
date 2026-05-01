@@ -206,6 +206,13 @@ func buildOpenAIConfig(t *testing.T, baseURL string) *types.RunConfig {
 	t.Helper()
 	timeout := 30
 	workspace := t.TempDir()
+	// Tests in this file exercise the factory and the agentic loop, not
+	// the Rule-of-Two security invariant. The default tool list (nil =
+	// all built-ins) combined with a TEST_*_KEY APIKeyRef and the
+	// allow-all permission policy is exactly the all-three case the
+	// validator rejects, so we explicitly disable enforcement here.
+	// Rule-of-Two semantics are covered in types/runconfig_test.go.
+	enforce := false
 	config := &types.RunConfig{
 		RunID:    "integration-provider",
 		Mode:     "execution",
@@ -224,6 +231,7 @@ func buildOpenAIConfig(t *testing.T, baseURL string) *types.RunConfig {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -285,6 +293,12 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 	defer server.Close()
 
 	timeout := 30
+	// Research mode + web_fetch + a TEST_*_KEY APIKeyRef triggers the
+	// Rule-of-Two invariant. This test predates the invariant and is
+	// asserting permission-policy behaviour, not Rule-of-Two — disable
+	// enforcement here. Rule-of-Two coverage lives in
+	// types/runconfig_test.go.
+	enforce := false
 	config := &types.RunConfig{
 		RunID:            "integration-research-webfetch",
 		Mode:             "research",
@@ -300,6 +314,7 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
 		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
 		MaxTurns:         4,
 		Timeout:          &timeout,
 	}

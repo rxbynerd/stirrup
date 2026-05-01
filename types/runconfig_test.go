@@ -540,8 +540,15 @@ func TestValidateRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	// The new openai-responses provider type must be accepted by validation.
 	// Before this case existed, callers who configured a Responses adapter
 	// would be rejected at validation time.
+	//
+	// We pin Tools.BuiltIn to a side-effect-free set so this test stays
+	// focused on provider-type validation; with the default (nil) tool
+	// list every built-in is enabled, which combined with the secret
+	// reference would trigger Rule of Two and obscure the actual
+	// failure mode this test is asserting against.
 	c := validConfig()
 	c.Provider = ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("expected openai-responses to be accepted, got: %v", err)
 	}

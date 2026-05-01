@@ -76,6 +76,26 @@ type RunConfig struct {
 	// preamble, bypassing prompt_builder mode selection. Workspace path,
 	// turn budget, and dynamic_context sections are still appended.
 	SystemPromptOverride string `json:"systemPromptOverride,omitempty"`
+
+	// RuleOfTwo carries the operator override for the "Agents Rule of
+	// Two" structural invariant enforced in ValidateRunConfig. When nil
+	// (the default) the invariant is enforced; setting Enforce: false
+	// is the only supported way to bypass it. The override exists so a
+	// human reviewer can sign off on a config that legitimately needs
+	// all three capabilities at once — it should not be set lightly.
+	RuleOfTwo *RuleOfTwoConfig `json:"ruleOfTwo,omitempty"`
+}
+
+// RuleOfTwoConfig configures the Rule-of-Two structural invariant. The
+// invariant: a single run must not simultaneously hold (a) untrusted
+// input, (b) sensitive data, and (c) the ability to communicate
+// externally — unless gated by ask-upstream.
+//
+// Enforce is a pointer so we can distinguish "unset" (default: enforce)
+// from "explicit false" (override the rejection). An explicit true is
+// equivalent to leaving the field unset.
+type RuleOfTwoConfig struct {
+	Enforce *bool `json:"enforce,omitempty"`
 }
 
 // Redact returns a copy of the RunConfig with secret references replaced
@@ -556,6 +576,8 @@ func ValidateRunConfig(config *RunConfig) error {
 		errs = append(errs, fmt.Sprintf("maxTokenBudget must be <= %d", maxTokenBudget))
 	}
 
+	validateRuleOfTwo(config, &errs)
+
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
 	}
@@ -597,6 +619,147 @@ func validatePermissionPolicyFields(cfg PermissionPolicyConfig, errs *[]string) 
 	if cfg.Fallback != "" && !validFallbackPolicyTypes[cfg.Fallback] {
 		*errs = append(*errs, fmt.Sprintf("permissionPolicy.fallback %q is not a valid fallback policy type", cfg.Fallback))
 	}
+}
+
+// validateRuleOfTwo enforces Meta's "Agents Rule of Two": a single
+// session must not simultaneously hold (a) untrusted input, (b)
+// sensitive data, and (c) the ability to communicate externally —
+// unless gated by the ask-upstream permission policy. The override
+// (RuleOfTwo.Enforce == false) is honoured silently here; the factory
+// emits a rule_of_two_disabled security event at run start to keep the
+// override auditable.
+//
+// The three booleans are deliberately crude in v1 (per the issue
+// brief). They will be refined as we collect eval-suite signal.
+func validateRuleOfTwo(config *RunConfig, errs *[]string) {
+	holdsUntrusted := ruleOfTwoUntrustedInput(config)
+	holdsSensitive := ruleOfTwoSensitiveData(config)
+	canCommExternal := ruleOfTwoExternalComm(config)
+
+	if !(holdsUntrusted && holdsSensitive && canCommExternal) {
+		return
+	}
+	if config.PermissionPolicy.Type == "ask-upstream" {
+		return
+	}
+	if config.RuleOfTwo != nil && config.RuleOfTwo.Enforce != nil && !*config.RuleOfTwo.Enforce {
+		return
+	}
+	*errs = append(*errs,
+		"all three of {untrusted-input, sensitive-data, external-communication} cannot simultaneously hold without the ask-upstream permission policy (Rule of Two)")
+}
+
+// ruleOfTwoUntrustedInput reports whether the run can ingest content
+// from outside the operator's trust boundary. Dynamic context entries
+// are populated by the control plane from issue bodies / PR comments
+// / etc. and must be treated as untrusted; web_fetch and MCP servers
+// pull live data from arbitrary remote endpoints.
+func ruleOfTwoUntrustedInput(config *RunConfig) bool {
+	if len(config.DynamicContext) > 0 {
+		return true
+	}
+	if isToolEnabled(config.Tools.BuiltIn, "web_fetch") {
+		return true
+	}
+	if len(config.Tools.MCPServers) > 0 {
+		return true
+	}
+	return false
+}
+
+// ruleOfTwoSensitiveData reports whether the run carries credentials
+// or other sensitive data the agent could exfiltrate.
+//
+// "Allowlisted secret env vars" interpretation: ExecutorConfig has no
+// dedicated env-allowlist field today, and the brief is explicit that
+// we must not invent one in this wave. We therefore inspect the
+// secret references that are actually carried in RunConfig — APIKeyRef
+// fields on the default provider, the named providers map, the VCS
+// backend, and MCP servers — and treat any whose name matches the
+// secret-name heuristic (*KEY*, *TOKEN*, *SECRET*, *PASSWORD*, case-
+// insensitive) as a "sensitive env var" for Rule-of-Two purposes. Any
+// secret://ssm:// reference also triggers this flag, regardless of
+// name, because SSM-backed values are by definition real secrets.
+func ruleOfTwoSensitiveData(config *RunConfig) bool {
+	if isSensitiveSecretRef(config.Provider.APIKeyRef) {
+		return true
+	}
+	for _, prov := range config.Providers {
+		if isSensitiveSecretRef(prov.APIKeyRef) {
+			return true
+		}
+	}
+	if config.Executor.VcsBackend != nil && isSensitiveSecretRef(config.Executor.VcsBackend.APIKeyRef) {
+		return true
+	}
+	for _, server := range config.Tools.MCPServers {
+		if isSensitiveSecretRef(server.APIKeyRef) {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleOfTwoExternalComm reports whether the run can send data to
+// systems outside the harness sandbox. run_command escapes via the
+// shell; web_fetch sends arbitrary HTTP requests; MCP servers receive
+// every tool call payload; non-"none" network configs let the
+// container reach the internet.
+func ruleOfTwoExternalComm(config *RunConfig) bool {
+	if isToolEnabled(config.Tools.BuiltIn, "run_command") {
+		return true
+	}
+	if isToolEnabled(config.Tools.BuiltIn, "web_fetch") {
+		return true
+	}
+	if len(config.Tools.MCPServers) > 0 {
+		return true
+	}
+	if config.Executor.Network != nil && config.Executor.Network.Mode != "" && config.Executor.Network.Mode != "none" {
+		return true
+	}
+	return false
+}
+
+// isToolEnabled mirrors the semantics used by harness/internal/core
+// for resolving Tools.BuiltIn: an empty list means "all built-in tools
+// are enabled", a non-empty list is treated as an explicit allowlist.
+// Read-only modes already constrain the tool set elsewhere so this
+// just answers "would the loop expose this tool to the model".
+func isToolEnabled(enabled []string, name string) bool {
+	if len(enabled) == 0 {
+		return true
+	}
+	for _, candidate := range enabled {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
+}
+
+// isSensitiveSecretRef reports whether the supplied secret reference
+// names a credential the Rule-of-Two should treat as sensitive. SSM
+// references are always sensitive; env/file refs are sensitive only
+// when the referenced name matches one of the conventional secret
+// substrings (key/token/secret/password, case-insensitive).
+func isSensitiveSecretRef(ref string) bool {
+	if ref == "" {
+		return false
+	}
+	const prefix = "secret://"
+	rest := ref
+	if strings.HasPrefix(rest, prefix) {
+		rest = rest[len(prefix):]
+	}
+	if strings.HasPrefix(rest, "ssm://") || strings.HasPrefix(rest, "ssm:///") {
+		return true
+	}
+	upper := strings.ToUpper(rest)
+	return strings.Contains(upper, "KEY") ||
+		strings.Contains(upper, "TOKEN") ||
+		strings.Contains(upper, "SECRET") ||
+		strings.Contains(upper, "PASSWORD")
 }
 
 func validateVerifierConfig(cfg VerifierConfig, path string, errs *[]string) {

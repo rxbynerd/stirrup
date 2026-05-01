@@ -78,6 +78,9 @@
       }
     ]
   },
+  "ruleOfTwo": {
+    "enforce": false
+  },
   "maxTurns": 20,
   "timeout": 600,
   "logLevel": "info"

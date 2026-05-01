@@ -41,11 +41,23 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 		LogLevel:      "info",
 	}
 
+	// Rule-of-Two override: every CLI default combination here pairs an
+	// API key (whose name matches the secret heuristic) with a tool list
+	// that carries both untrusted-input ingress (web_fetch) and external
+	// communication (web_fetch / run_command), which is exactly the all-
+	// three case the Rule-of-Two invariant rejects. The test predates that
+	// invariant and is asserting CLI defaulting / read-only-mode wiring,
+	// not the safety invariant; Rule-of-Two coverage lives in
+	// types/runconfig_test.go. Wiring the override into the CLI itself
+	// (so users get a clear error rather than this validation rejection)
+	// is tracked in a later wave of #42 and intentionally out of scope here.
+	enforce := false
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
 			opts := baseOpts
 			opts.Mode = mode
 			cfg := buildHarnessRunConfig(opts)
+			cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 
 			if err := types.ValidateRunConfig(cfg); err != nil {
 				t.Fatalf("buildHarnessRunConfig produced an invalid RunConfig for --mode %q: %v", mode, err)
@@ -90,6 +102,9 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	if cfg.ModelRouter.Provider != "openai-responses" {
 		t.Errorf("ModelRouter.Provider = %q, want openai-responses", cfg.ModelRouter.Provider)
 	}
+	// See Rule-of-Two note in TestBuildHarnessRunConfig_AllModesValidate.
+	enforce := false
+	cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig rejected openai-responses: %v", err)
 	}
@@ -241,6 +256,12 @@ func TestLoadRunConfigFile_RoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 
 	timeout := 300
+	// Planning mode + DefaultReadOnlyBuiltInTools (which includes
+	// web_fetch + spawn_agent) + a secret://ANTHROPIC_API_KEY ref
+	// trips the Rule-of-Two invariant. This test asserts the
+	// --config loader round-trips fields cleanly, not Rule-of-Two
+	// behaviour, so we explicitly disable enforcement.
+	enforce := false
 	original := types.RunConfig{
 		RunID:  "from-file",
 		Mode:   "planning",
@@ -268,9 +289,10 @@ func TestLoadRunConfigFile_RoundTrip(t *testing.T) {
 		Tools: types.ToolsConfig{
 			BuiltIn: types.DefaultReadOnlyBuiltInTools(),
 		},
-		MaxTurns: 10,
-		Timeout:  &timeout,
-		LogLevel: "info",
+		RuleOfTwo: &types.RuleOfTwoConfig{Enforce: &enforce},
+		MaxTurns:  10,
+		Timeout:   &timeout,
+		LogLevel:  "info",
 	}
 	data, err := json.MarshalIndent(original, "", "  ")
 	if err != nil {

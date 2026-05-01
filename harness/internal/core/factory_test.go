@@ -26,6 +26,18 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// disableRuleOfTwo returns a RuleOfTwoConfig that overrides the Rule-of-Two
+// invariant. The factory and integration tests in this file build configs
+// that legitimately exercise the all-three case (default tool list +
+// TEST_*_KEY APIKeyRef + allow-all/deny-side-effects) so they can verify
+// factory wiring and policy behaviour. Rule-of-Two semantics are covered
+// in types/runconfig_test.go; the tests here would otherwise be obscured
+// by the validator rejection.
+func disableRuleOfTwo() *types.RuleOfTwoConfig {
+	enforce := false
+	return &types.RuleOfTwoConfig{Enforce: &enforce}
+}
+
 // --- buildRouter ---
 
 func TestBuildRouter_Static(t *testing.T) {
@@ -881,6 +893,7 @@ func TestBuildLoopWithTransport_MinimalValidConfig(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -964,6 +977,7 @@ func TestBuildLoopWithTransport_InjectedTransportSkipsBuild(t *testing.T) {
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		Transport:        types.TransportConfig{Type: "grpc"}, // would fail without address
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1005,6 +1019,7 @@ func TestBuildLoopWithTransport_NoopMetricsWhenNotOTel(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1042,6 +1057,7 @@ func TestBuildLoopWithTransport_AllToolsRegisteredByDefault(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1079,6 +1095,7 @@ func TestBuildLoopWithTransport_SecretResolutionFailure(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1119,6 +1136,7 @@ func TestBuildLoopWithTransport_ResearchModeAllowsWebFetch(t *testing.T) {
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
 		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1175,6 +1193,7 @@ func TestBuildLoopWithTransport_ReadOnlyModesAllowWebFetch(t *testing.T) {
 				GitStrategy:      types.GitStrategyConfig{Type: "none"},
 				TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
 				Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+				RuleOfTwo:        disableRuleOfTwo(),
 				MaxTurns:         2,
 				Timeout:          &timeout,
 			}
