@@ -250,6 +250,18 @@ The `MultiStrategy` (`edit/multi.go`) presents a unified `edit_file` tool that a
 
 The `stallDetector` (`core/stall.go`) tracks consecutive identical tool calls and consecutive failures. The loop terminates with `"stalled"` after 3 repeated identical calls (same name + same input) or `"tool_failures"` after 5 consecutive failures.
 
+### Deterministic safety rings (issue #42)
+
+Five layered controls compose at run construction:
+
+- **Container runtimeClass** (`executor/container.go`) — optional `Runtime` field passed to the Docker Engine API selects `runc` (default), `runsc` (gVisor), or `kata-*` for kernel-isolation.
+- **Egress proxy** (`executor/egressproxy/`) — when `network.mode == "allowlist"` the container executor starts an in-process forward proxy on the host network namespace; the container is wired with `HTTP_PROXY`/`HTTPS_PROXY` and only well-formed requests to allowlisted FQDNs are forwarded. v1 fails closed only for cooperating clients (the iptables drop is a documented follow-up).
+- **Cedar policy engine** (`permission/policyengine.go`) — the fourth `PermissionPolicy` type. Backed by `github.com/cedar-policy/cedar-go`. Loads a `.cedar` file at boot, evaluates each tool call as `(principal=User::"<runId>", action=Action::"tool:<name>", resource=Tool::"<name>", context={input, workspace, dynamicContext})`, falls back to a configured non-policy-engine policy on no-decision.
+- **Rule of Two** (`types/runconfig.go::validateRuleOfTwo`) — structural invariant rejecting any RunConfig that simultaneously holds untrusted input, sensitive data, and external communication unless gated by `ask-upstream`. `RuleOfTwo.Enforce: false` is the only override; the factory emits a `rule_of_two_disabled` security event when it is used and `rule_of_two_warning` when exactly two of three flags hold.
+- **CodeScanner** (`security/codescanner/`, `edit/scanned.go`) — post-edit static analysis. Pure-Go pattern pack, optional shell-out to `semgrep`, or composite. Block findings roll back the write; warn findings emit `code_scan_warning`.
+
+Operator-facing walkthrough: [`docs/sandbox.md`](docs/sandbox.md). Starter Cedar policies: [`examples/policies/`](examples/policies/).
+
 ## Security Foundations
 
 - **SecretStore**: resolves `secret://` references (env vars, files, AWS SSM via `secret://ssm:///param-name`). `AutoSecretStore` routes by scheme, only initialising SSM client when config refs require it. API keys never stored in RunConfig.
