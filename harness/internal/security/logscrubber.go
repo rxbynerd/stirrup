@@ -39,6 +39,25 @@ type ScrubStats struct {
 	Patterns []string
 }
 
+// SecretPattern is a read-only view of a single secret-detection pattern,
+// exposed so other packages (e.g. codescanner) can reuse the canonical
+// regex set without duplicating the definitions.
+type SecretPattern struct {
+	Name string
+	Re   *regexp.Regexp
+}
+
+// SecretPatterns returns a copy of the canonical secret-detection regex set
+// used by Scrub. The returned slice is freshly allocated; the regexp values
+// are shared (regexp.Regexp is safe for concurrent use).
+func SecretPatterns() []SecretPattern {
+	out := make([]SecretPattern, len(secretPatterns))
+	for i, p := range secretPatterns {
+		out[i] = SecretPattern{Name: p.name, Re: p.re}
+	}
+	return out
+}
+
 // Scrub replaces all known secret patterns in value with "[REDACTED]".
 // Equivalent to ScrubWithStats with the stats discarded.
 func Scrub(value string) string {
