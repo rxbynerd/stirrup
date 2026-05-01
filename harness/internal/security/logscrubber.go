@@ -21,6 +21,14 @@ var secretPatterns = []namedPattern{
 	{"bearer_token", regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`)},
 	{"pem_private_key", regexp.MustCompile(`-----BEGIN[\s\w]+KEY-----`)},
 	{"secret_ref", regexp.MustCompile(`secret://[^\s"']+`)},
+	// api_key_header matches the literal "<header>: <value>" forms used
+	// for non-Bearer auth on Azure OpenAI and APIM-fronted gateways. These
+	// keys do not have a distinctive prefix (Azure keys are hex-y but
+	// indistinguishable from arbitrary strings), so the header name is the
+	// only reliable anchor. The pattern is anchored on a header name we
+	// know stirrup emits — adding more variants here is preferable to a
+	// permissive token catch-all.
+	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)\s*:\s*[A-Za-z0-9._~+/=-]+`)},
 }
 
 // ScrubStats reports redactions performed by ScrubWithStats. Count is the

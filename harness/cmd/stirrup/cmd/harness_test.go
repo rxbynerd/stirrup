@@ -659,6 +659,38 @@ func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleAzureOpenAIJSONLoadsAndValidates pins the shipped Azure
+// OpenAI fixture: the file must round-trip through loadRunConfigFile,
+// pass ValidateRunConfig, and demonstrate the three new fields populated
+// (apiKeyHeader, queryParams, and the Azure-shaped baseUrl). If any of
+// these drift out of sync with the schema, this test fails before users
+// hit the same error.
+func TestExampleAzureOpenAIJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
+	}
+	if cfg.Provider.APIKeyHeader != "api-key" {
+		t.Errorf("Provider.APIKeyHeader = %q, want api-key", cfg.Provider.APIKeyHeader)
+	}
+	if cfg.Provider.QueryParams["api-version"] != "preview" {
+		t.Errorf("Provider.QueryParams[api-version] = %q, want preview", cfg.Provider.QueryParams["api-version"])
+	}
+	if !strings.Contains(cfg.Provider.BaseURL, "openai.azure.com") {
+		t.Errorf("Provider.BaseURL should target Azure, got %q", cfg.Provider.BaseURL)
+	}
+}
+
 // TestRunHarness_ConfigValidationFailurePropagates writes a config that
 // fails ValidateRunConfig (read-only mode + write tool) and asserts the
 // CLI surfaces the error clearly.

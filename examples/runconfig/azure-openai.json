@@ -1,0 +1,59 @@
+{
+  "runId": "example-azure-openai",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "openai-responses",
+    "apiKeyRef": "secret://AZURE_OPENAI_API_KEY",
+    "baseUrl": "https://example-resource.openai.azure.com/openai/v1",
+    "apiKeyHeader": "api-key",
+    "queryParams": {
+      "api-version": "preview"
+    }
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "openai-responses",
+    "model": "gpt-4.1"
+  },
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 200000
+  },
+  "executor": {
+    "type": "local"
+  },
+  "editStrategy": {
+    "type": "multi"
+  },
+  "verifier": {
+    "type": "none"
+  },
+  "permissionPolicy": {
+    "type": "allow-all"
+  },
+  "gitStrategy": {
+    "type": "none"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "traceEmitter": {
+    "type": "jsonl"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory",
+      "search_files",
+      "edit_file",
+      "run_command"
+    ]
+  },
+  "maxTurns": 20,
+  "timeout": 600,
+  "logLevel": "info"
+}
