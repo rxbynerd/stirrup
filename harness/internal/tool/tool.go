@@ -11,20 +11,20 @@ import (
 )
 
 // AsyncDispatch carries the metadata an async tool returns from its preflight
-// step. Returning a non-empty AsyncDispatch tells the agentic loop "do not
-// finalise this tool call yet — emit a tool_result_request with this
-// RequestID, then block on the matching tool_result_response under ctx
-// cancellation and the per-call timeout".
+// step. Returning AsyncDispatch tells the agentic loop "do not finalise this
+// tool call yet — emit a tool_result_request, then block on the matching
+// tool_result_response under ctx cancellation and the per-call timeout".
 //
 // Timeout, when positive, overrides the loop's default per-call timeout for
 // just this call. Zero means use the loop default.
 //
-// If RequestID is empty the loop will allocate one via its async correlator
-// and pass it through to the wire event. Tools that need to track their own
-// internal state by request ID may populate it themselves.
+// The loop allocates the wire-level request ID via its transport correlator;
+// tool authors do not control it. This keeps correlation single-source so a
+// caller-supplied value cannot diverge from the value emitted on the wire.
+// The struct is retained as the AsyncHandler return type for future
+// extensibility.
 type AsyncDispatch struct {
-	RequestID string
-	Timeout   time.Duration
+	Timeout time.Duration
 }
 
 // Tool represents a single tool that the model can invoke.

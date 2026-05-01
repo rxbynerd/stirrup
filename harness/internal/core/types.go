@@ -265,9 +265,9 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 //  1. Refuse the call up front when the transport cannot deliver responses
 //     (NullTransport): an async tool here would block until the per-call
 //     timeout for nothing. Returning a clear error lets the model recover.
-//  2. Invoke the tool's AsyncHandler as a preflight. The handler may
-//     populate AsyncDispatch.RequestID to drive its own bookkeeping; the
-//     loop allocates one when it doesn't.
+//  2. Invoke the tool's AsyncHandler as a preflight. The handler returns
+//     an AsyncDispatch carrying any per-call timeout override; the loop
+//     owns the wire request ID via its transport correlator.
 //  3. Emit a "tool_result_request" HarnessEvent carrying the request_id,
 //     the model's tool_use_id, the tool name, and the input.
 //  4. Block on the matching "tool_result_response" via the loop's async
@@ -302,15 +302,10 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		timeout = DefaultAsyncToolTimeout
 	}
 
-	// The correlator allocates a request ID when emit is invoked. If the
-	// caller pre-set one, we want it threaded onto the wire event but the
-	// correlator's own ID owns the pending channel. We keep the correlator
-	// ID on the wire (it's what the control plane must echo) and surface
-	// the caller's RequestID as a redundant echo only — but the simpler
-	// contract is "the loop owns the request ID". Any future need for a
-	// caller-supplied ID can extend the correlator API; for now we ignore
-	// dispatch.RequestID at the wire layer to keep correlation single-source.
-	_ = dispatch.RequestID
+	// The correlator allocates the wire request ID. The AsyncDispatch
+	// struct intentionally does not expose that ID to tool authors —
+	// correlation is a loop concern, single source of truth, and a
+	// tool-supplied value would be silently overridden.
 
 	payload, err := correlator.Await(ctx, timeout, func(requestID string) error {
 		return l.Transport.Emit(types.HarnessEvent{
