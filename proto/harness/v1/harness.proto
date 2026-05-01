@@ -329,11 +329,14 @@ message RunConfig {
 // ask-upstream permission policy.
 message RuleOfTwoConfig {
   // When false, the validator silently accepts the all-three case;
-  // the harness emits a rule_of_two_disabled security event. Wrap
-  // in google.protobuf.BoolValue if you need to distinguish "unset"
-  // from "explicit true" — for now an unset proto bool is treated
-  // identically to true (enforce).
-  bool enforce = 1;
+  // the harness emits a rule_of_two_disabled security event. The field
+  // is declared `optional` so an unset value (the secure default —
+  // enforce) is wire-distinguishable from an explicit `false`
+  // (operator override). Without `optional`, proto3's plain bool would
+  // serialise an empty `RuleOfTwoConfig{}` identically to
+  // `RuleOfTwoConfig{enforce: false}`, silently disabling enforcement
+  // for any control plane that includes the sub-message at all.
+  optional bool enforce = 1;
 }
 
 // CodeScannerConfig selects the static-analysis pass run after every

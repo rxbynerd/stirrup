@@ -131,8 +131,23 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	}
 	if pc.PermissionPolicy != nil {
 		rc.PermissionPolicy = types.PermissionPolicyConfig{
-			Type:    pc.PermissionPolicy.Type,
-			Timeout: int(pc.PermissionPolicy.Timeout),
+			Type:       pc.PermissionPolicy.Type,
+			Timeout:    int(pc.PermissionPolicy.Timeout),
+			PolicyFile: pc.PermissionPolicy.PolicyFile,
+			Fallback:   pc.PermissionPolicy.Fallback,
+		}
+	}
+	if pc.RuleOfTwo != nil {
+		// Enforce is proto3 `optional bool`, generated as *bool. Preserve
+		// the unset/false distinction here — the validator depends on it
+		// to apply the secure default (enforce) when the field is omitted.
+		rc.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: pc.RuleOfTwo.Enforce}
+	}
+	if pc.CodeScanner != nil {
+		rc.CodeScanner = &types.CodeScannerConfig{
+			Type:        pc.CodeScanner.Type,
+			Scanners:    pc.CodeScanner.Scanners,
+			BlockOnWarn: pc.CodeScanner.BlockOnWarn,
 		}
 	}
 	if pc.GitStrategy != nil {
@@ -219,6 +234,7 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		Workspace: pc.Workspace,
 		Image:     pc.Image,
 		Proxy:     pc.Proxy,
+		Runtime:   pc.Runtime,
 	}
 	if pc.VcsBackend != nil {
 		ec.VcsBackend = &types.VcsBackendConfig{

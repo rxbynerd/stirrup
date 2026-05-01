@@ -729,11 +729,14 @@ func (x *RunConfig) GetCodeScanner() *CodeScannerConfig {
 type RuleOfTwoConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// When false, the validator silently accepts the all-three case;
-	// the harness emits a rule_of_two_disabled security event. Wrap
-	// in google.protobuf.BoolValue if you need to distinguish "unset"
-	// from "explicit true" — for now an unset proto bool is treated
-	// identically to true (enforce).
-	Enforce       bool `protobuf:"varint,1,opt,name=enforce,proto3" json:"enforce,omitempty"`
+	// the harness emits a rule_of_two_disabled security event. The field
+	// is declared `optional` so an unset value (the secure default —
+	// enforce) is wire-distinguishable from an explicit `false`
+	// (operator override). Without `optional`, proto3's plain bool would
+	// serialise an empty `RuleOfTwoConfig{}` identically to
+	// `RuleOfTwoConfig{enforce: false}`, silently disabling enforcement
+	// for any control plane that includes the sub-message at all.
+	Enforce       *bool `protobuf:"varint,1,opt,name=enforce,proto3,oneof" json:"enforce,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -769,8 +772,8 @@ func (*RuleOfTwoConfig) Descriptor() ([]byte, []int) {
 }
 
 func (x *RuleOfTwoConfig) GetEnforce() bool {
-	if x != nil {
-		return x.Enforce
+	if x != nil && x.Enforce != nil {
+		return *x.Enforce
 	}
 	return false
 }
@@ -2478,9 +2481,11 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
 	"\b_timeoutB\x12\n" +
 	"\x10_follow_up_graceB\x0f\n" +
-	"\r_session_name\"+\n" +
-	"\x0fRuleOfTwoConfig\x12\x18\n" +
-	"\aenforce\x18\x01 \x01(\bR\aenforce\"g\n" +
+	"\r_session_name\"<\n" +
+	"\x0fRuleOfTwoConfig\x12\x1d\n" +
+	"\aenforce\x18\x01 \x01(\bH\x00R\aenforce\x88\x01\x01B\n" +
+	"\n" +
+	"\b_enforce\"g\n" +
 	"\x11CodeScannerConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\bscanners\x18\x02 \x03(\tR\bscanners\x12\"\n" +
@@ -2690,6 +2695,7 @@ func file_harness_v1_harness_proto_init() {
 		return
 	}
 	file_harness_v1_harness_proto_msgTypes[3].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[4].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[17].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
