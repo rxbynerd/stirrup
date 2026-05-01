@@ -425,7 +425,9 @@ func TestApplyOverrides_DefaultFlagsDoNotOverride(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Mode != "planning" {
 		t.Errorf("Mode: file value should survive, got %q", cfg.Mode)
@@ -491,7 +493,9 @@ func TestApplyOverrides_ExplicitFlagsOverride(t *testing.T) {
 	must("trace-emitter", "otel")
 	must("otel-endpoint", "otel.flag:4317")
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Mode != "execution" {
 		t.Errorf("Mode override failed: %q", cfg.Mode)
@@ -561,7 +565,9 @@ func TestApplyOverrides_PositionalPromptFillsFileGap(t *testing.T) {
 	cfg := baseFileConfig()
 	cfg.Prompt = "" // simulate file with no prompt
 
-	applyOverrides(cmd, cfg, []string{"positional prompt"})
+	if err := applyOverrides(cmd, cfg, []string{"positional prompt"}); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Prompt != "positional prompt" {
 		t.Errorf("expected positional prompt to fill the gap, got %q", cfg.Prompt)
@@ -575,7 +581,9 @@ func TestApplyOverrides_FilePromptBeatsPositional(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig() // Prompt = "prompt-from-file"
 
-	applyOverrides(cmd, cfg, []string{"positional"})
+	if err := applyOverrides(cmd, cfg, []string{"positional"}); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Prompt != "prompt-from-file" {
 		t.Errorf("file prompt should win over positional, got %q", cfg.Prompt)
@@ -592,7 +600,9 @@ func TestApplyOverrides_ExplicitFlagBeatsPositional(t *testing.T) {
 		t.Fatalf("set prompt: %v", err)
 	}
 
-	applyOverrides(cmd, cfg, []string{"positional"})
+	if err := applyOverrides(cmd, cfg, []string{"positional"}); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Prompt != "from-flag" {
 		t.Errorf("explicit --prompt should win, got %q", cfg.Prompt)
@@ -810,7 +820,9 @@ func TestApplyOverrides_TraceCoercesEmitterToJSONL(t *testing.T) {
 	if err := cmd.Flags().Set("trace", "/tmp/out.jsonl"); err != nil {
 		t.Fatalf("set trace: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.TraceEmitter.Type != "jsonl" {
 		t.Errorf("emitter type should be coerced to jsonl when --trace is set, got %q", cfg.TraceEmitter.Type)
@@ -833,7 +845,9 @@ func TestApplyOverrides_TraceRespectsExplicitEmitter(t *testing.T) {
 	if err := cmd.Flags().Set("trace-emitter", "otel"); err != nil {
 		t.Fatalf("set trace-emitter: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.TraceEmitter.Type != "otel" {
 		t.Errorf("explicit --trace-emitter=otel should win over coercion, got %q", cfg.TraceEmitter.Type)
@@ -853,7 +867,9 @@ func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
 	if err := cmd.Flags().Set("followup-grace", "0"); err != nil {
 		t.Fatalf("set followup-grace: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.FollowUpGrace != nil {
 		t.Errorf("explicit --followup-grace=0 should clear FollowUpGrace, got %v", *cfg.FollowUpGrace)
@@ -946,7 +962,9 @@ func TestApplyModeDefaults_FillsAfterModeOverride(t *testing.T) {
 	if err := cmd.Flags().Set("mode", "planning"); err != nil {
 		t.Fatalf("set mode: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 	applyModeDefaults(cfg)
 
 	if cfg.Mode != "planning" {
@@ -989,7 +1007,9 @@ func TestApplyOverrides_AzureProviderFlags(t *testing.T) {
 	must("query-param", "api-version=preview")
 	must("query-param", "deployment-id=gpt4-prod")
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if got, want := cfg.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
 		t.Errorf("Provider.BaseURL = %q, want %q", got, want)
@@ -1015,7 +1035,9 @@ func TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset(t *testing.T) {
 	cfg.Provider.APIKeyHeader = "api-key"
 	cfg.Provider.QueryParams = map[string]string{"api-version": "preview"}
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if got, want := cfg.Provider.BaseURL, "https://file-base-url.example/v1"; got != want {
 		t.Errorf("Provider.BaseURL: file value should survive, got %q", got)
@@ -1025,6 +1047,41 @@ func TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset(t *testing.T) {
 	}
 	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
 		t.Errorf("QueryParams: file value should survive, got %q", got)
+	}
+}
+
+// TestApplyOverrides_QueryParamMalformedReturnsError pins the must-fix
+// behaviour from the issue #48 review: when --config is used alongside
+// a malformed --query-param entry, applyOverrides returns a non-nil
+// error rather than warning-and-continuing. Without this guard the
+// --config and flag-only paths would diverge — the flag-only path in
+// runHarness fails hard for the same input — and a request would reach
+// the provider with a parameter silently dropped (e.g. an Azure call
+// with no api-version, surfacing as an opaque HTTP 400).
+func TestApplyOverrides_QueryParamMalformedReturnsError(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry string
+	}{
+		{"missing-equals", "api-version"},
+		{"empty-key", "=preview"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newTestHarnessCommand()
+			cfg := baseFileConfig()
+			if err := cmd.Flags().Set("query-param", tc.entry); err != nil {
+				t.Fatalf("set query-param: %v", err)
+			}
+
+			err := applyOverrides(cmd, cfg, nil)
+			if err == nil {
+				t.Fatalf("expected error for malformed --query-param %q, got nil", tc.entry)
+			}
+			if !strings.Contains(err.Error(), "--query-param") {
+				t.Errorf("error should reference the offending flag, got: %v", err)
+			}
+		})
 	}
 }
 

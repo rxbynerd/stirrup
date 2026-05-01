@@ -265,7 +265,15 @@ func init() {
 // user did not touch) deliberately do NOT override the file. The list of
 // flags handled here mirrors the documented override surface in the
 // CLI help text.
-func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) {
+//
+// Returns a non-nil error when an override is structurally invalid (today,
+// only a malformed --query-param entry triggers this). The flag-only path
+// in runHarness already fails hard for the same input, so propagating the
+// error here keeps the two paths aligned: a typo at the CLI must never be
+// silently dropped, because that would let a request reach the provider
+// missing a required parameter (e.g. Azure's `api-version`) and surface as
+// an opaque HTTP 400 instead of a clear operator error.
+func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) error {
 	f := cmd.Flags()
 	changed := func(name string) bool { return f.Changed(name) }
 
@@ -346,12 +354,14 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) {
 		for _, entry := range raw {
 			k, v, err := parseQueryParam(entry)
 			if err != nil {
-				// Surface the error through cobra's stderr path so we do
-				// not silently drop a malformed --query-param. ValidateRunConfig
-				// would catch a key/value problem later but cannot detect
-				// a missing "=" because the parse fails earlier.
-				fmt.Fprintf(os.Stderr, "warning: --query-param %q: %v\n", entry, err)
-				continue
+				// Hard-fail rather than dropping the malformed entry. The
+				// flag-only path in runHarness returns the same shape of
+				// error for the same input; warning-and-continue here would
+				// leave Path 1 (--config) and Path 2 (flags only) inconsistent
+				// and let an Azure request proceed without a required
+				// parameter (e.g. api-version), surfacing later as an opaque
+				// HTTP 400 from the provider.
+				return fmt.Errorf("--query-param %q: %w", entry, err)
 			}
 			if cfg.Provider.QueryParams == nil {
 				cfg.Provider.QueryParams = map[string]string{}
@@ -377,6 +387,7 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) {
 	if changed("otel-endpoint") {
 		cfg.TraceEmitter.Endpoint, _ = f.GetString("otel-endpoint")
 	}
+	return nil
 }
 
 func runHarness(cmd *cobra.Command, args []string) error {
@@ -389,7 +400,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		applyOverrides(cmd, cfg, args)
+		if err := applyOverrides(cmd, cfg, args); err != nil {
+			return err
+		}
 
 		// After overrides, derive any unset mode-driven defaults
 		// (PermissionPolicy, read-only Tools.BuiltIn). Mirrors what
