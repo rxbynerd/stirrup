@@ -182,8 +182,13 @@ jobs:
         with:
           ref: ${{ needs.validate-tag.outputs.tag }}
 
+      # SHA-pinned to v0.24.0. SHA verified via the GitHub API on
+      # 2026-05-02 (`gh api repos/anchore/sbom-action/git/refs/tags/v0.24.0`,
+      # which also matches the v0 floating tag's current target). Pinning
+      # to an immutable commit defends against an upstream tag being
+      # silently retargeted to attacker-controlled code.
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
         with:
           path: .
           format: spdx-json
@@ -192,7 +197,7 @@ jobs:
           upload-release-assets: false
 
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
         with:
           path: .
           format: cyclonedx-json
@@ -314,8 +319,14 @@ jobs:
       #       cosign sign-blob --yes --output-signature "${f}.sig" "$f"
       #     done
 
+      # SHA-pinned to v2.6.2. SHA verified via the GitHub API on
+      # 2026-05-02 (`gh api repos/softprops/action-gh-release/git/refs/tags/v2.6.2`,
+      # which also matches the v2 floating tag's current target). This
+      # action runs with the job-scoped `contents: write` token, making
+      # it the highest-trust step in the workflow — pinning to an
+      # immutable commit is non-negotiable here.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
           name: ${{ env.TAG }}
