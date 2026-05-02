@@ -326,9 +326,31 @@ buf lint                 # Lint proto files
 ### CI
 
 GitHub Actions at `.github/workflows/ci.yml`:
-- **verify** job: runs `go test` for types, harness, and eval modules, builds the stirrup and eval binaries (on every push)
+- **verify** job: delegates to the reusable `_verify.yml` workflow, which runs `go test` for types, harness, and eval modules and builds the stirrup and eval binaries with `-trimpath` and `types/version` ldflags (on every push)
 - **eval-gate** job: builds binaries, runs eval suites from `eval/suites/`, compares against baselines in `eval/baselines/`, uploads results as artifacts (on main branch push, after verify passes)
 - **publish-container** job: builds and pushes Docker image to `ghcr.io/rxbynerd/stirrup` (on main branch push only, after verify passes)
+
+### Releases
+
+Releases are produced by `.github/workflows/release.yml`, triggered by pushing a `v*.*.*` tag (or via `workflow_dispatch` against an existing tag for retries):
+
+```sh
+git tag -a v1.2.3 -m "Release notes"
+git push origin v1.2.3
+```
+
+The workflow re-runs `_verify.yml`, then in parallel cross-compiles `stirrup` and `stirrup-eval` for linux/{amd64,arm64}, darwin/{amd64,arm64}, windows/amd64 (tar.gz on Unix, zip on Windows), generates SPDX + CycloneDX SBOMs via `anchore/sbom-action`, and renders a changelog from `git log` since the previous tag (capped at 100 lines). A `release` job aggregates all artifacts into a single `SHA256SUMS` file and publishes a GitHub Release. Tags containing `-` (e.g. `v1.2.3-rc1`) are marked as prereleases automatically.
+
+Version-label conventions injected via `-X github.com/rxbynerd/stirrup/types/version.version` and `...commit`:
+
+| Build origin | `Full()` output |
+|---|---|
+| `release.yml` on a tag | `v1.2.3 (ab74b75)` |
+| `ci.yml` on `refs/heads/main` | `main (ab74b75)` |
+| `ci.yml` on any other ref | `dev (ab74b75)` |
+| `go build` / `go run` locally | `dev` |
+
+Artifact signing (cosign / Sigstore) is intentionally out of scope; a commented-out signing seam sits in `release.yml` between the SHA256SUMS step and the release-create step.
 
 ### Known issue: gopls false positives
 
