@@ -10,11 +10,10 @@ on:
     inputs:
       ref:
         description: >-
-          Git ref to check out and test. Defaults to ${{ github.sha }}, which
-          is correct for ci.yml's per-push invocation. release.yml passes
-          the resolved release tag here so a workflow_dispatch retrigger
-          tests the tagged commit rather than whatever main currently
-          points at.
+          Git ref to check out and test. Defaults to github.sha, which is
+          correct for ci.yml's per-push invocation. release.yml passes the
+          resolved release tag here so a workflow_dispatch retrigger tests the
+          tagged commit rather than whatever main currently points at.
         type: string
         required: false
         default: ''
