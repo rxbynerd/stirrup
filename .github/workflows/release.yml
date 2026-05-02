@@ -23,8 +23,11 @@ on:
         required: true
         type: string
 
+# Default to read-only at the workflow level so a compromised action in the
+# build/sbom/changelog matrix cannot push commits or create releases. Only
+# the `release` job re-grants `contents: write` for the actual publish step.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # validate-tag is the single source of truth for the release tag. Every
@@ -268,6 +271,9 @@ jobs:
     name: Publish Release
     needs: [validate-tag, verify, build-binaries, sbom, changelog]
     runs-on: ubuntu-latest
+    # Only the publish step needs write access to releases. Granting it at
+    # the job level (rather than the workflow level) keeps the blast radius
+    # of any compromise in the matrix jobs minimal.
     permissions:
       contents: write
     env:
