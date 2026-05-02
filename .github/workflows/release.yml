@@ -1,0 +1,333 @@
+name: Release
+
+# Triggered by pushing a v*.*.* tag, or manually re-runnable against an
+# existing tag via workflow_dispatch (useful when a transient failure
+# leaves the release incomplete and re-tagging would be heavy-handed).
+#
+# Pipeline (sequential by `needs:`):
+#   validate-tag  → resolves and validates the input/ref tag once
+#   verify        → reuses _verify.yml — the tagged SHA must pass tests
+#   build-binaries → matrix of GOOS/GOARCH cells, archives + SHA-256
+#   sbom          → SPDX + CycloneDX from anchore/sbom-action
+#   changelog     → git log since the previous tag
+#   release       → aggregates SHA256SUMS and creates the GitHub Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (must match v*.*.*)'
+        required: true
+        type: string
+
+# Default to read-only at the workflow level so a compromised action in the
+# build/sbom/changelog matrix cannot push commits or create releases. Only
+# the `release` job re-grants `contents: write` for the actual publish step.
+permissions:
+  contents: read
+
+jobs:
+  # validate-tag is the single source of truth for the release tag. Every
+  # downstream job consumes its `tag` output instead of re-deriving and
+  # re-validating from `inputs.tag` / `github.ref_name`. Centralising the
+  # validation guard here means a workflow_dispatch with a garbage tag
+  # ("notasemver") fails fast in this job — no SBOMs are generated, no
+  # release is created, and the validation regex lives in exactly one place.
+  validate-tag:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Resolve and validate tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
+            echo "tag '$TAG' does not match v*.*.* (with optional prerelease suffix)" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify
+    needs: validate-tag
+    uses: ./.github/workflows/_verify.yml
+    with:
+      ref: ${{ needs.validate-tag.outputs.tag }}
+
+  build-binaries:
+    name: Build (${{ matrix.os }}/${{ matrix.arch }})
+    needs: [validate-tag, verify]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, arch: amd64}
+          - {os: linux, arch: arm64}
+          - {os: darwin, arch: amd64}
+          - {os: darwin, arch: arm64}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            harness/go.mod
+            types/go.mod
+            eval/go.mod
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+          SHORT_SHA: ${{ steps.sha.outputs.short }}
+        run: |
+          set -euo pipefail
+          ext=""
+
+          mkdir -p dist
+          STIRRUP_OUT="dist/stirrup-${TAG}-${GOOS}-${GOARCH}${ext}"
+          EVAL_OUT="dist/stirrup-eval-${TAG}-${GOOS}-${GOARCH}${ext}"
+
+          # Build from repo root so go.work resolves the cross-module
+          # imports (eval imports types/version, etc.).
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/rxbynerd/stirrup/types/version.version=${TAG} -X github.com/rxbynerd/stirrup/types/version.commit=${SHORT_SHA}" \
+            -o "${STIRRUP_OUT}" ./harness/cmd/stirrup
+          go build -trimpath \
+            -ldflags="-s -w -X github.com/rxbynerd/stirrup/types/version.version=${TAG} -X github.com/rxbynerd/stirrup/types/version.commit=${SHORT_SHA}" \
+            -o "${EVAL_OUT}" ./eval/cmd/eval
+
+      - name: Stage archive contents
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ext=""
+
+          STAGE="staging"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp "dist/stirrup-${TAG}-${GOOS}-${GOARCH}${ext}"      "$STAGE/stirrup${ext}"
+          cp "dist/stirrup-eval-${TAG}-${GOOS}-${GOARCH}${ext}" "$STAGE/stirrup-eval${ext}"
+          if [ -f LICENSE ]; then cp LICENSE "$STAGE/"; fi
+          if [ -f README.md ]; then cp README.md "$STAGE/"; fi
+
+      - name: Archive (tar.gz)
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="stirrup-${TAG}-${GOOS}-${GOARCH}.tar.gz"
+          # -C into staging so the archive does not embed the staging dir.
+          tar -czf "$ARCHIVE" -C staging .
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            stirrup-*.tar.gz
+            stirrup-*.zip
+            stirrup-*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  sbom:
+    name: SBOM
+    needs: [validate-tag, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-tag.outputs.tag }}
+
+      # SHA-pinned to v0.24.0. SHA verified via the GitHub API on
+      # 2026-05-02 (`gh api repos/anchore/sbom-action/git/refs/tags/v0.24.0`,
+      # which also matches the v0 floating tag's current target). Pinning
+      # to an immutable commit defends against an upstream tag being
+      # silently retargeted to attacker-controlled code.
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Compute SBOM checksums
+        run: |
+          set -euo pipefail
+          for f in stirrup-*.spdx.json stirrup-*.cdx.json; do
+            sha256sum "$f" > "${f}.sha256"
+          done
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: |
+            stirrup-*.spdx.json
+            stirrup-*.cdx.json
+            stirrup-*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  changelog:
+    name: Changelog
+    needs: [validate-tag, verify]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          # Full history is required for git describe / git log range.
+          fetch-depth: 0
+
+      - name: Generate CHANGELOG.md
+        env:
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..${TAG}"
+            HEADER="## Changes since ${PREV}"
+          else
+            RANGE="${TAG}"
+            HEADER="## Changes"
+          fi
+          {
+            echo "$HEADER"
+            echo
+            # Cap at 100 lines to keep first-tag changelogs readable.
+            git log --pretty=format:'- %s (%h)' --no-merges "$RANGE" | head -n 100
+            echo
+          } > CHANGELOG.md
+          cat CHANGELOG.md
+
+      - name: Upload changelog artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: changelog
+          path: CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish Release
+    needs: [validate-tag, verify, build-binaries, sbom, changelog]
+    runs-on: ubuntu-latest
+    # Only the publish step needs write access to releases. Granting it at
+    # the job level (rather than the workflow level) keeps the blast radius
+    # of any compromise in the matrix jobs minimal.
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.validate-tag.outputs.tag }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Aggregate release assets and SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # Flatten archives, SBOMs, and per-cell sums into release/.
+          find artifacts -type f \( \
+            -name 'stirrup-*.tar.gz' -o \
+            -name 'stirrup-*.zip' -o \
+            -name 'stirrup-*.spdx.json' -o \
+            -name 'stirrup-*.cdx.json' \
+          \) -exec cp -v {} release/ \;
+
+          # Locate the changelog (artifact path is artifacts/changelog/CHANGELOG.md).
+          cp artifacts/changelog/CHANGELOG.md CHANGELOG.md
+
+          cd release
+          # Recompute checksums against the flattened files so the final
+          # SHA256SUMS references the bare filenames consumers will see.
+          # Use -print0 / sort -z / xargs -0 to handle filenames with
+          # whitespace or other shell-special characters safely. The
+          # explicit `! -name SHA256SUMS` guard prevents the file we are
+          # about to write from being included in its own checksum line.
+          : > SHA256SUMS
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum >> SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+          echo "--- verifying ---"
+          sha256sum -c SHA256SUMS
+
+      # TODO(#NN): cosign sign-blob each release/ asset + SHA256SUMS,
+      # attach .sig files alongside the archives. Pre-wired so the
+      # follow-up only needs to flip these on.
+      # - uses: sigstore/cosign-installer@v3
+      # - run: |
+      #     cd release
+      #     for f in *.tar.gz *.zip *.spdx.json *.cdx.json SHA256SUMS; do
+      #       cosign sign-blob --yes --output-signature "${f}.sig" "$f"
+      #     done
+
+      # SHA-pinned to v2.6.2. SHA verified via the GitHub API on
+      # 2026-05-02 (`gh api repos/softprops/action-gh-release/git/refs/tags/v2.6.2`,
+      # which also matches the v2 floating tag's current target). This
+      # action runs with the job-scoped `contents: write` token, making
+      # it the highest-trust step in the workflow — pinning to an
+      # immutable commit is non-negotiable here.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          body_path: CHANGELOG.md
+          draft: false
+          # Treat any tag with a hyphen (e.g. v1.2.3-rc1) as a prerelease.
+          prerelease: ${{ contains(env.TAG, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            release/stirrup-*.tar.gz
+            release/stirrup-*.zip
+            release/stirrup-*.spdx.json
+            release/stirrup-*.cdx.json
+            release/SHA256SUMS

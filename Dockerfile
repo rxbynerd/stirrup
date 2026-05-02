@@ -3,6 +3,7 @@
 FROM golang:1.26.2-alpine AS builder
 
 ARG VERSION=dev
+ARG COMMIT=""
 
 WORKDIR /src
 
@@ -15,7 +16,9 @@ COPY harness ./harness
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux go build -trimpath \
-    -ldflags="-s -w -X github.com/rxbynerd/stirrup/harness/internal/version.version=${VERSION}" \
+    -ldflags="-s -w \
+      -X github.com/rxbynerd/stirrup/types/version.version=${VERSION} \
+      -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT}" \
     -o /out/stirrup ./harness/cmd/stirrup
 
 FROM gcr.io/distroless/static-debian12:nonroot

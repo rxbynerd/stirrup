@@ -1,16 +1,57 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// --- run() dispatch tests ---
+
+// TestRun_Version exercises the --version short-circuit through run() so we
+// don't need to shell out to a built binary or fight global state. Each
+// accepted spelling (--version / -v / version) must exit 0 and print to
+// stdout.
+func TestRun_Version(t *testing.T) {
+	for _, arg := range []string{"--version", "-v", "version"} {
+		t.Run(arg, func(t *testing.T) {
+			var stdout bytes.Buffer
+			code := run([]string{arg}, &stdout)
+			if code != 0 {
+				t.Fatalf("run(%q) exit code = %d, want 0", arg, code)
+			}
+			out := stdout.String()
+			if !strings.HasPrefix(out, "stirrup-eval version ") {
+				t.Fatalf("stdout = %q, want prefix %q", out, "stirrup-eval version ")
+			}
+			// Default link-time version when no -ldflags injected.
+			if !strings.Contains(out, "dev") {
+				t.Fatalf("stdout = %q, want it to contain default version %q", out, "dev")
+			}
+		})
+	}
+}
+
+// TestRun_NoArgs documents the empty-args contract: usage goes to stderr,
+// stdout stays untouched, exit code is 1.
+func TestRun_NoArgs(t *testing.T) {
+	var stdout bytes.Buffer
+	code := run(nil, &stdout)
+	if code != 1 {
+		t.Fatalf("run(nil) exit code = %d, want 1", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout should be empty for usage error, got %q", stdout.String())
+	}
+}
 
 func TestLoadSuite_Valid(t *testing.T) {
 	dir := t.TempDir()
