@@ -450,6 +450,7 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			cfg.CodeScanner = &types.CodeScannerConfig{Type: typ}
 		}
 	}
+	return nil
 }
 
 func runHarness(cmd *cobra.Command, args []string) error {

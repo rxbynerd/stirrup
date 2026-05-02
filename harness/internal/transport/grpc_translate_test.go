@@ -130,23 +130,6 @@ func TestRunConfigFromProto_TranslatesNewSafetyFields(t *testing.T) {
 
 	rc := runConfigFromProto(pc)
 
-	if rc.SessionName != "nightly-eval" {
-		t.Fatalf("SessionName not propagated: got %q, want %q", rc.SessionName, "nightly-eval")
-	}
-}
-
-// TestRunConfigFromProto_SessionNameAbsentWhenNil documents the safe default:
-// when the proto omits SessionName (the field is a proto3 optional, so the
-// zero value is a nil pointer), the internal RunConfig must surface the empty
-// string rather than panicking on a nil dereference.
-func TestRunConfigFromProto_SessionNameAbsentWhenNil(t *testing.T) {
-	pc := &pb.RunConfig{}
-
-	rc := runConfigFromProto(pc)
-
-	if rc.SessionName != "" {
-		t.Fatalf("SessionName should be empty when proto field is nil, got %q", rc.SessionName)
-	}
 	if rc.Executor.Runtime != "runsc" {
 		t.Errorf("Executor.Runtime: got %q, want runsc", rc.Executor.Runtime)
 	}
@@ -167,6 +150,20 @@ func TestRunConfigFromProto_SessionNameAbsentWhenNil(t *testing.T) {
 	}
 	if rc.CodeScanner != nil && !rc.CodeScanner.BlockOnWarn {
 		t.Errorf("CodeScanner.BlockOnWarn not translated")
+	}
+}
+
+// TestRunConfigFromProto_SessionNameAbsentWhenNil documents the safe default:
+// when the proto omits SessionName (the field is a proto3 optional, so the
+// zero value is a nil pointer), the internal RunConfig must surface the empty
+// string rather than panicking on a nil dereference.
+func TestRunConfigFromProto_SessionNameAbsentWhenNil(t *testing.T) {
+	pc := &pb.RunConfig{}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.SessionName != "" {
+		t.Fatalf("SessionName should be empty when proto field is nil, got %q", rc.SessionName)
 	}
 
 	// Cross-check: when the proto sub-message is omitted entirely,

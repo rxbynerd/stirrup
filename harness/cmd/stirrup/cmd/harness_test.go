@@ -637,6 +637,9 @@ func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
 	if cfg.SessionName != "nightly-eval" {
 		t.Errorf("SessionName: got %q, want %q", cfg.SessionName, "nightly-eval")
 	}
+	// See Rule-of-Two note in TestBuildHarnessRunConfig_AllModesValidate.
+	enforce := false
+	cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig: %v", err)
 	}
@@ -1361,6 +1364,9 @@ func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
 	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
 		t.Errorf("Provider.QueryParams[api-version] = %q, want %q", got, want)
 	}
+	// See Rule-of-Two note in TestBuildHarnessRunConfig_AllModesValidate.
+	enforce := false
+	cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig: %v", err)
 	}
