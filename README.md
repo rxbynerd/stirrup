@@ -168,6 +168,74 @@ covered there. For end-to-end examples see
 
 ## Architecture
 
+```mermaid
+flowchart LR
+  CP([Control plane / CLI])
+
+  subgraph Harness["Stirrup harness"]
+    T[Transport]
+    PB[PromptBuilder]
+    Loop((AgenticLoop))
+
+    subgraph Turn["Per turn"]
+      R[ModelRouter]
+      CS[ContextStrategy]
+      P[ProviderAdapter]
+    end
+
+    subgraph Dispatch["Tool dispatch"]
+      TR[ToolRegistry]
+      Perm[PermissionPolicy]
+      ES[EditStrategy]
+      E[Executor]
+    end
+
+    V[Verifier]
+    G[GitStrategy]
+    TE[TraceEmitter]
+  end
+
+  CP <-->|events| T
+  T <--> Loop
+  Loop -->|once at start| PB
+  Loop -->|setup / per-turn checkpoint / finalise| G
+
+  Loop --> R
+  Loop --> CS
+  Loop --> P
+  P -->|stream + tool calls| Loop
+
+  Loop --> TR
+  TR -->|gated tools| Perm
+  TR -->|read-only tools| E
+  Perm -->|edit_file| ES
+  Perm -->|other tools| E
+  ES -->|file I/O| E
+  E -->|results| Loop
+
+  Loop -->|end of run| V
+
+  Loop -.->|spans + metrics| TE
+```
+
+The agentic loop owns control flow; everything around it is an
+interface that the factory selects per `RunConfig`. The **PromptBuilder**
+runs once at start; the **GitStrategy** sets up before the loop,
+checkpoints after each turn, and finalises at end-of-run. Each turn the
+loop asks the **ModelRouter** which provider+model to use and the
+**ContextStrategy** for the message history (compacting if the budget
+is tight), then streams the request through the chosen
+**ProviderAdapter**. Tool calls in the response are resolved by the
+**ToolRegistry**; tools flagged `WorkspaceMutating` or
+`RequiresApproval` are gated by the **PermissionPolicy** before
+dispatch, while read-only tools go straight to the **Executor**. The
+`edit_file` tool dispatches through the **EditStrategy**, which uses
+the Executor for file I/O (and is transparently wrapped by the
+post-edit code scanner). At end-of-run the **Verifier** validates
+output. The **Transport** carries events to and from the control plane
+(or stdout for local CLI runs); the **TraceEmitter** records spans and
+metrics throughout.
+
 | # | Component | Interface | Implementations |
 |---|---|---|---|
 | 1 | Model provider | `ProviderAdapter` | `anthropic`, `bedrock`, `openai-compatible`, `openai-responses` |
