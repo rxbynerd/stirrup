@@ -12,8 +12,8 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
-	"github.com/rxbynerd/stirrup/harness/internal/version"
 	"github.com/rxbynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types/version"
 )
 
 var jobCmd = &cobra.Command{

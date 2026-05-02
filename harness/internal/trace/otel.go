@@ -11,8 +11,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/rxbynerd/stirrup/harness/internal/version"
 	"github.com/rxbynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types/version"
 )
 
 // OTelTraceEmitter records harness run telemetry as OpenTelemetry spans,

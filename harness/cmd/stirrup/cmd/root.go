@@ -10,15 +10,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/rxbynerd/stirrup/harness/internal/version"
 	"github.com/rxbynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types/version"
 )
 
 var rootCmd = &cobra.Command{
 	Use:     "stirrup",
 	Short:   "A coding agent harness",
 	Long:    "Stirrup is a coding agent harness with swappable components that can be composed via RunConfig.",
-	Version: version.Version(),
+	Version: version.Full(),
 }
 
 // Execute runs the root command. Called from main().
