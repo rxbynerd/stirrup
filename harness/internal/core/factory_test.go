@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -20,11 +21,39 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// repoRootForTests returns the absolute repo root by walking up from
+// this test file's path. Mirrors the helper in harness/cmd/stirrup/cmd/
+// so tests can locate examples/ regardless of working directory.
+func repoRootForTests(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller(0) failed")
+	}
+	// thisFile is .../harness/internal/core/factory_test.go; walk up four
+	// levels to reach the repo root.
+	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", ".."))
+}
+
+// disableRuleOfTwo returns a RuleOfTwoConfig that overrides the Rule-of-Two
+// invariant. The factory and integration tests in this file build configs
+// that legitimately exercise the all-three case (default tool list +
+// TEST_*_KEY APIKeyRef + allow-all/deny-side-effects) so they can verify
+// factory wiring and policy behaviour. Rule-of-Two semantics are covered
+// in types/runconfig_test.go; the tests here would otherwise be obscured
+// by the validator rejection.
+func disableRuleOfTwo() *types.RuleOfTwoConfig {
+	enforce := false
+	return &types.RuleOfTwoConfig{Enforce: &enforce}
+}
 
 // --- buildRouter ---
 
@@ -282,6 +311,52 @@ func TestBuildEditStrategy_UnknownFallsBack(t *testing.T) {
 	}
 }
 
+// --- wrapWithCodeScanner ---
+
+func TestWrapWithCodeScanner_NilLeavesInnerUnchanged(t *testing.T) {
+	inner := edit.NewWholeFileStrategy()
+	got, err := wrapWithCodeScanner(inner, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != inner {
+		t.Errorf("nil cfg should return inner unchanged, got %T", got)
+	}
+}
+
+func TestWrapWithCodeScanner_NoneLeavesInnerUnchanged(t *testing.T) {
+	inner := edit.NewWholeFileStrategy()
+	got, err := wrapWithCodeScanner(inner, &types.CodeScannerConfig{Type: "none"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != inner {
+		t.Errorf("type=none should return inner unchanged, got %T", got)
+	}
+}
+
+func TestWrapWithCodeScanner_PatternsWraps(t *testing.T) {
+	inner := edit.NewWholeFileStrategy()
+	got, err := wrapWithCodeScanner(inner, &types.CodeScannerConfig{Type: "patterns"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == inner {
+		t.Errorf("patterns scanner should wrap inner, got identity")
+	}
+	if _, ok := got.(*edit.ScannedStrategy); !ok {
+		t.Errorf("expected *edit.ScannedStrategy, got %T", got)
+	}
+}
+
+func TestWrapWithCodeScanner_UnknownTypeReturnsError(t *testing.T) {
+	inner := edit.NewWholeFileStrategy()
+	_, err := wrapWithCodeScanner(inner, &types.CodeScannerConfig{Type: "nope"}, nil)
+	if err == nil {
+		t.Fatal("expected error for unknown scanner type")
+	}
+}
+
 // --- buildVerifier ---
 
 func TestBuildVerifier_None(t *testing.T) {
@@ -332,10 +407,208 @@ func TestBuildVerifier_UnknownFallsBack(t *testing.T) {
 	}
 }
 
+// --- emitRuleOfTwoEvents ---
+
+// captureSecLogger writes to a buffer so tests can inspect the JSON-line
+// stream emitted by SecurityLogger. We use the real SecurityLogger
+// rather than a hand-rolled mock so the JSON shape exercised here is
+// the same one downstream tooling would see.
+func captureSecLogger(t *testing.T) (*security.SecurityLogger, *bytes.Buffer) {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	return security.NewSecurityLogger(buf, "test-run"), buf
+}
+
+func TestEmitRuleOfTwoEvents_AllThreeWithOverrideEmitsDisabled(t *testing.T) {
+	sec, buf := captureSecLogger(t)
+	enforce := false
+	cfg := &types.RunConfig{
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
+		DynamicContext:   map[string]string{"x": "y"},
+		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
+	}
+
+	emitRuleOfTwoEvents(cfg, sec)
+
+	out := buf.String()
+	if !strings.Contains(out, `"event":"rule_of_two_disabled"`) {
+		t.Errorf("expected rule_of_two_disabled event, got: %s", out)
+	}
+}
+
+func TestEmitRuleOfTwoEvents_AllThreeWithoutOverrideStaysSilent(t *testing.T) {
+	// All three flags + ask-upstream is legal without an explicit
+	// override; we should NOT emit rule_of_two_disabled in that case.
+	sec, buf := captureSecLogger(t)
+	cfg := &types.RunConfig{
+		Mode:             "research",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "ask-upstream"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
+		DynamicContext:   map[string]string{"x": "y"},
+	}
+
+	emitRuleOfTwoEvents(cfg, sec)
+
+	if strings.Contains(buf.String(), "rule_of_two_disabled") {
+		t.Errorf("ask-upstream all-three path must not emit rule_of_two_disabled, got: %s", buf.String())
+	}
+}
+
+func TestEmitRuleOfTwoEvents_TwoOfThreeEmitsWarning(t *testing.T) {
+	// All three two-of-three pairs must each emit rule_of_two_warning
+	// with the payload booleans set to (true, true, false) for the two
+	// flags that hold and false for the third. Pre-S6 only the
+	// untrusted+sensitive pair was tested, so a regression in the
+	// untrusted+external or sensitive+external branches would slip
+	// past CI silently.
+	cases := []struct {
+		name    string
+		cfg     *types.RunConfig
+		wantU   bool
+		wantS   bool
+		wantE   bool
+	}{
+		{
+			name: "untrusted+sensitive",
+			cfg: &types.RunConfig{
+				Mode:             "execution",
+				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+				DynamicContext:   map[string]string{"x": "y"},
+			},
+			wantU: true, wantS: true, wantE: false,
+		},
+		{
+			name: "untrusted+external",
+			cfg: &types.RunConfig{
+				Mode: "execution",
+				// APIKeyRef referencing a name without
+				// key/token/secret/password and not via SSM does not
+				// trip ruleOfTwoSensitiveData; use a placeholder.
+				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://CONFIG_VALUE"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				// web_fetch = untrusted AND external; explicit BuiltIn
+				// list so APIKeyRef stays the only sensitivity vector.
+				Tools: types.ToolsConfig{BuiltIn: []string{"web_fetch"}},
+			},
+			wantU: true, wantS: false, wantE: true,
+		},
+		{
+			name: "sensitive+external",
+			cfg: &types.RunConfig{
+				Mode:             "execution",
+				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				// run_command via bridge = external comm; sensitive APIKeyRef.
+				// No web_fetch / DynamicContext / MCP servers ⇒ not untrusted.
+				Tools: types.ToolsConfig{BuiltIn: []string{"run_command"}},
+				Executor: types.ExecutorConfig{
+					Type: "container", Image: "x",
+					Network: &types.NetworkConfig{Mode: "bridge"},
+				},
+			},
+			wantU: false, wantS: true, wantE: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sec, buf := captureSecLogger(t)
+			emitRuleOfTwoEvents(tc.cfg, sec)
+			out := buf.String()
+			if !strings.Contains(out, `"event":"rule_of_two_warning"`) {
+				t.Fatalf("expected rule_of_two_warning event, got: %s", out)
+			}
+			// Payload field assertions. The booleans are emitted as
+			// JSON true/false so a substring search is sufficient and
+			// keeps this test independent of map-key ordering.
+			assertPayloadBool(t, out, "untrustedInput", tc.wantU)
+			assertPayloadBool(t, out, "sensitiveData", tc.wantS)
+			assertPayloadBool(t, out, "externalCommunication", tc.wantE)
+		})
+	}
+}
+
+// assertPayloadBool checks that a JSON line in out names key with the
+// expected boolean value. The SecurityLogger output uses standard
+// json.Marshal so the encoding is `"key":true`/`"key":false`.
+func assertPayloadBool(t *testing.T, out, key string, want bool) {
+	t.Helper()
+	var phrase string
+	if want {
+		phrase = `"` + key + `":true`
+	} else {
+		phrase = `"` + key + `":false`
+	}
+	if !strings.Contains(out, phrase) {
+		t.Errorf("expected %q in payload, got: %s", phrase, out)
+	}
+}
+
+// TestEmitRuleOfTwoEvents_DisabledPayloadShape extends the override
+// path to assert the same payload booleans appear on rule_of_two_disabled
+// events. The audit consumer gets a single shape across both events.
+func TestEmitRuleOfTwoEvents_DisabledPayloadShape(t *testing.T) {
+	sec, buf := captureSecLogger(t)
+	enforce := false
+	cfg := &types.RunConfig{
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
+		DynamicContext:   map[string]string{"x": "y"},
+		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
+	}
+	emitRuleOfTwoEvents(cfg, sec)
+	out := buf.String()
+	if !strings.Contains(out, `"event":"rule_of_two_disabled"`) {
+		t.Fatalf("expected rule_of_two_disabled, got: %s", out)
+	}
+	assertPayloadBool(t, out, "untrustedInput", true)
+	assertPayloadBool(t, out, "sensitiveData", true)
+	assertPayloadBool(t, out, "externalCommunication", true)
+}
+
+func TestEmitRuleOfTwoEvents_NoneOrOneStaysSilent(t *testing.T) {
+	sec, buf := captureSecLogger(t)
+	cfg := &types.RunConfig{
+		Mode:             "execution",
+		Provider:         types.ProviderConfig{Type: "anthropic"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+	}
+	emitRuleOfTwoEvents(cfg, sec)
+	if buf.Len() > 0 {
+		t.Errorf("zero-or-one flag config should emit nothing, got: %s", buf.String())
+	}
+}
+
 // --- buildPermissionPolicy ---
 
+// buildPermissionPolicyForTest is a thin wrapper that fabricates a
+// minimal RunConfig from a bare PermissionPolicyConfig so the existing
+// table tests don't have to spell out a full config every call.
+func buildPermissionPolicyForTest(t *testing.T, cfg types.PermissionPolicyConfig, registry *tool.Registry, tp transport.Transport) permission.PermissionPolicy {
+	t.Helper()
+	rc := &types.RunConfig{
+		RunID:            "test-run",
+		Mode:             "execution",
+		PermissionPolicy: cfg,
+	}
+	pp, err := buildPermissionPolicy(rc, registry, tp, nil)
+	if err != nil {
+		t.Fatalf("buildPermissionPolicy: %v", err)
+	}
+	return pp
+}
+
 func TestBuildPermissionPolicy_AllowAll(t *testing.T) {
-	pp := buildPermissionPolicy(types.PermissionPolicyConfig{Type: "allow-all"}, nil, nil)
+	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{Type: "allow-all"}, nil, nil)
 	if _, ok := pp.(*permission.AllowAll); !ok {
 		t.Fatalf("expected AllowAll, got %T", pp)
 	}
@@ -345,7 +618,7 @@ func TestBuildPermissionPolicy_DenySideEffects(t *testing.T) {
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
 	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
-	pp := buildPermissionPolicy(types.PermissionPolicyConfig{Type: "deny-side-effects"}, registry, nil)
+	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{Type: "deny-side-effects"}, registry, nil)
 	if _, ok := pp.(*permission.DenySideEffects); !ok {
 		t.Fatalf("expected DenySideEffects, got %T", pp)
 	}
@@ -356,16 +629,111 @@ func TestBuildPermissionPolicy_AskUpstream(t *testing.T) {
 		caps: executor.ExecutorCapabilities{CanRead: true},
 	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
-	pp := buildPermissionPolicy(types.PermissionPolicyConfig{Type: "ask-upstream", Timeout: 60}, registry, tp)
+	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{Type: "ask-upstream", Timeout: 60}, registry, tp)
 	if _, ok := pp.(*permission.AskUpstreamPolicy); !ok {
 		t.Fatalf("expected AskUpstreamPolicy, got %T", pp)
 	}
 }
 
-func TestBuildPermissionPolicy_DefaultFallback(t *testing.T) {
-	pp := buildPermissionPolicy(types.PermissionPolicyConfig{}, nil, nil)
-	if _, ok := pp.(*permission.AllowAll); !ok {
-		t.Fatalf("expected AllowAll for empty type, got %T", pp)
+// TestBuildPermissionPolicy_UnknownTypeReturnsError covers S2: an
+// unrecognised PermissionPolicy.Type used to fall through to allow-all,
+// which silently dropped permissions on a config that ValidateRunConfig
+// would have rejected on the normal path. Direct callers (tests,
+// future tooling) that bypass validation must now get an explicit
+// error so a misconfigured run cannot proceed under allow-all.
+func TestBuildPermissionPolicy_UnknownTypeReturnsError(t *testing.T) {
+	registry := buildToolRegistry(&registryExecutor{
+		caps: executor.ExecutorCapabilities{CanRead: true},
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	rc := &types.RunConfig{
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "bogus"},
+	}
+	if _, err := buildPermissionPolicy(rc, registry, nil, nil); err == nil {
+		t.Fatal("expected error for unknown permissionPolicy.type")
+	}
+	rc2 := &types.RunConfig{PermissionPolicy: types.PermissionPolicyConfig{}}
+	if _, err := buildPermissionPolicy(rc2, registry, nil, nil); err == nil {
+		t.Fatal("expected error for empty permissionPolicy.type")
+	}
+}
+
+// TestBuildPermissionPolicy_PolicyEngine verifies the policy-engine arm
+// loads a Cedar policy file from disk and constructs a PolicyEnginePolicy
+// with the configured fallback. Uses an in-tree starter policy so we
+// exercise the real LoadPolicySetFromFile path.
+func TestBuildPermissionPolicy_PolicyEngine(t *testing.T) {
+	policyPath := filepath.Join(repoRootForTests(t), "examples", "policies", "destructive-shell.cedar")
+	if _, err := os.Stat(policyPath); err != nil {
+		t.Skipf("starter policy missing at %q: %v", policyPath, err)
+	}
+	registry := buildToolRegistry(&registryExecutor{
+		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	rc := &types.RunConfig{
+		RunID: "test-run",
+		Mode:  "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type:       "policy-engine",
+			PolicyFile: policyPath,
+			// Omit fallback to exercise the deny-side-effects default.
+		},
+	}
+	pp, err := buildPermissionPolicy(rc, registry, nil, nil)
+	if err != nil {
+		t.Fatalf("buildPermissionPolicy: %v", err)
+	}
+	if _, ok := pp.(*permission.PolicyEnginePolicy); !ok {
+		t.Fatalf("expected PolicyEnginePolicy, got %T", pp)
+	}
+}
+
+// TestBuildPermissionPolicy_PolicyEngineFallbackIsBuilt verifies the
+// fallback closure threads through the same buildPermissionPolicy
+// dispatch — i.e. an explicit fallback="ask-upstream" really constructs
+// an AskUpstreamPolicy under the hood. This is what makes the
+// no-decision path behave like a top-level ask-upstream config.
+func TestBuildPermissionPolicy_PolicyEngineFallbackIsBuilt(t *testing.T) {
+	policyPath := filepath.Join(repoRootForTests(t), "examples", "policies", "destructive-shell.cedar")
+	if _, err := os.Stat(policyPath); err != nil {
+		t.Skipf("starter policy missing at %q: %v", policyPath, err)
+	}
+	registry := buildToolRegistry(&registryExecutor{
+		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	rc := &types.RunConfig{
+		RunID: "test-run",
+		Mode:  "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type:       "policy-engine",
+			PolicyFile: policyPath,
+			Fallback:   "ask-upstream",
+			Timeout:    30,
+		},
+	}
+	pp, err := buildPermissionPolicy(rc, registry, tp, nil)
+	if err != nil {
+		t.Fatalf("buildPermissionPolicy: %v", err)
+	}
+	if _, ok := pp.(*permission.PolicyEnginePolicy); !ok {
+		t.Fatalf("expected PolicyEnginePolicy, got %T", pp)
+	}
+}
+
+// TestBuildPermissionPolicy_PolicyEngineMissingFile asserts that a
+// missing policy file fails fast with a clear error.
+func TestBuildPermissionPolicy_PolicyEngineMissingFile(t *testing.T) {
+	rc := &types.RunConfig{
+		RunID: "test-run",
+		Mode:  "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type:       "policy-engine",
+			PolicyFile: "/this/path/does/not/exist.cedar",
+		},
+	}
+	_, err := buildPermissionPolicy(rc, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for missing policy file, got nil")
 	}
 }
 
@@ -463,7 +831,7 @@ func TestBuildExecutor_Local(t *testing.T) {
 	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:      "local",
 		Workspace: workspace,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -475,7 +843,7 @@ func TestBuildExecutor_Local(t *testing.T) {
 func TestBuildExecutor_EmptyTypeDefaultsToLocal(t *testing.T) {
 	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Workspace: t.TempDir(),
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -485,7 +853,7 @@ func TestBuildExecutor_EmptyTypeDefaultsToLocal(t *testing.T) {
 }
 
 func TestBuildExecutor_LocalDefaultsWorkspaceToCwd(t *testing.T) {
-	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "local"}, nil)
+	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "local"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -495,7 +863,7 @@ func TestBuildExecutor_LocalDefaultsWorkspaceToCwd(t *testing.T) {
 }
 
 func TestBuildExecutor_API_MissingVcsBackend(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "api"}, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "api"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for api without vcsBackend")
 	}
@@ -513,7 +881,7 @@ func TestBuildExecutor_API_BadRepoFormat(t *testing.T) {
 			Repo:      "invalid-no-slash",
 			Ref:       "main",
 		},
-	}, secrets)
+	}, secrets, nil)
 	if err == nil {
 		t.Fatal("expected error for bad repo format")
 	}
@@ -531,7 +899,7 @@ func TestBuildExecutor_API_ValidConfig(t *testing.T) {
 			Repo:      "owner/repo",
 			Ref:       "main",
 		},
-	}, secrets)
+	}, secrets, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -541,7 +909,7 @@ func TestBuildExecutor_API_ValidConfig(t *testing.T) {
 }
 
 func TestBuildExecutor_Container_MissingImage(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for container without image")
 	}
@@ -551,7 +919,7 @@ func TestBuildExecutor_Container_MissingImage(t *testing.T) {
 }
 
 func TestBuildExecutor_UnsupportedType(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -881,6 +1249,7 @@ func TestBuildLoopWithTransport_MinimalValidConfig(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -964,6 +1333,7 @@ func TestBuildLoopWithTransport_InjectedTransportSkipsBuild(t *testing.T) {
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		Transport:        types.TransportConfig{Type: "grpc"}, // would fail without address
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1005,6 +1375,7 @@ func TestBuildLoopWithTransport_NoopMetricsWhenNotOTel(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1042,6 +1413,7 @@ func TestBuildLoopWithTransport_AllToolsRegisteredByDefault(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1079,6 +1451,7 @@ func TestBuildLoopWithTransport_SecretResolutionFailure(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1119,6 +1492,7 @@ func TestBuildLoopWithTransport_ResearchModeAllowsWebFetch(t *testing.T) {
 		GitStrategy:      types.GitStrategyConfig{Type: "none"},
 		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
 		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
 		MaxTurns:         2,
 		Timeout:          &timeout,
 	}
@@ -1175,6 +1549,7 @@ func TestBuildLoopWithTransport_ReadOnlyModesAllowWebFetch(t *testing.T) {
 				GitStrategy:      types.GitStrategyConfig{Type: "none"},
 				TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
 				Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+				RuleOfTwo:        disableRuleOfTwo(),
 				MaxTurns:         2,
 				Timeout:          &timeout,
 			}

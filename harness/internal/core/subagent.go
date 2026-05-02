@@ -11,6 +11,7 @@ import (
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -90,6 +91,26 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		tracer = noop.NewTracerProvider().Tracer("")
 	}
 
+	// Build the child RunConfig first so we have the child run ID to
+	// thread through the Cedar policy clone below.
+	childConfig := *parentConfig
+	childConfig.RunID = fmt.Sprintf("sub-%d", time.Now().UnixNano())
+	childConfig.Prompt = subConfig.Prompt
+	childConfig.Mode = mode
+	childConfig.MaxTurns = maxTurns
+	childConfig.GitStrategy = types.GitStrategyConfig{Type: "none"}
+
+	// Permissions: when the parent is a Cedar policy-engine policy, the
+	// sub-agent gets its own clone with parentRunId populated. This is
+	// the only path that activates the subagent-capability-cap.cedar
+	// starter policy — without it, principal.parentRunId is absent and
+	// `has parentRunId` evaluates to false for every sub-agent run,
+	// silently negating the policy (M3).
+	childPermissions := parent.Permissions
+	if parentPolicyEngine, ok := parent.Permissions.(*permission.PolicyEnginePolicy); ok {
+		childPermissions = parentPolicyEngine.ForChildRun(childConfig.RunID)
+	}
+
 	// Build the child loop, reusing parent components where safe.
 	childLoop := &AgenticLoop{
 		Provider:    parent.Provider,
@@ -101,7 +122,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Executor:    parent.Executor,
 		Edit:        parent.Edit,
 		Verifier:    verifier.NewNoneVerifier(),
-		Permissions: parent.Permissions,
+		Permissions: childPermissions,
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   captureTp,
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
@@ -110,15 +131,6 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Logger:      parent.Logger,
 		Security:    parent.Security,
 	}
-
-	// Build the child RunConfig. We copy the parent config and override
-	// the fields that distinguish the sub-agent from the parent.
-	childConfig := *parentConfig
-	childConfig.RunID = fmt.Sprintf("sub-%d", time.Now().UnixNano())
-	childConfig.Prompt = subConfig.Prompt
-	childConfig.Mode = mode
-	childConfig.MaxTurns = maxTurns
-	childConfig.GitStrategy = types.GitStrategyConfig{Type: "none"}
 
 	// Run the child loop synchronously.
 	runTrace, err := childLoop.Run(ctx, &childConfig)

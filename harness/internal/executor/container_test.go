@@ -105,7 +105,7 @@ func TestContainerAPIClient_CreateContainer(t *testing.T) {
 
 	client := newContainerAPIClient(sock)
 	id, err := client.createContainer(context.Background(), containerCreateRequest{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		Cmd:        []string{"sleep", "infinity"},
 		WorkingDir: "/workspace",
 		HostConfig: &hostConfig{
@@ -125,8 +125,8 @@ func TestContainerAPIClient_CreateContainer(t *testing.T) {
 	}
 
 	// Verify the body was sent correctly.
-	if receivedBody.Image != "ubuntu:22.04" {
-		t.Errorf("image: got %q, want %q", receivedBody.Image, "ubuntu:22.04")
+	if receivedBody.Image != "ubuntu:26.04" {
+		t.Errorf("image: got %q, want %q", receivedBody.Image, "ubuntu:26.04")
 	}
 	if receivedBody.HostConfig.NetworkMode != "none" {
 		t.Errorf("network mode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "none")
@@ -670,7 +670,7 @@ func TestContainerExecutor_StartFailureCleanup(t *testing.T) {
 	defer cleanup()
 
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
@@ -704,7 +704,7 @@ func TestContainerExecutor_ResourceLimits(t *testing.T) {
 	defer cleanup()
 
 	exec, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 		Resources: &types.ResourceLimits{
@@ -752,7 +752,7 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 
 	// Default: none
 	exec, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
@@ -767,7 +767,7 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 
 	// Allowlist: bridge
 	exec, err = NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 		Network:    &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}},
@@ -782,6 +782,240 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 	}
 }
 
+func TestContainerExecutor_Runtime(t *testing.T) {
+	// Capture the raw POST body so we can assert exactly what bytes go on
+	// the wire. The Engine API treats a missing Runtime field as "use the
+	// daemon default", so it matters that we (a) include "Runtime":"runsc"
+	// when set and (b) omit the field entirely when not set — otherwise
+	// older Docker versions can fail with `runtime "" not registered`.
+	var rawBody []byte
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			rawBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	defer cleanup()
+
+	// Configured runtime must appear in the create-container body.
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+		Runtime:    "runsc",
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	_ = exec.Close()
+
+	if !strings.Contains(string(rawBody), `"Runtime":"runsc"`) {
+		t.Errorf("create body missing Runtime=runsc; got: %s", string(rawBody))
+	}
+
+	// Hardening defaults must still be present alongside the runtime.
+	var parsed containerCreateRequest
+	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+		t.Fatalf("unmarshal create body: %v", err)
+	}
+	if parsed.HostConfig.Runtime != "runsc" {
+		t.Errorf("HostConfig.Runtime: got %q, want %q", parsed.HostConfig.Runtime, "runsc")
+	}
+	if parsed.HostConfig.NetworkMode != "none" {
+		t.Errorf("HostConfig.NetworkMode: got %q, want %q", parsed.HostConfig.NetworkMode, "none")
+	}
+	if len(parsed.HostConfig.CapDrop) != 1 || parsed.HostConfig.CapDrop[0] != "ALL" {
+		t.Errorf("HostConfig.CapDrop: got %v, want [ALL]", parsed.HostConfig.CapDrop)
+	}
+
+	// Empty runtime must be omitted entirely (engine picks its default).
+	rawBody = nil
+	exec, err = NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	_ = exec.Close()
+
+	if strings.Contains(string(rawBody), `"Runtime"`) {
+		t.Errorf("create body should omit Runtime when unset; got: %s", string(rawBody))
+	}
+}
+
+// TestContainerExecutor_AllowlistMode_WiringConfig verifies that selecting
+// Network.Mode == "allowlist" causes the create-container request to:
+//
+//   - set NetworkMode to "bridge" (so the container can dial the host),
+//   - inject ExtraHosts so host.docker.internal resolves to the host gateway,
+//   - populate HTTP_PROXY / HTTPS_PROXY / NO_PROXY env in the container.
+//
+// The proxy itself is started on a real local port; we don't exercise it
+// over the wire here (a planted-curl integration test belongs behind a
+// build tag — see container_integration_test.go).
+func TestContainerExecutor_AllowlistMode_WiringConfig(t *testing.T) {
+	var receivedBody containerCreateRequest
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	defer cleanup()
+
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+		Network: &types.NetworkConfig{
+			Mode:      "allowlist",
+			Allowlist: []string{"api.github.com"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	defer func() { _ = exec.Close() }()
+
+	if receivedBody.HostConfig.NetworkMode != "bridge" {
+		t.Errorf("NetworkMode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "bridge")
+	}
+
+	wantHost := "host.docker.internal:host-gateway"
+	if len(receivedBody.HostConfig.ExtraHosts) != 1 || receivedBody.HostConfig.ExtraHosts[0] != wantHost {
+		t.Errorf("ExtraHosts: got %v, want [%q]", receivedBody.HostConfig.ExtraHosts, wantHost)
+	}
+
+	envSeen := map[string]string{}
+	for _, kv := range receivedBody.Env {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) == 2 {
+			envSeen[parts[0]] = parts[1]
+		}
+	}
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"} {
+		if _, ok := envSeen[k]; !ok {
+			t.Errorf("missing env var %s; got Env=%v", k, receivedBody.Env)
+		}
+	}
+	if !strings.HasPrefix(envSeen["HTTP_PROXY"], "http://host.docker.internal:") {
+		t.Errorf("HTTP_PROXY: got %q, want prefix http://host.docker.internal:<port>", envSeen["HTTP_PROXY"])
+	}
+	if envSeen["HTTP_PROXY"] != envSeen["HTTPS_PROXY"] {
+		t.Errorf("HTTP_PROXY and HTTPS_PROXY should match; got %q vs %q", envSeen["HTTP_PROXY"], envSeen["HTTPS_PROXY"])
+	}
+	if !strings.Contains(envSeen["NO_PROXY"], "127.0.0.1") {
+		t.Errorf("NO_PROXY should at least cover 127.0.0.1; got %q", envSeen["NO_PROXY"])
+	}
+
+	// Hardening defaults should still be present alongside the egress wiring.
+	if len(receivedBody.HostConfig.CapDrop) != 1 || receivedBody.HostConfig.CapDrop[0] != "ALL" {
+		t.Errorf("CapDrop: got %v, want [ALL]", receivedBody.HostConfig.CapDrop)
+	}
+}
+
+// TestContainerExecutor_NoneMode_NoProxyWiring confirms that the proxy
+// lifecycle is only triggered when Network.Mode == "allowlist". For mode
+// "none" the executor must not set ExtraHosts, must not set proxy env,
+// and must keep NetworkMode == "none".
+func TestContainerExecutor_NoneMode_NoProxyWiring(t *testing.T) {
+	var receivedBody containerCreateRequest
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	defer cleanup()
+
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+		Network:    &types.NetworkConfig{Mode: "none"},
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	defer func() { _ = exec.Close() }()
+
+	if receivedBody.HostConfig.NetworkMode != "none" {
+		t.Errorf("NetworkMode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "none")
+	}
+	if len(receivedBody.HostConfig.ExtraHosts) != 0 {
+		t.Errorf("ExtraHosts should be empty for none mode, got %v", receivedBody.HostConfig.ExtraHosts)
+	}
+	if len(receivedBody.Env) != 0 {
+		t.Errorf("Env should be empty for none mode, got %v", receivedBody.Env)
+	}
+}
+
+// TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast verifies that a
+// malformed allowlist entry surfaces a construction error rather than a
+// half-started container.
+func TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast(t *testing.T) {
+	createCalled := false
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			createCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "should-not-happen"})
+		},
+	})
+	defer cleanup()
+
+	_, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+		Network: &types.NetworkConfig{
+			Mode:      "allowlist",
+			Allowlist: []string{"example.com:not-a-port"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for malformed allowlist")
+	}
+	if createCalled {
+		t.Error("container should not be created when the allowlist is invalid")
+	}
+}
+
 func TestNewContainerExecutor_MissingImage(t *testing.T) {
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
 		HostDir: "/tmp/workspace",
@@ -793,7 +1027,7 @@ func TestNewContainerExecutor_MissingImage(t *testing.T) {
 
 func TestNewContainerExecutor_MissingHostDir(t *testing.T) {
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image: "ubuntu:22.04",
+		Image: "ubuntu:26.04",
 	})
 	if err == nil {
 		t.Fatal("expected error for missing host dir")

@@ -26,6 +26,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/security/codescanner"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/tool/builtins"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
@@ -66,6 +67,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
 
+	// Emit Rule-of-Two audit events. The validator already accepted the
+	// config, so any all-three case here implies an explicit operator
+	// override (RuleOfTwo.Enforce: false) or the ask-upstream policy.
+	// Recording the event keeps the override auditable; the two-of-three
+	// warning surfaces a heads-up that future capability creep would
+	// trip the invariant.
+	emitRuleOfTwoEvents(config, secLogger)
+
 	// Secret store for resolving credential references. AutoSecretStore routes
 	// to SSM for "secret://ssm:///..." refs, falling back to env/file otherwise.
 	secrets, err := security.NewAutoSecretStore(ctx, config)
@@ -86,7 +95,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	pb := buildPromptBuilder(config.PromptBuilder, config.SystemPromptOverride)
 
 	// 4. Executor (built early because context strategy may need it).
-	exec, err := buildExecutor(ctx, config.Executor, secrets)
+	// Thread the security logger into the container executor so the
+	// in-process egress proxy (started when network.mode == "allowlist")
+	// can emit egress_allowed / egress_blocked events through the same
+	// SecurityLogger used for path/file events.
+	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger)
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -98,7 +111,18 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
 
 	// 6. Tool registry.
+	// The base edit strategy is constructed first, then optionally wrapped
+	// with a CodeScanner pass when one is configured. ValidateRunConfig
+	// fills CodeScanner with a sensible default per mode (patterns for
+	// execution, none for read-only) so cfg.CodeScanner is never nil at
+	// this point — but defend in depth in case a non-CLI caller passes a
+	// raw RunConfig that bypasses that defaulting.
 	es := buildEditStrategy(config.EditStrategy)
+	es, err = wrapWithCodeScanner(es, config.CodeScanner, secLogger)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("build code scanner: %w", err)
+	}
 	registry := buildToolRegistry(exec, es, config.Tools)
 
 	// secLogger was constructed above (before ValidateRunConfig) so it can
@@ -156,7 +180,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	// 10. Permission policy.
-	pp := buildPermissionPolicy(config.PermissionPolicy, registry, tp)
+	pp, err := buildPermissionPolicy(config, registry, tp, secLogger)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("build permission policy: %w", err)
+	}
 
 	// 11. Git strategy.
 	gs := buildGitStrategy(config.GitStrategy)
@@ -473,7 +501,7 @@ func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.Provide
 	}
 }
 
-func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore) (executor.Executor, error) {
+func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger) (executor.Executor, error) {
 	switch cfg.Type {
 	case "local", "":
 		workspace := cfg.Workspace
@@ -497,11 +525,13 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 				return nil, fmt.Errorf("get working directory: %w", err)
 			}
 		}
-		return executor.NewContainerExecutor(executor.ContainerExecutorConfig{
-			Image:     cfg.Image,
-			HostDir:   workspace,
-			Network:   cfg.Network,
-			Resources: cfg.Resources,
+		return executor.NewContainerExecutorWithContext(ctx, executor.ContainerExecutorConfig{
+			Image:          cfg.Image,
+			HostDir:        workspace,
+			Network:        cfg.Network,
+			Resources:      cfg.Resources,
+			Runtime:        cfg.Runtime,
+			EgressSecurity: secLogger,
 		})
 	case "api":
 		if cfg.VcsBackend == nil {
@@ -604,6 +634,78 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 	}
 }
 
+// emitRuleOfTwoEvents records two security events at run start:
+//
+//   - rule_of_two_disabled when all three Rule-of-Two flags hold AND the
+//     operator explicitly disabled enforcement via RuleOfTwo.Enforce:false.
+//     This is the audit trail for the override; the validator would
+//     otherwise have rejected the config.
+//   - rule_of_two_warning when exactly two of the three flags hold. The
+//     run is legal, but any added capability would tip it into all-three.
+//     The event names which two so reviewers can spot capability creep.
+//
+// The event names "untrusted-input", "sensitive-data", and
+// "external-communication" mirror the validator's rejection message so
+// downstream tooling can grep for the same identifiers in both places.
+func emitRuleOfTwoEvents(config *types.RunConfig, sec *security.SecurityLogger) {
+	if sec == nil || config == nil {
+		return
+	}
+	u, s, e := types.RuleOfTwoState(config)
+
+	if u && s && e {
+		// All three hold: validator only accepted because of the
+		// ask-upstream policy or an explicit Enforce:false override.
+		// Only the override case is interesting for audit — the
+		// ask-upstream path is the documented happy case.
+		if config.RuleOfTwo != nil && config.RuleOfTwo.Enforce != nil && !*config.RuleOfTwo.Enforce {
+			sec.Emit("warn", "rule_of_two_disabled", map[string]any{
+				"reason":               "operator override via RuleOfTwo.Enforce: false",
+				"untrustedInput":       u,
+				"sensitiveData":        s,
+				"externalCommunication": e,
+			})
+		}
+		return
+	}
+
+	// Exactly two hold: structural warning so reviewers can spot drift.
+	count := 0
+	if u {
+		count++
+	}
+	if s {
+		count++
+	}
+	if e {
+		count++
+	}
+	if count == 2 {
+		sec.Emit("warn", "rule_of_two_warning", map[string]any{
+			"untrustedInput":        u,
+			"sensitiveData":         s,
+			"externalCommunication": e,
+		})
+	}
+}
+
+// wrapWithCodeScanner builds a CodeScanner from cfg and wraps inner with a
+// ScannedStrategy when scanning is enabled. A nil cfg, an empty Type, or
+// Type=="none" short-circuits and returns inner unchanged so the no-scan
+// path has zero overhead. The supplied emitter receives code_scan_warning
+// events on warn findings; pass nil to disable security event emission
+// (warnings still log via slog).
+func wrapWithCodeScanner(inner edit.EditStrategy, cfg *types.CodeScannerConfig, emitter edit.SecurityEventEmitter) (edit.EditStrategy, error) {
+	if cfg == nil || cfg.Type == "" || cfg.Type == "none" {
+		return inner, nil
+	}
+	scanner, err := codescanner.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return edit.NewScannedStrategy(inner, scanner, cfg, emitter), nil
+}
+
 func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	fuzzyThreshold := 0.80
 	if cfg.FuzzyThreshold != nil {
@@ -648,24 +750,78 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter) veri
 	}
 }
 
-func buildPermissionPolicy(cfg types.PermissionPolicyConfig, registry *tool.Registry, tp transport.Transport) permission.PermissionPolicy {
+// buildPermissionPolicy constructs the configured PermissionPolicy.
+//
+// The policy-engine arm requires loading a Cedar policy file from disk
+// and wiring a fallback policy in case Cedar returns "no decision". The
+// FallbackBuilder closure is the seam between the permission package
+// (which doesn't know about the registry / transport / secLogger) and
+// the factory (which has all of those in scope) — it maps a fallback
+// type name back to the same construction logic the non-policy-engine
+// arms use, so a policy-engine config with fallback="ask-upstream"
+// behaves identically to top-level ask-upstream when Cedar abstains.
+//
+// Errors are bubbled because policy-engine construction can fail on a
+// missing or malformed policy file; the legacy arms cannot fail and
+// could remain non-error-returning, but a single signature is simpler.
+func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp transport.Transport, secLogger *security.SecurityLogger) (permission.PermissionPolicy, error) {
+	cfg := config.PermissionPolicy
 	switch cfg.Type {
 	case "allow-all":
-		return permission.NewAllowAll()
+		return permission.NewAllowAll(), nil
 	case "deny-side-effects":
 		// DenySideEffects rejects only tools that mutate workspace
 		// state. Tools whose only sensitivity is "operator should
 		// approve" (web_fetch, spawn_agent) are still allowed —
 		// research-mode users explicitly enable them.
-		return permission.NewDenySideEffects(mutatingToolSet(registry))
+		return permission.NewDenySideEffects(mutatingToolSet(registry)), nil
 	case "ask-upstream":
 		// AskUpstreamPolicy prompts on tools whose RequiresApproval
 		// flag is set. This includes mutating tools but also covers
 		// non-mutating-but-sensitive tools.
 		timeout := time.Duration(cfg.Timeout) * time.Second
-		return permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout)
+		return permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout), nil
+	case "policy-engine":
+		env := permission.PolicyEngineEnv{
+			RunID:          config.RunID,
+			Mode:           config.Mode,
+			Workspace:      config.Executor.Workspace,
+			DynamicContext: config.DynamicContext,
+			Security:       secLogger,
+			// ParentRunID and Capabilities are reserved for sub-agent
+			// wiring and capability propagation respectively; both
+			// are populated by the spawn_agent path in a future wave.
+		}
+		// The fallback closure maps a fallback type name to the same
+		// constructor the non-policy-engine arms use. We deliberately
+		// re-route through this switch (via a recursive nested call)
+		// so any future change to a fallback policy's construction
+		// (e.g. a new ask-upstream timeout default) lands in one place.
+		fallback := func(typeName string) (permission.PermissionPolicy, error) {
+			if typeName == "policy-engine" {
+				return nil, fmt.Errorf("policy-engine fallback may not itself be policy-engine")
+			}
+			fallbackCfg := types.PermissionPolicyConfig{
+				Type:    typeName,
+				Timeout: cfg.Timeout,
+			}
+			return buildPermissionPolicy(&types.RunConfig{
+				PermissionPolicy: fallbackCfg,
+				// The recursive call uses the same identity context;
+				// only the Type is different.
+				RunID:          config.RunID,
+				Mode:           config.Mode,
+				Executor:       config.Executor,
+				DynamicContext: config.DynamicContext,
+			}, registry, tp, secLogger)
+		}
+		return permission.New(cfg, env, fallback)
 	default:
-		return permission.NewAllowAll()
+		// Pre-fix this returned NewAllowAll() — silent permission
+		// bypass for any unknown type when callers skipped
+		// ValidateRunConfig. Match the rest of buildExecutor /
+		// buildVerifier and surface an explicit error (S2).
+		return nil, fmt.Errorf("unsupported permissionPolicy.type %q", cfg.Type)
 	}
 }
 

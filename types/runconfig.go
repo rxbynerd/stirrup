@@ -3,6 +3,7 @@ package types
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
@@ -76,6 +77,59 @@ type RunConfig struct {
 	// preamble, bypassing prompt_builder mode selection. Workspace path,
 	// turn budget, and dynamic_context sections are still appended.
 	SystemPromptOverride string `json:"systemPromptOverride,omitempty"`
+
+	// RuleOfTwo carries the operator override for the "Agents Rule of
+	// Two" structural invariant enforced in ValidateRunConfig. When nil
+	// (the default) the invariant is enforced; setting Enforce: false
+	// is the only supported way to bypass it. The override exists so a
+	// human reviewer can sign off on a config that legitimately needs
+	// all three capabilities at once — it should not be set lightly.
+	RuleOfTwo *RuleOfTwoConfig `json:"ruleOfTwo,omitempty"`
+
+	// CodeScanner configures the post-edit static analysis pass that
+	// scans every successful EditStrategy.Apply for hardcoded secrets,
+	// eval/exec sinks, and other known-bad patterns. When nil,
+	// ValidateRunConfig fills in a sensible default per mode
+	// (patterns for execution, none for read-only modes).
+	CodeScanner *CodeScannerConfig `json:"codeScanner,omitempty"`
+}
+
+// RuleOfTwoConfig configures the Rule-of-Two structural invariant. The
+// invariant: a single run must not simultaneously hold (a) untrusted
+// input, (b) sensitive data, and (c) the ability to communicate
+// externally — unless gated by ask-upstream.
+//
+// Enforce is a pointer so we can distinguish "unset" (default: enforce)
+// from "explicit false" (override the rejection). An explicit true is
+// equivalent to leaving the field unset.
+type RuleOfTwoConfig struct {
+	Enforce *bool `json:"enforce,omitempty"`
+}
+
+// CodeScannerConfig selects the static-analysis pass run after every
+// successful file edit. The scanner inspects the edited content for
+// hardcoded secrets, eval/exec sinks, and known-malicious patterns;
+// findings labelled "block" turn into edit failures, "warn" findings
+// just emit a security event.
+//
+//   - "none"      — disable scanning (default for read-only modes).
+//   - "patterns"  — pure-Go regex pack (always available; default for
+//     execution mode).
+//   - "semgrep"   — shell out to a local semgrep binary if present.
+//   - "composite" — union of multiple named scanners.
+type CodeScannerConfig struct {
+	Type        string   `json:"type"`
+	Scanners    []string `json:"scanners,omitempty"`
+	BlockOnWarn bool     `json:"blockOnWarn,omitempty"`
+
+	// SemgrepConfigPath, when non-empty, is passed to semgrep as
+	// `--config <path>` instead of the default `--config auto`. Set
+	// this to a local rules bundle (e.g. /etc/stirrup/semgrep-rules/)
+	// to disable the implicit network fetch of rule packs from
+	// semgrep.dev — required for air-gapped deployments and the only
+	// way to pin the scanner against supply-chain shifts (M7). Empty
+	// preserves the historical default of "auto".
+	SemgrepConfigPath string `json:"semgrepConfigPath,omitempty"`
 }
 
 // Redact returns a copy of the RunConfig with secret references replaced
@@ -197,6 +251,18 @@ type ExecutorConfig struct {
 	Network    *NetworkConfig    `json:"network,omitempty"`
 	Resources  *ResourceLimits   `json:"resources,omitempty"`
 	Proxy      string            `json:"proxy,omitempty"`
+
+	// Runtime selects the OCI runtime for the container executor. Empty
+	// string means "use the engine default" — i.e. the harness does not
+	// pass a Runtime field on the create-container request. The closed set
+	// of accepted values is enforced by ValidateRunConfig.
+	//   ""           — engine default (typically runc)
+	//   "runc"       — vanilla runc
+	//   "runsc"      — gVisor (user-space kernel)
+	//   "kata"       — Kata Containers (default flavour)
+	//   "kata-qemu"  — Kata Containers backed by QEMU
+	//   "kata-fc"    — Kata Containers backed by Firecracker
+	Runtime string `json:"runtime,omitempty"`
 }
 
 // VcsBackendConfig selects the VCS backend for the API executor.
@@ -239,8 +305,20 @@ type VerifierConfig struct {
 
 // PermissionPolicyConfig selects the permission policy implementation.
 type PermissionPolicyConfig struct {
-	Type    string `json:"type"`              // "allow-all" | "deny-side-effects" | "ask-upstream"
+	Type    string `json:"type"`              // "allow-all" | "deny-side-effects" | "ask-upstream" | "policy-engine"
 	Timeout int    `json:"timeout,omitempty"` // ask-upstream: seconds to wait for a response (0 = 60s default)
+
+	// PolicyFile is the filesystem path to a Cedar policy file
+	// (`.cedar`). Required when Type == "policy-engine"; ignored
+	// otherwise.
+	PolicyFile string `json:"policyFile,omitempty"`
+
+	// Fallback names the permission policy to consult when the Cedar
+	// engine returns "no decision" for a request. Must be one of the
+	// non-policy-engine types ("allow-all", "deny-side-effects",
+	// "ask-upstream"). When unset, callers should treat the default as
+	// "deny-side-effects" — fail closed.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // GitStrategyConfig selects the git strategy implementation.
@@ -323,6 +401,20 @@ var validExecutorTypes = map[string]bool{
 	"container": true,
 }
 
+// validExecutorRuntimes is the closed set of OCI runtimes the container
+// executor may select. The empty string is accepted and means "use the
+// engine default" — the harness omits the Runtime field on the create
+// request. Adding a new runtime here is the only supported way to extend
+// the set; ValidateRunConfig rejects everything else.
+var validExecutorRuntimes = map[string]bool{
+	"":          true,
+	"runc":      true,
+	"runsc":     true,
+	"kata":      true,
+	"kata-qemu": true,
+	"kata-fc":   true,
+}
+
 var validEditStrategyTypes = map[string]bool{
 	"whole-file":     true,
 	"search-replace": true,
@@ -338,6 +430,17 @@ var validVerifierTypes = map[string]bool{
 }
 
 var validPermissionPolicyTypes = map[string]bool{
+	"allow-all":         true,
+	"deny-side-effects": true,
+	"ask-upstream":      true,
+	"policy-engine":     true,
+}
+
+// validFallbackPolicyTypes is the set of permission policies that may be
+// referenced from PermissionPolicyConfig.Fallback. The policy-engine
+// itself is excluded — chained policy engines are explicitly out of
+// scope and would loop on a no-decision response.
+var validFallbackPolicyTypes = map[string]bool{
 	"allow-all":         true,
 	"deny-side-effects": true,
 	"ask-upstream":      true,
@@ -368,6 +471,23 @@ var validTokenSourceTypes = map[string]bool{
 	"gke-metadata": true,
 	"file":         true,
 	"env":          true,
+}
+
+// validCodeScannerTypes is the closed set of CodeScanner.Type values.
+var validCodeScannerTypes = map[string]bool{
+	"none":      true,
+	"patterns":  true,
+	"semgrep":   true,
+	"composite": true,
+}
+
+// validCompositeCodeScannerTypes is the subset of scanner types that
+// may appear in CodeScannerConfig.Scanners. Composite-of-composite is
+// excluded so the config cannot recurse.
+var validCompositeCodeScannerTypes = map[string]bool{
+	"none":     true,
+	"patterns": true,
+	"semgrep":  true,
 }
 
 var validBuiltInToolNames = map[string]bool{
@@ -433,7 +553,15 @@ type ModePreset struct {
 
 // ValidateRunConfig enforces hard security constraints that cannot be
 // overridden by the control plane or CLI flags.
+//
+// As a side-effect, ValidateRunConfig fills in a default
+// CodeScannerConfig when the caller has left it nil, so downstream
+// consumers always see a populated value: "patterns" for execution
+// mode (active scanning) and "none" for read-only modes (no edits
+// happen anyway).
 func ValidateRunConfig(config *RunConfig) error {
+	applyCodeScannerDefault(config)
+
 	var errs []string
 
 	validateSessionName(config.SessionName, &errs)
@@ -442,8 +570,19 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
 	validateOptionalType("contextStrategy", config.ContextStrategy.Type, validContextStrategyTypes, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
+	if !validExecutorRuntimes[config.Executor.Runtime] {
+		errs = append(errs, fmt.Sprintf("unsupported executor.runtime %q", config.Executor.Runtime))
+	}
+	// executor.runtime only changes behaviour for the container executor;
+	// silently dropping it on a "local" or "api" run lets an operator
+	// believe they have gVisor isolation when in fact the workload is
+	// running on the host (S8).
+	if config.Executor.Runtime != "" && config.Executor.Type != "container" && config.Executor.Type != "" {
+		errs = append(errs, "executor.runtime is only valid when executor.type is \"container\"")
+	}
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
+	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
 	validateOptionalType("transport", config.Transport.Type, validTransportTypes, &errs)
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
@@ -503,6 +642,9 @@ func ValidateRunConfig(config *RunConfig) error {
 		errs = append(errs, fmt.Sprintf("maxTokenBudget must be <= %d", maxTokenBudget))
 	}
 
+	validateRuleOfTwo(config, &errs)
+	validateCodeScannerConfig(config.CodeScanner, &errs)
+
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
 	}
@@ -523,6 +665,264 @@ func validateOptionalType(name, value string, valid map[string]bool, errs *[]str
 	}
 	if !valid[value] {
 		*errs = append(*errs, fmt.Sprintf("unsupported %s type %q", name, value))
+	}
+}
+
+// pathHasDotDotSegment reports whether path contains a literal ".."
+// component when split on either '/' or '\'. A substring check on
+// `..` would also match harmless filenames like "foo..bar.cedar"; we
+// only want to reject paths whose individual segments are ".." — the
+// shape that turns `os.ReadFile(p)` into a host-file traversal.
+func pathHasDotDotSegment(path string) bool {
+	for _, sep := range []string{"/", "\\"} {
+		for _, seg := range strings.Split(path, sep) {
+			if seg == ".." {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// validatePermissionPolicyFields enforces the cross-field constraints on
+// PermissionPolicyConfig that the closed-set validation in
+// validateOptionalType cannot express on its own.
+//
+//   - Type "policy-engine" requires a PolicyFile path so the harness has
+//     something concrete to load at boot. A missing file path is almost
+//     always a config-typo and we want to fail loudly rather than fall
+//     through silently to the fallback policy.
+//   - PolicyFile is operator-supplied and may arrive over gRPC. Reject
+//     traversal sequences (e.g. "../../etc/passwd") so a malicious
+//     control plane cannot trick the harness into reading sensitive
+//     host files and surfacing chunks of their content via Cedar
+//     parser error messages (M6).
+//   - PolicyFile set with a non-policy-engine type is a misconfiguration
+//     footgun: the file is silently ignored and the operator believes
+//     they have applied a Cedar policy. Reject it loudly (S7).
+//   - Fallback, when set, must name one of the three non-policy-engine
+//     policies. policy-engine -> policy-engine fallback would loop on a
+//     no-decision response, so it's rejected here.
+func validatePermissionPolicyFields(cfg PermissionPolicyConfig, errs *[]string) {
+	if cfg.Type == "policy-engine" && cfg.PolicyFile == "" {
+		*errs = append(*errs, "permissionPolicy type \"policy-engine\" requires policyFile")
+	}
+	if cfg.PolicyFile != "" && cfg.Type != "policy-engine" {
+		*errs = append(*errs, fmt.Sprintf(
+			"permissionPolicy.policyFile is set but permissionPolicy.type is %q — policyFile is only used with type=policy-engine",
+			cfg.Type))
+	}
+	if cfg.PolicyFile != "" {
+		// We accept either absolute paths (operator-managed) or
+		// workspace-relative paths (used by examples/runconfig/full.json)
+		// — but never a path that contains ".." segments. Both the raw
+		// and cleaned forms are checked: filepath.Clean rewrites
+		// "/a/../b" to "/b", which would slip past a post-clean check
+		// even though the operator clearly intended traversal.
+		if pathHasDotDotSegment(cfg.PolicyFile) || pathHasDotDotSegment(filepath.Clean(cfg.PolicyFile)) {
+			*errs = append(*errs, "permissionPolicy.policyFile must not contain \"..\" path segments")
+		}
+	}
+	if cfg.Fallback != "" && !validFallbackPolicyTypes[cfg.Fallback] {
+		*errs = append(*errs, fmt.Sprintf("permissionPolicy.fallback %q is not a valid fallback policy type", cfg.Fallback))
+	}
+}
+
+// RuleOfTwoState reports the three Rule-of-Two booleans for a config:
+// holdsUntrusted (untrusted input ingress), holdsSensitive (sensitive
+// data on hand), and canCommExternal (external communication).
+//
+// Exposed so factory wiring can emit security events without
+// re-implementing the heuristics. Returns the same booleans the
+// validator computes internally — single source of truth.
+func RuleOfTwoState(config *RunConfig) (holdsUntrusted, holdsSensitive, canCommExternal bool) {
+	if config == nil {
+		return false, false, false
+	}
+	return ruleOfTwoUntrustedInput(config), ruleOfTwoSensitiveData(config), ruleOfTwoExternalComm(config)
+}
+
+// validateRuleOfTwo enforces Meta's "Agents Rule of Two": a single
+// session must not simultaneously hold (a) untrusted input, (b)
+// sensitive data, and (c) the ability to communicate externally —
+// unless gated by the ask-upstream permission policy. The override
+// (RuleOfTwo.Enforce == false) is honoured silently here; the factory
+// emits a rule_of_two_disabled security event at run start to keep the
+// override auditable.
+//
+// The three booleans are deliberately crude in v1 (per the issue
+// brief). They will be refined as we collect eval-suite signal.
+func validateRuleOfTwo(config *RunConfig, errs *[]string) {
+	holdsUntrusted := ruleOfTwoUntrustedInput(config)
+	holdsSensitive := ruleOfTwoSensitiveData(config)
+	canCommExternal := ruleOfTwoExternalComm(config)
+
+	if !(holdsUntrusted && holdsSensitive && canCommExternal) {
+		return
+	}
+	if config.PermissionPolicy.Type == "ask-upstream" {
+		return
+	}
+	if config.RuleOfTwo != nil && config.RuleOfTwo.Enforce != nil && !*config.RuleOfTwo.Enforce {
+		return
+	}
+	*errs = append(*errs,
+		"all three of {untrusted-input, sensitive-data, external-communication} cannot simultaneously hold without the ask-upstream permission policy (Rule of Two)")
+}
+
+// ruleOfTwoUntrustedInput reports whether the run can ingest content
+// from outside the operator's trust boundary. Dynamic context entries
+// are populated by the control plane from issue bodies / PR comments
+// / etc. and must be treated as untrusted; web_fetch and MCP servers
+// pull live data from arbitrary remote endpoints.
+func ruleOfTwoUntrustedInput(config *RunConfig) bool {
+	if len(config.DynamicContext) > 0 {
+		return true
+	}
+	if isToolEnabled(config.Tools.BuiltIn, "web_fetch") {
+		return true
+	}
+	if len(config.Tools.MCPServers) > 0 {
+		return true
+	}
+	return false
+}
+
+// ruleOfTwoSensitiveData reports whether the run carries credentials
+// or other sensitive data the agent could exfiltrate.
+//
+// "Allowlisted secret env vars" interpretation: ExecutorConfig has no
+// dedicated env-allowlist field today, and the brief is explicit that
+// we must not invent one in this wave. We therefore inspect the
+// secret references that are actually carried in RunConfig — APIKeyRef
+// fields on the default provider, the named providers map, the VCS
+// backend, and MCP servers — and treat any whose name matches the
+// secret-name heuristic (*KEY*, *TOKEN*, *SECRET*, *PASSWORD*, case-
+// insensitive) as a "sensitive env var" for Rule-of-Two purposes. Any
+// secret://ssm:// reference also triggers this flag, regardless of
+// name, because SSM-backed values are by definition real secrets.
+func ruleOfTwoSensitiveData(config *RunConfig) bool {
+	if isSensitiveSecretRef(config.Provider.APIKeyRef) {
+		return true
+	}
+	for _, prov := range config.Providers {
+		if isSensitiveSecretRef(prov.APIKeyRef) {
+			return true
+		}
+	}
+	if config.Executor.VcsBackend != nil && isSensitiveSecretRef(config.Executor.VcsBackend.APIKeyRef) {
+		return true
+	}
+	for _, server := range config.Tools.MCPServers {
+		if isSensitiveSecretRef(server.APIKeyRef) {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleOfTwoExternalComm reports whether the run can send data to
+// systems outside the harness sandbox. run_command escapes via the
+// shell; web_fetch sends arbitrary HTTP requests; MCP servers receive
+// every tool call payload; non-"none" network configs let the
+// container reach the internet.
+func ruleOfTwoExternalComm(config *RunConfig) bool {
+	if isToolEnabled(config.Tools.BuiltIn, "run_command") {
+		return true
+	}
+	if isToolEnabled(config.Tools.BuiltIn, "web_fetch") {
+		return true
+	}
+	if len(config.Tools.MCPServers) > 0 {
+		return true
+	}
+	if config.Executor.Network != nil && config.Executor.Network.Mode != "" && config.Executor.Network.Mode != "none" {
+		return true
+	}
+	return false
+}
+
+// isToolEnabled mirrors the semantics used by harness/internal/core
+// for resolving Tools.BuiltIn: an empty list means "all built-in tools
+// are enabled", a non-empty list is treated as an explicit allowlist.
+// Read-only modes already constrain the tool set elsewhere so this
+// just answers "would the loop expose this tool to the model".
+func isToolEnabled(enabled []string, name string) bool {
+	if len(enabled) == 0 {
+		return true
+	}
+	for _, candidate := range enabled {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
+}
+
+// isSensitiveSecretRef reports whether the supplied secret reference
+// names a credential the Rule-of-Two should treat as sensitive. SSM
+// references are always sensitive; env/file refs are sensitive only
+// when the referenced name matches one of the conventional secret
+// substrings (key/token/secret/password, case-insensitive).
+func isSensitiveSecretRef(ref string) bool {
+	if ref == "" {
+		return false
+	}
+	const prefix = "secret://"
+	rest := ref
+	if strings.HasPrefix(rest, prefix) {
+		rest = rest[len(prefix):]
+	}
+	if strings.HasPrefix(rest, "ssm://") || strings.HasPrefix(rest, "ssm:///") {
+		return true
+	}
+	upper := strings.ToUpper(rest)
+	return strings.Contains(upper, "KEY") ||
+		strings.Contains(upper, "TOKEN") ||
+		strings.Contains(upper, "SECRET") ||
+		strings.Contains(upper, "PASSWORD")
+}
+
+// applyCodeScannerDefault fills CodeScanner with a sensible default
+// when the caller has not set one. The default is "patterns" for
+// execution mode (active scanning on every successful edit) and
+// "none" for read-only modes (no edits happen so there's nothing to
+// scan). Defaulting at validation time means downstream consumers
+// always see a populated value and can avoid nil-checking.
+func applyCodeScannerDefault(config *RunConfig) {
+	if config.CodeScanner != nil {
+		return
+	}
+	if readOnlyModes[config.Mode] {
+		config.CodeScanner = &CodeScannerConfig{Type: "none"}
+		return
+	}
+	config.CodeScanner = &CodeScannerConfig{Type: "patterns"}
+}
+
+// validateCodeScannerConfig enforces the closed-set Type and the
+// composite-only Scanners field. A composite scanner with an empty
+// Scanners list is always a config error (no work to do); each
+// scanner referenced must be a known non-composite type to prevent
+// the config from recursing.
+func validateCodeScannerConfig(cfg *CodeScannerConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if !validCodeScannerTypes[cfg.Type] {
+		*errs = append(*errs, fmt.Sprintf("unsupported codeScanner.type %q", cfg.Type))
+		return
+	}
+	if cfg.Type == "composite" {
+		if len(cfg.Scanners) == 0 {
+			*errs = append(*errs, "codeScanner.type \"composite\" requires a non-empty scanners list")
+			return
+		}
+		for i, name := range cfg.Scanners {
+			if !validCompositeCodeScannerTypes[name] {
+				*errs = append(*errs, fmt.Sprintf("codeScanner.scanners[%d] %q is not a valid scanner type", i, name))
+			}
+		}
 	}
 }
 

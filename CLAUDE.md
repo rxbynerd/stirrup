@@ -30,15 +30,17 @@ stirrup/
       context/               # ContextStrategy: sliding window, summarise, offload-to-file
       tool/                  # ToolRegistry + built-in tools (incl. spawn_agent)
       executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay
-      edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy
+      executor/egressproxy/  # In-process HTTP/CONNECT forward proxy for container allowlist mode (B2)
+      edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy, scanned
       verifier/              # Verifier: none, test-runner, composite, llm-judge
-      permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream
+      permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream, policy-engine (Cedar)
       git/                   # GitStrategy: none, deterministic
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC)
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
       health/                # File-based K8s liveness probes
       security/              # SecretStore (env, file, AWS SSM), LogScrubber, input validation
+      security/codescanner/  # Post-edit static analysis: patterns, semgrep, composite (B5)
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
   eval/                      # Eval framework
     cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift, compare-to-production)
@@ -91,6 +93,9 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--git-strategy` | `none` | Git strategy: none, deterministic |
 | `--trace-emitter` | `jsonl` | Trace emitter: jsonl, otel |
 | `--otel-endpoint` | (none) | OTLP endpoint for the otel trace emitter (default: localhost:4317) |
+| `--container-runtime` | (none) | OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. See `docs/sandbox.md`. |
+| `--permission-policy-file` | (none) | Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and the policy type is unset elsewhere, also implies `permissionPolicy.type=policy-engine`. Starters live under `examples/policies/`. |
+| `--code-scanner` | (none) | CodeScanner type: none, patterns, semgrep, composite. Composite requires `--config` (`codeScanner.scanners`). Empty defers to the mode-aware default (patterns for execution, none for read-only modes). |
 
 Precedence: `--config` file → explicit flags → defaults. Flags left at
 their default value do NOT override the file. The default edit strategy
@@ -136,7 +141,7 @@ go build -o stirrup-eval ./eval/cmd/eval
 6. **Executor** — sandboxed file I/O and command execution (local, container, API)
 7. **EditStrategy** — how file changes are applied (whole-file, search-replace, udiff, multi-strategy)
 8. **Verifier** — validates run output (none, test-runner, composite, llm-judge)
-9. **PermissionPolicy** — gates tools that mutate the workspace or require operator approval (allow-all, deny-side-effects, ask-upstream). `deny-side-effects` rejects only workspace-mutating tools (write_file, run_command, edit_file); read-only-but-network/budget-touching tools like web_fetch and spawn_agent are still allowed and are gated separately by `ask-upstream`.
+9. **PermissionPolicy** — gates tools that mutate the workspace or require operator approval (allow-all, deny-side-effects, ask-upstream, policy-engine). `deny-side-effects` rejects only workspace-mutating tools (write_file, run_command, edit_file); read-only-but-network/budget-touching tools like web_fetch and spawn_agent are still allowed and are gated separately by `ask-upstream`. `policy-engine` evaluates a Cedar policy file per tool call and falls back to one of the three other policies on no-decision.
 10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null for sub-agents)
 11. **GitStrategy** — manages branches/commits (none, deterministic)
 12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry)
@@ -246,6 +251,31 @@ The `MultiStrategy` (`edit/multi.go`) presents a unified `edit_file` tool that a
 ### Loop stall detection
 
 The `stallDetector` (`core/stall.go`) tracks consecutive identical tool calls and consecutive failures. The loop terminates with `"stalled"` after 3 repeated identical calls (same name + same input) or `"tool_failures"` after 5 consecutive failures.
+
+### Deterministic safety rings (issue #42)
+
+Five layered controls compose at run construction:
+
+- **Container runtimeClass** (`executor/container.go`) — optional `Runtime` field passed to the Docker Engine API selects `runc` (default), `runsc` (gVisor), or `kata-*` for kernel-isolation.
+- **Egress proxy** (`executor/egressproxy/`) — when `network.mode == "allowlist"` the container executor starts an in-process forward proxy on the host network namespace; the container is wired with `HTTP_PROXY`/`HTTPS_PROXY` and only well-formed requests to allowlisted FQDNs are forwarded. v1 fails closed only for cooperating clients (the iptables drop is a documented follow-up).
+- **Cedar policy engine** (`permission/policyengine.go`) — the fourth `PermissionPolicy` type. Backed by `github.com/cedar-policy/cedar-go`. Loads a `.cedar` file at boot, evaluates each tool call as `(principal=User::"<runId>", action=Action::"tool:<name>", resource=Tool::"<name>", context={input, workspace, dynamicContext})`, falls back to a configured non-policy-engine policy on no-decision.
+- **Rule of Two** (`types/runconfig.go::validateRuleOfTwo`) — structural invariant rejecting any RunConfig that simultaneously holds untrusted input, sensitive data, and external communication unless gated by `ask-upstream`. `RuleOfTwo.Enforce: false` is the only override; the factory emits a `rule_of_two_disabled` security event when it is used and `rule_of_two_warning` when exactly two of three flags hold.
+- **CodeScanner** (`security/codescanner/`, `edit/scanned.go`) — post-edit static analysis. Pure-Go pattern pack, optional shell-out to `semgrep`, or composite. Block findings roll back the write; warn findings emit `code_scan_warning`.
+
+Operator-facing walkthrough: [`docs/sandbox.md`](docs/sandbox.md). Starter Cedar policies: [`examples/policies/`](examples/policies/).
+
+#### RunConfig fields added in #42
+
+| Field | Default | Notes |
+|---|---|---|
+| `executor.runtime` | `""` (engine default) | Closed set: `runc`, `runsc`, `kata`, `kata-qemu`, `kata-fc`. Only valid when `executor.type == "container"`; `ValidateRunConfig` rejects the field on `local` / `api` executors. |
+| `permissionPolicy.type` (extended) | unchanged | Adds `policy-engine` alongside the existing three. Requires `policyFile`; rejects `..` traversal segments; `policyFile` set with any other type is a hard error. |
+| `permissionPolicy.policyFile` | (none) | Filesystem path to the Cedar policy file. Absolute paths are operator-managed; workspace-relative paths are resolved against `executor.workspace`. |
+| `permissionPolicy.fallback` | `deny-side-effects` (when `policy-engine`) | Closed set: `allow-all`, `deny-side-effects`, `ask-upstream`. Chained policy engines are rejected. |
+| `ruleOfTwo.enforce` | `nil` (enforce) | `*bool` so unset is wire-distinguishable from `false`. The proto field is declared `optional` for the same reason. The factory emits `rule_of_two_disabled` when enforcement is overridden and `rule_of_two_warning` when two of three flags hold without override. |
+| `codeScanner.type` | mode-aware (`patterns` for execution, `none` for read-only) | Closed set: `none`, `patterns`, `semgrep`, `composite`. Composite requires `codeScanner.scanners` (each entry from the non-composite set). |
+| `codeScanner.blockOnWarn` | `false` | Promotes warn findings to block; useful for production pinning. |
+| `codeScanner.semgrepConfigPath` | `""` (passes `--config auto`) | Local rules-bundle path. Set this for air-gapped deployments and supply-chain pinning — `auto` reaches out to `semgrep.dev` at scan time. See `docs/sandbox.md`. |
 
 ## Security Foundations
 

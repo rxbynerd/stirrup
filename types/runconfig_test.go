@@ -540,8 +540,15 @@ func TestValidateRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	// The new openai-responses provider type must be accepted by validation.
 	// Before this case existed, callers who configured a Responses adapter
 	// would be rejected at validation time.
+	//
+	// We pin Tools.BuiltIn to a side-effect-free set so this test stays
+	// focused on provider-type validation; with the default (nil) tool
+	// list every built-in is enabled, which combined with the secret
+	// reference would trigger Rule of Two and obscure the actual
+	// failure mode this test is asserting against.
 	c := validConfig()
 	c.Provider = ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("expected openai-responses to be accepted, got: %v", err)
 	}
@@ -775,6 +782,24 @@ func TestValidateRunConfig_APIKeyHeader_Valid(t *testing.T) {
 	}
 }
 
+// --- ExecutorConfig.Runtime ---
+
+// TestValidateRunConfig_ExecutorRuntimeAcceptsClosedSet locks in the
+// closed set of OCI runtimes. Adding a new runtime here without
+// updating validExecutorRuntimes (or vice versa) fails loudly so the
+// validator does not silently accept an unknown runtime string.
+func TestValidateRunConfig_ExecutorRuntimeAcceptsClosedSet(t *testing.T) {
+	for _, runtime := range []string{"", "runc", "runsc", "kata", "kata-qemu", "kata-fc"} {
+		t.Run(fmt.Sprintf("runtime_%s", runtime), func(t *testing.T) {
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: "container", Runtime: runtime}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected runtime %q to validate, got: %v", runtime, err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {
 	cases := map[string]string{
 		"contains colon":      "api-key:",
@@ -795,6 +820,360 @@ func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "apiKeyHeader") {
 				t.Errorf("error should mention apiKeyHeader, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_ExecutorRuntimeRejectsUnknown(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "container", Runtime: "foo"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unknown executor.runtime")
+	}
+	if !strings.Contains(err.Error(), "executor.runtime") || !strings.Contains(err.Error(), "foo") {
+		t.Errorf("expected error to mention executor.runtime and the bad value, got: %v", err)
+	}
+}
+
+// --- PermissionPolicyConfig.Type policy-engine ---
+
+func TestValidateRunConfig_PolicyEngineRequiresPolicyFile(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{Type: "policy-engine"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for policy-engine without policyFile")
+	}
+	if !strings.Contains(err.Error(), "policyFile") {
+		t.Errorf("expected error to mention policyFile, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_PolicyEngineWithPolicyFilePasses(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{Type: "policy-engine", PolicyFile: "/policies/main.cedar"}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}} // skirt the Rule-of-Two trip
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected policy-engine + policyFile to validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_FallbackAcceptsThreeNonEngineTypes(t *testing.T) {
+	for _, fallback := range []string{"allow-all", "deny-side-effects", "ask-upstream"} {
+		t.Run(fallback, func(t *testing.T) {
+			c := validConfig()
+			c.PermissionPolicy = PermissionPolicyConfig{
+				Type:       "policy-engine",
+				PolicyFile: "/policies/main.cedar",
+				Fallback:   fallback,
+			}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected fallback %q to validate, got: %v", fallback, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_FallbackRejectsPolicyEngine(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{
+		Type:       "policy-engine",
+		PolicyFile: "/policies/main.cedar",
+		Fallback:   "policy-engine", // chained engines are not allowed
+	}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for fallback=policy-engine")
+	}
+	if !strings.Contains(err.Error(), "fallback") {
+		t.Errorf("expected error to mention fallback, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_FallbackRejectsUnknown(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{
+		Type:       "policy-engine",
+		PolicyFile: "/policies/main.cedar",
+		Fallback:   "lasso",
+	}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unknown fallback")
+	}
+	if !strings.Contains(err.Error(), "fallback") || !strings.Contains(err.Error(), "lasso") {
+		t.Errorf("expected error to mention fallback and the bad value, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_PolicyFile_PathTraversalRejected covers M6:
+// a forged policyFile containing ".." must be rejected before any
+// os.ReadFile happens. Without this, a malicious control plane could
+// trick the harness into reading host files outside the workspace
+// and leaking partial content via Cedar parser error messages.
+func TestValidateRunConfig_PolicyFile_PathTraversalRejected(t *testing.T) {
+	cases := []string{
+		"../../etc/passwd",
+		"policies/../../etc/passwd",
+		"/policies/../../etc/passwd",
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			c := validConfig()
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "policy-engine", PolicyFile: p}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for traversal path %q", p)
+			}
+			if !strings.Contains(err.Error(), "policyFile") {
+				t.Errorf("expected error to mention policyFile, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_PolicyFile_RelativePathAllowed confirms that
+// relative paths without traversal segments still validate. The shipped
+// example RunConfig uses one (examples/policies/destructive-shell.cedar)
+// and we don't want to break it for operators who run against the repo
+// checkout. M6's stricter "absolute-only" alternative was rejected for
+// this reason.
+func TestValidateRunConfig_PolicyFile_RelativePathAllowed(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{
+		Type:       "policy-engine",
+		PolicyFile: "examples/policies/destructive-shell.cedar",
+	}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected workspace-relative policyFile to validate, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError covers
+// S7: a policyFile set with a non-policy-engine type is silently
+// dropped today, leaving the operator believing they have applied a
+// Cedar policy. Reject the misconfiguration loudly.
+func TestValidateRunConfig_PolicyFile_IgnoredWithWrongTypeIsError(t *testing.T) {
+	c := validConfig()
+	c.PermissionPolicy = PermissionPolicyConfig{
+		Type:       "deny-side-effects",
+		PolicyFile: "/policies/main.cedar",
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for policyFile set with deny-side-effects")
+	}
+	if !strings.Contains(err.Error(), "policyFile") || !strings.Contains(err.Error(), "policy-engine") {
+		t.Errorf("expected error to mention policyFile and policy-engine, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_RuntimeRequiresContainerExecutor covers S8:
+// executor.runtime only changes behaviour for the container executor.
+// A "local" run that sets runtime: "runsc" looks like gVisor isolation
+// is enabled but the field is silently ignored — fail loudly instead.
+func TestValidateRunConfig_RuntimeRequiresContainerExecutor(t *testing.T) {
+	cases := []string{"local", "api"}
+	for _, execType := range cases {
+		t.Run(execType, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: execType, Runtime: "runsc"}
+			if execType == "api" {
+				c.Executor.VcsBackend = &VcsBackendConfig{
+					Type: "github", APIKeyRef: "secret://gh", Repo: "x/y", Ref: "main",
+				}
+				c.Mode = "research"
+				c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+				c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for runtime=runsc with executor.type=%q", execType)
+			}
+			if !strings.Contains(err.Error(), "executor.runtime") || !strings.Contains(err.Error(), "container") {
+				t.Errorf("expected error to mention executor.runtime and container, got: %v", err)
+			}
+		})
+	}
+}
+
+// --- CodeScannerConfig ---
+
+func TestValidateRunConfig_CodeScannerAcceptsClosedSet(t *testing.T) {
+	for _, scanner := range []string{"none", "patterns", "semgrep"} {
+		t.Run(scanner, func(t *testing.T) {
+			c := validConfig()
+			c.CodeScanner = &CodeScannerConfig{Type: scanner}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected scanner %q to validate, got: %v", scanner, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_CodeScannerCompositeRequiresScanners(t *testing.T) {
+	c := validConfig()
+	c.CodeScanner = &CodeScannerConfig{Type: "composite"} // no scanners set
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for composite scanner with no scanners list")
+	}
+	if !strings.Contains(err.Error(), "composite") || !strings.Contains(err.Error(), "scanners") {
+		t.Errorf("expected error to mention composite and scanners, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_CodeScannerCompositeAcceptsKnownScanners(t *testing.T) {
+	c := validConfig()
+	c.CodeScanner = &CodeScannerConfig{
+		Type:     "composite",
+		Scanners: []string{"patterns", "semgrep"},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected composite scanner with patterns+semgrep to validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_CodeScannerCompositeRejectsRecursive(t *testing.T) {
+	c := validConfig()
+	c.CodeScanner = &CodeScannerConfig{
+		Type:     "composite",
+		Scanners: []string{"composite"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for composite scanner referencing composite")
+	}
+	if !strings.Contains(err.Error(), "scanners") {
+		t.Errorf("expected error to mention scanners, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_CodeScannerRejectsUnknown(t *testing.T) {
+	c := validConfig()
+	c.CodeScanner = &CodeScannerConfig{Type: "magic"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unknown scanner type")
+	}
+	if !strings.Contains(err.Error(), "codeScanner.type") || !strings.Contains(err.Error(), "magic") {
+		t.Errorf("expected error to mention codeScanner.type and the bad value, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_CodeScannerDefaultsExecutionToPatterns(t *testing.T) {
+	c := validConfig()
+	c.CodeScanner = nil
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("validation failed: %v", err)
+	}
+	if c.CodeScanner == nil {
+		t.Fatal("expected ValidateRunConfig to populate a default CodeScanner for execution mode")
+	}
+	if c.CodeScanner.Type != "patterns" {
+		t.Errorf("expected execution-mode default %q, got %q", "patterns", c.CodeScanner.Type)
+	}
+}
+
+func TestValidateRunConfig_CodeScannerDefaultsReadOnlyToNone(t *testing.T) {
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory"}}
+			c.CodeScanner = nil
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("validation failed for mode %q: %v", mode, err)
+			}
+			if c.CodeScanner == nil {
+				t.Fatalf("expected ValidateRunConfig to populate a default CodeScanner for mode %q", mode)
+			}
+			if c.CodeScanner.Type != "none" {
+				t.Errorf("expected read-only-mode default %q for mode %q, got %q", "none", mode, c.CodeScanner.Type)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_CodeScannerExplicitOverridesDefault(t *testing.T) {
+	c := validConfig()
+	c.CodeScanner = &CodeScannerConfig{Type: "none"} // explicitly opt out
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("validation failed: %v", err)
+	}
+	if c.CodeScanner.Type != "none" {
+		t.Errorf("expected explicit none to be preserved, got %q", c.CodeScanner.Type)
+	}
+}
+
+// --- Rule of Two ---
+
+// boolRef is a tiny helper for the *bool fields that gate a Rule-of-Two
+// override. Inlining a takeAddress(false) at every call site would
+// pollute the table-driven tests below.
+func boolRef(b bool) *bool { return &b }
+
+// ruleOfTwoConfig builds a RunConfig that exercises specific
+// combinations of the three Rule-of-Two flags. Each leg can be
+// turned on independently:
+//
+//   - holdsUntrusted is enabled by populating DynamicContext.
+//   - holdsSensitive is enabled by setting a secret-named APIKeyRef.
+//   - canCommExternal is enabled by setting a non-"none" NetworkConfig
+//     (so we don't have to drag in the Tools.BuiltIn semantics, which
+//     are exercised separately in the dedicated table-driven test).
+//
+// The default tool list is constrained so isolated leg-flips don't
+// trigger extra capabilities by accident.
+func ruleOfTwoConfig(untrusted, sensitive, external bool, policy string) *RunConfig {
+	timeout := 60
+	c := &RunConfig{
+		Mode:             "execution",
+		Provider:         ProviderConfig{Type: "anthropic"},
+		MaxTurns:         20,
+		Timeout:          &timeout,
+		PermissionPolicy: PermissionPolicyConfig{Type: policy},
+		Tools:            ToolsConfig{BuiltIn: []string{"read_file"}},
+	}
+	if untrusted {
+		c.DynamicContext = map[string]string{"issue_body": "untrusted text"}
+	}
+	if sensitive {
+		c.Provider.APIKeyRef = "secret://ANTHROPIC_API_KEY"
+	}
+	if external {
+		c.Executor = ExecutorConfig{Network: &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}}}
+	}
+	return c
+}
+
+func TestValidateRunConfig_RuleOfTwo_AllThreeWithoutAskUpstreamRejected(t *testing.T) {
+	for _, policy := range []string{"allow-all", "deny-side-effects"} {
+		t.Run(policy, func(t *testing.T) {
+			c := ruleOfTwoConfig(true, true, true, policy)
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected Rule-of-Two rejection for policy %q with all three flags", policy)
+			}
+			if !strings.Contains(err.Error(), "Rule of Two") {
+				t.Errorf("expected error to mention Rule of Two, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "untrusted-input") {
+				t.Errorf("expected error to mention untrusted-input, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "sensitive-data") {
+				t.Errorf("expected error to mention sensitive-data, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "external-communication") {
+				t.Errorf("expected error to mention external-communication, got: %v", err)
 			}
 		})
 	}
@@ -901,5 +1280,182 @@ func TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderValidShape(t *testing.T
 	c.Provider.QueryParams = map[string]string{"hint": "future"}
 	if err := ValidateRunConfig(c); err != nil {
 		t.Errorf("expected nil error for forward-compatible fields on anthropic, got %v", err)
+	}
+}
+
+func TestValidateRunConfig_RuleOfTwo_AskUpstreamPasses(t *testing.T) {
+	c := ruleOfTwoConfig(true, true, true, "ask-upstream")
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("ask-upstream should bypass Rule-of-Two rejection, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_RuleOfTwo_OverridePasses(t *testing.T) {
+	c := ruleOfTwoConfig(true, true, true, "deny-side-effects")
+	c.RuleOfTwo = &RuleOfTwoConfig{Enforce: boolRef(false)}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("explicit RuleOfTwo.Enforce: false should bypass rejection, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_RuleOfTwo_ExplicitTrueStillEnforces(t *testing.T) {
+	c := ruleOfTwoConfig(true, true, true, "deny-side-effects")
+	c.RuleOfTwo = &RuleOfTwoConfig{Enforce: boolRef(true)}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("RuleOfTwo.Enforce: true must not bypass the invariant")
+	}
+	if !strings.Contains(err.Error(), "Rule of Two") {
+		t.Errorf("expected Rule-of-Two error, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_RuleOfTwo_TwoOfThreePasses(t *testing.T) {
+	cases := []struct {
+		name      string
+		untrusted bool
+		sensitive bool
+		external  bool
+	}{
+		{"untrusted+sensitive", true, true, false},
+		{"untrusted+external", true, false, true},
+		{"sensitive+external", false, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ruleOfTwoConfig(tc.untrusted, tc.sensitive, tc.external, "deny-side-effects")
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("two-of-three should pass, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestRuleOfTwoState_MatchesValidator pins the public RuleOfTwoState
+// helper to the same booleans the internal validator reasons over.
+// Factory wiring uses this helper to decide when to emit
+// rule_of_two_disabled / rule_of_two_warning events.
+func TestRuleOfTwoState_MatchesValidator(t *testing.T) {
+	cases := []struct {
+		name                                              string
+		untrusted, sensitive, external                    bool
+		wantUntrusted, wantSensitive, wantCanCommExternal bool
+	}{
+		{"all_off", false, false, false, false, false, false},
+		{"untrusted_only", true, false, false, true, false, false},
+		{"sensitive_only", false, true, false, false, true, false},
+		{"external_only", false, false, true, false, false, true},
+		{"all_on", true, true, true, true, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ruleOfTwoConfig(tc.untrusted, tc.sensitive, tc.external, "deny-side-effects")
+			gotU, gotS, gotE := RuleOfTwoState(c)
+			if gotU != tc.wantUntrusted || gotS != tc.wantSensitive || gotE != tc.wantCanCommExternal {
+				t.Errorf("RuleOfTwoState = (%v, %v, %v), want (%v, %v, %v)",
+					gotU, gotS, gotE,
+					tc.wantUntrusted, tc.wantSensitive, tc.wantCanCommExternal)
+			}
+		})
+	}
+}
+
+// TestRuleOfTwoState_NilSafe documents the contract: passing nil
+// returns the all-false state rather than panicking. Factory wiring
+// relies on this for defensive emission paths.
+func TestRuleOfTwoState_NilSafe(t *testing.T) {
+	u, s, e := RuleOfTwoState(nil)
+	if u || s || e {
+		t.Errorf("nil config should return (false, false, false), got (%v, %v, %v)", u, s, e)
+	}
+}
+
+func TestValidateRunConfig_RuleOfTwo_OneOrZeroPasses(t *testing.T) {
+	cases := []struct {
+		name      string
+		untrusted bool
+		sensitive bool
+		external  bool
+	}{
+		{"none", false, false, false},
+		{"untrusted_only", true, false, false},
+		{"sensitive_only", false, true, false},
+		{"external_only", false, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ruleOfTwoConfig(tc.untrusted, tc.sensitive, tc.external, "deny-side-effects")
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("one-or-zero flags should pass, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_RuleOfTwo_SSMRefTriggersSensitive verifies that a
+// secret://ssm:// reference is treated as sensitive data even when the
+// parameter name does not match the secret-name heuristic. SSM-backed
+// values are by convention real secrets.
+func TestValidateRunConfig_RuleOfTwo_SSMRefTriggersSensitive(t *testing.T) {
+	timeout := 60
+	c := &RunConfig{
+		Mode:             "execution",
+		Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ssm:///prod/anthropic"},
+		MaxTurns:         20,
+		Timeout:          &timeout,
+		PermissionPolicy: PermissionPolicyConfig{Type: "deny-side-effects"},
+		DynamicContext:   map[string]string{"x": "y"}, // untrusted
+		Tools:            ToolsConfig{BuiltIn: []string{"web_fetch"}},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected SSM ref to trigger Rule-of-Two rejection alongside dynamicContext + web_fetch")
+	}
+	if !strings.Contains(err.Error(), "Rule of Two") {
+		t.Errorf("expected Rule-of-Two error, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_RuleOfTwo_NonSecretRefDoesNotTrigger verifies the
+// secret-name heuristic ignores APIKeyRef values that don't include any
+// of the secret-y substrings. A reference like "secret://CONFIG_PATH"
+// is still a secret reference structurally but its name carries no
+// signal that it's a credential, so we don't treat it as sensitive.
+func TestValidateRunConfig_RuleOfTwo_NonSecretRefDoesNotTrigger(t *testing.T) {
+	timeout := 60
+	c := &RunConfig{
+		Mode:             "execution",
+		Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: "secret://CONFIG_PATH"},
+		MaxTurns:         20,
+		Timeout:          &timeout,
+		PermissionPolicy: PermissionPolicyConfig{Type: "allow-all"},
+		DynamicContext:   map[string]string{"x": "y"},                 // untrusted
+		Tools:            ToolsConfig{BuiltIn: []string{"web_fetch"}}, // external + extra untrusted
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("non-secret-named APIKeyRef should not trigger sensitive flag, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn verifies
+// the issue brief's "tool-enabled checks must reflect the actual
+// tools.builtIn list". A run-command-disabled config must not be
+// flagged as canCommunicateExternally on that leg alone — even though
+// "all tools enabled" (empty list) would.
+func TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn(t *testing.T) {
+	timeout := 60
+	c := &RunConfig{
+		Mode:             "execution",
+		Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns:         20,
+		Timeout:          &timeout,
+		PermissionPolicy: PermissionPolicyConfig{Type: "allow-all"},
+		DynamicContext:   map[string]string{"x": "y"},
+		// Explicit list excludes web_fetch / run_command / mcp, and the
+		// executor has no network config — no external-communication leg.
+		Tools: ToolsConfig{BuiltIn: []string{"read_file", "list_directory"}},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("config with two flags only should pass, got: %v", err)
 	}
 }

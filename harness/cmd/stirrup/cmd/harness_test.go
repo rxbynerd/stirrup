@@ -41,11 +41,23 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 		LogLevel:      "info",
 	}
 
+	// Rule-of-Two override: every CLI default combination here pairs an
+	// API key (whose name matches the secret heuristic) with a tool list
+	// that carries both untrusted-input ingress (web_fetch) and external
+	// communication (web_fetch / run_command), which is exactly the all-
+	// three case the Rule-of-Two invariant rejects. The test predates that
+	// invariant and is asserting CLI defaulting / read-only-mode wiring,
+	// not the safety invariant; Rule-of-Two coverage lives in
+	// types/runconfig_test.go. Wiring the override into the CLI itself
+	// (so users get a clear error rather than this validation rejection)
+	// is tracked in a later wave of #42 and intentionally out of scope here.
+	enforce := false
 	for _, mode := range modes {
 		t.Run(mode, func(t *testing.T) {
 			opts := baseOpts
 			opts.Mode = mode
 			cfg := buildHarnessRunConfig(opts)
+			cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 
 			if err := types.ValidateRunConfig(cfg); err != nil {
 				t.Fatalf("buildHarnessRunConfig produced an invalid RunConfig for --mode %q: %v", mode, err)
@@ -90,6 +102,9 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	if cfg.ModelRouter.Provider != "openai-responses" {
 		t.Errorf("ModelRouter.Provider = %q, want openai-responses", cfg.ModelRouter.Provider)
 	}
+	// See Rule-of-Two note in TestBuildHarnessRunConfig_AllModesValidate.
+	enforce := false
+	cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig rejected openai-responses: %v", err)
 	}
@@ -241,6 +256,12 @@ func TestLoadRunConfigFile_RoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 
 	timeout := 300
+	// Planning mode + DefaultReadOnlyBuiltInTools (which includes
+	// web_fetch + spawn_agent) + a secret://ANTHROPIC_API_KEY ref
+	// trips the Rule-of-Two invariant. This test asserts the
+	// --config loader round-trips fields cleanly, not Rule-of-Two
+	// behaviour, so we explicitly disable enforcement.
+	enforce := false
 	original := types.RunConfig{
 		RunID:  "from-file",
 		Mode:   "planning",
@@ -268,9 +289,10 @@ func TestLoadRunConfigFile_RoundTrip(t *testing.T) {
 		Tools: types.ToolsConfig{
 			BuiltIn: types.DefaultReadOnlyBuiltInTools(),
 		},
-		MaxTurns: 10,
-		Timeout:  &timeout,
-		LogLevel: "info",
+		RuleOfTwo: &types.RuleOfTwoConfig{Enforce: &enforce},
+		MaxTurns:  10,
+		Timeout:   &timeout,
+		LogLevel:  "info",
 	}
 	data, err := json.MarshalIndent(original, "", "  ")
 	if err != nil {
@@ -377,6 +399,9 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("git-strategy", "none", "")
 	f.String("trace-emitter", "jsonl", "")
 	f.String("otel-endpoint", "", "")
+	f.String("container-runtime", "", "")
+	f.String("permission-policy-file", "", "")
+	f.String("code-scanner", "", "")
 	return cmd
 }
 
@@ -612,6 +637,9 @@ func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
 	if cfg.SessionName != "nightly-eval" {
 		t.Errorf("SessionName: got %q, want %q", cfg.SessionName, "nightly-eval")
 	}
+	// See Rule-of-Two note in TestBuildHarnessRunConfig_AllModesValidate.
+	enforce := false
+	cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig: %v", err)
 	}
@@ -759,6 +787,130 @@ func TestExampleAzureOpenAIJSONLoadsAndValidates(t *testing.T) {
 	}
 	if !strings.Contains(cfg.Provider.BaseURL, "openai.azure.com") {
 		t.Errorf("Provider.BaseURL should target Azure, got %q", cfg.Provider.BaseURL)
+	}
+}
+
+// TestBuildHarnessRunConfig_SafetyRingFlags verifies that the three new
+// safety-ring flags (issue #42) propagate to the matching RunConfig
+// fields. Each is independently exercised so a future refactor that
+// drops one wiring without dropping the others is caught.
+func TestBuildHarnessRunConfig_SafetyRingFlags(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:                "test-run",
+		Mode:                 "execution",
+		Prompt:               "test",
+		ProviderType:         "anthropic",
+		APIKeyRef:            "secret://ANTHROPIC_API_KEY",
+		Model:                "claude-sonnet-4-6",
+		MaxTurns:             20,
+		Timeout:              600,
+		TransportType:        "stdio",
+		LogLevel:             "info",
+		ContainerRuntime:     "runsc",
+		PermissionPolicyFile: "/tmp/policy.cedar",
+		CodeScannerType:      "patterns",
+	})
+
+	if cfg.Executor.Runtime != "runsc" {
+		t.Errorf("Executor.Runtime = %q, want runsc", cfg.Executor.Runtime)
+	}
+	if cfg.PermissionPolicy.PolicyFile != "/tmp/policy.cedar" {
+		t.Errorf("PermissionPolicy.PolicyFile = %q, want /tmp/policy.cedar", cfg.PermissionPolicy.PolicyFile)
+	}
+	// The convenience shortcut auto-sets type=policy-engine when the
+	// caller didn't pick a type elsewhere.
+	if cfg.PermissionPolicy.Type != "policy-engine" {
+		t.Errorf("PermissionPolicy.Type = %q, want policy-engine", cfg.PermissionPolicy.Type)
+	}
+	if cfg.CodeScanner == nil || cfg.CodeScanner.Type != "patterns" {
+		t.Errorf("CodeScanner = %+v, want type=patterns", cfg.CodeScanner)
+	}
+}
+
+// TestApplyOverrides_SafetyRingFlagsOverride verifies the override path:
+// safety-ring flags set on the command line clobber file-provided
+// values. Mirror of TestApplyOverrides_ExplicitFlagsOverride for the
+// new flags.
+func TestApplyOverrides_SafetyRingFlagsOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Executor.Runtime = "runc"
+	cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
+	cfg.CodeScanner = &types.CodeScannerConfig{Type: "none"}
+
+	must := func(name, value string) {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	must("container-runtime", "runsc")
+	must("permission-policy-file", "/tmp/p.cedar")
+	must("code-scanner", "patterns")
+
+	applyOverrides(cmd, cfg, nil)
+
+	if cfg.Executor.Runtime != "runsc" {
+		t.Errorf("Executor.Runtime override failed: %q", cfg.Executor.Runtime)
+	}
+	if cfg.PermissionPolicy.PolicyFile != "/tmp/p.cedar" {
+		t.Errorf("PermissionPolicy.PolicyFile override failed: %q", cfg.PermissionPolicy.PolicyFile)
+	}
+	// File set type=deny-side-effects so --permission-policy-file
+	// should NOT switch the type — only the path.
+	if cfg.PermissionPolicy.Type != "deny-side-effects" {
+		t.Errorf("PermissionPolicy.Type should survive when file set it, got %q", cfg.PermissionPolicy.Type)
+	}
+	if cfg.CodeScanner == nil || cfg.CodeScanner.Type != "patterns" {
+		t.Errorf("CodeScanner override failed: %+v", cfg.CodeScanner)
+	}
+}
+
+// TestApplyOverrides_PermissionPolicyFileImpliesPolicyEngine verifies
+// the convenience shortcut: when the file leaves PermissionPolicy.Type
+// unset and the user passes --permission-policy-file, type is bumped
+// to "policy-engine" so the single flag is enough to use the new
+// policy implementation.
+func TestApplyOverrides_PermissionPolicyFileImpliesPolicyEngine(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.PermissionPolicy = types.PermissionPolicyConfig{} // file did not set type
+
+	if err := cmd.Flags().Set("permission-policy-file", "/tmp/p.cedar"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	applyOverrides(cmd, cfg, nil)
+
+	if cfg.PermissionPolicy.Type != "policy-engine" {
+		t.Errorf("expected type=policy-engine when file omitted type, got %q", cfg.PermissionPolicy.Type)
+	}
+	if cfg.PermissionPolicy.PolicyFile != "/tmp/p.cedar" {
+		t.Errorf("PolicyFile = %q, want /tmp/p.cedar", cfg.PermissionPolicy.PolicyFile)
+	}
+}
+
+// TestApplyOverrides_DefaultSafetyRingFlagsDoNotOverride pins the
+// precedence rule for the new flags: a flag left at its default
+// (empty string) MUST NOT clobber a file-provided value.
+func TestApplyOverrides_DefaultSafetyRingFlagsDoNotOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Executor.Runtime = "kata"
+	cfg.PermissionPolicy = types.PermissionPolicyConfig{
+		Type:       "policy-engine",
+		PolicyFile: "/file/policy.cedar",
+	}
+	cfg.CodeScanner = &types.CodeScannerConfig{Type: "semgrep"}
+
+	applyOverrides(cmd, cfg, nil)
+
+	if cfg.Executor.Runtime != "kata" {
+		t.Errorf("Runtime: file value should survive, got %q", cfg.Executor.Runtime)
+	}
+	if cfg.PermissionPolicy.PolicyFile != "/file/policy.cedar" {
+		t.Errorf("PolicyFile: file value should survive, got %q", cfg.PermissionPolicy.PolicyFile)
+	}
+	if cfg.CodeScanner == nil || cfg.CodeScanner.Type != "semgrep" {
+		t.Errorf("CodeScanner: file value should survive, got %+v", cfg.CodeScanner)
 	}
 }
 
@@ -1212,6 +1364,9 @@ func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
 	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
 		t.Errorf("Provider.QueryParams[api-version] = %q, want %q", got, want)
 	}
+	// See Rule-of-Two note in TestBuildHarnessRunConfig_AllModesValidate.
+	enforce := false
+	cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig: %v", err)
 	}

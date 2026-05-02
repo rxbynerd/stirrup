@@ -9,6 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.6
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.68.6
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1
+	github.com/cedar-policy/cedar-go v1.6.0
 	github.com/rxbynerd/stirrup/gen v0.0.0
 	github.com/rxbynerd/stirrup/types v0.0.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
@@ -46,6 +47,7 @@ require (
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
+	golang.org/x/exp v0.0.0-20220921023135-46d9e7742f1e // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
