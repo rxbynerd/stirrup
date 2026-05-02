@@ -7,6 +7,17 @@ name: Verify (reusable)
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        description: >-
+          Git ref to check out and test. Defaults to ${{ github.sha }}, which
+          is correct for ci.yml's per-push invocation. release.yml passes
+          the resolved release tag here so a workflow_dispatch retrigger
+          tests the tagged commit rather than whatever main currently
+          points at.
+        type: string
+        required: false
+        default: ''
 
 jobs:
   verify:
@@ -17,6 +28,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          # Empty inputs.ref falls through to actions/checkout's default
+          # (github.sha), preserving behaviour for ci.yml callers that
+          # don't pass the input.
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -29,12 +45,21 @@ jobs:
 
       - name: Compute version label
         id: ver
+        env:
+          # Prefer the resolved input ref when set so a tag-push or a
+          # workflow_dispatch-triggered tag run produces a label of the
+          # tag name rather than "dev". Fall back to GITHUB_REF for the
+          # default ci.yml invocation.
+          REF: ${{ inputs.ref != '' && format('refs/tags/{0}', inputs.ref) || github.ref }}
         run: |
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            echo "label=main" >> "$GITHUB_OUTPUT"
+          if [ "$REF" = "refs/heads/main" ]; then
+            label="main"
+          elif [[ "$REF" == refs/tags/* ]]; then
+            label="${REF#refs/tags/}"
           else
-            echo "label=dev" >> "$GITHUB_OUTPUT"
+            label="dev"
           fi
+          echo "label=$label" >> "$GITHUB_OUTPUT"
           echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Run type module tests
@@ -51,15 +76,19 @@ jobs:
 
       - name: Build stirrup binary
         working-directory: harness
-        run: >
-          go build -trimpath
-          -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${{ steps.ver.outputs.label }}
-            -X github.com/rxbynerd/stirrup/types/version.commit=${{ steps.ver.outputs.sha }}"
-          ./cmd/stirrup
+        env:
+          VERSION_LABEL: ${{ steps.ver.outputs.label }}
+          COMMIT_SHA: ${{ steps.ver.outputs.sha }}
+        run: |
+          go build -trimpath \
+            -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${VERSION_LABEL} -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT_SHA}" \
+            ./cmd/stirrup
 
       - name: Build eval binary
-        run: >
-          go build -trimpath
-          -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${{ steps.ver.outputs.label }}
-            -X github.com/rxbynerd/stirrup/types/version.commit=${{ steps.ver.outputs.sha }}"
-          -o stirrup-eval ./eval/cmd/eval
+        env:
+          VERSION_LABEL: ${{ steps.ver.outputs.label }}
+          COMMIT_SHA: ${{ steps.ver.outputs.sha }}
+        run: |
+          go build -trimpath \
+            -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${VERSION_LABEL} -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT_SHA}" \
+            -o stirrup-eval ./eval/cmd/eval

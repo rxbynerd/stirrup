@@ -57,6 +57,8 @@ jobs:
     name: Verify
     needs: validate-tag
     uses: ./.github/workflows/_verify.yml
+    with:
+      ref: ${{ needs.validate-tag.outputs.tag }}
 
   build-binaries:
     name: Build (${{ matrix.os }}/${{ matrix.arch }})
