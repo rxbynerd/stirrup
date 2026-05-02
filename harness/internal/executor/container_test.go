@@ -105,7 +105,7 @@ func TestContainerAPIClient_CreateContainer(t *testing.T) {
 
 	client := newContainerAPIClient(sock)
 	id, err := client.createContainer(context.Background(), containerCreateRequest{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		Cmd:        []string{"sleep", "infinity"},
 		WorkingDir: "/workspace",
 		HostConfig: &hostConfig{
@@ -125,8 +125,8 @@ func TestContainerAPIClient_CreateContainer(t *testing.T) {
 	}
 
 	// Verify the body was sent correctly.
-	if receivedBody.Image != "ubuntu:22.04" {
-		t.Errorf("image: got %q, want %q", receivedBody.Image, "ubuntu:22.04")
+	if receivedBody.Image != "ubuntu:26.04" {
+		t.Errorf("image: got %q, want %q", receivedBody.Image, "ubuntu:26.04")
 	}
 	if receivedBody.HostConfig.NetworkMode != "none" {
 		t.Errorf("network mode: got %q, want %q", receivedBody.HostConfig.NetworkMode, "none")
@@ -670,7 +670,7 @@ func TestContainerExecutor_StartFailureCleanup(t *testing.T) {
 	defer cleanup()
 
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
@@ -704,7 +704,7 @@ func TestContainerExecutor_ResourceLimits(t *testing.T) {
 	defer cleanup()
 
 	exec, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 		Resources: &types.ResourceLimits{
@@ -752,7 +752,7 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 
 	// Default: none
 	exec, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
@@ -767,7 +767,7 @@ func TestContainerExecutor_NetworkModes(t *testing.T) {
 
 	// Allowlist: bridge
 	exec, err = NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 		Network:    &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}},
@@ -810,7 +810,7 @@ func TestContainerExecutor_Runtime(t *testing.T) {
 
 	// Configured runtime must appear in the create-container body.
 	exec, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 		Runtime:    "runsc",
@@ -842,7 +842,7 @@ func TestContainerExecutor_Runtime(t *testing.T) {
 	// Empty runtime must be omitted entirely (engine picks its default).
 	rawBody = nil
 	exec, err = NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 	})
@@ -888,7 +888,7 @@ func TestContainerExecutor_AllowlistMode_WiringConfig(t *testing.T) {
 	defer cleanup()
 
 	exec, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 		Network: &types.NetworkConfig{
@@ -964,7 +964,7 @@ func TestContainerExecutor_NoneMode_NoProxyWiring(t *testing.T) {
 	defer cleanup()
 
 	exec, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 		Network:    &types.NetworkConfig{Mode: "none"},
@@ -1000,7 +1000,7 @@ func TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast(t *testing.T) {
 	defer cleanup()
 
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image:      "ubuntu:22.04",
+		Image:      "ubuntu:26.04",
 		HostDir:    "/tmp/workspace",
 		SocketPath: sock,
 		Network: &types.NetworkConfig{
@@ -1027,7 +1027,7 @@ func TestNewContainerExecutor_MissingImage(t *testing.T) {
 
 func TestNewContainerExecutor_MissingHostDir(t *testing.T) {
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
-		Image: "ubuntu:22.04",
+		Image: "ubuntu:26.04",
 	})
 	if err == nil {
 		t.Fatal("expected error for missing host dir")
