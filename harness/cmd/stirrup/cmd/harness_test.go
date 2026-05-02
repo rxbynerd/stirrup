@@ -358,6 +358,9 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("model", "claude-sonnet-4-6", "")
 	f.String("provider", "anthropic", "")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "")
+	f.String("base-url", "", "")
+	f.String("api-key-header", "", "")
+	f.StringArray("query-param", nil, "")
 	f.StringP("workspace", "w", "", "")
 	f.Int("max-turns", 20, "")
 	f.Int("timeout", 600, "")
@@ -422,7 +425,9 @@ func TestApplyOverrides_DefaultFlagsDoNotOverride(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig()
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Mode != "planning" {
 		t.Errorf("Mode: file value should survive, got %q", cfg.Mode)
@@ -488,7 +493,9 @@ func TestApplyOverrides_ExplicitFlagsOverride(t *testing.T) {
 	must("trace-emitter", "otel")
 	must("otel-endpoint", "otel.flag:4317")
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Mode != "execution" {
 		t.Errorf("Mode override failed: %q", cfg.Mode)
@@ -558,7 +565,9 @@ func TestApplyOverrides_PositionalPromptFillsFileGap(t *testing.T) {
 	cfg := baseFileConfig()
 	cfg.Prompt = "" // simulate file with no prompt
 
-	applyOverrides(cmd, cfg, []string{"positional prompt"})
+	if err := applyOverrides(cmd, cfg, []string{"positional prompt"}); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Prompt != "positional prompt" {
 		t.Errorf("expected positional prompt to fill the gap, got %q", cfg.Prompt)
@@ -572,7 +581,9 @@ func TestApplyOverrides_FilePromptBeatsPositional(t *testing.T) {
 	cmd := newTestHarnessCommand()
 	cfg := baseFileConfig() // Prompt = "prompt-from-file"
 
-	applyOverrides(cmd, cfg, []string{"positional"})
+	if err := applyOverrides(cmd, cfg, []string{"positional"}); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Prompt != "prompt-from-file" {
 		t.Errorf("file prompt should win over positional, got %q", cfg.Prompt)
@@ -589,7 +600,9 @@ func TestApplyOverrides_ExplicitFlagBeatsPositional(t *testing.T) {
 		t.Fatalf("set prompt: %v", err)
 	}
 
-	applyOverrides(cmd, cfg, []string{"positional"})
+	if err := applyOverrides(cmd, cfg, []string{"positional"}); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Prompt != "from-flag" {
 		t.Errorf("explicit --prompt should win, got %q", cfg.Prompt)
@@ -653,6 +666,38 @@ func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
 	}
 	if len(cfg.Tools.MCPServers) != 1 || cfg.Tools.MCPServers[0].Name == "" {
 		t.Errorf("example should configure exactly one named MCP server, got %+v", cfg.Tools.MCPServers)
+	}
+}
+
+// TestExampleAzureOpenAIJSONLoadsAndValidates pins the shipped Azure
+// OpenAI fixture: the file must round-trip through loadRunConfigFile,
+// pass ValidateRunConfig, and demonstrate the three new fields populated
+// (apiKeyHeader, queryParams, and the Azure-shaped baseUrl). If any of
+// these drift out of sync with the schema, this test fails before users
+// hit the same error.
+func TestExampleAzureOpenAIJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
+	}
+	if cfg.Provider.APIKeyHeader != "api-key" {
+		t.Errorf("Provider.APIKeyHeader = %q, want api-key", cfg.Provider.APIKeyHeader)
+	}
+	if cfg.Provider.QueryParams["api-version"] != "preview" {
+		t.Errorf("Provider.QueryParams[api-version] = %q, want preview", cfg.Provider.QueryParams["api-version"])
+	}
+	if !strings.Contains(cfg.Provider.BaseURL, "openai.azure.com") {
+		t.Errorf("Provider.BaseURL should target Azure, got %q", cfg.Provider.BaseURL)
 	}
 }
 
@@ -775,7 +820,9 @@ func TestApplyOverrides_TraceCoercesEmitterToJSONL(t *testing.T) {
 	if err := cmd.Flags().Set("trace", "/tmp/out.jsonl"); err != nil {
 		t.Fatalf("set trace: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.TraceEmitter.Type != "jsonl" {
 		t.Errorf("emitter type should be coerced to jsonl when --trace is set, got %q", cfg.TraceEmitter.Type)
@@ -798,7 +845,9 @@ func TestApplyOverrides_TraceRespectsExplicitEmitter(t *testing.T) {
 	if err := cmd.Flags().Set("trace-emitter", "otel"); err != nil {
 		t.Fatalf("set trace-emitter: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.TraceEmitter.Type != "otel" {
 		t.Errorf("explicit --trace-emitter=otel should win over coercion, got %q", cfg.TraceEmitter.Type)
@@ -818,7 +867,9 @@ func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
 	if err := cmd.Flags().Set("followup-grace", "0"); err != nil {
 		t.Fatalf("set followup-grace: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.FollowUpGrace != nil {
 		t.Errorf("explicit --followup-grace=0 should clear FollowUpGrace, got %v", *cfg.FollowUpGrace)
@@ -911,7 +962,9 @@ func TestApplyModeDefaults_FillsAfterModeOverride(t *testing.T) {
 	if err := cmd.Flags().Set("mode", "planning"); err != nil {
 		t.Fatalf("set mode: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 	applyModeDefaults(cfg)
 
 	if cfg.Mode != "planning" {
@@ -930,3 +983,175 @@ func TestApplyModeDefaults_FillsAfterModeOverride(t *testing.T) {
 
 // intPtr is a small helper to take the address of an int literal.
 func intPtr(n int) *int { return &n }
+
+// TestApplyOverrides_AzureProviderFlags verifies that --base-url,
+// --api-key-header, and --query-param flags propagate into Provider.*
+// fields and override the file values for those flags. The file's
+// QueryParams entry is wholesale replaced (rather than merged) so users
+// who reach for --query-param to override a stale file entry get the
+// expected behaviour.
+func TestApplyOverrides_AzureProviderFlags(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider.BaseURL = "https://file-base-url.example/v1"
+	cfg.Provider.APIKeyHeader = "x-stale-header"
+	cfg.Provider.QueryParams = map[string]string{"api-version": "stale", "deployment-id": "stale"}
+
+	must := func(name, value string) {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	must("base-url", "https://example.openai.azure.com/openai/v1")
+	must("api-key-header", "api-key")
+	must("query-param", "api-version=preview")
+	must("query-param", "deployment-id=gpt4-prod")
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if got, want := cfg.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
+		t.Errorf("Provider.BaseURL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
+		t.Errorf("Provider.APIKeyHeader = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
+		t.Errorf("QueryParams[api-version] = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.QueryParams["deployment-id"], "gpt4-prod"; got != want {
+		t.Errorf("QueryParams[deployment-id] = %q, want %q", got, want)
+	}
+}
+
+// TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset verifies the
+// precedence rule for the new flags: a flag that the user did not pass
+// MUST NOT clobber a file-provided value.
+func TestApplyOverrides_AzureFlagsDoNotOverrideWhenUnset(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider.BaseURL = "https://file-base-url.example/v1"
+	cfg.Provider.APIKeyHeader = "api-key"
+	cfg.Provider.QueryParams = map[string]string{"api-version": "preview"}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if got, want := cfg.Provider.BaseURL, "https://file-base-url.example/v1"; got != want {
+		t.Errorf("Provider.BaseURL: file value should survive, got %q", got)
+	}
+	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
+		t.Errorf("Provider.APIKeyHeader: file value should survive, got %q", got)
+	}
+	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
+		t.Errorf("QueryParams: file value should survive, got %q", got)
+	}
+}
+
+// TestApplyOverrides_QueryParamMalformedReturnsError pins the must-fix
+// behaviour from the issue #48 review: when --config is used alongside
+// a malformed --query-param entry, applyOverrides returns a non-nil
+// error rather than warning-and-continuing. Without this guard the
+// --config and flag-only paths would diverge — the flag-only path in
+// runHarness fails hard for the same input — and a request would reach
+// the provider with a parameter silently dropped (e.g. an Azure call
+// with no api-version, surfacing as an opaque HTTP 400).
+func TestApplyOverrides_QueryParamMalformedReturnsError(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry string
+	}{
+		{"missing-equals", "api-version"},
+		{"empty-key", "=preview"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newTestHarnessCommand()
+			cfg := baseFileConfig()
+			if err := cmd.Flags().Set("query-param", tc.entry); err != nil {
+				t.Fatalf("set query-param: %v", err)
+			}
+
+			err := applyOverrides(cmd, cfg, nil)
+			if err == nil {
+				t.Fatalf("expected error for malformed --query-param %q, got nil", tc.entry)
+			}
+			if !strings.Contains(err.Error(), "--query-param") {
+				t.Errorf("error should reference the offending flag, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestParseQueryParam_ValidAndInvalid pins the syntactic split rule used
+// by the --query-param flag parser. Empty keys and missing "=" are rejected.
+// Charset/length validation lives in ValidateRunConfig — this helper only
+// owns the syntax.
+func TestParseQueryParam_ValidAndInvalid(t *testing.T) {
+	cases := []struct {
+		entry   string
+		wantK   string
+		wantV   string
+		wantErr bool
+	}{
+		{"api-version=preview", "api-version", "preview", false},
+		{"empty-value=", "empty-value", "", false},
+		{"with=equals=in=value", "with", "equals=in=value", false},
+		{"=missing-key", "", "", true},
+		{"no-equals", "", "", true},
+		{"", "", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.entry, func(t *testing.T) {
+			k, v, err := parseQueryParam(tc.entry)
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error for %q, got nil", tc.entry)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseQueryParam(%q) error: %v", tc.entry, err)
+			}
+			if k != tc.wantK || v != tc.wantV {
+				t.Errorf("parseQueryParam(%q) = (%q, %q), want (%q, %q)", tc.entry, k, v, tc.wantK, tc.wantV)
+			}
+		})
+	}
+}
+
+// TestBuildHarnessRunConfig_AzureProviderFields verifies that the new
+// CLI options propagate from harnessCLIOptions into the generated
+// ProviderConfig.
+func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "openai-responses",
+		APIKeyRef:     "secret://AZURE_KEY",
+		BaseURL:       "https://example.openai.azure.com/openai/v1",
+		APIKeyHeader:  "api-key",
+		QueryParams:   map[string]string{"api-version": "preview"},
+		Model:         "gpt-4o",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+
+	if got, want := cfg.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
+		t.Errorf("Provider.BaseURL = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.APIKeyHeader, "api-key"; got != want {
+		t.Errorf("Provider.APIKeyHeader = %q, want %q", got, want)
+	}
+	if got, want := cfg.Provider.QueryParams["api-version"], "preview"; got != want {
+		t.Errorf("Provider.QueryParams[api-version] = %q, want %q", got, want)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig: %v", err)
+	}
+}

@@ -310,9 +310,17 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	case "anthropic":
 		return provider.NewAnthropicAdapter(cred.BearerToken), nil
 	case "openai-compatible":
-		return provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL), nil
+		auth := provider.OpenAIAuthConfig{
+			APIKeyHeader: cfg.APIKeyHeader,
+			QueryParams:  cfg.QueryParams,
+		}
+		return provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth), nil
 	case "openai-responses":
-		return provider.NewOpenAIResponsesAdapter(cred.BearerToken, cfg.BaseURL), nil
+		auth := provider.OpenAIAuthConfig{
+			APIKeyHeader: cfg.APIKeyHeader,
+			QueryParams:  cfg.QueryParams,
+		}
+		return provider.NewOpenAIResponsesAdapter(cred.BearerToken, cfg.BaseURL, auth), nil
 	case "bedrock":
 		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials)
 	default:

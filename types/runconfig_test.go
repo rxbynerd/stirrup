@@ -665,3 +665,147 @@ func TestRedact_CredentialConfigPreserved(t *testing.T) {
 		t.Error("TokenSource.Audience should be preserved after redaction")
 	}
 }
+
+// --- ValidateRunConfig: APIKeyHeader / QueryParams (issue #48) ---
+
+func TestValidateRunConfig_APIKeyHeader_Valid(t *testing.T) {
+	cases := []string{"", "api-key", "x-api-key", "Ocp-Apim-Subscription-Key", "Authorization"}
+	for _, header := range cases {
+		t.Run(header, func(t *testing.T) {
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "openai-responses", APIKeyHeader: header}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Errorf("expected nil error for valid header %q, got %v", header, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {
+	cases := map[string]string{
+		"contains colon":      "api-key:",
+		"contains CR":         "api-key\r",
+		"contains LF":         "api-key\nset-cookie: foo=bar",
+		"contains tab":        "api\tkey",
+		"contains space":      "api key",
+		"contains underscore": "api_key",
+		"contains slash":      "api/key",
+	}
+	for name, header := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "openai-responses", APIKeyHeader: header}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for invalid header %q, got nil", header)
+			}
+			if !strings.Contains(err.Error(), "apiKeyHeader") {
+				t.Errorf("error should mention apiKeyHeader, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_QueryParams_Valid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "openai-responses",
+		QueryParams: map[string]string{
+			"api-version":   "preview",
+			"deployment.id": "gpt4_prod",
+			"flag":          "value with spaces are fine in values",
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Errorf("expected nil error for valid query params, got %v", err)
+	}
+}
+
+func TestValidateRunConfig_QueryParams_RejectsBadKeyChars(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:        "openai-responses",
+		QueryParams: map[string]string{"api version": "preview"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for key with spaces, got nil")
+	}
+	if !strings.Contains(err.Error(), "queryParams") {
+		t.Errorf("error should mention queryParams, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_QueryParams_RejectsCRLFInValue(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:        "openai-responses",
+		QueryParams: map[string]string{"api-version": "preview\r\nset-cookie: foo=bar"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for CRLF in value, got nil")
+	}
+	if !strings.Contains(err.Error(), "CR/LF") {
+		t.Errorf("error should mention CR/LF, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_QueryParams_RejectsOversize(t *testing.T) {
+	// Build a value just over the 2048-byte cap so the encoded form trips it.
+	huge := strings.Repeat("x", 2050)
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:        "openai-responses",
+		QueryParams: map[string]string{"k": huge},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for oversize query string, got nil")
+	}
+	if !strings.Contains(err.Error(), "byte cap") {
+		t.Errorf("error should mention byte cap, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_QueryParams_RejectsEmptyKey(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:        "openai-responses",
+		QueryParams: map[string]string{"": "value"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for empty key, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty key") {
+		t.Errorf("error should mention empty key, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderShapeStillEnforced
+// pins the design choice that shape validation is universal: even if the
+// fields will be ignored at runtime (because the provider is anthropic),
+// keeping a malformed value in a stale config is a footgun. Forward
+// compatibility means "ignore at runtime", not "skip validation".
+func TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderShapeStillEnforced(t *testing.T) {
+	c := validConfig() // Provider.Type == "anthropic"
+	c.Provider.APIKeyHeader = "bad: header"
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error even on anthropic with malformed header, got nil")
+	}
+}
+
+// TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderValidShape verifies
+// the inverse of the above: well-formed APIKeyHeader / QueryParams on a
+// non-OpenAI provider are tolerated (anthropic and bedrock will simply
+// ignore them at runtime). This is forward compatibility.
+func TestValidateRunConfig_AzureFieldsOnNonOpenAIProviderValidShape(t *testing.T) {
+	c := validConfig() // Provider.Type == "anthropic"
+	c.Provider.APIKeyHeader = "x-api-key"
+	c.Provider.QueryParams = map[string]string{"hint": "future"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Errorf("expected nil error for forward-compatible fields on anthropic, got %v", err)
+	}
+}

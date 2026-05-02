@@ -24,6 +24,9 @@ type harnessCLIOptions struct {
 	Prompt        string
 	ProviderType  string
 	APIKeyRef     string
+	BaseURL       string
+	APIKeyHeader  string
+	QueryParams   map[string]string
 	Model         string
 	Workspace     string
 	MaxTurns      int
@@ -95,8 +98,11 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 		Mode:   opts.Mode,
 		Prompt: opts.Prompt,
 		Provider: types.ProviderConfig{
-			Type:      opts.ProviderType,
-			APIKeyRef: opts.APIKeyRef,
+			Type:         opts.ProviderType,
+			APIKeyRef:    opts.APIKeyRef,
+			BaseURL:      opts.BaseURL,
+			APIKeyHeader: opts.APIKeyHeader,
+			QueryParams:  opts.QueryParams,
 		},
 		ModelRouter: types.ModelRouterConfig{
 			Type:     "static",
@@ -189,6 +195,24 @@ func loadRunConfigFile(path string) (*types.RunConfig, error) {
 	return &cfg, nil
 }
 
+// parseQueryParam splits a "key=value" --query-param entry. Empty keys and
+// missing "=" are rejected so a typo at the CLI surfaces immediately rather
+// than silently dropping. Validation of the resulting key/value (charset
+// limits, CRLF, total encoded size) is left to ValidateRunConfig — this
+// helper only handles the syntactic split.
+func parseQueryParam(entry string) (string, string, error) {
+	idx := bytes.IndexByte([]byte(entry), '=')
+	if idx < 0 {
+		return "", "", fmt.Errorf("expected key=value, got %q", entry)
+	}
+	key := entry[:idx]
+	val := entry[idx+1:]
+	if key == "" {
+		return "", "", fmt.Errorf("empty key (entry: %q)", entry)
+	}
+	return key, val, nil
+}
+
 var harnessCmd = &cobra.Command{
 	Use:   "harness [flags] [prompt]",
 	Short: "Run the coding agent harness",
@@ -212,6 +236,9 @@ func init() {
 	f.String("model", "claude-sonnet-4-6", "Model to use (sets ModelRouter.Model; for dynamic/per-mode routers in --config files this only sets the default-model field, not the cheap/expensive override)")
 	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API). The two OpenAI variants speak different wire formats and must be selected explicitly.")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "Secret reference for API key")
+	f.String("base-url", "", "API base URL for openai-compatible / openai-responses providers (e.g. https://<resource>.openai.azure.com/openai/v1)")
+	f.String("api-key-header", "", "Header name for sending the API key. Empty = Authorization: Bearer (default). Set to \"api-key\" for Azure OpenAI key auth.")
+	f.StringArray("query-param", nil, "Repeatable key=value query parameter appended to every provider request URL (e.g. api-version=preview). Used by the openai-* adapters.")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
 	f.Int("timeout", 600, "Wall-clock timeout in seconds")
@@ -238,7 +265,15 @@ func init() {
 // user did not touch) deliberately do NOT override the file. The list of
 // flags handled here mirrors the documented override surface in the
 // CLI help text.
-func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) {
+//
+// Returns a non-nil error when an override is structurally invalid (today,
+// only a malformed --query-param entry triggers this). The flag-only path
+// in runHarness already fails hard for the same input, so propagating the
+// error here keeps the two paths aligned: a typo at the CLI must never be
+// silently dropped, because that would let a request reach the provider
+// missing a required parameter (e.g. Azure's `api-version`) and surface as
+// an opaque HTTP 400 instead of a clear operator error.
+func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) error {
 	f := cmd.Flags()
 	changed := func(name string) bool { return f.Changed(name) }
 
@@ -302,6 +337,38 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) {
 	if changed("api-key-ref") {
 		cfg.Provider.APIKeyRef, _ = f.GetString("api-key-ref")
 	}
+	if changed("base-url") {
+		cfg.Provider.BaseURL, _ = f.GetString("base-url")
+	}
+	if changed("api-key-header") {
+		cfg.Provider.APIKeyHeader, _ = f.GetString("api-key-header")
+	}
+	if changed("query-param") {
+		// Replace rather than merge: explicit --query-param flags clear any
+		// QueryParams set in the --config file, mirroring how a single
+		// --base-url flag wholesale replaces the file's BaseURL. Mixing
+		// would surprise users who set --query-param to override a stale
+		// file entry.
+		raw, _ := f.GetStringArray("query-param")
+		cfg.Provider.QueryParams = nil
+		for _, entry := range raw {
+			k, v, err := parseQueryParam(entry)
+			if err != nil {
+				// Hard-fail rather than dropping the malformed entry. The
+				// flag-only path in runHarness returns the same shape of
+				// error for the same input; warning-and-continue here would
+				// leave Path 1 (--config) and Path 2 (flags only) inconsistent
+				// and let an Azure request proceed without a required
+				// parameter (e.g. api-version), surfacing later as an opaque
+				// HTTP 400 from the provider.
+				return fmt.Errorf("--query-param %q: %w", entry, err)
+			}
+			if cfg.Provider.QueryParams == nil {
+				cfg.Provider.QueryParams = map[string]string{}
+			}
+			cfg.Provider.QueryParams[k] = v
+		}
+	}
 	if changed("executor") {
 		cfg.Executor.Type, _ = f.GetString("executor")
 	}
@@ -320,6 +387,7 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) {
 	if changed("otel-endpoint") {
 		cfg.TraceEmitter.Endpoint, _ = f.GetString("otel-endpoint")
 	}
+	return nil
 }
 
 func runHarness(cmd *cobra.Command, args []string) error {
@@ -332,7 +400,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		applyOverrides(cmd, cfg, args)
+		if err := applyOverrides(cmd, cfg, args); err != nil {
+			return err
+		}
 
 		// After overrides, derive any unset mode-driven defaults
 		// (PermissionPolicy, read-only Tools.BuiltIn). Mirrors what
@@ -376,6 +446,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	model, _ := f.GetString("model")
 	providerType, _ := f.GetString("provider")
 	apiKeyRef, _ := f.GetString("api-key-ref")
+	baseURL, _ := f.GetString("base-url")
+	apiKeyHeader, _ := f.GetString("api-key-header")
+	queryParamRaw, _ := f.GetStringArray("query-param")
 	workspace, _ := f.GetString("workspace")
 	maxTurns, _ := f.GetInt("max-turns")
 	timeout, _ := f.GetInt("timeout")
@@ -390,6 +463,18 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	gitStrategyType, _ := f.GetString("git-strategy")
 	traceEmitterType, _ := f.GetString("trace-emitter")
 	otelEndpoint, _ := f.GetString("otel-endpoint")
+
+	var queryParams map[string]string
+	for _, entry := range queryParamRaw {
+		k, v, err := parseQueryParam(entry)
+		if err != nil {
+			return fmt.Errorf("--query-param %q: %w", entry, err)
+		}
+		if queryParams == nil {
+			queryParams = map[string]string{}
+		}
+		queryParams[k] = v
+	}
 
 	// Allow the env var to set the follow-up grace when the flag is not provided.
 	if followUpGrace == 0 {
@@ -406,6 +491,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		Prompt:           prompt,
 		ProviderType:     providerType,
 		APIKeyRef:        apiKeyRef,
+		BaseURL:          baseURL,
+		APIKeyHeader:     apiKeyHeader,
+		QueryParams:      queryParams,
 		Model:            model,
 		Workspace:        workspace,
 		MaxTurns:         maxTurns,

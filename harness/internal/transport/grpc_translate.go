@@ -158,11 +158,20 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 
 func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 	cfg := types.ProviderConfig{
-		Type:      pc.Type,
-		APIKeyRef: pc.ApiKeyRef,
-		Region:    pc.Region,
-		Profile:   pc.Profile,
-		BaseURL:   pc.BaseUrl,
+		Type:         pc.Type,
+		APIKeyRef:    pc.ApiKeyRef,
+		Region:       pc.Region,
+		Profile:      pc.Profile,
+		BaseURL:      pc.BaseUrl,
+		APIKeyHeader: pc.ApiKeyHeader,
+	}
+	if len(pc.QueryParams) > 0 {
+		// Copy the proto-owned map so later mutations to the wire payload
+		// can't reach internal config state.
+		cfg.QueryParams = make(map[string]string, len(pc.QueryParams))
+		for k, v := range pc.QueryParams {
+			cfg.QueryParams[k] = v
+		}
 	}
 	if pc.Credential != nil {
 		cfg.Credential = credentialConfigFromProto(pc.Credential)

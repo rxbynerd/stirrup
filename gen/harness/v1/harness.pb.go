@@ -814,7 +814,20 @@ type ProviderConfig struct {
 	// Optional. Cross-cloud credential federation configuration. When omitted,
 	// the credential type is inferred from the provider type: "bedrock" defaults
 	// to "aws-default"; all others default to "static" (resolving api_key_ref).
-	Credential    *CredentialConfig `protobuf:"bytes,6,opt,name=credential,proto3" json:"credential,omitempty"`
+	Credential *CredentialConfig `protobuf:"bytes,6,opt,name=credential,proto3" json:"credential,omitempty"`
+	// Optional. Custom header name for sending the API key. Empty string means
+	// "Authorization: Bearer <key>" (default OpenAI / Anthropic behaviour). Set
+	// to "api-key" for Azure OpenAI key auth, or to a vendor-specific header
+	// name (e.g. "x-api-key", "Ocp-Apim-Subscription-Key") for gateways that
+	// expect it. Only consulted by "openai-compatible" and "openai-responses";
+	// ignored by "anthropic" and "bedrock".
+	ApiKeyHeader string `protobuf:"bytes,7,opt,name=api_key_header,json=apiKeyHeader,proto3" json:"api_key_header,omitempty"`
+	// Optional. Query parameters appended to every request URL by the
+	// "openai-compatible" and "openai-responses" adapters. Used for Azure
+	// OpenAI's api-version pin (e.g. {"api-version": "preview"}) and similar
+	// gateway parameters. Keys supplied here override any duplicate keys
+	// present in base_url's query string.
+	QueryParams   map[string]string `protobuf:"bytes,8,rep,name=query_params,json=queryParams,proto3" json:"query_params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -887,6 +900,20 @@ func (x *ProviderConfig) GetBaseUrl() string {
 func (x *ProviderConfig) GetCredential() *CredentialConfig {
 	if x != nil {
 		return x.Credential
+	}
+	return nil
+}
+
+func (x *ProviderConfig) GetApiKeyHeader() string {
+	if x != nil {
+		return x.ApiKeyHeader
+	}
+	return ""
+}
+
+func (x *ProviderConfig) GetQueryParams() map[string]string {
+	if x != nil {
+		return x.QueryParams
 	}
 	return nil
 }
@@ -1817,8 +1844,16 @@ func (x *VerifierConfig) GetModel() string {
 	return ""
 }
 
-// PermissionPolicyConfig selects the permission gating strategy for
-// side-effecting tools (write_file, run_command, etc.).
+// PermissionPolicyConfig selects the permission gating strategy for tools
+// that mutate the workspace or that otherwise require operator approval.
+//
+// The harness distinguishes two independent tool flags:
+//   - WorkspaceMutating: the tool modifies workspace state (e.g. write_file,
+//     run_command, edit_file). Read-only modes must reject these.
+//   - RequiresApproval:  the tool should be gated by an upstream approval
+//     policy. Set on every WorkspaceMutating tool plus non-mutating tools
+//     whose effects an operator may want to gate (web_fetch makes outbound
+//     network requests; spawn_agent consumes additional model budget).
 //
 // Cross-field constraint: read-only modes ("planning", "review", "research",
 // "toil") must use "deny-side-effects" or "ask-upstream" — never "allow-all".
@@ -1829,12 +1864,16 @@ type PermissionPolicyConfig struct {
 	//
 	//	"allow-all"         — all tool calls are allowed without gating. Only
 	//	                      valid for "execution" mode.
-	//	"deny-side-effects" — read tools are allowed; write tools are denied
-	//	                      automatically.
-	//	"ask-upstream"      — side-effecting tool calls trigger a
-	//	                      permission_request HarnessEvent. The control plane
-	//	                      must respond with a permission_response ControlEvent
-	//	                      within the timeout.
+	//	"deny-side-effects" — denies tools that mutate the workspace. Read
+	//	                      tools and approval-required-but-non-mutating
+	//	                      tools (web_fetch, spawn_agent) are still
+	//	                      allowed; this is what makes "research" mode
+	//	                      able to call web_fetch.
+	//	"ask-upstream"      — approval-required tool calls trigger a
+	//	                      permission_request HarnessEvent. The control
+	//	                      plane must respond with a permission_response
+	//	                      ControlEvent within the timeout. Tools that
+	//	                      do not require approval are auto-allowed.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// For "ask-upstream": seconds to wait for a permission_response before
 	// auto-denying. 0 means use the harness default (60 seconds).
@@ -2235,7 +2274,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
 	"durationMs\x12\x1f\n" +
 	"\vstop_reason\x18\a \x01(\tR\n" +
-	"stopReason\"\xd7\x01\n" +
+	"stopReason\"\x95\x03\n" +
 	"\x0eProviderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x16\n" +
@@ -2244,7 +2283,12 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\bbase_url\x18\x05 \x01(\tR\abaseUrl\x12D\n" +
 	"\n" +
 	"credential\x18\x06 \x01(\v2$.stirrup.harness.v1.CredentialConfigR\n" +
-	"credential\"\xae\x01\n" +
+	"credential\x12$\n" +
+	"\x0eapi_key_header\x18\a \x01(\tR\fapiKeyHeader\x12V\n" +
+	"\fquery_params\x18\b \x03(\v23.stirrup.harness.v1.ProviderConfig.QueryParamsEntryR\vqueryParams\x1a>\n" +
+	"\x10QueryParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xae\x01\n" +
 	"\x10CredentialConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12H\n" +
 	"\ftoken_source\x18\x02 \x01(\v2%.stirrup.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
@@ -2347,7 +2391,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),           // 0: stirrup.harness.v1.HarnessEvent
 	(*ControlEvent)(nil),           // 1: stirrup.harness.v1.ControlEvent
@@ -2373,7 +2417,8 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	(*MCPServerConfig)(nil),        // 21: stirrup.harness.v1.MCPServerConfig
 	nil,                            // 22: stirrup.harness.v1.RunConfig.DynamicContextEntry
 	nil,                            // 23: stirrup.harness.v1.RunConfig.ProvidersEntry
-	nil,                            // 24: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	nil,                            // 24: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	nil,                            // 25: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	4,  // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
@@ -2393,21 +2438,22 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	19, // 14: stirrup.harness.v1.RunConfig.trace_emitter:type_name -> stirrup.harness.v1.TraceEmitterConfig
 	20, // 15: stirrup.harness.v1.RunConfig.tools:type_name -> stirrup.harness.v1.ToolsConfig
 	6,  // 16: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
-	7,  // 17: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
-	24, // 18: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
-	12, // 19: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
-	13, // 20: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
-	14, // 21: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
-	16, // 22: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
-	21, // 23: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	5,  // 24: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 25: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	1,  // 26: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	26, // [26:27] is the sub-list for method output_type
-	25, // [25:26] is the sub-list for method input_type
-	25, // [25:25] is the sub-list for extension type_name
-	25, // [25:25] is the sub-list for extension extendee
-	0,  // [0:25] is the sub-list for field type_name
+	24, // 17: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	7,  // 18: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
+	25, // 19: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	12, // 20: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
+	13, // 21: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
+	14, // 22: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
+	16, // 23: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
+	21, // 24: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	5,  // 25: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 26: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	1,  // 27: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	27, // [27:28] is the sub-list for method output_type
+	26, // [26:27] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -2423,7 +2469,7 @@ func file_harness_v1_harness_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   25,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

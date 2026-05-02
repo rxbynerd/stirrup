@@ -239,6 +239,21 @@ func TestScrubWithStats_PatternNames(t *testing.T) {
 			input:   "secret://ANTHROPIC_KEY",
 			pattern: "secret_ref",
 		},
+		{
+			name:    "api_key_header_lowercase",
+			input:   "api-key: 0123456789abcdef0123456789abcdef",
+			pattern: "api_key_header",
+		},
+		{
+			name:    "api_key_header_x_prefix",
+			input:   "x-api-key: SOME-VENDOR-VALUE",
+			pattern: "api_key_header",
+		},
+		{
+			name:    "api_key_header_apim",
+			input:   "Ocp-Apim-Subscription-Key: opaque-token-here",
+			pattern: "api_key_header",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

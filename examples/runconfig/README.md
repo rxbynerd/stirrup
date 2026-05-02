@@ -20,6 +20,7 @@ fails fast with a clear error rather than being silently dropped.
 |---|---|
 | [`full.json`](full.json) | Container executor, multi edit strategy, OTel trace emitter, deterministic git, dynamic model router, allow-all permission policy, and one MCP server. Passes `types.ValidateRunConfig` end-to-end. |
 | [`openai_responses.json`](openai_responses.json) | OpenAI Responses API provider (`POST /v1/responses`), local executor, multi edit strategy, JSONL trace emitter, static router on `gpt-4.1`. Use this template when you want the Responses wire format (top-level `instructions`, typed `input[]` items, `max_output_tokens`) rather than Chat Completions. |
+| [`azure-openai.json`](azure-openai.json) | Azure OpenAI Foundry's Responses endpoint via the same `openai-responses` provider type, with `apiKeyHeader: "api-key"` for key-based auth and `queryParams: {"api-version": "preview"}` for the api-version pin. Switch the `apiKeyHeader` to an empty string to use Entra ID bearer tokens (the default behaviour) instead. |
 
 ## Precedence
 
