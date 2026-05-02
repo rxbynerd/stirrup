@@ -38,11 +38,17 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 		UserResponse: pe.UserResponse,
 		RequestID:    pe.RequestId,
 		Reason:       pe.Reason,
+		Content:      pe.Content,
 	}
 
 	if pe.Allowed != nil {
 		v := pe.Allowed.Value
 		e.Allowed = &v
+	}
+
+	if pe.IsError != nil {
+		v := pe.IsError.Value
+		e.IsError = &v
 	}
 
 	if pe.Task != nil {

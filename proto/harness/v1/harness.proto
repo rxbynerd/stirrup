@@ -56,6 +56,18 @@ service HarnessService {
 //     - input:      JSON-encoded tool input (so the control plane can display
 //                   what the tool wants to do).
 //
+//   "tool_result_request"
+//     - request_id: unique ID for this request; the control plane must echo it
+//                   back in the corresponding tool_result_response ControlEvent.
+//     - tool_use_id: the tool-use ID assigned by the model for this call (so
+//                    the control plane can correlate to the original tool_call).
+//     - tool_name:   the async tool whose result is being requested.
+//     - input:       JSON-encoded tool input (so the control plane can decide
+//                    what to do).
+//     Emitted by the agentic loop when an async tool defers its result to the
+//     control plane. The harness blocks on the matching tool_result_response
+//     under ctx cancellation and a per-call timeout.
+//
 //   "done"
 //     - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
 //                    "stalled", "tool_failures", "cancelled", "budget_exceeded").
@@ -74,7 +86,8 @@ service HarnessService {
 message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
-  //              "warning", "heartbeat", "ready", "permission_request".
+  //              "warning", "heartbeat", "ready", "permission_request",
+  //              "tool_result_request".
   string type = 1;
 
   // Incremental text fragment from the model. Set on "text_delta" events.
@@ -86,11 +99,12 @@ message HarnessEvent {
   // Tool name. Set on "tool_call" events.
   string name = 4;
 
-  // JSON-encoded tool input parameters. Set on "tool_call" and
-  // "permission_request" events.
+  // JSON-encoded tool input parameters. Set on "tool_call",
+  // "permission_request", and "tool_result_request" events.
   bytes input = 5;
 
-  // The tool-use ID this result corresponds to. Set on "tool_result" events.
+  // The tool-use ID this result corresponds to. Set on "tool_result" and
+  // "tool_result_request" events.
   string tool_use_id = 6;
 
   // Tool execution result. Set on "tool_result" events.
@@ -107,12 +121,13 @@ message HarnessEvent {
   // Execution metrics. Set on "done" events.
   RunTrace trace = 10;
 
-  // Unique request ID for permission correlation. Set on "permission_request"
-  // events. The control plane must echo this back in the permission_response
-  // ControlEvent's request_id field.
+  // Unique request ID for correlation. Set on "permission_request" and
+  // "tool_result_request" events. The control plane must echo this back in
+  // the corresponding permission_response / tool_result_response ControlEvent.
   string request_id = 11;
 
-  // The tool requesting permission. Set on "permission_request" events.
+  // The tool name. Set on "permission_request" (tool requesting permission)
+  // and "tool_result_request" (async tool whose result is being requested).
   string tool_name = 12;
 
   // Build version of the harness binary. Set on "ready" events. The control
@@ -141,6 +156,16 @@ message HarnessEvent {
 //     - reason:     optional human-readable explanation for denial; passed
 //                   back to the model as context.
 //
+//   "tool_result_response"
+//     - request_id: must match the request_id from the corresponding
+//                   tool_result_request HarnessEvent.
+//     - content:    string result payload to deliver back to the agentic
+//                   loop as the async tool's output.
+//     - is_error:   when true, the loop treats the result as an error
+//                   (IsError=true on the ToolResult passed to the model).
+//                   Use this for upstream-side failures the model should
+//                   see as a tool error rather than a successful result.
+//
 //   "cancel"
 //     - (no additional fields) Signals that the run should be aborted. The
 //       harness terminates the run within one turn boundary: any in-flight
@@ -152,7 +177,7 @@ message HarnessEvent {
 message ControlEvent {
   // Required. The event type discriminator.
   // Valid values: "task_assignment", "user_response", "cancel",
-  //              "permission_response".
+  //              "permission_response", "tool_result_response".
   string type = 1;
 
   // The run configuration. Set on "task_assignment" events only. This is the
@@ -162,9 +187,9 @@ message ControlEvent {
   // Free-text user response. Set on "user_response" events.
   string user_response = 3;
 
-  // Correlates a permission_response with the originating permission_request.
-  // Set on "permission_response" events. Must match a previously received
-  // HarnessEvent.request_id.
+  // Correlates the response with the originating request HarnessEvent.
+  // Set on "permission_response" and "tool_result_response" events. Must
+  // match a previously received HarnessEvent.request_id.
   string request_id = 4;
 
   // The permission decision. Set on "permission_response" events.
@@ -174,6 +199,15 @@ message ControlEvent {
   // Human-readable explanation for a denial. Set on "permission_response"
   // events when allowed is false. Passed to the model as context.
   string reason = 6;
+
+  // Async tool result payload. Set on "tool_result_response" events. Delivered
+  // to the agentic loop verbatim as the async tool's output content.
+  string content = 7;
+
+  // When true on a "tool_result_response", the loop marks the resulting
+  // ToolResult as an error so the model sees it as a tool failure. Wrapped
+  // to distinguish unset from explicit-false (proto3 scalar default).
+  OptionalBool is_error = 8;
 }
 
 // OptionalBool wraps a boolean so we can distinguish "not set" from "false"

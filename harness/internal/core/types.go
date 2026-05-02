@@ -4,11 +4,14 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -30,6 +33,22 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// DefaultAsyncToolTimeout is the per-call wait used by the async tool
+// dispatch path when a tool's AsyncDispatch.Timeout is non-positive.
+// Matches permission.DefaultAskUpstreamTimeout for consistency; both are
+// "wait for a control-plane response" timeouts.
+const DefaultAsyncToolTimeout = 60 * time.Second
+
+// maxAsyncToolResultBytes caps the length of control-plane-supplied tool
+// result content. The control plane is partially trusted; an unbounded
+// string here is a DoS vector (CWE-400). 1MB matches the existing command
+// output cap used by the run_command sync tool.
+const maxAsyncToolResultBytes = 1 << 20 // 1MB
+
+// asyncResultTruncationSuffix is appended when content exceeds
+// maxAsyncToolResultBytes. The model and the trace see this marker.
+const asyncResultTruncationSuffix = "... [truncated by harness]"
 
 // AgenticLoop drives the ReAct loop. All dependencies are injected as struct
 // fields — the loop has no imports from concrete implementations, no environment
@@ -62,6 +81,71 @@ type AgenticLoop struct {
 	// callback registered in Run. atomic ensures the read in the OTel
 	// collection goroutine sees a complete value.
 	lastContextTokens atomic.Int64
+
+	// asyncOnce guards lazy construction of asyncCorrelator. The
+	// correlator is created and attached to the transport on the first
+	// async tool dispatch — most runs never use any async tools and pay
+	// no cost. The pointer is held in an atomic so non-dispatcher
+	// goroutines (e.g. tests, diagnostics) can read it safely without
+	// going through Once.Do.
+	asyncOnce       sync.Once
+	asyncCorrelator atomic.Pointer[transport.Correlator]
+}
+
+// asyncToolResult carries the resolved payload of an async tool call from
+// the transport correlator back to the dispatch path.
+type asyncToolResult struct {
+	content string
+	isError bool
+}
+
+// extractAsyncToolResult is the PayloadExtractor for tool_result_response
+// control events. Returns an empty id (and so is ignored) for any other
+// event type. Content is truncated at maxAsyncToolResultBytes before
+// flowing into tool output, message history, or the wire — the cap is
+// applied here, at the extraction boundary, so it is enforced regardless
+// of how the payload is later consumed (success path, error path, trace).
+// Truncation happens in bytes (not runes) to keep the bound predictable;
+// downstream consumers do not assume valid UTF-8.
+func extractAsyncToolResult(event types.ControlEvent) (string, any) {
+	if event.Type != "tool_result_response" {
+		return "", nil
+	}
+	content := event.Content
+	if len(content) > maxAsyncToolResultBytes {
+		content = content[:maxAsyncToolResultBytes] + asyncResultTruncationSuffix
+	}
+	isErr := event.IsError != nil && *event.IsError
+	return event.RequestID, asyncToolResult{
+		content: content,
+		isError: isErr,
+	}
+}
+
+// ensureAsyncCorrelator returns the loop's async tool correlator, lazily
+// constructing it and attaching it to the loop's transport on first use.
+// Safe to call concurrently. Returns nil when the loop's transport has no
+// way to deliver responses (NullTransport / nil); callers should handle
+// nil by failing the dispatch fast.
+func (l *AgenticLoop) ensureAsyncCorrelator() *transport.Correlator {
+	if l.Transport == nil || transport.IsNull(l.Transport) {
+		return nil
+	}
+	l.asyncOnce.Do(func() {
+		c := transport.NewCorrelator("async-tool")
+		c.AttachTo(l.Transport, extractAsyncToolResult)
+		l.asyncCorrelator.Store(c)
+	})
+	return l.asyncCorrelator.Load()
+}
+
+// asyncCorrelatorForTest returns the loop's async tool correlator if it
+// has been constructed, nil otherwise. Race-safe with concurrent
+// dispatchAsyncToolCall calls because the underlying field is an
+// atomic.Pointer. Used by tests that want to assert correlator state
+// (e.g. PendingCount) without forcing construction.
+func (l *AgenticLoop) asyncCorrelatorForTest() *transport.Correlator {
+	return l.asyncCorrelator.Load()
 }
 
 // TokenTracker tracks cumulative token usage per run and enforces token budgets.
@@ -173,13 +257,125 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		}
 	}
 
+	// Async tools resolve their result via the transport correlator: the
+	// preflight returns an AsyncDispatch describing the request_id and
+	// per-call timeout to use, the loop emits a tool_result_request event,
+	// and blocks until a tool_result_response arrives (or ctx is cancelled
+	// / the timeout fires). Permission and security checks above already
+	// ran and gated dispatch identically to the sync path.
+	if t.AsyncHandler != nil {
+		return l.dispatchAsyncToolCall(ctx, t, call, inputForCall)
+	}
+
 	// Execute the tool handler with the cleaned input so the handler does not
 	// see prototype-pollution keys either.
+	if t.Handler == nil {
+		return fmt.Sprintf("Tool %s has no handler registered", call.Name), false
+	}
 	output, err := t.Handler(ctx, inputForCall)
 	if err != nil {
 		return "Tool error: " + err.Error(), false
 	}
 	return output, true
+}
+
+// dispatchAsyncToolCall runs the async tool path:
+//
+//  1. Refuse the call up front when the transport cannot deliver responses
+//     (NullTransport): an async tool here would block until the per-call
+//     timeout for nothing. Returning a clear error lets the model recover.
+//  2. Invoke the tool's AsyncHandler as a preflight. The handler returns
+//     an AsyncDispatch carrying any per-call timeout override; the loop
+//     owns the wire request ID via its transport correlator.
+//  3. Emit a "tool_result_request" HarnessEvent carrying the request_id,
+//     the model's tool_use_id, the tool name, and the input.
+//  4. Block on the matching "tool_result_response" via the loop's async
+//     correlator under run-context cancellation and the per-call timeout.
+//
+// The error taxonomy surfaced via the returned content string is documented
+// in dispatchAsyncToolCall's call sites (see the constants below); the
+// model sees IsError=true on every failure path.
+func (l *AgenticLoop) dispatchAsyncToolCall(
+	ctx context.Context,
+	t *tool.Tool,
+	call types.ToolCall,
+	inputForCall json.RawMessage,
+) (string, bool) {
+	correlator := l.ensureAsyncCorrelator()
+	if correlator == nil {
+		// NullTransport (sub-agent) — no control plane to round-trip
+		// through. Fail fast rather than burning the per-call timeout.
+		return fmt.Sprintf(
+			"async tool %s unavailable: this loop has no live control-plane transport",
+			call.Name,
+		), false
+	}
+
+	dispatch, err := t.AsyncHandler(ctx, inputForCall)
+	if err != nil {
+		return fmt.Sprintf("async tool %s internal error: %s", call.Name, err.Error()), false
+	}
+
+	timeout := dispatch.Timeout
+	if timeout <= 0 {
+		timeout = DefaultAsyncToolTimeout
+	}
+
+	// The correlator allocates the wire request ID. The AsyncDispatch
+	// struct intentionally does not expose that ID to tool authors —
+	// correlation is a loop concern, single source of truth, and a
+	// tool-supplied value would be silently overridden.
+
+	payload, err := correlator.Await(ctx, timeout, func(requestID string) error {
+		return l.Transport.Emit(types.HarnessEvent{
+			Type:      "tool_result_request",
+			RequestID: requestID,
+			ToolName:  call.Name,
+			ToolUseID: call.ID,
+			Input:     inputForCall,
+		})
+	})
+	if err != nil {
+		// Distinguish error classes for the model:
+		//   - emit failure   → "transport_disconnect"
+		//   - timeout        → "async tool timeout"
+		//   - ctx cancellation → "async tool cancelled"
+		// The correlator wraps emit errors with "emit failed", timeouts
+		// with "timed out", and ctx errors carry context.Canceled /
+		// context.DeadlineExceeded in the chain.
+		if strings.Contains(err.Error(), "emit failed") {
+			return fmt.Sprintf("async tool %s transport_disconnect: %s", call.Name, err.Error()), false
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Sprintf("async tool %s cancelled: %s", call.Name, err.Error()), false
+		}
+		// Default: timeout (correlator: "timed out after ...") and any
+		// other unexpected wrapping go here.
+		return fmt.Sprintf("async tool %s timeout: %s", call.Name, err.Error()), false
+	}
+
+	resp, ok := payload.(asyncToolResult)
+	if !ok {
+		// Defensive: extractAsyncToolResult only ever delivers
+		// asyncToolResult, so reaching this branch means the correlator
+		// was wired with a different extractor. Treat as a hard error.
+		return fmt.Sprintf("async tool %s internal error: unexpected payload type %T", call.Name, payload), false
+	}
+	if resp.isError {
+		// The control plane is partially trusted: a compromised or
+		// misbehaving control plane could embed secret-shaped strings
+		// in the error payload, and the failure path forwards this
+		// content into the JSONL trace via RecordToolCall.ErrorReason
+		// without going through the transport's outbound scrub. Scrub
+		// at the point of entry so both the model context and the
+		// trace see the redacted form. The structured prefix matches
+		// the other three error taxonomy paths (transport_disconnect,
+		// timeout, internal error) so the model can disambiguate
+		// upstream failures from harness-side failures.
+		scrubbed := security.Scrub(resp.content)
+		return fmt.Sprintf("async tool %s upstream_error: %s", call.Name, scrubbed), false
+	}
+	return resp.content, true
 }
 
 // buildMessages constructs the initial message list from the user prompt.

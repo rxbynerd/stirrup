@@ -48,6 +48,18 @@ const (
 //	  - input:      JSON-encoded tool input (so the control plane can display
 //	                what the tool wants to do).
 //
+//	"tool_result_request"
+//	  - request_id: unique ID for this request; the control plane must echo it
+//	                back in the corresponding tool_result_response ControlEvent.
+//	  - tool_use_id: the tool-use ID assigned by the model for this call (so
+//	                 the control plane can correlate to the original tool_call).
+//	  - tool_name:   the async tool whose result is being requested.
+//	  - input:       JSON-encoded tool input (so the control plane can decide
+//	                 what to do).
+//	  Emitted by the agentic loop when an async tool defers its result to the
+//	  control plane. The harness blocks on the matching tool_result_response
+//	  under ctx cancellation and a per-call timeout.
+//
 //	"done"
 //	  - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
 //	                 "stalled", "tool_failures", "cancelled", "budget_exceeded").
@@ -68,7 +80,8 @@ type HarnessEvent struct {
 	// Required. The event type discriminator.
 	// Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
 	//
-	//	"warning", "heartbeat", "ready", "permission_request".
+	//	"warning", "heartbeat", "ready", "permission_request",
+	//	"tool_result_request".
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Incremental text fragment from the model. Set on "text_delta" events.
 	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
@@ -76,10 +89,11 @@ type HarnessEvent struct {
 	Id string `protobuf:"bytes,3,opt,name=id,proto3" json:"id,omitempty"`
 	// Tool name. Set on "tool_call" events.
 	Name string `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`
-	// JSON-encoded tool input parameters. Set on "tool_call" and
-	// "permission_request" events.
+	// JSON-encoded tool input parameters. Set on "tool_call",
+	// "permission_request", and "tool_result_request" events.
 	Input []byte `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
-	// The tool-use ID this result corresponds to. Set on "tool_result" events.
+	// The tool-use ID this result corresponds to. Set on "tool_result" and
+	// "tool_result_request" events.
 	ToolUseId string `protobuf:"bytes,6,opt,name=tool_use_id,json=toolUseId,proto3" json:"tool_use_id,omitempty"`
 	// Tool execution result. Set on "tool_result" events.
 	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
@@ -92,11 +106,12 @@ type HarnessEvent struct {
 	Message string `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
 	// Execution metrics. Set on "done" events.
 	Trace *RunTrace `protobuf:"bytes,10,opt,name=trace,proto3" json:"trace,omitempty"`
-	// Unique request ID for permission correlation. Set on "permission_request"
-	// events. The control plane must echo this back in the permission_response
-	// ControlEvent's request_id field.
+	// Unique request ID for correlation. Set on "permission_request" and
+	// "tool_result_request" events. The control plane must echo this back in
+	// the corresponding permission_response / tool_result_response ControlEvent.
 	RequestId string `protobuf:"bytes,11,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	// The tool requesting permission. Set on "permission_request" events.
+	// The tool name. Set on "permission_request" (tool requesting permission)
+	// and "tool_result_request" (async tool whose result is being requested).
 	ToolName string `protobuf:"bytes,12,opt,name=tool_name,json=toolName,proto3" json:"tool_name,omitempty"`
 	// Build version of the harness binary. Set on "ready" events. The control
 	// plane may use this to verify compatibility before sending a task.
@@ -247,6 +262,16 @@ func (x *HarnessEvent) GetHarnessVersion() string {
 //	  - reason:     optional human-readable explanation for denial; passed
 //	                back to the model as context.
 //
+//	"tool_result_response"
+//	  - request_id: must match the request_id from the corresponding
+//	                tool_result_request HarnessEvent.
+//	  - content:    string result payload to deliver back to the agentic
+//	                loop as the async tool's output.
+//	  - is_error:   when true, the loop treats the result as an error
+//	                (IsError=true on the ToolResult passed to the model).
+//	                Use this for upstream-side failures the model should
+//	                see as a tool error rather than a successful result.
+//
 //	"cancel"
 //	  - (no additional fields) Signals that the run should be aborted. The
 //	    harness terminates the run within one turn boundary: any in-flight
@@ -260,23 +285,30 @@ type ControlEvent struct {
 	// Required. The event type discriminator.
 	// Valid values: "task_assignment", "user_response", "cancel",
 	//
-	//	"permission_response".
+	//	"permission_response", "tool_result_response".
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// The run configuration. Set on "task_assignment" events only. This is the
 	// composition root that drives all harness behaviour for the run.
 	Task *RunConfig `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
 	// Free-text user response. Set on "user_response" events.
 	UserResponse string `protobuf:"bytes,3,opt,name=user_response,json=userResponse,proto3" json:"user_response,omitempty"`
-	// Correlates a permission_response with the originating permission_request.
-	// Set on "permission_response" events. Must match a previously received
-	// HarnessEvent.request_id.
+	// Correlates the response with the originating request HarnessEvent.
+	// Set on "permission_response" and "tool_result_response" events. Must
+	// match a previously received HarnessEvent.request_id.
 	RequestId string `protobuf:"bytes,4,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// The permission decision. Set on "permission_response" events.
 	// True = allow the tool call to proceed. False = deny.
 	Allowed *OptionalBool `protobuf:"bytes,5,opt,name=allowed,proto3" json:"allowed,omitempty"`
 	// Human-readable explanation for a denial. Set on "permission_response"
 	// events when allowed is false. Passed to the model as context.
-	Reason        string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,6,opt,name=reason,proto3" json:"reason,omitempty"`
+	// Async tool result payload. Set on "tool_result_response" events. Delivered
+	// to the agentic loop verbatim as the async tool's output content.
+	Content string `protobuf:"bytes,7,opt,name=content,proto3" json:"content,omitempty"`
+	// When true on a "tool_result_response", the loop marks the resulting
+	// ToolResult as an error so the model sees it as a tool failure. Wrapped
+	// to distinguish unset from explicit-false (proto3 scalar default).
+	IsError       *OptionalBool `protobuf:"bytes,8,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -351,6 +383,20 @@ func (x *ControlEvent) GetReason() string {
 		return x.Reason
 	}
 	return ""
+}
+
+func (x *ControlEvent) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ControlEvent) GetIsError() *OptionalBool {
+	if x != nil {
+		return x.IsError
+	}
+	return nil
 }
 
 // OptionalBool wraps a boolean so we can distinguish "not set" from "false"
@@ -2445,7 +2491,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\v \x01(\tR\trequestId\x12\x1b\n" +
 	"\ttool_name\x18\f \x01(\tR\btoolName\x12'\n" +
-	"\x0fharness_version\x18\r \x01(\tR\x0eharnessVersion\"\xed\x01\n" +
+	"\x0fharness_version\x18\r \x01(\tR\x0eharnessVersion\"\xc4\x02\n" +
 	"\fControlEvent\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x121\n" +
 	"\x04task\x18\x02 \x01(\v2\x1d.stirrup.harness.v1.RunConfigR\x04task\x12#\n" +
@@ -2453,7 +2499,9 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
 	"request_id\x18\x04 \x01(\tR\trequestId\x12:\n" +
 	"\aallowed\x18\x05 \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
-	"\x06reason\x18\x06 \x01(\tR\x06reason\"$\n" +
+	"\x06reason\x18\x06 \x01(\tR\x06reason\x12\x18\n" +
+	"\acontent\x18\a \x01(\tR\acontent\x12;\n" +
+	"\bis_error\x18\b \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aisError\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\bR\x05value\"\xe8\r\n" +
 	"\tRunConfig\x12\x15\n" +
@@ -2670,38 +2718,39 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	6,  // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
 	3,  // 1: stirrup.harness.v1.ControlEvent.task:type_name -> stirrup.harness.v1.RunConfig
 	2,  // 2: stirrup.harness.v1.ControlEvent.allowed:type_name -> stirrup.harness.v1.OptionalBool
-	24, // 3: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
-	7,  // 4: stirrup.harness.v1.RunConfig.provider:type_name -> stirrup.harness.v1.ProviderConfig
-	25, // 5: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
-	10, // 6: stirrup.harness.v1.RunConfig.model_router:type_name -> stirrup.harness.v1.ModelRouterConfig
-	11, // 7: stirrup.harness.v1.RunConfig.prompt_builder:type_name -> stirrup.harness.v1.PromptBuilderConfig
-	12, // 8: stirrup.harness.v1.RunConfig.context_strategy:type_name -> stirrup.harness.v1.ContextStrategyConfig
-	13, // 9: stirrup.harness.v1.RunConfig.executor:type_name -> stirrup.harness.v1.ExecutorConfig
-	17, // 10: stirrup.harness.v1.RunConfig.edit_strategy:type_name -> stirrup.harness.v1.EditStrategyConfig
-	18, // 11: stirrup.harness.v1.RunConfig.verifier:type_name -> stirrup.harness.v1.VerifierConfig
-	19, // 12: stirrup.harness.v1.RunConfig.permission_policy:type_name -> stirrup.harness.v1.PermissionPolicyConfig
-	20, // 13: stirrup.harness.v1.RunConfig.git_strategy:type_name -> stirrup.harness.v1.GitStrategyConfig
-	21, // 14: stirrup.harness.v1.RunConfig.trace_emitter:type_name -> stirrup.harness.v1.TraceEmitterConfig
-	22, // 15: stirrup.harness.v1.RunConfig.tools:type_name -> stirrup.harness.v1.ToolsConfig
-	4,  // 16: stirrup.harness.v1.RunConfig.rule_of_two:type_name -> stirrup.harness.v1.RuleOfTwoConfig
-	5,  // 17: stirrup.harness.v1.RunConfig.code_scanner:type_name -> stirrup.harness.v1.CodeScannerConfig
-	8,  // 18: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
-	26, // 19: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
-	9,  // 20: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
-	27, // 21: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
-	14, // 22: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
-	15, // 23: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
-	16, // 24: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
-	18, // 25: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
-	23, // 26: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	7,  // 27: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 28: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	1,  // 29: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	29, // [29:30] is the sub-list for method output_type
-	28, // [28:29] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	2,  // 3: stirrup.harness.v1.ControlEvent.is_error:type_name -> stirrup.harness.v1.OptionalBool
+	24, // 4: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
+	7,  // 5: stirrup.harness.v1.RunConfig.provider:type_name -> stirrup.harness.v1.ProviderConfig
+	25, // 6: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
+	10, // 7: stirrup.harness.v1.RunConfig.model_router:type_name -> stirrup.harness.v1.ModelRouterConfig
+	11, // 8: stirrup.harness.v1.RunConfig.prompt_builder:type_name -> stirrup.harness.v1.PromptBuilderConfig
+	12, // 9: stirrup.harness.v1.RunConfig.context_strategy:type_name -> stirrup.harness.v1.ContextStrategyConfig
+	13, // 10: stirrup.harness.v1.RunConfig.executor:type_name -> stirrup.harness.v1.ExecutorConfig
+	17, // 11: stirrup.harness.v1.RunConfig.edit_strategy:type_name -> stirrup.harness.v1.EditStrategyConfig
+	18, // 12: stirrup.harness.v1.RunConfig.verifier:type_name -> stirrup.harness.v1.VerifierConfig
+	19, // 13: stirrup.harness.v1.RunConfig.permission_policy:type_name -> stirrup.harness.v1.PermissionPolicyConfig
+	20, // 14: stirrup.harness.v1.RunConfig.git_strategy:type_name -> stirrup.harness.v1.GitStrategyConfig
+	21, // 15: stirrup.harness.v1.RunConfig.trace_emitter:type_name -> stirrup.harness.v1.TraceEmitterConfig
+	22, // 16: stirrup.harness.v1.RunConfig.tools:type_name -> stirrup.harness.v1.ToolsConfig
+	4,  // 17: stirrup.harness.v1.RunConfig.rule_of_two:type_name -> stirrup.harness.v1.RuleOfTwoConfig
+	5,  // 18: stirrup.harness.v1.RunConfig.code_scanner:type_name -> stirrup.harness.v1.CodeScannerConfig
+	8,  // 19: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
+	26, // 20: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	9,  // 21: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
+	27, // 22: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	14, // 23: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
+	15, // 24: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
+	16, // 25: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
+	18, // 26: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
+	23, // 27: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	7,  // 28: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 29: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	1,  // 30: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	30, // [30:31] is the sub-list for method output_type
+	29, // [29:30] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
