@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -23,6 +24,7 @@ import (
 	"github.com/rxbynerd/stirrup/eval/reporter"
 	"github.com/rxbynerd/stirrup/eval/runner"
 	"github.com/rxbynerd/stirrup/types"
+	"github.com/rxbynerd/stirrup/types/version"
 )
 
 const usage = `Usage: eval <command> [options]
@@ -40,29 +42,43 @@ Run "eval <command> -help" for details.
 
 func main() {
 	log.SetFlags(0)
+	os.Exit(run(os.Args[1:], os.Stdout))
+}
 
-	if len(os.Args) < 2 {
+// run dispatches a stirrup-eval invocation. It is split out from main so
+// tests can exercise short-circuit subcommands (e.g. --version) without
+// shelling out to a built binary or fighting global state.
+//
+// args is the slice of arguments AFTER the program name (i.e. os.Args[1:]),
+// stdout is where short-circuit output is written, and the return value is
+// the process exit code.
+func run(args []string, stdout io.Writer) int {
+	if len(args) < 1 {
 		fmt.Fprint(os.Stderr, usage)
-		os.Exit(1)
+		return 1
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
+	case "--version", "-v", "version":
+		fmt.Fprintf(stdout, "stirrup-eval version %s\n", version.Full())
+		return 0
 	case "run":
-		cmdRun(os.Args[2:])
+		cmdRun(args[1:])
 	case "compare":
-		cmdCompare(os.Args[2:])
+		cmdCompare(args[1:])
 	case "baseline":
-		cmdBaseline(os.Args[2:])
+		cmdBaseline(args[1:])
 	case "mine-failures":
-		cmdMineFailures(os.Args[2:])
+		cmdMineFailures(args[1:])
 	case "drift":
-		cmdDrift(os.Args[2:])
+		cmdDrift(args[1:])
 	case "compare-to-production":
-		cmdCompareToProduction(os.Args[2:])
+		cmdCompareToProduction(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", os.Args[1], usage)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", args[0], usage)
+		return 1
 	}
+	return 0
 }
 
 func cmdRun(args []string) {
