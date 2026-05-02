@@ -299,6 +299,12 @@ message RunConfig {
   // bypassing prompt_builder mode selection. Workspace path, turn budget,
   // and dynamic_context sections are still appended by the harness.
   string system_prompt_override = 23;
+
+  // Optional. Human-readable label attached to the run for reporting.
+  // Surfaces in structured logs (sessionName), JSONL traces (config.sessionName),
+  // and OTel root spans (run.session_name). Metadata only — never injected
+  // into the model's prompt or conversation history.
+  optional string session_name = 24;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution

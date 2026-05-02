@@ -81,6 +81,22 @@ func TestRedact_MCPServersAPIKeys(t *testing.T) {
 	}
 }
 
+// TestRedact_SessionNamePreserved pins that SessionName survives Redact().
+// SessionName is not a secret — it's the operator's chosen label and it
+// must appear in persisted traces so logs and traces can be cross-
+// referenced. If Redact() ever starts stripping SessionName, downstream
+// trace consumers (eval lakehouse, JSONL replay) lose the link.
+func TestRedact_SessionNamePreserved(t *testing.T) {
+	rc := RunConfig{
+		SessionName: "nightly-eval",
+		Provider:    ProviderConfig{APIKeyRef: "secret://k"},
+	}
+	redacted := rc.Redact()
+	if redacted.SessionName != "nightly-eval" {
+		t.Errorf("SessionName should be preserved, got %q", redacted.SessionName)
+	}
+}
+
 func TestRedact_EmptyConfig(t *testing.T) {
 	rc := RunConfig{}
 	redacted := rc.Redact()
@@ -439,6 +455,84 @@ func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 	c.MaxTokenBudget = nil
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("expected no error for nil budget fields, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_SessionNameEmpty(t *testing.T) {
+	c := validConfig()
+	c.SessionName = ""
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("empty SessionName should pass validation, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_SessionNameValid(t *testing.T) {
+	cases := []string{
+		"nightly-eval",
+		"PR #123 sweep",
+		"café-run",              // unicode letter with diacritic
+		"文字列-test",              // CJK characters are printable
+		"emoji-ok-\xe2\x9c\x85", // U+2705 white heavy check mark (valid printable symbol)
+		strings.Repeat("a", 255),
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := validConfig()
+			c.SessionName = name
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("SessionName %q should pass validation, got: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_SessionNameTooLong(t *testing.T) {
+	c := validConfig()
+	c.SessionName = strings.Repeat("a", 256)
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for SessionName > 255 bytes")
+	}
+	if !strings.Contains(err.Error(), "sessionName") || !strings.Contains(err.Error(), "255") {
+		t.Errorf("error should describe the limit, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_SessionNameRejectsControlChars(t *testing.T) {
+	cases := map[string]string{
+		"newline":  "bad\nname",
+		"tab":      "bad\tname",
+		"nul":      "bad\x00name",
+		"del":      "bad\x7fname",
+		"carriage": "bad\rname",
+		"vtab":     "bad\vname",
+		"escape":   "bad\x1bname",
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := validConfig()
+			c.SessionName = value
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for SessionName containing %s", name)
+			}
+			if !strings.Contains(err.Error(), "sessionName") {
+				t.Errorf("error should mention sessionName, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_SessionNameRejectsInvalidUTF8(t *testing.T) {
+	c := validConfig()
+	// 0xff is never valid as a leading UTF-8 byte.
+	c.SessionName = "bad\xffname"
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for invalid UTF-8 in SessionName")
+	}
+	if !strings.Contains(err.Error(), "sessionName") {
+		t.Errorf("error should mention sessionName, got: %v", err)
 	}
 }
 

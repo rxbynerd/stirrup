@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -20,6 +22,11 @@ const (
 
 	// maxTokenBudget is the maximum allowed token budget.
 	maxTokenBudget = 50_000_000
+
+	// maxSessionNameLength is the maximum allowed length, in bytes, of
+	// SessionName. Capped to keep log lines, OTel attribute values, and
+	// trace JSON predictable; well above any genuine human-readable label.
+	maxSessionNameLength = 255
 )
 
 // RunConfig fully describes a single harness run. It is the composition root:
@@ -27,8 +34,9 @@ const (
 // the CLI builds it from flags/env.
 type RunConfig struct {
 	// Identity
-	RunID string `json:"runId"`
-	Mode  string `json:"mode"` // "execution" | "planning" | "review" | "research" | "toil"
+	RunID       string `json:"runId"`
+	Mode        string `json:"mode"`                  // "execution" | "planning" | "review" | "research" | "toil"
+	SessionName string `json:"sessionName,omitempty"` // human-readable label; never injected into the model's context
 
 	// What to do
 	Prompt         string            `json:"prompt"`
@@ -428,6 +436,7 @@ type ModePreset struct {
 func ValidateRunConfig(config *RunConfig) error {
 	var errs []string
 
+	validateSessionName(config.SessionName, &errs)
 	validateRequiredType("provider", config.Provider.Type, validProviderTypes, &errs)
 	validateOptionalType("modelRouter", config.ModelRouter.Type, validModelRouterTypes, &errs)
 	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
@@ -559,6 +568,33 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 	for mode, spec := range config.ModelRouter.ModeModels {
 		if providerName, _, ok := strings.Cut(spec, "/"); ok {
 			checkProviderRef(fmt.Sprintf("modelRouter.modeModels[%s]", mode), providerName)
+		}
+	}
+}
+
+// validateSessionName enforces the SessionName invariants: bounded length and
+// printable, non-control characters only. Empty is valid (means unset). The
+// goal is to keep the value safe to drop into a log line, an OTel attribute,
+// or a trace JSON record without truncation, escaping, or line corruption.
+func validateSessionName(name string, errs *[]string) {
+	if name == "" {
+		return
+	}
+	if len(name) > maxSessionNameLength {
+		*errs = append(*errs, fmt.Sprintf("sessionName must be <= %d bytes, got %d", maxSessionNameLength, len(name)))
+		return
+	}
+	if !utf8.ValidString(name) {
+		*errs = append(*errs, "sessionName must be valid UTF-8")
+		return
+	}
+	for i, r := range name {
+		// Reject every non-printable rune, including line terminators,
+		// tabs, NUL, and DEL. unicode.IsPrint returns false for control
+		// characters and for the Unicode separators we don't want either.
+		if !unicode.IsPrint(r) {
+			*errs = append(*errs, fmt.Sprintf("sessionName contains non-printable character at byte %d (U+%04X)", i, r))
+			return
 		}
 	}
 }

@@ -89,6 +89,47 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	}
 }
 
+// TestJSONLTraceEmitter_SessionNameRoundTrip pins that a SessionName set
+// on the RunConfig flows into the JSONL trace and survives a JSON round
+// trip. The eval lakehouse and replay tooling rely on this — without it,
+// a run labelled --name "nightly-eval" would not be filterable by label
+// in downstream analysis. (Construction-style test rather than booting
+// the full agentic loop, which would require a provider, executor, etc.;
+// the round-trip is the load-bearing property.)
+func TestJSONLTraceEmitter_SessionNameRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	timeout := 60
+	config := &types.RunConfig{
+		RunID:       "run-session",
+		Mode:        "execution",
+		SessionName: "nightly-eval",
+		MaxTurns:    5,
+		Timeout:     &timeout,
+		Provider:    types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://X"},
+	}
+	emitter.Start("run-session", config)
+	tr, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	// Trace returned in memory should carry SessionName.
+	if tr.Config.SessionName != "nightly-eval" {
+		t.Errorf("returned trace SessionName: got %q, want nightly-eval", tr.Config.SessionName)
+	}
+
+	// And the persisted JSONL line must round-trip the field.
+	var written types.RunTrace
+	if err := json.Unmarshal(buf.Bytes(), &written); err != nil {
+		t.Fatalf("unmarshal JSONL: %v\n%s", err, buf.String())
+	}
+	if written.Config.SessionName != "nightly-eval" {
+		t.Errorf("written SessionName: got %q, want nightly-eval", written.Config.SessionName)
+	}
+}
+
 func TestJSONLTraceEmitter_EmptyRun(t *testing.T) {
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf)

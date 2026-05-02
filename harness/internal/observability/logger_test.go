@@ -43,6 +43,32 @@ func (s *spyNotifier) snapshot() []notifierCall {
 // alphanumeric characters; ScrubWithStats must redact it.
 const anthropicKeyFixture = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
+// TestLogger_WithSessionNameAttribute verifies that a logger built via
+// NewLoggerWithSecurity preserves caller-attached default attributes
+// (e.g. sessionName) on every record. This is the property the harness
+// factory relies on when it does logger = logger.With("sessionName", ...).
+// If a future change makes the returned logger not chain .With() correctly,
+// this test will catch it before sessionName silently disappears from
+// production logs.
+func TestLogger_WithSessionNameAttribute(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger("test-run", slog.LevelInfo, &buf)
+	logger = logger.With("sessionName", "nightly-eval")
+
+	logger.Info("hello")
+
+	var record map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &record); err != nil {
+		t.Fatalf("unmarshal log record: %v\n%s", err, buf.String())
+	}
+	if got, ok := record["sessionName"].(string); !ok || got != "nightly-eval" {
+		t.Errorf("sessionName attribute missing or wrong: %v", record)
+	}
+	if got, ok := record["runId"].(string); !ok || got != "test-run" {
+		t.Errorf("runId attribute missing or wrong: %v", record)
+	}
+}
+
 func TestScrubHandler_RedactsAnthropicKey(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger("test-run", slog.LevelInfo, &buf)

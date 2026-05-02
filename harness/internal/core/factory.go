@@ -110,6 +110,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// Build logger early so MCP connection warnings go through the ScrubHandler.
 	logLevel := parseLogLevel(config.LogLevel)
 	logger := observability.NewLoggerWithSecurity(config.RunID, logLevel, os.Stderr, secLogger)
+	if config.SessionName != "" {
+		// Attach SessionName as a default log attribute so every line
+		// emitted from this loop (and any sub-loop sharing this logger)
+		// carries the operator-supplied label. Reassigned, not shadowed,
+		// so the value propagates into AgenticLoop.Logger below — a local
+		// copy would be discarded.
+		logger = logger.With("sessionName", config.SessionName)
+	}
 
 	// 6b. MCP tool discovery — connect to remote MCP servers and register
 	// their tools into the registry alongside the built-in tools.

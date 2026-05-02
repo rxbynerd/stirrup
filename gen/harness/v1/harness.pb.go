@@ -487,8 +487,13 @@ type RunConfig struct {
 	// bypassing prompt_builder mode selection. Workspace path, turn budget,
 	// and dynamic_context sections are still appended by the harness.
 	SystemPromptOverride string `protobuf:"bytes,23,opt,name=system_prompt_override,json=systemPromptOverride,proto3" json:"system_prompt_override,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Optional. Human-readable label attached to the run for reporting.
+	// Surfaces in structured logs (sessionName), JSONL traces (config.sessionName),
+	// and OTel root spans (run.session_name). Metadata only — never injected
+	// into the model's prompt or conversation history.
+	SessionName   *string `protobuf:"bytes,24,opt,name=session_name,json=sessionName,proto3,oneof" json:"session_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunConfig) Reset() {
@@ -678,6 +683,13 @@ func (x *RunConfig) GetLogLevel() string {
 func (x *RunConfig) GetSystemPromptOverride() string {
 	if x != nil {
 		return x.SystemPromptOverride
+	}
+	return ""
+}
+
+func (x *RunConfig) GetSessionName() string {
+	if x != nil && x.SessionName != nil {
+		return *x.SessionName
 	}
 	return ""
 }
@@ -2228,7 +2240,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\aallowed\x18\x05 \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aallowed\x12\x16\n" +
 	"\x06reason\x18\x06 \x01(\tR\x06reason\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xa0\f\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xd9\f\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -2253,7 +2265,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
 	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12\x1b\n" +
 	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x124\n" +
-	"\x16system_prompt_override\x18\x17 \x01(\tR\x14systemPromptOverride\x1aA\n" +
+	"\x16system_prompt_override\x18\x17 \x01(\tR\x14systemPromptOverride\x12&\n" +
+	"\fsession_name\x18\x18 \x01(\tH\x04R\vsessionName\x88\x01\x01\x1aA\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a`\n" +
@@ -2264,7 +2277,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x10_max_cost_budgetB\n" +
 	"\n" +
 	"\b_timeoutB\x12\n" +
-	"\x10_follow_up_grace\"\xdc\x01\n" +
+	"\x10_follow_up_graceB\x0f\n" +
+	"\r_session_name\"\xdc\x01\n" +
 	"\bRunTrace\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x14\n" +
 	"\x05turns\x18\x02 \x01(\x05R\x05turns\x12!\n" +

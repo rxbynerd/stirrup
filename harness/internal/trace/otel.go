@@ -100,6 +100,12 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 		if config.ModelRouter.Model != "" {
 			span.SetAttributes(attribute.String("run.model", config.ModelRouter.Model))
 		}
+		if config.SessionName != "" {
+			// Set on the root span so child spans inherit access via context.
+			// Skipped when empty so we don't pollute traces with empty
+			// attributes for runs that did not specify a label.
+			span.SetAttributes(attribute.String("run.session_name", config.SessionName))
+		}
 	}
 
 	e.rootSpan = span
