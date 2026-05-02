@@ -22,6 +22,16 @@ jobs:
             types/go.mod
             eval/go.mod
 
+      - name: Compute version label
+        id: ver
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "label=main" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=dev" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Run type module tests
         working-directory: types
         run: go test ./...
@@ -36,10 +46,18 @@ jobs:
 
       - name: Build stirrup binary
         working-directory: harness
-        run: go build -ldflags="-X github.com/rxbynerd/stirrup/harness/internal/version.version=${{ github.sha }}" ./cmd/stirrup
+        run: >
+          go build -trimpath
+          -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${{ steps.ver.outputs.label }}
+            -X github.com/rxbynerd/stirrup/types/version.commit=${{ steps.ver.outputs.sha }}"
+          ./cmd/stirrup
 
       - name: Build eval binary
-        run: go build -o stirrup-eval ./eval/cmd/eval
+        run: >
+          go build -trimpath
+          -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${{ steps.ver.outputs.label }}
+            -X github.com/rxbynerd/stirrup/types/version.commit=${{ steps.ver.outputs.sha }}"
+          -o stirrup-eval ./eval/cmd/eval
 
   eval-gate:
     name: Eval Gate
@@ -61,10 +79,24 @@ jobs:
             types/go.mod
             eval/go.mod
 
+      - name: Compute version label
+        id: ver
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "label=main" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=dev" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Build binaries
         run: |
-          go build -ldflags="-X github.com/rxbynerd/stirrup/harness/internal/version.version=${{ github.sha }}" -o stirrup ./harness/cmd/stirrup
-          go build -o stirrup-eval ./eval/cmd/eval
+          go build -trimpath \
+            -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${{ steps.ver.outputs.label }} -X github.com/rxbynerd/stirrup/types/version.commit=${{ steps.ver.outputs.sha }}" \
+            -o stirrup ./harness/cmd/stirrup
+          go build -trimpath \
+            -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${{ steps.ver.outputs.label }} -X github.com/rxbynerd/stirrup/types/version.commit=${{ steps.ver.outputs.sha }}" \
+            -o stirrup-eval ./eval/cmd/eval
 
       - name: Check for eval suites
         id: check-suites
@@ -124,6 +156,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Compute short SHA
+        id: ver
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -153,4 +189,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.sha }}
+            VERSION=main
+            COMMIT=${{ steps.ver.outputs.sha }}
