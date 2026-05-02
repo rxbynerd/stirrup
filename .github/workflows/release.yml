@@ -5,6 +5,7 @@ name: Release
 # leaves the release incomplete and re-tagging would be heavy-handed).
 #
 # Pipeline (sequential by `needs:`):
+#   validate-tag  → resolves and validates the input/ref tag once
 #   verify        → reuses _verify.yml — the tagged SHA must pass tests
 #   build-binaries → matrix of GOOS/GOARCH cells, archives + SHA-256
 #   sbom          → SPDX + CycloneDX from anchore/sbom-action
@@ -26,25 +27,19 @@ permissions:
   contents: write
 
 jobs:
-  verify:
-    name: Verify
-    uses: ./.github/workflows/_verify.yml
-
-  build-binaries:
-    name: Build (${{ matrix.os }}/${{ matrix.arch }})
-    needs: verify
+  # validate-tag is the single source of truth for the release tag. Every
+  # downstream job consumes its `tag` output instead of re-deriving and
+  # re-validating from `inputs.tag` / `github.ref_name`. Centralising the
+  # validation guard here means a workflow_dispatch with a garbage tag
+  # ("notasemver") fails fast in this job — no SBOMs are generated, no
+  # release is created, and the validation regex lives in exactly one place.
+  validate-tag:
+    name: Validate tag
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: linux,   arch: amd64 }
-          - { os: linux,   arch: arm64 }
-          - { os: darwin,  arch: amd64 }
-          - { os: darwin,  arch: arm64 }
-          - { os: windows, arch: amd64 }
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - name: Resolve tag
+      - name: Resolve and validate tag
         id: tag
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -58,10 +53,29 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+  verify:
+    name: Verify
+    needs: validate-tag
+    uses: ./.github/workflows/_verify.yml
+
+  build-binaries:
+    name: Build (${{ matrix.os }}/${{ matrix.arch }})
+    needs: [validate-tag, verify]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux,   arch: amd64 }
+          - { os: linux,   arch: arm64 }
+          - { os: darwin,  arch: amd64 }
+          - { os: darwin,  arch: arm64 }
+          - { os: windows, arch: amd64 }
+    steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.tag }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -82,7 +96,7 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: '0'
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
           SHORT_SHA: ${{ steps.sha.outputs.short }}
         run: |
           set -euo pipefail
@@ -106,7 +120,7 @@ jobs:
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
         run: |
           set -euo pipefail
           ext=""
@@ -125,7 +139,7 @@ jobs:
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
         run: |
           set -euo pipefail
           ARCHIVE="stirrup-${TAG}-${GOOS}-${GOARCH}.tar.gz"
@@ -138,7 +152,7 @@ jobs:
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
         run: |
           set -euo pipefail
           ARCHIVE="stirrup-${TAG}-${GOOS}-${GOARCH}.zip"
@@ -158,30 +172,20 @@ jobs:
 
   sbom:
     name: SBOM
-    needs: verify
+    needs: [validate-tag, verify]
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${{ github.ref_name }}"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
       - name: Check out repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ steps.tag.outputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.tag }}
 
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@v0
         with:
           path: .
           format: spdx-json
-          output-file: stirrup-${{ steps.tag.outputs.tag }}.spdx.json
+          output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.spdx.json
           upload-artifact: false
           upload-release-assets: false
 
@@ -190,7 +194,7 @@ jobs:
         with:
           path: .
           format: cyclonedx-json
-          output-file: stirrup-${{ steps.tag.outputs.tag }}.cdx.json
+          output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.cdx.json
           upload-artifact: false
           upload-release-assets: false
 
@@ -214,19 +218,9 @@ jobs:
 
   changelog:
     name: Changelog
-    needs: verify
+    needs: [validate-tag, verify]
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${{ github.ref_name }}"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
       - name: Check out repository
         uses: actions/checkout@v6
         with:
@@ -235,7 +229,7 @@ jobs:
 
       - name: Generate CHANGELOG.md
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.validate-tag.outputs.tag }}
         run: |
           set -euo pipefail
           PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
@@ -265,22 +259,13 @@ jobs:
 
   release:
     name: Publish Release
-    needs: [verify, build-binaries, sbom, changelog]
+    needs: [validate-tag, verify, build-binaries, sbom, changelog]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.validate-tag.outputs.tag }}
     steps:
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${{ github.ref_name }}"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
-
       - name: Download all artifacts
         uses: actions/download-artifact@v7
         with:
