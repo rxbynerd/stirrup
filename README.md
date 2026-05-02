@@ -236,20 +236,20 @@ output. The **Transport** carries events to and from the control plane
 (or stdout for local CLI runs); the **TraceEmitter** records spans and
 metrics throughout.
 
-| # | Component | Interface | Implementations |
+| # | Interface | Implementations |
 |---|---|---|---|
-| 1 | Model provider | `ProviderAdapter` | `anthropic`, `bedrock`, `openai-compatible`, `openai-responses` |
-| 2 | Model router | `ModelRouter` | `static`, `per-mode`, `dynamic` |
-| 3 | Prompt builder | `PromptBuilder` | `default` (per-mode templates, composed) |
-| 4 | Context strategy | `ContextStrategy` | `sliding-window`, `summarise`, `offload-to-file` |
-| 5 | Tool registry | `ToolRegistry` | 7 built-in tools + remote MCP servers; tools may declare an `AsyncHandler` that the loop dispatches over the transport correlator |
-| 6 | Executor | `Executor` | `local`, `container` (Docker/Podman), `api` (GitHub) |
-| 7 | Edit strategy | `EditStrategy` | `whole-file`, `search-replace`, `udiff`, `multi` |
-| 8 | Verifier | `Verifier` | `none`, `test-runner`, `llm-judge`, `composite` |
-| 9 | Permission policy | `PermissionPolicy` | `allow-all`, `deny-side-effects` (workspace-mutating tools only), `ask-upstream` (tools whose `RequiresApproval` flag is set), `policy-engine` (Cedar) |
-| 10 | Transport | `Transport` | `stdio`, `grpc` (outbound bidi streaming), `null` (sub-agents) |
-| 11 | Git strategy | `GitStrategy` | `none`, `deterministic` |
-| 12 | Trace emitter | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC) |
+| 1 | `ProviderAdapter` | `anthropic`, `bedrock`, `openai-compatible`, `openai-responses` |
+| 2 | `ModelRouter` | `static`, `per-mode`, `dynamic` |
+| 3 | `PromptBuilder` | `default` (per-mode templates, composed) |
+| 4 | `ContextStrategy` | `sliding-window`, `summarise`, `offload-to-file` |
+| 5 | `ToolRegistry` | 7 built-in tools + remote MCP servers; tools may declare an `AsyncHandler` that the loop dispatches over the transport correlator |
+| 6 | `Executor` | `local`, `container` (Docker/Podman), `api` (GitHub) |
+| 7 | `EditStrategy` | `whole-file`, `search-replace`, `udiff`, `multi` |
+| 8 | `Verifier` | `none`, `test-runner`, `llm-judge`, `composite` |
+| 9 | `PermissionPolicy` | `allow-all`, `deny-side-effects` (workspace-mutating tools only), `ask-upstream` (tools whose `RequiresApproval` flag is set), `policy-engine` (Cedar) |
+| 10 | `Transport` | `stdio`, `grpc` (outbound bidi streaming), `null` (sub-agents) |
+| 11 | `GitStrategy` | `none`, `deterministic` |
+| 12 | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC) |
 
 Whichever edit strategy you pick, the factory wraps it with the
 post-edit code scanner — so a `block` finding rolls the write back
