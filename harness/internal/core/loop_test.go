@@ -23,6 +23,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -652,6 +653,72 @@ func TestLoop_StreamEventError(t *testing.T) {
 	}
 	if runTrace.Outcome != "error" {
 		t.Errorf("expected outcome 'error', got %q", runTrace.Outcome)
+	}
+}
+
+// TestLoop_ProviderError_SurfacesViaTransport guards against a regression
+// where the loop swallowed provider/stream errors into OTel spans only,
+// leaving operators without an OTLP collector with no idea why a run
+// failed. The error string must be reachable on the transport stream and
+// the slog log output.
+func TestLoop_ProviderError_SurfacesViaTransport(t *testing.T) {
+	cases := []struct {
+		name   string
+		prov   provider.ProviderAdapter
+		needle string
+	}{
+		{
+			name:   "stream-init",
+			prov:   &errorProvider{err: errors.New("ValidationException: bad model id")},
+			needle: "ValidationException: bad model id",
+		},
+		{
+			name:   "stream-event",
+			prov:   &streamErrorProvider{err: errors.New("upstream 503 retrying")},
+			needle: "upstream 503 retrying",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var transportBuf, logBuf bytes.Buffer
+
+			registry := tool.NewRegistry()
+			loop := &AgenticLoop{
+				Provider:    tc.prov,
+				Router:      router.NewStaticRouter("bedrock", "claude-sonnet-4-6"),
+				Prompt:      prompt.NewDefaultPromptBuilder(),
+				Context:     contextpkg.NewSlidingWindowStrategy(),
+				Tools:       registry,
+				Edit:        edit.NewWholeFileStrategy(),
+				Verifier:    verifier.NewNoneVerifier(),
+				Permissions: permission.NewAllowAll(),
+				Git:         git.NewNoneGitStrategy(),
+				Transport:   transport.NewStdioTransport(&transportBuf, &bytes.Buffer{}),
+				Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+				Tracer:      noop.NewTracerProvider().Tracer(""),
+				Metrics:     observability.NewNoopMetrics(),
+				Logger:      slog.New(slog.NewJSONHandler(&logBuf, nil)),
+			}
+
+			runTrace, err := loop.Run(context.Background(), buildTestConfig())
+			if err != nil {
+				t.Fatalf("Run() returned Go error: %v", err)
+			}
+			if runTrace.Outcome != "error" {
+				t.Fatalf("expected outcome 'error', got %q", runTrace.Outcome)
+			}
+
+			if !strings.Contains(transportBuf.String(), tc.needle) {
+				t.Errorf("transport stream missing error detail %q; got:\n%s", tc.needle, transportBuf.String())
+			}
+			if !strings.Contains(transportBuf.String(), `"type":"warning"`) {
+				t.Errorf("expected a warning event on the transport stream; got:\n%s", transportBuf.String())
+			}
+			if !strings.Contains(logBuf.String(), tc.needle) {
+				t.Errorf("slog output missing error detail %q; got:\n%s", tc.needle, logBuf.String())
+			}
+		})
 	}
 }
 

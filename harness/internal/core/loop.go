@@ -515,9 +515,29 @@ func (l *AgenticLoop) runInnerLoop(
 			// value would land in OTLP exports unredacted. RecordError
 			// keeps the raw error so the span retains type information;
 			// only the user-visible status message is scrubbed.
+			scrubbedErr := security.Scrub(err.Error())
 			providerSpan.RecordError(err)
-			providerSpan.SetStatus(codes.Error, security.Scrub(err.Error()))
+			providerSpan.SetStatus(codes.Error, scrubbedErr)
 			providerSpan.End()
+			// Surface the failure outside of OTel: log it and emit a
+			// transport warning. Without this, operators running without
+			// an OTLP collector see only outcome=error with no detail.
+			// ScrubHandler only intercepts string-kind slog attrs, so a
+			// raw error value would slip through as KindAny — pass the
+			// pre-scrubbed string explicitly. Skip when the context is
+			// already cancelled: the cancel/timeout path below produces
+			// the user-visible message.
+			if ctx.Err() == nil {
+				l.Logger.Error("provider stream failed",
+					"provider", selection.Provider,
+					"model", selection.Model,
+					"error", scrubbedErr,
+				)
+				_ = l.Transport.Emit(types.HarnessEvent{
+					Type:    "warning",
+					Message: fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr),
+				})
+			}
 			// Rollback: don't append anything on error.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
 			l.Trace.RecordTurn(types.TurnTrace{
@@ -543,9 +563,23 @@ func (l *AgenticLoop) runInnerLoop(
 			// stream errors can wrap *url.Error or other strings derived
 			// from HTTP transport state, and the OTel span status string
 			// is not covered by ScrubHandler.
+			scrubbedErr := security.Scrub(streamErr.Error())
 			providerSpan.RecordError(streamErr)
-			providerSpan.SetStatus(codes.Error, security.Scrub(streamErr.Error()))
+			providerSpan.SetStatus(codes.Error, scrubbedErr)
 			providerSpan.End()
+			// Surface the failure outside of OTel — see the matching
+			// log + emit at the Stream() call above for rationale.
+			if ctx.Err() == nil {
+				l.Logger.Error("provider stream failed",
+					"provider", selection.Provider,
+					"model", selection.Model,
+					"error", scrubbedErr,
+				)
+				_ = l.Transport.Emit(types.HarnessEvent{
+					Type:    "warning",
+					Message: fmt.Sprintf("provider %s (%s): %s", selection.Provider, selection.Model, scrubbedErr),
+				})
+			}
 			// Rollback on stream error — don't append partial content.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
 			l.Trace.RecordTurn(types.TurnTrace{
