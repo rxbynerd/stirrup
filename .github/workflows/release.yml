@@ -71,11 +71,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: linux,   arch: amd64 }
-          - { os: linux,   arch: arm64 }
-          - { os: darwin,  arch: amd64 }
-          - { os: darwin,  arch: arm64 }
-          - { os: windows, arch: amd64 }
+          - {os: linux, arch: amd64}
+          - {os: linux, arch: arm64}
+          - {os: darwin, arch: amd64}
+          - {os: darwin, arch: arm64}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -106,7 +105,6 @@ jobs:
         run: |
           set -euo pipefail
           ext=""
-          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
 
           mkdir -p dist
           STIRRUP_OUT="dist/stirrup-${TAG}-${GOOS}-${GOARCH}${ext}"
@@ -129,7 +127,6 @@ jobs:
         run: |
           set -euo pipefail
           ext=""
-          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
 
           STAGE="staging"
           rm -rf "$STAGE"
@@ -140,7 +137,6 @@ jobs:
           if [ -f README.md ]; then cp README.md "$STAGE/"; fi
 
       - name: Archive (tar.gz)
-        if: matrix.os != 'windows'
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
@@ -150,18 +146,6 @@ jobs:
           ARCHIVE="stirrup-${TAG}-${GOOS}-${GOARCH}.tar.gz"
           # -C into staging so the archive does not embed the staging dir.
           tar -czf "$ARCHIVE" -C staging .
-          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
-
-      - name: Archive (zip)
-        if: matrix.os == 'windows'
-        env:
-          GOOS: ${{ matrix.os }}
-          GOARCH: ${{ matrix.arch }}
-          TAG: ${{ needs.validate-tag.outputs.tag }}
-        run: |
-          set -euo pipefail
-          ARCHIVE="stirrup-${TAG}-${GOOS}-${GOARCH}.zip"
-          (cd staging && zip -r "../${ARCHIVE}" .)
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
 
       - name: Upload artifact
@@ -191,7 +175,7 @@ jobs:
       # to an immutable commit defends against an upstream tag being
       # silently retargeted to attacker-controlled code.
       - name: Generate SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: .
           format: spdx-json
@@ -200,7 +184,7 @@ jobs:
           upload-release-assets: false
 
       - name: Generate CycloneDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
           path: .
           format: cyclonedx-json
@@ -332,7 +316,7 @@ jobs:
       # it the highest-trust step in the workflow — pinning to an
       # immutable commit is non-negotiable here.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG }}
           name: ${{ env.TAG }}

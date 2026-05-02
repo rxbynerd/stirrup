@@ -339,7 +339,7 @@ git tag -a v1.2.3 -m "Release notes"
 git push origin v1.2.3
 ```
 
-The workflow re-runs `_verify.yml`, then in parallel cross-compiles `stirrup` and `stirrup-eval` for linux/{amd64,arm64}, darwin/{amd64,arm64}, windows/amd64 (tar.gz on Unix, zip on Windows), generates SPDX + CycloneDX SBOMs via `anchore/sbom-action`, and renders a changelog from `git log` since the previous tag (capped at 100 lines). A `release` job aggregates all artifacts into a single `SHA256SUMS` file and publishes a GitHub Release. Tags containing `-` (e.g. `v1.2.3-rc1`) are marked as prereleases automatically.
+The workflow re-runs `_verify.yml`, then in parallel cross-compiles `stirrup` and `stirrup-eval` for linux/{amd64,arm64}, darwin/{amd64,arm64}, generates SPDX + CycloneDX SBOMs via `anchore/sbom-action`, and renders a changelog from `git log` since the previous tag (capped at 100 lines). A `release` job aggregates all artifacts into a single `SHA256SUMS` file and publishes a GitHub Release. Tags containing `-` (e.g. `v1.2.3-rc1`) are marked as prereleases automatically.
 
 Version-label conventions injected via `-X github.com/rxbynerd/stirrup/types/version.version` and `...commit`:
 
