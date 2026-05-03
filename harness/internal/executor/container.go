@@ -23,7 +23,7 @@ const (
 	// (via ExtraHosts) that resolves to the host's address. Docker Engine
 	// >=20.10 and Podman >=4.0 expand the magic value "host-gateway" into
 	// the real bridge gateway IP. The harness does not support older
-	// runtimes for the allowlist mode — see docs/sandbox.md (Wave 4).
+	// runtimes for the allowlist mode — see docs/safety-rings.md (Wave 4).
 	hostGatewayHost = "host.docker.internal"
 )
 
