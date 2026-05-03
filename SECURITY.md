@@ -57,7 +57,7 @@ Out of scope:
   `RunConfig` itself.
 - Findings against examples in `examples/` that are clearly labelled as
   starters (e.g. the Cedar starter policies are samples, not a default).
-- Outputs of the documented [Rule of Two override](docs/sandbox.md):
+- Outputs of the documented [Rule of Two override](docs/safety-rings.md):
   setting `ruleOfTwo.enforce: false` deliberately weakens an invariant
   and emits a `rule_of_two_disabled` security event for the operator's
   attention.
@@ -66,7 +66,7 @@ Out of scope:
 
 For operator-side hardening — choosing a runtime class, an egress
 allowlist, a Cedar policy, the code scanner, and the Rule of Two — see
-the operator guide at [`docs/sandbox.md`](docs/sandbox.md). The README
+the operator guide at [`docs/safety-rings.md`](docs/safety-rings.md). The README
 covers the in-harness security controls
 ([README § Security](README.md#security)).
 

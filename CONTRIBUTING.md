@@ -153,8 +153,8 @@ If you change anything under `harness/internal/permission/`,
 `harness/internal/security/codescanner/`,
 `harness/internal/executor/egressproxy/`, or the relevant
 `types/runconfig.go` validators, please re-read
-[`docs/sandbox.md`](docs/sandbox.md) and confirm the operator-facing
-behaviour still matches. Updates to `docs/sandbox.md` should land in the
+[`docs/safety-rings.md`](docs/safety-rings.md) and confirm the operator-facing
+behaviour still matches. Updates to `docs/safety-rings.md` should land in the
 same PR.
 
 ## Reporting security issues

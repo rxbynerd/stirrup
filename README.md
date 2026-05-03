@@ -28,7 +28,7 @@ single `RunConfig`.
   rings on top of the usual hardening: kernel-isolation runtime classes,
   egress allowlists, a Cedar-backed policy engine, the Rule of Two
   structural invariant, and a post-edit code scanner. See
-  [`docs/sandbox.md`](docs/sandbox.md).
+  [`docs/safety-rings.md`](docs/safety-rings.md).
 - **Minimal dependency surface.** Provider adapters and the container
   executor are written against documented REST APIs using the Go
   standard library, not vendor SDKs. Every line is auditable.
@@ -54,7 +54,7 @@ single `RunConfig`.
 - Cross-cloud credential federation: GKE Workload Identity OIDC tokens
   exchanged for AWS STS credentials (no static keys required).
 
-**Sandboxing & safety**
+**Safety rings**
 - Container executor over the Docker Engine REST API (Docker or Podman),
   with optional `runc` / `runsc` (gVisor) / `kata*` runtime selection.
 - In-process HTTP/CONNECT egress proxy with FQDN allowlist and SNI
@@ -156,7 +156,7 @@ override the file.
 | `--transport-addr` | (none) | Required when `--transport grpc`. |
 | `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups; env: `STIRRUP_FOLLOWUP_GRACE`. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
-| `--container-runtime` | (none) | OCI runtime: `runc`, `runsc`, `kata`, `kata-qemu`, `kata-fc`. See [`docs/sandbox.md`](docs/sandbox.md). |
+| `--container-runtime` | (none) | OCI runtime: `runc`, `runsc`, `kata`, `kata-qemu`, `kata-fc`. See [`docs/safety-rings.md`](docs/safety-rings.md). |
 | `--permission-policy-file` | (none) | Cedar policy file. Implies `permissionPolicy.type=policy-engine` when not set elsewhere. |
 | `--code-scanner` | (none) | One of `none`, `patterns`, `semgrep`. `composite` is accepted only via `--config` (it requires `codeScanner.scanners`). Empty = mode-aware default. |
 
@@ -263,7 +263,7 @@ construct concrete components from a `RunConfig`. See
 [`VERSION1.md`](VERSION1.md) for the v1 architecture write-up and
 [`AGENTS.md`](AGENTS.md) for the per-package layout.
 
-## Sandboxing & safety
+## Safety rings
 
 Stirrup composes five deterministic, agent-uncircumventable controls:
 
@@ -285,7 +285,7 @@ Stirrup composes five deterministic, agent-uncircumventable controls:
    `code_scan_warning` and continues.
 
 Operator walkthrough with copy-pasteable configs:
-[`docs/sandbox.md`](docs/sandbox.md).
+[`docs/safety-rings.md`](docs/safety-rings.md).
 
 ## Evaluation
 
@@ -308,7 +308,7 @@ stirrup/
   harness/           # the harness binary and its 12 components
   eval/              # the eval CLI, judges, runner, lakehouse
   examples/          # RunConfig examples + Cedar policy starters
-  docs/              # operator-facing guides (sandbox, eval, sessions draft)
+  docs/              # operator-facing guides (safety-rings, eval, sessions draft)
 ```
 
 Per-package detail lives in [`AGENTS.md`](AGENTS.md).
@@ -316,7 +316,7 @@ Per-package detail lives in [`AGENTS.md`](AGENTS.md).
 ## Security
 
 The README covers the high-level posture; the operator-facing guide is
-[`docs/sandbox.md`](docs/sandbox.md), and the disclosure policy is in
+[`docs/safety-rings.md`](docs/safety-rings.md), and the disclosure policy is in
 [`SECURITY.md`](SECURITY.md).
 
 - **SecretStore** resolves `secret://` references from env vars, files,
@@ -337,7 +337,7 @@ The README covers the high-level posture; the operator-facing guide is
 - **Stall detection** terminates the loop after 3 repeated identical
   tool calls or 5 consecutive tool failures.
 - **Deterministic safety rings** layered on top: see the
-  [Sandboxing & safety](#sandboxing--safety) section above.
+  [Safety rings](#safety-rings) section above.
 
 ## Releases
 

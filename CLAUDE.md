@@ -93,7 +93,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--git-strategy` | `none` | Git strategy: none, deterministic |
 | `--trace-emitter` | `jsonl` | Trace emitter: jsonl, otel |
 | `--otel-endpoint` | (none) | OTLP endpoint for the otel trace emitter (default: localhost:4317) |
-| `--container-runtime` | (none) | OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. See `docs/sandbox.md`. |
+| `--container-runtime` | (none) | OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. See `docs/safety-rings.md`. |
 | `--permission-policy-file` | (none) | Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and the policy type is unset elsewhere, also implies `permissionPolicy.type=policy-engine`. Starters live under `examples/policies/`. |
 | `--code-scanner` | (none) | CodeScanner type: none, patterns, semgrep, composite. Composite requires `--config` (`codeScanner.scanners`). Empty defers to the mode-aware default (patterns for execution, none for read-only modes). |
 
@@ -262,7 +262,7 @@ Five layered controls compose at run construction:
 - **Rule of Two** (`types/runconfig.go::validateRuleOfTwo`) — structural invariant rejecting any RunConfig that simultaneously holds untrusted input, sensitive data, and external communication unless gated by `ask-upstream`. `RuleOfTwo.Enforce: false` is the only override; the factory emits a `rule_of_two_disabled` security event when it is used and `rule_of_two_warning` when exactly two of three flags hold.
 - **CodeScanner** (`security/codescanner/`, `edit/scanned.go`) — post-edit static analysis. Pure-Go pattern pack, optional shell-out to `semgrep`, or composite. Block findings roll back the write; warn findings emit `code_scan_warning`.
 
-Operator-facing walkthrough: [`docs/sandbox.md`](docs/sandbox.md). Starter Cedar policies: [`examples/policies/`](examples/policies/).
+Operator-facing walkthrough: [`docs/safety-rings.md`](docs/safety-rings.md). Starter Cedar policies: [`examples/policies/`](examples/policies/).
 
 #### RunConfig fields added in #42
 
@@ -275,7 +275,7 @@ Operator-facing walkthrough: [`docs/sandbox.md`](docs/sandbox.md). Starter Cedar
 | `ruleOfTwo.enforce` | `nil` (enforce) | `*bool` so unset is wire-distinguishable from `false`. The proto field is declared `optional` for the same reason. The factory emits `rule_of_two_disabled` when enforcement is overridden and `rule_of_two_warning` when two of three flags hold without override. |
 | `codeScanner.type` | mode-aware (`patterns` for execution, `none` for read-only) | Closed set: `none`, `patterns`, `semgrep`, `composite`. Composite requires `codeScanner.scanners` (each entry from the non-composite set). |
 | `codeScanner.blockOnWarn` | `false` | Promotes warn findings to block; useful for production pinning. |
-| `codeScanner.semgrepConfigPath` | `""` (passes `--config auto`) | Local rules-bundle path. Set this for air-gapped deployments and supply-chain pinning — `auto` reaches out to `semgrep.dev` at scan time. See `docs/sandbox.md`. |
+| `codeScanner.semgrepConfigPath` | `""` (passes `--config auto`) | Local rules-bundle path. Set this for air-gapped deployments and supply-chain pinning — `auto` reaches out to `semgrep.dev` at scan time. See `docs/safety-rings.md`. |
 
 ## Security Foundations
 

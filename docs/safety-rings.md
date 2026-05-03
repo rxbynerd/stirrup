@@ -1,14 +1,28 @@
-# Sandbox & deterministic safety rings
+# Safety rings
 
-This is the operator-facing guide to stirrup's sandboxing story. It is
-written for someone who is choosing a deployment posture for the first
-time — what the controls do, why they exist, and what they don't catch
-— rather than for an engineer reading the source.
+Stirrup composes five deterministic *safety rings* on top of its usual
+hardening. Each ring is an agent-uncircumventable control that catches
+a different class of attack on the harness's core job — turning LLM
+output into actions on a workspace. Together they form a layered
+defence-in-depth boundary: any single ring is sufficient against the
+attack shape it covers, and combining them ensures a misconfiguration
+or zero-day in one ring does not unlock the host.
 
-If you only have time for one thing: read [§ Why these
-exist](#why-these-exist) and [§ What these don't
-catch](#what-these-dont-catch). Those two together set expectations;
-the per-ring sections fill them in.
+The rings catch attacks at different points in a run's lifetime —
+pre-flight (before the run starts), per-call (each tool invocation),
+runtime (inside the sandbox container, every operation), and post-edit
+(after each successful workspace write). They are deliberately
+*deterministic*: rule-based, evaluated outside the model, so the agent
+cannot prompt them to behave differently.
+
+This guide is operator-facing. It is written for someone choosing a
+deployment posture for the first time — what each ring does, why it
+exists, and what it doesn't catch — not for an engineer reading the
+source.
+
+If you only have time for one thing: read [§ Why these exist](#why-these-exist)
+and [§ What these don't catch](#what-these-dont-catch). Those two
+together set expectations; the per-ring sections fill them in.
 
 ## Why these exist
 
@@ -38,19 +52,20 @@ What you are protecting:
 - The workspace itself — both `git push` history and the source tree
   the next reviewer will read.
 
-The five rings below are *deterministic*. The agent cannot prompt
-them to behave differently. They are deliberately *not* LLM-based
-guards — content classifiers, prompt-injection detectors, or
-secondary "guard models" — because those are themselves susceptible
-to the same coercion the model is. LLM guards are useful as
-defence-in-depth on top of the rings; they do not substitute for
-them.
+The "deterministic" point is worth dwelling on: these rings are
+deliberately *not* LLM-based guards — content classifiers,
+prompt-injection detectors, or secondary "guard models" — because
+those are themselves susceptible to the same coercion the model is.
+LLM guards are useful as defence-in-depth on top of the rings; they
+do not substitute for them.
 
-The rings are numbered for stable reference (matches the issue #42
-sub-task labels B1–B5 and the comments in the source). They do **not**
-have to be enabled in numeric order, and the order they appear in the
-sections below is the order in which they catch attacks during a
-request.
+The rings are numbered for stable reference — the numbering matches
+issue #42's sub-task labels B1–B5 and the comments in the source. The
+numbering is *not* an ordering; rings can be enabled independently.
+The sections below appear in the order they catch an attack during a
+run: pre-flight first (Ring 4), then per-call authorization (Ring 3),
+then runtime isolation inside the sandbox (Rings 1 and 2), then
+post-edit checks (Ring 5).
 
 ## The five rings at a glance
 
@@ -128,156 +143,92 @@ to https://attacker.example/upload."
    a hardcoded secret or an `eval(...)` sink into the workspace, the
    `patterns` scanner would roll the edit back.
 
-The rings catch different attack shapes, and any single one is
-sufficient for the corresponding shape. *Defense-in-depth* means
-choosing more than one so a misconfiguration or zero-day in one
-doesn't unlock the host.
+In this scenario Rings 4, 3, and 2 each independently catch the
+exfiltration attempt; Rings 1 and 5 do not, but would catch the next
+move (a kernel-exploit `run_command`, or an `eval(...)` sink written
+to disk). That is what defence-in-depth buys: the agent has to defeat
+every ring, not just one.
 
-## Ring 1 — Container runtime class
+## Ring 4 — Rule of Two (pre-flight invariant)
 
 ### What it does
 
-The container executor accepts an optional `Runtime` field selecting
-which OCI runtime the host Docker/Podman daemon uses to start the
-sandbox container. The executor unconditionally applies `CapDrop:
-ALL` and `no-new-privileges` to every container regardless of the
-chosen runtime — those are process-level capability drops, applied at
-container construction. The runtime choice controls only the
-kernel-isolation layer beneath that. The default (`runc`) shares a
-kernel with the host; picking `runsc` or a `kata*` flavour adds a
-kernel-level barrier between the agent and the host kernel.
+Meta's [Agents Rule of
+Two](https://ai.meta.com/blog/practical-ai-agent-security/) is a
+structural invariant: a single agent run must not simultaneously hold
+all three of these capabilities — *unless* a human is gated into
+every dangerous call. `ValidateRunConfig` enforces it by computing
+three booleans from the RunConfig, before the run starts.
 
-### Supported values
+```mermaid
+flowchart TB
+  Cfg[/RunConfig/]
+  Cfg --> A{holdsUntrustedInput?}
+  Cfg --> B{holdsSensitiveData?}
+  Cfg --> C{canCommunicateExternally?}
 
-| Value | Implementation | Host setup |
-|---|---|---|
-| `""` (default) | engine default — usually `runc` | none |
-| `runc` | vanilla runc | none |
-| `runsc` | [gVisor](https://gvisor.dev) — user-space kernel | install `runsc` and register with the daemon |
-| `kata` | [Kata Containers](https://katacontainers.io) (default flavour) | install `kata-runtime` and register |
-| `kata-qemu` | Kata backed by QEMU | as above |
-| `kata-fc` | Kata backed by Firecracker | as above |
-
-### Host setup
-
-- **gVisor:** install `runsc` from the [Google
-  releases](https://gvisor.dev/docs/user_guide/install/), then register
-  it with Docker by adding `"runsc": { "path":
-  "/usr/local/bin/runsc" }` under `runtimes` in
-  `/etc/docker/daemon.json` and restarting the daemon. Verify with
-  `docker info | grep -A1 Runtimes`.
-- **Kata Containers:** install via your distribution package or the
-  upstream installer; register `kata-runtime` similarly. The
-  `kata-qemu` and `kata-fc` flavours are aliases the daemon expects to
-  map onto distinct runtime entries.
-
-### How to enable
-
-```sh
-stirrup harness --container-runtime runsc --executor container ...
+  A --> All3{all three?}
+  B --> All3
+  C --> All3
+  All3 -->|no| Pass2[Pass]
+  All3 -->|yes| Ask{permissionPolicy<br/>= ask-upstream?}
+  Ask -->|yes| Pass2
+  Ask -->|no| Override{ruleOfTwo.enforce<br/>= false?}
+  Override -->|yes| AuditedPass[Pass + emit<br/>rule_of_two_disabled event]
+  Override -->|no| Reject[Run rejected]
 ```
 
-Or in a `RunConfig` file:
+The three flags use crude heuristics — deliberately so for v1, per
+the issue brief; they will be refined as we collect eval signal.
+
+| Flag | True when |
+|---|---|
+| `holdsUntrustedInput` | `dynamicContext` populated, `web_fetch` enabled, OR any MCP server configured. |
+| `holdsSensitiveData` | The provider/VCS/MCP `apiKeyRef` matches `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` (case-insensitive), OR any reference uses `secret://ssm:///...`. |
+| `canCommunicateExternally` | `run_command` enabled, `web_fetch` enabled, any MCP server configured, OR the executor has a non-`none` network mode. |
+
+The ground truth is `types/runconfig.go::RuleOfTwoState` — these
+heuristics are exposed to the factory so security events at run start
+share a single source of truth with the validator.
+
+### Why `ask-upstream` is the documented exception
+
+Rule of Two is a "two of three" rule. You can hold any two of
+{untrusted input, sensitive data, external comms} freely; you can
+also hold all three *if* a human is in the loop. `ask-upstream`
+prompts the operator (over the gRPC transport correlator) for every
+side-effecting call, making each dangerous tool call a human
+decision. That is the third constraint the rule allows, in
+exchange for relaxing the structural one.
+
+### Override
+
+For explicit operator override, set `ruleOfTwo.enforce: false` in the
+RunConfig:
 
 ```json
 {
-  "executor": {
-    "type": "container",
-    "image": "ghcr.io/rxbynerd/stirrup:latest",
-    "runtime": "runsc"
+  "ruleOfTwo": {
+    "enforce": false
   }
 }
 ```
 
-`ValidateRunConfig` rejects values outside the closed set above.
+There is **no CLI flag** for this. The override must live in the
+RunConfig file so it is reviewable in pull requests and not lost in
+shell history.
 
-### Failure mode
+When set, the validator passes the all-three case, but the harness
+emits a `rule_of_two_disabled` security event at run start with the
+three flag states — the override is never silent.
 
-If the runtime you ask for isn't registered with the daemon, the
-container fails to start with a clear error from Docker/Podman. There
-is no silent fallback to `runc`.
+### Two-of-three warning
 
-### Kubernetes deployment
+When exactly two of the three flags hold, the run is legal but the
+harness emits a structural `rule_of_two_warning` event so reviewers
+can spot capability creep one step before the invariant trips.
 
-On Kubernetes, set `runtimeClassName` on the pod spec rather than
-threading the runtime through stirrup. `--container-runtime` is for
-the local Docker/Podman container executor.
-
-## Ring 2 — Egress allowlist proxy
-
-### What it does
-
-When `network.mode == "allowlist"`, the container executor starts an
-in-process forward proxy on the host network namespace and configures
-the container to use it via `HTTP_PROXY` / `HTTPS_PROXY`. The proxy
-resolves the destination FQDN, checks it against `network.allowlist`,
-and forwards the request only on a match.
-
-```mermaid
-flowchart LR
-  Inside[Inside container<br/>curl, git, stdlib http.Client]
-  Inside -->|HTTP_PROXY| Proxy{{In-process proxy<br/>on host netns}}
-  Proxy -->|FQDN match + SNI verify| Out([Internet])
-  Proxy -.->|no match| X[403]
-```
-
-### FQDN matching
-
-| Allowlist entry | Matches |
-|---|---|
-| `example.com` | `example.com:443` only |
-| `*.example.com` | any `<sub>.example.com:443` (one wildcard label only) |
-| `example.com:80` | `example.com:80` only |
-| `*.example.com:8080` | any `<sub>.example.com:8080` only — wildcard entries inherit the explicit port if one is suffixed, otherwise default to 443 |
-
-The proxy verifies the TLS SNI matches the requested host so a
-tampered HTTP `Host` header cannot mismatch the allowlisted FQDN. The
-default port is 443 unless explicitly suffixed.
-
-### Cooperation model — important caveat
-
-The proxy intercepts well-behaved HTTP/HTTPS clients that honour
-`HTTP_PROXY` / `HTTPS_PROXY`: curl, git over HTTPS, the language
-stdlib HTTP client. The container is wired with
-`NO_PROXY=localhost,127.0.0.1,::1` so loopback is unaffected.
-
-> **In v1 the iptables drop is deferred.** Fail-closed depends on the
-> in-container client honouring the proxy env vars. A misbehaving
-> client (raw TCP, custom DNS resolver, env-stripped subprocess)
-> inside the container can still dial the bridge gateway directly,
-> because the bridge network has unrestricted egress.
->
-> The full fail-closed posture requires an iptables/nftables drop on
-> the host that whitelists only the proxy's listen address. That drop
-> is privilege-sensitive and not portable to macOS Docker Desktop, so
-> it ships as a follow-up. See `harness/internal/executor/container.go`
-> (search for "iptables / nftables drop").
-
-The cooperative model still defeats the agent's *intended* tools —
-`web_fetch`, `run_command` calling `curl`, `git fetch` — because those
-all go through the proxy. It is the deliberate-evasion case (the
-agent writes its own raw socket client, or invokes an obscure binary
-that ignores `$HTTPS_PROXY`) that the v1 implementation does not
-fully cover.
-
-### Security events
-
-Each request through the proxy emits one of:
-
-- `egress_allowed` — host matched, request forwarded.
-- `egress_blocked` — host did not match the allowlist; request
-  dropped with a 403 to the client.
-
-These are JSON-line `SecurityEvent`s on stderr and feed the OTel
-`SecurityEvents` counter.
-
-### Local executor refusal
-
-The local executor refuses `network.mode: allowlist` at construction
-time. Egress controls require a sandbox boundary, and the local
-executor is one. Use `executor.type: container` for allowlist mode.
-
-## Ring 3 — Cedar policy engine
+## Ring 3 — Cedar policy engine (per-call authorization)
 
 ### What it does
 
@@ -405,86 +356,151 @@ Every Cedar decision emits one of:
   fallback outcome included).
 - `policy_denied` (level `warn`) on Forbid (with matched policy IDs).
 
-## Ring 4 — Rule of Two
+## Ring 1 — Container runtime class (kernel isolation)
 
 ### What it does
 
-Meta's [Agents Rule of
-Two](https://ai.meta.com/blog/practical-ai-agent-security/) is a
-structural invariant: a single agent run must not simultaneously hold
-all three of these capabilities — *unless* a human is gated into
-every dangerous call. `ValidateRunConfig` enforces it by computing
-three booleans from the RunConfig, before the run starts.
+The container executor accepts an optional `Runtime` field selecting
+which OCI runtime the host Docker/Podman daemon uses to start the
+sandbox container. The executor unconditionally applies `CapDrop:
+ALL` and `no-new-privileges` to every container regardless of the
+chosen runtime — those are process-level capability drops, applied at
+container construction. The runtime choice controls only the
+kernel-isolation layer beneath that. The default (`runc`) shares a
+kernel with the host; picking `runsc` or a `kata*` flavour adds a
+kernel-level barrier between the agent and the host kernel.
 
-```mermaid
-flowchart TB
-  Cfg[/RunConfig/]
-  Cfg --> A{holdsUntrustedInput?}
-  Cfg --> B{holdsSensitiveData?}
-  Cfg --> C{canCommunicateExternally?}
+### Supported values
 
-  A --> All3{all three?}
-  B --> All3
-  C --> All3
-  All3 -->|no| Pass2[Pass]
-  All3 -->|yes| Ask{permissionPolicy<br/>= ask-upstream?}
-  Ask -->|yes| Pass2
-  Ask -->|no| Override{ruleOfTwo.enforce<br/>= false?}
-  Override -->|yes| AuditedPass[Pass + emit<br/>rule_of_two_disabled event]
-  Override -->|no| Reject[Run rejected]
+| Value | Implementation | Host setup |
+|---|---|---|
+| `""` (default) | engine default — usually `runc` | none |
+| `runc` | vanilla runc | none |
+| `runsc` | [gVisor](https://gvisor.dev) — user-space kernel | install `runsc` and register with the daemon |
+| `kata` | [Kata Containers](https://katacontainers.io) (default flavour) | install `kata-runtime` and register |
+| `kata-qemu` | Kata backed by QEMU | as above |
+| `kata-fc` | Kata backed by Firecracker | as above |
+
+### Host setup
+
+- **gVisor:** install `runsc` from the [Google
+  releases](https://gvisor.dev/docs/user_guide/install/), then register
+  it with Docker by adding `"runsc": { "path":
+  "/usr/local/bin/runsc" }` under `runtimes` in
+  `/etc/docker/daemon.json` and restarting the daemon. Verify with
+  `docker info | grep -A1 Runtimes`.
+- **Kata Containers:** install via your distribution package or the
+  upstream installer; register `kata-runtime` similarly. The
+  `kata-qemu` and `kata-fc` flavours are aliases the daemon expects to
+  map onto distinct runtime entries.
+
+### How to enable
+
+```sh
+stirrup harness --container-runtime runsc --executor container ...
 ```
 
-The three flags use crude heuristics — deliberately so for v1, per
-the issue brief; they will be refined as we collect eval signal.
-
-| Flag | True when |
-|---|---|
-| `holdsUntrustedInput` | `dynamicContext` populated, `web_fetch` enabled, OR any MCP server configured. |
-| `holdsSensitiveData` | The provider/VCS/MCP `apiKeyRef` matches `*KEY*` / `*TOKEN*` / `*SECRET*` / `*PASSWORD*` (case-insensitive), OR any reference uses `secret://ssm:///...`. |
-| `canCommunicateExternally` | `run_command` enabled, `web_fetch` enabled, any MCP server configured, OR the executor has a non-`none` network mode. |
-
-The ground truth is `types/runconfig.go::RuleOfTwoState` — these
-heuristics are exposed to the factory so security events at run start
-share a single source of truth with the validator.
-
-### Why `ask-upstream` is the documented exception
-
-Rule of Two is a "two of three" rule. You can hold any two of
-{untrusted input, sensitive data, external comms} freely; you can
-also hold all three *if* a human is in the loop. `ask-upstream`
-prompts the operator (over the gRPC transport correlator) for every
-side-effecting call, making each dangerous tool call a human
-decision. That is the third constraint the rule allows, in
-exchange for relaxing the structural one.
-
-### Override
-
-For explicit operator override, set `ruleOfTwo.enforce: false` in the
-RunConfig:
+Or in a `RunConfig` file:
 
 ```json
 {
-  "ruleOfTwo": {
-    "enforce": false
+  "executor": {
+    "type": "container",
+    "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "runtime": "runsc"
   }
 }
 ```
 
-There is **no CLI flag** for this. The override must live in the
-RunConfig file so it is reviewable in pull requests and not lost in
-shell history.
+`ValidateRunConfig` rejects values outside the closed set above.
 
-When set, the validator passes the all-three case, but the harness
-emits a `rule_of_two_disabled` security event at run start with the
-three flag states — the override is never silent.
+### Failure mode
 
-### Two-of-three warning
+If the runtime you ask for isn't registered with the daemon, the
+container fails to start with a clear error from Docker/Podman. There
+is no silent fallback to `runc`.
 
-When exactly two of the three flags hold, the run is legal but the
-harness emits a structural `rule_of_two_warning` event so reviewers
-can spot capability creep one step before the invariant trips.
+### Kubernetes deployment
 
-## Ring 5 — Code scanner
+On Kubernetes, set `runtimeClassName` on the pod spec rather than
+threading the runtime through stirrup. `--container-runtime` is for
+the local Docker/Podman container executor.
+
+## Ring 2 — Egress allowlist proxy (network isolation)
+
+### What it does
+
+When `network.mode == "allowlist"`, the container executor starts an
+in-process forward proxy on the host network namespace and configures
+the container to use it via `HTTP_PROXY` / `HTTPS_PROXY`. The proxy
+resolves the destination FQDN, checks it against `network.allowlist`,
+and forwards the request only on a match.
+
+```mermaid
+flowchart LR
+  Inside[Inside container<br/>curl, git, stdlib http.Client]
+  Inside -->|HTTP_PROXY| Proxy{{In-process proxy<br/>on host netns}}
+  Proxy -->|FQDN match + SNI verify| Out([Internet])
+  Proxy -.->|no match| X[403]
+```
+
+### FQDN matching
+
+| Allowlist entry | Matches |
+|---|---|
+| `example.com` | `example.com:443` only |
+| `*.example.com` | any `<sub>.example.com:443` (one wildcard label only) |
+| `example.com:80` | `example.com:80` only |
+| `*.example.com:8080` | any `<sub>.example.com:8080` only — wildcard entries inherit the explicit port if one is suffixed, otherwise default to 443 |
+
+The proxy verifies the TLS SNI matches the requested host so a
+tampered HTTP `Host` header cannot mismatch the allowlisted FQDN. The
+default port is 443 unless explicitly suffixed.
+
+### Cooperation model — important caveat
+
+The proxy intercepts well-behaved HTTP/HTTPS clients that honour
+`HTTP_PROXY` / `HTTPS_PROXY`: curl, git over HTTPS, the language
+stdlib HTTP client. The container is wired with
+`NO_PROXY=localhost,127.0.0.1,::1` so loopback is unaffected.
+
+> **In v1 the iptables drop is deferred.** Fail-closed depends on the
+> in-container client honouring the proxy env vars. A misbehaving
+> client (raw TCP, custom DNS resolver, env-stripped subprocess)
+> inside the container can still dial the bridge gateway directly,
+> because the bridge network has unrestricted egress.
+>
+> The full fail-closed posture requires an iptables/nftables drop on
+> the host that whitelists only the proxy's listen address. That drop
+> is privilege-sensitive and not portable to macOS Docker Desktop, so
+> it ships as a follow-up. See `harness/internal/executor/container.go`
+> (search for "iptables / nftables drop").
+
+The cooperative model still defeats the agent's *intended* tools —
+`web_fetch`, `run_command` calling `curl`, `git fetch` — because those
+all go through the proxy. It is the deliberate-evasion case (the
+agent writes its own raw socket client, or invokes an obscure binary
+that ignores `$HTTPS_PROXY`) that the v1 implementation does not
+fully cover.
+
+### Security events
+
+Each request through the proxy emits one of:
+
+- `egress_allowed` — host matched, request forwarded.
+- `egress_blocked` — host did not match the allowlist; request
+  dropped with a 403 to the client.
+
+These are JSON-line `SecurityEvent`s on stderr and feed the OTel
+`SecurityEvents` counter.
+
+### Local executor refusal
+
+The local executor refuses `network.mode: allowlist` at construction
+time. Egress controls require a sandbox boundary, and the local
+executor is one. Use `executor.type: container` for allowlist mode.
+
+## Ring 5 — Code scanner (post-edit content check)
 
 ### What it does
 
