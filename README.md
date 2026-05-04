@@ -237,7 +237,7 @@ output. The **Transport** carries events to and from the control plane
 metrics throughout.
 
 | # | Interface | Implementations |
-|---|---|---|---|
+|---|---|---|
 | 1 | `ProviderAdapter` | `anthropic`, `bedrock`, `openai-compatible`, `openai-responses` |
 | 2 | `ModelRouter` | `static`, `per-mode`, `dynamic` |
 | 3 | `PromptBuilder` | `default` (per-mode templates, composed) |
