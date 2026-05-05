@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -140,7 +141,9 @@ type GraniteGuardianConfig struct {
 	// Threshold is reserved for a future calibrated head. Granite
 	// Guardian 4.1-8B exposes a binary yes/no head, so we cannot
 	// faithfully fabricate a probability score. The field is accepted
-	// for forward compatibility with the wire schema.
+	// for forward compatibility with the wire schema; setting it has
+	// no effect in v1 and triggers a startup log warning so operators
+	// who set it intentionally are not silently misled.
 	Threshold float64
 
 	// Think enables Granite's <think>...</think> reasoning preamble.
@@ -152,15 +155,15 @@ type GraniteGuardianConfig struct {
 	// defaultGraniteTimeout.
 	Timeout time.Duration
 
-	// FailOpen is stored verbatim for the loop's fail-open wrapper to
-	// consult. The adapter itself never reads this field; surfacing it
-	// here keeps the wire-to-runtime mapping symmetric.
-	FailOpen bool
-
 	// MinChunkChars suppresses PhasePreTurn calls whose content length
 	// is below this threshold. Zero disables the optimisation entirely;
 	// negative values are normalised to zero at construction time.
 	MinChunkChars int
+
+	// Logger is consulted for startup warnings (currently the inert-
+	// Threshold notice). Optional; when nil, warnings are emitted via
+	// the slog default.
+	Logger *slog.Logger
 }
 
 // GraniteGuardian is the concrete GuardRail implementation for vLLM-
@@ -174,7 +177,6 @@ type GraniteGuardian struct {
 	criteria      map[Phase]string // resolved per-phase criterion text
 	think         bool
 	httpClient    *http.Client
-	failOpen      bool // exposed via FailOpen() for callers; not read internally
 	minChunkChars int
 }
 
@@ -220,20 +222,31 @@ func NewGraniteGuardian(cfg GraniteGuardianConfig) (*GraniteGuardian, error) {
 		return nil, err
 	}
 
+	// Surface a startup warning when the operator set Threshold to a
+	// non-default value. The Granite Guardian 4.1-8B head is binary
+	// (yes/no), so the threshold has no effect — silently accepting it
+	// would let an operator believe they had configured a calibrated
+	// admission control when in fact the policy is unchanged.
+	if cfg.Threshold != 0 {
+		logger := cfg.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("granite-guardian: GuardRail.Threshold is reserved and has no effect in v1; the classifier head is binary (yes/no). Remove the threshold field or expect verdicts identical to the default policy.",
+			"threshold", cfg.Threshold,
+			"guardId", guardianGuardID,
+		)
+	}
+
 	return &GraniteGuardian{
 		endpoint:      resolvedURL,
 		model:         model,
 		criteria:      resolved,
 		think:         cfg.Think,
 		httpClient:    &http.Client{Timeout: timeout},
-		failOpen:      cfg.FailOpen,
 		minChunkChars: minChunk,
 	}, nil
 }
-
-// FailOpen reports the configured fail-open flag. The loop / fail-open
-// wrapper consults this; the adapter itself returns errors verbatim.
-func (g *GraniteGuardian) FailOpen() bool { return g.failOpen }
 
 // composeGraniteURL applies the URL-composition rule documented on
 // NewGraniteGuardian. We parse with net/url so we never accidentally

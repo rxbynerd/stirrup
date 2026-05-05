@@ -786,6 +786,8 @@ func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provide
 	case "none":
 		return guard.NewNoop(), nil
 	case "granite-guardian":
+		// FailOpen lives at the GuardRailConfig level (consulted via
+		// guardFailOpen() in the loop). The adapter does not read it.
 		gg, err := guard.NewGraniteGuardian(guard.GraniteGuardianConfig{
 			Endpoint:       cfg.Endpoint,
 			Model:          cfg.Model,
@@ -794,7 +796,6 @@ func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provide
 			Threshold:      cfg.Threshold,
 			Think:          cfg.Think != nil && *cfg.Think,
 			Timeout:        time.Duration(cfg.TimeoutMs) * time.Millisecond,
-			FailOpen:       cfg.FailOpen,
 			MinChunkChars:  cfg.MinChunkChars,
 		})
 		if err != nil {
@@ -806,10 +807,11 @@ func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provide
 		// route to a named provider in `providers` based on a future
 		// GuardRailConfig.Provider field.
 		_ = providers
+		// FailOpen lives at the GuardRailConfig level (consulted via
+		// guardFailOpen() in the loop). The adapter does not read it.
 		cj, err := guard.NewCloudJudge(guard.CloudJudgeConfig{
 			Provider: defaultProvider,
 			Model:    cfg.Model,
-			FailOpen: cfg.FailOpen,
 			Timeout:  time.Duration(cfg.TimeoutMs) * time.Millisecond,
 		})
 		if err != nil {
