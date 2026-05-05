@@ -354,6 +354,13 @@ message RunConfig {
   // the mode: "patterns" (active scanning) for execution mode, "none"
   // for read-only modes (no edits happen).
   CodeScannerConfig code_scanner = 26;
+
+  // Optional. LLM-based safety classifier that runs at three
+  // intervention points in the agentic loop (pre-turn, pre-tool,
+  // post-turn). When unset, the factory installs a "none" guard so
+  // call sites never nil-check. See A1/A5 of issue #43 for the full
+  // design.
+  GuardRailConfig guard_rail = 27;
 }
 
 // RuleOfTwoConfig carries the operator override for the Rule-of-Two
@@ -404,6 +411,81 @@ message CodeScannerConfig {
   // for air-gapped deployments and to pin against supply-chain
   // shifts in the upstream registry.
   string semgrep_config_path = 4;
+}
+
+// GuardRailConfig configures the LLM-based safety classifier that runs
+// at three intervention points in the agentic loop. See A1/A5 of issue
+// #43 for the full design.
+message GuardRailConfig {
+  // The guard implementation.
+  // Valid values:
+  //   "none"             — disable guardrails (default).
+  //   "granite-guardian" — Granite Guardian 4.1-8B served via vLLM
+  //                        using the OpenAI-compatible chat-completions
+  //                        API. Requires endpoint.
+  //   "composite"        — sequential / parallel layering of stages.
+  //                        Requires a non-empty stages list; each stage
+  //                        must be a non-composite type.
+  //   "cloud-judge"      — reuse an existing ProviderAdapter so
+  //                        environments that cannot run their own
+  //                        vLLM still have a guard option.
+  string type = 1;
+
+  // For "composite": the inner stages to layer. Each stage must be a
+  // non-composite type. composite-of-composite is rejected at
+  // validation time so failure modes stay tractable.
+  repeated GuardRailConfig stages = 2;
+
+  // Restrict the guard to specific phases. Empty means all three.
+  // Valid values: "pre_turn", "pre_tool", "post_turn". Duplicates are
+  // rejected.
+  repeated string phases = 3;
+
+  // For "granite-guardian" / "cloud-judge": the endpoint URL. Must
+  // parse with net/url and use scheme http or https; a path component
+  // is allowed (vLLM typically serves at /v1/chat/completions).
+  // Rejected for type="none" / type="composite" because those types
+  // have no transport of their own.
+  string endpoint = 4;
+
+  // For "granite-guardian" / "cloud-judge": the model identifier
+  // (e.g. "ibm-granite/granite-guardian-4.1-8b"). Adapter-defined
+  // default applies when empty.
+  string model = 5;
+
+  // For "granite-guardian": the verdict threshold in [0.0, 1.0].
+  // Adapter-defined default applies when zero.
+  double threshold = 6;
+
+  // For "granite-guardian": built-in criteria identifiers (e.g.
+  // "harm", "jailbreak"). Adapter-defined per-phase default applies
+  // when empty. Each entry must be non-empty.
+  repeated string criteria = 7;
+
+  // For "granite-guardian": natural-language criteria keyed by ID.
+  // IDs must conform to [a-z][a-z0-9_]*.
+  map<string, string> custom_criteria = 8;
+
+  // For "granite-guardian": when true, request reasoning traces
+  // (<think>...</think>) from the classifier. Defaults to false
+  // (faster). Optional so unset is wire-distinguishable from explicit
+  // false — same rationale as RuleOfTwoConfig.enforce.
+  optional bool think = 9;
+
+  // For "granite-guardian" / "cloud-judge": per-call timeout in
+  // milliseconds. Range [50, 30000]. Zero means "use the adapter
+  // default".
+  int32 timeout_ms = 10;
+
+  // When true, transport errors and timeouts produce VerdictAllow with
+  // a security event rather than blocking. Default false (fail
+  // closed).
+  bool fail_open = 11;
+
+  // For "granite-guardian": pre-turn chunks shorter than this are
+  // skipped (no HTTP call). Default 256 (applied at construction
+  // time); 0 disables. Range [0, 4096].
+  int32 min_chunk_chars = 12;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution

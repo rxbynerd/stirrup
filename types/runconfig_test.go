@@ -1459,3 +1459,298 @@ func TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn(t *testing.T)
 		t.Fatalf("config with two flags only should pass, got: %v", err)
 	}
 }
+
+// --- GuardRailConfig ---
+
+// TestValidateGuardRailConfig is a table-driven exercise of every
+// invariant validateGuardRailConfig enforces. Each case wraps a
+// GuardRailConfig in an otherwise-valid RunConfig so the closed-set,
+// range, and cross-field checks fire exactly as they would in
+// production.
+func TestValidateGuardRailConfig(t *testing.T) {
+	think := true
+	cases := []struct {
+		name      string
+		guard     *GuardRailConfig
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:    "nil",
+			guard:   nil,
+			wantErr: false,
+		},
+		{
+			name:    "empty type with no fields",
+			guard:   &GuardRailConfig{},
+			wantErr: false,
+		},
+		{
+			name:      "empty type with adapter fields",
+			guard:     &GuardRailConfig{Endpoint: "http://x"},
+			wantErr:   true,
+			errSubstr: "guardRail.type is required",
+		},
+		{
+			name:    "type none alone",
+			guard:   &GuardRailConfig{Type: "none"},
+			wantErr: false,
+		},
+		{
+			name:      "type bogus",
+			guard:     &GuardRailConfig{Type: "bogus"},
+			wantErr:   true,
+			errSubstr: "unsupported guardRail.type",
+		},
+		{
+			name:      "granite-guardian without endpoint",
+			guard:     &GuardRailConfig{Type: "granite-guardian"},
+			wantErr:   true,
+			errSubstr: "requires endpoint",
+		},
+		{
+			name:    "granite-guardian with endpoint",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://vllm:8000/v1/chat/completions"},
+			wantErr: false,
+		},
+		{
+			name:      "granite-guardian endpoint not a url",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "not a url"},
+			wantErr:   true,
+			errSubstr: "guardRail.endpoint",
+		},
+		{
+			name:      "granite-guardian endpoint ftp scheme",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "ftp://x/y"},
+			wantErr:   true,
+			errSubstr: "scheme http or https",
+		},
+		{
+			name:      "granite-guardian endpoint missing host",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "http:///path"},
+			wantErr:   true,
+			errSubstr: "must include a host",
+		},
+		{
+			name:      "composite empty stages",
+			guard:     &GuardRailConfig{Type: "composite"},
+			wantErr:   true,
+			errSubstr: "non-empty stages",
+		},
+		{
+			name: "composite of composite rejected",
+			guard: &GuardRailConfig{
+				Type: "composite",
+				Stages: []GuardRailConfig{
+					{Type: "composite", Stages: []GuardRailConfig{{Type: "none"}}},
+				},
+			},
+			wantErr:   true,
+			errSubstr: "stages[0].type",
+		},
+		{
+			name: "composite with valid stages",
+			guard: &GuardRailConfig{
+				Type: "composite",
+				Stages: []GuardRailConfig{
+					{Type: "granite-guardian", Endpoint: "http://vllm:8000"},
+					{Type: "none"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:      "composite with endpoint",
+			guard:     &GuardRailConfig{Type: "composite", Endpoint: "http://x", Stages: []GuardRailConfig{{Type: "none"}}},
+			wantErr:   true,
+			errSubstr: "endpoint is not valid for type=composite",
+		},
+		{
+			name:      "phases bogus",
+			guard:     &GuardRailConfig{Type: "none", Phases: []string{"bogus"}},
+			wantErr:   true,
+			errSubstr: "is not a valid phase",
+		},
+		{
+			name:      "phases duplicate",
+			guard:     &GuardRailConfig{Type: "none", Phases: []string{"pre_turn", "pre_turn"}},
+			wantErr:   true,
+			errSubstr: "duplicate",
+		},
+		{
+			name:    "phases all three",
+			guard:   &GuardRailConfig{Type: "none", Phases: []string{"pre_turn", "pre_tool", "post_turn"}},
+			wantErr: false,
+		},
+		{
+			name:      "threshold below range",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", Threshold: -0.1},
+			wantErr:   true,
+			errSubstr: "threshold",
+		},
+		{
+			name:      "threshold above range",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", Threshold: 1.5},
+			wantErr:   true,
+			errSubstr: "threshold",
+		},
+		{
+			name:    "threshold zero",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", Threshold: 0},
+			wantErr: false,
+		},
+		{
+			name:    "threshold half",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", Threshold: 0.5},
+			wantErr: false,
+		},
+		{
+			name:    "threshold one",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", Threshold: 1.0},
+			wantErr: false,
+		},
+		{
+			name:      "timeoutMs below range",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", TimeoutMs: 49},
+			wantErr:   true,
+			errSubstr: "timeoutMs",
+		},
+		{
+			name:      "timeoutMs above range",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", TimeoutMs: 30001},
+			wantErr:   true,
+			errSubstr: "timeoutMs",
+		},
+		{
+			name:    "timeoutMs at lower bound",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", TimeoutMs: 50},
+			wantErr: false,
+		},
+		{
+			name:    "timeoutMs typical",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", TimeoutMs: 1500},
+			wantErr: false,
+		},
+		{
+			name:    "timeoutMs at upper bound",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", TimeoutMs: 30000},
+			wantErr: false,
+		},
+		{
+			name:      "minChunkChars negative",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", MinChunkChars: -1},
+			wantErr:   true,
+			errSubstr: "minChunkChars",
+		},
+		{
+			name:      "minChunkChars above max",
+			guard:     &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", MinChunkChars: 4097},
+			wantErr:   true,
+			errSubstr: "minChunkChars",
+		},
+		{
+			name:    "minChunkChars zero",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", MinChunkChars: 0},
+			wantErr: false,
+		},
+		{
+			name:    "minChunkChars typical",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", MinChunkChars: 256},
+			wantErr: false,
+		},
+		{
+			name:    "minChunkChars at max",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", MinChunkChars: 4096},
+			wantErr: false,
+		},
+		{
+			name: "customCriteria empty key",
+			guard: &GuardRailConfig{
+				Type:           "granite-guardian",
+				Endpoint:       "http://x",
+				CustomCriteria: map[string]string{"": "rule"},
+			},
+			wantErr:   true,
+			errSubstr: "customCriteria contains an empty key",
+		},
+		{
+			name: "customCriteria uppercase key",
+			guard: &GuardRailConfig{
+				Type:           "granite-guardian",
+				Endpoint:       "http://x",
+				CustomCriteria: map[string]string{"HARM": "rule"},
+			},
+			wantErr:   true,
+			errSubstr: "customCriteria key",
+		},
+		{
+			name: "customCriteria leading digit key",
+			guard: &GuardRailConfig{
+				Type:           "granite-guardian",
+				Endpoint:       "http://x",
+				CustomCriteria: map[string]string{"1bad": "rule"},
+			},
+			wantErr:   true,
+			errSubstr: "customCriteria key",
+		},
+		{
+			name: "customCriteria valid key",
+			guard: &GuardRailConfig{
+				Type:           "granite-guardian",
+				Endpoint:       "http://x",
+				CustomCriteria: map[string]string{"prompt_injection": "rule"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "criteria empty entry",
+			guard: &GuardRailConfig{
+				Type:     "granite-guardian",
+				Endpoint: "http://x",
+				Criteria: []string{"harm", ""},
+			},
+			wantErr:   true,
+			errSubstr: "criteria[1] is empty",
+		},
+		{
+			name:      "endpoint set on type none",
+			guard:     &GuardRailConfig{Type: "none", Endpoint: "http://x"},
+			wantErr:   true,
+			errSubstr: "endpoint is not valid for type=none",
+		},
+		{
+			name:    "think pointer accepted",
+			guard:   &GuardRailConfig{Type: "granite-guardian", Endpoint: "http://x", Think: &think},
+			wantErr: false,
+		},
+		{
+			name:    "cloud-judge without endpoint allowed",
+			guard:   &GuardRailConfig{Type: "cloud-judge", Model: "claude-haiku-4-5"},
+			wantErr: false,
+		},
+		{
+			name:    "cloud-judge with https endpoint",
+			guard:   &GuardRailConfig{Type: "cloud-judge", Endpoint: "https://api.anthropic.com/v1/messages"},
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.GuardRail = tc.guard
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+		})
+	}
+}
