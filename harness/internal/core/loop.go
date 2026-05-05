@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -12,6 +14,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -391,6 +394,39 @@ func (l *AgenticLoop) runInnerLoop(
 		default:
 		}
 
+		// PhasePreTurn guard. Classifies untrusted content that just
+		// entered the message history. On turn 0 the chunks include the
+		// initial user prompt and DynamicContext entries; on turn N>0
+		// the chunks are the contents of every tool_result block in the
+		// last user message. The chunks are concatenated under a "--- chunk i ---"
+		// envelope so the adapter sees a single batched request.
+		var preTurnDynamic map[string]string
+		if turn == 0 {
+			preTurnDynamic = config.DynamicContext
+		}
+		if chunks := collectUntrustedChunks(messages, turn, preTurnDynamic, config.Prompt); len(chunks) > 0 {
+			batched := batchUntrustedChunks(chunks)
+			in := guard.Input{
+				Phase:   guard.PhasePreTurn,
+				Content: batched,
+				Source:  fmt.Sprintf("batched:n=%d", len(chunks)),
+				Mode:    config.Mode,
+				RunID:   config.RunID,
+			}
+			allow, _, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
+			switch {
+			case !allow:
+				// PreTurn deny scrubs the untrusted content rather than
+				// aborting the run: the issue treats PreTurn as a
+				// content-level rather than call-level intervention. The
+				// run continues so the model can still respond (typically
+				// with a refusal) and operators see the deny event.
+				replaceUntrustedChunks(messages, turn, "[content blocked by guardrail]")
+			case spotlight:
+				spotlightUntrustedChunks(messages, turn)
+			}
+		}
+
 		// Select model for this turn.
 		selection := l.Router.Select(ctx, router.RouterContext{
 			Mode:           config.Mode,
@@ -638,6 +674,30 @@ func (l *AgenticLoop) runInnerLoop(
 		toolCalls := collectToolCalls(sr.Blocks)
 
 		if sr.StopReason == "end_turn" {
+			// PhasePostTurn guard: classify the assistant's final text
+			// before forwarding it. A deny terminates the run with the
+			// "guardrail_blocked" outcome. Spotlight is opt-in for
+			// future sub-agent contexts where the parent loop can safely
+			// rewrap the child's output; for v1 we log the request and
+			// forward the response unchanged because rewriting the
+			// user-visible text would break tool-protocol expectations.
+			finalText := lastAssistantText(sr.Blocks)
+			if finalText != "" {
+				in := guard.Input{
+					Phase:   guard.PhasePostTurn,
+					Content: finalText,
+					Source:  "model_output",
+					Mode:    config.Mode,
+					RunID:   config.RunID,
+				}
+				allow, _, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
+				if !allow {
+					return messages, "guardrail_blocked"
+				}
+				if spotlight {
+					l.Logger.Info("postTurn guard requested spotlight; not rewriting in v1")
+				}
+			}
 			return messages, "success"
 		}
 		if sr.StopReason != "tool_use" {
@@ -663,6 +723,70 @@ func (l *AgenticLoop) runInnerLoop(
 					attribute.Int("tool.input_size", len(call.Input)),
 				),
 			)
+
+			// PhasePreTool guard: classify the proposed tool call before
+			// dispatch. A deny short-circuits dispatch as a tool failure
+			// — same metrics, trace, and transport surface as a regular
+			// tool error — so the model gets a structured error to
+			// recover from and the existing stall detector accumulates
+			// the failure against its consecutive-failures threshold.
+			preToolIn := guard.Input{
+				Phase:     guard.PhasePreTool,
+				Content:   string(call.Input),
+				Source:    "tool_call:" + call.Name,
+				ToolName:  call.Name,
+				ToolInput: call.Input,
+				Mode:      config.Mode,
+				RunID:     config.RunID,
+			}
+			preToolAllow, preToolDecision, _ := l.guardCheck(ctx, preToolIn, guardFailOpen(config))
+			if !preToolAllow {
+				reason := "guardrail blocked tool call"
+				if preToolDecision != nil && preToolDecision.Reason != "" {
+					reason = "guardrail blocked tool call: " + preToolDecision.Reason
+				}
+				output := reason
+				callDuration := time.Since(callStart)
+				toolSpan.SetAttributes(
+					attribute.Bool("tool.success", false),
+					attribute.Int("tool.output_size", len(output)),
+					attribute.Int64("tool.duration_ms", callDuration.Milliseconds()),
+				)
+				toolSpan.SetStatus(codes.Error, "guardrail_denied")
+				toolSpan.End()
+				l.Trace.RecordToolCall(types.ToolCallTrace{
+					Name:        call.Name,
+					DurationMs:  callDuration.Milliseconds(),
+					Success:     false,
+					ErrorReason: reason,
+					InputSize:   len(call.Input),
+					OutputSize:  len(output),
+				})
+				toolNameAttr := metric.WithAttributes(attribute.String("tool.name", call.Name))
+				l.Metrics.ToolCalls.Add(ctx, 1, toolNameAttr)
+				l.Metrics.ToolCallDuration.Record(ctx, float64(callDuration.Milliseconds()), toolNameAttr)
+				l.Metrics.ToolErrors.Add(ctx, 1, toolNameAttr)
+				toolResults = append(toolResults, types.ToolResult{
+					ToolUseID: call.ID,
+					Content:   output,
+					IsError:   true,
+				})
+				if err := l.Transport.Emit(types.HarnessEvent{
+					Type:      "tool_result",
+					ToolUseID: call.ID,
+					Content:   output,
+				}); err != nil {
+					l.Logger.Warn("transport emit failed", "event", "tool_result", "error", err)
+				}
+				if outcome := stall.recordToolCall(call.Name, call.Input, false); outcome != "" {
+					l.Metrics.Stalls.Add(ctx, 1,
+						metric.WithAttributes(attribute.String("run.mode", config.Mode)),
+					)
+					messages = appendToolResults(messages, toolResults)
+					return messages, outcome
+				}
+				continue
+			}
 
 			output, success := l.dispatchToolCall(ctx, call)
 			callDuration := time.Since(callStart)
@@ -834,6 +958,287 @@ func (l *AgenticLoop) startHeartbeat(ctx context.Context, interval time.Duration
 		}
 	}()
 	return cancel
+}
+
+// guardCheck wraps a guard.Check call with: trace span, metrics, security
+// events, fail-open decoding, and skip detection. Returns:
+//
+//   - allow=true  → caller continues (decision is non-nil)
+//   - allow=false → caller treats as a deny. The caller decides how to
+//     surface the deny per phase: tool failure for PhasePreTool,
+//     "guardrail_blocked" outcome for PhasePostTurn, content-scrub for
+//     PhasePreTurn.
+//   - decision is the underlying decision (always non-nil on allow=true,
+//     non-nil with VerdictDeny on allow=false from a deny verdict, nil
+//     when allow=false because of a hard error and FailOpen is false)
+//   - spotlight=true means the caller should rewrap content with
+//     ApplySpotlight before forwarding (PhasePreTurn / PhasePostTurn)
+//
+// failOpen tells the helper how to interpret an error: when true, errors
+// produce allow=true with a guard_error security event; when false,
+// errors produce allow=false with a guard_error event AND the loop
+// should treat as deny.
+func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen bool) (bool, *guard.Decision, bool) {
+	if l.GuardRail == nil {
+		return true, &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "none"}, false
+	}
+	start := time.Now()
+	_, span := l.Tracer.Start(l.traceCtx(ctx), "guard."+string(in.Phase),
+		oteltrace.WithAttributes(
+			attribute.String("guard.phase", string(in.Phase)),
+			attribute.String("guard.source", in.Source),
+		),
+	)
+	decision, err := l.GuardRail.Check(ctx, in)
+	elapsed := time.Since(start)
+	if err != nil {
+		// Scrub before surfacing: error strings can wrap *url.Error or
+		// classifier-side payloads that legitimately contain operator
+		// hostnames or query parameters. ScrubHandler covers slog but
+		// not OTel span statuses or security event data, so scrub here
+		// once and reuse the redacted string everywhere.
+		scrubbed := security.Scrub(err.Error())
+		span.RecordError(err)
+		span.SetStatus(codes.Error, scrubbed)
+		span.End()
+		guardID := guardIDFromDecision(decision)
+		if l.Metrics != nil {
+			l.Metrics.GuardErrors.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("guard.phase", string(in.Phase)),
+				attribute.String("guard.id", guardID),
+			))
+			l.Metrics.GuardDuration.Record(ctx, float64(elapsed.Milliseconds()), metric.WithAttributes(
+				attribute.String("guard.phase", string(in.Phase)),
+				attribute.String("guard.id", guardID),
+			))
+		}
+		if l.Security != nil {
+			l.Security.GuardError(string(in.Phase), guardID, scrubbed)
+		}
+		if failOpen {
+			return true, &guard.Decision{
+				Verdict: guard.VerdictAllow,
+				Reason:  "fail_open: " + scrubbed,
+				GuardID: guardID,
+			}, false
+		}
+		return false, nil, false
+	}
+	if decision == nil {
+		// Defensive: a guard returning (nil, nil) is a contract
+		// violation. Record a synthetic allow rather than panicking
+		// downstream.
+		decision = &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "unknown"}
+	}
+	span.SetAttributes(
+		attribute.String("guard.id", decision.GuardID),
+		attribute.String("guard.verdict", string(decision.Verdict)),
+		attribute.Float64("guard.score", decision.Score),
+		attribute.Int64("guard.latency_ms", elapsed.Milliseconds()),
+	)
+	span.End()
+
+	// Skip detection — distinct from a regular allow. The granite-
+	// guardian adapter sets Reason==ReasonSkippedMinChunk when content
+	// is below the configured MinChunkChars threshold. We surface this
+	// as a separate metric and security event so dashboards do not
+	// confuse cost-saving skips with classifier-validated allows.
+	isSkip := decision.Reason == guard.ReasonSkippedMinChunk
+	if l.Metrics != nil {
+		if isSkip {
+			l.Metrics.GuardSkips.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("guard.phase", string(in.Phase)),
+				attribute.String("guard.id", decision.GuardID),
+				attribute.String("reason", "min_chunk_chars"),
+			))
+		} else {
+			l.Metrics.GuardChecks.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("guard.phase", string(in.Phase)),
+				attribute.String("guard.id", decision.GuardID),
+				attribute.String("guard.verdict", string(decision.Verdict)),
+			))
+		}
+		l.Metrics.GuardDuration.Record(ctx, float64(elapsed.Milliseconds()), metric.WithAttributes(
+			attribute.String("guard.phase", string(in.Phase)),
+			attribute.String("guard.id", decision.GuardID),
+		))
+	}
+	if l.Security != nil {
+		switch {
+		case isSkip:
+			l.Security.GuardSkipped(string(in.Phase), decision.GuardID)
+		case decision.Verdict == guard.VerdictDeny:
+			l.Security.GuardDenied(string(in.Phase), decision.GuardID, decision.Criterion, decision.Reason)
+		case decision.Verdict == guard.VerdictAllowSpot:
+			l.Security.GuardSpotlighted(string(in.Phase), decision.GuardID, decision.Reason)
+		default:
+			l.Security.GuardAllowed(string(in.Phase), decision.GuardID)
+		}
+	}
+	if decision.Verdict == guard.VerdictAllowSpot {
+		if l.Metrics != nil {
+			l.Metrics.GuardSpotlights.Add(ctx, 1, metric.WithAttributes(
+				attribute.String("guard.id", decision.GuardID),
+			))
+		}
+		return true, decision, true
+	}
+	return decision.Verdict != guard.VerdictDeny, decision, false
+}
+
+// guardIDFromDecision returns the GuardID from a Decision, defaulting to
+// "unknown" when the decision is nil or its GuardID is empty. Used for
+// metric labelling on the error path where a Decision may not exist.
+func guardIDFromDecision(d *guard.Decision) string {
+	if d != nil && d.GuardID != "" {
+		return d.GuardID
+	}
+	return "unknown"
+}
+
+// guardFailOpen returns the fail-open policy from RunConfig. When the
+// guardrail is unconfigured, fail-open is false (which is moot because
+// the guard is a Noop and cannot error).
+func guardFailOpen(config *types.RunConfig) bool {
+	if config == nil || config.GuardRail == nil {
+		return false
+	}
+	return config.GuardRail.FailOpen
+}
+
+// collectUntrustedChunks returns the chunks of untrusted content that
+// just entered the message history at the start of the given turn. On
+// turn 0 this includes the initial user prompt and any DynamicContext
+// entries (sorted by key for determinism). On subsequent turns it
+// returns the Content field of every tool_result block in the last
+// message — those entries arrived from external tool execution and
+// have not yet been classified.
+//
+// v1 keeps this conservative: we do not attempt to classify earlier
+// turns' content (already in history), nor model-emitted text (handled
+// at PhasePostTurn). Only freshly arrived untrusted material is sent
+// to the pre-turn guard, batched into a single classification call.
+func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext map[string]string, prompt string) []string {
+	if turn == 0 {
+		chunks := make([]string, 0, 1+len(dynamicContext))
+		if prompt != "" {
+			chunks = append(chunks, prompt)
+		}
+		// Sort keys for deterministic batched ordering — the guard
+		// adapter assigns chunk indices to the batch and operators
+		// debugging a deny benefit from a stable ordering.
+		keys := make([]string, 0, len(dynamicContext))
+		for k := range dynamicContext {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if v := dynamicContext[k]; v != "" {
+				chunks = append(chunks, v)
+			}
+		}
+		return chunks
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "user" {
+		return nil
+	}
+	chunks := make([]string, 0, len(last.Content))
+	for _, b := range last.Content {
+		if b.Type == "tool_result" && b.Content != "" {
+			chunks = append(chunks, b.Content)
+		}
+	}
+	return chunks
+}
+
+// batchUntrustedChunks concatenates chunks under per-chunk delimiters
+// suitable for the granite-guardian batched composite criterion.
+// Single-chunk batches still get a "--- chunk 0 ---" header so the
+// model sees a consistent envelope shape regardless of chunk count.
+func batchUntrustedChunks(chunks []string) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, c := range chunks {
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		fmt.Fprintf(&sb, "--- chunk %d ---\n", i)
+		sb.WriteString(c)
+	}
+	return sb.String()
+}
+
+// replaceUntrustedChunks replaces the content of every tool_result
+// block in the last message with the supplied placeholder. Used when
+// PhasePreTurn returns VerdictDeny to drop the untrusted content from
+// this turn rather than feed it to the model. Turn 0 is a no-op
+// because the user prompt itself is the untrusted content and we
+// cannot rewrite it without producing an opaque user-facing failure
+// — the loop's pre-turn deny on turn 0 surfaces as "guardrail_blocked"
+// at the outer level instead. (Currently turn 0 PreTurn deny is logged
+// but does not abort; v1 prefers progress to a strict refusal here.)
+func replaceUntrustedChunks(messages []types.Message, turn int, placeholder string) {
+	if turn == 0 {
+		// Turn 0 untrusted content is the user prompt — already in the
+		// system input. We log via the security event in the caller and
+		// otherwise let the run continue; PostTurn guards still apply.
+		return
+	}
+	if len(messages) == 0 {
+		return
+	}
+	last := &messages[len(messages)-1]
+	if last.Role != "user" {
+		return
+	}
+	for i := range last.Content {
+		if last.Content[i].Type == "tool_result" {
+			last.Content[i].Content = placeholder
+		}
+	}
+}
+
+// spotlightUntrustedChunks rewraps every tool_result block in the last
+// message via guard.ApplySpotlight. Used when PhasePreTurn returns
+// VerdictAllowSpot for batched untrusted content. Turn 0 is a no-op
+// because the user prompt already lives in the system input layer; we
+// cannot retroactively spotlight it without rewriting prompts.
+func spotlightUntrustedChunks(messages []types.Message, turn int) {
+	if turn == 0 {
+		return
+	}
+	if len(messages) == 0 {
+		return
+	}
+	last := &messages[len(messages)-1]
+	if last.Role != "user" {
+		return
+	}
+	for i := range last.Content {
+		if last.Content[i].Type == "tool_result" {
+			last.Content[i].Content = guard.ApplySpotlight(last.Content[i].Content)
+		}
+	}
+}
+
+// lastAssistantText concatenates every text block in the assistant's
+// final response. Tool-use blocks are skipped because PhasePreTool
+// already gated them per-call.
+func lastAssistantText(blocks []types.ContentBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		if b.Type == "text" {
+			sb.WriteString(b.Text)
+			sb.WriteString("\n")
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // finishWithError records an error outcome and finishes the trace.

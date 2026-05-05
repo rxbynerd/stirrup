@@ -466,11 +466,11 @@ func TestEmitRuleOfTwoEvents_TwoOfThreeEmitsWarning(t *testing.T) {
 	// untrusted+external or sensitive+external branches would slip
 	// past CI silently.
 	cases := []struct {
-		name    string
-		cfg     *types.RunConfig
-		wantU   bool
-		wantS   bool
-		wantE   bool
+		name  string
+		cfg   *types.RunConfig
+		wantU bool
+		wantS bool
+		wantE bool
 	}{
 		{
 			name: "untrusted+sensitive",
