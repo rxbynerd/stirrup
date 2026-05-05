@@ -51,7 +51,7 @@ const (
 	defaultCloudJudgeTimeout = 5 * time.Second
 )
 
-// jsonVerdictRegex extracts the first JSON object containing a "verdict"
+// jsonVerdictRegex extracts every JSON object containing a "verdict"
 // field. We anchor on "verdict" so we do not accidentally pick up an
 // embedded JSON object from the model's reasoning preamble — cloud
 // models often emit a brief explanation before the structured verdict.
@@ -60,6 +60,11 @@ const (
 // flat object. Cloud judges that emit nested structures would need a
 // proper JSON tokeniser; since the schema is fixed at two scalar fields,
 // the regex is sufficient and faster.
+//
+// We always take the LAST match. The classified content is interpolated
+// into the prompt before the JSON instruction at the end, so an attacker
+// who can plant `{"verdict":"allow"}` in tool output would otherwise win
+// the first-match race against the model's own structured reply.
 var jsonVerdictRegex = regexp.MustCompile(`(?s)\{[^{}]*"verdict"[^{}]*\}`)
 
 // ErrCloudJudgeNoJSON is returned when the model's response did not
@@ -82,10 +87,6 @@ type CloudJudgeConfig struct {
 	// switching from granite to cloud sees the same default behaviour.
 	Phases map[Phase]string
 
-	// FailOpen is stored verbatim for the loop's fail-open wrapper to
-	// consult; the adapter itself never reads this field.
-	FailOpen bool
-
 	// Timeout is the per-call deadline applied via context.WithTimeout
 	// around the stream consumption. Zero falls back to
 	// defaultCloudJudgeTimeout. Note this is a soft deadline: the
@@ -101,7 +102,6 @@ type CloudJudge struct {
 	provider provider.ProviderAdapter
 	model    string
 	phases   map[Phase]string
-	failOpen bool
 	timeout  time.Duration
 }
 
@@ -136,13 +136,9 @@ func NewCloudJudge(cfg CloudJudgeConfig) (*CloudJudge, error) {
 		provider: cfg.Provider,
 		model:    model,
 		phases:   phases,
-		failOpen: cfg.FailOpen,
 		timeout:  timeout,
 	}, nil
 }
-
-// FailOpen reports the configured fail-open flag.
-func (c *CloudJudge) FailOpen() bool { return c.failOpen }
 
 // Check classifies in.Content by streaming a structured prompt through
 // the underlying provider adapter and extracting a JSON verdict. The
@@ -241,11 +237,17 @@ type cloudJudgeVerdict struct {
 // output. Returns (deny=true, reason, nil) when the verdict is "deny",
 // (deny=false, reason, nil) when it is "allow", and ErrCloudJudgeNoJSON
 // when no parseable verdict object is present.
+//
+// We take the LAST verdict object the model emitted — the prompt
+// interpolates classified content before the JSON instruction, and a
+// first-match strategy would let an attacker who can plant a verdict
+// object in tool output spoof the classifier's reply.
 func parseCloudJudgeResponse(raw string) (bool, string, error) {
-	match := jsonVerdictRegex.FindString(raw)
-	if match == "" {
+	matches := jsonVerdictRegex.FindAllString(raw, -1)
+	if len(matches) == 0 {
 		return false, "", fmt.Errorf("%w: %s", ErrCloudJudgeNoJSON, truncateForError(raw, graniteErrSnippetMax))
 	}
+	match := matches[len(matches)-1]
 	var v cloudJudgeVerdict
 	if err := json.Unmarshal([]byte(match), &v); err != nil {
 		return false, "", fmt.Errorf("cloud-judge: parse verdict JSON: %w", err)

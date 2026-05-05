@@ -1,11 +1,13 @@
 package guard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -423,5 +425,50 @@ func TestGraniteGuardianRejectsNonHTTPScheme(t *testing.T) {
 	_, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: "file:///etc/passwd"})
 	if err == nil {
 		t.Fatalf("expected error for file:// scheme, got nil")
+	}
+}
+
+// TestGraniteGuardian_ThresholdWarnsAtConstruction asserts that a
+// non-zero Threshold emits a startup warning (per SF-6) — the field
+// is reserved for forward compatibility and has no behavioural effect
+// in v1, so silently accepting it would mislead operators who think
+// they configured calibrated admission control.
+func TestGraniteGuardian_ThresholdWarnsAtConstruction(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if _, err := NewGraniteGuardian(GraniteGuardianConfig{
+		Endpoint:  "http://localhost:9999",
+		Threshold: 0.8,
+		Logger:    logger,
+	}); err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, `"level":"WARN"`) {
+		t.Errorf("expected WARN log, got: %s", out)
+	}
+	if !strings.Contains(out, "Threshold") && !strings.Contains(out, "threshold") {
+		t.Errorf("expected threshold mention in warning, got: %s", out)
+	}
+}
+
+// TestGraniteGuardian_ThresholdSilentAtDefault asserts that the zero
+// threshold value emits no warning so operators who never touched the
+// field are not spammed.
+func TestGraniteGuardian_ThresholdSilentAtDefault(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if _, err := NewGraniteGuardian(GraniteGuardianConfig{
+		Endpoint: "http://localhost:9999",
+		Logger:   logger,
+	}); err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+
+	if buf.Len() != 0 {
+		t.Errorf("expected silent construction at default threshold, got log output: %s", buf.String())
 	}
 }

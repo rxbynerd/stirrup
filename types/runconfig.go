@@ -159,6 +159,12 @@ type GuardRailConfig struct {
 	Stages []GuardRailConfig `json:"stages,omitempty"` // composite only
 	Phases []string          `json:"phases,omitempty"` // restrict to phases; default = all three
 
+	// Composite layering mode is reserved for future use. v1 always
+	// wires composites as Sequential (first-deny-wins, last decision
+	// otherwise). The guard package exports a Parallel implementation
+	// but no config field selects it; embedders who need parallel
+	// composition must build the GuardRail tree manually.
+
 	// Adapter config (granite-guardian, cloud-judge):
 
 	// Endpoint is the URL of the classifier service. Must parse with
@@ -175,10 +181,10 @@ type GuardRailConfig struct {
 	// applies when empty.
 	Model string `json:"model,omitempty"`
 
-	// Threshold is the verdict cutoff in [0.0, 1.0]. Adapter-defined
-	// default applies when zero (Go's zero value is also a valid
-	// threshold meaning "deny everything"; that ambiguity is resolved
-	// at construction time, not here).
+	// Threshold is reserved; the Granite Guardian 4.1-8B head returns
+	// binary yes/no — this field has no effect in v1. Do not rely on
+	// it for admission control. Setting a non-zero value triggers a
+	// startup warning so operators are not silently misled.
 	Threshold float64 `json:"threshold,omitempty"`
 
 	// Criteria are built-in criterion identifiers (e.g. "harm",

@@ -188,3 +188,111 @@ func TestRunConfigFromProto_SessionNameAbsentWhenNil(t *testing.T) {
 		t.Errorf("RuleOfTwo.Enforce should be nil for empty proto sub-message; got %v", *rcUnset.RuleOfTwo.Enforce)
 	}
 }
+
+// TestRunConfigProtoRoundTrip_GuardRail asserts that every field on
+// the proto GuardRailConfig is preserved by runConfigFromProto. A
+// missing translation block for guard_rail (proto field 27) silently
+// drops guard configuration on the K8s job path, leaving operators
+// running a guardless harness even when their wire payload says
+// otherwise. The composite stage exercises the recursion path so
+// nested configurations also survive.
+func TestRunConfigProtoRoundTrip_GuardRail(t *testing.T) {
+	think := true
+	pc := &pb.RunConfig{
+		GuardRail: &pb.GuardRailConfig{
+			Type:          "composite",
+			Phases:        []string{"pre_turn", "post_turn"},
+			Endpoint:      "",
+			Model:         "",
+			TimeoutMs:     1500,
+			FailOpen:      true,
+			MinChunkChars: 256,
+			Stages: []*pb.GuardRailConfig{
+				{
+					Type:      "granite-guardian",
+					Endpoint:  "http://classifier.local:9999",
+					Model:     "ibm-granite/granite-guardian-4.1-8b",
+					Threshold: 0,
+					Criteria:  []string{"harm", "jailbreak"},
+					CustomCriteria: map[string]string{
+						"my_rule": "no profanity",
+					},
+					Think:         &think,
+					TimeoutMs:     1500,
+					FailOpen:      false,
+					MinChunkChars: 256,
+				},
+				{
+					Type:      "cloud-judge",
+					Model:     "claude-haiku-4-5-20251001",
+					TimeoutMs: 5000,
+				},
+			},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.GuardRail == nil {
+		t.Fatal("GuardRail dropped during proto translation")
+	}
+	if rc.GuardRail.Type != "composite" {
+		t.Errorf("Type: got %q, want composite", rc.GuardRail.Type)
+	}
+	if got, want := rc.GuardRail.Phases, []string{"pre_turn", "post_turn"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Phases: got %v, want %v", got, want)
+	}
+	if rc.GuardRail.TimeoutMs != 1500 {
+		t.Errorf("TimeoutMs: got %d, want 1500", rc.GuardRail.TimeoutMs)
+	}
+	if !rc.GuardRail.FailOpen {
+		t.Errorf("FailOpen: got false, want true")
+	}
+	if rc.GuardRail.MinChunkChars != 256 {
+		t.Errorf("MinChunkChars: got %d, want 256", rc.GuardRail.MinChunkChars)
+	}
+	if len(rc.GuardRail.Stages) != 2 {
+		t.Fatalf("Stages: got %d, want 2", len(rc.GuardRail.Stages))
+	}
+
+	gg := rc.GuardRail.Stages[0]
+	if gg.Type != "granite-guardian" {
+		t.Errorf("Stages[0].Type: got %q", gg.Type)
+	}
+	if gg.Endpoint != "http://classifier.local:9999" {
+		t.Errorf("Stages[0].Endpoint: got %q", gg.Endpoint)
+	}
+	if gg.Model != "ibm-granite/granite-guardian-4.1-8b" {
+		t.Errorf("Stages[0].Model: got %q", gg.Model)
+	}
+	if len(gg.Criteria) != 2 || gg.Criteria[0] != "harm" || gg.Criteria[1] != "jailbreak" {
+		t.Errorf("Stages[0].Criteria: got %v", gg.Criteria)
+	}
+	if gg.CustomCriteria["my_rule"] != "no profanity" {
+		t.Errorf("Stages[0].CustomCriteria: got %v", gg.CustomCriteria)
+	}
+	if gg.Think == nil || *gg.Think != true {
+		t.Errorf("Stages[0].Think: got %v, want pointer to true", gg.Think)
+	}
+
+	cj := rc.GuardRail.Stages[1]
+	if cj.Type != "cloud-judge" {
+		t.Errorf("Stages[1].Type: got %q", cj.Type)
+	}
+	if cj.Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("Stages[1].Model: got %q", cj.Model)
+	}
+	if cj.TimeoutMs != 5000 {
+		t.Errorf("Stages[1].TimeoutMs: got %d", cj.TimeoutMs)
+	}
+}
+
+// TestRunConfigProtoRoundTrip_GuardRailNilStays_Nil documents that an
+// absent guard_rail proto field translates to a nil GuardRail (the
+// validator then applies the default — guards are opt-in).
+func TestRunConfigProtoRoundTrip_GuardRailNilStaysNil(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{})
+	if rc.GuardRail != nil {
+		t.Errorf("GuardRail should be nil when proto field absent; got %+v", rc.GuardRail)
+	}
+}

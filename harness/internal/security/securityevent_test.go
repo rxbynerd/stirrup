@@ -151,6 +151,91 @@ func TestSecurityLogger_SetEventCounterIsRaceFree(t *testing.T) {
 	wg.Wait()
 }
 
+// TestSecurityLogger_GuardEventHelpers asserts each guard-flavoured
+// SecurityLogger helper emits the expected event name and structured
+// data fields. Without coverage here, a refactor that silently
+// renamed an event or dropped a field (e.g. `criterion` on
+// guard_denied) would erode the operator-visible contract while the
+// build still passes.
+func TestSecurityLogger_GuardEventHelpers(t *testing.T) {
+	cases := []struct {
+		name      string
+		fire      func(sl *SecurityLogger)
+		event     string
+		wantField map[string]any
+	}{
+		{
+			name:  "guard_allowed",
+			fire:  func(sl *SecurityLogger) { sl.GuardAllowed("pre_turn", "granite-guardian") },
+			event: "guard_allowed",
+			wantField: map[string]any{
+				"phase":   "pre_turn",
+				"guardId": "granite-guardian",
+			},
+		},
+		{
+			name:  "guard_denied carries criterion and reason",
+			fire:  func(sl *SecurityLogger) { sl.GuardDenied("pre_tool", "granite-guardian", "harm", "rule violation") },
+			event: "guard_denied",
+			wantField: map[string]any{
+				"phase":     "pre_tool",
+				"guardId":   "granite-guardian",
+				"criterion": "harm",
+				"reason":    "rule violation",
+			},
+		},
+		{
+			name:  "guard_skipped",
+			fire:  func(sl *SecurityLogger) { sl.GuardSkipped("pre_turn", "granite-guardian") },
+			event: "guard_skipped",
+			wantField: map[string]any{
+				"phase":   "pre_turn",
+				"guardId": "granite-guardian",
+			},
+		},
+		{
+			name:  "guard_spotlighted carries reason",
+			fire:  func(sl *SecurityLogger) { sl.GuardSpotlighted("pre_turn", "granite-guardian", "low confidence") },
+			event: "guard_spotlighted",
+			wantField: map[string]any{
+				"phase":   "pre_turn",
+				"guardId": "granite-guardian",
+				"reason":  "low confidence",
+			},
+		},
+		{
+			name:  "guard_error carries error string",
+			fire:  func(sl *SecurityLogger) { sl.GuardError("post_turn", "granite-guardian", "connection refused") },
+			event: "guard_error",
+			wantField: map[string]any{
+				"phase":   "post_turn",
+				"guardId": "granite-guardian",
+				"error":   "connection refused",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			sl := NewSecurityLogger(&buf, "run-1")
+			tc.fire(sl)
+			var got SecurityEvent
+			if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got); err != nil {
+				t.Fatalf("unmarshal %q: %v\noutput=%q", tc.name, err, buf.String())
+			}
+			if got.Event != tc.event {
+				t.Errorf("Event = %q, want %q", got.Event, tc.event)
+			}
+			for k, want := range tc.wantField {
+				if got.Data[k] != want {
+					t.Errorf("Data[%q] = %v, want %v", k, got.Data[k], want)
+				}
+			}
+		})
+	}
+}
+
 // Confirm that Emit still produces the expected JSON output regardless of
 // whether the counter is wired.
 func TestSecurityLogger_EmitJSONShapeWithCounter(t *testing.T) {

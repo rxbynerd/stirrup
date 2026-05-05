@@ -2,7 +2,6 @@ package guard
 
 import (
 	"encoding/base64"
-	"strings"
 )
 
 // Spotlight wrapper tags. Exported so callers (the loop, in a later
@@ -19,14 +18,16 @@ const (
 // payloads inside the content syntactically inert from the model's
 // perspective — there are no English instructions left to follow.
 //
-// The function is idempotent: if content is already wrapped (begins
-// with SpotlightOpenTag and ends with SpotlightCloseTag), it is
-// returned unchanged. This lets the loop call ApplySpotlight on every
-// hop without compounding wrappers.
+// ApplySpotlight always re-encodes. The loop only calls this once per
+// chunk (at the wrap site, never on already-wrapped content), so a
+// "skip if already wrapped" prefix/suffix check is unnecessary — and
+// it would be unsafe: an attacker who controls a tool output could
+// emit content that *begins* with SpotlightOpenTag and *ends* with
+// SpotlightCloseTag but is otherwise plain text, defeating the
+// encoding. If a future use case needs idempotency, verify
+// authenticity by stripping the tags and attempting base64-decode
+// rather than trusting the sentinel pattern.
 func ApplySpotlight(content string) string {
-	if strings.HasPrefix(content, SpotlightOpenTag) && strings.HasSuffix(content, SpotlightCloseTag) {
-		return content
-	}
 	encoded := base64.StdEncoding.EncodeToString([]byte(content))
 	return SpotlightOpenTag + encoded + SpotlightCloseTag
 }

@@ -12,6 +12,7 @@ import (
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -214,6 +215,39 @@ func TestSpawnSubAgent_InheritsParentMode(t *testing.T) {
 	}
 	if result.Outcome != "success" {
 		t.Errorf("expected outcome 'success', got %q", result.Outcome)
+	}
+}
+
+// TestSpawnSubAgent_InheritsGuardRail asserts that a sub-agent
+// inherits the parent's GuardRail. Without this inheritance an
+// indirect-injection payload could route harmful work through
+// spawn_agent and bypass all phases, since guardCheck nil-short-
+// circuits to allow when GuardRail is nil. The test installs a
+// deny-everything guard on the parent and asserts the sub-agent run
+// terminates with "guardrail_blocked" — proving the guard was active
+// inside the child loop.
+func TestSpawnSubAgent_InheritsGuardRail(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Sub-agent output."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentLoop.GuardRail = &fakeGuard{verdict: guard.VerdictDeny, reason: "deny everything"}
+	parentConfig := buildTestConfig()
+
+	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "Do a subtask",
+	})
+	if err != nil {
+		t.Fatalf("SpawnSubAgent() error: %v", err)
+	}
+	// A deny on PreTurn turn 0 aborts with guardrail_blocked. If the
+	// sub-agent had a nil GuardRail it would silently run to success.
+	if result.Outcome != "guardrail_blocked" {
+		t.Errorf("expected outcome 'guardrail_blocked' (parent guard inherited), got %q", result.Outcome)
 	}
 }
 

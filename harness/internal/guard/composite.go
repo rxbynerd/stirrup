@@ -24,11 +24,14 @@ func verdictRank(v Verdict) int {
 }
 
 // Sequential runs its Guards in order and short-circuits on the first
-// VerdictDeny. If no guard denies, the LAST allow / spotlight decision
-// is returned so a spotlight verdict from any guard naturally
-// propagates. Errors abort the chain.
+// VerdictDeny. If no guard denies, the LAST decision is returned —
+// this means a spotlight verdict from a guard placed BEFORE another
+// guard that ultimately allows is superseded by the trailing allow.
+// Operators who want spotlighting to propagate must place a
+// spotlighting guard last in the chain (or rely on Parallel, which
+// aggregates strongest-verdict-wins). Errors abort the chain.
 //
-// Aggregation precedence: Deny > Spotlight > Allow.
+// Aggregation precedence: Deny > (last non-deny decision wins).
 type Sequential struct {
 	Guards []GuardRail
 	ID     string
@@ -81,6 +84,14 @@ func (s Sequential) Check(ctx context.Context, in Input) (*Decision, error) {
 // A deny from any guard wins outright, even if siblings errored. If
 // every non-error guard allows and at least one guard errored, the
 // first error is returned.
+//
+// CompositeMode reservation: v1's `buildGuardRailNode` always wires a
+// Sequential composite. Parallel is exported and tested against direct
+// callers (embedders, future config switches), but no
+// GuardRailConfig.CompositeMode field exists yet — adding one is a
+// backward-compatible extension reserved for a follow-up issue. Until
+// then, operators who want parallel composition must construct the
+// Parallel directly via the harnessapi.
 type Parallel struct {
 	Guards []GuardRail
 	ID     string

@@ -413,17 +413,34 @@ func (l *AgenticLoop) runInnerLoop(
 				Mode:    config.Mode,
 				RunID:   config.RunID,
 			}
-			allow, _, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
+			allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 			switch {
 			case !allow:
-				// PreTurn deny scrubs the untrusted content rather than
-				// aborting the run: the issue treats PreTurn as a
-				// content-level rather than call-level intervention. The
-				// run continues so the model can still respond (typically
-				// with a refusal) and operators see the deny event.
+				// On turn 0 the user prompt itself is the untrusted
+				// content; replaceUntrustedChunks cannot rewrite the
+				// initial prompt (it has not been appended to the
+				// message history at this point). The only correct
+				// action is to abort the run before the model sees
+				// the offending input.
+				if turn == 0 {
+					return messages, "guardrail_blocked"
+				}
+				// On later turns PreTurn deny scrubs the untrusted
+				// content rather than aborting: the just-arrived
+				// tool_result blocks are rewritten so the run continues
+				// and the model can refuse, while operators still see
+				// the deny event.
 				replaceUntrustedChunks(messages, turn, "[content blocked by guardrail]")
 			case spotlight:
+				if turn == 0 {
+					// Turn 0 has no tool_result blocks to rewrap —
+					// spotlightUntrustedChunks is a no-op. Skip the
+					// spotlight metric/event so dashboards reflect
+					// applied (not merely requested) spotlights.
+					break
+				}
 				spotlightUntrustedChunks(messages, turn)
+				l.recordSpotlightApplied(ctx, guard.PhasePreTurn, decision)
 			}
 		}
 
@@ -695,6 +712,12 @@ func (l *AgenticLoop) runInnerLoop(
 					return messages, "guardrail_blocked"
 				}
 				if spotlight {
+					// PostTurn spotlight is intentionally a log-only
+					// no-op in v1: rewriting the user-visible
+					// assistant text would break tool-protocol
+					// expectations. The spotlight metric / event are
+					// NOT emitted for unapplied PostTurn spotlights —
+					// see recordSpotlightApplied.
 					l.Logger.Info("postTurn guard requested spotlight; not rewriting in v1")
 				}
 			}
@@ -741,11 +764,25 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			preToolAllow, preToolDecision, _ := l.guardCheck(ctx, preToolIn, guardFailOpen(config))
 			if !preToolAllow {
-				reason := "guardrail blocked tool call"
+				// The user-visible tool error MUST be a fixed string:
+				// preToolDecision.Reason originates from the
+				// classifier model's response and is therefore
+				// adversary-influenceable (the cloud-judge in
+				// particular runs untrusted content through an LLM
+				// whose JSON reason field is part of its output).
+				// Echoing it back to the main model would re-introduce
+				// the injection we just blocked. The full reason is
+				// captured by GuardDenied for operator visibility at
+				// the call site below.
+				const blockedToolMessage = "guardrail blocked tool call"
+				output := blockedToolMessage
+				// reason carries the structured guard reason for
+				// trace/log fields (operator-only); it is never
+				// surfaced to the model.
+				reason := blockedToolMessage
 				if preToolDecision != nil && preToolDecision.Reason != "" {
-					reason = "guardrail blocked tool call: " + preToolDecision.Reason
+					reason = blockedToolMessage + ": " + preToolDecision.Reason
 				}
-				output := reason
 				callDuration := time.Since(callStart)
 				toolSpan.SetAttributes(
 					attribute.Bool("tool.success", false),
@@ -1070,20 +1107,42 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		case decision.Verdict == guard.VerdictDeny:
 			l.Security.GuardDenied(string(in.Phase), decision.GuardID, decision.Criterion, decision.Reason)
 		case decision.Verdict == guard.VerdictAllowSpot:
-			l.Security.GuardSpotlighted(string(in.Phase), decision.GuardID, decision.Reason)
+			// Spotlight events and the stirrup.guard.spotlights metric
+			// are emitted by the call site only after the spotlight is
+			// actually applied (recordSpotlightApplied). guardCheck
+			// returns spotlight=true to signal the request; whether
+			// the caller acts on it depends on the phase. Emitting
+			// here would over-count: PostTurn currently logs and
+			// forwards the response unchanged.
 		default:
 			l.Security.GuardAllowed(string(in.Phase), decision.GuardID)
 		}
 	}
 	if decision.Verdict == guard.VerdictAllowSpot {
-		if l.Metrics != nil {
-			l.Metrics.GuardSpotlights.Add(ctx, 1, metric.WithAttributes(
-				attribute.String("guard.id", decision.GuardID),
-			))
-		}
 		return true, decision, true
 	}
 	return decision.Verdict != guard.VerdictDeny, decision, false
+}
+
+// recordSpotlightApplied emits the spotlight security event and metric.
+// Call this only after a spotlight request has actually been honoured
+// (e.g. spotlightUntrustedChunks has run). Calling guardCheck alone
+// must NOT increment the spotlights counter — the loop currently
+// no-ops PostTurn spotlight requests, and conflating "requested" with
+// "applied" would mislead operators monitoring spotlight rates.
+func (l *AgenticLoop) recordSpotlightApplied(ctx context.Context, phase guard.Phase, decision *guard.Decision) {
+	if decision == nil {
+		return
+	}
+	if l.Metrics != nil {
+		l.Metrics.GuardSpotlights.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("guard.id", decision.GuardID),
+			attribute.String("guard.phase", string(phase)),
+		))
+	}
+	if l.Security != nil {
+		l.Security.GuardSpotlighted(string(phase), decision.GuardID, decision.Reason)
+	}
 }
 
 // guardIDFromDecision returns the GuardID from a Decision, defaulting to
@@ -1178,16 +1237,15 @@ func batchUntrustedChunks(chunks []string) string {
 // block in the last message with the supplied placeholder. Used when
 // PhasePreTurn returns VerdictDeny to drop the untrusted content from
 // this turn rather than feed it to the model. Turn 0 is a no-op
-// because the user prompt itself is the untrusted content and we
-// cannot rewrite it without producing an opaque user-facing failure
-// — the loop's pre-turn deny on turn 0 surfaces as "guardrail_blocked"
-// at the outer level instead. (Currently turn 0 PreTurn deny is logged
-// but does not abort; v1 prefers progress to a strict refusal here.)
+// because the user prompt itself is the untrusted content and is
+// not yet appended to the message history; turn 0 PreTurn denies
+// must be handled by the caller (the loop aborts the run with
+// outcome "guardrail_blocked").
 func replaceUntrustedChunks(messages []types.Message, turn int, placeholder string) {
 	if turn == 0 {
-		// Turn 0 untrusted content is the user prompt — already in the
-		// system input. We log via the security event in the caller and
-		// otherwise let the run continue; PostTurn guards still apply.
+		// Turn 0 has no tool_result blocks to rewrite. Callers must
+		// abort the run rather than calling into this helper, so this
+		// branch is a defensive no-op only.
 		return
 	}
 	if len(messages) == 0 {

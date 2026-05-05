@@ -221,6 +221,13 @@ malformed response from the classifier produces a `VerdictDeny` and
 the run is blocked. This matches the principle that an unreachable
 guardrail is no guardrail.
 
+`failOpen` is a **top-level GuardRailConfig setting only**. It governs
+the entire guardrail tree for the run. Per-stage `failOpen` is not
+supported: a composite policy with mixed fail-open settings would
+silently mask transport errors in one stage while blocking on
+another, and that is confusing rather than useful. Set the field once
+at the top level, alongside `type` / `endpoint` / `phases`.
+
 Set `failOpen: true` only when:
 - Degraded vLLM availability is part of the normal operating
   envelope (e.g. a shared cluster with frequent rollouts).
