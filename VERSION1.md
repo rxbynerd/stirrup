@@ -374,3 +374,9 @@ The container executor uses the Docker Engine REST API directly over a Unix sock
 - **Communication model**: gRPC bidi streaming between harness and control plane. Protobuf contract replaces the WebSocket JSON protocol from the Ruby prototype.
 - **Interoperability**: the harness speaks gRPC. A2A compatibility for external agents is the control plane's responsibility via adapter pattern.
 - **MCP**: supported from the start. Remote-only (Streamable HTTP), no stdio subprocess management.
+
+---
+
+## Issue #43 — GuardRail
+
+The 13th swappable component, `GuardRail`, adds an LLM-based safety classifier at three points in the agentic loop: **PreTurn** (untrusted text — tool outputs, dynamic context, the initial prompt — before it enters context), **PreTool** (model-proposed tool calls before dispatch), and **PostTurn** (assistant text before it leaves the loop). Two adapters ship: `granite-guardian` (IBM Granite Guardian 4.1-8B served via vLLM over OpenAI-compatible chat completions) and `cloud-judge` (reuses an existing `ProviderAdapter` such as Anthropic Haiku for deployments without GPU access). A `composite` primitive lets operators layer additional classifiers (e.g. a fast-path Llama Prompt Guard 2 in front of Granite Guardian) without modifying the harness; no fast-path adapter ships natively. The component is opt-in: the default is `none`, the call sites are no-ops, and zero behaviour changes from the pre-#43 path. Operator walkthrough: [`docs/guardrails.md`](docs/guardrails.md). The classifier is a probability reducer, not an authoriser — a `VerdictAllow` from the guard does **not** override a deny from the [Cedar policy engine](docs/safety-rings.md); the two questions are different and both must agree to allow.

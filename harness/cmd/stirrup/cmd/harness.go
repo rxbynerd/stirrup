@@ -56,6 +56,16 @@ type harnessCLIOptions struct {
 	ContainerRuntime     string
 	PermissionPolicyFile string
 	CodeScannerType      string
+
+	// GuardRail escape hatches (issue #43). When any of these is non-zero
+	// the flag-only path constructs a GuardRailConfig; an entirely-zero
+	// trio leaves config.GuardRail nil so the factory installs the
+	// no-op "none" guard. Composite stages are not surfaced as flags —
+	// they require a --config file because flag syntax cannot express
+	// per-stage phase restrictions.
+	GuardRailType     string
+	GuardRailEndpoint string
+	GuardRailFailOpen bool
 }
 
 // buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
@@ -149,6 +159,18 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	}
 	if opts.CodeScannerType != "" {
 		config.CodeScanner = &types.CodeScannerConfig{Type: opts.CodeScannerType}
+	}
+
+	// GuardRail (issue #43). Only construct the sub-config when the caller
+	// touched at least one of the three GuardRail flags; an entirely-empty
+	// trio leaves config.GuardRail nil and the factory installs the
+	// no-op "none" guard. Composite stages can only be set via --config.
+	if opts.GuardRailType != "" || opts.GuardRailEndpoint != "" || opts.GuardRailFailOpen {
+		config.GuardRail = &types.GuardRailConfig{
+			Type:     opts.GuardRailType,
+			Endpoint: opts.GuardRailEndpoint,
+			FailOpen: opts.GuardRailFailOpen,
+		}
 	}
 
 	applyModeDefaults(config)
@@ -292,6 +314,14 @@ func init() {
 	f.String("container-runtime", "", "OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty means engine default (typically runc). Requires the runtime to be registered with the host Docker/Podman daemon — see docs/safety-rings.md.")
 	f.String("permission-policy-file", "", "Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and --permission-policy is unset elsewhere, also implies permissionPolicy.type=policy-engine. See examples/policies/ for starters.")
 	f.String("code-scanner", "", "CodeScanner type: none, patterns, semgrep, composite. Composite requires --config (codeScanner.scanners). Empty defers to the mode-aware default (patterns for execution, none for read-only modes).")
+
+	// GuardRail flags (issue #43). The composite layering used by the
+	// operator escape hatch requires per-stage phase restrictions, which
+	// flag syntax cannot express; composite stacks therefore round-trip
+	// only through --config (see docs/guardrails.md).
+	f.String("guardrail", "", "GuardRail type: none, granite-guardian, composite, cloud-judge. Composite requires --config (guardRail.stages).")
+	f.String("guardrail-endpoint", "", "Endpoint URL for the granite-guardian or cloud-judge adapter.")
+	f.Bool("guardrail-fail-open", false, "When true, transport errors / timeouts produce VerdictAllow with a security event rather than blocking. Default false (fail closed).")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -450,6 +480,36 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			cfg.CodeScanner = &types.CodeScannerConfig{Type: typ}
 		}
 	}
+	// GuardRail (issue #43). Each flag is independently overrideable so
+	// callers can fine-tune one field (e.g. swap the endpoint) without
+	// having to restate the rest of the file's GuardRail block. The "set
+	// type to empty string" convention clears the GuardRail entirely,
+	// matching the --code-scanner pattern above.
+	if changed("guardrail") {
+		typ, _ := f.GetString("guardrail")
+		if typ == "" {
+			cfg.GuardRail = nil
+		} else {
+			if cfg.GuardRail == nil {
+				cfg.GuardRail = &types.GuardRailConfig{}
+			}
+			cfg.GuardRail.Type = typ
+		}
+	}
+	if changed("guardrail-endpoint") {
+		endpoint, _ := f.GetString("guardrail-endpoint")
+		if cfg.GuardRail == nil {
+			cfg.GuardRail = &types.GuardRailConfig{}
+		}
+		cfg.GuardRail.Endpoint = endpoint
+	}
+	if changed("guardrail-fail-open") {
+		failOpen, _ := f.GetBool("guardrail-fail-open")
+		if cfg.GuardRail == nil {
+			cfg.GuardRail = &types.GuardRailConfig{}
+		}
+		cfg.GuardRail.FailOpen = failOpen
+	}
 	return nil
 }
 
@@ -530,6 +590,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	containerRuntime, _ := f.GetString("container-runtime")
 	permissionPolicyFile, _ := f.GetString("permission-policy-file")
 	codeScannerType, _ := f.GetString("code-scanner")
+	guardRailType, _ := f.GetString("guardrail")
+	guardRailEndpoint, _ := f.GetString("guardrail-endpoint")
+	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
 
 	var queryParams map[string]string
 	for _, entry := range queryParamRaw {
@@ -580,6 +643,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		ContainerRuntime:     containerRuntime,
 		PermissionPolicyFile: permissionPolicyFile,
 		CodeScannerType:      codeScannerType,
+		GuardRailType:        guardRailType,
+		GuardRailEndpoint:    guardRailEndpoint,
+		GuardRailFailOpen:    guardRailFailOpen,
 	})
 
 	if err := types.ValidateRunConfig(config); err != nil {
