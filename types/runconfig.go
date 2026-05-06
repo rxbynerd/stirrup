@@ -40,8 +40,8 @@ type RunConfig struct {
 	SessionName string `json:"sessionName,omitempty"` // human-readable label; never injected into the model's context
 
 	// What to do
-	Prompt         string            `json:"prompt"`
-	DynamicContext map[string]string `json:"dynamicContext,omitempty"`
+	Prompt         string                         `json:"prompt"`
+	DynamicContext map[string]DynamicContextValue `json:"dynamicContext,omitempty"`
 
 	// Component selections
 	Provider         ProviderConfig            `json:"provider"`
@@ -92,6 +92,63 @@ type RunConfig struct {
 	// ValidateRunConfig fills in a sensible default per mode
 	// (patterns for execution, none for read-only modes).
 	CodeScanner *CodeScannerConfig `json:"codeScanner,omitempty"`
+
+	// SensitiveData, when explicitly true, declares that this run will
+	// expose the agent to sensitive data inside its conversation. It is
+	// the operator-supplied signal for the "sensitive data" leg of the
+	// Rule of Two. Provider/VCS/MCP API keys are deliberately *not*
+	// inferred as sensitive data: the harness keeps those out of the
+	// agent's reach (env-allowlist on run_command, log scrubbing,
+	// SecretStore deferred resolution). What "sensitive data" really
+	// means for the rule is data the agent itself can read — and only
+	// the operator can know that at config time. Per-entry sensitivity
+	// can also be declared via DynamicContextValue.Sensitive; either
+	// signal trips the rule's sensitive-data leg.
+	//
+	// Pointer so unset is wire-distinguishable from explicit false: the
+	// secure default in v1 is "not sensitive unless declared". Future
+	// work (#42 follow-up tracking GuardRail integration) may compute
+	// this at runtime from observed conversation content.
+	SensitiveData *bool `json:"sensitiveData,omitempty"`
+}
+
+// DynamicContextValue is a single dynamic-context value with metadata.
+// The control plane / operator populates these from outside the immutable
+// prompt — issue bodies, PR comments, retrieved documents, customer
+// records pulled in for triage, etc. Every entry is treated as
+// untrusted by the prompt builder (wrapped in <untrusted_context>);
+// the Sensitive flag additionally marks an entry as carrying private
+// data that the Rule of Two should weigh.
+type DynamicContextValue struct {
+	// Value is the entry text. Sanitization (XML/HTML tag stripping,
+	// 50 KB length cap) runs over this field before it reaches the
+	// prompt builder.
+	Value string `json:"value"`
+
+	// Sensitive, when true, marks the entry as carrying data the Rule
+	// of Two should treat as the "sensitive data" leg. Defaults to
+	// false. The flag is per-entry rather than global so an operator
+	// can mix non-sensitive context (a public README) with sensitive
+	// context (a customer record) in a single run.
+	Sensitive bool `json:"sensitive,omitempty"`
+}
+
+// DynamicContextValues projects DynamicContext to a {key: Value} map
+// for downstream consumers (PromptBuilder, Sanitize, PolicyEngine
+// Cedar context) that only need the string content. The Sensitive
+// flag is preserved on the original RunConfig.DynamicContext map for
+// components that need it (Rule of Two, future GuardRail).
+//
+// Returns nil for nil/empty input.
+func (rc *RunConfig) DynamicContextValues() map[string]string {
+	if rc == nil || len(rc.DynamicContext) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(rc.DynamicContext))
+	for k, e := range rc.DynamicContext {
+		out[k] = e.Value
+	}
+	return out
 }
 
 // RuleOfTwoConfig configures the Rule-of-Two structural invariant. The
@@ -788,33 +845,39 @@ func ruleOfTwoUntrustedInput(config *RunConfig) bool {
 	return false
 }
 
-// ruleOfTwoSensitiveData reports whether the run carries credentials
-// or other sensitive data the agent could exfiltrate.
+// ruleOfTwoSensitiveData reports whether the run carries sensitive
+// data inside the agent's reach.
 //
-// "Allowlisted secret env vars" interpretation: ExecutorConfig has no
-// dedicated env-allowlist field today, and the brief is explicit that
-// we must not invent one in this wave. We therefore inspect the
-// secret references that are actually carried in RunConfig — APIKeyRef
-// fields on the default provider, the named providers map, the VCS
-// backend, and MCP servers — and treat any whose name matches the
-// secret-name heuristic (*KEY*, *TOKEN*, *SECRET*, *PASSWORD*, case-
-// insensitive) as a "sensitive env var" for Rule-of-Two purposes. Any
-// secret://ssm:// reference also triggers this flag, regardless of
-// name, because SSM-backed values are by definition real secrets.
+// The semantic alignment: "sensitive data" in the Agents Rule of Two
+// means data the agent itself can see — content inside its
+// conversation context, files in its workspace, dynamic context
+// supplied by the control plane. It deliberately does NOT mean
+// host-level operational secrets (provider/VCS/MCP API keys), because
+// the harness already keeps those out of the agent's reach: the
+// run_command env-allowlist excludes API keys, the log scrubber
+// redacts them, and SecretStore resolves them only at provider call
+// time so they never enter the conversation. Treating those keys as
+// "sensitive data" would make this leg trip on every working config
+// and degrade the rule to "rule of one".
+//
+// Two operator-supplied signals trip the leg today:
+//
+//   - RunConfig.SensitiveData explicitly set to true. Operator
+//     declares the run will work with sensitive data.
+//   - Any DynamicContextValue with Sensitive == true. Operator marks
+//     specific entries (customer record, private doc) as sensitive.
+//
+// The intent of having two signals is granularity: the SensitiveData
+// flag covers cases where sensitivity comes from somewhere outside
+// dynamic context (workspace, future MCP-resourced data, etc.); the
+// per-entry flag covers the common case where the sensitivity rides
+// the dynamic context block.
 func ruleOfTwoSensitiveData(config *RunConfig) bool {
-	if isSensitiveSecretRef(config.Provider.APIKeyRef) {
+	if config.SensitiveData != nil && *config.SensitiveData {
 		return true
 	}
-	for _, prov := range config.Providers {
-		if isSensitiveSecretRef(prov.APIKeyRef) {
-			return true
-		}
-	}
-	if config.Executor.VcsBackend != nil && isSensitiveSecretRef(config.Executor.VcsBackend.APIKeyRef) {
-		return true
-	}
-	for _, server := range config.Tools.MCPServers {
-		if isSensitiveSecretRef(server.APIKeyRef) {
+	for _, entry := range config.DynamicContext {
+		if entry.Sensitive {
 			return true
 		}
 	}
@@ -857,30 +920,6 @@ func isToolEnabled(enabled []string, name string) bool {
 		}
 	}
 	return false
-}
-
-// isSensitiveSecretRef reports whether the supplied secret reference
-// names a credential the Rule-of-Two should treat as sensitive. SSM
-// references are always sensitive; env/file refs are sensitive only
-// when the referenced name matches one of the conventional secret
-// substrings (key/token/secret/password, case-insensitive).
-func isSensitiveSecretRef(ref string) bool {
-	if ref == "" {
-		return false
-	}
-	const prefix = "secret://"
-	rest := ref
-	if strings.HasPrefix(rest, prefix) {
-		rest = rest[len(prefix):]
-	}
-	if strings.HasPrefix(rest, "ssm://") || strings.HasPrefix(rest, "ssm:///") {
-		return true
-	}
-	upper := strings.ToUpper(rest)
-	return strings.Contains(upper, "KEY") ||
-		strings.Contains(upper, "TOKEN") ||
-		strings.Contains(upper, "SECRET") ||
-		strings.Contains(upper, "PASSWORD")
 }
 
 // applyCodeScannerDefault fills CodeScanner with a sensible default

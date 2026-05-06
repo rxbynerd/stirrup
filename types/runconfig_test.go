@@ -1126,7 +1126,10 @@ func boolRef(b bool) *bool { return &b }
 // turned on independently:
 //
 //   - holdsUntrusted is enabled by populating DynamicContext.
-//   - holdsSensitive is enabled by setting a secret-named APIKeyRef.
+//   - holdsSensitive is enabled via the explicit RunConfig.SensitiveData
+//     declaration. Operational secret references (provider/VCS/MCP API
+//     keys) deliberately do NOT trip this leg — see ruleOfTwoSensitiveData
+//     for rationale.
 //   - canCommExternal is enabled by setting a non-"none" NetworkConfig
 //     (so we don't have to drag in the Tools.BuiltIn semantics, which
 //     are exercised separately in the dedicated table-driven test).
@@ -1144,10 +1147,10 @@ func ruleOfTwoConfig(untrusted, sensitive, external bool, policy string) *RunCon
 		Tools:            ToolsConfig{BuiltIn: []string{"read_file"}},
 	}
 	if untrusted {
-		c.DynamicContext = map[string]string{"issue_body": "untrusted text"}
+		c.DynamicContext = map[string]DynamicContextValue{"issue_body": {Value: "untrusted text"}}
 	}
 	if sensitive {
-		c.Provider.APIKeyRef = "secret://ANTHROPIC_API_KEY"
+		c.SensitiveData = boolRef(true)
 	}
 	if external {
 		c.Executor = ExecutorConfig{Network: &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}}}
@@ -1392,48 +1395,120 @@ func TestValidateRunConfig_RuleOfTwo_OneOrZeroPasses(t *testing.T) {
 	}
 }
 
-// TestValidateRunConfig_RuleOfTwo_SSMRefTriggersSensitive verifies that a
-// secret://ssm:// reference is treated as sensitive data even when the
-// parameter name does not match the secret-name heuristic. SSM-backed
-// values are by convention real secrets.
-func TestValidateRunConfig_RuleOfTwo_SSMRefTriggersSensitive(t *testing.T) {
+// TestValidateRunConfig_RuleOfTwo_OperationalSecretRefDoesNotTrigger pins
+// the deliberate semantic that operational secret references — provider
+// API keys, VCS backend keys, MCP server keys, including SSM-backed ones
+// — do NOT trip the sensitive-data leg of the Rule of Two. The harness
+// keeps these out of the agent's reach (run_command env-allowlist, log
+// scrubbing, SecretStore deferred resolution), so they are not "data the
+// agent has access to" in the rule's sense. The opposite would degrade
+// the rule to "rule of one" because every working config has a provider
+// API key.
+//
+// This test combines untrusted-input (DynamicContext) + external-comm
+// (web_fetch) with a worst-case secret reference; the run is expected
+// to validate cleanly because no sensitive-data signal is set.
+func TestValidateRunConfig_RuleOfTwo_OperationalSecretRefDoesNotTrigger(t *testing.T) {
+	timeout := 60
+	cases := []struct {
+		name      string
+		apiKeyRef string
+	}{
+		{"secret-named env", "secret://ANTHROPIC_API_KEY"},
+		{"secret-named ssm", "secret://ssm:///prod/anthropic"},
+		{"non-secret-named env", "secret://CONFIG_PATH"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &RunConfig{
+				Mode:             "execution",
+				Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: tc.apiKeyRef},
+				MaxTurns:         20,
+				Timeout:          &timeout,
+				PermissionPolicy: PermissionPolicyConfig{Type: "deny-side-effects"},
+				DynamicContext:   map[string]DynamicContextValue{"x": {Value: "y"}}, // untrusted
+				Tools:            ToolsConfig{BuiltIn: []string{"web_fetch"}},       // external
+			}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("operational secret reference must not trip the sensitive-data leg, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_RuleOfTwo_ExplicitSensitiveDataTriggers verifies
+// the operator-supplied RunConfig.SensitiveData flag trips the leg.
+// Combined with DynamicContext (untrusted) and web_fetch (external),
+// this should produce the all-three rejection.
+func TestValidateRunConfig_RuleOfTwo_ExplicitSensitiveDataTriggers(t *testing.T) {
 	timeout := 60
 	c := &RunConfig{
 		Mode:             "execution",
-		Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ssm:///prod/anthropic"},
+		Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 		MaxTurns:         20,
 		Timeout:          &timeout,
 		PermissionPolicy: PermissionPolicyConfig{Type: "deny-side-effects"},
-		DynamicContext:   map[string]string{"x": "y"}, // untrusted
-		Tools:            ToolsConfig{BuiltIn: []string{"web_fetch"}},
+		DynamicContext:   map[string]DynamicContextValue{"x": {Value: "y"}}, // untrusted
+		Tools:            ToolsConfig{BuiltIn: []string{"web_fetch"}},       // external
+		SensitiveData:    boolRef(true),                                     // explicit
 	}
 	err := ValidateRunConfig(c)
 	if err == nil {
-		t.Fatal("expected SSM ref to trigger Rule-of-Two rejection alongside dynamicContext + web_fetch")
+		t.Fatal("explicit SensitiveData must trip the Rule-of-Two rejection alongside untrusted+external")
 	}
 	if !strings.Contains(err.Error(), "Rule of Two") {
 		t.Errorf("expected Rule-of-Two error, got: %v", err)
 	}
 }
 
-// TestValidateRunConfig_RuleOfTwo_NonSecretRefDoesNotTrigger verifies the
-// secret-name heuristic ignores APIKeyRef values that don't include any
-// of the secret-y substrings. A reference like "secret://CONFIG_PATH"
-// is still a secret reference structurally but its name carries no
-// signal that it's a credential, so we don't treat it as sensitive.
-func TestValidateRunConfig_RuleOfTwo_NonSecretRefDoesNotTrigger(t *testing.T) {
+// TestValidateRunConfig_RuleOfTwo_SensitiveDynamicContextEntryTriggers
+// verifies a single per-entry Sensitive flag on a DynamicContext entry
+// trips the leg. The motivating use case: a triage agent given a
+// customer record block that's marked sensitive while other entries
+// (issue body, repo metadata) remain non-sensitive.
+func TestValidateRunConfig_RuleOfTwo_SensitiveDynamicContextEntryTriggers(t *testing.T) {
 	timeout := 60
 	c := &RunConfig{
 		Mode:             "execution",
-		Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: "secret://CONFIG_PATH"},
+		Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns:         20,
+		Timeout:          &timeout,
+		PermissionPolicy: PermissionPolicyConfig{Type: "deny-side-effects"},
+		DynamicContext: map[string]DynamicContextValue{
+			"issue_body":      {Value: "non-sensitive"},
+			"customer_record": {Value: "private", Sensitive: true},
+		},
+		Tools: ToolsConfig{BuiltIn: []string{"web_fetch"}},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("a single sensitive DynamicContext entry must trip the Rule-of-Two rejection alongside untrusted+external")
+	}
+	if !strings.Contains(err.Error(), "Rule of Two") {
+		t.Errorf("expected Rule-of-Two error, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive pins the
+// out-of-the-box behavior: with neither RunConfig.SensitiveData nor any
+// sensitive DynamicContext entry, the sensitive-data leg is false and
+// a config with untrusted + external (which is what a bare
+// `stirrup harness --prompt "x"` produces) validates cleanly. This is
+// the regression guard for the original issue: PR #51's heuristic was
+// always tripping sensitive-data on a bare invocation.
+func TestValidateRunConfig_RuleOfTwo_DefaultIsNotSensitive(t *testing.T) {
+	timeout := 60
+	c := &RunConfig{
+		Mode:             "execution",
+		Provider:         ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 		MaxTurns:         20,
 		Timeout:          &timeout,
 		PermissionPolicy: PermissionPolicyConfig{Type: "allow-all"},
-		DynamicContext:   map[string]string{"x": "y"},                 // untrusted
-		Tools:            ToolsConfig{BuiltIn: []string{"web_fetch"}}, // external + extra untrusted
+		DynamicContext:   map[string]DynamicContextValue{"issue_body": {Value: "y"}}, // untrusted
+		Tools:            ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}}, // external
 	}
 	if err := ValidateRunConfig(c); err != nil {
-		t.Fatalf("non-secret-named APIKeyRef should not trigger sensitive flag, got: %v", err)
+		t.Fatalf("default (no SensitiveData, no sensitive entry) must not trip the leg, got: %v", err)
 	}
 }
 
@@ -1450,7 +1525,8 @@ func TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn(t *testing.T)
 		MaxTurns:         20,
 		Timeout:          &timeout,
 		PermissionPolicy: PermissionPolicyConfig{Type: "allow-all"},
-		DynamicContext:   map[string]string{"x": "y"},
+		DynamicContext:   map[string]DynamicContextValue{"x": {Value: "y"}},
+		SensitiveData:    boolRef(true),
 		// Explicit list excludes web_fetch / run_command / mcp, and the
 		// executor has no network config — no external-communication leg.
 		Tools: ToolsConfig{BuiltIn: []string{"read_file", "list_directory"}},

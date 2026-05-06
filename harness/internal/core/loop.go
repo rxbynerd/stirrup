@@ -97,8 +97,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Start heartbeat emission so the control plane knows we are alive.
 	stopHeartbeat := l.startHeartbeat(runCtx, 30*time.Second)
 
-	// Build the system prompt.
-	dynamicContext := config.DynamicContext
+	// Build the system prompt. The Rule-of-Two-bearing entry shape
+	// (DynamicContextValue) carries a per-entry Sensitive flag the
+	// validator and any future GuardRail wiring read; downstream
+	// consumers (Sanitize, PromptBuilder) only need the string content,
+	// so we project to a values map here at the boundary.
+	dynamicContext := config.DynamicContextValues()
 	if len(dynamicContext) > 0 {
 		var events []security.DynamicContextSanitizationEvent
 		dynamicContext, events = security.SanitizeDynamicContext(dynamicContext)

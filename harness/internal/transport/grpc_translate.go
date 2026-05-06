@@ -79,7 +79,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		RunID:          pc.RunId,
 		Mode:           pc.Mode,
 		Prompt:         pc.Prompt,
-		DynamicContext: pc.DynamicContext,
+		DynamicContext: dynamicContextFromProto(pc.DynamicContext),
 		MaxTurns:       int(pc.MaxTurns),
 	}
 
@@ -148,6 +148,14 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		// the unset/false distinction here — the validator depends on it
 		// to apply the secure default (enforce) when the field is omitted.
 		rc.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: pc.RuleOfTwo.Enforce}
+	}
+	if pc.SensitiveData != nil {
+		// proto3 `optional bool`, generated as *bool. Preserve the
+		// unset/false distinction so the validator's secure default
+		// ("not sensitive unless declared") applies when the field is
+		// omitted on the wire.
+		v := *pc.SensitiveData
+		rc.SensitiveData = &v
 	}
 	if pc.CodeScanner != nil {
 		rc.CodeScanner = &types.CodeScannerConfig{
@@ -280,6 +288,28 @@ func verifierConfigFromProto(pc *pb.VerifierConfig) types.VerifierConfig {
 		vc.Verifiers = append(vc.Verifiers, verifierConfigFromProto(sub))
 	}
 	return vc
+}
+
+// dynamicContextFromProto translates the wire-format dynamic context
+// (map[string]*DynamicContextValue) to the internal entry-typed map.
+// nil-safe: returns a nil map when the wire payload is empty so an
+// empty inbound message does not allocate.
+func dynamicContextFromProto(pc map[string]*pb.DynamicContextValue) map[string]types.DynamicContextValue {
+	if len(pc) == 0 {
+		return nil
+	}
+	out := make(map[string]types.DynamicContextValue, len(pc))
+	for k, v := range pc {
+		if v == nil {
+			out[k] = types.DynamicContextValue{}
+			continue
+		}
+		out[k] = types.DynamicContextValue{
+			Value:     v.Value,
+			Sensitive: v.Sensitive,
+		}
+	}
+	return out
 }
 
 func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {

@@ -422,12 +422,14 @@ func captureSecLogger(t *testing.T) (*security.SecurityLogger, *bytes.Buffer) {
 func TestEmitRuleOfTwoEvents_AllThreeWithOverrideEmitsDisabled(t *testing.T) {
 	sec, buf := captureSecLogger(t)
 	enforce := false
+	sensitive := true
 	cfg := &types.RunConfig{
 		Mode:             "execution",
 		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
 		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
-		DynamicContext:   map[string]string{"x": "y"},
+		DynamicContext:   map[string]types.DynamicContextValue{"x": {Value: "y"}},
+		SensitiveData:    &sensitive,
 		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
 	}
 
@@ -443,12 +445,14 @@ func TestEmitRuleOfTwoEvents_AllThreeWithoutOverrideStaysSilent(t *testing.T) {
 	// All three flags + ask-upstream is legal without an explicit
 	// override; we should NOT emit rule_of_two_disabled in that case.
 	sec, buf := captureSecLogger(t)
+	sensitive := true
 	cfg := &types.RunConfig{
 		Mode:             "research",
 		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "ask-upstream"},
 		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
-		DynamicContext:   map[string]string{"x": "y"},
+		DynamicContext:   map[string]types.DynamicContextValue{"x": {Value: "y"}},
+		SensitiveData:    &sensitive,
 	}
 
 	emitRuleOfTwoEvents(cfg, sec)
@@ -465,12 +469,13 @@ func TestEmitRuleOfTwoEvents_TwoOfThreeEmitsWarning(t *testing.T) {
 	// untrusted+sensitive pair was tested, so a regression in the
 	// untrusted+external or sensitive+external branches would slip
 	// past CI silently.
+	sensitive := true
 	cases := []struct {
-		name    string
-		cfg     *types.RunConfig
-		wantU   bool
-		wantS   bool
-		wantE   bool
+		name  string
+		cfg   *types.RunConfig
+		wantU bool
+		wantS bool
+		wantE bool
 	}{
 		{
 			name: "untrusted+sensitive",
@@ -479,21 +484,20 @@ func TestEmitRuleOfTwoEvents_TwoOfThreeEmitsWarning(t *testing.T) {
 				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
 				Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
-				DynamicContext:   map[string]string{"x": "y"},
+				DynamicContext:   map[string]types.DynamicContextValue{"x": {Value: "y"}},
+				SensitiveData:    &sensitive,
 			},
 			wantU: true, wantS: true, wantE: false,
 		},
 		{
 			name: "untrusted+external",
 			cfg: &types.RunConfig{
-				Mode: "execution",
-				// APIKeyRef referencing a name without
-				// key/token/secret/password and not via SSM does not
-				// trip ruleOfTwoSensitiveData; use a placeholder.
-				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://CONFIG_VALUE"},
+				Mode:             "execution",
+				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
-				// web_fetch = untrusted AND external; explicit BuiltIn
-				// list so APIKeyRef stays the only sensitivity vector.
+				// web_fetch = untrusted AND external. SensitiveData
+				// unset so the sensitive leg stays false — the API key
+				// reference name no longer counts.
 				Tools: types.ToolsConfig{BuiltIn: []string{"web_fetch"}},
 			},
 			wantU: true, wantS: false, wantE: true,
@@ -504,9 +508,11 @@ func TestEmitRuleOfTwoEvents_TwoOfThreeEmitsWarning(t *testing.T) {
 				Mode:             "execution",
 				Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
-				// run_command via bridge = external comm; sensitive APIKeyRef.
-				// No web_fetch / DynamicContext / MCP servers ⇒ not untrusted.
-				Tools: types.ToolsConfig{BuiltIn: []string{"run_command"}},
+				// run_command via bridge = external comm; SensitiveData
+				// declares the sensitive leg explicitly. No web_fetch /
+				// DynamicContext / MCP servers ⇒ not untrusted.
+				Tools:         types.ToolsConfig{BuiltIn: []string{"run_command"}},
+				SensitiveData: &sensitive,
 				Executor: types.ExecutorConfig{
 					Type: "container", Image: "x",
 					Network: &types.NetworkConfig{Mode: "bridge"},
@@ -556,12 +562,14 @@ func assertPayloadBool(t *testing.T, out, key string, want bool) {
 func TestEmitRuleOfTwoEvents_DisabledPayloadShape(t *testing.T) {
 	sec, buf := captureSecLogger(t)
 	enforce := false
+	sensitive := true
 	cfg := &types.RunConfig{
 		Mode:             "execution",
 		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
 		Tools:            types.ToolsConfig{BuiltIn: []string{"web_fetch", "run_command"}},
-		DynamicContext:   map[string]string{"x": "y"},
+		DynamicContext:   map[string]types.DynamicContextValue{"x": {Value: "y"}},
+		SensitiveData:    &sensitive,
 		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
 	}
 	emitRuleOfTwoEvents(cfg, sec)
