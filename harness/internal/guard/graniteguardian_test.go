@@ -277,6 +277,89 @@ func TestGraniteGuardianMalformedBodyReturnsError(t *testing.T) {
 	if !errors.Is(err, ErrParseFailed) {
 		t.Fatalf("error chain missing ErrParseFailed: %v", err)
 	}
+	// Path-not-truncation: a malformed body without finish_reason="length"
+	// must NOT be reported as ErrResponseTruncated, otherwise operators
+	// chase a max_tokens red herring for an unrelated bug.
+	if errors.Is(err, ErrResponseTruncated) {
+		t.Fatalf("malformed body should not be classified as truncation: %v", err)
+	}
+}
+
+// truncatingFakeServer mirrors newFakeGraniteServer but emits the optional
+// finish_reason field so we can exercise the truncation detector. Kept
+// as a separate helper rather than expanding newFakeGraniteServer so the
+// existing tests stay terse — the OpenAI-compatible response is well-
+// defined; only this path needs the field.
+func newTruncatingFakeServer(t *testing.T, content, finishReason string) *fakeServer {
+	t.Helper()
+	fs := &fakeServer{}
+	fs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&fs.requests, 1)
+		body, _ := io.ReadAll(r.Body)
+		fs.lastBody = body
+		fs.lastURL = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{
+					"message":       map[string]any{"role": "assistant", "content": content},
+					"finish_reason": finishReason,
+				},
+			},
+		})
+	}))
+	t.Cleanup(fs.srv.Close)
+	return fs
+}
+
+func TestGraniteGuardianTruncatedResponseSurfacesActionableError(t *testing.T) {
+	// LM Studio (and other DeepSeek-style runtimes) routes the model's
+	// reasoning into a separate reasoning_content field. When max_tokens
+	// is too tight the budget is exhausted before the <score> head fires,
+	// content arrives empty, and finish_reason is "length". The adapter
+	// must recognise this and surface ErrResponseTruncated so operators
+	// know to raise the budget rather than debug the parser. The error
+	// must still chain ErrParseFailed for any caller using errors.Is on
+	// the broader category.
+	fs := newTruncatingFakeServer(t, "", "length")
+	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	_, err = g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
+	if err == nil {
+		t.Fatalf("expected ErrResponseTruncated, got nil")
+	}
+	if !errors.Is(err, ErrResponseTruncated) {
+		t.Fatalf("error chain missing ErrResponseTruncated: %v", err)
+	}
+	// Backward compatibility: callers checking the broader parse-failed
+	// category must still match. ErrResponseTruncated wraps ErrParseFailed
+	// precisely so existing fail-closed paths in the loop continue to
+	// behave identically without code changes.
+	if !errors.Is(err, ErrParseFailed) {
+		t.Fatalf("ErrResponseTruncated must wrap ErrParseFailed for backward compat: %v", err)
+	}
+}
+
+func TestGraniteGuardianTruncationOnlyWhenScoreMissing(t *testing.T) {
+	// finish_reason="length" alone is not a failure — when the model
+	// emits the score before the budget runs out, the verdict is valid
+	// even if generation was capped immediately afterwards. Only treat
+	// truncation as the cause when the score head did not fire.
+	fs := newTruncatingFakeServer(t, "<score>no</score>", "length")
+	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	d, err := g.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if d.Verdict != VerdictAllow {
+		t.Fatalf("verdict = %q, want allow", d.Verdict)
+	}
 }
 
 func TestGraniteGuardianDefaultPhaseCriteria(t *testing.T) {

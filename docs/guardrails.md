@@ -271,6 +271,33 @@ For non-GPU operators, use the `cloud-judge` adapter instead. It
 reuses the Anthropic adapter with Haiku as the classifier model
 and adds no new dependencies.
 
+### LM Studio and other DeepSeek-style runtimes
+
+vLLM is the reference runtime: it honours Granite Guardian's
+`<no-think>` directive verbatim and emits the full classifier output
+into the OpenAI `content` field. Other OpenAI-compatible runtimes —
+notably LM Studio, but also any backend modelled after the DeepSeek
+chat template — behave differently in two ways that matter for the
+adapter:
+
+1. **`<no-think>` is silently ignored.** The underlying model still
+   reasons before emitting `<score>`, typically burning ~80 tokens of
+   reasoning. The default `noThinkMaxTokens` budget (256) is sized to
+   absorb this with margin; if you see `ErrResponseTruncated` errors
+   in operator logs, bump the budget further or move to vLLM.
+2. **Reasoning is routed to a separate `reasoning_content` field.**
+   The score itself still arrives in `content`, so the adapter parses
+   correctly — but the tokens spent on reasoning are charged against
+   the same `max_tokens` budget. This is the failure mode the
+   ErrResponseTruncated detector exists to surface: empty `content` +
+   `finish_reason: "length"` is the unmistakable fingerprint.
+
+If you intend to run guardrails on a non-vLLM runtime in production,
+either run with `Think: true` (uses the larger 512-token budget and
+stops feeling like a knife edge), or characterise your runtime's
+typical reasoning cost and set `Think: false` only when you are
+confident the score head can fire under the configured budget.
+
 ## Operator escape hatch
 
 The composite primitive lets you layer additional adapters in front

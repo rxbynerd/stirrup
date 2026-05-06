@@ -46,11 +46,20 @@ const (
 	// would dominate per-turn latency if classified.
 	defaultMinChunkChars = 256
 
-	// noThinkMaxTokens caps the response to a handful of tokens — enough
-	// for "<score>yes</score>" plus margin. Generous because some vLLM
-	// configurations include leading whitespace or a stop-token's worth
-	// of slack before terminating.
-	noThinkMaxTokens = 32
+	// noThinkMaxTokens caps the response in no-think mode. Originally 32
+	// (just enough for "<score>yes</score>" plus margin) on the assumption
+	// that <no-think> would be honoured by every OpenAI-compatible runtime.
+	// Empirically that assumption does not hold: LM Studio (and any
+	// DeepSeek-style runtime that routes reasoning into a separate
+	// `reasoning_content` field) ignores the <no-think> directive and the
+	// underlying model still emits ~80 tokens of reasoning before the
+	// <score> head fires. With a 32-token cap finish_reason fires "length"
+	// and content arrives empty — the parser then misreports it as an
+	// ErrParseFailed, which then becomes a fail-closed deny. 256 absorbs
+	// observed reasoning traces with comfortable margin while still being
+	// half the think-mode budget; a fully no-think runtime (e.g. vLLM with
+	// the official Granite Guardian template) only burns ~10 of these.
+	noThinkMaxTokens = 256
 
 	// thinkMaxTokens accommodates a short reasoning trace inside
 	// <think>...</think> followed by the score. 512 is empirically enough
@@ -84,6 +93,16 @@ var scoreRegex = regexp.MustCompile(`(?is)<score>\s*(yes|no)\s*</score>`)
 // Chunk 4) decide whether parse failures map to fail-open allows or
 // run-aborting denies.
 var ErrParseFailed = errors.New("granite-guardian: failed to parse score")
+
+// ErrResponseTruncated is returned when the classifier's response was cut
+// off by max_tokens before the <score> head could emit (finish_reason ==
+// "length"). It wraps ErrParseFailed so existing `errors.Is(err,
+// ErrParseFailed)` callers still match, but a more specific check —
+// `errors.Is(err, ErrResponseTruncated)` — lets operators surface the
+// actionable remediation: bump the budget, switch runtimes, or move to
+// think mode. Without this distinction the operator sees a generic "no
+// <score> tag" and reaches for the parser when the parser is innocent.
+var ErrResponseTruncated = fmt.Errorf("%w: response truncated by max_tokens (finish_reason=length); raise no-think budget or switch to vLLM", ErrParseFailed)
 
 // ReasonSkippedMinChunk is the Decision.Reason set when PhasePreTurn
 // content is shorter than MinChunkChars and the adapter skips the call.
@@ -411,18 +430,27 @@ func buildGuardianPrompt(think bool, criteriaText, content string) string {
 // chatCompletionResponse is the minimal subset of the OpenAI-compatible
 // chat-completions response we need to extract the verdict. Unknown
 // fields are ignored by encoding/json so vLLM extensions ride through.
+//
+// FinishReason is captured because budget-truncated responses (LM Studio
+// and other DeepSeek-style runtimes ignoring <no-think> can burn the
+// whole budget on reasoning) arrive with empty content and look
+// indistinguishable from a model refusal — surfacing finish_reason lets
+// the parser produce an actionable error instead of a generic parse
+// failure.
 type chatCompletionResponse struct {
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 }
 
 // parseGuardianResponse returns true when the classifier said "yes"
 // (i.e. content matches the criterion → deny), false for "no", and
-// ErrParseFailed if no <score> tag was found. The fail-open decision is
-// loop policy, not adapter policy.
+// ErrParseFailed (or its more specific ErrResponseTruncated wrapper) if
+// no <score> tag was found. The fail-open decision is loop policy, not
+// adapter policy.
 func parseGuardianResponse(body io.Reader) (bool, error) {
 	var resp chatCompletionResponse
 	if err := json.NewDecoder(body).Decode(&resp); err != nil {
@@ -434,6 +462,16 @@ func parseGuardianResponse(body io.Reader) (bool, error) {
 	content := resp.Choices[0].Message.Content
 	match := scoreRegex.FindStringSubmatch(content)
 	if len(match) < 2 {
+		// finish_reason="length" means max_tokens was exhausted before the
+		// model finished. If the score head didn't fire, that's the cause —
+		// surface a typed error so the operator's first move is "raise the
+		// budget" rather than "debug the parser". Note: when the budget IS
+		// large enough, finish_reason can still be "length" but the score
+		// tag will be present in content; we only treat truncation as the
+		// cause when the score is also missing.
+		if strings.EqualFold(resp.Choices[0].FinishReason, "length") {
+			return false, ErrResponseTruncated
+		}
 		return false, fmt.Errorf("%w: no <score> tag in %q", ErrParseFailed, truncateForError(content, graniteErrSnippetMax))
 	}
 	return strings.EqualFold(strings.TrimSpace(match[1]), "yes"), nil
