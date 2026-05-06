@@ -21,6 +21,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -65,6 +66,7 @@ type AgenticLoop struct {
 	Verifier     verifier.Verifier
 	Permissions  permission.PermissionPolicy
 	Git          git.GitStrategy
+	GuardRail    guard.GuardRail
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
 	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)

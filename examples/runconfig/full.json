@@ -88,6 +88,15 @@
     "type": "patterns",
     "blockOnWarn": false
   },
+  "guardRail": {
+    "type": "granite-guardian",
+    "endpoint": "http://127.0.0.1:1234",
+    "model": "ibm-granite/granite-guardian-4.1-8b",
+    "phases": ["pre_turn", "pre_tool", "post_turn"],
+    "timeoutMs": 1500,
+    "minChunkChars": 256,
+    "failOpen": false
+  },
   "maxTurns": 20,
   "timeout": 600,
   "logLevel": "info"

@@ -92,6 +92,12 @@ type RunConfig struct {
 	// ValidateRunConfig fills in a sensible default per mode
 	// (patterns for execution, none for read-only modes).
 	CodeScanner *CodeScannerConfig `json:"codeScanner,omitempty"`
+
+	// GuardRail configures the LLM-based safety classifier that runs
+	// at three intervention points in the agentic loop. When nil, the
+	// factory installs a "none" guard so call sites never nil-check.
+	// See GuardRailConfig for the available implementations.
+	GuardRail *GuardRailConfig `json:"guardRail,omitempty"`
 }
 
 // RuleOfTwoConfig configures the Rule-of-Two structural invariant. The
@@ -130,6 +136,85 @@ type CodeScannerConfig struct {
 	// way to pin the scanner against supply-chain shifts (M7). Empty
 	// preserves the historical default of "auto".
 	SemgrepConfigPath string `json:"semgrepConfigPath,omitempty"`
+}
+
+// GuardRailConfig configures the LLM-based safety classifier that runs
+// at three intervention points in the agentic loop: pre-turn (untrusted
+// content before it enters context), pre-tool (model-proposed tool call
+// before dispatch), and post-turn (assistant text before it is forwarded
+// to the user). Defaults to "none" — guardrails are opt-in per run.
+//
+//   - "none"             — disable guardrails (default).
+//   - "granite-guardian" — Granite Guardian 4.1-8B served via vLLM
+//     using the OpenAI-compatible chat-completions API. Requires
+//     Endpoint.
+//   - "composite"        — sequential / parallel layering of stages.
+//     Each entry in Stages must be a non-composite type;
+//     composite-of-composite is rejected.
+//   - "cloud-judge"      — reuse an existing ProviderAdapter so
+//     environments that cannot run their own vLLM still have a guard
+//     option.
+type GuardRailConfig struct {
+	Type   string            `json:"type"`             // "none" | "granite-guardian" | "composite" | "cloud-judge"
+	Stages []GuardRailConfig `json:"stages,omitempty"` // composite only
+	Phases []string          `json:"phases,omitempty"` // restrict to phases; default = all three
+
+	// Composite layering mode is reserved for future use. v1 always
+	// wires composites as Sequential (first-deny-wins, last decision
+	// otherwise). The guard package exports a Parallel implementation
+	// but no config field selects it; embedders who need parallel
+	// composition must build the GuardRail tree manually.
+
+	// Adapter config (granite-guardian, cloud-judge):
+
+	// Endpoint is the URL of the classifier service. Must parse with
+	// net/url and use scheme http or https. A path component is allowed
+	// (vLLM typically serves at /v1/chat/completions); query strings are
+	// accepted because some gateways encode their own pin parameters.
+	// Required for "granite-guardian"; rejected for "none" / "composite"
+	// because those types have no transport of their own and a stale
+	// value would be silently ignored.
+	Endpoint string `json:"endpoint,omitempty"`
+
+	// Model identifies the classifier model (e.g.
+	// "ibm-granite/granite-guardian-4.1-8b"). Adapter-defined default
+	// applies when empty.
+	Model string `json:"model,omitempty"`
+
+	// Threshold is reserved; the Granite Guardian 4.1-8B head returns
+	// binary yes/no — this field has no effect in v1. Do not rely on
+	// it for admission control. Setting a non-zero value triggers a
+	// startup warning so operators are not silently misled.
+	Threshold float64 `json:"threshold,omitempty"`
+
+	// Criteria are built-in criterion identifiers (e.g. "harm",
+	// "jailbreak"). Adapter-defined per-phase default applies when
+	// empty.
+	Criteria []string `json:"criteria,omitempty"`
+
+	// CustomCriteria are natural-language criteria keyed by ID. IDs
+	// must conform to [a-z][a-z0-9_]* — the rule is wire-stable, kept
+	// loggable, and doesn't collide with proto field-name shapes.
+	CustomCriteria map[string]string `json:"customCriteria,omitempty"`
+
+	// Think requests reasoning traces (<think>...</think>) from the
+	// classifier when true. Pointer so unset is wire-distinguishable
+	// from explicit false — same rationale as RuleOfTwoConfig.Enforce.
+	Think *bool `json:"think,omitempty"`
+
+	// TimeoutMs is the per-call timeout in milliseconds. Range
+	// [50, 30000]. Zero means "use the adapter default".
+	TimeoutMs int `json:"timeoutMs,omitempty"`
+
+	// FailOpen, when true, converts transport errors and timeouts into
+	// VerdictAllow plus a security event rather than blocking. Default
+	// false (fail closed).
+	FailOpen bool `json:"failOpen,omitempty"`
+
+	// MinChunkChars is the pre-turn skip threshold: chunks shorter than
+	// this are not sent to the classifier. Range [0, 4096]. Zero
+	// disables skipping.
+	MinChunkChars int `json:"minChunkChars,omitempty"`
 }
 
 // Redact returns a copy of the RunConfig with secret references replaced
@@ -490,6 +575,45 @@ var validCompositeCodeScannerTypes = map[string]bool{
 	"semgrep":  true,
 }
 
+// validGuardRailTypes is the closed set of GuardRailConfig.Type values.
+var validGuardRailTypes = map[string]bool{
+	"none":             true,
+	"granite-guardian": true,
+	"composite":        true,
+	"cloud-judge":      true,
+}
+
+// validGuardRailPhases is the closed set of intervention points the
+// guard may be bound to.
+var validGuardRailPhases = map[string]bool{
+	"pre_turn":  true,
+	"pre_tool":  true,
+	"post_turn": true,
+}
+
+// validCompositeGuardRailTypes is the subset of guard types that may
+// appear inside Stages. composite-of-composite is excluded so the
+// config cannot recurse and so failure modes stay tractable for
+// operators reading a stack trace.
+var validCompositeGuardRailTypes = map[string]bool{
+	"none":             true,
+	"granite-guardian": true,
+	"cloud-judge":      true,
+}
+
+// guardRailCustomCriterionPattern restricts CustomCriteria keys to
+// snake_case identifiers. Keeps IDs loggable, OTel-attribute-safe, and
+// stable across the wire — the same constraint we apply elsewhere when
+// an operator-supplied string ends up as a metric or trace attribute.
+var guardRailCustomCriterionPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// guardRail bounds.
+const (
+	guardRailMinTimeoutMs     = 50
+	guardRailMaxTimeoutMs     = 30000
+	guardRailMaxMinChunkChars = 4096
+)
+
 var validBuiltInToolNames = map[string]bool{
 	"read_file":      true,
 	"write_file":     true,
@@ -644,6 +768,7 @@ func ValidateRunConfig(config *RunConfig) error {
 
 	validateRuleOfTwo(config, &errs)
 	validateCodeScannerConfig(config.CodeScanner, &errs)
+	validateGuardRailConfig(config.GuardRail, "guardRail", false, &errs)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
@@ -1083,5 +1208,190 @@ func validateOpenAIAuthFields(path string, cfg ProviderConfig, errs *[]string) {
 		if size := len(encoded.Encode()); size > maxQueryStringBytes {
 			*errs = append(*errs, fmt.Sprintf("%s.queryParams encoded form is %d bytes, exceeds %d byte cap", path, size, maxQueryStringBytes))
 		}
+	}
+}
+
+// validateGuardRailConfig enforces the closed-set Type, the
+// composite-only Stages field, range checks, and the cross-field
+// constraints. A nil config is valid (means "no guardrails", treated as
+// type=none by the factory). An empty Type is also valid for the same
+// reason — it lets operators omit guard config entirely without
+// scattering nil checks downstream.
+//
+//   - Type, when non-empty, must be in validGuardRailTypes;
+//     "composite" requires a non-empty Stages list.
+//   - Each Stages entry must validate as a non-composite
+//     GuardRailConfig (composite-of-composite is rejected so the
+//     config cannot recurse).
+//   - Phases values must be in {pre_turn, pre_tool, post_turn};
+//     duplicates are rejected.
+//   - Threshold ∈ [0.0, 1.0].
+//   - TimeoutMs, when set, ∈ [50, 30000].
+//   - MinChunkChars, when set, ∈ [0, 4096].
+//   - "granite-guardian" requires Endpoint.
+//   - Endpoint set with Type=none / Type=composite is rejected (a
+//     stale value would be silently ignored — the kind of footgun that
+//     bites at 03:00).
+//   - Endpoint, when set, must parse with net/url and use scheme
+//     http or https, with a non-empty host. A path is allowed (vLLM
+//     typically serves at /v1/chat/completions).
+//   - CustomCriteria keys must be non-empty and conform to
+//     [a-z][a-z0-9_]*. Each Criteria entry must be non-empty.
+//
+// nestedComposite is true when validating an entry inside Stages — the
+// closed set tightens to validCompositeGuardRailTypes for that call.
+func validateGuardRailConfig(cfg *GuardRailConfig, path string, nestedComposite bool, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+
+	// Empty type is treated as "none" by the factory; no further
+	// validation applies. An entirely-empty GuardRailConfig{} is a
+	// valid shape on the wire even though it's not useful in practice.
+	if cfg.Type == "" {
+		// Reject the case where the operator forgot the type but
+		// populated adapter fields — a typo we want to surface.
+		if guardRailHasAdapterFields(cfg) {
+			*errs = append(*errs, fmt.Sprintf("%s.type is required when other guardRail fields are set", path))
+		}
+		return
+	}
+
+	allowedTypes := validGuardRailTypes
+	if nestedComposite {
+		allowedTypes = validCompositeGuardRailTypes
+	}
+	if !allowedTypes[cfg.Type] {
+		*errs = append(*errs, fmt.Sprintf("unsupported %s.type %q", path, cfg.Type))
+		return
+	}
+
+	// composite vs leaf branching.
+	if cfg.Type == "composite" {
+		if len(cfg.Stages) == 0 {
+			*errs = append(*errs, fmt.Sprintf("%s.type \"composite\" requires a non-empty stages list", path))
+		}
+		// Composite has no transport of its own; adapter fields on it
+		// are silently ignored and almost always indicate the operator
+		// thought the field would propagate. Reject loudly.
+		if cfg.Endpoint != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.endpoint is not valid for type=composite", path))
+		}
+		for i, stage := range cfg.Stages {
+			subPath := fmt.Sprintf("%s.stages[%d]", path, i)
+			stage := stage // capture loop variable
+			validateGuardRailConfig(&stage, subPath, true, errs)
+		}
+	} else {
+		// Leaf types share the same field shape; per-type required
+		// fields and footguns are checked here.
+		switch cfg.Type {
+		case "none":
+			if cfg.Endpoint != "" {
+				*errs = append(*errs, fmt.Sprintf("%s.endpoint is not valid for type=none", path))
+			}
+		case "granite-guardian":
+			if cfg.Endpoint == "" {
+				*errs = append(*errs, fmt.Sprintf("%s.type %q requires endpoint", path, cfg.Type))
+			}
+		case "cloud-judge":
+			// cloud-judge reuses an existing ProviderAdapter; an
+			// explicit endpoint is allowed but optional (the adapter
+			// resolves it from the underlying provider when omitted).
+		}
+	}
+
+	// Endpoint URL shape, applied to whichever leaf types accept it.
+	if cfg.Endpoint != "" && cfg.Type != "none" && cfg.Type != "composite" {
+		validateGuardRailEndpoint(cfg.Endpoint, path+".endpoint", errs)
+	}
+
+	// Phases — closed set + duplicate rejection.
+	if len(cfg.Phases) > 0 {
+		seen := make(map[string]bool, len(cfg.Phases))
+		for i, phase := range cfg.Phases {
+			if !validGuardRailPhases[phase] {
+				*errs = append(*errs, fmt.Sprintf("%s.phases[%d] %q is not a valid phase", path, i, phase))
+				continue
+			}
+			if seen[phase] {
+				*errs = append(*errs, fmt.Sprintf("%s.phases contains duplicate %q", path, phase))
+				continue
+			}
+			seen[phase] = true
+		}
+	}
+
+	// Range checks.
+	if cfg.Threshold < 0.0 || cfg.Threshold > 1.0 {
+		*errs = append(*errs, fmt.Sprintf("%s.threshold must be in [0.0, 1.0], got %v", path, cfg.Threshold))
+	}
+	if cfg.TimeoutMs != 0 && (cfg.TimeoutMs < guardRailMinTimeoutMs || cfg.TimeoutMs > guardRailMaxTimeoutMs) {
+		*errs = append(*errs, fmt.Sprintf("%s.timeoutMs must be in [%d, %d], got %d", path, guardRailMinTimeoutMs, guardRailMaxTimeoutMs, cfg.TimeoutMs))
+	}
+	if cfg.MinChunkChars < 0 || cfg.MinChunkChars > guardRailMaxMinChunkChars {
+		*errs = append(*errs, fmt.Sprintf("%s.minChunkChars must be in [0, %d], got %d", path, guardRailMaxMinChunkChars, cfg.MinChunkChars))
+	}
+
+	// Criteria entries must be non-empty — a blank ID would map to no
+	// vetted text in the adapter and silently degrade to "no
+	// criterion".
+	for i, c := range cfg.Criteria {
+		if c == "" {
+			*errs = append(*errs, fmt.Sprintf("%s.criteria[%d] is empty", path, i))
+		}
+	}
+
+	// CustomCriteria keys — closed format; values may be empty (the
+	// adapter treats that as "use the built-in default text for the
+	// id" in some configurations, so we don't reject empty values
+	// here).
+	for k := range cfg.CustomCriteria {
+		if k == "" {
+			*errs = append(*errs, fmt.Sprintf("%s.customCriteria contains an empty key", path))
+			continue
+		}
+		if !guardRailCustomCriterionPattern.MatchString(k) {
+			*errs = append(*errs, fmt.Sprintf("%s.customCriteria key %q must match %s", path, k, guardRailCustomCriterionPattern.String()))
+		}
+	}
+}
+
+// guardRailHasAdapterFields reports whether the config has any
+// non-zero leaf field. Used to detect the "operator forgot Type but
+// filled in Endpoint / Threshold / etc." typo so we can fail loudly
+// instead of silently treating the config as type=none.
+func guardRailHasAdapterFields(cfg *GuardRailConfig) bool {
+	if cfg == nil {
+		return false
+	}
+	return cfg.Endpoint != "" ||
+		cfg.Model != "" ||
+		cfg.Threshold != 0 ||
+		len(cfg.Criteria) > 0 ||
+		len(cfg.CustomCriteria) > 0 ||
+		cfg.Think != nil ||
+		cfg.TimeoutMs != 0 ||
+		cfg.FailOpen ||
+		cfg.MinChunkChars != 0 ||
+		len(cfg.Stages) > 0 ||
+		len(cfg.Phases) > 0
+}
+
+// validateGuardRailEndpoint enforces that the endpoint URL parses, has
+// scheme http or https, and a non-empty host. A path is permitted
+// (vLLM serves at /v1/chat/completions); query strings are permitted
+// because gateways may legitimately need them.
+func validateGuardRailEndpoint(endpoint, path string, errs *[]string) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		*errs = append(*errs, fmt.Sprintf("%s %q must be a valid URL: %v", path, endpoint, err))
+		return
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		*errs = append(*errs, fmt.Sprintf("%s %q must use scheme http or https, got %q", path, endpoint, u.Scheme))
+	}
+	if u.Host == "" {
+		*errs = append(*errs, fmt.Sprintf("%s %q must include a host", path, endpoint))
 	}
 }

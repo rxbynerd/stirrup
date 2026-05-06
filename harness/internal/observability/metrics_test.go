@@ -34,6 +34,25 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	m.Stalls.Add(ctx, 1)
 	m.ContextCompactions.Add(ctx, 2)
 	m.SecurityEvents.Add(ctx, 4, metric.WithAttributes(attribute.String("event", "test")))
+	// Guard counters — exercised so a regression that silently
+	// dropped one of the new instruments would be caught here.
+	m.GuardChecks.Add(ctx, 7, metric.WithAttributes(
+		attribute.String("guard.phase", "pre_turn"),
+		attribute.String("guard.id", "granite-guardian"),
+		attribute.String("guard.verdict", "allow"),
+	))
+	m.GuardErrors.Add(ctx, 2, metric.WithAttributes(
+		attribute.String("guard.phase", "pre_tool"),
+		attribute.String("guard.id", "granite-guardian"),
+	))
+	m.GuardSkips.Add(ctx, 4, metric.WithAttributes(
+		attribute.String("guard.phase", "pre_turn"),
+		attribute.String("guard.id", "granite-guardian"),
+		attribute.String("reason", "min_chunk_chars"),
+	))
+	m.GuardSpotlights.Add(ctx, 3, metric.WithAttributes(
+		attribute.String("guard.id", "granite-guardian"),
+	))
 
 	// Collect metrics.
 	var rm metricdata.ResourceMetrics
@@ -56,6 +75,10 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	assertInt64Sum(t, sums, "stirrup.harness.stalls", 1)
 	assertInt64Sum(t, sums, "stirrup.harness.context_compactions", 2)
 	assertInt64Sum(t, sums, "stirrup.harness.security_events", 4)
+	assertInt64Sum(t, sums, "stirrup.guard.checks", 7)
+	assertInt64Sum(t, sums, "stirrup.guard.errors", 2)
+	assertInt64Sum(t, sums, "stirrup.guard.skips", 4)
+	assertInt64Sum(t, sums, "stirrup.guard.spotlights", 3)
 }
 
 func TestMetricsRecording_Histograms(t *testing.T) {
@@ -76,6 +99,12 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	))
 	m.TurnDuration.Record(ctx, 250.0)
 	m.ToolCallDuration.Record(ctx, 50.0)
+	// Guard duration histogram exercised so a regression that dropped
+	// the instrument would surface here.
+	m.GuardDuration.Record(ctx, 42.0, metric.WithAttributes(
+		attribute.String("guard.phase", "pre_turn"),
+		attribute.String("guard.id", "granite-guardian"),
+	))
 
 	// Collect metrics.
 	var rm metricdata.ResourceMetrics
@@ -89,6 +118,8 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	assertFloat64HistogramSum(t, histograms, "stirrup.harness.run_duration", 1500.0)
 	assertFloat64HistogramCount(t, histograms, "stirrup.harness.turn_duration", 1)
 	assertFloat64HistogramCount(t, histograms, "stirrup.harness.tool_call_duration", 1)
+	assertFloat64HistogramCount(t, histograms, "stirrup.guard.duration_ms", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.guard.duration_ms", 42.0)
 }
 
 func TestNoopMetrics_NoPanic(t *testing.T) {

@@ -305,7 +305,7 @@ stirrup/
   proto/harness/v1/  # gRPC + RunConfig schema (source of truth)
   gen/               # generated Go from proto
   types/             # shared types, validation, version
-  harness/           # the harness binary and its 12 components
+  harness/           # the harness binary and its 13 components
   eval/              # the eval CLI, judges, runner, lakehouse
   examples/          # RunConfig examples + Cedar policy starters
   docs/              # operator-facing guides (safety-rings, eval, sessions draft)

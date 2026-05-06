@@ -31,6 +31,10 @@ type Metrics struct {
 	SecurityEvents       metric.Int64Counter
 	VerificationAttempts metric.Int64Counter
 	Stalls               metric.Int64Counter
+	GuardChecks          metric.Int64Counter
+	GuardErrors          metric.Int64Counter
+	GuardSkips           metric.Int64Counter
+	GuardSpotlights      metric.Int64Counter
 
 	// Histograms
 	RunDuration      metric.Float64Histogram
@@ -38,6 +42,7 @@ type Metrics struct {
 	ToolCallDuration metric.Float64Histogram
 	ProviderLatency  metric.Float64Histogram
 	ProviderTTFB     metric.Float64Histogram
+	GuardDuration    metric.Float64Histogram
 
 	// Observable gauge: per-run callbacks supply the live absolute token
 	// estimate. Multiple concurrent runs each register their own callback;
@@ -195,6 +200,44 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
+	// Guard instruments. The five new counters/histogram are tagged with
+	// guard.id and guard.phase so a multi-stage composite (e.g. granite
+	// + cloud-judge) reports correctly attributed metrics. Skips are
+	// distinct from regular allows because a min-chunk skip never
+	// contacts the upstream classifier — counting them as allows would
+	// hide cost-saving optimisation behaviour.
+	m.GuardChecks, err = meter.Int64Counter("stirrup.guard.checks",
+		metric.WithUnit("{check}"),
+		metric.WithDescription("Total guard checks dispatched (allow + deny + spotlight)"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GuardErrors, err = meter.Int64Counter("stirrup.guard.errors",
+		metric.WithUnit("{error}"),
+		metric.WithDescription("Total guard checks that returned a transport / parse error"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GuardSkips, err = meter.Int64Counter("stirrup.guard.skips",
+		metric.WithUnit("{skip}"),
+		metric.WithDescription("Total guard checks short-circuited (e.g. content below MinChunkChars)"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GuardSpotlights, err = meter.Int64Counter("stirrup.guard.spotlights",
+		metric.WithUnit("{spotlight}"),
+		metric.WithDescription("Total guard checks that returned VerdictAllowSpot"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// --- Histograms ---
 
 	m.RunDuration, err = meter.Float64Histogram("stirrup.harness.run_duration",
@@ -232,6 +275,14 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.ProviderTTFB, err = meter.Float64Histogram("stirrup.harness.provider_ttfb",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Provider time to first byte"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.GuardDuration, err = meter.Float64Histogram("stirrup.guard.duration_ms",
+		metric.WithUnit("ms"),
+		metric.WithDescription("Wall-clock latency of guard.Check calls"),
 	)
 	if err != nil {
 		return nil, err

@@ -402,6 +402,9 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("container-runtime", "", "")
 	f.String("permission-policy-file", "", "")
 	f.String("code-scanner", "", "")
+	f.String("guardrail", "", "")
+	f.String("guardrail-endpoint", "", "")
+	f.Bool("guardrail-fail-open", false, "")
 	return cmd
 }
 
@@ -1369,5 +1372,221 @@ func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
 	cfg.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: &enforce}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig: %v", err)
+	}
+}
+
+// TestBuildHarnessRunConfig_GuardRailFlags verifies that the three
+// GuardRail flags (issue #43) propagate from harnessCLIOptions into the
+// RunConfig.GuardRail block. The block is only constructed when at
+// least one of the flags is non-zero so the flag-only build path
+// matches the documented "default == nil == no guardrails" behaviour.
+func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:             "test-run",
+		Mode:              "execution",
+		Prompt:            "test",
+		ProviderType:      "anthropic",
+		APIKeyRef:         "secret://ANTHROPIC_API_KEY",
+		Model:             "claude-sonnet-4-6",
+		MaxTurns:          20,
+		Timeout:           600,
+		TransportType:     "stdio",
+		LogLevel:          "info",
+		GuardRailType:     "granite-guardian",
+		GuardRailEndpoint: "http://localhost:8000",
+	})
+
+	if cfg.GuardRail == nil {
+		t.Fatalf("expected non-nil GuardRail config, got nil")
+	}
+	if cfg.GuardRail.Type != "granite-guardian" {
+		t.Errorf("GuardRail.Type = %q, want granite-guardian", cfg.GuardRail.Type)
+	}
+	if cfg.GuardRail.Endpoint != "http://localhost:8000" {
+		t.Errorf("GuardRail.Endpoint = %q, want http://localhost:8000", cfg.GuardRail.Endpoint)
+	}
+	if cfg.GuardRail.FailOpen {
+		t.Errorf("GuardRail.FailOpen = true, want false (default)")
+	}
+}
+
+// TestBuildHarnessRunConfig_GuardRailDefaultNil verifies the documented
+// "no flags set means no guardrails" behaviour: the flag-only build
+// path leaves config.GuardRail as nil so the factory installs the
+// no-op "none" guard with zero behaviour change vs the pre-#43 path.
+func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		// All GuardRail fields deliberately left at their zero values.
+	})
+	if cfg.GuardRail != nil {
+		t.Errorf("expected GuardRail to be nil when no flags are set, got %+v", cfg.GuardRail)
+	}
+}
+
+// TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean exercises the
+// fail-open flag in isolation: setting only --guardrail-fail-open is
+// enough to materialise a GuardRail config (with the default empty
+// type) so an operator can flip the posture without restating the rest.
+func TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:             "test-run",
+		Mode:              "execution",
+		Prompt:            "test",
+		ProviderType:      "anthropic",
+		APIKeyRef:         "secret://ANTHROPIC_API_KEY",
+		Model:             "claude-sonnet-4-6",
+		MaxTurns:          20,
+		Timeout:           600,
+		TransportType:     "stdio",
+		LogLevel:          "info",
+		GuardRailFailOpen: true,
+	})
+	if cfg.GuardRail == nil {
+		t.Fatalf("expected non-nil GuardRail when fail-open flag is set")
+	}
+	if !cfg.GuardRail.FailOpen {
+		t.Errorf("GuardRail.FailOpen = false, want true")
+	}
+}
+
+// TestApplyOverrides_GuardRailFlagsOverride verifies the override path
+// for the GuardRail flags. Each flag set on the command line clobbers
+// the corresponding file-provided field; flags left unset preserve the
+// file's value. This is the same precedence rule as every other
+// override flag, but the multi-field GuardRailConfig means the test
+// covers each component independently.
+func TestApplyOverrides_GuardRailFlagsOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.GuardRail = &types.GuardRailConfig{
+		Type:     "granite-guardian",
+		Endpoint: "http://file-endpoint:8000",
+		FailOpen: false,
+	}
+
+	must := func(name, value string) {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	must("guardrail-endpoint", "http://flag-endpoint:1234")
+	must("guardrail-fail-open", "true")
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.GuardRail == nil {
+		t.Fatalf("GuardRail should remain non-nil after override")
+	}
+	if cfg.GuardRail.Type != "granite-guardian" {
+		t.Errorf("GuardRail.Type: file value should survive when --guardrail not set, got %q", cfg.GuardRail.Type)
+	}
+	if cfg.GuardRail.Endpoint != "http://flag-endpoint:1234" {
+		t.Errorf("GuardRail.Endpoint override failed: %q", cfg.GuardRail.Endpoint)
+	}
+	if !cfg.GuardRail.FailOpen {
+		t.Errorf("GuardRail.FailOpen override failed: got false")
+	}
+}
+
+// TestApplyOverrides_GuardRailEndpointPreservesStages verifies that
+// overriding only the endpoint leaves a composite stage list intact.
+// This is the central "fine-tune one field" invariant: an operator who
+// loaded a composite config from --config and then passes
+// --guardrail-endpoint to retarget the inner adapter must not
+// inadvertently drop the rest of the layering.
+func TestApplyOverrides_GuardRailEndpointPreservesStages(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.GuardRail = &types.GuardRailConfig{
+		Type: "composite",
+		Stages: []types.GuardRailConfig{
+			{Type: "granite-guardian", Endpoint: "http://stage-1:8000"},
+			{Type: "cloud-judge"},
+		},
+	}
+
+	if err := cmd.Flags().Set("guardrail-endpoint", "http://flag-endpoint:1234"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.GuardRail == nil {
+		t.Fatalf("GuardRail should remain non-nil")
+	}
+	if cfg.GuardRail.Type != "composite" {
+		t.Errorf("composite type should survive, got %q", cfg.GuardRail.Type)
+	}
+	if len(cfg.GuardRail.Stages) != 2 {
+		t.Errorf("composite stages should survive, got %d entries", len(cfg.GuardRail.Stages))
+	}
+	if cfg.GuardRail.Endpoint != "http://flag-endpoint:1234" {
+		t.Errorf("Endpoint override failed: %q", cfg.GuardRail.Endpoint)
+	}
+}
+
+// TestApplyOverrides_GuardRailDefaultFlagsDoNotOverride pins the
+// precedence rule for the GuardRail flags: if the user did not pass
+// any of them, a file-provided GuardRail block must survive intact.
+func TestApplyOverrides_GuardRailDefaultFlagsDoNotOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.GuardRail = &types.GuardRailConfig{
+		Type:     "granite-guardian",
+		Endpoint: "http://file-endpoint:8000",
+		FailOpen: true,
+	}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.GuardRail == nil {
+		t.Fatalf("GuardRail should remain non-nil")
+	}
+	if cfg.GuardRail.Type != "granite-guardian" {
+		t.Errorf("Type: file value should survive, got %q", cfg.GuardRail.Type)
+	}
+	if cfg.GuardRail.Endpoint != "http://file-endpoint:8000" {
+		t.Errorf("Endpoint: file value should survive, got %q", cfg.GuardRail.Endpoint)
+	}
+	if !cfg.GuardRail.FailOpen {
+		t.Errorf("FailOpen: file value should survive, got false")
+	}
+}
+
+// TestApplyOverrides_GuardRailEmptyTypeClears verifies the
+// "set type to empty string clears the GuardRail block" convention
+// that mirrors --code-scanner. Operators use this to disable a
+// guardrail block declared in a shared --config file without having
+// to maintain a separate file.
+func TestApplyOverrides_GuardRailEmptyTypeClears(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.GuardRail = &types.GuardRailConfig{
+		Type:     "granite-guardian",
+		Endpoint: "http://file-endpoint:8000",
+	}
+
+	if err := cmd.Flags().Set("guardrail", ""); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.GuardRail != nil {
+		t.Errorf("expected GuardRail to be cleared by --guardrail='', got %+v", cfg.GuardRail)
 	}
 }

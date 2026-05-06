@@ -171,12 +171,61 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.Tools != nil {
 		rc.Tools = toolsConfigFromProto(pc.Tools)
 	}
+	if pc.GuardRail != nil {
+		gr := guardRailConfigFromProto(pc.GuardRail)
+		rc.GuardRail = &gr
+	}
 
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride
 	rc.SessionName = pc.GetSessionName()
 
 	return rc
+}
+
+// guardRailConfigFromProto recursively translates a proto GuardRailConfig
+// to the internal types form. Stages are walked recursively so a
+// composite payload survives the round-trip; the validator (run in the
+// factory) still rejects composite-of-composite, so only one level of
+// recursion is operationally meaningful.
+func guardRailConfigFromProto(pc *pb.GuardRailConfig) types.GuardRailConfig {
+	cfg := types.GuardRailConfig{
+		Type:          pc.Type,
+		Phases:        append([]string(nil), pc.Phases...),
+		Endpoint:      pc.Endpoint,
+		Model:         pc.Model,
+		Threshold:     pc.Threshold,
+		Criteria:      append([]string(nil), pc.Criteria...),
+		TimeoutMs:     int(pc.TimeoutMs),
+		FailOpen:      pc.FailOpen,
+		MinChunkChars: int(pc.MinChunkChars),
+	}
+	if len(pc.CustomCriteria) > 0 {
+		// Copy the proto-owned map so later mutations to the wire payload
+		// can't reach internal config state.
+		cfg.CustomCriteria = make(map[string]string, len(pc.CustomCriteria))
+		for k, v := range pc.CustomCriteria {
+			cfg.CustomCriteria[k] = v
+		}
+	}
+	// Think is `optional bool`, generated as *bool. Preserve the
+	// unset/false distinction so the validator and adapter constructor
+	// can apply the documented default ("false") when the field is
+	// omitted on the wire.
+	if pc.Think != nil {
+		v := *pc.Think
+		cfg.Think = &v
+	}
+	if len(pc.Stages) > 0 {
+		cfg.Stages = make([]types.GuardRailConfig, 0, len(pc.Stages))
+		for _, stage := range pc.Stages {
+			if stage == nil {
+				continue
+			}
+			cfg.Stages = append(cfg.Stages, guardRailConfigFromProto(stage))
+		}
+	}
+	return cfg
 }
 
 func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {

@@ -130,6 +130,11 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Metrics:     parent.Metrics,
 		Logger:      parent.Logger,
 		Security:    parent.Security,
+		// Inherit the parent's GuardRail so spawned sub-agents are
+		// not a silent escape hatch around the configured guards.
+		// Without this, an indirect-injection payload could route
+		// harmful work through spawn_agent and bypass all phases.
+		GuardRail: parent.GuardRail,
 	}
 
 	// Run the child loop synchronously.
