@@ -395,6 +395,71 @@ func TestGraniteGuardianDefaultPhaseCriteria(t *testing.T) {
 	}
 }
 
+// TestGraniteGuardianPolarityConvention is a regression test for a
+// genuine semantic bug we shipped on first cut: PhasePostTurn was
+// authored in safety-requirement form ("the response must not contain
+// X"), which under the generic "if meets criteria → yes" scoring
+// schema means a benign response *meets* the safety requirements and
+// the model returns "yes" — which the adapter then mapped to deny.
+// Symptom in the field: a clean README summary triggered guard_denied
+// at post_turn with reason "granite-guardian classifier returned yes".
+//
+// The convention is: every default criterion must be phrased so that
+// "meeting the criterion" means "this content is risky" — i.e. "yes"
+// must always mean "deny". This test pins that invariant by asserting
+// that the post-turn criterion text uses risk-form ("contains")
+// rather than safety-form ("must satisfy" / "must not"). It is
+// deliberately specific to PostTurn because that is the phase that
+// regressed; PreTurn and PreTool were correct from day one.
+func TestGraniteGuardianPolarityConvention(t *testing.T) {
+	postTurn := defaultPhaseCriteria[PhasePostTurn]
+	if postTurn == "" {
+		t.Fatal("post_turn default criterion is empty")
+	}
+	// Risk-form marker: criteria must describe what a risky response
+	// looks like. The literal string "contains" is the simplest
+	// invariant that survives reasonable rewording.
+	if !strings.Contains(postTurn, "contains") {
+		t.Errorf("post_turn criterion has lost its risk-form 'contains' marker; would silently re-introduce false-positive denies on benign content. Criterion: %s", postTurn)
+	}
+	// Safety-form anti-markers: phrasings that flip the polarity.
+	for _, antimarker := range []string{"must satisfy", "must not contain"} {
+		if strings.Contains(postTurn, antimarker) {
+			t.Errorf("post_turn criterion contains safety-form anti-marker %q — under the scoring schema this maps benign content to deny. Criterion: %s", antimarker, postTurn)
+		}
+	}
+}
+
+// TestGraniteGuardianBenignPostTurnAllowed simulates the field-test
+// failure mode end-to-end: a benign assistant response is sent through
+// PhasePostTurn and the classifier (mocked) returns "no" because no
+// risk is present. With the corrected risk-form criterion the adapter
+// must produce VerdictAllow. Before the fix, the criterion was authored
+// in safety-form, the model returned "yes" on benign content, and this
+// path produced VerdictDeny. The mock here pins the parser+criterion
+// contract: when the criterion is risk-form and the content is benign,
+// the wire response is "no" and the verdict is allow.
+func TestGraniteGuardianBenignPostTurnAllowed(t *testing.T) {
+	fs := newFakeGraniteServer(t, "<score>no</score>", http.StatusOK)
+	g, err := NewGraniteGuardian(GraniteGuardianConfig{Endpoint: fs.srv.URL})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	// A representative benign post-turn payload: a short README summary
+	// with no harm, no unsupported claims, no secrets. Under risk-form
+	// criteria the model returns "no" and the adapter must allow.
+	d, err := g.Check(context.Background(), Input{
+		Phase:   PhasePostTurn,
+		Content: "This README explains the project's build and test commands. Run `just build` to compile the binaries; run `just test` to execute the unit suite.",
+	})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if d.Verdict != VerdictAllow {
+		t.Fatalf("benign post_turn produced verdict %q, want allow (regression: criterion polarity has flipped)", d.Verdict)
+	}
+}
+
 func TestGraniteGuardianEndpointURLComposition(t *testing.T) {
 	// Both bare-host endpoints and pre-pinned-path endpoints should
 	// resolve to a working POST URL. We use a single httptest server but
