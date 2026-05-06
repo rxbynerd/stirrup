@@ -91,6 +91,50 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	assertFloat64HistogramCount(t, histograms, "stirrup.harness.tool_call_duration", 1)
 }
 
+// TestMetricsRecording_Resource is the regression test for the
+// "unknown_service:stirrup" bug on the metrics side: when no Resource is
+// attached to the MeterProvider, OTel-aware backends label the metric
+// stream with the SDK fallback service name. We assert here that the
+// resource carried alongside collected metrics carries service.name=stirrup
+// so this can't silently regress on the metrics path either.
+func TestMetricsRecording_Resource(t *testing.T) {
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(reader),
+		sdkmetric.WithResource(Resource()),
+	)
+	meter := provider.Meter("test")
+
+	m, err := newMetricsFromMeter(meter, provider)
+	if err != nil {
+		t.Fatalf("newMetricsFromMeter() error: %v", err)
+	}
+	m.Runs.Add(ctx, 1)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect() error: %v", err)
+	}
+
+	if rm.Resource == nil {
+		t.Fatal("ResourceMetrics.Resource is nil — MeterProvider was constructed without WithResource")
+	}
+	got := make(map[string]string)
+	for _, kv := range rm.Resource.Attributes() {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["service.name"] != ServiceName {
+		t.Errorf("service.name=%q, want %q", got["service.name"], ServiceName)
+	}
+	if got["service.version"] == "" {
+		t.Errorf("service.version missing from metrics resource")
+	}
+	if got["service.instance.id"] == "" {
+		t.Errorf("service.instance.id missing from metrics resource")
+	}
+}
+
 func TestNoopMetrics_NoPanic(t *testing.T) {
 	ctx := context.Background()
 	m := NewNoopMetrics()
