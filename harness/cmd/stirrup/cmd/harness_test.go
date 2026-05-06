@@ -390,6 +390,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("code-scanner", "", "")
 	f.String("guardrail", "", "")
 	f.String("guardrail-endpoint", "", "")
+	f.String("guardrail-model", "", "")
 	f.Bool("guardrail-fail-open", false, "")
 	return cmd
 }
@@ -1514,6 +1515,48 @@ func TestApplyOverrides_GuardRailEndpointPreservesStages(t *testing.T) {
 	}
 	if cfg.GuardRail.Endpoint != "http://flag-endpoint:1234" {
 		t.Errorf("Endpoint override failed: %q", cfg.GuardRail.Endpoint)
+	}
+}
+
+// TestApplyOverrides_GuardRailModelOverride verifies that
+// --guardrail-model overrides a file-provided model without disturbing
+// other GuardRail fields. This is the path operators on Bedrock take
+// when the cloud-judge default Anthropic-API model ID
+// (claude-haiku-4-5-20251001) is rejected by Bedrock and must be
+// replaced with a Bedrock-format identifier such as
+// us.anthropic.claude-haiku-4-5-20251001-v1:0.
+func TestApplyOverrides_GuardRailModelOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.GuardRail = &types.GuardRailConfig{
+		Type:     "cloud-judge",
+		Endpoint: "http://file-endpoint:8000",
+		Model:    "from-file",
+		FailOpen: true,
+	}
+
+	if err := cmd.Flags().Set("guardrail-model", "us.anthropic.claude-haiku-4-5-20251001-v1:0"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.GuardRail == nil {
+		t.Fatalf("GuardRail should remain non-nil")
+	}
+	if cfg.GuardRail.Model != "us.anthropic.claude-haiku-4-5-20251001-v1:0" {
+		t.Errorf("Model override failed: got %q", cfg.GuardRail.Model)
+	}
+	// Other fields must survive untouched.
+	if cfg.GuardRail.Type != "cloud-judge" {
+		t.Errorf("Type: file value should survive, got %q", cfg.GuardRail.Type)
+	}
+	if cfg.GuardRail.Endpoint != "http://file-endpoint:8000" {
+		t.Errorf("Endpoint: file value should survive, got %q", cfg.GuardRail.Endpoint)
+	}
+	if !cfg.GuardRail.FailOpen {
+		t.Errorf("FailOpen: file value should survive, got false")
 	}
 }
 

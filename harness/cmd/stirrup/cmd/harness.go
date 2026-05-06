@@ -65,6 +65,7 @@ type harnessCLIOptions struct {
 	// per-stage phase restrictions.
 	GuardRailType     string
 	GuardRailEndpoint string
+	GuardRailModel    string
 	GuardRailFailOpen bool
 }
 
@@ -165,10 +166,11 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	// touched at least one of the three GuardRail flags; an entirely-empty
 	// trio leaves config.GuardRail nil and the factory installs the
 	// no-op "none" guard. Composite stages can only be set via --config.
-	if opts.GuardRailType != "" || opts.GuardRailEndpoint != "" || opts.GuardRailFailOpen {
+	if opts.GuardRailType != "" || opts.GuardRailEndpoint != "" || opts.GuardRailModel != "" || opts.GuardRailFailOpen {
 		config.GuardRail = &types.GuardRailConfig{
 			Type:     opts.GuardRailType,
 			Endpoint: opts.GuardRailEndpoint,
+			Model:    opts.GuardRailModel,
 			FailOpen: opts.GuardRailFailOpen,
 		}
 	}
@@ -321,6 +323,7 @@ func init() {
 	// only through --config (see docs/guardrails.md).
 	f.String("guardrail", "", "GuardRail type: none, granite-guardian, composite, cloud-judge. Composite requires --config (guardRail.stages).")
 	f.String("guardrail-endpoint", "", "Endpoint URL for the granite-guardian or cloud-judge adapter.")
+	f.String("guardrail-model", "", "Model identifier for the GuardRail classifier. Granite-guardian default: ibm-granite/granite-guardian-4.1-8b. Cloud-judge default: claude-haiku-4-5-20251001 (Anthropic API format) — when the primary provider is Bedrock, use the Bedrock-format ID (e.g. us.anthropic.claude-haiku-4-5-20251001-v1:0).")
 	f.Bool("guardrail-fail-open", false, "When true, transport errors / timeouts produce VerdictAllow with a security event rather than blocking. Default false (fail closed).")
 }
 
@@ -503,6 +506,13 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 		cfg.GuardRail.Endpoint = endpoint
 	}
+	if changed("guardrail-model") {
+		model, _ := f.GetString("guardrail-model")
+		if cfg.GuardRail == nil {
+			cfg.GuardRail = &types.GuardRailConfig{}
+		}
+		cfg.GuardRail.Model = model
+	}
 	if changed("guardrail-fail-open") {
 		failOpen, _ := f.GetBool("guardrail-fail-open")
 		if cfg.GuardRail == nil {
@@ -592,6 +602,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	codeScannerType, _ := f.GetString("code-scanner")
 	guardRailType, _ := f.GetString("guardrail")
 	guardRailEndpoint, _ := f.GetString("guardrail-endpoint")
+	guardRailModel, _ := f.GetString("guardrail-model")
 	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
 
 	var queryParams map[string]string
@@ -645,6 +656,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		CodeScannerType:      codeScannerType,
 		GuardRailType:        guardRailType,
 		GuardRailEndpoint:    guardRailEndpoint,
+		GuardRailModel:       guardRailModel,
 		GuardRailFailOpen:    guardRailFailOpen,
 	})
 
