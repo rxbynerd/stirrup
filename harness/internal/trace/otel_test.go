@@ -7,13 +7,17 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
 func newTestOTelEmitter() (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
 	exporter := tracetest.NewInMemoryExporter()
+	// Mirror NewOTelTraceEmitter's TracerProvider construction so resource
+	// attributes round-trip through emitted spans in tests.
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSyncer(exporter),
+		sdktrace.WithResource(observability.Resource()),
 	)
 	emitter := newOTelTraceEmitterForTest(tp)
 	return emitter, exporter
@@ -253,6 +257,48 @@ func TestOTelTraceEmitter_SessionNameAbsentWhenEmpty(t *testing.T) {
 	for _, attr := range spans[0].Attributes {
 		if string(attr.Key) == "run.session_name" {
 			t.Errorf("run.session_name should be absent when SessionName is empty, found value %q", attr.Value.AsString())
+		}
+	}
+}
+
+// TestOTelTraceEmitter_ResourceAttributes is the regression test for the
+// "unknown_service:stirrup" bug: when no Resource is attached to the
+// TracerProvider, OTel-aware backends (Zipkin, Jaeger, Tempo, ...) display
+// the service name as "unknown_service:<binary>" because the SDK falls
+// back to that placeholder. We assert here that every emitted span carries
+// service.name=stirrup so this can never silently regress.
+func TestOTelTraceEmitter_ResourceAttributes(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+
+	emitter.Start("run-resource", nil)
+	emitter.RecordToolCall(types.ToolCallTrace{Name: "read_file", DurationMs: 1, Success: true})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected at least one span")
+	}
+
+	for _, span := range spans {
+		if span.Resource == nil {
+			t.Errorf("span %q: Resource is nil — TracerProvider was constructed without WithResource", span.Name)
+			continue
+		}
+		got := make(map[string]string)
+		for _, kv := range span.Resource.Attributes() {
+			got[string(kv.Key)] = kv.Value.AsString()
+		}
+		if got["service.name"] != observability.ServiceName {
+			t.Errorf("span %q: service.name=%q, want %q",
+				span.Name, got["service.name"], observability.ServiceName)
+		}
+		if got["service.version"] == "" {
+			t.Errorf("span %q: service.version missing", span.Name)
+		}
+		if got["service.instance.id"] == "" {
+			t.Errorf("span %q: service.instance.id missing", span.Name)
 		}
 	}
 }
