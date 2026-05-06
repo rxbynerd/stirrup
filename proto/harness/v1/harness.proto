@@ -251,9 +251,12 @@ message RunConfig {
   string prompt = 3;
 
   // Optional. Key-value pairs injected into the system prompt as
-  // <untrusted_context> blocks. Keys are context labels; values are the
-  // content. Use this for repo metadata, issue descriptions, etc.
-  map<string, string> dynamic_context = 4;
+  // <untrusted_context> blocks. Keys are context labels; entries carry
+  // the value plus a `sensitive` flag the Rule-of-Two reads. Use this
+  // for repo metadata, issue descriptions, retrieved documents, and —
+  // when `sensitive: true` — private records the agent legitimately
+  // needs to operate on.
+  map<string, DynamicContextValue> dynamic_context = 4;
 
   // Component selections — each configures one of the 12 swappable
   // components. See individual message docs for valid type values and fields.
@@ -354,6 +357,42 @@ message RunConfig {
   // the mode: "patterns" (active scanning) for execution mode, "none"
   // for read-only modes (no edits happen).
   CodeScannerConfig code_scanner = 26;
+
+  // Optional. When explicitly true, declares that the run will expose
+  // the agent to sensitive data inside its conversation. This is the
+  // operator-supplied signal for the "sensitive data" leg of the
+  // Rule of Two; provider/VCS/MCP API keys are deliberately not
+  // inferred (the harness keeps those out of the agent's reach).
+  // Per-entry sensitivity can also be declared via
+  // DynamicContextEntry.sensitive; either signal trips the leg. The
+  // field is `optional` so unset is wire-distinguishable from explicit
+  // false — the secure default in v1 is "not sensitive unless
+  // declared".
+  optional bool sensitive_data = 27;
+}
+
+// DynamicContextValue is a single dynamic-context value with metadata.
+// The control plane / operator populates these from outside the
+// immutable prompt — issue bodies, PR comments, retrieved documents,
+// customer records pulled in for triage. Every entry is treated as
+// untrusted by the prompt builder; `sensitive` additionally marks the
+// entry as carrying private data that the Rule of Two should weigh.
+//
+// Named "Value" rather than "Entry" because protoc reserves the
+// "Entry" suffix for the synthetic map-entry types it generates for
+// map fields, and `DynamicContextEntry` would collide with the
+// synthetic type for the `dynamic_context` map.
+message DynamicContextValue {
+  // The entry text. Sanitization (XML/HTML tag stripping, 50 KB length
+  // cap) runs over this field before it reaches the prompt builder.
+  string value = 1;
+
+  // When true, marks the entry as carrying data the Rule of Two
+  // should treat as the "sensitive data" leg. Defaults to false. The
+  // flag is per-entry rather than global so an operator can mix
+  // non-sensitive context (a public README) with sensitive context (a
+  // customer record) in a single run.
+  bool sensitive = 2;
 }
 
 // RuleOfTwoConfig carries the operator override for the Rule-of-Two

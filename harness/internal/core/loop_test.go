@@ -156,8 +156,8 @@ func TestLoop_SanitizesDynamicContextBeforePromptBuildAndEmitsEvents(t *testing.
 	var securityEvents bytes.Buffer
 	loop.Security = security.NewSecurityLogger(&securityEvents, "test-run")
 	config := buildTestConfig()
-	config.DynamicContext = map[string]string{
-		"issue": "<tag>Fix main.go</tag><!-- hidden -->",
+	config.DynamicContext = map[string]types.DynamicContextValue{
+		"issue": {Value: "<tag>Fix main.go</tag><!-- hidden -->"},
 	}
 
 	runTrace, err := loop.Run(context.Background(), config)

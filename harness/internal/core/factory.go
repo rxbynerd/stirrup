@@ -783,10 +783,17 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 		return permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout), nil
 	case "policy-engine":
 		env := permission.PolicyEngineEnv{
-			RunID:          config.RunID,
-			Mode:           config.Mode,
-			Workspace:      config.Executor.Workspace,
-			DynamicContext: config.DynamicContext,
+			RunID:     config.RunID,
+			Mode:      config.Mode,
+			Workspace: config.Executor.Workspace,
+			// Project DynamicContext entries → values map: the Cedar
+			// engine exposes context.dynamicContext as a Record of
+			// String → String. Per-entry sensitivity is carried on the
+			// RunConfig.DynamicContext map but is not wired into Cedar
+			// today — a follow-up may surface it as
+			// `context.sensitive_dynamic_context` for policies that
+			// want to reason about it.
+			DynamicContext: config.DynamicContextValues(),
 			Security:       secLogger,
 			// ParentRunID and Capabilities are reserved for sub-agent
 			// wiring and capability propagation respectively; both
@@ -813,6 +820,7 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 				Mode:           config.Mode,
 				Executor:       config.Executor,
 				DynamicContext: config.DynamicContext,
+				SensitiveData:  config.SensitiveData,
 			}, registry, tp, secLogger)
 		}
 		return permission.New(cfg, env, fallback)
