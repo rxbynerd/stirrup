@@ -298,6 +298,32 @@ stops feeling like a knife edge), or characterise your runtime's
 typical reasoning cost and set `Think: false` only when you are
 confident the score head can fire under the configured budget.
 
+**Latency expectations.** Local runtimes are also markedly slower
+than vLLM on a datacentre GPU. With `stream: false` (which the
+adapter uses — guards must be synchronous), runtimes generate the
+full response before emitting headers, so first-byte latency tracks
+total latency almost exactly. Empirically, LM Studio on Apple
+Silicon serving Granite Guardian 4.1-8B lands at ~5-6s per call for
+the default no-think configuration; a vLLM A100 deployment lands
+sub-second. The shipped default `timeoutMs` (10000 = 10s) is sized
+to absorb the LM Studio case with margin. Operators on fast
+hardware should tighten this in their RunConfig:
+
+```json
+"guardRail": {
+  "type": "granite-guardian",
+  "endpoint": "http://your-vllm:8000",
+  "timeoutMs": 1500
+}
+```
+
+A guard timeout fires `guard_error` and, with the default
+`failOpen: false`, aborts the run on PhasePreTurn or denies the
+tool call on PhasePreTool. That is the correct safety posture, but
+on slow local hardware it surfaces as "every dev run instantly
+fails" — almost always a sign that `timeoutMs` is too low for the
+runtime, not that the classifier is genuinely unhealthy.
+
 ## Operator escape hatch
 
 The composite primitive lets you layer additional adapters in front

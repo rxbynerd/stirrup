@@ -35,10 +35,19 @@ const (
 	defaultGraniteModel = "ibm-granite/granite-guardian-4.1-8b"
 
 	// defaultGraniteTimeout is the safe default for a synchronous, in-the-loop
-	// classification call. Granite Guardian 4.1-8B served on a modern GPU
-	// returns in well under a second; 1.5s leaves slack for warm-cache
-	// startup and small-batch queueing in vLLM.
-	defaultGraniteTimeout = 1500 * time.Millisecond
+	// classification call. The original 1.5s was sized for vLLM on a modern
+	// GPU (sub-second total round-trip in production) and proved badly tight
+	// for the local-development case: LM Studio on Apple Silicon doing ~80
+	// tokens of reasoning consistently lands around 5-6s end-to-end (the
+	// non-streaming response path means the runtime emits no headers until
+	// generation completes, so first-byte latency tracks total latency
+	// almost exactly). 10s leaves comfortable margin for that case while
+	// still cutting off a genuinely hung classifier well before the 30s
+	// upper bound enforced by RunConfig validation. Operators on slow
+	// hardware can raise it further via guardRail.timeoutMs; operators on
+	// fast hardware can tighten it back down to a low number to fail
+	// faster on classifier outage.
+	defaultGraniteTimeout = 10 * time.Second
 
 	// defaultMinChunkChars is the threshold below which PhasePreTurn skips
 	// the classifier outright. Tiny chunks (single tokens, short tool
