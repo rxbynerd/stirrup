@@ -65,6 +65,7 @@ func NewMetrics(ctx context.Context, endpoint string) (*Metrics, error) {
 
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
+		sdkmetric.WithResource(Resource()),
 	)
 	meter := provider.Meter("stirrup-harness")
 

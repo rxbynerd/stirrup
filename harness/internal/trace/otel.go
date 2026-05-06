@@ -11,6 +11,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
 )
@@ -45,6 +46,7 @@ func NewOTelTraceEmitter(ctx context.Context, endpoint string) (*OTelTraceEmitte
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(observability.Resource()),
 	)
 	tracer := tp.Tracer("stirrup-harness")
 
