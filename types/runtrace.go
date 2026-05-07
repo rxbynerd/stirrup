@@ -12,6 +12,13 @@ type TokenUsage struct {
 }
 
 // RunTrace captures the full telemetry of a single harness run.
+//
+// ToolCalls contains tool call summaries for this run and any sub-agent
+// runs whose trace was forwarded to this emitter (see #55 nested
+// trace forwarding). Entries with a non-empty RunID distinct from the
+// parent run's ID — equivalently, a non-empty ParentRunID — are sub-
+// agent calls. Consumers computing parent-only aggregates must filter
+// on RunID/ParentRunID; otherwise sub-agent activity is double-counted.
 type RunTrace struct {
 	ID                  string               `json:"id"`
 	Config              RunConfig            `json:"config"`
