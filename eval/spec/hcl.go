@@ -1,7 +1,7 @@
 // Package spec parses eval suite definitions from HCLv2 source files
 // into the canonical types.EvalSuite shape used by the runner. HCL is
-// the preferred authoring format for suites; the legacy JSON loader
-// still works and is dispatched by file extension in the eval CLI.
+// the only accepted authoring format for suites; the legacy JSON
+// loader was removed once HCL became canonical.
 //
 // The package mirrors the EvalSuite / EvalTask / EvalJudge shape one
 // for one but keeps `hcl:` tags on internal structs in this package so

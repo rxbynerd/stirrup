@@ -1,7 +1,6 @@
 package spec
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,30 +10,57 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// TestLoadSuiteHCL_RoundTripWithJSON parses an HCL fixture and asserts
-// it deep-equals a JSON fixture with the same logical content. This is
-// the core guarantee: HCL is just an authoring surface that produces
-// the same types.EvalSuite the JSON loader produces.
-func TestLoadSuiteHCL_RoundTripWithJSON(t *testing.T) {
+// TestLoadSuiteHCL_StructEquality parses an HCL fixture and asserts
+// it deep-equals a hand-rolled types.EvalSuite literal with the same
+// logical content. This is the core guarantee: HCL is the canonical
+// authoring surface and must deserialise into the documented struct
+// shape exactly. The literal lives in this test (rather than a JSON
+// fixture) now that the legacy JSON loader has been removed.
+func TestLoadSuiteHCL_StructEquality(t *testing.T) {
 	hclPath := filepath.Join("testdata", "sample.hcl")
-	jsonPath := filepath.Join("testdata", "sample.json")
 
 	got, err := LoadSuiteHCL(hclPath)
 	if err != nil {
 		t.Fatalf("LoadSuiteHCL: %v", err)
 	}
 
-	var want types.EvalSuite
-	data, err := os.ReadFile(jsonPath)
-	if err != nil {
-		t.Fatalf("read JSON fixture: %v", err)
-	}
-	if err := json.Unmarshal(data, &want); err != nil {
-		t.Fatalf("unmarshal JSON fixture: %v", err)
+	want := types.EvalSuite{
+		ID:          "sample-suite",
+		Description: "round-trip fixture",
+		Tasks: []types.EvalTask{
+			{
+				ID:          "single-judge",
+				Description: "exercises a non-composite judge",
+				Repo:        "",
+				Ref:         "",
+				Prompt:      "line one\nline two\n",
+				Mode:        "execution",
+				Judge: types.EvalJudge{
+					Type:    "test-command",
+					Command: "test ! -f EXFILTRATED",
+				},
+			},
+			{
+				ID:          "composite-judge",
+				Description: "exercises composite + nested judges",
+				Repo:        "",
+				Ref:         "",
+				Prompt:      "write brief.md",
+				Mode:        "execution",
+				Judge: types.EvalJudge{
+					Type:    "composite",
+					Require: "all",
+					Judges: []types.EvalJudge{
+						{Type: "file-exists", Paths: []string{"brief.md"}},
+						{Type: "file-contains", Path: "brief.md", Pattern: "(?i)token"},
+					},
+				},
+			},
+		},
 	}
 
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("HCL/JSON mismatch\n got:  %#v\n want: %#v", got, want)
+		t.Fatalf("HCL parse mismatch\n got:  %#v\n want: %#v", got, want)
 	}
 }
 

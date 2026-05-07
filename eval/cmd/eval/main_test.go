@@ -54,51 +54,18 @@ func TestRun_NoArgs(t *testing.T) {
 	}
 }
 
-func TestLoadSuite_Valid(t *testing.T) {
-	dir := t.TempDir()
-	suite := types.EvalSuite{
-		ID:          "test-suite",
-		Description: "a test suite",
-		Tasks: []types.EvalTask{
-			{ID: "t1", Prompt: "hello", Mode: "execution"},
-		},
-	}
-	path := filepath.Join(dir, "suite.json")
-	writeJSONFile(t, path, suite)
-
-	got, err := loadSuite(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.ID != "test-suite" {
-		t.Errorf("ID = %q, want %q", got.ID, "test-suite")
-	}
-	if len(got.Tasks) != 1 {
-		t.Errorf("got %d tasks, want 1", len(got.Tasks))
-	}
-}
-
+// TestLoadSuite_Missing exercises the underlying os error surface
+// when the suite path does not exist.
 func TestLoadSuite_Missing(t *testing.T) {
-	_, err := loadSuite("/nonexistent/suite.json")
+	_, err := loadSuite("/nonexistent/suite.hcl")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
 }
 
-func TestLoadSuite_InvalidJSON(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "bad.json")
-	_ = os.WriteFile(path, []byte("not json"), 0o644)
-
-	_, err := loadSuite(path)
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-}
-
-// TestLoadSuite_InvalidHCL exercises the .hcl branch's error
-// propagation. If loadSuite ever stopped returning the error from
-// spec.LoadSuiteHCL, this test would catch it.
+// TestLoadSuite_InvalidHCL pins error propagation: if loadSuite ever
+// stopped returning the diagnostic from spec.LoadSuiteHCL, this test
+// would catch it.
 func TestLoadSuite_InvalidHCL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.hcl")
@@ -112,9 +79,8 @@ func TestLoadSuite_InvalidHCL(t *testing.T) {
 	}
 }
 
-// TestLoadSuite_HCL exercises the .hcl branch of the dispatcher: the
-// loader must route on extension and produce the same EvalSuite shape
-// the JSON branch does.
+// TestLoadSuite_HCL exercises the happy path: the loader must accept
+// a .hcl file and produce the canonical EvalSuite shape.
 func TestLoadSuite_HCL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "suite.hcl")
@@ -157,20 +123,33 @@ suite "hcl-suite" {
 }
 
 // TestLoadSuite_UnsupportedExtension documents the dispatcher contract
-// for unknown file extensions.
+// for unknown file extensions: only .hcl is accepted, and the error
+// message must say so. Notably .json is rejected the same way as
+// .yaml — the legacy JSON loader is gone.
 func TestLoadSuite_UnsupportedExtension(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "suite.yaml")
-	if err := os.WriteFile(path, []byte("id: x"), 0o644); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name string
+		ext  string
+	}{
+		{name: "yaml", ext: ".yaml"},
+		{name: "json (legacy format removed)", ext: ".json"},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "suite"+tc.ext)
+			if err := os.WriteFile(path, []byte("anything"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	_, err := loadSuite(path)
-	if err == nil {
-		t.Fatal("expected error for unsupported extension")
-	}
-	if !strings.Contains(err.Error(), ".hcl") || !strings.Contains(err.Error(), ".json") {
-		t.Fatalf("error = %q, want it to mention both .hcl and .json", err.Error())
+			_, err := loadSuite(path)
+			if err == nil {
+				t.Fatal("expected error for unsupported extension")
+			}
+			if !strings.Contains(err.Error(), ".hcl") {
+				t.Fatalf("error = %q, want it to mention .hcl", err.Error())
+			}
+		})
 	}
 }
 
@@ -425,6 +404,120 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 	tasks := mineFailureTasks(recordings, 0)
 	if len(tasks) != 0 {
 		t.Fatalf("got %d tasks, want 0", len(tasks))
+	}
+}
+
+// --- writeSuiteHCL tests ---
+
+// TestWriteSuiteHCL_RoundTrip ensures the HCL emitted by mine-failures
+// is parseable by the canonical loader. Without this, mined suites
+// would silently regress to a non-loadable format the moment the
+// emitter and loader drift.
+func TestWriteSuiteHCL_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mined.hcl")
+
+	original := types.EvalSuite{
+		ID:          "mined-suite",
+		Description: "starter from mine-failures",
+		Tasks: []types.EvalTask{
+			{
+				ID:          "single",
+				Description: "single judge task",
+				Repo:        "https://example.invalid/repo",
+				Ref:         "main",
+				Mode:        "execution",
+				Prompt:      "fix the bug",
+				Judge: types.EvalJudge{
+					Type:    "test-command",
+					Command: "go test ./...",
+				},
+			},
+			{
+				ID:     "composite",
+				Mode:   "execution",
+				Prompt: "produce brief.md",
+				Judge: types.EvalJudge{
+					Type:    "composite",
+					Require: "all",
+					Judges: []types.EvalJudge{
+						{Type: "file-exists", Paths: []string{"brief.md"}},
+						{Type: "file-contains", Path: "brief.md", Pattern: "(?i)token"},
+					},
+				},
+			},
+		},
+	}
+
+	if err := writeSuiteHCL(path, original); err != nil {
+		t.Fatalf("writeSuiteHCL: %v", err)
+	}
+
+	got, err := loadSuite(path)
+	if err != nil {
+		t.Fatalf("loadSuite after writeSuiteHCL: %v", err)
+	}
+
+	if got.ID != original.ID || got.Description != original.Description {
+		t.Errorf("suite metadata mismatch: got %+v want %+v", got, original)
+	}
+	if len(got.Tasks) != len(original.Tasks) {
+		t.Fatalf("got %d tasks, want %d", len(got.Tasks), len(original.Tasks))
+	}
+	for i, want := range original.Tasks {
+		if got.Tasks[i].ID != want.ID ||
+			got.Tasks[i].Mode != want.Mode ||
+			got.Tasks[i].Prompt != want.Prompt {
+			t.Errorf("task[%d] mismatch: got %+v want %+v", i, got.Tasks[i], want)
+		}
+		if got.Tasks[i].Judge.Type != want.Judge.Type {
+			t.Errorf("task[%d].Judge.Type = %q, want %q", i, got.Tasks[i].Judge.Type, want.Judge.Type)
+		}
+	}
+	if got.Tasks[1].Judge.Require != "all" {
+		t.Errorf("composite Require = %q, want %q", got.Tasks[1].Judge.Require, "all")
+	}
+	if len(got.Tasks[1].Judge.Judges) != 2 {
+		t.Errorf("composite has %d sub-judges, want 2", len(got.Tasks[1].Judge.Judges))
+	}
+}
+
+// TestWriteSuiteHCL_EscapesInterpolation ensures hclwrite is escaping
+// HCL-significant sequences (in particular `${...}` interpolation
+// markers) so that user prompts mined out of production traces are
+// preserved verbatim through the round trip rather than re-interpreted
+// by the loader.
+func TestWriteSuiteHCL_EscapesInterpolation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mined.hcl")
+
+	dangerous := `prompt with ${var} interpolation and "quotes" plus a backslash \ end`
+	original := types.EvalSuite{
+		ID: "mined",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "tricky",
+				Prompt: dangerous,
+				Judge: types.EvalJudge{
+					Type:    "test-command",
+					Command: `go test ${PKG}`,
+				},
+			},
+		},
+	}
+
+	if err := writeSuiteHCL(path, original); err != nil {
+		t.Fatalf("writeSuiteHCL: %v", err)
+	}
+	got, err := loadSuite(path)
+	if err != nil {
+		t.Fatalf("loadSuite: %v", err)
+	}
+	if got.Tasks[0].Prompt != dangerous {
+		t.Errorf("Prompt = %q, want %q", got.Tasks[0].Prompt, dangerous)
+	}
+	if got.Tasks[0].Judge.Command != `go test ${PKG}` {
+		t.Errorf("Command = %q, want %q", got.Tasks[0].Judge.Command, `go test ${PKG}`)
 	}
 }
 
