@@ -166,8 +166,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
-	// 7. Verifier.
-	v := buildVerifier(config.Verifier, prov)
+	// 7. Verifier. Constructed without metrics here; the metrics
+	// instance is built later (step 13). After metrics is available we
+	// rebuild the verifier so each Verify call records
+	// stirrup.verifier.runs / stirrup.verifier.duration_ms with the
+	// appropriate type label, including for composite sub-verifiers.
+	v := buildVerifier(config.Verifier, prov, nil)
 
 	// 8. GuardRail. Constructed AFTER providers are built so cloud-judge
 	// can reuse the default ProviderAdapter. Returns guard.NewNoop() when
@@ -256,6 +260,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// be a *MultiStrategy and/or wrapped in a *ScannedStrategy — walk the
 	// outer wrapper first, then unwrap to reach an inner *MultiStrategy.
 	wireEditMetrics(es, metrics)
+
+	// Rebuild the verifier now that metrics is available so each Verify
+	// call records stirrup.verifier.runs / stirrup.verifier.duration_ms
+	// with the appropriate type label. The first pass at step 7 was
+	// metrics-less; this re-construction is cheap (no I/O) and keeps the
+	// metric-recorder wrapping centralised in buildVerifier.
+	v = buildVerifier(config.Verifier, prov, metrics)
 
 	// Wire security logger into executor if it supports it.
 	switch e := exec.(type) {
@@ -783,27 +794,35 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	}
 }
 
-func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter) verifier.Verifier {
+// buildVerifier constructs a Verifier from cfg. Each leaf verifier (and
+// the composite at every level) is wrapped with verifier.NewMetricRecorder
+// when metrics is non-nil, so dashboards can see runs and durations
+// attributed to the specific verifier type — including individual
+// children of a composite. Passing metrics=nil skips wrapping entirely
+// (used during the first construction pass before the run's Metrics
+// instance is built; the factory rebuilds the verifier with metrics
+// once it's available).
+func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metrics *observability.Metrics) verifier.Verifier {
 	switch cfg.Type {
 	case "composite":
 		subs := make([]verifier.Verifier, len(cfg.Verifiers))
 		for i, sub := range cfg.Verifiers {
-			subs[i] = buildVerifier(sub, prov)
+			subs[i] = buildVerifier(sub, prov, metrics)
 		}
-		return verifier.NewCompositeVerifier(subs)
+		return verifier.NewMetricRecorder(verifier.NewCompositeVerifier(subs), metrics, "composite")
 	case "llm-judge":
 		model := cfg.Model
 		if model == "" {
 			model = "claude-haiku-4-5-20251001"
 		}
-		return verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria)
+		return verifier.NewMetricRecorder(verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria), metrics, "llm-judge")
 	case "test-runner":
 		timeout := time.Duration(cfg.Timeout) * time.Second
-		return verifier.NewTestRunnerVerifier(cfg.Command, timeout)
+		return verifier.NewMetricRecorder(verifier.NewTestRunnerVerifier(cfg.Command, timeout), metrics, "test-runner")
 	case "none", "":
-		return verifier.NewNoneVerifier()
+		return verifier.NewMetricRecorder(verifier.NewNoneVerifier(), metrics, "none")
 	default:
-		return verifier.NewNoneVerifier()
+		return verifier.NewMetricRecorder(verifier.NewNoneVerifier(), metrics, "none")
 	}
 }
 

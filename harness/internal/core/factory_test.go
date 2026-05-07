@@ -360,28 +360,28 @@ func TestWrapWithCodeScanner_UnknownTypeReturnsError(t *testing.T) {
 // --- buildVerifier ---
 
 func TestBuildVerifier_None(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{Type: "none"}, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "none"}, nil, nil)
 	if _, ok := v.(*verifier.NoneVerifier); !ok {
 		t.Fatalf("expected NoneVerifier, got %T", v)
 	}
 }
 
 func TestBuildVerifier_Empty(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{}, nil)
+	v := buildVerifier(types.VerifierConfig{}, nil, nil)
 	if _, ok := v.(*verifier.NoneVerifier); !ok {
 		t.Fatalf("expected NoneVerifier for empty type, got %T", v)
 	}
 }
 
 func TestBuildVerifier_TestRunner(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{Type: "test-runner", Command: "go test ./..."}, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "test-runner", Command: "go test ./..."}, nil, nil)
 	if _, ok := v.(*verifier.TestRunnerVerifier); !ok {
 		t.Fatalf("expected TestRunnerVerifier, got %T", v)
 	}
 }
 
 func TestBuildVerifier_LLMJudge(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{Type: "llm-judge", Criteria: "test criteria"}, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "llm-judge", Criteria: "test criteria"}, nil, nil)
 	if _, ok := v.(*verifier.LLMJudgeVerifier); !ok {
 		t.Fatalf("expected LLMJudgeVerifier, got %T", v)
 	}
@@ -394,14 +394,14 @@ func TestBuildVerifier_Composite(t *testing.T) {
 			{Type: "none"},
 			{Type: "test-runner", Command: "echo ok"},
 		},
-	}, nil)
+	}, nil, nil)
 	if _, ok := v.(*verifier.CompositeVerifier); !ok {
 		t.Fatalf("expected CompositeVerifier, got %T", v)
 	}
 }
 
 func TestBuildVerifier_UnknownFallsBack(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{Type: "nonexistent"}, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "nonexistent"}, nil, nil)
 	if _, ok := v.(*verifier.NoneVerifier); !ok {
 		t.Fatalf("expected NoneVerifier for unknown type, got %T", v)
 	}
