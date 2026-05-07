@@ -8,7 +8,11 @@ import (
 	"log/slog"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security/codescanner"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -38,8 +42,15 @@ type SecurityEventEmitter interface {
 type ScannedStrategy struct {
 	inner       EditStrategy
 	scanner     codescanner.CodeScanner
+	scannerName string // "patterns" / "semgrep" / "composite" — for metric attrs
 	emitter     SecurityEventEmitter
 	blockOnWarn bool
+
+	// Metrics is optional. When set, every scan invocation records
+	// stirrup.codescanner.scans (with scanner) and per-finding
+	// stirrup.codescanner.findings (with scanner, severity, blocked).
+	// Field-injected from the factory; nil is safe everywhere.
+	Metrics *observability.Metrics
 }
 
 // NewScannedStrategy returns a ScannedStrategy that delegates to inner
@@ -51,6 +62,11 @@ type ScannedStrategy struct {
 // (the edit succeeds) but they are logged via slog only and no
 // SecurityEvent is emitted. Production wiring should always supply the
 // run's SecurityLogger.
+//
+// The scanner name used for metric attribution is taken from cfg.Type
+// when cfg is non-nil; otherwise it is "unknown" so dashboards still
+// show activity even from hand-wired scanners that bypass the config
+// dispatch.
 func NewScannedStrategy(inner EditStrategy, scanner codescanner.CodeScanner, cfg *types.CodeScannerConfig, emitter SecurityEventEmitter) EditStrategy {
 	if scanner == nil {
 		return inner
@@ -59,12 +75,17 @@ func NewScannedStrategy(inner EditStrategy, scanner codescanner.CodeScanner, cfg
 		return inner
 	}
 	blockOnWarn := false
+	scannerName := "unknown"
 	if cfg != nil {
 		blockOnWarn = cfg.BlockOnWarn
+		if cfg.Type != "" {
+			scannerName = cfg.Type
+		}
 	}
 	return &ScannedStrategy{
 		inner:       inner,
 		scanner:     scanner,
+		scannerName: scannerName,
 		emitter:     emitter,
 		blockOnWarn: blockOnWarn,
 	}
@@ -74,6 +95,13 @@ func NewScannedStrategy(inner EditStrategy, scanner codescanner.CodeScanner, cfg
 // must not alter the tool surface presented to the model.
 func (s *ScannedStrategy) ToolDefinition() types.ToolDefinition {
 	return s.inner.ToolDefinition()
+}
+
+// Inner returns the wrapped EditStrategy. Exposed so the factory can
+// reach an underlying *MultiStrategy to inject Metrics; the field
+// itself stays unexported to discourage other tinkering.
+func (s *ScannedStrategy) Inner() EditStrategy {
+	return s.inner
 }
 
 // Apply runs the inner strategy, then scans the resulting file. On
@@ -104,6 +132,10 @@ func (s *ScannedStrategy) Apply(ctx context.Context, input json.RawMessage, exec
 		return nil, fmt.Errorf("scan post-apply: read %q: %w", result.Path, readErr)
 	}
 
+	// Record one scan attempt regardless of outcome so dashboards see
+	// the rate of scans even when scanners frequently no-op.
+	s.recordScan(ctx)
+
 	scanRes, scanErr := s.scanner.Scan(ctx, result.Path, []byte(post))
 	if scanErr != nil {
 		return nil, fmt.Errorf("scan post-apply: %w", scanErr)
@@ -113,6 +145,13 @@ func (s *ScannedStrategy) Apply(ctx context.Context, input json.RawMessage, exec
 	}
 
 	blocking, warnings := classify(scanRes.Findings, s.blockOnWarn)
+	// Record one stirrup.codescanner.findings observation per finding.
+	// Findings that triggered the block path (any blocking finding when
+	// len(blocking) > 0) get blocked=true; warnings that survived
+	// classification get blocked=false. Promotion via blockOnWarn lands
+	// in the "blocking" bucket, matching the promotion semantics.
+	s.recordFindings(ctx, blocking, true)
+	s.recordFindings(ctx, warnings, false)
 	if len(blocking) > 0 {
 		// Roll back the write before returning the failure so the
 		// workspace is left in its prior state. Best-effort: a
@@ -237,4 +276,34 @@ func (s *ScannedStrategy) emitWarn(path string, f codescanner.Finding) {
 		"line":    f.Line,
 		"message": f.Message,
 	})
+}
+
+// recordScan records one stirrup.codescanner.scans observation for the
+// configured scanner. A nil Metrics short-circuits.
+func (s *ScannedStrategy) recordScan(ctx context.Context) {
+	if s.Metrics == nil {
+		return
+	}
+	s.Metrics.CodeScannerScans.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("scanner", s.scannerName),
+	))
+}
+
+// recordFindings records one stirrup.codescanner.findings observation
+// per finding. blocked=true is passed for the blocking bucket (which
+// includes warn findings promoted via BlockOnWarn) and false otherwise.
+// The finding's own Severity is forwarded as the severity attribute so
+// dashboards can distinguish naturally-block findings from promoted
+// warns.
+func (s *ScannedStrategy) recordFindings(ctx context.Context, findings []codescanner.Finding, blocked bool) {
+	if s.Metrics == nil || len(findings) == 0 {
+		return
+	}
+	for _, f := range findings {
+		s.Metrics.CodeScannerFindings.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("scanner", s.scannerName),
+			attribute.String("severity", f.Severity),
+			attribute.Bool("blocked", blocked),
+		))
+	}
 }

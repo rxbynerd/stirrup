@@ -252,6 +252,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		mcpClient.Metrics = metrics
 	}
 
+	// Field-inject Metrics into the edit strategy. The base strategy may
+	// be a *MultiStrategy and/or wrapped in a *ScannedStrategy — walk the
+	// outer wrapper first, then unwrap to reach an inner *MultiStrategy.
+	wireEditMetrics(es, metrics)
+
 	// Wire security logger into executor if it supports it.
 	switch e := exec.(type) {
 	case *executor.LocalExecutor:
@@ -733,6 +738,29 @@ func wrapWithCodeScanner(inner edit.EditStrategy, cfg *types.CodeScannerConfig, 
 		return nil, err
 	}
 	return edit.NewScannedStrategy(inner, scanner, cfg, emitter), nil
+}
+
+// wireEditMetrics field-injects metrics into a *MultiStrategy or
+// *ScannedStrategy(*MultiStrategy) chain. Direct strategies (whole-file,
+// search-replace, udiff, ScannedStrategy(direct)) carry no per-attempt
+// metric of their own — the edit_file tool path covers them at the loop
+// level — so the only writable target here is *MultiStrategy. Walking
+// through the ScannedStrategy wrapper means scanned + multi runs are
+// instrumented end-to-end without changing public APIs.
+func wireEditMetrics(es edit.EditStrategy, metrics *observability.Metrics) {
+	if metrics == nil || es == nil {
+		return
+	}
+	// Always wire Scanned wrapper first so codescanner metrics fire,
+	// then recurse into its inner strategy for Multi.
+	if scanned, ok := es.(*edit.ScannedStrategy); ok {
+		scanned.Metrics = metrics
+		wireEditMetrics(scanned.Inner(), metrics)
+		return
+	}
+	if multi, ok := es.(*edit.MultiStrategy); ok {
+		multi.Metrics = metrics
+	}
 }
 
 func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
