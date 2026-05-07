@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -549,20 +550,9 @@ func TestPrintComparisonSummary_DoesNotPanic(t *testing.T) {
 		},
 	}
 
-	// Redirect stderr to discard so test output stays clean.
-	origStderr := os.Stderr
-	devNull, err := os.Open(os.DevNull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = devNull
-	defer func() {
-		os.Stderr = origStderr
-		_ = devNull.Close()
-	}()
-
-	// Should not panic.
-	printComparisonSummary(report)
+	// Should not panic. Using io.Discard avoids the global os.Stderr
+	// mutation pattern, which is unsafe under -race / -parallel.
+	printComparisonSummary(io.Discard, report)
 }
 
 func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
@@ -574,19 +564,8 @@ func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
 		},
 	}
 
-	origStderr := os.Stderr
-	devNull, err := os.Open(os.DevNull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = devNull
-	defer func() {
-		os.Stderr = origStderr
-		_ = devNull.Close()
-	}()
-
 	// Should not panic with zero variants.
-	printComparisonSummary(report)
+	printComparisonSummary(io.Discard, report)
 }
 
 // --- buildDriftReport tests ---

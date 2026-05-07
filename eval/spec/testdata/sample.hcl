@@ -27,6 +27,8 @@ suite "sample-suite" {
 
   task "composite-judge" {
     description = "exercises composite + nested judges"
+    repo        = ""
+    ref         = ""
     mode        = "execution"
     prompt      = "write brief.md"
 

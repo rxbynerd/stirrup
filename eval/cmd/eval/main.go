@@ -168,11 +168,21 @@ func cmdCompare(args []string) {
 // authoring format and goes through spec.LoadSuiteHCL; .json is the
 // legacy path and is decoded directly into types.EvalSuite. Both
 // produce the same value, so the runner and judges are oblivious.
+//
+// Both paths enforce spec.MaxSuiteBytes so a misconfigured glob
+// matching a build artefact returns a clear error rather than OOMing
+// the runner.
 func loadSuite(path string) (types.EvalSuite, error) {
 	switch ext := strings.ToLower(filepath.Ext(path)); ext {
 	case ".hcl":
 		return spec.LoadSuiteHCL(path)
 	case ".json":
+		if info, err := os.Stat(path); err == nil && info.Size() > spec.MaxSuiteBytes {
+			return types.EvalSuite{}, fmt.Errorf(
+				"suite file %s is %d bytes, exceeds limit of %d",
+				path, info.Size(), spec.MaxSuiteBytes,
+			)
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return types.EvalSuite{}, err
@@ -593,7 +603,7 @@ func cmdCompareToProduction(args []string) {
 	}
 
 	fmt.Fprintln(os.Stderr)
-	printComparisonSummary(report)
+	printComparisonSummary(os.Stderr, report)
 }
 
 // buildLabVsProductionReport constructs a LabVsProductionReport from production
@@ -638,23 +648,25 @@ func buildLabVsProductionReport(experimentID string, prodMetrics types.TraceMetr
 	}
 }
 
-// printComparisonSummary prints a human-readable table comparing production
-// metrics to each lab variant.
-func printComparisonSummary(report types.LabVsProductionReport) {
-	fmt.Fprintf(os.Stderr, "Experiment: %s\n", report.ExperimentID)
-	fmt.Fprintf(os.Stderr, "Production sample size: %d\n\n", report.Production.SampleSize)
+// printComparisonSummary prints a human-readable table comparing
+// production metrics to each lab variant. The destination writer is
+// injected so tests can supply io.Discard rather than mutating
+// os.Stderr globally; callers in cmdCompareToProduction pass os.Stderr.
+func printComparisonSummary(w io.Writer, report types.LabVsProductionReport) {
+	fmt.Fprintf(w, "Experiment: %s\n", report.ExperimentID)
+	fmt.Fprintf(w, "Production sample size: %d\n\n", report.Production.SampleSize)
 
 	for _, v := range report.Variants {
-		fmt.Fprintf(os.Stderr, "Variant: %s\n", v.Name)
-		fmt.Fprintf(os.Stderr, "%-16s %12s %12s %12s\n", "Metric", "Production", "Lab", "Delta")
-		fmt.Fprintf(os.Stderr, "%-16s %12s %12s %12s\n", "------", "----------", "---", "-----")
+		fmt.Fprintf(w, "Variant: %s\n", v.Name)
+		fmt.Fprintf(w, "%-16s %12s %12s %12s\n", "Metric", "Production", "Lab", "Delta")
+		fmt.Fprintf(w, "%-16s %12s %12s %12s\n", "------", "----------", "---", "-----")
 
 		prodPassPct := report.Production.PassRate * 100
 		labPassPct := v.Results.PassRate * 100
-		fmt.Fprintf(os.Stderr, "%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
+		fmt.Fprintf(w, "%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
 			"Pass rate", prodPassPct, labPassPct, labPassPct-prodPassPct)
 
-		fmt.Fprintf(os.Stderr, "%-16s %12.1f %12d %+12.1f\n",
+		fmt.Fprintf(w, "%-16s %12.1f %12d %+12.1f\n",
 			"Mean turns",
 			report.Production.MeanTurns,
 			v.Results.MedianTurns,

@@ -20,6 +20,22 @@ import (
 
 const commandTimeout = 5 * time.Minute
 
+// KnownJudgeTypes returns the set of judge types Evaluate accepts. It is
+// the single source of truth: callers (e.g. the HCL spec loader) use it
+// for authoring-time validation so a new judge type added below cannot
+// drift out of sync with up-front error messages.
+//
+// The returned slice is freshly allocated on each call.
+func KnownJudgeTypes() []string {
+	return []string{
+		"test-command",
+		"file-exists",
+		"file-contains",
+		"diff-review",
+		"composite",
+	}
+}
+
 // JudgeContext provides the environment for judging a run's outcome.
 type JudgeContext struct {
 	WorkspaceDir string // path to the workspace after the run

@@ -13,29 +13,39 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 
+	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// validJudgeTypes mirrors the set accepted by eval/judge.Evaluate so that
-// authoring-time validation rejects misspelt types early.
-var validJudgeTypes = map[string]struct{}{
-	"test-command":  {},
-	"file-exists":   {},
-	"file-contains": {},
-	"diff-review":   {},
-	"composite":     {},
-}
+// validJudgeTypes mirrors the set accepted by eval/judge.Evaluate so
+// that authoring-time validation rejects misspelt types early. The
+// canonical list lives in eval/judge.KnownJudgeTypes; we materialise a
+// lookup map at package init so this stays trivially in sync.
+var validJudgeTypes = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(judge.KnownJudgeTypes()))
+	for _, t := range judge.KnownJudgeTypes() {
+		m[t] = struct{}{}
+	}
+	return m
+}()
 
 // maxJudgeDepth caps recursive composite nesting in convertJudge so that
 // a pathologically nested fixture returns a clear validation error rather
 // than exhausting the goroutine stack and panicking.
 const maxJudgeDepth = 10
+
+// MaxSuiteBytes is the upper bound for any single suite file the loader
+// will read. It mirrors the harness's loadRunConfigFile cap so a
+// misconfigured glob matching a build artefact returns a clear error
+// instead of OOMing the runner.
+const MaxSuiteBytes = 4 << 20 // 4 MiB
 
 // LoadSuiteHCL parses an HCL file at path and returns a types.EvalSuite.
 //
@@ -62,6 +72,12 @@ const maxJudgeDepth = 10
 // formatted via hcl.NewDiagnosticTextWriter so callers see file/line
 // context for each problem.
 func LoadSuiteHCL(path string) (types.EvalSuite, error) {
+	if info, err := os.Stat(path); err == nil && info.Size() > MaxSuiteBytes {
+		return types.EvalSuite{}, fmt.Errorf(
+			"suite file %s is %d bytes, exceeds limit of %d",
+			path, info.Size(), MaxSuiteBytes,
+		)
+	}
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return types.EvalSuite{}, fmt.Errorf("reading suite file: %w", err)
@@ -280,8 +296,8 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 	}
 	if _, ok := validJudgeTypes[j.Type]; !ok {
 		return types.EvalJudge{}, fmt.Errorf(
-			"%s: invalid judge.type %q (must be one of test-command, file-exists, file-contains, diff-review, composite)",
-			context, j.Type,
+			"%s: invalid judge.type %q (must be one of %s)",
+			context, j.Type, strings.Join(judge.KnownJudgeTypes(), ", "),
 		)
 	}
 
