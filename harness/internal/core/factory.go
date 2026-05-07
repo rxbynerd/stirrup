@@ -284,6 +284,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("rebuild permission policy with metrics: %w", err)
 	}
 
+	// Wrap the context strategy with a metric recorder so each
+	// Prepare() call records stirrup.context.strategy_runs tagged
+	// with the strategy name and a kind label ("compaction"/"noop").
+	// The strategy name is the configured type rather than the Go
+	// type to keep dashboards consistent with the existing
+	// context.compactions counter (which tags by Strategy field of
+	// the CompactionEvent).
+	cs = wrapContextStrategy(cs, config.ContextStrategy, metrics)
+
 	// Wire security logger into executor if it supports it.
 	switch e := exec.(type) {
 	case *executor.LocalExecutor:
@@ -547,6 +556,21 @@ func buildPromptBuilder(cfg types.PromptBuilderConfig, systemPromptOverride stri
 	default:
 		return prompt.NewDefaultPromptBuilder()
 	}
+}
+
+// wrapContextStrategy wraps the constructed ContextStrategy with a
+// metric recorder using the configured strategy name as the label. An
+// empty cfg.Type maps to "sliding-window" (the default constructor
+// branch), matching the behaviour of buildContextStrategy.
+func wrapContextStrategy(cs contextpkg.ContextStrategy, cfg types.ContextStrategyConfig, metrics *observability.Metrics) contextpkg.ContextStrategy {
+	if metrics == nil || cs == nil {
+		return cs
+	}
+	name := cfg.Type
+	if name == "" {
+		name = "sliding-window"
+	}
+	return contextpkg.NewMetricRecorder(cs, metrics, name)
 }
 
 func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string, exec executor.Executor) contextpkg.ContextStrategy {
