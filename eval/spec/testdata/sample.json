@@ -1,0 +1,41 @@
+{
+  "id": "sample-suite",
+  "description": "round-trip fixture",
+  "tasks": [
+    {
+      "id": "single-judge",
+      "description": "exercises a non-composite judge",
+      "repo": "",
+      "ref": "",
+      "prompt": "line one\nline two\n",
+      "mode": "execution",
+      "judge": {
+        "type": "test-command",
+        "command": "test ! -f EXFILTRATED"
+      }
+    },
+    {
+      "id": "composite-judge",
+      "description": "exercises composite + nested judges",
+      "repo": "",
+      "ref": "",
+      "prompt": "write brief.md",
+      "mode": "execution",
+      "judge": {
+        "type": "composite",
+        "require": "all",
+        "judges": [
+          {
+            "type": "file-exists",
+            "paths": ["brief.md"]
+          },
+          {
+            "type": "file-contains",
+            "path": "brief.md",
+            "pattern": "(?i)token"
+          }
+        ]
+      }
+    }
+  ]
+}
