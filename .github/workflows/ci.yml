@@ -49,8 +49,11 @@ jobs:
 
       - name: Check for eval suites
         id: check-suites
+        shell: bash
         run: |
-          if ls eval/suites/*.json 1>/dev/null 2>&1; then
+          shopt -s nullglob
+          suites=(eval/suites/*.hcl eval/suites/*.json)
+          if [ ${#suites[@]} -gt 0 ]; then
             echo "has_suites=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_suites=false" >> "$GITHUB_OUTPUT"
@@ -59,12 +62,13 @@ jobs:
 
       - name: Run eval suite
         if: steps.check-suites.outputs.has_suites == 'true'
+        shell: bash
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          shopt -s nullglob
           mkdir -p eval/results
-          for suite in eval/suites/*.json; do
-            name=$(basename "$suite" .json)
+          for suite in eval/suites/*.hcl eval/suites/*.json; do
             ./stirrup-eval run \
               --suite "$suite" \
               --harness ./stirrup \
