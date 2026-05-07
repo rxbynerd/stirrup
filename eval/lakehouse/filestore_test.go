@@ -463,6 +463,90 @@ func TestQueryRecordings_FilterByOutcome(t *testing.T) {
 	}
 }
 
+// TestParentOnlyToolCalls_FiltersForwardedSubAgentEntries asserts the
+// helper rejects tool call summaries that were forwarded from a sub-
+// agent run (#55). The mixed-source contract is documented on
+// types.RunTrace.ToolCalls; without filtering, any aggregate over
+// ToolCalls double-counts sub-agent activity against the parent run.
+func TestParentOnlyToolCalls_FiltersForwardedSubAgentEntries(t *testing.T) {
+	trace := types.RunTrace{
+		ID: "parent-1",
+		ToolCalls: []types.ToolCallSummary{
+			// parent-only entry: empty RunID/ParentRunID
+			{Name: "read_file", DurationMs: 10, Success: true},
+			// parent-only entry: RunID equal to trace.ID (forwarder
+			// path tags both parent and child the same way once a
+			// future writer normalises the wire shape)
+			{Name: "run_command", DurationMs: 20, Success: true, RunID: "parent-1"},
+			// forwarded sub-agent entry: ParentRunID set
+			{Name: "read_file", DurationMs: 30, Success: true, RunID: "sub-1", ParentRunID: "parent-1"},
+			// forwarded sub-agent entry: only RunID set, distinct
+			{Name: "run_command", DurationMs: 40, Success: true, RunID: "sub-2"},
+		},
+	}
+
+	got := parentOnlyToolCalls(trace)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 parent-only tool calls, got %d (%+v)", len(got), got)
+	}
+	for _, tc := range got {
+		if tc.ParentRunID != "" {
+			t.Errorf("parentOnlyToolCalls returned forwarded entry: %+v", tc)
+		}
+		if tc.RunID != "" && tc.RunID != trace.ID {
+			t.Errorf("parentOnlyToolCalls returned cross-run entry: %+v", tc)
+		}
+	}
+}
+
+// TestComputeMetrics_SubAgentToolCallsDoNotInflate verifies that
+// running computeMetrics over a trace whose ToolCalls slice contains
+// sub-agent forwarded entries does not affect the returned aggregate
+// shape. This is the regression guard for the contract described on
+// types.RunTrace.ToolCalls: any future per-run tool-count aggregate
+// added to TraceMetrics must filter via parentOnlyToolCalls (#55).
+func TestComputeMetrics_SubAgentToolCallsDoNotInflate(t *testing.T) {
+	started := time.Now()
+	parentOnly := types.RunTrace{
+		ID:          "parent-only",
+		Outcome:     "success",
+		StartedAt:   started,
+		CompletedAt: started.Add(1 * time.Second),
+		Turns:       3,
+		TokenUsage:  types.TokenUsage{Input: 100, Output: 200},
+		ToolCalls: []types.ToolCallSummary{
+			{Name: "read_file", DurationMs: 10, Success: true},
+			{Name: "run_command", DurationMs: 20, Success: true},
+		},
+	}
+	withSubAgent := parentOnly
+	withSubAgent.ID = "with-subagent"
+	withSubAgent.ToolCalls = []types.ToolCallSummary{
+		{Name: "read_file", DurationMs: 10, Success: true},
+		{Name: "run_command", DurationMs: 20, Success: true},
+		// Forwarded sub-agent entries that must not affect aggregates.
+		{Name: "read_file", DurationMs: 30, Success: true, RunID: "sub-1", ParentRunID: "with-subagent"},
+		{Name: "run_command", DurationMs: 40, Success: true, RunID: "sub-1", ParentRunID: "with-subagent"},
+		{Name: "read_file", DurationMs: 50, Success: true, RunID: "sub-1", ParentRunID: "with-subagent"},
+	}
+
+	mParent := computeMetrics([]types.RunTrace{parentOnly})
+	mSub := computeMetrics([]types.RunTrace{withSubAgent})
+
+	if mParent.Count != mSub.Count {
+		t.Errorf("Count: parent=%d sub=%d (forwarded entries must not inflate)", mParent.Count, mSub.Count)
+	}
+	if mParent.MeanTurns != mSub.MeanTurns {
+		t.Errorf("MeanTurns: parent=%v sub=%v", mParent.MeanTurns, mSub.MeanTurns)
+	}
+	if mParent.MeanTokens != mSub.MeanTokens {
+		t.Errorf("MeanTokens: parent=%v sub=%v", mParent.MeanTokens, mSub.MeanTokens)
+	}
+	if mParent.PassRate != mSub.PassRate {
+		t.Errorf("PassRate: parent=%v sub=%v", mParent.PassRate, mSub.PassRate)
+	}
+}
+
 func TestClose(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)

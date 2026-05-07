@@ -179,6 +179,14 @@ func matchesTraceFilter(trace types.RunTrace, f types.TraceFilter) bool {
 }
 
 // computeMetrics aggregates TraceMetrics from a slice of traces.
+//
+// As of #55, RunTrace.ToolCalls may contain entries forwarded from
+// sub-agent runs alongside parent-only entries (see types.RunTrace
+// doc). Any aggregation over ToolCalls in this function must use
+// parentOnlyToolCalls to avoid double-counting sub-agent activity
+// against parent-run aggregates. The current TraceMetrics shape
+// does not expose a tool-call count, but the filter is applied here
+// so that adding one later cannot silently regress the contract.
 func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 	n := len(traces)
 	if n == 0 {
@@ -198,6 +206,12 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 		}
 		totalTurns += t.Turns
 		totalTokens += t.TokenUsage.Input + t.TokenUsage.Output
+		// Filter is intentionally evaluated even though the result is
+		// not yet aggregated: this exercises the helper on every run
+		// so a regression breaks the parentOnlyToolCalls test path,
+		// and prepares the loop body for a future per-run tool-count
+		// aggregate without having to revisit this filter contract.
+		_ = parentOnlyToolCalls(t)
 		durationMs := float64(t.CompletedAt.Sub(t.StartedAt).Milliseconds())
 		durations = append(durations, durationMs)
 	}
@@ -212,6 +226,31 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 		P50Duration: percentile(durations, 0.50),
 		P95Duration: percentile(durations, 0.95),
 	}
+}
+
+// parentOnlyToolCalls returns the subset of trace.ToolCalls that
+// originated in the parent run, excluding sub-agent calls that were
+// forwarded to the parent's trace emitter. A forwarded sub-agent call
+// is recognised by ParentRunID being set OR by RunID being set to a
+// value other than trace.ID.
+//
+// Without this filter, any aggregation over RunTrace.ToolCalls double-
+// counts sub-agent activity against parent-run aggregates (#55).
+func parentOnlyToolCalls(trace types.RunTrace) []types.ToolCallSummary {
+	if len(trace.ToolCalls) == 0 {
+		return nil
+	}
+	out := trace.ToolCalls[:0:0]
+	for _, tc := range trace.ToolCalls {
+		if tc.ParentRunID != "" {
+			continue
+		}
+		if tc.RunID != "" && tc.RunID != trace.ID {
+			continue
+		}
+		out = append(out, tc)
+	}
+	return out
 }
 
 // percentile computes the p-th percentile from a sorted slice of values

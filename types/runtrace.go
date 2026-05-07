@@ -12,6 +12,13 @@ type TokenUsage struct {
 }
 
 // RunTrace captures the full telemetry of a single harness run.
+//
+// ToolCalls contains tool call summaries for this run and any sub-agent
+// runs whose trace was forwarded to this emitter (see #55 nested
+// trace forwarding). Entries with a non-empty RunID distinct from the
+// parent run's ID — equivalently, a non-empty ParentRunID — are sub-
+// agent calls. Consumers computing parent-only aggregates must filter
+// on RunID/ParentRunID; otherwise sub-agent activity is double-counted.
 type RunTrace struct {
 	ID                  string               `json:"id"`
 	Config              RunConfig            `json:"config"`
@@ -32,6 +39,14 @@ type ToolCallSummary struct {
 	ErrorReason string `json:"errorReason,omitempty"`
 	InputSize   int    `json:"inputSize,omitempty"`
 	OutputSize  int    `json:"outputSize,omitempty"`
+	// RunID identifies the run that produced this tool call. Populated only
+	// when the call originated in a sub-agent run forwarded to a parent
+	// emitter; absent (omitempty) on parent-emitted events to preserve
+	// the existing wire shape.
+	RunID string `json:"runId,omitempty"`
+	// ParentRunID is the run ID of the sub-agent's parent. Populated only
+	// for forwarded sub-agent events.
+	ParentRunID string `json:"parentRunId,omitempty"`
 }
 
 // VerificationResult holds the outcome of a verification check.
@@ -48,9 +63,20 @@ type TurnTrace struct {
 	ToolCalls  int        `json:"toolCalls"`
 	StopReason string     `json:"stopReason"`
 	DurationMs int64      `json:"durationMs"`
+	// RunID identifies the run that produced this turn. Populated only
+	// when the turn originated in a sub-agent run forwarded to a parent
+	// emitter; absent (omitempty) on parent-emitted events to preserve
+	// the existing wire shape.
+	RunID string `json:"runId,omitempty"`
+	// ParentRunID is the run ID of the sub-agent's parent. Populated only
+	// for forwarded sub-agent events.
+	ParentRunID string `json:"parentRunId,omitempty"`
 }
 
 // ToolCallTrace records telemetry for a single tool call.
+//
+// Field order MUST match ToolCallSummary so the cast in trace emitters
+// (types.ToolCallSummary(tc)) remains valid.
 type ToolCallTrace struct {
 	Name        string `json:"name"`
 	DurationMs  int64  `json:"durationMs"`
@@ -58,6 +84,14 @@ type ToolCallTrace struct {
 	ErrorReason string `json:"errorReason,omitempty"`
 	InputSize   int    `json:"inputSize,omitempty"`
 	OutputSize  int    `json:"outputSize,omitempty"`
+	// RunID identifies the run that produced this tool call. Populated only
+	// when the call originated in a sub-agent run forwarded to a parent
+	// emitter; absent (omitempty) on parent-emitted events to preserve
+	// the existing wire shape.
+	RunID string `json:"runId,omitempty"`
+	// ParentRunID is the run ID of the sub-agent's parent. Populated only
+	// for forwarded sub-agent events.
+	ParentRunID string `json:"parentRunId,omitempty"`
 }
 
 // TurnRecord captures the full input/output of a single agentic loop turn.

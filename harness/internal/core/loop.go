@@ -10,7 +10,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -91,10 +90,19 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.Trace.Start(config.RunID, config)
 
 	// Extract the root trace context for child span parenting.
-	if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
-		l.TraceContext = otelEmitter.RootContext()
-	} else {
-		l.TraceContext = runCtx
+	//
+	// If TraceContext was set by the caller before Run (notably by
+	// SpawnSubAgent, which threads the parent's tool.spawn_agent span ctx
+	// into the child loop), preserve it so child spans nest correctly. The
+	// parent run path leaves TraceContext nil at construction time, so this
+	// fall-through still establishes the OTel root or a plain ctx as the
+	// span parent for top-level runs.
+	if l.TraceContext == nil {
+		if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
+			l.TraceContext = otelEmitter.RootContext()
+		} else {
+			l.TraceContext = runCtx
+		}
 	}
 
 	// Start heartbeat emission so the control plane knows we are alive.
@@ -154,9 +162,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	runStart := time.Now()
 	l.Metrics.Runs.Add(runCtx, 1,
-		metric.WithAttributes(
-			attribute.String("run.mode", config.Mode),
-		),
+		l.metricAttrs(attribute.String("run.mode", config.Mode)),
 	)
 
 	// Reset the per-run absolute token estimate before registering the
@@ -169,10 +175,13 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// run.mode. Unregister at run end so the OTel SDK does not continue
 	// observing this run after it has finished.
 	unregisterCtxTokens, err := l.Metrics.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {
-		return l.lastContextTokens.Load(), []attribute.KeyValue{
+		attrs := make([]attribute.KeyValue, 0, 2+len(l.MetricAttrs))
+		attrs = append(attrs, l.MetricAttrs...)
+		attrs = append(attrs,
 			attribute.String("run.mode", config.Mode),
 			attribute.String("run.id", config.RunID),
-		}
+		)
+		return l.lastContextTokens.Load(), attrs
 	})
 	if err != nil {
 		l.Logger.Warn("register context_tokens callback failed", "error", err)
@@ -194,7 +203,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		}
 
 		// Run verifier.
-		l.Metrics.VerificationAttempts.Add(runCtx, 1)
+		l.Metrics.VerificationAttempts.Add(runCtx, 1, l.metricAttrs())
 		_, verifySpan := l.Tracer.Start(l.traceCtx(runCtx), "verifier.verify",
 			oteltrace.WithAttributes(
 				attribute.Int("verifier.attempt", verificationAttempts),
@@ -275,7 +284,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.Logger.Info("run finished", "outcome", outcome)
 
 	l.Metrics.RunDuration.Record(ctx, float64(time.Since(runStart).Milliseconds()),
-		metric.WithAttributes(
+		l.metricAttrs(
 			attribute.String("run.mode", config.Mode),
 			attribute.String("run.outcome", outcome),
 		),
@@ -505,7 +514,7 @@ func (l *AgenticLoop) runInnerLoop(
 				attribute.Int("context.tokens.after", compaction.TokensAfter),
 			)
 			l.Metrics.ContextCompactions.Add(ctx, 1,
-				metric.WithAttributes(attribute.String("context.strategy", compaction.Strategy)),
+				l.metricAttrs(attribute.String("context.strategy", compaction.Strategy)),
 			)
 			l.Logger.Info("context compacted",
 				"strategy", compaction.Strategy,
@@ -540,7 +549,7 @@ func (l *AgenticLoop) runInnerLoop(
 			})
 			return messages, "error"
 		}
-		providerAttrs := metric.WithAttributes(
+		providerAttrs := l.metricAttrs(
 			attribute.String("provider.type", selection.Provider),
 			attribute.String("provider.model", selection.Model),
 		)
@@ -677,10 +686,10 @@ func (l *AgenticLoop) runInnerLoop(
 			DurationMs: turnDuration.Milliseconds(),
 		})
 
-		modeAttr := metric.WithAttributes(attribute.String("run.mode", config.Mode))
+		modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
 		l.Metrics.Turns.Add(ctx, 1, modeAttr)
-		l.Metrics.TokensInput.Add(ctx, int64(inputTokenEstimate))
-		l.Metrics.TokensOutput.Add(ctx, int64(sr.OutputTokens))
+		l.Metrics.TokensInput.Add(ctx, int64(inputTokenEstimate), l.metricAttrs())
+		l.Metrics.TokensOutput.Add(ctx, int64(sr.OutputTokens), l.metricAttrs())
 		l.Metrics.TurnDuration.Record(ctx, float64(turnDuration.Milliseconds()), modeAttr)
 
 		l.Logger.Info("turn completed", "turn", turn,
@@ -744,7 +753,7 @@ func (l *AgenticLoop) runInnerLoop(
 			l.Logger.Info("tool dispatched", "tool", call.Name)
 			callStart := time.Now()
 
-			_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
+			toolSpanCtx, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
 				oteltrace.WithAttributes(
 					attribute.String("tool.name", call.Name),
 					attribute.Int("tool.input_size", len(call.Input)),
@@ -766,7 +775,13 @@ func (l *AgenticLoop) runInnerLoop(
 				Mode:      config.Mode,
 				RunID:     config.RunID,
 			}
-			preToolAllow, preToolDecision, _ := l.guardCheck(ctx, preToolIn, guardFailOpen(config))
+			// Pass the tool-span ctx (not the outer turn ctx) so the
+			// guard.pre_tool span created inside guardCheck nests under
+			// tool.<name> rather than appearing as a sibling of it. This
+			// matches the toolSpanCtx threading at the permission.check
+			// site below; without it the guard span is mis-attributed
+			// in OTel traces for every denied tool call (#55, B3).
+			preToolAllow, preToolDecision, _ := l.guardCheck(toolSpanCtx, preToolIn, guardFailOpen(config))
 			if !preToolAllow {
 				// The user-visible tool error MUST be a fixed string:
 				// preToolDecision.Reason originates from the
@@ -803,7 +818,7 @@ func (l *AgenticLoop) runInnerLoop(
 					InputSize:   len(call.Input),
 					OutputSize:  len(output),
 				})
-				toolNameAttr := metric.WithAttributes(attribute.String("tool.name", call.Name))
+				toolNameAttr := l.metricAttrs(attribute.String("tool.name", call.Name))
 				l.Metrics.ToolCalls.Add(ctx, 1, toolNameAttr)
 				l.Metrics.ToolCallDuration.Record(ctx, float64(callDuration.Milliseconds()), toolNameAttr)
 				l.Metrics.ToolErrors.Add(ctx, 1, toolNameAttr)
@@ -821,7 +836,7 @@ func (l *AgenticLoop) runInnerLoop(
 				}
 				if outcome := stall.recordToolCall(call.Name, call.Input, false); outcome != "" {
 					l.Metrics.Stalls.Add(ctx, 1,
-						metric.WithAttributes(attribute.String("run.mode", config.Mode)),
+						l.metricAttrs(attribute.String("run.mode", config.Mode)),
 					)
 					messages = appendToolResults(messages, toolResults)
 					return messages, outcome
@@ -829,7 +844,13 @@ func (l *AgenticLoop) runInnerLoop(
 				continue
 			}
 
-			output, success := l.dispatchToolCall(ctx, call)
+			// Pass the tool-span ctx (not the outer ctx) so spans created
+			// inside dispatchToolCall — the permission.check span and, for
+			// spawn_agent, every span the child sub-agent loop creates —
+			// nest under tool.<name>. Without this threading the tool span
+			// has no logical children in the trace and a sub-agent's
+			// turn[N] / tool spans land at run-root level (#55).
+			output, success := l.dispatchToolCall(toolSpanCtx, call)
 			callDuration := time.Since(callStart)
 
 			toolSpan.SetAttributes(
@@ -844,7 +865,18 @@ func (l *AgenticLoop) runInnerLoop(
 
 			errorReason := ""
 			if !success {
-				errorReason = output
+				// Scrub before persisting: dispatchToolCall returns the
+				// raw tool error (e.g. "Permission check error: " +
+				// err.Error(), "Tool error: " + err.Error(), schema
+				// validation echoes of input fields). Tool handlers can
+				// surface IAM error messages, policy file paths, or
+				// echoes of secret-shaped inputs. Without scrubbing,
+				// NestedJSONLEmitter.RecordToolCall forwards this raw
+				// string to the parent's JSONL trace where it is
+				// written via json.Marshal — bypassing slog's
+				// ScrubHandler. Mirrors the provider error scrubbing
+				// at lines ~584 / ~632. (#55, B4 — CWE-532.)
+				errorReason = security.Scrub(output)
 			}
 			l.Trace.RecordToolCall(types.ToolCallTrace{
 				Name:        call.Name,
@@ -855,7 +887,7 @@ func (l *AgenticLoop) runInnerLoop(
 				OutputSize:  len(output),
 			})
 
-			toolNameAttr := metric.WithAttributes(attribute.String("tool.name", call.Name))
+			toolNameAttr := l.metricAttrs(attribute.String("tool.name", call.Name))
 			l.Metrics.ToolCalls.Add(ctx, 1, toolNameAttr)
 			l.Metrics.ToolCallDuration.Record(ctx, float64(callDuration.Milliseconds()), toolNameAttr)
 			if !success {
@@ -879,7 +911,7 @@ func (l *AgenticLoop) runInnerLoop(
 			// Check for stall conditions after each tool call.
 			if outcome := stall.recordToolCall(call.Name, call.Input, success); outcome != "" {
 				l.Metrics.Stalls.Add(ctx, 1,
-					metric.WithAttributes(attribute.String("run.mode", config.Mode)),
+					l.metricAttrs(attribute.String("run.mode", config.Mode)),
 				)
 				messages = appendToolResults(messages, toolResults)
 				return messages, outcome
@@ -1024,7 +1056,16 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		return true, &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "none"}, false
 	}
 	start := time.Now()
-	_, span := l.Tracer.Start(l.traceCtx(ctx), "guard."+string(in.Phase),
+	// Span parent: when the caller's ctx already carries an active span
+	// (PhasePreTool — tool.<name> via toolSpanCtx) use it directly so the
+	// guard span nests under the dispatch path (#55, B3). For PreTurn /
+	// PostTurn the caller's ctx carries no span, so fall back to the
+	// loop's run-root TraceContext to preserve existing trace shape.
+	spanParent := ctx
+	if !oteltrace.SpanFromContext(ctx).SpanContext().IsValid() {
+		spanParent = l.traceCtx(ctx)
+	}
+	_, span := l.Tracer.Start(spanParent, "guard."+string(in.Phase),
 		oteltrace.WithAttributes(
 			attribute.String("guard.phase", string(in.Phase)),
 			attribute.String("guard.source", in.Source),
@@ -1044,11 +1085,11 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		span.End()
 		guardID := guardIDFromDecision(decision)
 		if l.Metrics != nil {
-			l.Metrics.GuardErrors.Add(ctx, 1, metric.WithAttributes(
+			l.Metrics.GuardErrors.Add(ctx, 1, l.metricAttrs(
 				attribute.String("guard.phase", string(in.Phase)),
 				attribute.String("guard.id", guardID),
 			))
-			l.Metrics.GuardDuration.Record(ctx, float64(elapsed.Milliseconds()), metric.WithAttributes(
+			l.Metrics.GuardDuration.Record(ctx, float64(elapsed.Milliseconds()), l.metricAttrs(
 				attribute.String("guard.phase", string(in.Phase)),
 				attribute.String("guard.id", guardID),
 			))
@@ -1087,19 +1128,19 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 	isSkip := decision.Reason == guard.ReasonSkippedMinChunk
 	if l.Metrics != nil {
 		if isSkip {
-			l.Metrics.GuardSkips.Add(ctx, 1, metric.WithAttributes(
+			l.Metrics.GuardSkips.Add(ctx, 1, l.metricAttrs(
 				attribute.String("guard.phase", string(in.Phase)),
 				attribute.String("guard.id", decision.GuardID),
 				attribute.String("reason", "min_chunk_chars"),
 			))
 		} else {
-			l.Metrics.GuardChecks.Add(ctx, 1, metric.WithAttributes(
+			l.Metrics.GuardChecks.Add(ctx, 1, l.metricAttrs(
 				attribute.String("guard.phase", string(in.Phase)),
 				attribute.String("guard.id", decision.GuardID),
 				attribute.String("guard.verdict", string(decision.Verdict)),
 			))
 		}
-		l.Metrics.GuardDuration.Record(ctx, float64(elapsed.Milliseconds()), metric.WithAttributes(
+		l.Metrics.GuardDuration.Record(ctx, float64(elapsed.Milliseconds()), l.metricAttrs(
 			attribute.String("guard.phase", string(in.Phase)),
 			attribute.String("guard.id", decision.GuardID),
 		))
@@ -1139,7 +1180,7 @@ func (l *AgenticLoop) recordSpotlightApplied(ctx context.Context, phase guard.Ph
 		return
 	}
 	if l.Metrics != nil {
-		l.Metrics.GuardSpotlights.Add(ctx, 1, metric.WithAttributes(
+		l.Metrics.GuardSpotlights.Add(ctx, 1, l.metricAttrs(
 			attribute.String("guard.id", decision.GuardID),
 			attribute.String("guard.phase", string(phase)),
 		))
