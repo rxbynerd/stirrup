@@ -775,7 +775,13 @@ func (l *AgenticLoop) runInnerLoop(
 				Mode:      config.Mode,
 				RunID:     config.RunID,
 			}
-			preToolAllow, preToolDecision, _ := l.guardCheck(ctx, preToolIn, guardFailOpen(config))
+			// Pass the tool-span ctx (not the outer turn ctx) so the
+			// guard.pre_tool span created inside guardCheck nests under
+			// tool.<name> rather than appearing as a sibling of it. This
+			// matches the toolSpanCtx threading at the permission.check
+			// site below; without it the guard span is mis-attributed
+			// in OTel traces for every denied tool call (#55, B3).
+			preToolAllow, preToolDecision, _ := l.guardCheck(toolSpanCtx, preToolIn, guardFailOpen(config))
 			if !preToolAllow {
 				// The user-visible tool error MUST be a fixed string:
 				// preToolDecision.Reason originates from the
@@ -1039,7 +1045,16 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		return true, &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "none"}, false
 	}
 	start := time.Now()
-	_, span := l.Tracer.Start(l.traceCtx(ctx), "guard."+string(in.Phase),
+	// Span parent: when the caller's ctx already carries an active span
+	// (PhasePreTool — tool.<name> via toolSpanCtx) use it directly so the
+	// guard span nests under the dispatch path (#55, B3). For PreTurn /
+	// PostTurn the caller's ctx carries no span, so fall back to the
+	// loop's run-root TraceContext to preserve existing trace shape.
+	spanParent := ctx
+	if !oteltrace.SpanFromContext(ctx).SpanContext().IsValid() {
+		spanParent = l.traceCtx(ctx)
+	}
+	_, span := l.Tracer.Start(spanParent, "guard."+string(in.Phase),
 		oteltrace.WithAttributes(
 			attribute.String("guard.phase", string(in.Phase)),
 			attribute.String("guard.source", in.Source),

@@ -13,6 +13,7 @@ import (
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -231,4 +232,114 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 			t.Logf("  %-24s  parent=%s  span=%s", s.Name, s.Parent.SpanID(), s.SpanContext.SpanID())
 		}
 	}
+}
+
+// TestLoop_PreToolGuardSpanNestsUnderToolSpan is the regression test
+// for #55 B3: the guard.pre_tool span created inside guardCheck must
+// be parented to the tool.<name> span, not to the run-root, so OTel
+// traces correctly show "tool dispatch -> guard pre-tool denied" as a
+// nested operation. Before the fix, guardCheck was passed the outer
+// turn ctx and the resulting guard.pre_tool span landed as a sibling
+// of tool.<name> for every denied tool call.
+//
+// Setup: a single-turn provider emitting one tool_call, with a
+// fakeGuard configured to deny the PhasePreTool check. The tool.test
+// span and guard.pre_tool span are emitted via the in-memory exporter;
+// the assertion is on the parent SpanID linkage between them.
+func TestLoop_PreToolGuardSpanNestsUnderToolSpan(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	emitter := tracepkg.NewOTelTraceEmitterForTest(tp)
+	tracer := emitter.Tracer()
+
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		},
+	}
+
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:              "test_tool",
+		Description:       "A test tool",
+		InputSchema:       json.RawMessage(`{"type":"object","properties":{}}`),
+		WorkspaceMutating: false,
+		RequiresApproval:  false,
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "should not be called", nil
+		},
+	})
+
+	loop := &AgenticLoop{
+		Provider:    prov,
+		Router:      router.NewStaticRouter("anthropic", "claude-sonnet-4-6"),
+		Prompt:      prompt.NewDefaultPromptBuilder(),
+		Context:     contextpkg.NewSlidingWindowStrategy(),
+		Tools:       registry,
+		Executor:    nil,
+		Edit:        edit.NewWholeFileStrategy(),
+		Verifier:    verifier.NewNoneVerifier(),
+		Permissions: permission.NewAllowAll(),
+		Git:         git.NewNoneGitStrategy(),
+		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
+		Trace:       emitter,
+		Tracer:      tracer,
+		Metrics:     observability.NewNoopMetrics(),
+		Logger:      slog.Default(),
+		// Deny-everything guard: PreTurn allows turn 0 (we want the
+		// loop to reach tool dispatch), so we narrow the deny to the
+		// PreTool phase only via a custom guard implementation.
+		GuardRail: &phaseSpecificDenyGuard{denyPhase: guard.PhasePreTool},
+	}
+
+	config := buildTestConfig()
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+
+	// Locate tool.test_tool and guard.pre_tool.
+	var toolSpan, guardSpan tracetest.SpanStub
+	for _, s := range spans {
+		switch s.Name {
+		case "tool.test_tool":
+			toolSpan = s
+		case "guard.pre_tool":
+			guardSpan = s
+		}
+	}
+	if toolSpan.Name == "" {
+		t.Fatal("no tool.test_tool span found in exported spans")
+	}
+	if guardSpan.Name == "" {
+		t.Fatal("no guard.pre_tool span found in exported spans")
+	}
+
+	if guardSpan.Parent.SpanID() != toolSpan.SpanContext.SpanID() {
+		t.Errorf("guard.pre_tool.Parent.SpanID = %s, want tool.test_tool SpanID %s",
+			guardSpan.Parent.SpanID(), toolSpan.SpanContext.SpanID())
+		t.Log("emitted spans (name -> parent.SpanID -> span.SpanID):")
+		for _, s := range spans {
+			t.Logf("  %-24s  parent=%s  span=%s", s.Name, s.Parent.SpanID(), s.SpanContext.SpanID())
+		}
+	}
+}
+
+// phaseSpecificDenyGuard denies a specific guard phase and allows all
+// others. Used in the B3 nesting test to ensure PreTurn allows turn 0
+// (so the loop reaches tool dispatch) while PreTool denies the call
+// (so the guard.pre_tool span is actually emitted).
+type phaseSpecificDenyGuard struct {
+	denyPhase guard.Phase
+}
+
+func (g *phaseSpecificDenyGuard) Check(_ context.Context, in guard.Input) (*guard.Decision, error) {
+	if in.Phase == g.denyPhase {
+		return &guard.Decision{Verdict: guard.VerdictDeny, GuardID: "phase-deny", Reason: "denied"}, nil
+	}
+	return &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "phase-deny"}, nil
 }
