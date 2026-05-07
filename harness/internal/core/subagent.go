@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -198,20 +197,26 @@ func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentMode str
 	if parent == nil || parent.Metrics == nil {
 		return
 	}
-	parent.Metrics.SubagentSpawns.Add(ctx, 1, metric.WithAttributes(
+	// Route every observation through parent.metricAttrs so the loop's
+	// MetricAttrs (e.g. run.subagent / run.parent_id when the parent is
+	// itself a sub-agent) prepend correctly. Bypassing this with raw
+	// metric.WithAttributes would drop those attributes on multi-level
+	// spawn trees and break the attribution chain on dashboards
+	// (CWE-778).
+	parent.Metrics.SubagentSpawns.Add(ctx, 1, parent.metricAttrs(
 		attribute.String("parent.mode", parentMode),
 		attribute.Bool("success", success),
 	))
-	parent.Metrics.SubagentDuration.Record(ctx, float64(elapsed.Milliseconds()), metric.WithAttributes(
+	parent.Metrics.SubagentDuration.Record(ctx, float64(elapsed.Milliseconds()), parent.metricAttrs(
 		attribute.String("parent.mode", parentMode),
 	))
 	if runTrace == nil {
 		return
 	}
-	parent.Metrics.SubagentTokensInput.Add(ctx, int64(runTrace.TokenUsage.Input), metric.WithAttributes(
+	parent.Metrics.SubagentTokensInput.Add(ctx, int64(runTrace.TokenUsage.Input), parent.metricAttrs(
 		attribute.String("parent.mode", parentMode),
 	))
-	parent.Metrics.SubagentTokensOutput.Add(ctx, int64(runTrace.TokenUsage.Output), metric.WithAttributes(
+	parent.Metrics.SubagentTokensOutput.Add(ctx, int64(runTrace.TokenUsage.Output), parent.metricAttrs(
 		attribute.String("parent.mode", parentMode),
 	))
 }
