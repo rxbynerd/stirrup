@@ -54,6 +54,45 @@ func TestMetricsRecording_Counters(t *testing.T) {
 		attribute.String("guard.id", "granite-guardian"),
 	))
 
+	// Component-level counters (issue #97) — exercised so a regression
+	// that silently dropped one of the new instruments would be caught
+	// here. Attributes are representative of what call-site wiring is
+	// expected to emit (parent.mode, server.name, strategy, type, etc.).
+	m.SubagentSpawns.Add(ctx, 2, metric.WithAttributes(
+		attribute.String("parent.mode", "execution"),
+	))
+	m.SubagentTokensInput.Add(ctx, 800, metric.WithAttributes(
+		attribute.String("parent.mode", "execution"),
+	))
+	m.SubagentTokensOutput.Add(ctx, 120, metric.WithAttributes(
+		attribute.String("parent.mode", "execution"),
+	))
+	m.MCPCalls.Add(ctx, 6, metric.WithAttributes(
+		attribute.String("server.name", "test-server"),
+		attribute.String("tool", "search_docs"),
+	))
+	m.EditAttempts.Add(ctx, 4, metric.WithAttributes(
+		attribute.String("strategy", "search-replace"),
+	))
+	m.VerifierRuns.Add(ctx, 3, metric.WithAttributes(
+		attribute.String("type", "test-runner"),
+	))
+	m.CodeScannerScans.Add(ctx, 5, metric.WithAttributes(
+		attribute.String("scanner", "patterns"),
+	))
+	m.CodeScannerFindings.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("scanner", "patterns"),
+		attribute.String("severity", "block"),
+	))
+	m.PermissionDecisions.Add(ctx, 9, metric.WithAttributes(
+		attribute.String("policy", "deny-side-effects"),
+		attribute.String("decision", "allow"),
+		attribute.String("tool", "read_file"),
+	))
+	m.ContextStrategyRuns.Add(ctx, 2, metric.WithAttributes(
+		attribute.String("strategy", "sliding-window"),
+	))
+
 	// Collect metrics.
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
@@ -79,6 +118,18 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	assertInt64Sum(t, sums, "stirrup.guard.errors", 2)
 	assertInt64Sum(t, sums, "stirrup.guard.skips", 4)
 	assertInt64Sum(t, sums, "stirrup.guard.spotlights", 3)
+
+	// Component-level counters.
+	assertInt64Sum(t, sums, "stirrup.subagent.spawns", 2)
+	assertInt64Sum(t, sums, "stirrup.subagent.tokens.input", 800)
+	assertInt64Sum(t, sums, "stirrup.subagent.tokens.output", 120)
+	assertInt64Sum(t, sums, "stirrup.mcp.calls", 6)
+	assertInt64Sum(t, sums, "stirrup.edit.attempts", 4)
+	assertInt64Sum(t, sums, "stirrup.verifier.runs", 3)
+	assertInt64Sum(t, sums, "stirrup.codescanner.scans", 5)
+	assertInt64Sum(t, sums, "stirrup.codescanner.findings", 1)
+	assertInt64Sum(t, sums, "stirrup.permission.decisions", 9)
+	assertInt64Sum(t, sums, "stirrup.context.strategy_runs", 2)
 }
 
 func TestMetricsRecording_Histograms(t *testing.T) {
@@ -106,6 +157,21 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 		attribute.String("guard.id", "granite-guardian"),
 	))
 
+	// Component-level histograms (issue #97).
+	m.SubagentDuration.Record(ctx, 1200.0, metric.WithAttributes(
+		attribute.String("parent.mode", "execution"),
+	))
+	m.MCPDuration.Record(ctx, 75.0, metric.WithAttributes(
+		attribute.String("server.name", "test-server"),
+		attribute.String("tool", "search_docs"),
+	))
+	m.EditDuration.Record(ctx, 18.0, metric.WithAttributes(
+		attribute.String("strategy", "search-replace"),
+	))
+	m.VerifierDuration.Record(ctx, 350.0, metric.WithAttributes(
+		attribute.String("type", "test-runner"),
+	))
+
 	// Collect metrics.
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
@@ -120,6 +186,16 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	assertFloat64HistogramCount(t, histograms, "stirrup.harness.tool_call_duration", 1)
 	assertFloat64HistogramCount(t, histograms, "stirrup.guard.duration_ms", 1)
 	assertFloat64HistogramSum(t, histograms, "stirrup.guard.duration_ms", 42.0)
+
+	// Component-level histograms.
+	assertFloat64HistogramCount(t, histograms, "stirrup.subagent.duration_ms", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.subagent.duration_ms", 1200.0)
+	assertFloat64HistogramCount(t, histograms, "stirrup.mcp.duration_ms", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.mcp.duration_ms", 75.0)
+	assertFloat64HistogramCount(t, histograms, "stirrup.edit.duration_ms", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.edit.duration_ms", 18.0)
+	assertFloat64HistogramCount(t, histograms, "stirrup.verifier.duration_ms", 1)
+	assertFloat64HistogramSum(t, histograms, "stirrup.verifier.duration_ms", 350.0)
 }
 
 // TestMetricsRecording_Resource is the regression test for the
