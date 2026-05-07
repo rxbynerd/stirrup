@@ -86,19 +86,6 @@ func (r *metricRecorder) Check(ctx context.Context, tool types.ToolDefinition, i
 	return result, err
 }
 
-// AddApprovalTool exposes the underlying AskUpstreamPolicy method so
-// callers (factory) that registered approval tools post-construction
-// (e.g. spawn_agent) can still reach through the wrapper. Without this,
-// wrapping ask-upstream would silently auto-allow late-registered tools.
-// Returns false when the wrapped policy is not an *AskUpstreamPolicy.
-func (r *metricRecorder) AddApprovalTool(name string) bool {
-	if ask, ok := r.inner.(*AskUpstreamPolicy); ok {
-		ask.AddApprovalTool(name)
-		return true
-	}
-	return false
-}
-
 // Unwrap returns the wrapped PermissionPolicy. Exposed so callers that
 // need to type-assert against the concrete policy type (tests, the
 // factory's spawn_agent path) can reach through the metric wrapper. Use

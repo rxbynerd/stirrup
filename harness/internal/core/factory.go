@@ -789,18 +789,15 @@ func wrapWithCodeScanner(inner edit.EditStrategy, cfg *types.CodeScannerConfig, 
 	return edit.NewScannedStrategy(inner, scanner, cfg, emitter), nil
 }
 
-// addApprovalTool routes an approval-tool registration through any
-// metric-recorder wrapping. Direct *permission.AskUpstreamPolicy is
-// handled too (covering tests that bypass the wrapper). Returns true
-// when the registration landed on an ask-upstream policy.
+// addApprovalTool routes an approval-tool registration to the
+// underlying *AskUpstreamPolicy, walking through any metric-recorder
+// wrapper via permission.Unwrap. Returns true when the registration
+// landed on an ask-upstream policy. Centralising the unwrap means the
+// metric wrapper does not need its own AddApprovalTool delegation —
+// the wrapper preserves Check() semantics; reaching the concrete
+// policy is the caller's job.
 func addApprovalTool(pp permission.PermissionPolicy, name string) bool {
-	type askThrough interface {
-		AddApprovalTool(name string) bool
-	}
-	if a, ok := pp.(askThrough); ok {
-		return a.AddApprovalTool(name)
-	}
-	if ask, ok := pp.(*permission.AskUpstreamPolicy); ok {
+	if ask, ok := permission.Unwrap(pp).(*permission.AskUpstreamPolicy); ok {
 		ask.AddApprovalTool(name)
 		return true
 	}

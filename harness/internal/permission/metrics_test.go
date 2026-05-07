@@ -144,21 +144,22 @@ func TestUnwrap_PassesThroughWrapper(t *testing.T) {
 	}
 }
 
-// TestMetricRecorder_AddApprovalToolPropagates verifies the wrapper
-// forwards AddApprovalTool to an inner AskUpstreamPolicy. Without this
-// propagation, late-registered tools (spawn_agent) would silently
-// auto-allow.
-func TestMetricRecorder_AddApprovalToolPropagates(t *testing.T) {
+// TestMetricRecorder_AddApprovalToolViaUnwrap verifies that callers
+// can reach the inner AskUpstreamPolicy through Unwrap to register
+// late-arriving approval tools. Without this access path,
+// wrapping ask-upstream would silently auto-allow tools registered
+// after policy construction (e.g. spawn_agent). The wrapper does not
+// expose its own AddApprovalTool — the canonical entry point is
+// Unwrap, which is uniform across wrapped and unwrapped policies.
+func TestMetricRecorder_AddApprovalToolViaUnwrap(t *testing.T) {
 	ask := NewAskUpstreamPolicy(nopTransport{}, map[string]bool{}, 0)
 	rec, _ := newRecorder(t, ask, "ask-upstream")
 
-	wrapped, ok := rec.(interface{ AddApprovalTool(string) bool })
+	inner, ok := Unwrap(rec).(*AskUpstreamPolicy)
 	if !ok {
-		t.Fatal("metric recorder must expose AddApprovalTool")
+		t.Fatalf("Unwrap should reach *AskUpstreamPolicy through the metric wrapper, got %T", Unwrap(rec))
 	}
-	if !wrapped.AddApprovalTool("late_tool") {
-		t.Error("AddApprovalTool returned false for AskUpstreamPolicy inner")
-	}
+	inner.AddApprovalTool("late_tool")
 
 	got := ask.ApprovalToolNames()
 	var found bool
