@@ -44,11 +44,12 @@ stirrup/
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
   eval/                      # Eval framework
     cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift, compare-to-production)
+    spec/                    # HCL suite parser (spec.LoadSuiteHCL); .json legacy path lives in cmd/eval
     judge/                   # Judge system: test-command, file-exists, file-contains, composite
     runner/                  # Suite runner (live + replay) and replay evaluator
     reporter/                # Comparison reporter: diffs two SuiteResults, text formatting
     lakehouse/               # TraceLakehouse adapters: file-based (FileStore)
-    suites/                  # Eval suite definitions (JSON)
+    suites/                  # Eval suite definitions (HCL canonical, JSON legacy)
     baselines/               # Stored baseline results for CI comparison
 ```
 
@@ -228,8 +229,9 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 
 ### Eval framework
 
+- **Spec** (`eval/spec/`) — HCLv2 suite loader (`spec.LoadSuiteHCL`). Mirrors `types.EvalSuite` one for one with `hcl:` tags on internal mirror structs so `types/eval.go` stays free of optional-dep tags. The CLI dispatches on file extension: `.hcl` is canonical, `.json` is the legacy path that still uses `encoding/json` directly. Top-level blocks other than `suite` (e.g. `variable`, `locals`, `for_each`) are rejected today and reserved for future grammar growth.
 - **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command` (shell exit code), `file-exists`, `file-contains` (regex), `composite` (`all`/`any`), and `diff-review` (stub). Path traversal prevention on all workspace-relative paths.
-- **Runner** (`eval/runner/`) — orchestrates suite execution: loads `EvalSuite` from JSON, creates temp workspaces, optionally clones repos at specific refs, invokes the harness binary, parses JSONL traces, applies judges. Sequential task execution. Errors per-task are captured without halting the suite.
+- **Runner** (`eval/runner/`) — orchestrates suite execution: loads `EvalSuite` from disk (HCL or JSON), creates temp workspaces, optionally clones repos at specific refs, invokes the harness binary, parses JSONL traces, applies judges. Sequential task execution. Errors per-task are captured without halting the suite.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness. Useful for testing new judge criteria against existing recordings.
 - **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets. Detects regressions (pass→fail/error) and improvements (fail/error→pass). Computes turn deltas from `RunTrace`. Text formatter for human-readable output.
 - **CLI** (`eval/cmd/eval/`) — `run`, `compare`, `baseline`, `mine-failures`, `drift`, `compare-to-production` subcommands.
@@ -386,6 +388,7 @@ Exceptions where external deps are accepted:
 - `google.golang.org/grpc` + `google.golang.org/protobuf` for gRPC transport (the reference Go gRPC implementation)
 - `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace and metrics (the reference OTel SDK)
 - `golang.org/x/oauth2` for the Gemini Vertex AI credential layer (Application Default Credentials, JWT service-account flow, and metadata-server token sources). `cloud.google.com/go/compute/metadata` rides as an indirect dep used through `google.ComputeTokenSource`; no other Google SDK packages are pulled in.
+- `github.com/hashicorp/hcl/v2` for parsing eval suite HCL files (`eval/spec/`). Confined to the eval module so the harness binary stays unaffected; HCL grammar handling is in the same bucket as cobra/jsonschema — production-grade libraries for problems we don't want to re-invent.
 
 ## Lint policy
 

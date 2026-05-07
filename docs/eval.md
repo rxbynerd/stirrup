@@ -42,28 +42,50 @@ go build -o stirrup ./harness/cmd/stirrup
 
 ### Eval suite
 
-An `EvalSuite` is a JSON file describing a collection of tasks with
-reproducible starting states and outcome judges
-(`types/eval.go::EvalSuite`).
+An `EvalSuite` describes a collection of tasks with reproducible
+starting states and outcome judges (`types/eval.go::EvalSuite`).
+Suites are authored in HCLv2; the legacy JSON format is still
+accepted for migration purposes but new suites should use `.hcl`.
 
-```json
-{
-  "id": "fix-nil-check-regressions",
-  "description": "Tasks mined from production nil-pointer fixes",
-  "tasks": [
-    {
-      "id": "task-001",
-      "description": "Fix the nil deref in pkg/foo/bar.go",
-      "repo": "https://github.com/example/repo",
-      "ref": "abc123",
-      "prompt": "The test in bar_test.go is failing with a nil pointer. Fix it.",
-      "mode": "execution",
-      "judge": {
-        "type": "test-command",
-        "command": "go test ./pkg/foo/..."
-      }
+```hcl
+suite "fix-nil-check-regressions" {
+  description = "Tasks mined from production nil-pointer fixes"
+
+  task "task-001" {
+    description = "Fix the nil deref in pkg/foo/bar.go"
+    repo        = "https://github.com/example/repo"
+    ref         = "abc123"
+    mode        = "execution"
+    prompt      = <<-EOT
+      The test in bar_test.go is failing with a nil pointer. Fix it.
+    EOT
+
+    judge {
+      type    = "test-command"
+      command = "go test ./pkg/foo/..."
     }
-  ]
+  }
+}
+```
+
+Composite judges nest `judge` blocks recursively rather than using a
+list expression, so the grammar stays homogeneous:
+
+```hcl
+judge {
+  type    = "composite"
+  require = "all"
+
+  judge {
+    type  = "file-exists"
+    paths = ["brief.md"]
+  }
+
+  judge {
+    type    = "file-contains"
+    path    = "brief.md"
+    pattern = "(?i)token"
+  }
 }
 ```
 
@@ -71,6 +93,19 @@ Each task gets a fresh temporary workspace. If `repo` and `ref` are
 set the runner clones the repo at that ref before invoking the
 harness. Tasks currently execute sequentially even when
 `--concurrency` is passed (`eval/runner/runner.go:31`).
+
+The `.json` loader is preserved for back-compatibility — `eval run
+--suite x.json` still works and produces the same `types.EvalSuite`
+the HCL path produces. The CLI dispatches on file extension; `.hcl`
+is canonical and `.json` is legacy. Output artifacts (`result.json`,
+mined suites from `mine-failures`, etc.) remain JSON.
+
+Top-level blocks other than `suite` (e.g. `variable`, `locals`,
+`for_each`) are intentionally rejected today. The grammar deliberately
+leaves runway for those keywords; they'll be added in follow-up issues
+when concrete use cases land. Authors who need parameterisation today
+should generate suites from a higher-level tool and emit the static
+HCL.
 
 Suite definitions live in `eval/suites/`. CI baselines live in
 `eval/baselines/`.
@@ -134,21 +169,21 @@ stirrup-eval <command> [options]
 
 ```bash
 ./stirrup-eval run \
-  --suite eval/suites/regression.json \
+  --suite eval/suites/regression.hcl \
   --output results/ \
   --harness ./stirrup
 ```
 
-Loads the suite, creates per-task temp workspaces (cloning `repo` at
-`ref` when set), invokes the harness binary as a subprocess, parses
-the JSONL trace it emits, and applies each task's judge to the
-workspace. Writes a `result.json` (`eval.SuiteResult`) into
-`--output`. Errors per-task are captured in `TaskResult.Error`
-without halting the suite.
+Loads the suite (extension-dispatched: `.hcl` is canonical, `.json` is
+legacy), creates per-task temp workspaces (cloning `repo` at `ref`
+when set), invokes the harness binary as a subprocess, parses the
+JSONL trace it emits, and applies each task's judge to the workspace.
+Writes a `result.json` (`eval.SuiteResult`) into `--output`. Errors
+per-task are captured in `TaskResult.Error` without halting the suite.
 
 | Flag             | Default          | Description                                                  |
 |------------------|------------------|--------------------------------------------------------------|
-| `--suite`        | required         | Path to `EvalSuite` JSON.                                    |
+| `--suite`        | required         | Path to `EvalSuite` (`.hcl` preferred, `.json` legacy).      |
 | `--output`       | current dir      | Directory for `result.json` and per-task artifacts.          |
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
 | `--concurrency`  | `1`              | Requested parallelism. Honoured as `1` until concurrency lands. |
@@ -263,7 +298,8 @@ and blocks the container publish.
 
 ### Adding a regression suite to CI
 
-1. Author an `EvalSuite` JSON file under `eval/suites/`.
+1. Author an `EvalSuite` HCL file under `eval/suites/` (e.g.
+   `eval/suites/<name>.hcl`).
 2. Run it once with `eval run` and capture `result.json` as the
    baseline at `eval/baselines/<name>.json`.
 3. On subsequent CI runs, `eval-gate` runs the suite and compares to
