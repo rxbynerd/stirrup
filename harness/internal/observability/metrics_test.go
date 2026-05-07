@@ -69,7 +69,7 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	))
 	m.MCPCalls.Add(ctx, 6, metric.WithAttributes(
 		attribute.String("server.name", "test-server"),
-		attribute.String("tool", "search_docs"),
+		attribute.String("tool.name", "search_docs"),
 	))
 	m.EditAttempts.Add(ctx, 4, metric.WithAttributes(
 		attribute.String("strategy", "search-replace"),
@@ -163,7 +163,7 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 	))
 	m.MCPDuration.Record(ctx, 75.0, metric.WithAttributes(
 		attribute.String("server.name", "test-server"),
-		attribute.String("tool", "search_docs"),
+		attribute.String("tool.name", "search_docs"),
 	))
 	m.EditDuration.Record(ctx, 18.0, metric.WithAttributes(
 		attribute.String("strategy", "search-replace"),
