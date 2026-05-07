@@ -57,19 +57,10 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		return nil, fmt.Errorf("sub-agent prompt must not be empty")
 	}
 
-	// Determine max turns: default to 10, cap at the hard limit.
-	maxTurns := subConfig.MaxTurns
-	if maxTurns <= 0 {
-		maxTurns = defaultSubAgentMaxTurns
-	}
-	if maxTurns > maxSubAgentMaxTurns {
-		maxTurns = maxSubAgentMaxTurns
-	}
-	// Also cap at the parent's remaining turns to prevent the child from
-	// exceeding the parent's overall budget.
-	if maxTurns > parentConfig.MaxTurns {
-		maxTurns = parentConfig.MaxTurns
-	}
+	// Determine max turns via the dedicated helper so tests can exercise
+	// the capping branches without driving an entire SpawnSubAgent path
+	// (#55, B5).
+	maxTurns := capSubAgentMaxTurns(subConfig.MaxTurns, parentConfig.MaxTurns)
 
 	// Determine mode.
 	mode := subConfig.Mode
@@ -181,6 +172,31 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Output:  output,
 		Turns:   runTrace.Turns,
 	}, nil
+}
+
+// capSubAgentMaxTurns returns the effective MaxTurns a sub-agent should
+// run with, given the caller-requested value and the parent run's own
+// MaxTurns budget. The capping rules are, in order:
+//
+//  1. A non-positive request (zero) defaults to defaultSubAgentMaxTurns.
+//  2. Cap at maxSubAgentMaxTurns regardless of the request.
+//  3. Cap at the parent's MaxTurns so the child cannot exceed the
+//     parent's overall budget.
+//
+// Pulled out of SpawnSubAgent so tests can exercise the branches
+// directly without standing up a full sub-agent loop (#55, B5).
+func capSubAgentMaxTurns(requested, parentMaxTurns int) int {
+	maxTurns := requested
+	if maxTurns <= 0 {
+		maxTurns = defaultSubAgentMaxTurns
+	}
+	if maxTurns > maxSubAgentMaxTurns {
+		maxTurns = maxSubAgentMaxTurns
+	}
+	if maxTurns > parentMaxTurns {
+		maxTurns = parentMaxTurns
+	}
+	return maxTurns
 }
 
 // filterToolRegistry creates a new Registry containing all tools from the

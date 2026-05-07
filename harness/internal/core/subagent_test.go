@@ -149,7 +149,13 @@ func TestSpawnSubAgent_EmptyPromptReturnsError(t *testing.T) {
 	}
 }
 
-func TestSpawnSubAgent_MaxTurnsCapping(t *testing.T) {
+// TestCapSubAgentMaxTurns exercises the production capSubAgentMaxTurns
+// helper so all three capping branches in SpawnSubAgent (#55, B5) are
+// covered directly. The previous version of this test replicated the
+// arithmetic in the test body and never called the production code,
+// so a deletion of one of the branches would leave the test passing
+// while production was broken.
+func TestCapSubAgentMaxTurns(t *testing.T) {
 	tests := []struct {
 		name           string
 		requested      int
@@ -164,21 +170,58 @@ func TestSpawnSubAgent_MaxTurnsCapping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			maxTurns := tt.requested
-			if maxTurns <= 0 {
-				maxTurns = defaultSubAgentMaxTurns
+			got := capSubAgentMaxTurns(tt.requested, tt.parentMax)
+			if got != tt.expectedCapped {
+				t.Errorf("capSubAgentMaxTurns(%d, %d) = %d, want %d",
+					tt.requested, tt.parentMax, got, tt.expectedCapped)
 			}
-			if maxTurns > maxSubAgentMaxTurns {
-				maxTurns = maxSubAgentMaxTurns
-			}
-			if maxTurns > tt.parentMax {
-				maxTurns = tt.parentMax
-			}
-
-			if maxTurns != tt.expectedCapped {
-				t.Errorf("expected capped maxTurns %d, got %d", tt.expectedCapped, maxTurns)
-			}
+			t.Logf("capSubAgentMaxTurns(%d, %d) = %d", tt.requested, tt.parentMax, got)
 		})
+	}
+}
+
+// TestSpawnSubAgent_MaxTurnsRespectedAtRuntime is the end-to-end
+// counterpart to TestCapSubAgentMaxTurns: it drives SpawnSubAgent
+// itself with a provider that emits text+end_turn so the run
+// completes in a single turn, and asserts the returned
+// SubAgentResult.Turns is bounded by the cap. Combined with the
+// helper test, this covers both the arithmetic and the wiring of
+// the capped value into the child loop's RunConfig (#55, B5).
+func TestSpawnSubAgent_MaxTurnsRespectedAtRuntime(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Done."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentConfig := buildTestConfig()
+	parentConfig.MaxTurns = 50 // generous parent budget so cap is not parent-bound
+
+	// Request 999 turns; expect the child to actually be capped at
+	// maxSubAgentMaxTurns. The single-turn provider then ends after
+	// turn 0, so result.Turns should be 1 and the run must not have
+	// failed for budget reasons.
+	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt:   "do a subtask",
+		MaxTurns: 999,
+	})
+	if err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+	if result.Outcome != "success" {
+		t.Errorf("expected outcome 'success' (cap accepted, run completed), got %q", result.Outcome)
+	}
+	if result.Turns < 1 {
+		t.Errorf("expected at least 1 turn, got %d", result.Turns)
+	}
+	// Sanity: the cap helper would have returned maxSubAgentMaxTurns
+	// for this requested value paired with parentConfig.MaxTurns=50.
+	wantCap := capSubAgentMaxTurns(999, parentConfig.MaxTurns)
+	if wantCap != maxSubAgentMaxTurns {
+		t.Errorf("test setup invariant violated: capSubAgentMaxTurns(999, %d) = %d, want %d",
+			parentConfig.MaxTurns, wantCap, maxSubAgentMaxTurns)
 	}
 }
 
@@ -359,6 +402,64 @@ func TestSpawnSubAgent_TraceEventsForwardedToParent(t *testing.T) {
 	}
 }
 
+// TestSpawnSubAgent_TraceToolCallsForwardedToParent is the regression
+// test for #55 B6: the end-to-end path SpawnSubAgent → child loop
+// tool dispatch → NestedJSONLEmitter.RecordToolCall → parent emitter
+// must surface tool calls on the parent's trace stream, tagged with
+// the child's RunID and the parent's ParentRunID. The original
+// forwarding test only emitted text deltas, so the tool-call branch
+// of NestedJSONLEmitter was only covered by isolated unit tests.
+func TestSpawnSubAgent_TraceToolCallsForwardedToParent(t *testing.T) {
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			// Turn 0: emit one tool_call, stop with tool_use so the
+			// loop dispatches the tool then re-enters the next turn.
+			{
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			// Turn 1: end the run.
+			{
+				{Type: "text_delta", Text: "Done."},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+
+	parentEmitter := &recordingTraceEmitter{}
+	parentLoop := buildSubAgentTestLoop(nil)
+	parentLoop.Provider = prov
+	parentLoop.Trace = parentEmitter
+
+	parentConfig := buildTestConfig()
+	parentConfig.RunID = "parent-run-toolcalls-1"
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "do a subtask",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+
+	_, calls := parentEmitter.snapshot()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one forwarded tool call on parent emitter, got none (NestedJSONLEmitter.RecordToolCall path is broken)")
+	}
+	for _, c := range calls {
+		if c.ParentRunID != parentConfig.RunID {
+			t.Errorf("forwarded ToolCallTrace.ParentRunID: got %q, want %q", c.ParentRunID, parentConfig.RunID)
+		}
+		if c.RunID == "" {
+			t.Errorf("forwarded ToolCallTrace.RunID must be populated; got empty")
+		}
+		if c.RunID == parentConfig.RunID {
+			t.Errorf("forwarded ToolCallTrace.RunID must be the child's runID, not the parent's; got %q", c.RunID)
+		}
+		if c.Name != "test_tool" {
+			t.Errorf("forwarded ToolCallTrace.Name: got %q, want %q", c.Name, "test_tool")
+		}
+	}
+}
+
 // TestSpawnSubAgent_ForwardedToolErrorReasonIsScrubbed is the
 // regression test for #55 B4 (CWE-532): when a child tool fails,
 // dispatchToolCall returns the raw error text. NestedJSONLEmitter
@@ -476,35 +577,51 @@ func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 		t.Fatalf("Collect: %v", err)
 	}
 
-	// Find the runs counter — every Run() invocation Adds 1 to it. The
-	// sub-agent run produces a data point with run.subagent=true; if no
-	// such data point exists the MetricAttrs wiring is broken.
-	var sawSubAgentDP bool
-	var sawParentRunIDDP bool
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != "stirrup.harness.runs" {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				continue
-			}
-			for _, dp := range sum.DataPoints {
-				attrs := dp.Attributes
-				if v, exists := attrs.Value(attribute.Key("run.subagent")); exists && v.AsBool() {
-					sawSubAgentDP = true
+	// Inspect both stirrup.harness.runs and stirrup.harness.turns so
+	// the assertion exercises at least two of the 14 instrument call
+	// sites that go through metricAttrs() in loop.go (#55, B7). A
+	// missing metricAttrs() call on Turns specifically would not have
+	// been caught by a runs-only assertion — Runs is incremented once
+	// per run but Turns is incremented every turn, making it the most
+	// reliable "is the wiring still hooked up" probe across the
+	// per-turn instrument cluster.
+	check := func(name string) (sawSubAgent, sawParentRunID bool) {
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name != name {
+					continue
 				}
-				if v, exists := attrs.Value(attribute.Key("run.parent_id")); exists && v.AsString() == parentConfig.RunID {
-					sawParentRunIDDP = true
+				sum, ok := m.Data.(metricdata.Sum[int64])
+				if !ok {
+					continue
+				}
+				for _, dp := range sum.DataPoints {
+					attrs := dp.Attributes
+					if v, exists := attrs.Value(attribute.Key("run.subagent")); exists && v.AsBool() {
+						sawSubAgent = true
+					}
+					if v, exists := attrs.Value(attribute.Key("run.parent_id")); exists && v.AsString() == parentConfig.RunID {
+						sawParentRunID = true
+					}
 				}
 			}
 		}
+		return
 	}
-	if !sawSubAgentDP {
+
+	sawRunsSubAgent, sawRunsParentRunID := check("stirrup.harness.runs")
+	if !sawRunsSubAgent {
 		t.Errorf("expected a stirrup.harness.runs data point with run.subagent=true; none found")
 	}
-	if !sawParentRunIDDP {
+	if !sawRunsParentRunID {
 		t.Errorf("expected a stirrup.harness.runs data point with run.parent_id=%q; none found", parentConfig.RunID)
+	}
+
+	sawTurnsSubAgent, sawTurnsParentRunID := check("stirrup.harness.turns")
+	if !sawTurnsSubAgent {
+		t.Errorf("expected a stirrup.harness.turns data point with run.subagent=true; none found (B7: metric attrs not propagated to per-turn instrument)")
+	}
+	if !sawTurnsParentRunID {
+		t.Errorf("expected a stirrup.harness.turns data point with run.parent_id=%q; none found", parentConfig.RunID)
 	}
 }
