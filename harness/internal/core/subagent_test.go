@@ -625,3 +625,126 @@ func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 		t.Errorf("expected a stirrup.harness.turns data point with run.parent_id=%q; none found", parentConfig.RunID)
 	}
 }
+
+// TestSpawnSubAgent_RecordsSubagentMetrics asserts that one
+// SpawnSubAgent invocation records exactly one stirrup.subagent.spawns
+// observation (with parent.mode + success), at least one
+// stirrup.subagent.duration_ms observation, and the input/output
+// token counters are populated from the child's RunTrace.
+func TestSpawnSubAgent_RecordsSubagentMetrics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "ok."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentLoop.Metrics = metrics
+
+	parentConfig := buildTestConfig()
+	parentConfig.RunID = "parent-subagent-metrics-1"
+	parentConfig.Mode = "execution"
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "do a subtask",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	// stirrup.subagent.spawns: exactly 1 observation, parent.mode=execution,
+	// success=true.
+	spawns := findSubagentCounter(t, rm, "stirrup.subagent.spawns")
+	if spawns.total != 1 {
+		t.Errorf("stirrup.subagent.spawns total = %d, want 1", spawns.total)
+	}
+	if spawns.attrs["parent.mode"] != "execution" {
+		t.Errorf("parent.mode = %q, want execution", spawns.attrs["parent.mode"])
+	}
+	if spawns.attrs["success"] != "true" {
+		t.Errorf("success = %q, want true", spawns.attrs["success"])
+	}
+
+	// stirrup.subagent.duration_ms: at least one observation.
+	if !subagentHistogramRecorded(t, rm, "stirrup.subagent.duration_ms") {
+		t.Error("stirrup.subagent.duration_ms recorded no observations")
+	}
+
+	// Token counters fire (their value can be zero on a mock provider
+	// that didn't report token counts, but the data point should
+	// exist).
+	if findSubagentCounter(t, rm, "stirrup.subagent.tokens.input").attrs["parent.mode"] != "execution" {
+		t.Error("stirrup.subagent.tokens.input missing parent.mode=execution attribute")
+	}
+	if findSubagentCounter(t, rm, "stirrup.subagent.tokens.output").attrs["parent.mode"] != "execution" {
+		t.Error("stirrup.subagent.tokens.output missing parent.mode=execution attribute")
+	}
+}
+
+// subagentCounterDP is a flattened view of an int64 counter; tests in
+// this file already use a similar helper for harness metrics, but the
+// sub-agent assertions need attribute access too.
+type subagentCounterDP struct {
+	total int64
+	attrs map[string]string
+}
+
+func findSubagentCounter(t *testing.T, rm metricdata.ResourceMetrics, name string) subagentCounterDP {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %q is not a Sum[int64]", name)
+			}
+			if len(sum.DataPoints) == 0 {
+				return subagentCounterDP{}
+			}
+			dp := sum.DataPoints[0]
+			out := subagentCounterDP{total: dp.Value, attrs: make(map[string]string)}
+			for _, kv := range dp.Attributes.ToSlice() {
+				out.attrs[string(kv.Key)] = kv.Value.Emit()
+			}
+			return out
+		}
+	}
+	t.Fatalf("metric %q not found", name)
+	return subagentCounterDP{}
+}
+
+func subagentHistogramRecorded(t *testing.T, rm metricdata.ResourceMetrics, name string) bool {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			h, ok := m.Data.(metricdata.Histogram[float64])
+			if !ok {
+				return false
+			}
+			for _, dp := range h.DataPoints {
+				if dp.Count > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
