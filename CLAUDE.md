@@ -49,7 +49,7 @@ stirrup/
     runner/                  # Suite runner (live + replay) and replay evaluator
     reporter/                # Comparison reporter: diffs two SuiteResults, text formatting
     lakehouse/               # TraceLakehouse adapters: file-based (FileStore)
-    suites/                  # Eval suite definitions (HCL canonical, JSON legacy)
+    suites/                  # Eval suite definitions (HCL only)
     baselines/               # Stored baseline results for CI comparison
 ```
 
@@ -115,7 +115,7 @@ A fully-populated example lives at `examples/runconfig/full.json`.
 go build -o stirrup-eval ./eval/cmd/eval
 
 # Run an eval suite
-./stirrup-eval run --suite path/to/suite.json --output results/ [--harness path/to/harness] [--dry-run]
+./stirrup-eval run --suite path/to/suite.hcl --output results/ [--harness path/to/harness] [--dry-run]
 
 # Compare two eval results
 ./stirrup-eval compare --current results/result.json --baseline baseline/result.json
@@ -124,7 +124,7 @@ go build -o stirrup-eval ./eval/cmd/eval
 ./stirrup-eval baseline --lakehouse path/to/lakehouse [--after 2026-03-01] [--mode execution] [--output metrics.json]
 
 # Mine failures into eval tasks
-./stirrup-eval mine-failures --lakehouse path/to/lakehouse [--after 2026-03-01] [--limit 20] [--output suite.json]
+./stirrup-eval mine-failures --lakehouse path/to/lakehouse [--after 2026-03-01] [--limit 20] [--output suite.hcl]
 
 # Detect metric drift between time windows
 ./stirrup-eval drift --lakehouse path/to/lakehouse --window 7d [--compare-window 7d] [--mode execution]
@@ -229,7 +229,7 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 
 ### Eval framework
 
-- **Spec** (`eval/spec/`) — HCLv2 suite loader (`spec.LoadSuiteHCL`). Mirrors `types.EvalSuite` one for one with `hcl:` tags on internal mirror structs so `types/eval.go` stays free of optional-dep tags. The CLI dispatches on file extension: `.hcl` is canonical, `.json` is the legacy path that still uses `encoding/json` directly. Top-level blocks other than `suite` (e.g. `variable`, `locals`, `for_each`) are rejected today and reserved for future grammar growth.
+- **Spec** (`eval/spec/`) — HCLv2 suite loader (`spec.LoadSuiteHCL`). Mirrors `types.EvalSuite` one for one with `hcl:` tags on internal mirror structs so `types/eval.go` stays free of optional-dep tags. HCL is the only accepted authoring format; the legacy JSON loader was removed and `eval run --suite` now requires a `.hcl` extension. Top-level blocks other than `suite` (e.g. `variable`, `locals`, `for_each`) are rejected today and reserved for future grammar growth.
 - **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command` (shell exit code), `file-exists`, `file-contains` (regex), `composite` (`all`/`any`), and `diff-review` (stub). Path traversal prevention on all workspace-relative paths.
 - **Runner** (`eval/runner/`) — orchestrates suite execution: loads `EvalSuite` from disk (HCL or JSON), creates temp workspaces, optionally clones repos at specific refs, invokes the harness binary, parses JSONL traces, applies judges. Sequential task execution. Errors per-task are captured without halting the suite.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness. Useful for testing new judge criteria against existing recordings.
@@ -241,7 +241,7 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 - **TraceLakehouse interface** (`types/lakehouse.go`) — abstracts storage and querying of production run data. Any backing store (files, Postgres, BigQuery) can implement this interface.
 - **FileStore adapter** (`eval/lakehouse/filestore.go`) — file-based TraceLakehouse implementation. Stores traces and recordings as JSON files. Supports filtering by time range, outcome, mode, model. Computes aggregate metrics with p50/p95 duration percentiles.
 - **`eval baseline`** — pulls aggregate metrics from a lakehouse for use as experiment baselines.
-- **`eval mine-failures`** — queries non-success recordings and generates EvalSuite JSON with test-command judges.
+- **`eval mine-failures`** — queries non-success recordings and generates EvalSuite HCL with test-command judges. Output is canonical HCL (via `hclwrite`) so it can be loaded by `eval run` without conversion.
 - **`eval drift`** — compares metrics between two adjacent time windows, flags significant changes (pass rate >5pp drop, turns >20% increase), exits 1 on drift.
 - **`eval compare-to-production`** — loads eval results and production metrics from lakehouse, builds `LabVsProductionReport`, prints comparison table.
 
