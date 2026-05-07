@@ -95,6 +95,68 @@ func TestLoadSuite_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestLoadSuite_HCL exercises the .hcl branch of the dispatcher: the
+// loader must route on extension and produce the same EvalSuite shape
+// the JSON branch does.
+func TestLoadSuite_HCL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suite.hcl")
+	src := `
+suite "hcl-suite" {
+  description = "an HCL suite"
+
+  task "t1" {
+    description = "first task"
+    mode        = "execution"
+    prompt      = "hello"
+
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadSuite(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.ID != "hcl-suite" {
+		t.Errorf("ID = %q, want %q", got.ID, "hcl-suite")
+	}
+	if len(got.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(got.Tasks))
+	}
+	if got.Tasks[0].ID != "t1" {
+		t.Errorf("Tasks[0].ID = %q, want %q", got.Tasks[0].ID, "t1")
+	}
+	if got.Tasks[0].Judge.Type != "test-command" {
+		t.Errorf("Tasks[0].Judge.Type = %q, want %q", got.Tasks[0].Judge.Type, "test-command")
+	}
+}
+
+// TestLoadSuite_UnsupportedExtension documents the dispatcher contract
+// for unknown file extensions.
+func TestLoadSuite_UnsupportedExtension(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "suite.yaml")
+	if err := os.WriteFile(path, []byte("id: x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadSuite(path)
+	if err == nil {
+		t.Fatal("expected error for unsupported extension")
+	}
+	if !strings.Contains(err.Error(), ".hcl") || !strings.Contains(err.Error(), ".json") {
+		t.Fatalf("error = %q, want it to mention both .hcl and .json", err.Error())
+	}
+}
+
 func TestLoadResult_Valid(t *testing.T) {
 	dir := t.TempDir()
 	result := eval.SuiteResult{

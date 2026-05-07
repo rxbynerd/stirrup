@@ -23,6 +23,7 @@ import (
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/eval/reporter"
 	"github.com/rxbynerd/stirrup/eval/runner"
+	"github.com/rxbynerd/stirrup/eval/spec"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
 )
@@ -83,7 +84,7 @@ func run(args []string, stdout io.Writer) int {
 
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	suitePath := fs.String("suite", "", "Path to eval suite JSON file (required)")
+	suitePath := fs.String("suite", "", "Path to eval suite file (.hcl preferred, .json legacy) (required)")
 	harnessPath := fs.String("harness", "", "Path to stirrup binary (default: stirrup)")
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory)")
 	concurrency := fs.Int("concurrency", 1, "Requested task concurrency (currently tasks run sequentially)")
@@ -163,16 +164,27 @@ func cmdCompare(args []string) {
 	}
 }
 
+// loadSuite dispatches on file extension: .hcl is the canonical
+// authoring format and goes through spec.LoadSuiteHCL; .json is the
+// legacy path and is decoded directly into types.EvalSuite. Both
+// produce the same value, so the runner and judges are oblivious.
 func loadSuite(path string) (types.EvalSuite, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return types.EvalSuite{}, err
+	switch ext := strings.ToLower(filepath.Ext(path)); ext {
+	case ".hcl":
+		return spec.LoadSuiteHCL(path)
+	case ".json":
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return types.EvalSuite{}, err
+		}
+		var suite types.EvalSuite
+		if err := json.Unmarshal(data, &suite); err != nil {
+			return types.EvalSuite{}, fmt.Errorf("parsing suite JSON: %w", err)
+		}
+		return suite, nil
+	default:
+		return types.EvalSuite{}, fmt.Errorf("unsupported suite file extension %q (expected .hcl or .json)", ext)
 	}
-	var suite types.EvalSuite
-	if err := json.Unmarshal(data, &suite); err != nil {
-		return types.EvalSuite{}, fmt.Errorf("parsing suite JSON: %w", err)
-	}
-	return suite, nil
 }
 
 func loadResult(path string) (eval.SuiteResult, error) {
