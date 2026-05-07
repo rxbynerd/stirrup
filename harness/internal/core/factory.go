@@ -201,13 +201,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		t.Security = secLogger
 	}
 
-	// 10. Permission policy. Built without metrics here; rebuilt below
-	// once the run's metrics instance is constructed so each Check call
-	// records stirrup.permission.decisions with the appropriate policy
-	// label. The intermediate value is used for the registry-derived
-	// approval/mutating tool sets (those depend on the registry, not on
-	// metrics).
-	pp, err := buildPermissionPolicy(config, registry, tp, secLogger, nil)
+	// 10. Permission policy. The raw policy is built once here; the
+	// metric-recording wrapper is applied below after the run's
+	// observability.Metrics instance is constructed. Splitting these
+	// steps avoids re-reading the Cedar policy file on the rebuild
+	// path — the previous double-call made the factory parse the
+	// policy file twice on every policy-engine run, which both cost
+	// extra latency and opened a TOCTOU window on workspace-relative
+	// paths between the two reads (CWE-367).
+	pp, err := buildPermissionPolicy(config, registry, tp, secLogger)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build permission policy: %w", err)
@@ -273,16 +275,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// metric-recorder wrapping centralised in buildVerifier.
 	v = buildVerifier(config.Verifier, prov, metrics)
 
-	// Rebuild the permission policy with metrics for the same reason —
-	// stirrup.permission.decisions tagged with the policy class label.
-	// policy-engine construction is the only path that may fail (Cedar
-	// file load), and we already passed it once at step 10 so any
-	// failure here is genuinely unexpected; surface it.
-	pp, err = buildPermissionPolicy(config, registry, tp, secLogger, metrics)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("rebuild permission policy with metrics: %w", err)
-	}
+	// Wrap the previously-built permission policy with metrics so
+	// each Check call records stirrup.permission.decisions tagged
+	// with the policy class label. The wrapper is composition-only:
+	// it does not re-construct the policy, so the policy-engine
+	// branch's Cedar file is loaded exactly once.
+	pp = wrapPermissionPolicyMetrics(pp, config.PermissionPolicy, metrics)
 
 	// Wrap the context strategy with a metric recorder so each
 	// Prepare() call records stirrup.context.strategy_runs tagged
@@ -976,6 +974,16 @@ func wrapWithPhases(g guard.GuardRail, phases []string) guard.GuardRail {
 
 // buildPermissionPolicy constructs the configured PermissionPolicy.
 //
+// The returned policy is raw: it is never wrapped in a metric recorder
+// here. Callers that want metric instrumentation should compose the
+// result through wrapPermissionPolicyMetrics — splitting the steps lets
+// the factory build the policy once (which, for the policy-engine arm,
+// involves a Cedar file read and parse) and wrap it with metrics
+// afterwards without re-reading the file. The previous design called
+// this function twice — once before metrics was constructed, once after
+// — and the second call re-loaded the policy file from disk, opening a
+// TOCTOU window on workspace-relative paths (CWE-367).
+//
 // The policy-engine arm requires loading a Cedar policy file from disk
 // and wiring a fallback policy in case Cedar returns "no decision". The
 // FallbackBuilder closure is the seam between the permission package
@@ -988,23 +996,23 @@ func wrapWithPhases(g guard.GuardRail, phases []string) guard.GuardRail {
 // Errors are bubbled because policy-engine construction can fail on a
 // missing or malformed policy file; the legacy arms cannot fail and
 // could remain non-error-returning, but a single signature is simpler.
-func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp transport.Transport, secLogger *security.SecurityLogger, metrics *observability.Metrics) (permission.PermissionPolicy, error) {
+func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp transport.Transport, secLogger *security.SecurityLogger) (permission.PermissionPolicy, error) {
 	cfg := config.PermissionPolicy
 	switch cfg.Type {
 	case "allow-all":
-		return permission.NewMetricRecorder(permission.NewAllowAll(), metrics, "allow-all"), nil
+		return permission.NewAllowAll(), nil
 	case "deny-side-effects":
 		// DenySideEffects rejects only tools that mutate workspace
 		// state. Tools whose only sensitivity is "operator should
 		// approve" (web_fetch, spawn_agent) are still allowed —
 		// research-mode users explicitly enable them.
-		return permission.NewMetricRecorder(permission.NewDenySideEffects(mutatingToolSet(registry)), metrics, "deny-side-effects"), nil
+		return permission.NewDenySideEffects(mutatingToolSet(registry)), nil
 	case "ask-upstream":
 		// AskUpstreamPolicy prompts on tools whose RequiresApproval
 		// flag is set. This includes mutating tools but also covers
 		// non-mutating-but-sensitive tools.
 		timeout := time.Duration(cfg.Timeout) * time.Second
-		return permission.NewMetricRecorder(permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout), metrics, "ask-upstream"), nil
+		return permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout), nil
 	case "policy-engine":
 		env := permission.PolicyEngineEnv{
 			RunID:     config.RunID,
@@ -1045,13 +1053,13 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 				Executor:       config.Executor,
 				DynamicContext: config.DynamicContext,
 				SensitiveData:  config.SensitiveData,
-			}, registry, tp, secLogger, metrics)
+			}, registry, tp, secLogger)
 		}
 		policy, err := permission.New(cfg, env, fallback)
 		if err != nil {
 			return nil, err
 		}
-		return permission.NewMetricRecorder(policy, metrics, "policy-engine"), nil
+		return policy, nil
 	default:
 		// Pre-fix this returned NewAllowAll() — silent permission
 		// bypass for any unknown type when callers skipped
@@ -1059,6 +1067,20 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 		// buildVerifier and surface an explicit error (S2).
 		return nil, fmt.Errorf("unsupported permissionPolicy.type %q", cfg.Type)
 	}
+}
+
+// wrapPermissionPolicyMetrics wraps an already-built PermissionPolicy
+// with a metric recorder labelled with the configured policy type. A
+// nil metrics argument or an empty cfg.Type returns pp unchanged so the
+// no-metrics deployment has zero overhead. Splitting the wrap from
+// buildPermissionPolicy means the factory can construct the policy once
+// (avoiding a second Cedar policy file read) and add metric
+// instrumentation afterwards.
+func wrapPermissionPolicyMetrics(pp permission.PermissionPolicy, cfg types.PermissionPolicyConfig, metrics *observability.Metrics) permission.PermissionPolicy {
+	if pp == nil || metrics == nil || cfg.Type == "" {
+		return pp
+	}
+	return permission.NewMetricRecorder(pp, metrics, cfg.Type)
 }
 
 // mutatingToolSet returns the names of registered tools that mutate

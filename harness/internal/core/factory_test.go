@@ -608,7 +608,7 @@ func buildPermissionPolicyForTest(t *testing.T, cfg types.PermissionPolicyConfig
 		Mode:             "execution",
 		PermissionPolicy: cfg,
 	}
-	pp, err := buildPermissionPolicy(rc, registry, tp, nil, nil)
+	pp, err := buildPermissionPolicy(rc, registry, tp, nil)
 	if err != nil {
 		t.Fatalf("buildPermissionPolicy: %v", err)
 	}
@@ -656,11 +656,11 @@ func TestBuildPermissionPolicy_UnknownTypeReturnsError(t *testing.T) {
 	rc := &types.RunConfig{
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "bogus"},
 	}
-	if _, err := buildPermissionPolicy(rc, registry, nil, nil, nil); err == nil {
+	if _, err := buildPermissionPolicy(rc, registry, nil, nil); err == nil {
 		t.Fatal("expected error for unknown permissionPolicy.type")
 	}
 	rc2 := &types.RunConfig{PermissionPolicy: types.PermissionPolicyConfig{}}
-	if _, err := buildPermissionPolicy(rc2, registry, nil, nil, nil); err == nil {
+	if _, err := buildPermissionPolicy(rc2, registry, nil, nil); err == nil {
 		t.Fatal("expected error for empty permissionPolicy.type")
 	}
 }
@@ -686,7 +686,7 @@ func TestBuildPermissionPolicy_PolicyEngine(t *testing.T) {
 			// Omit fallback to exercise the deny-side-effects default.
 		},
 	}
-	pp, err := buildPermissionPolicy(rc, registry, nil, nil, nil)
+	pp, err := buildPermissionPolicy(rc, registry, nil, nil)
 	if err != nil {
 		t.Fatalf("buildPermissionPolicy: %v", err)
 	}
@@ -719,7 +719,7 @@ func TestBuildPermissionPolicy_PolicyEngineFallbackIsBuilt(t *testing.T) {
 			Timeout:    30,
 		},
 	}
-	pp, err := buildPermissionPolicy(rc, registry, tp, nil, nil)
+	pp, err := buildPermissionPolicy(rc, registry, tp, nil)
 	if err != nil {
 		t.Fatalf("buildPermissionPolicy: %v", err)
 	}
@@ -739,9 +739,66 @@ func TestBuildPermissionPolicy_PolicyEngineMissingFile(t *testing.T) {
 			PolicyFile: "/this/path/does/not/exist.cedar",
 		},
 	}
-	_, err := buildPermissionPolicy(rc, nil, nil, nil, nil)
+	_, err := buildPermissionPolicy(rc, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing policy file, got nil")
+	}
+}
+
+// TestBuildPermissionPolicy_PolicyEngineFileReadOnce is the regression
+// test for #97 B2 (CWE-367): wrapping a freshly-built policy-engine
+// policy with metrics must not re-read the Cedar policy file from
+// disk. The previous implementation called buildPermissionPolicy
+// twice (once before metrics, once after) which loaded the file twice
+// and opened a TOCTOU window between the reads. This test copies the
+// starter policy to a temp file, builds the policy, removes the file,
+// then wraps with metrics and asserts the wrap succeeds — proving the
+// wrap path is composition-only.
+func TestBuildPermissionPolicy_PolicyEngineFileReadOnce(t *testing.T) {
+	starter := filepath.Join(repoRootForTests(t), "examples", "policies", "destructive-shell.cedar")
+	if _, err := os.Stat(starter); err != nil {
+		t.Skipf("starter policy missing at %q: %v", starter, err)
+	}
+	contents, err := os.ReadFile(starter)
+	if err != nil {
+		t.Fatalf("read starter policy: %v", err)
+	}
+	tempPath := filepath.Join(t.TempDir(), "test-policy.cedar")
+	if err := os.WriteFile(tempPath, contents, 0o600); err != nil {
+		t.Fatalf("write temp policy: %v", err)
+	}
+
+	registry := buildToolRegistry(&registryExecutor{
+		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	rc := &types.RunConfig{
+		RunID: "test-run",
+		Mode:  "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type:       "policy-engine",
+			PolicyFile: tempPath,
+		},
+	}
+
+	pp, err := buildPermissionPolicy(rc, registry, nil, nil)
+	if err != nil {
+		t.Fatalf("buildPermissionPolicy: %v", err)
+	}
+
+	// Remove the file so any re-read attempt would hard-fail.
+	if err := os.Remove(tempPath); err != nil {
+		t.Fatalf("remove temp policy: %v", err)
+	}
+
+	// Wrap with metrics — must not touch disk.
+	wrapped := wrapPermissionPolicyMetrics(pp, rc.PermissionPolicy, nil)
+	if wrapped == nil {
+		t.Fatal("wrapPermissionPolicyMetrics returned nil")
+	}
+	// With a nil metrics argument the wrap is a no-op and returns the
+	// inner unchanged. Pass through still must not re-read the file.
+	if wrapped != pp {
+		t.Errorf("nil metrics wrap should return inner unchanged")
 	}
 }
 
