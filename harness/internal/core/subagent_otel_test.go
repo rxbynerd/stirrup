@@ -58,7 +58,8 @@ func (p *multiCallProviderForOTel) Stream(_ context.Context, _ types.StreamParam
 // the parent's tool-span ctx so child spans nest correctly. (The
 // turn[N] spans synthesized inside OTelTraceEmitter.RecordTurn are
 // parented from the emitter's rootCtx and do not exercise this path,
-// so the assertion targets the child loop's directly-emitted spans.)
+// so the assertion targets the child loop's directly-emitted spans.
+// The turn[N] gap is tracked in #89; see otel.go:RecordTurn TODO.)
 //
 // Setup:
 //

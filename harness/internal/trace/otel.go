@@ -130,6 +130,13 @@ func (e *OTelTraceEmitter) RecordTurn(turn types.TurnTrace) {
 	spanEnd := time.Now()
 	spanStart := spanEnd.Add(-time.Duration(turn.DurationMs) * time.Millisecond)
 
+	// TODO(#89): turn[N] is parented off e.rootCtx, which Start()
+	// derives from context.Background(). For child sub-agent loops
+	// (#55) this prevents turn[N] spans from nesting under the
+	// parent's tool.spawn_agent span — the loop's TraceContext is not
+	// visible to the emitter. The preferred fix is to add an
+	// injected parentCtx for child emitter variants; tracked
+	// separately in #89.
 	_, span := e.tracer.Start(e.rootCtx, fmt.Sprintf("turn[%d]", turn.Turn),
 		oteltrace.WithTimestamp(spanStart),
 		oteltrace.WithAttributes(

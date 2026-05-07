@@ -15,6 +15,14 @@ import (
 // stream) carries the full call graph rather than discarding child
 // observations.
 //
+// TODO(#89): When the parent emitter is an OTelTraceEmitter, the
+// turn[N] spans this emitter forwards still parent off the
+// OTelTraceEmitter's internal rootCtx (derived from
+// context.Background()), so #55's AC-2 — child turn[N] spans nesting
+// under the parent's tool.spawn_agent — is only partly satisfied.
+// The preferred long-term fix injects a parentCtx into
+// OTelTraceEmitter for child emitter variants; tracked in #89.
+//
 // The wrapped emitter is NOT started or finished by NestedJSONLEmitter:
 //
 //   - parent.Start was called by the parent's own Run.
