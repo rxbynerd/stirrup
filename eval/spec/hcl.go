@@ -12,10 +12,12 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -136,27 +138,12 @@ type judgeSpec struct {
 // We use PartialContent with a wildcard schema rather than `,remain`
 // in rootSpec so the error message names the offending block precisely.
 func rejectUnsupportedTopLevel(body hcl.Body) error {
-	// Only `suite` is a recognised top-level block; there are no
-	// recognised top-level attributes. Anything else lands in `leftover`.
-	schema := &hcl.BodySchema{
-		Blocks: []hcl.BlockHeaderSchema{
-			{Type: "suite", LabelNames: []string{"id"}},
-		},
-	}
-	_, leftover, diags := body.PartialContent(schema)
-	if diags.HasErrors() {
-		// A wrong label arity on `suite` etc. would surface here; bubble
-		// it up via the same diagnostics path as a parse error.
-		return fmt.Errorf("hcl: %s", diags.Error())
-	}
-	if leftover == nil {
-		return nil
-	}
-
-	// The HCL syntax body type exposes JustAttributes / blocks that we
-	// can probe for unrecognised content. We try a wide net of plausible
-	// top-level keywords; whichever appears is reported.
+	// We do a single PartialContent against `suite` plus a probe set of
+	// reserved-for-future-use block names. Whatever falls out of probe
+	// is then enumerated via the underlying hclsyntax.Body for a
+	// generic catch-all.
 	probe := []hcl.BlockHeaderSchema{
+		{Type: "suite", LabelNames: []string{"id"}},
 		{Type: "variable", LabelNames: []string{"name"}},
 		{Type: "locals"},
 		{Type: "for_each"},
@@ -166,25 +153,80 @@ func rejectUnsupportedTopLevel(body hcl.Body) error {
 		{Type: "import", LabelNames: []string{"path"}},
 		{Type: "module", LabelNames: []string{"name"}},
 	}
-	content, _, _ := leftover.PartialContent(&hcl.BodySchema{Blocks: probe})
+	content, leftover, diags := body.PartialContent(&hcl.BodySchema{Blocks: probe})
+	if diags.HasErrors() {
+		// A wrong label arity on `suite` etc. would surface here; bubble
+		// it up via the same diagnostics path as a parse error.
+		return fmt.Errorf("hcl: %s", diags.Error())
+	}
+
+	// Report the first probe-matched non-`suite` block with a "reserved
+	// for future use" hint.
 	for _, b := range content.Blocks {
+		if b.Type == "suite" {
+			continue
+		}
 		return fmt.Errorf(
 			"unsupported top-level block %q at %s (variable/locals/for_each are reserved for future use)",
 			b.Type, b.DefRange.String(),
 		)
 	}
 
-	// Check for any leftover top-level attributes (e.g. `name = "x"`
-	// floating outside a suite block).
-	if attrs, attrDiags := leftover.JustAttributes(); !attrDiags.HasErrors() {
-		for name, attr := range attrs {
+	if leftover == nil {
+		return nil
+	}
+
+	// Catch-all for any block type outside the probe list (e.g.
+	// `output`, `resource`, `data`). The downstream gohcl.DecodeBody
+	// would surface a generic strict-mode error for these, but with no
+	// "reserved for future use" hint; this branch closes that gap with
+	// a uniform message and a precise file/line range. The hclsyntax
+	// Body type exposes its raw Blocks slice (including those already
+	// matched by PartialContent above), so we filter by name.
+	if syntaxBody, ok := leftover.(*hclsyntax.Body); ok {
+		for _, b := range syntaxBody.Blocks {
+			if isProbedTopLevelBlock(b.Type) {
+				continue
+			}
 			return fmt.Errorf(
-				"unsupported top-level attribute %q at %s (only `suite` blocks are allowed)",
-				name, attr.Range.String(),
+				"unsupported top-level block %q at %s (only `suite` blocks are allowed)",
+				b.Type, b.DefRange().String(),
 			)
 		}
 	}
+
+	// Check for any leftover top-level attributes (e.g. `name = "x"`
+	// floating outside a suite block). JustAttributes returns
+	// diagnostics whenever the body still contains blocks, so we
+	// ignore the gate and walk attrs directly. Iterating in sorted
+	// order keeps the error deterministic when more than one stray
+	// attribute is present.
+	attrs, _ := leftover.JustAttributes()
+	if len(attrs) > 0 {
+		names := make([]string, 0, len(attrs))
+		for name := range attrs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		first := attrs[names[0]]
+		return fmt.Errorf(
+			"unsupported top-level attribute %q at %s (only `suite` blocks are allowed)",
+			names[0], first.Range.String(),
+		)
+	}
 	return nil
+}
+
+// isProbedTopLevelBlock reports whether name was already handled by the
+// probe schema in rejectUnsupportedTopLevel. Used as a defensive belt
+// for the *hclsyntax.Body catch-all walk.
+func isProbedTopLevelBlock(name string) bool {
+	switch name {
+	case "suite", "variable", "locals", "for_each", "task", "judge",
+		"include", "import", "module":
+		return true
+	}
+	return false
 }
 
 // convertSuite translates the parsed HCL spec into the canonical

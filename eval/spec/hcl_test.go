@@ -298,6 +298,69 @@ suite "s" {
 	}
 }
 
+// TestLoadSuiteHCL_UnknownTopLevelAttributesDeterministic asserts that
+// when multiple stray top-level attributes are present, the reported
+// error names them in a deterministic (sorted) order. Map iteration
+// order would otherwise make future tests flaky.
+func TestLoadSuiteHCL_UnknownTopLevelAttributesDeterministic(t *testing.T) {
+	src := `
+zeta = "z"
+alpha = "a"
+
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "attrs.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), `unsupported top-level attribute "alpha"`) {
+		t.Fatalf("error = %q, want it to name alpha first (sorted)", err.Error())
+	}
+}
+
+// TestLoadSuiteHCL_UnknownTopLevelBlockOutsideProbeList ensures the
+// catch-all branch in rejectUnsupportedTopLevel handles block types
+// that aren't part of the named probe list (e.g. `output`, `resource`).
+func TestLoadSuiteHCL_UnknownTopLevelBlockOutsideProbeList(t *testing.T) {
+	src := `
+output "x" {
+  value = "y"
+}
+
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "output-block.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported top-level block") {
+		t.Fatalf("error = %q, want it to mention unsupported top-level block", err.Error())
+	}
+	if !strings.Contains(err.Error(), "output") {
+		t.Fatalf("error = %q, want it to name the offending block", err.Error())
+	}
+}
+
 // TestLoadSuiteHCL_EmptyFile fails clearly rather than panicking when
 // handed a zero-byte source.
 func TestLoadSuiteHCL_EmptyFile(t *testing.T) {
