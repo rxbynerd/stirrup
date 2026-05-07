@@ -608,7 +608,7 @@ func buildPermissionPolicyForTest(t *testing.T, cfg types.PermissionPolicyConfig
 		Mode:             "execution",
 		PermissionPolicy: cfg,
 	}
-	pp, err := buildPermissionPolicy(rc, registry, tp, nil)
+	pp, err := buildPermissionPolicy(rc, registry, tp, nil, nil)
 	if err != nil {
 		t.Fatalf("buildPermissionPolicy: %v", err)
 	}
@@ -656,11 +656,11 @@ func TestBuildPermissionPolicy_UnknownTypeReturnsError(t *testing.T) {
 	rc := &types.RunConfig{
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "bogus"},
 	}
-	if _, err := buildPermissionPolicy(rc, registry, nil, nil); err == nil {
+	if _, err := buildPermissionPolicy(rc, registry, nil, nil, nil); err == nil {
 		t.Fatal("expected error for unknown permissionPolicy.type")
 	}
 	rc2 := &types.RunConfig{PermissionPolicy: types.PermissionPolicyConfig{}}
-	if _, err := buildPermissionPolicy(rc2, registry, nil, nil); err == nil {
+	if _, err := buildPermissionPolicy(rc2, registry, nil, nil, nil); err == nil {
 		t.Fatal("expected error for empty permissionPolicy.type")
 	}
 }
@@ -686,7 +686,7 @@ func TestBuildPermissionPolicy_PolicyEngine(t *testing.T) {
 			// Omit fallback to exercise the deny-side-effects default.
 		},
 	}
-	pp, err := buildPermissionPolicy(rc, registry, nil, nil)
+	pp, err := buildPermissionPolicy(rc, registry, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildPermissionPolicy: %v", err)
 	}
@@ -719,7 +719,7 @@ func TestBuildPermissionPolicy_PolicyEngineFallbackIsBuilt(t *testing.T) {
 			Timeout:    30,
 		},
 	}
-	pp, err := buildPermissionPolicy(rc, registry, tp, nil)
+	pp, err := buildPermissionPolicy(rc, registry, tp, nil, nil)
 	if err != nil {
 		t.Fatalf("buildPermissionPolicy: %v", err)
 	}
@@ -739,7 +739,7 @@ func TestBuildPermissionPolicy_PolicyEngineMissingFile(t *testing.T) {
 			PolicyFile: "/this/path/does/not/exist.cedar",
 		},
 	}
-	_, err := buildPermissionPolicy(rc, nil, nil, nil)
+	_, err := buildPermissionPolicy(rc, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing policy file, got nil")
 	}
@@ -1151,7 +1151,7 @@ func TestBuildLoopWithTransport_AskUpstreamIncludesSpawnAgent(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	ask, ok := loop.Permissions.(*permission.AskUpstreamPolicy)
+	ask, ok := permission.Unwrap(loop.Permissions).(*permission.AskUpstreamPolicy)
 	if !ok {
 		t.Fatalf("expected AskUpstreamPolicy, got %T", loop.Permissions)
 	}

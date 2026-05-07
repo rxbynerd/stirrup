@@ -201,8 +201,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		t.Security = secLogger
 	}
 
-	// 10. Permission policy.
-	pp, err := buildPermissionPolicy(config, registry, tp, secLogger)
+	// 10. Permission policy. Built without metrics here; rebuilt below
+	// once the run's metrics instance is constructed so each Check call
+	// records stirrup.permission.decisions with the appropriate policy
+	// label. The intermediate value is used for the registry-derived
+	// approval/mutating tool sets (those depend on the registry, not on
+	// metrics).
+	pp, err := buildPermissionPolicy(config, registry, tp, secLogger, nil)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build permission policy: %w", err)
@@ -267,6 +272,17 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// metrics-less; this re-construction is cheap (no I/O) and keeps the
 	// metric-recorder wrapping centralised in buildVerifier.
 	v = buildVerifier(config.Verifier, prov, metrics)
+
+	// Rebuild the permission policy with metrics for the same reason —
+	// stirrup.permission.decisions tagged with the policy class label.
+	// policy-engine construction is the only path that may fail (Cedar
+	// file load), and we already passed it once at step 10 so any
+	// failure here is genuinely unexpected; surface it.
+	pp, err = buildPermissionPolicy(config, registry, tp, secLogger, metrics)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("rebuild permission policy with metrics: %w", err)
+	}
 
 	// Wire security logger into executor if it supports it.
 	switch e := exec.(type) {
@@ -349,10 +365,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		// calls are gated by the control plane rather than silently
 		// auto-allowed. (See TestApprovalRequiredToolSet which asserts
 		// the load-bearing absence of spawn_agent in the unrefreshed
-		// set.)
-		if ask, ok := pp.(*permission.AskUpstreamPolicy); ok {
-			ask.AddApprovalTool("spawn_agent")
-		}
+		// set.) The policy may be wrapped in a metric recorder, so try
+		// the wrapper's pass-through first before falling back to a
+		// direct type assertion.
+		addApprovalTool(pp, "spawn_agent")
 	}
 
 	return loop, nil
@@ -751,6 +767,24 @@ func wrapWithCodeScanner(inner edit.EditStrategy, cfg *types.CodeScannerConfig, 
 	return edit.NewScannedStrategy(inner, scanner, cfg, emitter), nil
 }
 
+// addApprovalTool routes an approval-tool registration through any
+// metric-recorder wrapping. Direct *permission.AskUpstreamPolicy is
+// handled too (covering tests that bypass the wrapper). Returns true
+// when the registration landed on an ask-upstream policy.
+func addApprovalTool(pp permission.PermissionPolicy, name string) bool {
+	type askThrough interface {
+		AddApprovalTool(name string) bool
+	}
+	if a, ok := pp.(askThrough); ok {
+		return a.AddApprovalTool(name)
+	}
+	if ask, ok := pp.(*permission.AskUpstreamPolicy); ok {
+		ask.AddApprovalTool(name)
+		return true
+	}
+	return false
+}
+
 // wireEditMetrics field-injects metrics into a *MultiStrategy or
 // *ScannedStrategy(*MultiStrategy) chain. Direct strategies (whole-file,
 // search-replace, udiff, ScannedStrategy(direct)) carry no per-attempt
@@ -930,23 +964,23 @@ func wrapWithPhases(g guard.GuardRail, phases []string) guard.GuardRail {
 // Errors are bubbled because policy-engine construction can fail on a
 // missing or malformed policy file; the legacy arms cannot fail and
 // could remain non-error-returning, but a single signature is simpler.
-func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp transport.Transport, secLogger *security.SecurityLogger) (permission.PermissionPolicy, error) {
+func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp transport.Transport, secLogger *security.SecurityLogger, metrics *observability.Metrics) (permission.PermissionPolicy, error) {
 	cfg := config.PermissionPolicy
 	switch cfg.Type {
 	case "allow-all":
-		return permission.NewAllowAll(), nil
+		return permission.NewMetricRecorder(permission.NewAllowAll(), metrics, "allow-all"), nil
 	case "deny-side-effects":
 		// DenySideEffects rejects only tools that mutate workspace
 		// state. Tools whose only sensitivity is "operator should
 		// approve" (web_fetch, spawn_agent) are still allowed —
 		// research-mode users explicitly enable them.
-		return permission.NewDenySideEffects(mutatingToolSet(registry)), nil
+		return permission.NewMetricRecorder(permission.NewDenySideEffects(mutatingToolSet(registry)), metrics, "deny-side-effects"), nil
 	case "ask-upstream":
 		// AskUpstreamPolicy prompts on tools whose RequiresApproval
 		// flag is set. This includes mutating tools but also covers
 		// non-mutating-but-sensitive tools.
 		timeout := time.Duration(cfg.Timeout) * time.Second
-		return permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout), nil
+		return permission.NewMetricRecorder(permission.NewAskUpstreamPolicy(tp, approvalRequiredToolSet(registry), timeout), metrics, "ask-upstream"), nil
 	case "policy-engine":
 		env := permission.PolicyEngineEnv{
 			RunID:     config.RunID,
@@ -987,9 +1021,13 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 				Executor:       config.Executor,
 				DynamicContext: config.DynamicContext,
 				SensitiveData:  config.SensitiveData,
-			}, registry, tp, secLogger)
+			}, registry, tp, secLogger, metrics)
 		}
-		return permission.New(cfg, env, fallback)
+		policy, err := permission.New(cfg, env, fallback)
+		if err != nil {
+			return nil, err
+		}
+		return permission.NewMetricRecorder(policy, metrics, "policy-engine"), nil
 	default:
 		// Pre-fix this returned NewAllowAll() — silent permission
 		// bypass for any unknown type when callers skipped
