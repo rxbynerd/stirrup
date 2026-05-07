@@ -30,6 +30,11 @@ var validJudgeTypes = map[string]struct{}{
 	"composite":     {},
 }
 
+// maxJudgeDepth caps recursive composite nesting in convertJudge so that
+// a pathologically nested fixture returns a clear validation error rather
+// than exhausting the goroutine stack and panicking.
+const maxJudgeDepth = 10
+
 // LoadSuiteHCL parses an HCL file at path and returns a types.EvalSuite.
 //
 // The HCL surface mirrors the existing types one for one:
@@ -197,7 +202,7 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		if t.ID == "" {
 			return types.EvalSuite{}, fmt.Errorf("task[%d] in suite %q is missing an id label", i, s.ID)
 		}
-		j, err := convertJudge(t.Judge, fmt.Sprintf("task %q", t.ID))
+		j, err := convertJudge(t.Judge, fmt.Sprintf("task %q", t.ID), 0)
 		if err != nil {
 			return types.EvalSuite{}, err
 		}
@@ -221,11 +226,31 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 
 // convertJudge recursively translates a judgeSpec into types.EvalJudge,
 // validating type and require values along the way. context describes
-// the enclosing scope (e.g. `task "foo"`) for error messages.
-func convertJudge(j judgeSpec, context string) (types.EvalJudge, error) {
+// the enclosing scope (e.g. `task "foo"`) for error messages. depth
+// guards against pathologically nested composite judges; see
+// maxJudgeDepth.
+func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, error) {
+	if depth > maxJudgeDepth {
+		return types.EvalJudge{}, fmt.Errorf(
+			"%s: judge nesting exceeds maximum depth of %d",
+			context, maxJudgeDepth,
+		)
+	}
 	if _, ok := validJudgeTypes[j.Type]; !ok {
 		return types.EvalJudge{}, fmt.Errorf(
 			"%s: invalid judge.type %q (must be one of test-command, file-exists, file-contains, diff-review, composite)",
+			context, j.Type,
+		)
+	}
+
+	// gohcl decodes nested `judge` blocks into judgeSpec.Judges
+	// regardless of the parent type. Only composite consumes them; on
+	// any other type, silently dropping them would mask a common
+	// authoring mistake (forgetting to set `type = "composite"` after
+	// adding child judges). Reject the construct loudly instead.
+	if j.Type != "composite" && len(j.Judges) > 0 {
+		return types.EvalJudge{}, fmt.Errorf(
+			"%s: judge.type %q does not support nested judge blocks (use type \"composite\")",
 			context, j.Type,
 		)
 	}
@@ -255,13 +280,24 @@ func convertJudge(j judgeSpec, context string) (types.EvalJudge, error) {
 
 		children := make([]types.EvalJudge, 0, len(j.Judges))
 		for i, sub := range j.Judges {
-			converted, err := convertJudge(sub, fmt.Sprintf("%s > judge[%d]", context, i))
+			converted, err := convertJudge(sub, fmt.Sprintf("%s > judge[%d]", context, i), depth+1)
 			if err != nil {
 				return types.EvalJudge{}, err
 			}
 			children = append(children, converted)
 		}
 		out.Judges = children
+
+		if len(out.Judges) == 0 {
+			// A bare composite block (likely a typo where the author
+			// forgot to add child judges) would otherwise evaluate as
+			// vacuous-pass via the `all` of zero — producing misleading
+			// CI greens. Force at least one child.
+			return types.EvalJudge{}, fmt.Errorf(
+				"%s: composite judge must have at least one nested judge block",
+				context,
+			)
+		}
 	}
 
 	return out, nil
