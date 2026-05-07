@@ -28,6 +28,32 @@ import (
 
 const maxMCPResponseSize = 10 * 1024 * 1024 // 10 MB
 
+// maxMCPToolNameLen caps the length of a per-tool name as reported by a
+// remote MCP server. mt.Name is taken verbatim from the wire response and
+// becomes a metric attribute (`tool.name`) on stirrup.mcp.calls; an
+// uncapped value lets a malicious or misconfigured server inject
+// arbitrarily long unique attribute values, blowing up cardinality on
+// the OTLP exporter (CWE-400). 128 is comfortably above any realistic
+// MCP tool name and well below typical metric backend label limits.
+const maxMCPToolNameLen = 128
+
+// maxMCPToolsPerServer caps the number of tools a single MCP server may
+// register. Combined with maxMCPToolNameLen this bounds the cardinality
+// contribution of any one server to (count * length) regardless of how
+// the server is misbehaving. Tools beyond the cap are dropped at
+// registration time with a structured warning so operators can spot
+// misconfigured servers.
+const maxMCPToolsPerServer = 64
+
+// sanitizeMCPToolName truncates a remote tool name to maxMCPToolNameLen.
+// Returns the input unchanged when it is already within the cap.
+func sanitizeMCPToolName(s string) string {
+	if len(s) > maxMCPToolNameLen {
+		return s[:maxMCPToolNameLen]
+	}
+	return s
+}
+
 // --- JSON-RPC 2.0 wire types ---
 
 type jsonRPCRequest struct {
@@ -169,6 +195,17 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 	tools, err := c.listTools(ctx, sess)
 	if err != nil {
 		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
+	}
+
+	// Cap the number of tools we register per server. A misconfigured or
+	// hostile MCP server could otherwise expose thousands of unique
+	// `tool.name` metric attribute values via stirrup.mcp.calls and
+	// permission decisions, causing cardinality explosion in the OTLP
+	// exporter (CWE-400). Drop the overflow with a warning so operators
+	// can investigate; the first maxMCPToolsPerServer tools are
+	// still usable.
+	if len(tools) > maxMCPToolsPerServer {
+		tools = tools[:maxMCPToolsPerServer]
 	}
 
 	// Register each discovered tool.
@@ -354,9 +391,15 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 // registerMCPTool creates a Tool backed by a remote MCP tools/call invocation
 // and registers it in the registry. Tool names are prefixed with the server
 // name to avoid collisions: "mcp_{serverName}_{toolName}".
+//
+// mt.Name is sanitised via sanitizeMCPToolName so a remote server that
+// returns an absurdly long name cannot inject high-cardinality strings
+// into the metric attribute stream (`tool.name` on stirrup.mcp.calls and
+// stirrup.permission.decisions). The sanitised form is used both for
+// registration and for outbound metric attribution.
 func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpTool) {
-	prefixedName := fmt.Sprintf("mcp_%s_%s", serverName, mt.Name)
-	remoteName := mt.Name
+	remoteName := sanitizeMCPToolName(mt.Name)
+	prefixedName := fmt.Sprintf("mcp_%s_%s", serverName, remoteName)
 	remoteSess := sess
 	// Capture serverName by value so each handler reports the correct
 	// operator-supplied name — independent of any later registration on
