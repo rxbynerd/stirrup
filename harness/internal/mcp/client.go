@@ -17,6 +17,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -80,6 +84,14 @@ type Client struct {
 	httpClient *http.Client
 	registry   *tool.Registry
 	nextID     atomic.Int64
+
+	// Metrics is optional. When set, every MCP tool invocation records
+	// stirrup.mcp.calls and stirrup.mcp.duration_ms with attributes
+	// (server.name, tool.name, success). A nil Metrics is safe at every
+	// call site — callers (including the factory) wire this after
+	// construction. Field-injected to avoid breaking existing NewClient
+	// callers.
+	Metrics *observability.Metrics
 
 	mu       sync.Mutex
 	sessions map[string]*serverSession // keyed by server URI
@@ -194,7 +206,20 @@ func (c *Client) listTools(ctx context.Context, sess *serverSession) ([]mcpTool,
 }
 
 // callTool sends a tools/call JSON-RPC request and returns the text result.
-func (c *Client) callTool(ctx context.Context, sess *serverSession, name string, arguments json.RawMessage) (string, error) {
+// It records stirrup.mcp.calls and stirrup.mcp.duration_ms when Metrics is
+// set. The serverName argument is the operator-supplied logical name (used
+// for the server.name attribute) — distinct from sess.uri so dashboards
+// group by intent rather than transport target.
+func (c *Client) callTool(ctx context.Context, sess *serverSession, serverName, name string, arguments json.RawMessage) (string, error) {
+	start := time.Now()
+	out, err := c.callToolInner(ctx, sess, name, arguments)
+	c.recordCall(ctx, serverName, name, err == nil, time.Since(start))
+	return out, err
+}
+
+// callToolInner is the original tools/call body, factored out so
+// callTool's metric recording wraps both happy and error paths uniformly.
+func (c *Client) callToolInner(ctx context.Context, sess *serverSession, name string, arguments json.RawMessage) (string, error) {
 	params := struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -232,6 +257,26 @@ func (c *Client) callTool(ctx context.Context, sess *serverSession, name string,
 		}
 	}
 	return strings.Join(texts, "\n"), nil
+}
+
+// recordCall emits the per-invocation MCP counter and duration histogram.
+// A nil Metrics short-circuits — every call site assumes Metrics is
+// optional. Note: the issue's attribute set for mcp.calls also includes
+// `success`; an mcp tool error returned by the server is treated as a
+// failed call here so dashboards can distinguish transport/protocol
+// errors from successful responses.
+func (c *Client) recordCall(ctx context.Context, serverName, toolName string, success bool, elapsed time.Duration) {
+	if c.Metrics == nil {
+		return
+	}
+	c.Metrics.MCPCalls.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("server.name", serverName),
+		attribute.String("tool.name", toolName),
+		attribute.Bool("success", success),
+	))
+	c.Metrics.MCPDuration.Record(ctx, float64(elapsed.Milliseconds()), metric.WithAttributes(
+		attribute.String("server.name", serverName),
+	))
 }
 
 // call performs a single JSON-RPC 2.0 request over HTTP POST. It handles
@@ -313,6 +358,10 @@ func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpT
 	prefixedName := fmt.Sprintf("mcp_%s_%s", serverName, mt.Name)
 	remoteName := mt.Name
 	remoteSess := sess
+	// Capture serverName by value so each handler reports the correct
+	// operator-supplied name — independent of any later registration on
+	// the same client.
+	remoteServerName := serverName
 
 	c.registry.Register(&tool.Tool{
 		Name:        prefixedName,
@@ -326,7 +375,7 @@ func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpT
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
-			return c.callTool(ctx, remoteSess, remoteName, input)
+			return c.callTool(ctx, remoteSess, remoteServerName, remoteName, input)
 		},
 	})
 }

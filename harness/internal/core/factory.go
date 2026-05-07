@@ -148,8 +148,16 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// their tools into the registry alongside the built-in tools.
 	// Connection failures are non-fatal: the server's tools are skipped
 	// so the harness can still operate with its built-in tools.
+	//
+	// The MCP client's Metrics field is wired further below once the
+	// run's *observability.Metrics is constructed; the Connect() loop
+	// above only performs tools/list (no callTool yet), so the absence
+	// of Metrics during Connect is acceptable. We retain a reference to
+	// the client here so we can field-inject Metrics after metrics
+	// construction.
+	var mcpClient *mcp.Client
 	if len(config.Tools.MCPServers) > 0 {
-		mcpClient := mcp.NewClient(registry, nil)
+		mcpClient = mcp.NewClient(registry, nil)
 		ownedClosers = append(ownedClosers, mcpClient)
 		for _, srv := range config.Tools.MCPServers {
 			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
@@ -232,6 +240,16 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// the concrete type of metrics.SecurityEvents.
 	if metrics != nil {
 		secLogger.SetEventCounter(metrics.SecurityEvents)
+	}
+
+	// Field-inject Metrics into the MCP client so subsequent tools/call
+	// dispatches record stirrup.mcp.calls / stirrup.mcp.duration_ms.
+	// Done here (not at NewClient time) because the run's metrics
+	// instance is built after MCP discovery — if we waited until then
+	// to construct the client, callers would lose initial connection
+	// telemetry. A nil mcpClient (no servers configured) is a no-op.
+	if mcpClient != nil {
+		mcpClient.Metrics = metrics
 	}
 
 	// Wire security logger into executor if it supports it.
