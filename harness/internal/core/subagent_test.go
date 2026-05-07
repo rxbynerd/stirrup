@@ -360,8 +360,8 @@ func TestSpawnSubAgent_TraceEventsForwardedToParent(t *testing.T) {
 
 // TestSpawnSubAgent_MetricsTaggedAsSubAgent is the regression test for
 // issue #55 acceptance criterion #3: metrics emitted from a sub-agent
-// must carry an attribute identifying them as such (subagent=true plus
-// parent.run_id) so dashboards can decompose a run.
+// must carry an attribute identifying them as such (run.subagent=true
+// plus run.parent_id) so dashboards can decompose a run.
 func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -396,8 +396,8 @@ func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 	}
 
 	// Find the runs counter — every Run() invocation Adds 1 to it. The
-	// sub-agent run produces a data point with subagent=true; if no such
-	// data point exists the MetricAttrs wiring is broken.
+	// sub-agent run produces a data point with run.subagent=true; if no
+	// such data point exists the MetricAttrs wiring is broken.
 	var sawSubAgentDP bool
 	var sawParentRunIDDP bool
 	for _, sm := range rm.ScopeMetrics {
@@ -411,19 +411,19 @@ func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
 			}
 			for _, dp := range sum.DataPoints {
 				attrs := dp.Attributes
-				if v, exists := attrs.Value(attribute.Key("subagent")); exists && v.AsBool() {
+				if v, exists := attrs.Value(attribute.Key("run.subagent")); exists && v.AsBool() {
 					sawSubAgentDP = true
 				}
-				if v, exists := attrs.Value(attribute.Key("parent.run_id")); exists && v.AsString() == parentConfig.RunID {
+				if v, exists := attrs.Value(attribute.Key("run.parent_id")); exists && v.AsString() == parentConfig.RunID {
 					sawParentRunIDDP = true
 				}
 			}
 		}
 	}
 	if !sawSubAgentDP {
-		t.Errorf("expected a stirrup.harness.runs data point with subagent=true; none found")
+		t.Errorf("expected a stirrup.harness.runs data point with run.subagent=true; none found")
 	}
 	if !sawParentRunIDDP {
-		t.Errorf("expected a stirrup.harness.runs data point with parent.run_id=%q; none found", parentConfig.RunID)
+		t.Errorf("expected a stirrup.harness.runs data point with run.parent_id=%q; none found", parentConfig.RunID)
 	}
 }

@@ -145,10 +145,12 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		// Tag every metric observation emitted from the child so
 		// dashboards can decompose a run into parent vs sub-agent
 		// contributions. The parent's run id is preserved as
-		// parent.run_id so correlated traces and metrics line up.
+		// run.parent_id so correlated traces and metrics line up.
+		// Attribute keys follow the run.* namespace convention used by
+		// every other run-scoped attribute (run.mode, run.id, etc.).
 		MetricAttrs: []attribute.KeyValue{
-			attribute.Bool("subagent", true),
-			attribute.String("parent.run_id", parentConfig.RunID),
+			attribute.Bool("run.subagent", true),
+			attribute.String("run.parent_id", parentConfig.RunID),
 		},
 	}
 
