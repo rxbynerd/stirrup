@@ -95,6 +95,22 @@ func TestLoadSuite_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestLoadSuite_InvalidHCL exercises the .hcl branch's error
+// propagation. If loadSuite ever stopped returning the error from
+// spec.LoadSuiteHCL, this test would catch it.
+func TestLoadSuite_InvalidHCL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.hcl")
+	if err := os.WriteFile(path, []byte("suite \"x\" { {{{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := loadSuite(path)
+	if err == nil {
+		t.Fatal("expected error for invalid HCL")
+	}
+}
+
 // TestLoadSuite_HCL exercises the .hcl branch of the dispatcher: the
 // loader must route on extension and produce the same EvalSuite shape
 // the JSON branch does.

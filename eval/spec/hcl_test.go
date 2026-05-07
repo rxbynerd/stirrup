@@ -149,13 +149,14 @@ suite "c" {
 
 // TestLoadSuiteHCL_ValidationErrors covers all the guard-rails: missing
 // suite ID, missing task ID, no tasks, invalid judge.type, invalid
-// composite require value. Each error message must mention the offending
-// field so authors can find the problem.
+// composite require value, and recursive convertJudge errors surfacing
+// through the composite branch. Each error message must mention every
+// listed fragment so authors can find the problem.
 func TestLoadSuiteHCL_ValidationErrors(t *testing.T) {
 	cases := []struct {
-		name        string
-		src         string
-		wantErrFrag string
+		name         string
+		src          string
+		wantErrFrags []string
 	}{
 		{
 			name: "missing suite id (empty label)",
@@ -170,7 +171,7 @@ suite "" {
     }
   }
 }`,
-			wantErrFrag: "suite ID is required",
+			wantErrFrags: []string{"suite ID is required"},
 		},
 		{
 			name: "no tasks",
@@ -178,7 +179,7 @@ suite "" {
 suite "empty" {
   description = "no tasks"
 }`,
-			wantErrFrag: "must contain at least one task",
+			wantErrFrags: []string{"must contain at least one task"},
 		},
 		{
 			name: "missing task id (empty label)",
@@ -193,7 +194,7 @@ suite "s" {
     }
   }
 }`,
-			wantErrFrag: "is missing an id label",
+			wantErrFrags: []string{"is missing an id label"},
 		},
 		{
 			name: "invalid judge type",
@@ -205,7 +206,7 @@ suite "s" {
     judge { type = "made-up" }
   }
 }`,
-			wantErrFrag: "invalid judge.type",
+			wantErrFrags: []string{"invalid judge.type"},
 		},
 		{
 			name: "invalid composite require",
@@ -224,7 +225,26 @@ suite "s" {
     }
   }
 }`,
-			wantErrFrag: "judge.require",
+			wantErrFrags: []string{"judge.require"},
+		},
+		{
+			name: "composite with invalid child type",
+			src: `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "composite"
+      require = "all"
+      judge { type = "bad" }
+    }
+  }
+}`,
+			// The recursive convertJudge call must surface the child
+			// error with its context-prefixed path so authors can find
+			// the offending nested judge by index.
+			wantErrFrags: []string{"invalid judge.type", "judge[0]"},
 		},
 	}
 
@@ -233,10 +253,12 @@ suite "s" {
 			path := writeTemp(t, "case.hcl", tc.src)
 			_, err := LoadSuiteHCL(path)
 			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErrFrag)
+				t.Fatalf("expected error containing %v, got nil", tc.wantErrFrags)
 			}
-			if !strings.Contains(err.Error(), tc.wantErrFrag) {
-				t.Fatalf("error = %q, want it to contain %q", err.Error(), tc.wantErrFrag)
+			for _, frag := range tc.wantErrFrags {
+				if !strings.Contains(err.Error(), frag) {
+					t.Fatalf("error = %q, want it to contain %q", err.Error(), frag)
+				}
 			}
 		})
 	}
@@ -340,6 +362,129 @@ func TestLoadSuiteHCL_MissingFile(t *testing.T) {
 	_, err := LoadSuiteHCL("/nonexistent/missing.hcl")
 	if err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+// TestLoadSuiteHCL_TaskMissingJudgeBlock pins the gohcl.DecodeBody
+// error path: the most common structural authoring mistake (forgetting
+// the `judge {}` sub-block) must surface a clear diagnostic. The error
+// originates inside hcl/v2 so we only assert that "judge" appears in
+// the message — the wording is library-controlled.
+func TestLoadSuiteHCL_TaskMissingJudgeBlock(t *testing.T) {
+	src := `suite "s" { task "t" { prompt = "x" } }`
+	path := writeTemp(t, "no-judge.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatal("expected error for task missing judge block")
+	}
+	if !strings.Contains(err.Error(), "judge") {
+		t.Fatalf("error = %q, want it to mention judge", err.Error())
+	}
+}
+
+// TestLoadSuiteHCL_NonCompositeWithChildJudge pins the contract that
+// nesting `judge` blocks inside a non-composite parent is rejected
+// loudly rather than silently dropped (gohcl decodes the field for
+// every judge type).
+func TestLoadSuiteHCL_NonCompositeWithChildJudge(t *testing.T) {
+	src := `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type  = "file-exists"
+      paths = ["a.txt"]
+      judge {
+        type    = "test-command"
+        command = "true"
+      }
+    }
+  }
+}
+`
+	path := writeTemp(t, "non-composite-with-child.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatal("expected error for non-composite judge with nested judge block")
+	}
+	if !strings.Contains(err.Error(), "does not support nested judge blocks") {
+		t.Fatalf("error = %q, want it to mention nested judge blocks", err.Error())
+	}
+}
+
+// TestLoadSuiteHCL_EmptyCompositeJudge pins the contract that a
+// composite block with zero children is rejected. The runtime evaluator
+// would otherwise treat `all` of zero as a vacuous pass, producing
+// misleading green CI for what is almost always a forgotten typo.
+func TestLoadSuiteHCL_EmptyCompositeJudge(t *testing.T) {
+	src := `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "composite"
+      require = "all"
+    }
+  }
+}
+`
+	path := writeTemp(t, "empty-composite.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatal("expected error for empty composite judge")
+	}
+	if !strings.Contains(err.Error(), "at least one nested judge block") {
+		t.Fatalf("error = %q, want it to mention nested judge requirement", err.Error())
+	}
+}
+
+// TestLoadSuiteHCL_CompositeRequireDefaultsToAll pins the contract that
+// omitting `require` on a composite judge defaults to "all". A change
+// of the default to "" or "any" must surface here.
+func TestLoadSuiteHCL_CompositeRequireDefaultsToAll(t *testing.T) {
+	src := `
+suite "s" {
+  task "t" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type = "composite"
+      judge {
+        type  = "file-exists"
+        paths = ["a.txt"]
+      }
+    }
+  }
+}
+`
+	path := writeTemp(t, "default-require.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if len(got.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(got.Tasks))
+	}
+	if got.Tasks[0].Judge.Require != "all" {
+		t.Fatalf("Require = %q, want %q", got.Tasks[0].Judge.Require, "all")
+	}
+}
+
+// TestLoadSuiteHCL_SuiteBlockMissingLabel pins the diagnostic surfaced
+// by rejectUnsupportedTopLevel when `suite` is written without an id
+// label. This is distinct from the `suite ""` empty-label path and
+// fires earlier (PartialContent reports a label arity mismatch).
+func TestLoadSuiteHCL_SuiteBlockMissingLabel(t *testing.T) {
+	src := "suite {\n  task \"t\" { judge { type = \"file-exists\"; paths = [\"a.txt\"] } }\n}\n"
+	path := writeTemp(t, "no-label.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatal("expected error for suite block with missing label")
+	}
+	if err.Error() == "" {
+		t.Fatal("expected non-empty error message")
 	}
 }
 
