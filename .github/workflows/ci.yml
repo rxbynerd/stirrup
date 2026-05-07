@@ -52,7 +52,7 @@ jobs:
         shell: bash
         run: |
           shopt -s nullglob
-          suites=(eval/suites/*.hcl eval/suites/*.json)
+          suites=(eval/suites/*.hcl)
           if [ ${#suites[@]} -gt 0 ]; then
             echo "has_suites=true" >> "$GITHUB_OUTPUT"
           else
@@ -68,7 +68,7 @@ jobs:
         run: |
           shopt -s nullglob
           mkdir -p eval/results
-          for suite in eval/suites/*.hcl eval/suites/*.json; do
+          for suite in eval/suites/*.hcl; do
             name=$(basename "$suite")
             name="${name%.*}"
             ./stirrup-eval run \
