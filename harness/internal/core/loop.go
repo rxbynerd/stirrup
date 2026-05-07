@@ -91,10 +91,19 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.Trace.Start(config.RunID, config)
 
 	// Extract the root trace context for child span parenting.
-	if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
-		l.TraceContext = otelEmitter.RootContext()
-	} else {
-		l.TraceContext = runCtx
+	//
+	// If TraceContext was set by the caller before Run (notably by
+	// SpawnSubAgent, which threads the parent's tool.spawn_agent span ctx
+	// into the child loop), preserve it so child spans nest correctly. The
+	// parent run path leaves TraceContext nil at construction time, so this
+	// fall-through still establishes the OTel root or a plain ctx as the
+	// span parent for top-level runs.
+	if l.TraceContext == nil {
+		if otelEmitter, ok := l.Trace.(*trace.OTelTraceEmitter); ok {
+			l.TraceContext = otelEmitter.RootContext()
+		} else {
+			l.TraceContext = runCtx
+		}
 	}
 
 	// Start heartbeat emission so the control plane knows we are alive.
@@ -744,7 +753,7 @@ func (l *AgenticLoop) runInnerLoop(
 			l.Logger.Info("tool dispatched", "tool", call.Name)
 			callStart := time.Now()
 
-			_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
+			toolSpanCtx, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
 				oteltrace.WithAttributes(
 					attribute.String("tool.name", call.Name),
 					attribute.Int("tool.input_size", len(call.Input)),
@@ -829,7 +838,13 @@ func (l *AgenticLoop) runInnerLoop(
 				continue
 			}
 
-			output, success := l.dispatchToolCall(ctx, call)
+			// Pass the tool-span ctx (not the outer ctx) so spans created
+			// inside dispatchToolCall — the permission.check span and, for
+			// spawn_agent, every span the child sub-agent loop creates —
+			// nest under tool.<name>. Without this threading the tool span
+			// has no logical children in the trace and a sub-agent's
+			// turn[N] / tool spans land at run-root level (#55).
+			output, success := l.dispatchToolCall(toolSpanCtx, call)
 			callDuration := time.Since(callStart)
 
 			toolSpan.SetAttributes(
