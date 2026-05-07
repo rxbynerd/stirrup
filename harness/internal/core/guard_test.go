@@ -783,9 +783,9 @@ func TestBuildGuardRail_CompositeWithPhasesWraps(t *testing.T) {
 // TestCollectUntrustedChunks_Turn0 asserts that on turn 0 the helper
 // returns the user prompt followed by sorted dynamic-context values.
 func TestCollectUntrustedChunks_Turn0(t *testing.T) {
-	chunks := collectUntrustedChunks(nil, 0, map[string]string{
-		"b_key": "second",
-		"a_key": "first",
+	chunks := collectUntrustedChunks(nil, 0, map[string]types.DynamicContextValue{
+		"b_key": {Value: "second"},
+		"a_key": {Value: "first"},
 	}, "user prompt")
 	want := []string{"user prompt", "first", "second"}
 	if len(chunks) != len(want) {

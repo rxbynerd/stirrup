@@ -404,7 +404,7 @@ func (l *AgenticLoop) runInnerLoop(
 		// the chunks are the contents of every tool_result block in the
 		// last user message. The chunks are concatenated under a "--- chunk i ---"
 		// envelope so the adapter sees a single batched request.
-		var preTurnDynamic map[string]string
+		var preTurnDynamic map[string]types.DynamicContextValue
 		if turn == 0 {
 			preTurnDynamic = config.DynamicContext
 		}
@@ -1181,7 +1181,7 @@ func guardFailOpen(config *types.RunConfig) bool {
 // turns' content (already in history), nor model-emitted text (handled
 // at PhasePostTurn). Only freshly arrived untrusted material is sent
 // to the pre-turn guard, batched into a single classification call.
-func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext map[string]string, prompt string) []string {
+func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext map[string]types.DynamicContextValue, prompt string) []string {
 	if turn == 0 {
 		chunks := make([]string, 0, 1+len(dynamicContext))
 		if prompt != "" {
@@ -1196,8 +1196,8 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if v := dynamicContext[k]; v != "" {
-				chunks = append(chunks, v)
+			if v := dynamicContext[k]; v.Value != "" {
+				chunks = append(chunks, v.Value)
 			}
 		}
 		return chunks
