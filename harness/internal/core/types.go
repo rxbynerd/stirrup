@@ -15,6 +15,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -74,6 +75,12 @@ type AgenticLoop struct {
 	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
 	Security     *security.SecurityLogger // optional, for structured security event logging
 	Logger       *slog.Logger             // structured logger with secret scrubbing
+	// MetricAttrs is a set of attributes prepended to every metric
+	// observation emitted from this loop. Empty for top-level runs;
+	// SpawnSubAgent populates it on child loops with subagent=true and
+	// parent.run_id=<parent run id> so dashboards can decompose a run
+	// into parent vs child observations.
+	MetricAttrs  []attribute.KeyValue
 	emitReady    bool
 	ownedClosers []io.Closer
 
@@ -191,6 +198,24 @@ func (l *AgenticLoop) traceCtx(fallback context.Context) context.Context {
 		return l.TraceContext
 	}
 	return fallback
+}
+
+// metricAttrs returns a metric.MeasurementOption that combines the loop's
+// MetricAttrs (set per-run, e.g. subagent=true on child loops) with the
+// supplied per-call extras. Used at every metric instrument call site so
+// sub-agent observations are attributable on dashboards without touching
+// every call individually.
+func (l *AgenticLoop) metricAttrs(extra ...attribute.KeyValue) metric.MeasurementOption {
+	if len(l.MetricAttrs) == 0 {
+		return metric.WithAttributes(extra...)
+	}
+	if len(extra) == 0 {
+		return metric.WithAttributes(l.MetricAttrs...)
+	}
+	combined := make([]attribute.KeyValue, 0, len(l.MetricAttrs)+len(extra))
+	combined = append(combined, l.MetricAttrs...)
+	combined = append(combined, extra...)
+	return metric.WithAttributes(combined...)
 }
 
 // dispatchToolCall executes a single tool call, checking permissions and

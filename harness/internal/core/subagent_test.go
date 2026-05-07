@@ -5,8 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -23,6 +27,41 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// recordingTraceEmitter is a TraceEmitter test double that captures every
+// RecordTurn / RecordToolCall call so tests can assert on forwarding
+// behaviour from the NestedJSONLEmitter into the parent's emitter.
+type recordingTraceEmitter struct {
+	mu        sync.Mutex
+	turns     []types.TurnTrace
+	toolCalls []types.ToolCallTrace
+}
+
+func (r *recordingTraceEmitter) Start(_ string, _ *types.RunConfig) {}
+
+func (r *recordingTraceEmitter) RecordTurn(turn types.TurnTrace) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.turns = append(r.turns, turn)
+}
+
+func (r *recordingTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.toolCalls = append(r.toolCalls, call)
+}
+
+func (r *recordingTraceEmitter) Finish(_ context.Context, _ string) (*types.RunTrace, error) {
+	return &types.RunTrace{}, nil
+}
+
+func (r *recordingTraceEmitter) snapshot() ([]types.TurnTrace, []types.ToolCallTrace) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	turns := append([]types.TurnTrace(nil), r.turns...)
+	calls := append([]types.ToolCallTrace(nil), r.toolCalls...)
+	return turns, calls
+}
 
 func buildSubAgentTestLoop(prov *mockProvider) *AgenticLoop {
 	registry := tool.NewRegistry()
@@ -271,5 +310,120 @@ func TestCaptureTransport_EmptyWhenNoTextDeltas(t *testing.T) {
 
 	if text := ct.lastText(); text != "" {
 		t.Errorf("expected empty string, got %q", text)
+	}
+}
+
+// TestSpawnSubAgent_TraceEventsForwardedToParent is the regression test
+// for issue #55 acceptance criterion #1: sub-agent JSONL trace events
+// must appear on the parent's trace emitter rather than being dropped
+// into a discarded buffer. We attach a recording emitter as the
+// parent's Trace, run a sub-agent through one turn, and assert the
+// child's RecordTurn and RecordToolCall events arrived on the parent
+// emitter, tagged with parentRunID and the child's runID.
+func TestSpawnSubAgent_TraceEventsForwardedToParent(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Sub-agent reply."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	parentEmitter := &recordingTraceEmitter{}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentLoop.Trace = parentEmitter
+
+	parentConfig := buildTestConfig()
+	parentConfig.RunID = "parent-run-forward-1"
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "do a subtask",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+
+	turns, _ := parentEmitter.snapshot()
+	if len(turns) == 0 {
+		t.Fatal("expected at least one turn forwarded to parent emitter, got none (was the bytes.Buffer discarder reintroduced?)")
+	}
+	for _, turn := range turns {
+		if turn.ParentRunID != parentConfig.RunID {
+			t.Errorf("forwarded turn ParentRunID: got %q, want %q", turn.ParentRunID, parentConfig.RunID)
+		}
+		if turn.RunID == "" {
+			t.Errorf("forwarded turn RunID must be populated; got empty")
+		}
+		if turn.RunID == parentConfig.RunID {
+			t.Errorf("forwarded turn RunID must be the child's runID, not the parent's; got %q", turn.RunID)
+		}
+	}
+}
+
+// TestSpawnSubAgent_MetricsTaggedAsSubAgent is the regression test for
+// issue #55 acceptance criterion #3: metrics emitted from a sub-agent
+// must carry an attribute identifying them as such (subagent=true plus
+// parent.run_id) so dashboards can decompose a run.
+func TestSpawnSubAgent_MetricsTaggedAsSubAgent(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Sub-agent reply."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentLoop.Metrics = metrics
+
+	parentConfig := buildTestConfig()
+	parentConfig.RunID = "parent-run-metrics-1"
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "do a subtask",
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	// Find the runs counter — every Run() invocation Adds 1 to it. The
+	// sub-agent run produces a data point with subagent=true; if no such
+	// data point exists the MetricAttrs wiring is broken.
+	var sawSubAgentDP bool
+	var sawParentRunIDDP bool
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "stirrup.harness.runs" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, dp := range sum.DataPoints {
+				attrs := dp.Attributes
+				if v, exists := attrs.Value(attribute.Key("subagent")); exists && v.AsBool() {
+					sawSubAgentDP = true
+				}
+				if v, exists := attrs.Value(attribute.Key("parent.run_id")); exists && v.AsString() == parentConfig.RunID {
+					sawParentRunIDDP = true
+				}
+			}
+		}
+	}
+	if !sawSubAgentDP {
+		t.Errorf("expected a stirrup.harness.runs data point with subagent=true; none found")
+	}
+	if !sawParentRunIDDP {
+		t.Errorf("expected a stirrup.harness.runs data point with parent.run_id=%q; none found", parentConfig.RunID)
 	}
 }

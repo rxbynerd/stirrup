@@ -1,12 +1,12 @@
 package core
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -111,6 +111,13 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		childPermissions = parentPolicyEngine.ForChildRun(childConfig.RunID)
 	}
 
+	// Forwarding trace emitter: every Turn / ToolCall the child records
+	// is forwarded live to the parent's TraceEmitter, tagged with the
+	// child's runID and the parent's runID. Replaces the previous
+	// bytes.Buffer{} sink, which discarded every sub-agent trace event.
+	// See harness/internal/trace/nested_jsonl.go.
+	childTrace := trace.NewNestedJSONLEmitter(parent.Trace, parentConfig.RunID)
+
 	// Build the child loop, reusing parent components where safe.
 	childLoop := &AgenticLoop{
 		Provider:    parent.Provider,
@@ -125,7 +132,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Permissions: childPermissions,
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   captureTp,
-		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Trace:       childTrace,
 		Tracer:      tracer,
 		Metrics:     parent.Metrics,
 		Logger:      parent.Logger,
@@ -135,7 +142,21 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		// Without this, an indirect-injection payload could route
 		// harmful work through spawn_agent and bypass all phases.
 		GuardRail: parent.GuardRail,
+		// Tag every metric observation emitted from the child so
+		// dashboards can decompose a run into parent vs sub-agent
+		// contributions. The parent's run id is preserved as
+		// parent.run_id so correlated traces and metrics line up.
+		MetricAttrs: []attribute.KeyValue{
+			attribute.Bool("subagent", true),
+			attribute.String("parent.run_id", parentConfig.RunID),
+		},
 	}
+
+	// Inherit the parent's tool-span ctx as the child's TraceContext so
+	// every span the child loop creates (turn[N], tool.<name>, etc.)
+	// nests under the parent's tool.spawn_agent span. The Run() method
+	// preserves a pre-set TraceContext rather than overwriting it.
+	childLoop.TraceContext = ctx
 
 	// Run the child loop synchronously.
 	runTrace, err := childLoop.Run(ctx, &childConfig)
