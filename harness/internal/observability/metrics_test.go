@@ -265,6 +265,26 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	m.ProviderLatency.Record(ctx, 100.0)
 	m.ProviderTTFB.Record(ctx, 30.0)
 
+	// Component-level instruments (issue #97). Exercising every new
+	// instrument here means a regression that leaves any of them as a
+	// nil field in newMetricsFromMeter would surface as a panic on the
+	// noop path, rather than waiting for the first production
+	// observation (which can be hours into a deployment).
+	m.SubagentSpawns.Add(ctx, 1)
+	m.SubagentTokensInput.Add(ctx, 100)
+	m.SubagentTokensOutput.Add(ctx, 50)
+	m.SubagentDuration.Record(ctx, 250.0)
+	m.MCPCalls.Add(ctx, 1)
+	m.MCPDuration.Record(ctx, 25.0)
+	m.EditAttempts.Add(ctx, 1)
+	m.EditDuration.Record(ctx, 10.0)
+	m.VerifierRuns.Add(ctx, 1)
+	m.VerifierDuration.Record(ctx, 75.0)
+	m.CodeScannerScans.Add(ctx, 1)
+	m.CodeScannerFindings.Add(ctx, 1)
+	m.PermissionDecisions.Add(ctx, 1)
+	m.ContextStrategyRuns.Add(ctx, 1)
+
 	// ContextTokens is an observable gauge; registering and unregistering
 	// a callback on a no-op meter must not panic.
 	unregister, err := m.RegisterContextTokensCallback(func() (int64, []attribute.KeyValue) {

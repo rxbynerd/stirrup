@@ -213,6 +213,184 @@ func TestScannedStrategy_RecordsScansAndFindings(t *testing.T) {
 	}
 }
 
+// TestScannedStrategy_RecordsWarnFinding asserts that warn-severity
+// findings emit stirrup.codescanner.findings observations with
+// severity=warn and blocked=false. Without this case covered, a
+// regression that swapped the (block, warn) buckets would leave
+// blocked=true on warns and the dashboards' "things we let through"
+// vs "things we blocked" decomposition would silently invert.
+func TestScannedStrategy_RecordsWarnFinding(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+	writeTestFile(t, dir, "config.py", "x = 1\n")
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	scanner := codescanner.NewPatternScanner()
+	wrapped := NewScannedStrategy(NewWholeFileStrategy(), scanner, &types.CodeScannerConfig{Type: "patterns"}, nil)
+	scanned, ok := wrapped.(*ScannedStrategy)
+	if !ok {
+		t.Fatal("expected ScannedStrategy from NewScannedStrategy")
+	}
+	scanned.Metrics = m
+
+	// `eval(` matches the sink/python_eval warn-severity pattern. The
+	// edit succeeds (warns do not block by default) and the wrapper
+	// records one warn finding with blocked=false.
+	input := json.RawMessage(`{
+		"path": "config.py",
+		"content": "result = eval(input())\n"
+	}`)
+	result, err := scanned.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !result.Applied {
+		t.Errorf("expected Applied=true on warn-only finding")
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	findings := collectInt64DataPoints(t, rm, "stirrup.codescanner.findings")
+	if len(findings) == 0 {
+		t.Fatal("expected at least one finding data point")
+	}
+	var sawWarn bool
+	for _, dp := range findings {
+		if dp.attrs["scanner"] != "patterns" {
+			t.Errorf("finding scanner = %q, want patterns", dp.attrs["scanner"])
+		}
+		if dp.attrs["severity"] == codescanner.SeverityWarn && dp.attrs["blocked"] == "false" {
+			sawWarn = true
+		}
+	}
+	if !sawWarn {
+		t.Errorf("expected a warn-severity, blocked=false finding; got: %+v", findings)
+	}
+}
+
+// TestScannedStrategy_RecordsWarnFindingPromotedByBlockOnWarn asserts
+// that when BlockOnWarn=true, warn-severity findings are promoted into
+// the blocked bucket: blocked=true on the metric attribute. Without
+// this case, the BlockOnWarn config field would silently lose its
+// dashboard-visible effect.
+func TestScannedStrategy_RecordsWarnFindingPromotedByBlockOnWarn(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+	writeTestFile(t, dir, "config.py", "x = 1\n")
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	scanner := codescanner.NewPatternScanner()
+	wrapped := NewScannedStrategy(NewWholeFileStrategy(), scanner, &types.CodeScannerConfig{
+		Type:        "patterns",
+		BlockOnWarn: true,
+	}, nil)
+	scanned, ok := wrapped.(*ScannedStrategy)
+	if !ok {
+		t.Fatal("expected ScannedStrategy from NewScannedStrategy")
+	}
+	scanned.Metrics = m
+
+	input := json.RawMessage(`{
+		"path": "config.py",
+		"content": "result = eval(input())\n"
+	}`)
+	result, err := scanned.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Errorf("expected Applied=false when BlockOnWarn promotes the warn")
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	findings := collectInt64DataPoints(t, rm, "stirrup.codescanner.findings")
+	if len(findings) == 0 {
+		t.Fatal("expected at least one finding data point")
+	}
+	var sawPromoted bool
+	for _, dp := range findings {
+		if dp.attrs["severity"] == codescanner.SeverityWarn && dp.attrs["blocked"] == "true" {
+			sawPromoted = true
+		}
+	}
+	if !sawPromoted {
+		t.Errorf("expected a warn-severity, blocked=true finding (BlockOnWarn promotion); got: %+v", findings)
+	}
+}
+
+// TestScannedStrategy_RecordsNoFindingsOnCleanContent asserts that a
+// scan with no findings still records the scan counter (so dashboards
+// show scan rate even when scanners are quiet) and produces no
+// findings observations. A regression that emitted phantom findings
+// would inflate the "blocked edits" alert thresholds.
+func TestScannedStrategy_RecordsNoFindingsOnCleanContent(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+	writeTestFile(t, dir, "config.txt", "anything\n")
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	scanner := codescanner.NewPatternScanner()
+	wrapped := NewScannedStrategy(NewWholeFileStrategy(), scanner, &types.CodeScannerConfig{Type: "patterns"}, nil)
+	scanned, ok := wrapped.(*ScannedStrategy)
+	if !ok {
+		t.Fatal("expected ScannedStrategy from NewScannedStrategy")
+	}
+	scanned.Metrics = m
+
+	// Plain text with no secret patterns, no sinks.
+	input := json.RawMessage(`{
+		"path": "config.txt",
+		"content": "hello world\nthis is fine\n"
+	}`)
+	result, err := scanned.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !result.Applied {
+		t.Fatalf("expected Applied=true on clean content; error: %s", result.Error)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	scans := collectInt64DataPoints(t, rm, "stirrup.codescanner.scans")
+	if len(scans) != 1 {
+		t.Fatalf("expected 1 scan data point, got %d", len(scans))
+	}
+
+	findings := collectInt64DataPoints(t, rm, "stirrup.codescanner.findings")
+	if len(findings) != 0 {
+		t.Errorf("expected zero findings on clean content, got %d data points: %+v", len(findings), findings)
+	}
+}
+
 // --- helpers ---
 
 type int64DataPoint struct {
