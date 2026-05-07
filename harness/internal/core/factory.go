@@ -19,6 +19,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/mcp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
@@ -160,6 +161,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 7. Verifier.
 	v := buildVerifier(config.Verifier, prov)
 
+	// 8. GuardRail. Constructed AFTER providers are built so cloud-judge
+	// can reuse the default ProviderAdapter. Returns guard.NewNoop() when
+	// no guard is configured, so the loop's call sites are unconditional.
+	gr, err := buildGuardRail(config.GuardRail, providers, prov)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("build guardrail: %w", err)
+	}
+
 	// 9. Transport — use the injected one if provided, otherwise build from config.
 	if tp == nil {
 		tp, err = buildTransport(ctx, config.Transport)
@@ -270,6 +280,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Verifier:     v,
 		Permissions:  pp,
 		Git:          gs,
+		GuardRail:    gr,
 		Transport:    tp,
 		Trace:        te,
 		Tracer:       tracer,
@@ -660,9 +671,9 @@ func emitRuleOfTwoEvents(config *types.RunConfig, sec *security.SecurityLogger) 
 		// ask-upstream path is the documented happy case.
 		if config.RuleOfTwo != nil && config.RuleOfTwo.Enforce != nil && !*config.RuleOfTwo.Enforce {
 			sec.Emit("warn", "rule_of_two_disabled", map[string]any{
-				"reason":               "operator override via RuleOfTwo.Enforce: false",
-				"untrustedInput":       u,
-				"sensitiveData":        s,
+				"reason":                "operator override via RuleOfTwo.Enforce: false",
+				"untrustedInput":        u,
+				"sensitiveData":         s,
 				"externalCommunication": e,
 			})
 		}
@@ -748,6 +759,96 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter) veri
 	default:
 		return verifier.NewNoneVerifier()
 	}
+}
+
+// buildGuardRail constructs the operator-configured GuardRail. A nil cfg
+// or an explicit "none" type returns the package-level Noop so the
+// loop's call sites can be unconditional. Cloud-judge reuses the default
+// provider adapter; granite-guardian builds its own HTTP client. The
+// outer Phases gate (when non-empty) is applied after the inner guard
+// is built so a misconfigured PhaseGated does not silently bypass the
+// guard at non-listed phases.
+func buildGuardRail(cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter) (guard.GuardRail, error) {
+	if cfg == nil || cfg.Type == "" || cfg.Type == "none" {
+		return guard.NewNoop(), nil
+	}
+	return buildGuardRailNode(cfg, providers, defaultProvider)
+}
+
+// buildGuardRailNode is the recursive worker for buildGuardRail. It
+// rejects "composite" containing another "composite" implicitly by
+// relying on ValidateRunConfig (which forbids composite-of-composite at
+// config validation time) — but we still defend in depth by returning
+// an error for any unsupported type so a non-CLI caller bypassing
+// validation gets a clear diagnostic instead of a silent allow.
+func buildGuardRailNode(cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter) (guard.GuardRail, error) {
+	switch cfg.Type {
+	case "none":
+		return guard.NewNoop(), nil
+	case "granite-guardian":
+		// FailOpen lives at the GuardRailConfig level (consulted via
+		// guardFailOpen() in the loop). The adapter does not read it.
+		gg, err := guard.NewGraniteGuardian(guard.GraniteGuardianConfig{
+			Endpoint:       cfg.Endpoint,
+			Model:          cfg.Model,
+			Criteria:       cfg.Criteria,
+			CustomCriteria: cfg.CustomCriteria,
+			Threshold:      cfg.Threshold,
+			Think:          cfg.Think != nil && *cfg.Think,
+			Timeout:        time.Duration(cfg.TimeoutMs) * time.Millisecond,
+			MinChunkChars:  cfg.MinChunkChars,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return wrapWithPhases(gg, cfg.Phases), nil
+	case "cloud-judge":
+		// v1: always use the default provider. A future revision could
+		// route to a named provider in `providers` based on a future
+		// GuardRailConfig.Provider field.
+		_ = providers
+		// FailOpen lives at the GuardRailConfig level (consulted via
+		// guardFailOpen() in the loop). The adapter does not read it.
+		cj, err := guard.NewCloudJudge(guard.CloudJudgeConfig{
+			Provider: defaultProvider,
+			Model:    cfg.Model,
+			Timeout:  time.Duration(cfg.TimeoutMs) * time.Millisecond,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return wrapWithPhases(cj, cfg.Phases), nil
+	case "composite":
+		guards := make([]guard.GuardRail, 0, len(cfg.Stages))
+		for i := range cfg.Stages {
+			stage, err := buildGuardRailNode(&cfg.Stages[i], providers, defaultProvider)
+			if err != nil {
+				return nil, fmt.Errorf("composite stage %d: %w", i, err)
+			}
+			guards = append(guards, stage)
+		}
+		seq := &guard.Sequential{Guards: guards, ID: "composite"}
+		return wrapWithPhases(seq, cfg.Phases), nil
+	default:
+		return nil, fmt.Errorf("unsupported guardRail.type %q", cfg.Type)
+	}
+}
+
+// wrapWithPhases applies a PhaseGated wrapper when phases is non-empty.
+// An empty phases slice means "the guard runs on every phase" and
+// returns the inner guard unchanged — this matches the operator-friendly
+// reading of GuardRailConfig.Phases (default = all three) and avoids
+// the PhaseGated trap where an empty Phases slice silently disables
+// the guard.
+func wrapWithPhases(g guard.GuardRail, phases []string) guard.GuardRail {
+	if len(phases) == 0 {
+		return g
+	}
+	parsed := make([]guard.Phase, 0, len(phases))
+	for _, p := range phases {
+		parsed = append(parsed, guard.Phase(p))
+	}
+	return &guard.PhaseGated{Phases: parsed, Inner: g}
 }
 
 // buildPermissionPolicy constructs the configured PermissionPolicy.

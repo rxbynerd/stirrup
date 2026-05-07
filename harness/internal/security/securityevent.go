@@ -183,3 +183,72 @@ func (sl *SecurityLogger) PermissionDenied(toolName, reason string) {
 		"reason": reason,
 	})
 }
+
+// GuardAllowed emits when a guard passed content/calls without
+// modification. Note: this fires once per guard.Check call across all
+// three phases (pre_turn, pre_tool, post_turn) so it can be high volume
+// — in production runs, expect one event per turn at minimum. Operators
+// who need quieter logs can filter on event=guard_allowed downstream.
+// Logged at info level rather than debug because Emit only supports
+// info/warn/error today; promoting Emit to debug is intentionally
+// deferred until an operator asks.
+func (sl *SecurityLogger) GuardAllowed(phase, guardID string) {
+	sl.Emit("info", "guard_allowed", map[string]any{
+		"phase":   phase,
+		"guardId": guardID,
+	})
+}
+
+// GuardSpotlighted emits when a guard returned VerdictAllowSpot — the
+// content is forwarded but rewrapped via ApplySpotlight so the model
+// treats it as untrusted.
+func (sl *SecurityLogger) GuardSpotlighted(phase, guardID, reason string) {
+	sl.Emit("warn", "guard_spotlighted", map[string]any{
+		"phase":   phase,
+		"guardId": guardID,
+		"reason":  reason,
+	})
+}
+
+// GuardDenied emits when a guard returned VerdictDeny. The criterion
+// names which configured rule fired (when the adapter exposes one); the
+// reason carries the adapter's human-readable explanation. Content
+// itself is intentionally NOT logged: at info/warn levels a redaction
+// regress would silently leak prompt-injection payloads or sensitive
+// tool inputs into the security event stream. Operators who want
+// content correlation can derive a hash at the call site and pass it
+// through the reason field; that capability is reserved for a future
+// helper if it is asked for.
+func (sl *SecurityLogger) GuardDenied(phase, guardID, criterion, reason string) {
+	sl.Emit("warn", "guard_denied", map[string]any{
+		"phase":     phase,
+		"guardId":   guardID,
+		"criterion": criterion,
+		"reason":    reason,
+	})
+}
+
+// GuardSkipped emits when a guard short-circuited without contacting
+// the upstream classifier. The canonical case is the granite-guardian
+// MinChunkChars optimisation, where pre-turn chunks below the threshold
+// skip the classifier outright. Distinguishing skip from allow keeps
+// dashboards honest: a sudden surge of skips means tiny tool outputs
+// are bypassing the guard, which an operator may want to know about.
+func (sl *SecurityLogger) GuardSkipped(phase, guardID string) {
+	sl.Emit("info", "guard_skipped", map[string]any{
+		"phase":   phase,
+		"guardId": guardID,
+	})
+}
+
+// GuardError emits when a guard.Check returned a Go error. Whether the
+// loop converts this into a deny or an allow is a fail-open policy
+// decision; the event records the underlying error string regardless so
+// operators can spot recurring transport / parse failures.
+func (sl *SecurityLogger) GuardError(phase, guardID, errorMessage string) {
+	sl.Emit("error", "guard_error", map[string]any{
+		"phase":   phase,
+		"guardId": guardID,
+		"error":   errorMessage,
+	})
+}

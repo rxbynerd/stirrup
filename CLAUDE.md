@@ -1,6 +1,6 @@
 # stirrup
 
-A coding agent harness. Go monorepo with 12 swappable components that can be composed via RunConfig.
+A coding agent harness. Go monorepo with 13 swappable components that can be composed via RunConfig.
 
 VERSION1.md contains the summary of what was implemented during "version 1" (PR #1).
 
@@ -131,7 +131,7 @@ go build -o stirrup-eval ./eval/cmd/eval
 
 ## Architecture
 
-12 swappable components, all interface-based:
+13 swappable components, all interface-based:
 
 1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses)
 2. **ModelRouter** — selects provider+model per turn (static, per-mode, dynamic)
@@ -145,6 +145,7 @@ go build -o stirrup-eval ./eval/cmd/eval
 10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null for sub-agents)
 11. **GitStrategy** — manages branches/commits (none, deterministic)
 12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry)
+13. **GuardRail** — LLM-based safety classifier at three loop intervention points: pre-turn (untrusted content), pre-tool (proposed tool calls), post-turn (assistant text). Adapters: none, granite-guardian (vLLM), composite, cloud-judge. See `docs/guardrails.md`.
 
 The core loop is a pure function of its interfaces. All dependencies are injected via the factory (`core.BuildLoop` / `core.BuildLoopWithTransport`), which constructs components from a `RunConfig`.
 
@@ -276,6 +277,20 @@ Operator-facing walkthrough: [`docs/safety-rings.md`](docs/safety-rings.md). Sta
 | `codeScanner.type` | mode-aware (`patterns` for execution, `none` for read-only) | Closed set: `none`, `patterns`, `semgrep`, `composite`. Composite requires `codeScanner.scanners` (each entry from the non-composite set). |
 | `codeScanner.blockOnWarn` | `false` | Promotes warn findings to block; useful for production pinning. |
 | `codeScanner.semgrepConfigPath` | `""` (passes `--config auto`) | Local rules-bundle path. Set this for air-gapped deployments and supply-chain pinning — `auto` reaches out to `semgrep.dev` at scan time. See `docs/safety-rings.md`. |
+
+### Probabilistic guardrails (issue #43)
+
+The `GuardRail` component (`harness/internal/guard/`) is the
+probabilistic counterpart to the deterministic rings above: an
+LLM-based classifier called at three points in the agentic loop
+(pre-turn, pre-tool, post-turn) to catch *content-level* attacks the
+rings cannot see — prompt injection, jailbreaks, hallucinated tool
+calls, secret-shaped output. Two adapters ship: `granite-guardian`
+(IBM Granite Guardian 4.1-8B served via vLLM) and `cloud-judge`
+(reuses an existing ProviderAdapter, e.g. Anthropic Haiku, for
+deployments without GPU access). The component is opt-in: default is
+`none` and call sites are no-ops. Operator walkthrough:
+[`docs/guardrails.md`](docs/guardrails.md).
 
 ## Security Foundations
 
