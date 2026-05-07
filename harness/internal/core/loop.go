@@ -865,7 +865,18 @@ func (l *AgenticLoop) runInnerLoop(
 
 			errorReason := ""
 			if !success {
-				errorReason = output
+				// Scrub before persisting: dispatchToolCall returns the
+				// raw tool error (e.g. "Permission check error: " +
+				// err.Error(), "Tool error: " + err.Error(), schema
+				// validation echoes of input fields). Tool handlers can
+				// surface IAM error messages, policy file paths, or
+				// echoes of secret-shaped inputs. Without scrubbing,
+				// NestedJSONLEmitter.RecordToolCall forwards this raw
+				// string to the parent's JSONL trace where it is
+				// written via json.Marshal — bypassing slog's
+				// ScrubHandler. Mirrors the provider error scrubbing
+				// at lines ~584 / ~632. (#55, B4 — CWE-532.)
+				errorReason = security.Scrub(output)
 			}
 			l.Trace.RecordToolCall(types.ToolCallTrace{
 				Name:        call.Name,

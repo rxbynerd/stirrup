@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -356,6 +357,86 @@ func TestSpawnSubAgent_TraceEventsForwardedToParent(t *testing.T) {
 			t.Errorf("forwarded turn RunID must be the child's runID, not the parent's; got %q", turn.RunID)
 		}
 	}
+}
+
+// TestSpawnSubAgent_ForwardedToolErrorReasonIsScrubbed is the
+// regression test for #55 B4 (CWE-532): when a child tool fails,
+// dispatchToolCall returns the raw error text. NestedJSONLEmitter
+// then forwards that string to the parent's JSONL trace via
+// RecordToolCall, where it lands in the trace file via json.Marshal
+// — bypassing slog's ScrubHandler. The fix scrubs the string before
+// it reaches RecordToolCall.
+//
+// Setup: child tool handler returns an error containing a string
+// matching the anthropic_api_key LogScrubber pattern, child provider
+// emits a tool_call invoking that handler. After SpawnSubAgent
+// returns, assert the parent emitter saw a ToolCallTrace whose
+// ErrorReason is redacted (no fake key substring) and that at least
+// one forwarded tool call was recorded.
+func TestSpawnSubAgent_ForwardedToolErrorReasonIsScrubbed(t *testing.T) {
+	const fakeKey = "sk-ant-DEADBEEFleakcanaryABCDEF123456789"
+
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "tool_call", ID: "tc_leak_1", Name: "test_tool", Input: map[string]any{}},
+			{Type: "message_complete", StopReason: "tool_use"},
+		},
+	}
+
+	parentEmitter := &recordingTraceEmitter{}
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentLoop.Trace = parentEmitter
+	// Replace the test_tool handler with one that returns an error
+	// embedding the fake key. dispatchToolCall wraps it as
+	// "Tool error: <err>" with success=false.
+	parentLoop.Tools.Resolve("test_tool").Handler = func(_ context.Context, _ json.RawMessage) (string, error) {
+		return "", &leakErr{fakeKey: fakeKey}
+	}
+
+	parentConfig := buildTestConfig()
+	parentConfig.RunID = "parent-run-scrub-1"
+
+	if _, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt:   "do a subtask",
+		MaxTurns: 1,
+	}); err != nil {
+		t.Fatalf("SpawnSubAgent: %v", err)
+	}
+
+	_, calls := parentEmitter.snapshot()
+	if len(calls) == 0 {
+		t.Fatal("expected at least one forwarded tool call on parent emitter, got none")
+	}
+
+	var sawScrubbedFailure bool
+	for _, c := range calls {
+		if c.Success {
+			continue
+		}
+		if c.ErrorReason == "" {
+			t.Errorf("failed forwarded tool call has empty ErrorReason; expected scrubbed text")
+			continue
+		}
+		if strings.Contains(c.ErrorReason, fakeKey) {
+			t.Errorf("forwarded ToolCallTrace.ErrorReason leaked unscrubbed key: %q", c.ErrorReason)
+		}
+		sawScrubbedFailure = true
+	}
+	if !sawScrubbedFailure {
+		t.Fatal("expected at least one failed forwarded ToolCallTrace, got none")
+	}
+}
+
+// leakErr's Error() embeds a fake API key to simulate a tool handler
+// surfacing an upstream error string that legitimately contains
+// secret-shaped substrings (e.g. an HTTP error wrapping the request
+// URL with an Authorization header). Used by the B4 scrub test.
+type leakErr struct {
+	fakeKey string
+}
+
+func (e *leakErr) Error() string {
+	return "upstream auth failed for request token=" + e.fakeKey
 }
 
 // TestSpawnSubAgent_MetricsTaggedAsSubAgent is the regression test for
