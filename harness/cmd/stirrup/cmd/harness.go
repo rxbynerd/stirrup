@@ -64,6 +64,18 @@ type harnessCLIOptions struct {
 	// credential bugs unfixable).
 	AnthropicFromGitHubActions bool
 
+	// Azure Entra ID Workload Identity Federation fields (issue #118).
+	// Only meaningful when --provider is openai-compatible or
+	// openai-responses against an Azure OpenAI / Foundry endpoint.
+	// Setting --azure-tenant-id implies credential.type=azure-workload-identity
+	// (the file/flag is the discriminator, mirroring the
+	// --gcp-credentials-file pattern). The TokenSource selection — file,
+	// github-actions-oidc, aws-irsa, etc. — must come from --config
+	// because flag syntax cannot cleanly express the per-source shape.
+	AzureTenantID string
+	AzureClientID string
+	AzureScope    string
+
 	// Component-selection escape hatches. These let the caller steer the
 	// non-trivial component choices without having to reach for a full
 	// --config file. Empty strings fall back to the documented default
@@ -217,6 +229,28 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	// would only create drift the next time a fifth WIF field lands.
 	// Keep this comment as a signpost so future edits do not re-add a
 	// parallel population block.
+
+	// --azure-tenant-id implies credential.type=azure-workload-identity
+	// when no other credential type is configured. This mirrors the
+	// --gcp-credentials-file shortcut above: the flag is the
+	// discriminator. The TokenSource still must come from --config
+	// (no flag-only path for tokenSource selection — too many shape
+	// variants to express cleanly as flags). A flag-only invocation
+	// with --azure-tenant-id will therefore fail validateRunConfig
+	// with "azure-workload-identity requires tokenSource", which is
+	// the correct UX: the validator's error tells the operator to
+	// reach for --config to wire the source. The flag is NOT silently
+	// dropped, because that would let an Azure WIF run reach the
+	// validator with an inconsistent shape and surface a confusing
+	// error about credential.type rather than the missing tokenSource.
+	if opts.AzureTenantID != "" && config.Provider.Credential == nil {
+		config.Provider.Credential = &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: opts.AzureTenantID,
+			AzureClientID: opts.AzureClientID,
+			AzureScope:    opts.AzureScope,
+		}
+	}
 
 	// Safety-ring fields are wired only when the caller supplied them
 	// so ValidateRunConfig's mode-aware defaulting (e.g. CodeScanner
@@ -387,6 +421,11 @@ func init() {
 	f.String("anthropic-service-account-id", "", "Anthropic service account ID (`svac_...`). Required with WIF. Env fallback: ANTHROPIC_SERVICE_ACCOUNT_ID.")
 	f.String("anthropic-workspace-id", "", "Anthropic workspace ID (`wrkspc_...`) or `default`. Conditional. Env fallback: ANTHROPIC_WORKSPACE_ID.")
 	f.Bool("anthropic-from-github-actions", false, "Enable GitHub Actions OIDC token source for Anthropic WIF. Reads ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN from the runner environment. Ignored (with a warning) if `--config` already sets `credential.tokenSource`.")
+
+	// Azure Entra ID Workload Identity Federation flags (issue #118).
+	f.String("azure-tenant-id", "", "Azure AD tenant UUID hosting the App Registration. When set, implies credential.type=azure-workload-identity. Use with --provider=openai-compatible or openai-responses against Azure OpenAI / Foundry.")
+	f.String("azure-client-id", "", "App Registration / federated identity credential client ID (UUID). Required with --azure-tenant-id.")
+	f.String("azure-scope", "", "OAuth2 scope for the Entra access token. Empty = https://cognitiveservices.azure.com/.default (Azure OpenAI / Cognitive Services audience).")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
 	f.Int("timeout", 600, "Wall-clock timeout in seconds")
@@ -567,6 +606,39 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	// chain, and the apiKeyRef mutual-exclusion guard.
 	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
 		return err
+	}
+
+	// Azure Entra ID Workload Identity Federation (issue #118). The three
+	// --azure-* flags compose: --azure-tenant-id alone is enough to imply
+	// credential.type=azure-workload-identity (mirroring the
+	// --gcp-credentials-file pattern); --azure-client-id and --azure-scope
+	// fill in fields on whichever Credential block the operator ends up
+	// with (file-loaded or flag-implied). An explicit Credential block of
+	// any other type in the file wins — operators who have set
+	// credential.type=static deliberately should not have it silently
+	// upgraded to WIF by a stray --azure-tenant-id.
+	if changed("azure-tenant-id") {
+		tenantID, _ := f.GetString("azure-tenant-id")
+		if tenantID != "" && cfg.Provider.Credential == nil {
+			cfg.Provider.Credential = &types.CredentialConfig{Type: "azure-workload-identity"}
+		}
+		if cfg.Provider.Credential != nil {
+			cfg.Provider.Credential.AzureTenantID = tenantID
+		}
+	}
+	if changed("azure-client-id") {
+		clientID, _ := f.GetString("azure-client-id")
+		if cfg.Provider.Credential == nil {
+			cfg.Provider.Credential = &types.CredentialConfig{Type: "azure-workload-identity"}
+		}
+		cfg.Provider.Credential.AzureClientID = clientID
+	}
+	if changed("azure-scope") {
+		scope, _ := f.GetString("azure-scope")
+		if cfg.Provider.Credential == nil {
+			cfg.Provider.Credential = &types.CredentialConfig{Type: "azure-workload-identity"}
+		}
+		cfg.Provider.Credential.AzureScope = scope
 	}
 	if changed("query-param") {
 		// Replace rather than merge: explicit --query-param flags clear any
@@ -756,6 +828,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	anthropicServiceAccountID, _ := f.GetString("anthropic-service-account-id")
 	anthropicWorkspaceID, _ := f.GetString("anthropic-workspace-id")
 	anthropicFromGitHubActions, _ := f.GetBool("anthropic-from-github-actions")
+	azureTenantID, _ := f.GetString("azure-tenant-id")
+	azureClientID, _ := f.GetString("azure-client-id")
+	azureScope, _ := f.GetString("azure-scope")
 	workspace, _ := f.GetString("workspace")
 	maxTurns, _ := f.GetInt("max-turns")
 	timeout, _ := f.GetInt("timeout")
@@ -819,6 +894,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		AnthropicServiceAccountID:  anthropicServiceAccountID,
 		AnthropicWorkspaceID:       anthropicWorkspaceID,
 		AnthropicFromGitHubActions: anthropicFromGitHubActions,
+		AzureTenantID:              azureTenantID,
+		AzureClientID:              azureClientID,
+		AzureScope:                 azureScope,
 		Model:                      model,
 		Workspace:                  workspace,
 		MaxTurns:                   maxTurns,

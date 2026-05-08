@@ -428,6 +428,9 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("anthropic-service-account-id", "", "")
 	f.String("anthropic-workspace-id", "", "")
 	f.Bool("anthropic-from-github-actions", false, "")
+	f.String("azure-tenant-id", "", "")
+	f.String("azure-client-id", "", "")
+	f.String("azure-scope", "", "")
 	f.StringP("workspace", "w", "", "")
 	f.Int("max-turns", 20, "")
 	f.Int("timeout", 600, "")
@@ -2561,5 +2564,204 @@ func TestApplyAnthropicWIF_ExistingTokenSourcePreserved(t *testing.T) {
 	}
 	if cfg.Provider.Credential.TokenSource.Path != "/var/run/file/jwt" {
 		t.Errorf("file-provided TokenSource.Path overwritten: got %q", cfg.Provider.Credential.TokenSource.Path)
+	}
+}
+
+// TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential verifies that
+// --azure-tenant-id (and the companion --azure-client-id / --azure-scope)
+// in the flag-only path produce a Credential block with
+// type=azure-workload-identity. Mirrors the --gcp-credentials-file
+// shortcut: the flag is the discriminator.
+func TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "openai-compatible",
+		APIKeyRef:     "secret://UNUSED", // ignored for WIF; validator clears via mutual-exclusion check
+		BaseURL:       "https://example.openai.azure.com/openai/v1",
+		Model:         "gpt-4o",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		AzureTenantID: "11111111-1111-1111-1111-111111111111",
+		AzureClientID: "22222222-2222-2222-2222-222222222222",
+		AzureScope:    "https://cognitiveservices.azure.com/.default",
+	})
+
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Credential to be inferred from --azure-tenant-id")
+	}
+	if cfg.Provider.Credential.Type != "azure-workload-identity" {
+		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("AzureTenantID = %q", cfg.Provider.Credential.AzureTenantID)
+	}
+	if cfg.Provider.Credential.AzureClientID != "22222222-2222-2222-2222-222222222222" {
+		t.Errorf("AzureClientID = %q", cfg.Provider.Credential.AzureClientID)
+	}
+	if cfg.Provider.Credential.AzureScope != "https://cognitiveservices.azure.com/.default" {
+		t.Errorf("AzureScope = %q", cfg.Provider.Credential.AzureScope)
+	}
+}
+
+// TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient verifies that a
+// --azure-tenant-id passed without --azure-client-id still produces the
+// implied Credential block. The validator (a separate layer) will then
+// reject the run with a clear "azure-workload-identity requires
+// azureClientId" error — the flag mapping itself is mechanical and must
+// not silently drop a partial spec.
+func TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "openai-compatible",
+		BaseURL:       "https://example.openai.azure.com/openai/v1",
+		Model:         "gpt-4o",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		AzureTenantID: "11111111-1111-1111-1111-111111111111",
+		// AzureClientID intentionally empty; validator's job to reject.
+	})
+
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Credential to be inferred from --azure-tenant-id alone")
+	}
+	if cfg.Provider.Credential.Type != "azure-workload-identity" {
+		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("AzureTenantID = %q", cfg.Provider.Credential.AzureTenantID)
+	}
+	if cfg.Provider.Credential.AzureClientID != "" {
+		t.Errorf("AzureClientID should be empty, got %q", cfg.Provider.Credential.AzureClientID)
+	}
+}
+
+// TestBuildHarnessRunConfig_AzureWIFRespectsExplicitCredential verifies
+// that --azure-tenant-id does NOT clobber an explicit Credential block
+// that the caller has already constructed (e.g. via --config). This
+// mirrors how --gcp-credentials-file behaves.
+//
+// Build path is exercised via the higher-level applyOverrides test
+// below (TestApplyOverrides_AzureWIFRespectsExplicitCredential); this
+// flag-only test cannot exercise the path because buildHarnessRunConfig
+// itself constructs the config from scratch (no pre-existing
+// Credential to preserve).
+func TestBuildHarnessRunConfig_AzureWIFNotSetLeavesCredentialNil(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "openai-compatible",
+		APIKeyRef:     "secret://OPENAI_KEY",
+		BaseURL:       "https://api.openai.com/v1",
+		Model:         "gpt-4o",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		// All AzureWIF fields empty — no Credential block should be
+		// constructed for a vanilla openai-compatible run.
+	})
+
+	if cfg.Provider.Credential != nil {
+		t.Errorf("Credential should remain nil when no Azure WIF flags are set, got %+v", cfg.Provider.Credential)
+	}
+}
+
+// TestApplyOverrides_AzureWIFFlags exercises the --azure-* overrides on
+// the --config path. An explicitly-set --azure-tenant-id must:
+//   - Imply a Credential block when the file has none.
+//   - Populate AzureTenantID / AzureClientID / AzureScope on the
+//     resulting Credential.
+func TestApplyOverrides_AzureWIFFlags(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:    "openai-compatible",
+		BaseURL: "https://example.openai.azure.com/openai/v1",
+	}
+	cfg.ModelRouter.Provider = "openai-compatible"
+	cfg.ModelRouter.Model = "gpt-4o"
+
+	must := func(name, value string) {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	must("provider", "openai-compatible")
+	must("azure-tenant-id", "11111111-1111-1111-1111-111111111111")
+	must("azure-client-id", "22222222-2222-2222-2222-222222222222")
+	must("azure-scope", "https://cognitiveservices.azure.com/.default")
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Credential to be inferred from --azure-tenant-id")
+	}
+	if cfg.Provider.Credential.Type != "azure-workload-identity" {
+		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("AzureTenantID override failed: %q", cfg.Provider.Credential.AzureTenantID)
+	}
+	if cfg.Provider.Credential.AzureClientID != "22222222-2222-2222-2222-222222222222" {
+		t.Errorf("AzureClientID override failed: %q", cfg.Provider.Credential.AzureClientID)
+	}
+	if cfg.Provider.Credential.AzureScope != "https://cognitiveservices.azure.com/.default" {
+		t.Errorf("AzureScope override failed: %q", cfg.Provider.Credential.AzureScope)
+	}
+}
+
+// TestApplyOverrides_AzureWIFRespectsExplicitCredential pins that an
+// explicit Credential block in --config (e.g. credential.type=static)
+// is NOT silently upgraded to azure-workload-identity by a stray
+// --azure-tenant-id flag. The override fills the Azure-named fields on
+// the existing block (so a config that already says
+// credential.type=azure-workload-identity can still be fine-tuned at
+// the CLI), but the type is preserved. Mirrors how
+// --gcp-credentials-file leaves a non-gcp-service-account Credential
+// alone.
+func TestApplyOverrides_AzureWIFRespectsExplicitCredential(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:      "openai-compatible",
+		BaseURL:   "https://example.openai.azure.com/openai/v1",
+		APIKeyRef: "secret://OPENAI_KEY",
+		Credential: &types.CredentialConfig{
+			Type: "static",
+		},
+	}
+	cfg.ModelRouter.Provider = "openai-compatible"
+	cfg.ModelRouter.Model = "gpt-4o"
+
+	if err := cmd.Flags().Set("azure-tenant-id", "11111111-1111-1111-1111-111111111111"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential == nil {
+		t.Fatal("Credential cleared unexpectedly")
+	}
+	if cfg.Provider.Credential.Type != "static" {
+		t.Errorf("Credential.Type silently upgraded: got %q, want static", cfg.Provider.Credential.Type)
+	}
+	// The Azure tenant field is still populated on the existing block —
+	// the validator will then reject the combination (static type with
+	// azureTenantId set), which is the correct outcome: the operator's
+	// intent is ambiguous and should fail loudly.
+	if cfg.Provider.Credential.AzureTenantID != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("AzureTenantID not propagated to existing Credential: %q", cfg.Provider.Credential.AzureTenantID)
 	}
 }

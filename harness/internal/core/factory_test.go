@@ -1872,6 +1872,75 @@ func writeFakeServiceAccountJSON(t *testing.T, dir string) string {
 	return path
 }
 
+// TestBuildProvider_OpenAICompatibleAzureWIF verifies that a RunConfig
+// with provider.type=openai-compatible + credential.type=azure-workload-identity
+// builds an *OpenAICompatibleAdapter without error. The adapter's
+// bearer closure is wired through to the AzureWorkloadIdentitySource
+// (which only reaches Entra lazily at first BearerToken call); the
+// factory itself must not block on network IO during Resolve.
+//
+// We point the file token source at a local file rather than a
+// projected k8s volume so the test stays self-contained.
+func TestBuildProvider_OpenAICompatibleAzureWIF(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "azure-identity-token")
+	if err := os.WriteFile(tokenPath, []byte("eyJ.fake.jwt"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:    "openai-compatible",
+		BaseURL: "https://example.openai.azure.com/openai/v1",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-1111-1111-1111-111111111111",
+			AzureClientID: "22222222-2222-2222-2222-222222222222",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "file",
+				Path: tokenPath,
+			},
+		},
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	if _, ok := prov.(*provider.OpenAICompatibleAdapter); !ok {
+		t.Errorf("buildProvider type = %T, want *provider.OpenAICompatibleAdapter", prov)
+	}
+}
+
+// TestBuildProvider_OpenAIResponsesAzureWIF mirrors
+// TestBuildProvider_OpenAICompatibleAzureWIF for the Responses adapter.
+// Both adapters share the same bearer-closure plumbing
+// (factory.go::buildProvider), so the two together pin the seam
+// between credential.AzureWorkloadIdentitySource and the OpenAI
+// adapter family.
+func TestBuildProvider_OpenAIResponsesAzureWIF(t *testing.T) {
+	tokenPath := filepath.Join(t.TempDir(), "azure-identity-token")
+	if err := os.WriteFile(tokenPath, []byte("eyJ.fake.jwt"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:    "openai-responses",
+		BaseURL: "https://example.openai.azure.com/openai/v1",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-1111-1111-1111-111111111111",
+			AzureClientID: "22222222-2222-2222-2222-222222222222",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "file",
+				Path: tokenPath,
+			},
+		},
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	if _, ok := prov.(*provider.OpenAIResponsesAdapter); !ok {
+		t.Errorf("buildProvider type = %T, want *provider.OpenAIResponsesAdapter", prov)
+	}
+}
+
 func TestBuildProvider_OpenAICompatibleStillWorks(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
 	prov, err := buildProvider(context.Background(), types.ProviderConfig{
