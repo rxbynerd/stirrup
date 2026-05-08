@@ -9,13 +9,18 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// mockSecretStore implements security.SecretStore for testing.
+// mockSecretStore implements security.SecretStore for testing. It tracks
+// the number of Resolve calls so closure-caching tests can assert that the
+// SecretStore is hit exactly once per Source.Resolve regardless of how many
+// times the resulting BearerToken closure is invoked.
 type mockSecretStore struct {
 	values map[string]string
 	err    error
+	calls  int
 }
 
 func (m *mockSecretStore) Resolve(_ context.Context, ref string) (string, error) {
+	m.calls++
 	if m.err != nil {
 		return "", m.err
 	}
@@ -39,11 +44,56 @@ func TestStaticSource_Resolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cred.BearerToken != "sk-test-123" {
-		t.Errorf("BearerToken = %q, want %q", cred.BearerToken, "sk-test-123")
+	if cred.BearerToken == nil {
+		t.Fatal("BearerToken closure should be non-nil for static source")
+	}
+	tok, err := cred.BearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("BearerToken closure returned error: %v", err)
+	}
+	if tok != "sk-test-123" {
+		t.Errorf("BearerToken closure value = %q, want %q", tok, "sk-test-123")
 	}
 	if cred.AWSCredentials != nil {
 		t.Error("AWSCredentials should be nil for static source")
+	}
+}
+
+// TestStaticSource_ClosureUsesCachedValue verifies that the BearerToken
+// closure does not re-resolve the SecretStore on every call: a static
+// secret is fetched once at Source.Resolve time and reused thereafter.
+// This is the critical efficiency property that lets adapters call the
+// closure on every provider request without paying for repeated
+// SecretStore round-trips.
+func TestStaticSource_ClosureUsesCachedValue(t *testing.T) {
+	secrets := &mockSecretStore{values: map[string]string{
+		"secret://MY_KEY": "sk-test-123",
+	}}
+	src := &StaticSource{secrets: secrets, ref: "secret://MY_KEY"}
+
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if secrets.calls != 1 {
+		t.Fatalf("after Resolve, secrets.calls = %d, want 1", secrets.calls)
+	}
+	if cred.BearerToken == nil {
+		t.Fatal("BearerToken closure should be non-nil")
+	}
+
+	for i := 0; i < 10; i++ {
+		tok, err := cred.BearerToken(context.Background())
+		if err != nil {
+			t.Fatalf("closure call %d returned error: %v", i, err)
+		}
+		if tok != "sk-test-123" {
+			t.Errorf("closure call %d value = %q, want %q", i, tok, "sk-test-123")
+		}
+	}
+
+	if secrets.calls != 1 {
+		t.Errorf("after 10 closure calls, secrets.calls = %d, want 1 (closure must reuse cached value)", secrets.calls)
 	}
 }
 
@@ -66,8 +116,8 @@ func TestAWSDefaultSource_Resolve(t *testing.T) {
 	if cred.AWSCredentials != nil {
 		t.Error("AWSCredentials should be nil for default source (signals use SDK chain)")
 	}
-	if cred.BearerToken != "" {
-		t.Error("BearerToken should be empty for AWS default source")
+	if cred.BearerToken != nil {
+		t.Error("BearerToken closure should be nil for AWS default source")
 	}
 }
 

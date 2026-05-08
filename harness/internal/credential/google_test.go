@@ -112,11 +112,8 @@ func TestGoogleADCSource_AcceptsServiceAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cred.GoogleTokenSource == nil {
-		t.Fatal("GoogleTokenSource should be non-nil for service-account ADC")
-	}
-	if cred.BearerToken != "" {
-		t.Error("BearerToken should be empty for Google credentials")
+	if cred.BearerToken == nil {
+		t.Fatal("BearerToken closure should be non-nil for service-account ADC")
 	}
 	if cred.AWSCredentials != nil {
 		t.Error("AWSCredentials should be nil for Google credentials")
@@ -132,8 +129,8 @@ func TestServiceAccountKeySource_AcceptsValidKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cred.GoogleTokenSource == nil {
-		t.Fatal("GoogleTokenSource should be non-nil")
+	if cred.BearerToken == nil {
+		t.Fatal("BearerToken closure should be non-nil")
 	}
 }
 
@@ -265,17 +262,19 @@ func TestServiceAccountKeySource_ContextCancelDoesNotFailRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if cred.GoogleTokenSource == nil {
-		t.Fatal("expected GoogleTokenSource")
+	if cred.BearerToken == nil {
+		t.Fatal("expected BearerToken closure")
 	}
 	cancel()
 
-	// Token() will hit the OAuth2 endpoint and likely fail because the
-	// JWT was signed with a fake key. The point is that the failure
-	// must not be due to the cancelled Resolve ctx.
-	_, err = cred.GoogleTokenSource.Token()
+	// The closure will hit the OAuth2 endpoint via the underlying
+	// oauth2.TokenSource and likely fail because the JWT was signed with
+	// a fake key. The point is that the failure must not be due to the
+	// cancelled Resolve ctx — refresh is bound to context.Background()
+	// internally, not to the caller-supplied ctx.
+	_, err = cred.BearerToken(context.Background())
 	if err != nil && strings.Contains(err.Error(), "context canceled") {
-		t.Fatalf("Token() failed with cancelled Resolve context — refresh ctx is still bound to factory ctx: %v", err)
+		t.Fatalf("BearerToken closure failed with cancelled Resolve context — refresh ctx is still bound to factory ctx: %v", err)
 	}
 }
 
@@ -295,15 +294,15 @@ func TestServiceAccountKeySource_RejectsDirectory(t *testing.T) {
 func TestGoogleWorkloadIdentitySource_Construct(t *testing.T) {
 	// We cannot meaningfully test Resolve() without a metadata server;
 	// the test just confirms the constructor returns a source whose
-	// Resolve produces a non-nil GoogleTokenSource synchronously
+	// Resolve produces a non-nil BearerToken closure synchronously
 	// (oauth2.ReuseTokenSource is lazy; no network call yet).
 	src := NewGoogleWorkloadIdentitySource()
 	cred, err := src.Resolve(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cred.GoogleTokenSource == nil {
-		t.Fatal("GoogleTokenSource should be non-nil after Resolve")
+	if cred.BearerToken == nil {
+		t.Fatal("BearerToken closure should be non-nil after Resolve")
 	}
 }
 

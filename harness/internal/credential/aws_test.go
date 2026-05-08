@@ -26,8 +26,8 @@ func TestWebIdentityAWSSource_Resolve(t *testing.T) {
 	if cred.AWSCredentials == nil {
 		t.Fatal("AWSCredentials should be non-nil for web identity source")
 	}
-	if cred.BearerToken != "" {
-		t.Error("BearerToken should be empty for AWS credential source")
+	if cred.BearerToken != nil {
+		t.Error("BearerToken closure should be nil for AWS credential source")
 	}
 }
 
