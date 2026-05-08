@@ -89,7 +89,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--anthropic-from-github-actions` | `false` | Enable GitHub Actions OIDC token source for Anthropic WIF. Reads `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` from the runner environment. Implicit selection from env presence is rejected — explicit opt-in is required. The `ANTHROPIC_IDENTITY_TOKEN_FILE` and `ANTHROPIC_IDENTITY_TOKEN` env vars also infer the file / env token sources respectively when unset by `--config`. |
 | `--azure-tenant-id` | (none) | Azure AD tenant UUID hosting the App Registration. When set, implies `credential.type=azure-workload-identity`. Use with `--provider=openai-compatible` or `openai-responses` against Azure OpenAI / Foundry. The TokenSource (file / github-actions-oidc / aws-irsa / azure-imds) must come from `--config`. |
 | `--azure-client-id` | (none) | App Registration / federated identity credential client ID (UUID). Required with `--azure-tenant-id`. |
-| `--azure-scope` | (none, defaults to `https://cognitiveservices.azure.com/.default` at the credential layer) | OAuth2 scope for the Entra access token. Empty falls back to the Azure OpenAI / Cognitive Services audience. |
+| `--azure-scope` | `https://cognitiveservices.azure.com/.default` | OAuth2 scope for the Entra access token. Override only for non-default Azure audiences (custom AAD app registrations, sovereign clouds). |
 | `--workspace`, `-w` | current directory | Workspace directory |
 | `--max-turns` | `20` | Maximum agentic loop turns |
 | `--timeout` | `600` | Wall-clock timeout in seconds |

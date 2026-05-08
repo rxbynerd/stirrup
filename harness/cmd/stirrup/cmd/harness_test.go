@@ -430,7 +430,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("anthropic-from-github-actions", false, "")
 	f.String("azure-tenant-id", "", "")
 	f.String("azure-client-id", "", "")
-	f.String("azure-scope", "", "")
+	f.String("azure-scope", "https://cognitiveservices.azure.com/.default", "")
 	f.StringP("workspace", "w", "", "")
 	f.Int("max-turns", 20, "")
 	f.Int("timeout", 600, "")

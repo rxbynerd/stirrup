@@ -431,7 +431,7 @@ func init() {
 	// Azure Entra ID Workload Identity Federation flags (issue #118).
 	f.String("azure-tenant-id", "", "Azure AD tenant UUID hosting the App Registration. When set, implies credential.type=azure-workload-identity. Use with --provider=openai-compatible or openai-responses against Azure OpenAI / Foundry.")
 	f.String("azure-client-id", "", "App Registration / federated identity credential client ID (UUID). Required with --azure-tenant-id.")
-	f.String("azure-scope", "", "OAuth2 scope for the Entra access token. Empty = https://cognitiveservices.azure.com/.default (Azure OpenAI / Cognitive Services audience).")
+	f.String("azure-scope", "https://cognitiveservices.azure.com/.default", "OAuth2 scope for the Entra access token. Override only for non-default Azure audiences (custom AAD app registrations, sovereign clouds).")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
 	f.Int("timeout", 600, "Wall-clock timeout in seconds")
