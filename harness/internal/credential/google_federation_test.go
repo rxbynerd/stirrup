@@ -388,3 +388,205 @@ func TestGCPWIFSource_EmptySTSAccessToken(t *testing.T) {
 		t.Fatal("expected error for empty access_token, got nil")
 	}
 }
+
+// TestGCPWIFSource_STSMalformedJSON exercises the json.Unmarshal
+// branch on the STS response body (google_federation.go:263–264).
+// A misconfigured proxy or hostile endpoint that returns a 200 with
+// non-JSON content must produce a clear "parse STS response" error
+// rather than a nil-pointer panic in the access-token check.
+func TestGCPWIFSource_STSMalformedJSON(t *testing.T) {
+	sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer sts.Close()
+
+	src := newWIFSource(t, &stubTokenSource{token: []byte("oidc")}, validWIFAudience, "", sts.URL, "")
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = cred.BearerToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error for malformed STS JSON")
+	}
+	if !strings.Contains(err.Error(), "parse STS response") {
+		t.Errorf("error should mention parse STS response, got: %v", err)
+	}
+}
+
+// TestGCPWIFSource_STSZeroExpiresIn exercises the documented
+// 1-hour fallback when the STS response omits or zeroes expires_in
+// (google_federation.go:274–277). The fallback is what keeps
+// oauth2.ReuseTokenSource able to refresh; without it the cache
+// would treat the token as already expired and re-hit STS on every
+// adapter request.
+func TestGCPWIFSource_STSZeroExpiresIn(t *testing.T) {
+	var calls int32
+	sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"sts-tok","expires_in":0,"token_type":"Bearer"}`))
+	}))
+	defer sts.Close()
+
+	src := newWIFSource(t, &stubTokenSource{token: []byte("oidc")}, validWIFAudience, "", sts.URL, "")
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	tok1, err := cred.BearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("BearerToken (first): %v", err)
+	}
+	if tok1 != "sts-tok" {
+		t.Errorf("token = %q, want sts-tok", tok1)
+	}
+
+	// Second call should hit the cache, not STS, because the 1-hour
+	// fallback gives ReuseTokenSource a non-zero expiry to inspect.
+	tok2, err := cred.BearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("BearerToken (second): %v", err)
+	}
+	if tok2 != "sts-tok" {
+		t.Errorf("second token = %q, want sts-tok", tok2)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("STS hit %d times, want 1 (cache should absorb the second call)", got)
+	}
+}
+
+// TestGCPWIFSource_ImpersonationMalformedJSON exercises the
+// json.Unmarshal branch on the IAM Credentials response
+// (google_federation.go:318–320). Symmetric to the STS case but the
+// error label distinguishes the two hops for operators triaging logs.
+func TestGCPWIFSource_ImpersonationMalformedJSON(t *testing.T) {
+	sts := httptest.NewServer(stsHandler(t, "fed-tok", 3600, nil))
+	defer sts.Close()
+
+	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer iam.Close()
+
+	src := newWIFSource(
+		t,
+		&stubTokenSource{token: []byte("oidc")},
+		validWIFAudience,
+		"sa@p.iam.gserviceaccount.com",
+		sts.URL,
+		iam.URL+"/v1/projects/-/serviceAccounts/%s:generateAccessToken",
+	)
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = cred.BearerToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error for malformed impersonation JSON")
+	}
+	if !strings.Contains(err.Error(), "parse impersonation response") {
+		t.Errorf("error should mention parse impersonation response, got: %v", err)
+	}
+}
+
+// TestGCPWIFSource_ImpersonationEmptyAccessToken exercises the
+// empty-string check at google_federation.go:322. A 200 response
+// that omits the access token must surface as a federation error
+// rather than yielding an empty bearer to the provider adapter.
+func TestGCPWIFSource_ImpersonationEmptyAccessToken(t *testing.T) {
+	sts := httptest.NewServer(stsHandler(t, "fed-tok", 3600, nil))
+	defer sts.Close()
+
+	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"","expireTime":"2030-01-01T00:00:00Z"}`))
+	}))
+	defer iam.Close()
+
+	src := newWIFSource(
+		t,
+		&stubTokenSource{token: []byte("oidc")},
+		validWIFAudience,
+		"sa@p.iam.gserviceaccount.com",
+		sts.URL,
+		iam.URL+"/v1/projects/-/serviceAccounts/%s:generateAccessToken",
+	)
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = cred.BearerToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error for empty impersonation accessToken")
+	}
+	if !strings.Contains(err.Error(), "empty accessToken") {
+		t.Errorf("error should mention empty accessToken, got: %v", err)
+	}
+}
+
+// TestGCPWIFSource_ImpersonationMalformedExpireTime exercises the
+// time.Parse branch at google_federation.go:326–329. A non-RFC3339
+// expireTime cannot be cached against, and refreshing on every
+// request would burn through IAM quota — so the source surfaces the
+// parse failure as an error rather than fabricating an expiry.
+func TestGCPWIFSource_ImpersonationMalformedExpireTime(t *testing.T) {
+	sts := httptest.NewServer(stsHandler(t, "fed-tok", 3600, nil))
+	defer sts.Close()
+
+	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accessToken":"tok","expireTime":"not-a-date"}`))
+	}))
+	defer iam.Close()
+
+	src := newWIFSource(
+		t,
+		&stubTokenSource{token: []byte("oidc")},
+		validWIFAudience,
+		"sa@p.iam.gserviceaccount.com",
+		sts.URL,
+		iam.URL+"/v1/projects/-/serviceAccounts/%s:generateAccessToken",
+	)
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = cred.BearerToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error for malformed expireTime")
+	}
+	if !strings.Contains(err.Error(), "parse impersonation expireTime") {
+		t.Errorf("error should mention parse impersonation expireTime, got: %v", err)
+	}
+}
+
+// TestTruncateForError_TruncatesLongBody guards the error-body cap
+// (google_federation.go:336–342). Without the cap, a hostile STS
+// endpoint that streams a 1 MiB error body would propagate the full
+// payload through every error wrapper into slog and OTel span
+// statuses.
+func TestTruncateForError_TruncatesLongBody(t *testing.T) {
+	// Build a body larger than the cap. The trailing characters must
+	// be dropped, not the leading ones — operators read from the start.
+	long := make([]byte, stsErrorBodyLimit+128)
+	for i := range long {
+		long[i] = 'A'
+	}
+
+	got := truncateForError(long)
+
+	// Truncated output is "<first stsErrorBodyLimit bytes>…" so the
+	// rune count is stsErrorBodyLimit + 1 (the ellipsis) and the byte
+	// length is stsErrorBodyLimit + 3 (UTF-8 ellipsis is 3 bytes).
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("truncated output should end with ellipsis, got: %q (...)", got[len(got)-min(20, len(got)):])
+	}
+	const ellipsisBytes = 3
+	wantBytes := stsErrorBodyLimit + ellipsisBytes
+	if len(got) != wantBytes {
+		t.Errorf("truncated length = %d bytes, want %d (cap %d + ellipsis %d)", len(got), wantBytes, stsErrorBodyLimit, ellipsisBytes)
+	}
+}

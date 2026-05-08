@@ -635,6 +635,31 @@ func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
 	}
 }
 
+// TestOpenAIAdapter_BearerClosureError exercises the error branch of
+// resolveBearer (openai.go:571–574). A federation-source bearer
+// closure that errors must surface synchronously from Stream without
+// a network round-trip; otherwise a half-built request would mask the
+// original credential failure behind an HTTP error.
+func TestOpenAIAdapter_BearerClosureError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("openai-compatible adapter should not have hit the network when the bearer closure errors")
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter(erroringBearer("federation: STS returned 401"), srv.URL, OpenAIAuthConfig{})
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-4o",
+		MaxTokens: 16,
+	})
+	if err == nil {
+		t.Fatal("expected error from bearer closure failure")
+	}
+	if !strings.Contains(err.Error(), "STS returned 401") {
+		t.Errorf("error should preserve closure cause, got: %v", err)
+	}
+}
+
 func TestOpenAIAdapter_HasTimeout(t *testing.T) {
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{})
 	if adapter.httpClient.Timeout == 0 {

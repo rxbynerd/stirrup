@@ -1733,3 +1733,26 @@ func TestOpenAIResponsesAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 	for range ch { //nolint:revive // drain stream
 	}
 }
+
+// TestOpenAIResponsesAdapter_BearerClosureError exercises the
+// resolveBearer error branch on the Responses adapter — same shape
+// as the openai-compatible test, distinct adapter implementation.
+func TestOpenAIResponsesAdapter_BearerClosureError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("openai-responses adapter should not have hit the network when the bearer closure errors")
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter(erroringBearer("federation: STS returned 401"), srv.URL, OpenAIAuthConfig{})
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gpt-4o",
+		MaxTokens: 16,
+	})
+	if err == nil {
+		t.Fatal("expected error from bearer closure failure")
+	}
+	if !strings.Contains(err.Error(), "STS returned 401") {
+		t.Errorf("error should preserve closure cause, got: %v", err)
+	}
+}

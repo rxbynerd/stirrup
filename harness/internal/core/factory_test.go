@@ -1943,6 +1943,60 @@ func TestResourceOptionsFromConfig(t *testing.T) {
 	})
 }
 
+// TestBuildProvider_AnthropicNilBearerErrors guards the defensive
+// nil-bearer check at the top of the anthropic arm in buildProvider.
+// A credential source that resolves cleanly but produces a nil
+// BearerToken closure (e.g. AWSDefaultSource — its Resolved carries
+// only AWSCredentials) must fail the factory with a clear error
+// rather than yielding a half-built adapter that nil-panics on the
+// first Stream() call.
+//
+// Sourced from a config with credential.type=aws-default piped into a
+// non-AWS provider, which is the canonical mis-wiring shape the guard
+// exists to catch.
+func TestBuildProvider_AnthropicNilBearerErrors(t *testing.T) {
+	_, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:       "anthropic",
+		Credential: &types.CredentialConfig{Type: "aws-default"},
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err == nil {
+		t.Fatal("expected error when anthropic is wired to a non-bearer credential source")
+	}
+	if !strings.Contains(err.Error(), "bearer credential") {
+		t.Errorf("error should mention bearer credential, got: %v", err)
+	}
+}
+
+// TestBuildProvider_OpenAICompatibleNilBearerErrors mirrors the
+// anthropic case for the openai-compatible arm.
+func TestBuildProvider_OpenAICompatibleNilBearerErrors(t *testing.T) {
+	_, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:       "openai-compatible",
+		Credential: &types.CredentialConfig{Type: "aws-default"},
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err == nil {
+		t.Fatal("expected error when openai-compatible is wired to a non-bearer credential source")
+	}
+	if !strings.Contains(err.Error(), "bearer credential") {
+		t.Errorf("error should mention bearer credential, got: %v", err)
+	}
+}
+
+// TestBuildProvider_OpenAIResponsesNilBearerErrors mirrors the
+// anthropic case for the openai-responses arm.
+func TestBuildProvider_OpenAIResponsesNilBearerErrors(t *testing.T) {
+	_, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:       "openai-responses",
+		Credential: &types.CredentialConfig{Type: "aws-default"},
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err == nil {
+		t.Fatal("expected error when openai-responses is wired to a non-bearer credential source")
+	}
+	if !strings.Contains(err.Error(), "bearer credential") {
+		t.Errorf("error should mention bearer credential, got: %v", err)
+	}
+}
+
 // --- stubSecretStore ---
 
 type stubSecretStore struct {

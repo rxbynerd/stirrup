@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 
 	"golang.org/x/oauth2"
 
@@ -16,6 +17,16 @@ import (
 func staticBearer(s string) credential.BearerTokenFunc {
 	return func(_ context.Context) (string, error) {
 		return s, nil
+	}
+}
+
+// erroringBearer returns a credential.BearerTokenFunc that always
+// fails. Used to assert provider adapters surface the closure error
+// before issuing the HTTP request — covers the Resolve-bearer error
+// branch added when the API-key string was replaced with a closure.
+func erroringBearer(msg string) credential.BearerTokenFunc {
+	return func(_ context.Context) (string, error) {
+		return "", errors.New(msg)
 	}
 }
 

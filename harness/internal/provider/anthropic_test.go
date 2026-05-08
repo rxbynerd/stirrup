@@ -499,6 +499,34 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 	}
 }
 
+// TestAnthropicAdapter_BearerClosureError asserts that a failure
+// inside the bearer closure (e.g. a federation source whose STS
+// exchange returned a 4xx) is surfaced synchronously by Stream
+// without ever hitting the upstream API. Without this, a
+// credential-layer failure would result in a half-built request that
+// only error out after the network round-trip, masking the original
+// cause behind a HTTP-shaped failure.
+func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("anthropic adapter should not have hit the network when the bearer closure errors")
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(erroringBearer("federation: STS returned 401"))
+	adapter.baseURL = srv.URL
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 16,
+	})
+	if err == nil {
+		t.Fatal("expected error from bearer closure failure")
+	}
+	if !strings.Contains(err.Error(), "STS returned 401") {
+		t.Errorf("error should preserve closure cause, got: %v", err)
+	}
+}
+
 func TestAnthropicAdapter_HasTimeout(t *testing.T) {
 	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	if adapter.httpClient.Timeout == 0 {
