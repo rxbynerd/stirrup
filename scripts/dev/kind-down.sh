@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="stirrup-sandbox"
+CLUSTER_NAME="${STIRRUP_CLUSTER_NAME:-stirrup-sandbox}"
 
 log()  { printf '[kind-down] %s\n' "$*"; }
 fail() { printf '[kind-down] ERROR: %s\n' "$*" >&2; exit 1; }

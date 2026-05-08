@@ -34,7 +34,7 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="stirrup-sandbox"
+CLUSTER_NAME="${STIRRUP_CLUSTER_NAME:-stirrup-sandbox}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIND_CONFIG="${SCRIPT_DIR}/kind-config.yaml"
 RUNTIMECLASSES="${SCRIPT_DIR}/runtimeclasses.yaml"
@@ -151,7 +151,11 @@ Run scripts/dev/kind-down.sh first if you want to recreate it."
     fi
 
     log "creating kind cluster '${CLUSTER_NAME}' (may take several minutes on first run — node image pull is the slowest step)..."
-    kind create cluster --config "${KIND_CONFIG}" --wait 5m
+    # `kind create cluster --name X` overrides any `name:` field in the
+    # config file (kind documents this precedence explicitly), so the
+    # static `name: stirrup-sandbox` in kind-config.yaml does not block
+    # the STIRRUP_CLUSTER_NAME override.
+    kind create cluster --name "${CLUSTER_NAME}" --config "${KIND_CONFIG}" --wait 5m
 
     local node; node="$(node_container_name)"
     if ! "${engine}" inspect "${node}" >/dev/null 2>&1; then
