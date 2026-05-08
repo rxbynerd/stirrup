@@ -106,6 +106,22 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 		return NewServiceAccountKeySource(cfg.GCPCredentialsFile), nil
 	case "gcp-workload-identity":
 		return NewGoogleWorkloadIdentitySource(), nil
+	case "gcp-workload-identity-federation":
+		if cfg.Credential.Audience == "" {
+			return nil, fmt.Errorf("gcp-workload-identity-federation requires audience")
+		}
+		if cfg.Credential.TokenSource == nil {
+			return nil, fmt.Errorf("gcp-workload-identity-federation requires tokenSource")
+		}
+		ts, err := BuildTokenSource(cfg.Credential.TokenSource)
+		if err != nil {
+			return nil, fmt.Errorf("build token source: %w", err)
+		}
+		return NewGCPWorkloadIdentityFederationSource(
+			ts,
+			cfg.Credential.Audience,
+			cfg.Credential.ServiceAccount,
+		), nil
 	default:
 		return nil, fmt.Errorf("unsupported credential type: %q", cfg.Credential.Type)
 	}

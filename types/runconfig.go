@@ -419,20 +419,25 @@ type GeminiSafetySetting struct {
 // "static" (resolving APIKeyRef).
 //
 // Valid Type values:
-//   - "static"                — resolve APIKeyRef via SecretStore.
-//   - "aws-default"           — AWS SDK default credential chain.
-//   - "web-identity"          — OIDC -> STS AssumeRoleWithWebIdentity.
-//   - "gcp-default"           — Google Application Default Credentials.
-//     Default for "gemini". Rejects user-mode gcloud creds.
-//   - "gcp-service-account"   — explicit service account JSON key file.
-//     Requires ProviderConfig.GCPCredentialsFile.
-//   - "gcp-workload-identity" — GKE Workload Identity (compute metadata
-//     access token).
+//   - "static"                            — resolve APIKeyRef via SecretStore.
+//   - "aws-default"                       — AWS SDK default credential chain.
+//   - "web-identity"                      — OIDC -> STS AssumeRoleWithWebIdentity.
+//   - "gcp-default"                       — Google Application Default
+//     Credentials. Default for "gemini". Rejects user-mode gcloud creds.
+//   - "gcp-service-account"               — explicit service account JSON key
+//     file. Requires ProviderConfig.GCPCredentialsFile.
+//   - "gcp-workload-identity"             — GKE Workload Identity (compute
+//     metadata access token).
+//   - "gcp-workload-identity-federation"  — non-GCP runtime → GCP via Workload
+//     Identity Federation (STS + optional service-account impersonation).
+//     Requires Audience and TokenSource.
 type CredentialConfig struct {
-	Type        string             `json:"type"`
-	TokenSource *TokenSourceConfig `json:"tokenSource,omitempty"` // required for "web-identity"
-	RoleARN     string             `json:"roleArn,omitempty"`     // required for "web-identity": IAM role to assume
-	SessionName string             `json:"sessionName,omitempty"` // for "web-identity" (default: "stirrup")
+	Type           string             `json:"type"`
+	TokenSource    *TokenSourceConfig `json:"tokenSource,omitempty"`    // required for "web-identity" and "gcp-workload-identity-federation"
+	RoleARN        string             `json:"roleArn,omitempty"`        // required for "web-identity": IAM role to assume
+	SessionName    string             `json:"sessionName,omitempty"`    // for "web-identity" (default: "stirrup")
+	Audience       string             `json:"audience,omitempty"`       // required for "gcp-workload-identity-federation": WIF provider audience
+	ServiceAccount string             `json:"serviceAccount,omitempty"` // optional for "gcp-workload-identity-federation": SA email to impersonate
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
@@ -750,13 +755,30 @@ var validTraceEmitterTypes = map[string]bool{
 }
 
 var validCredentialTypes = map[string]bool{
-	"static":                true,
-	"aws-default":           true,
-	"web-identity":          true,
-	"gcp-default":           true,
-	"gcp-service-account":   true,
-	"gcp-workload-identity": true,
+	"static":                           true,
+	"aws-default":                      true,
+	"web-identity":                     true,
+	"gcp-default":                      true,
+	"gcp-service-account":              true,
+	"gcp-workload-identity":            true,
+	"gcp-workload-identity-federation": true,
 }
+
+// gcpWIFAudiencePattern bounds the shape of a Workload Identity Federation
+// audience. The full identifier always takes the form
+//
+//	//iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER}
+//
+// Validating the shape at config time gives operators a precise error
+// message ("must match …") instead of a 400 from the STS exchange when
+// the audience is ill-formed (typo, missing segment, wrong host).
+//
+// The pool/provider segments use Google's documented identifier rules
+// (lowercase letter + lowercase letters/digits/hyphen, 4–32 chars,
+// ending in alphanumeric). Project number is purely digits.
+var gcpWIFAudiencePattern = regexp.MustCompile(
+	`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z][a-z0-9-]{2,30}[a-z0-9]/providers/[a-z][a-z0-9-]{2,30}[a-z0-9]$`,
+)
 
 var validTokenSourceTypes = map[string]bool{
 	"gke-metadata":        true,
@@ -1358,12 +1380,27 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 	}
 	validateRequiredType(path, cfg.Type, validCredentialTypes, errs)
 
-	if cfg.Type == "web-identity" {
+	switch cfg.Type {
+	case "web-identity":
 		if cfg.RoleARN == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: web-identity requires roleArn", path))
 		}
 		if cfg.TokenSource == nil {
 			*errs = append(*errs, fmt.Sprintf("%s: web-identity requires tokenSource", path))
+		} else {
+			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
+		}
+	case "gcp-workload-identity-federation":
+		if cfg.Audience == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: gcp-workload-identity-federation requires audience", path))
+		} else if !gcpWIFAudiencePattern.MatchString(cfg.Audience) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.audience %q must match //iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER}",
+				path, cfg.Audience,
+			))
+		}
+		if cfg.TokenSource == nil {
+			*errs = append(*errs, fmt.Sprintf("%s: gcp-workload-identity-federation requires tokenSource", path))
 		} else {
 			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
 		}
