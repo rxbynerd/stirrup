@@ -1982,6 +1982,72 @@ func TestBuildProvider_OpenAICompatibleNilBearerErrors(t *testing.T) {
 	}
 }
 
+// TestBuildProvider_AnthropicWIF exercises the anthropic-wif arm of
+// the factory's credential switch end-to-end: a ProviderConfig with
+// type="anthropic" and credential.type="anthropic-wif" must construct
+// an AnthropicWIFSource (via credential.BuildSource), wire its bearer
+// closure into NewAnthropicAdapter, and produce a working adapter.
+//
+// The test does NOT exercise the OAuth token exchange itself — that
+// is exhaustively covered by anthropic_wif_test.go in the credential
+// package. The role here is the factory wiring: that the four
+// federation IDs reach the source constructor and that the resulting
+// adapter is the right type. Mirrors TestBuildProvider_Gemini in
+// scope and shape.
+func TestBuildProvider_AnthropicWIF(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "jwt")
+	if err := os.WriteFile(tokenPath, []byte("eyJ.fake.jwt"), 0o600); err != nil {
+		t.Fatalf("write jwt: %v", err)
+	}
+
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type: "anthropic",
+		Credential: &types.CredentialConfig{
+			Type:             "anthropic-wif",
+			FederationRuleID: "fdrl_example",
+			OrganizationID:   "550e8400-e29b-41d4-a716-446655440000",
+			ServiceAccountID: "svac_example",
+			WorkspaceID:      "default",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "file",
+				Path: tokenPath,
+			},
+		},
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	if _, ok := prov.(*provider.AnthropicAdapter); !ok {
+		t.Errorf("buildProvider type = %T, want *provider.AnthropicAdapter", prov)
+	}
+}
+
+// TestBuildProvider_AnthropicWIFMissingTokenSourceErrors guards the
+// belt-and-braces field check inside the anthropic-wif arm of
+// credential.BuildSource. Reciprocal validation in
+// types.validateCredentialConfig already enforces the same shape at
+// config-load time; this confirms BuildSource is self-contained for
+// callers that bypass full RunConfig validation.
+func TestBuildProvider_AnthropicWIFMissingTokenSourceErrors(t *testing.T) {
+	_, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type: "anthropic",
+		Credential: &types.CredentialConfig{
+			Type:             "anthropic-wif",
+			FederationRuleID: "fdrl_example",
+			OrganizationID:   "550e8400-e29b-41d4-a716-446655440000",
+			ServiceAccountID: "svac_example",
+			// TokenSource omitted — must surface as a clear error.
+		},
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err == nil {
+		t.Fatal("expected error when anthropic-wif is missing tokenSource")
+	}
+	if !strings.Contains(err.Error(), "tokenSource") {
+		t.Errorf("error should mention tokenSource, got: %v", err)
+	}
+}
+
 // TestBuildProvider_OpenAIResponsesNilBearerErrors mirrors the
 // anthropic case for the openai-responses arm.
 func TestBuildProvider_OpenAIResponsesNilBearerErrors(t *testing.T) {
