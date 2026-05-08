@@ -6,9 +6,13 @@ under `scripts/dev/` ships in a production image.
 
 ## What you get
 
-- A single-node kind cluster named `stirrup-sandbox`.
+- A single-node kind cluster named `stirrup-sandbox` (override via
+  the `STIRRUP_CLUSTER_NAME` environment variable; both bring-up,
+  tear-down, and smoke-test scripts honour it).
 - Two `RuntimeClass` resources: `runc` (default OCI runtime) and
-  `gvisor` (handler `runsc`, gVisor user-space kernel).
+  `gvisor` (handler `runsc`, gVisor user-space kernel). The future
+  K8sExecutor `runtimeClassName` field will accept these names
+  (`runc`, `gvisor`) verbatim when targeting this sandbox cluster.
 - gVisor (`runsc` + `containerd-shim-runsc-v1`) installed into the
   kind node from a pinned upstream release. SHA-512 verified against
   pinned hashes committed to this repository; the upstream `.sha512`

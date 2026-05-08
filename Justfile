@@ -43,6 +43,8 @@ guardian-smoke:
 clean:
     rm -f stirrup stirrup-eval
 
+# === Kind sandbox ===
+
 # Bring up the local K8sExecutor sandbox cluster (kind + gVisor +
 # RuntimeClasses). See scripts/dev/README.md for prerequisites and
 # the rationale behind the bring-up steps.
@@ -54,7 +56,8 @@ kind-up:
 kind-down:
     ./scripts/dev/kind-down.sh
 
-# Smoke test: schedule a Pod on RuntimeClass=gvisor against the
-# sandbox cluster and verify gVisor signatures in the kernel banner.
+# Smoke test: schedule Pods on RuntimeClass=gvisor and RuntimeClass=runc
+# against the sandbox cluster and verify gVisor signatures in the
+# kernel banner of the gvisor pod.
 kind-smoke:
     ./scripts/dev/smoke-test.sh
