@@ -29,6 +29,21 @@ var secretPatterns = []namedPattern{
 	// know stirrup emits — adding more variants here is preferable to a
 	// permissive token catch-all.
 	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)\s*:\s*[A-Za-z0-9._~+/=-]+`)},
+	// oidc_jwt matches a three-segment JWT whose header begins with
+	// "eyJ" (the base64url prefix of `{"`). Federation flows propagate
+	// runner OIDC tokens, AWS web-identity tokens, and GCP STS subject
+	// tokens through error strings (truncateForError, GHA OIDC error
+	// body, Azure IMDS error body) verbatim — without this entry a
+	// hostile STS endpoint that echoes the subject token back in its
+	// error body would produce an unscrubbed JWT in slog output and
+	// OTel span status strings.
+	{"oidc_jwt", regexp.MustCompile(`eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*`)},
+	// gcp_access_token matches Google OAuth2 access tokens, which all
+	// share the documented "ya29." prefix. The body is the standard
+	// base64url alphabet; the regex stops at any character outside
+	// that set so trailing punctuation, whitespace, or quotes do not
+	// get pulled into the redaction span.
+	{"gcp_access_token", regexp.MustCompile(`ya29\.[A-Za-z0-9_-]+`)},
 }
 
 // ScrubStats reports redactions performed by ScrubWithStats. Count is the
