@@ -33,7 +33,6 @@ import (
 const (
 	genAIProviderNameKey   = "gen_ai.provider.name"
 	genAIRequestModelKey   = "gen_ai.request.model"
-	genAIAgentIDKey        = "gen_ai.agent.id"
 	genAIConversationIDKey = "gen_ai.conversation.id"
 	genAIOperationNameKey  = "gen_ai.operation.name"
 	genAIUsageInputTokens  = "gen_ai.usage.input_tokens"
@@ -140,11 +139,13 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 
 	ctx := context.Background()
+	// NOTE: gen_ai.agent.id is intentionally NOT emitted. The OTel GenAI spec
+	// defines this as a persistent agent identity (e.g. an OpenAI Assistant ID),
+	// not a per-execution run ID. Stirrup has no first-class named-agent concept;
+	// emit when one exists. See ADR-0001 and follow-up issue (TBD).
 	ctx, span := e.tracer.Start(ctx, "run",
 		oteltrace.WithAttributes(
-			// Dual-emit pair: run.id (stirrup) + gen_ai.agent.id (GenAI semconv).
 			attribute.String("run.id", runID),
-			attribute.String(genAIAgentIDKey, runID),
 			attribute.String("harness.version", version.Version()),
 		),
 	)

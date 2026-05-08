@@ -152,7 +152,6 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	// semantic-convention attribute names must be present alongside
 	// the stirrup-prefixed names on the root span, with the same
 	// values, so vendor-shipped APM dashboards recognise the spans.
-	assertAttribute(t, rootSpan, genAIAgentIDKey, "run-otel-1")
 	assertAttribute(t, rootSpan, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, rootSpan, genAIRequestModelKey, "claude-sonnet-4-6")
 
@@ -544,11 +543,18 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 		t.Fatalf("expected run, turn[1], tool_call spans; got %v", spans)
 	}
 
-	// Root span: agent identity, model, provider, conversation.
-	assertAttribute(t, root, genAIAgentIDKey, "run-genai-1")
+	// Root span: model, provider, conversation. gen_ai.agent.id is
+	// intentionally NOT emitted; the spec defines it as a persistent
+	// agent identity (e.g. an OpenAI Assistant ID), not a per-execution
+	// run ID. See otel.go and ADR-0001.
 	assertAttribute(t, root, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, root, genAIRequestModelKey, "claude-sonnet-4-6")
 	assertAttribute(t, root, genAIConversationIDKey, "alignment-test")
+	for _, attr := range root.Attributes {
+		if string(attr.Key) == "gen_ai.agent.id" {
+			t.Errorf("gen_ai.agent.id should not be emitted, found value %q", attr.Value.AsString())
+		}
+	}
 
 	// Turn span: usage tokens, finish reasons, operation name.
 	assertIntAttribute(t, turn, genAIUsageInputTokens, 42)
