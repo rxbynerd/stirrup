@@ -423,14 +423,23 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 
 	switch cfg.Type {
 	case "anthropic":
+		if cred.BearerToken == nil {
+			return nil, fmt.Errorf("anthropic provider requires a bearer credential but the credential source produced none")
+		}
 		return provider.NewAnthropicAdapter(cred.BearerToken), nil
 	case "openai-compatible":
+		if cred.BearerToken == nil {
+			return nil, fmt.Errorf("openai-compatible provider requires a bearer credential but the credential source produced none")
+		}
 		auth := provider.OpenAIAuthConfig{
 			APIKeyHeader: cfg.APIKeyHeader,
 			QueryParams:  cfg.QueryParams,
 		}
 		return provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth), nil
 	case "openai-responses":
+		if cred.BearerToken == nil {
+			return nil, fmt.Errorf("openai-responses provider requires a bearer credential but the credential source produced none")
+		}
 		auth := provider.OpenAIAuthConfig{
 			APIKeyHeader: cfg.APIKeyHeader,
 			QueryParams:  cfg.QueryParams,
@@ -439,10 +448,10 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	case "bedrock":
 		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials)
 	case "gemini":
-		if cred.GoogleTokenSource == nil {
-			return nil, fmt.Errorf("gemini provider requires Google credentials but the credential source produced none")
+		if cred.BearerToken == nil {
+			return nil, fmt.Errorf("gemini provider requires GCP credentials but the credential source produced none")
 		}
-		return provider.NewGeminiAdapter(cred.GoogleTokenSource, cfg.GCPProject, cfg.GCPLocation, cfg.GeminiSafetySettings), nil
+		return provider.NewGeminiAdapter(cred.BearerToken, cfg.GCPProject, cfg.GCPLocation, cfg.GeminiSafetySettings), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses)", cfg.Type)
 	}

@@ -1815,13 +1815,13 @@ func TestBuildProvider_Gemini(t *testing.T) {
 
 // TestBuildProvider_GeminiNilTokenSourceErrors covers the defensive
 // nil-check in the gemini arm: a credential source that resolves
-// successfully but with no GoogleTokenSource set must produce a clear
+// successfully but with a nil BearerToken closure must produce a clear
 // factory error rather than a nil-pointer panic later in Stream().
 func TestBuildProvider_GeminiNilTokenSourceErrors(t *testing.T) {
 	// Force ADC to fail by pointing GOOGLE_APPLICATION_CREDENTIALS at
 	// a non-existent path AND clearing the metadata-server fallback. The
-	// nil GoogleTokenSource path is also reachable through a malformed
-	// ADC chain — using a nonexistent path keeps the test deterministic.
+	// nil-bearer path is also reachable through a malformed ADC chain —
+	// using a nonexistent path keeps the test deterministic.
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-such-file.json"))
 
 	_, err := buildProvider(context.Background(), types.ProviderConfig{
