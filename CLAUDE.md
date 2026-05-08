@@ -99,6 +99,8 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--container-runtime` | (none) | OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. See `docs/safety-rings.md`. |
 | `--permission-policy-file` | (none) | Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and the policy type is unset elsewhere, also implies `permissionPolicy.type=policy-engine`. Starters live under `examples/policies/`. |
 | `--code-scanner` | (none) | CodeScanner type: none, patterns, semgrep, composite. Composite requires `--config` (`codeScanner.scanners`). Empty defers to the mode-aware default (patterns for execution, none for read-only modes). |
+| `--deployment-environment` | (none) | OTel `deployment.environment` resource attribute (e.g. `production`, `staging`). Empty falls through to env `OTEL_DEPLOYMENT_ENVIRONMENT`, then to `local`. |
+| `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
 
 Precedence: `--config` file → explicit flags → defaults. Flags left at
 their default value do NOT override the file. The default edit strategy
@@ -204,6 +206,10 @@ The harness uses `log/slog` (stdlib) with a custom `ScrubHandler` (`observabilit
 ### OTel metrics
 
 The `observability/metrics.go` package emits OTel metrics via OTLP/gRPC alongside tracing. Instruments: 12 counters (`stirrup.harness.runs`, `.turns`, `.tokens.input`, `.tokens.output`, `.tool_calls`, `.tool_errors`, `.provider.requests`, `.provider.errors`, `.context.compactions`, `.security.events`, `.verification.attempts`, `.stalls`), 5 histograms (run/turn/tool-call duration, provider latency, TTFB), and 1 UpDownCounter (context token estimate). All instruments use standard attributes (`run.mode`, `provider.type`, `tool.name`, etc.). `NewNoopMetrics()` provides a zero-cost no-op when metrics are disabled.
+
+### OTel resource attributes
+
+`observability/resource.go` builds the OTel `Resource` shared by traces and metrics so backends can correlate the two signals on a consistent identity. The resource carries `service.name=stirrup`, `service.version`, `service.instance.id` (random 128-bit hex generated once per process), plus three run-scoped fields: `service.namespace` (default `"stirrup"`), `deployment.environment` (default `"local"`), and `harness.run.mode` (omitted entirely when empty). The first two are configurable via `RunConfig.Observability` → env vars (`OTEL_SERVICE_NAMESPACE`, `OTEL_DEPLOYMENT_ENVIRONMENT`) → defaults; CLI surface is `--service-namespace` / `--deployment-environment`. Only low-cardinality fields belong on the resource — `run.id`, `run.provider`, and `run.model` stay span/instrument-level because promoting them would explode metric series cardinality on backends like Mimir. `OTEL_RESOURCE_ATTRIBUTES` continues to merge via `resource.Default()` so operator-supplied overlays still apply on top.
 
 ### Heartbeat and health probes
 
