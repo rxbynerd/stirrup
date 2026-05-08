@@ -279,6 +279,16 @@ func credentialConfigFromProto(pc *pb.CredentialConfig) *types.CredentialConfig 
 		SessionName:    pc.SessionName,
 		Audience:       pc.Audience,
 		ServiceAccount: pc.ServiceAccount,
+		// Anthropic Workload Identity Federation fields (issue #117).
+		// Use the generated getters so a future change to the proto
+		// (e.g. promoting these to a oneof) keeps the translate layer
+		// nil-safe; without copying these here, every K8s job that
+		// ships an `anthropic-wif` credential over the wire fails
+		// validation because all four required fields arrive empty.
+		FederationRuleID: pc.GetFederationRuleId(),
+		OrganizationID:   pc.GetOrganizationId(),
+		ServiceAccountID: pc.GetServiceAccountId(),
+		WorkspaceID:      pc.GetWorkspaceId(),
 	}
 	if pc.TokenSource != nil {
 		cfg.TokenSource = &types.TokenSourceConfig{
