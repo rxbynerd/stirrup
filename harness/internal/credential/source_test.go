@@ -205,6 +205,39 @@ func TestBuildSource_WebIdentity(t *testing.T) {
 	}
 }
 
+// TestBuildSource_AzureWorkloadIdentityBadTokenSourceType pins the
+// error-path BuildSource takes when an Azure WIF Credential is paired
+// with a TokenSource of an unsupported type. The error must wrap the
+// inner BuildTokenSource failure with "build token source" so the
+// operator's stack trace points at the right config field.
+//
+// Without this coverage, a future refactor that swallows the
+// BuildTokenSource error would silently fall through to a malformed
+// AzureWorkloadIdentitySource construction (or worse, a nil source)
+// and the misconfiguration would only surface inside the agentic loop
+// as a vague "token source returned empty subject token" failure 60s
+// into a run.
+func TestBuildSource_AzureWorkloadIdentityBadTokenSourceType(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "openai-compatible",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-2222-3333-4444-555555555555",
+			AzureClientID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "unsupported-type",
+			},
+		},
+	}
+	_, err := BuildSource(cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for unsupported inner token source type, got nil")
+	}
+	if !strings.Contains(err.Error(), "build token source") {
+		t.Errorf("error should wrap with 'build token source', got: %v", err)
+	}
+}
+
 func TestBuildSource_UnsupportedType(t *testing.T) {
 	cfg := types.ProviderConfig{
 		Type: "anthropic",
