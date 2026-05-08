@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -552,5 +557,325 @@ func TestNewClient_ExplicitHTTPClient_Preserved(t *testing.T) {
 	client := NewClient(registry, custom)
 	if client.httpClient != custom {
 		t.Error("explicit HTTP client should be preserved, not replaced")
+	}
+}
+
+// TestMCPCall_RecordsMetrics_Success asserts that a successful tools/call
+// records stirrup.mcp.calls (with success=true) and stirrup.mcp.duration_ms
+// when the client has a Metrics instance attached. It also covers the
+// failure path: a server that responds with isError=true should still
+// record a call, but with success=false.
+func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
+	tools := []mcpTool{{
+		Name:        "echo",
+		Description: "Echo tool",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
+
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+	client.Metrics = m
+
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "metrics-srv", URI: srv.URL}, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	resolved := registry.Resolve("mcp_metrics-srv_echo")
+	if resolved == nil {
+		t.Fatal("tool not found")
+	}
+	if _, err := resolved.Handler(context.Background(), json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	// Expect exactly one mcp.calls observation, success=true, with the
+	// configured server.name/tool.name attributes.
+	got := findInt64Counter(t, rm, "stirrup.mcp.calls")
+	if got.total != 1 {
+		t.Errorf("stirrup.mcp.calls total = %d, want 1", got.total)
+	}
+	if got.attrs["server.name"] != "metrics-srv" {
+		t.Errorf("server.name = %q, want %q", got.attrs["server.name"], "metrics-srv")
+	}
+	if got.attrs["tool.name"] != "echo" {
+		t.Errorf("tool.name = %q, want %q", got.attrs["tool.name"], "echo")
+	}
+	if got.attrs["success"] != "true" {
+		t.Errorf("success = %q, want %q", got.attrs["success"], "true")
+	}
+
+	dur := findFloat64Histogram(t, rm, "stirrup.mcp.duration_ms")
+	if dur.count == 0 {
+		t.Error("stirrup.mcp.duration_ms recorded no observations")
+	}
+	if dur.attrs["server.name"] != "metrics-srv" {
+		t.Errorf("duration server.name = %q, want %q", dur.attrs["server.name"], "metrics-srv")
+	}
+}
+
+// TestMCPCall_RecordsMetrics_Failure asserts a failed tools/call still
+// records the counter with success=false. The server returns isError=true
+// so the call reaches the client cleanly but surfaces an error to the
+// handler — the success label distinguishes this from transport errors
+// (also recorded as success=false).
+func TestMCPCall_RecordsMetrics_Failure(t *testing.T) {
+	tools := []mcpTool{{
+		Name:        "boom",
+		Description: "Always errors",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
+
+	// Custom server that returns isError=true on tools/call.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch req.Method {
+		case "tools/list":
+			writeJSONRPCResult(w, req.ID, toolsListResult{Tools: tools})
+		case "tools/call":
+			writeJSONRPCResult(w, req.ID, toolsCallResult{
+				IsError: true,
+				Content: []contentItem{{Type: "text", Text: "boom failed"}},
+			})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+	client.Metrics = m
+
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "boom-srv", URI: srv.URL}, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	resolved := registry.Resolve("mcp_boom-srv_boom")
+	if resolved == nil {
+		t.Fatal("tool not found")
+	}
+	if _, err := resolved.Handler(context.Background(), json.RawMessage(`{}`)); err == nil {
+		t.Fatal("expected handler error from isError=true response")
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	got := findInt64Counter(t, rm, "stirrup.mcp.calls")
+	if got.total != 1 {
+		t.Errorf("stirrup.mcp.calls total = %d, want 1", got.total)
+	}
+	if got.attrs["success"] != "false" {
+		t.Errorf("success = %q, want %q", got.attrs["success"], "false")
+	}
+}
+
+// counterDataPoint is a flattened view of a single int64 counter
+// observation. The mcp tests below collect at most one observation per
+// metric so we don't need a full per-attribute breakdown.
+type counterDataPoint struct {
+	total int64
+	attrs map[string]string
+}
+
+func findInt64Counter(t *testing.T, rm metricdata.ResourceMetrics, name string) counterDataPoint {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, mt := range sm.Metrics {
+			if mt.Name != name {
+				continue
+			}
+			sum, ok := mt.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("metric %q is not a Sum[int64]", name)
+			}
+			if len(sum.DataPoints) == 0 {
+				return counterDataPoint{}
+			}
+			dp := sum.DataPoints[0]
+			attrs := make(map[string]string)
+			for _, kv := range dp.Attributes.ToSlice() {
+				attrs[string(kv.Key)] = kv.Value.Emit()
+			}
+			return counterDataPoint{total: dp.Value, attrs: attrs}
+		}
+	}
+	t.Fatalf("metric %q not found", name)
+	return counterDataPoint{}
+}
+
+type histogramDataPoint struct {
+	count uint64
+	attrs map[string]string
+}
+
+func findFloat64Histogram(t *testing.T, rm metricdata.ResourceMetrics, name string) histogramDataPoint {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, mt := range sm.Metrics {
+			if mt.Name != name {
+				continue
+			}
+			h, ok := mt.Data.(metricdata.Histogram[float64])
+			if !ok {
+				t.Fatalf("metric %q is not a Histogram[float64]", name)
+			}
+			if len(h.DataPoints) == 0 {
+				return histogramDataPoint{}
+			}
+			dp := h.DataPoints[0]
+			attrs := make(map[string]string)
+			for _, kv := range dp.Attributes.ToSlice() {
+				attrs[string(kv.Key)] = kv.Value.Emit()
+			}
+			return histogramDataPoint{count: dp.Count, attrs: attrs}
+		}
+	}
+	t.Fatalf("metric %q not found", name)
+	return histogramDataPoint{}
+}
+
+// TestRegisterMCPTool_TruncatesLongNames is the regression test for the
+// unbounded metric cardinality footgun (#97 B1, CWE-400). A misconfigured
+// or malicious MCP server can advertise tool names of arbitrary length;
+// without sanitisation, those names flow verbatim into the
+// `tool.name` attribute on stirrup.mcp.calls and would explode
+// cardinality on any OTLP-aware backend. Assertion: the prefixed
+// registry name and any downstream metric attribution use the truncated
+// form.
+func TestRegisterMCPTool_TruncatesLongNames(t *testing.T) {
+	longName := strings.Repeat("a", maxMCPToolNameLen+50)
+	tools := []mcpTool{{
+		Name:        longName,
+		Description: "Tool with absurd name",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
+
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "long", URI: srv.URL}, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	// Registry stores the prefixed, sanitised name. The remote-side name
+	// portion of the registered tool must be exactly maxMCPToolNameLen.
+	wantSuffix := strings.Repeat("a", maxMCPToolNameLen)
+	wantRegistered := "mcp_long_" + wantSuffix
+	if registry.Resolve(wantRegistered) == nil {
+		defs := registry.List()
+		got := make([]string, 0, len(defs))
+		for _, d := range defs {
+			got = append(got, d.Name)
+		}
+		t.Fatalf("expected registered tool %q, got names %v", wantRegistered, got)
+	}
+}
+
+// TestRegisterMCPTool_RecordsTruncatedToolName extends the truncation
+// test to the metrics path: a recorded mcp.calls observation must carry
+// the truncated tool name so downstream cardinality is bounded even
+// when a hostile MCP server returns a 4 KB name.
+func TestRegisterMCPTool_RecordsTruncatedToolName(t *testing.T) {
+	longName := strings.Repeat("a", maxMCPToolNameLen+50)
+	tools := []mcpTool{{
+		Name:        longName,
+		Description: "Tool with absurd name",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
+
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m, err := observability.NewMetricsForTesting(provider)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+	client.Metrics = m
+
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "long-srv", URI: srv.URL}, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	wantSuffix := strings.Repeat("a", maxMCPToolNameLen)
+	resolved := registry.Resolve("mcp_long-srv_" + wantSuffix)
+	if resolved == nil {
+		t.Fatal("registered tool not found")
+	}
+	if _, err := resolved.Handler(context.Background(), json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("Handler: %v", err)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	got := findInt64Counter(t, rm, "stirrup.mcp.calls")
+	gotName := got.attrs["tool.name"]
+	if len(gotName) != maxMCPToolNameLen {
+		t.Errorf("tool.name length = %d, want %d", len(gotName), maxMCPToolNameLen)
+	}
+	if gotName != wantSuffix {
+		t.Errorf("tool.name = %q, want %q", gotName, wantSuffix)
+	}
+}
+
+// TestConnect_CapsToolsPerServer asserts the per-server tool count cap
+// applied at Connect time (#97 B1). A misbehaving MCP server cannot
+// flood the registry with thousands of unique tool names — the first
+// maxMCPToolsPerServer entries are registered and the rest are dropped.
+func TestConnect_CapsToolsPerServer(t *testing.T) {
+	overflow := maxMCPToolsPerServer + 25
+	tools := make([]mcpTool, overflow)
+	for i := 0; i < overflow; i++ {
+		tools[i] = mcpTool{
+			Name:        fmt.Sprintf("tool_%d", i),
+			Description: "Generated",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}
+	}
+
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "flood", URI: srv.URL}, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	got := len(registry.List())
+	if got != maxMCPToolsPerServer {
+		t.Errorf("registered tool count = %d, want %d (cap)", got, maxMCPToolsPerServer)
 	}
 }

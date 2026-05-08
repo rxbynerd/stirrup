@@ -360,28 +360,28 @@ func TestWrapWithCodeScanner_UnknownTypeReturnsError(t *testing.T) {
 // --- buildVerifier ---
 
 func TestBuildVerifier_None(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{Type: "none"}, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "none"}, nil, nil)
 	if _, ok := v.(*verifier.NoneVerifier); !ok {
 		t.Fatalf("expected NoneVerifier, got %T", v)
 	}
 }
 
 func TestBuildVerifier_Empty(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{}, nil)
+	v := buildVerifier(types.VerifierConfig{}, nil, nil)
 	if _, ok := v.(*verifier.NoneVerifier); !ok {
 		t.Fatalf("expected NoneVerifier for empty type, got %T", v)
 	}
 }
 
 func TestBuildVerifier_TestRunner(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{Type: "test-runner", Command: "go test ./..."}, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "test-runner", Command: "go test ./..."}, nil, nil)
 	if _, ok := v.(*verifier.TestRunnerVerifier); !ok {
 		t.Fatalf("expected TestRunnerVerifier, got %T", v)
 	}
 }
 
 func TestBuildVerifier_LLMJudge(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{Type: "llm-judge", Criteria: "test criteria"}, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "llm-judge", Criteria: "test criteria"}, nil, nil)
 	if _, ok := v.(*verifier.LLMJudgeVerifier); !ok {
 		t.Fatalf("expected LLMJudgeVerifier, got %T", v)
 	}
@@ -394,14 +394,14 @@ func TestBuildVerifier_Composite(t *testing.T) {
 			{Type: "none"},
 			{Type: "test-runner", Command: "echo ok"},
 		},
-	}, nil)
+	}, nil, nil)
 	if _, ok := v.(*verifier.CompositeVerifier); !ok {
 		t.Fatalf("expected CompositeVerifier, got %T", v)
 	}
 }
 
 func TestBuildVerifier_UnknownFallsBack(t *testing.T) {
-	v := buildVerifier(types.VerifierConfig{Type: "nonexistent"}, nil)
+	v := buildVerifier(types.VerifierConfig{Type: "nonexistent"}, nil, nil)
 	if _, ok := v.(*verifier.NoneVerifier); !ok {
 		t.Fatalf("expected NoneVerifier for unknown type, got %T", v)
 	}
@@ -742,6 +742,63 @@ func TestBuildPermissionPolicy_PolicyEngineMissingFile(t *testing.T) {
 	_, err := buildPermissionPolicy(rc, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing policy file, got nil")
+	}
+}
+
+// TestBuildPermissionPolicy_PolicyEngineFileReadOnce is the regression
+// test for #97 B2 (CWE-367): wrapping a freshly-built policy-engine
+// policy with metrics must not re-read the Cedar policy file from
+// disk. The previous implementation called buildPermissionPolicy
+// twice (once before metrics, once after) which loaded the file twice
+// and opened a TOCTOU window between the reads. This test copies the
+// starter policy to a temp file, builds the policy, removes the file,
+// then wraps with metrics and asserts the wrap succeeds — proving the
+// wrap path is composition-only.
+func TestBuildPermissionPolicy_PolicyEngineFileReadOnce(t *testing.T) {
+	starter := filepath.Join(repoRootForTests(t), "examples", "policies", "destructive-shell.cedar")
+	if _, err := os.Stat(starter); err != nil {
+		t.Skipf("starter policy missing at %q: %v", starter, err)
+	}
+	contents, err := os.ReadFile(starter)
+	if err != nil {
+		t.Fatalf("read starter policy: %v", err)
+	}
+	tempPath := filepath.Join(t.TempDir(), "test-policy.cedar")
+	if err := os.WriteFile(tempPath, contents, 0o600); err != nil {
+		t.Fatalf("write temp policy: %v", err)
+	}
+
+	registry := buildToolRegistry(&registryExecutor{
+		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	rc := &types.RunConfig{
+		RunID: "test-run",
+		Mode:  "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type:       "policy-engine",
+			PolicyFile: tempPath,
+		},
+	}
+
+	pp, err := buildPermissionPolicy(rc, registry, nil, nil)
+	if err != nil {
+		t.Fatalf("buildPermissionPolicy: %v", err)
+	}
+
+	// Remove the file so any re-read attempt would hard-fail.
+	if err := os.Remove(tempPath); err != nil {
+		t.Fatalf("remove temp policy: %v", err)
+	}
+
+	// Wrap with metrics — must not touch disk.
+	wrapped := wrapPermissionPolicyMetrics(pp, rc.PermissionPolicy, nil)
+	if wrapped == nil {
+		t.Fatal("wrapPermissionPolicyMetrics returned nil")
+	}
+	// With a nil metrics argument the wrap is a no-op and returns the
+	// inner unchanged. Pass through still must not re-read the file.
+	if wrapped != pp {
+		t.Errorf("nil metrics wrap should return inner unchanged")
 	}
 }
 
@@ -1151,7 +1208,7 @@ func TestBuildLoopWithTransport_AskUpstreamIncludesSpawnAgent(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	ask, ok := loop.Permissions.(*permission.AskUpstreamPolicy)
+	ask, ok := permission.Unwrap(loop.Permissions).(*permission.AskUpstreamPolicy)
 	if !ok {
 		t.Fatalf("expected AskUpstreamPolicy, got %T", loop.Permissions)
 	}

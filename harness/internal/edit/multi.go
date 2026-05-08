@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -50,6 +55,12 @@ type MultiStrategy struct {
 	udiff         EditStrategy
 	searchReplace EditStrategy
 	wholeFile     EditStrategy
+
+	// Metrics is optional. When set, every Apply records
+	// stirrup.edit.attempts (per candidate, with strategy + fell_back_from
+	// + success) and stirrup.edit.duration_ms (with strategy) once at the
+	// end. Field-injected from the factory; nil is safe everywhere.
+	Metrics *observability.Metrics
 }
 
 // NewMultiStrategy creates a MultiStrategy with the standard strategy set:
@@ -93,6 +104,23 @@ type strategyCandidate struct {
 // one succeeds. A strategy "fails" when it returns Applied == false without a
 // hard error; hard errors (non-nil error return) are propagated immediately.
 func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec executor.Executor) (*EditResult, error) {
+	start := time.Now()
+	// appliedStrategy tracks the last strategy that ran (or attempted
+	// to run) so we can record the edit.duration_ms histogram with
+	// the strategy label that actually carried the work — the one
+	// that succeeded if any did, otherwise the final candidate that
+	// failed. Empty if we never reached the candidate loop (parse
+	// error or no candidates). Renamed from "lastStrategy" because
+	// "last" was ambiguous about success vs failure attribution.
+	var appliedStrategy string
+	defer func() {
+		if m.Metrics != nil && appliedStrategy != "" {
+			m.Metrics.EditDuration.Record(ctx, float64(time.Since(start).Milliseconds()),
+				metric.WithAttributes(attribute.String("strategy", appliedStrategy)),
+			)
+		}
+	}()
+
 	var params multiInput
 	if err := json.Unmarshal(input, &params); err != nil {
 		return nil, fmt.Errorf("parse input: %w", err)
@@ -114,8 +142,16 @@ func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 	}
 
 	var failures []string
+	var fellBackFrom string
 	for _, c := range candidates {
+		appliedStrategy = c.name
 		result, err := c.strat.Apply(ctx, c.input, exec)
+		// Record the attempt regardless of outcome. A hard error still
+		// counts as an attempt so dashboards show that the strategy
+		// was tried — recording only after a clean return would hide
+		// crashy strategies behind silence.
+		applied := err == nil && result != nil && result.Applied
+		m.recordAttempt(ctx, c.name, fellBackFrom, applied)
 		if err != nil {
 			return nil, err
 		}
@@ -123,6 +159,8 @@ func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 			return result, nil
 		}
 		failures = append(failures, fmt.Sprintf("%s: %s", c.name, result.Error))
+		// Subsequent attempts are fallbacks from this candidate.
+		fellBackFrom = c.name
 	}
 
 	return &EditResult{
@@ -130,6 +168,20 @@ func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 		Applied: false,
 		Error:   fmt.Sprintf("all strategies failed: %s", strings.Join(failures, "; ")),
 	}, nil
+}
+
+// recordAttempt emits stirrup.edit.attempts for a single candidate.
+// fellBackFrom is the previous candidate's name when this is a fallback,
+// or "" when this is the primary attempt. A nil Metrics short-circuits.
+func (m *MultiStrategy) recordAttempt(ctx context.Context, strategy, fellBackFrom string, success bool) {
+	if m.Metrics == nil {
+		return
+	}
+	m.Metrics.EditAttempts.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("strategy", strategy),
+		attribute.String("fell_back_from", fellBackFrom),
+		attribute.Bool("success", success),
+	))
 }
 
 // buildCandidates returns the ordered list of applicable strategies based on

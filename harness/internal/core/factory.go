@@ -148,8 +148,16 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// their tools into the registry alongside the built-in tools.
 	// Connection failures are non-fatal: the server's tools are skipped
 	// so the harness can still operate with its built-in tools.
+	//
+	// The MCP client's Metrics field is wired further below once the
+	// run's *observability.Metrics is constructed; the Connect() loop
+	// above only performs tools/list (no callTool yet), so the absence
+	// of Metrics during Connect is acceptable. We retain a reference to
+	// the client here so we can field-inject Metrics after metrics
+	// construction.
+	var mcpClient *mcp.Client
 	if len(config.Tools.MCPServers) > 0 {
-		mcpClient := mcp.NewClient(registry, nil)
+		mcpClient = mcp.NewClient(registry, nil)
 		ownedClosers = append(ownedClosers, mcpClient)
 		for _, srv := range config.Tools.MCPServers {
 			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {
@@ -158,8 +166,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
-	// 7. Verifier.
-	v := buildVerifier(config.Verifier, prov)
+	// 7. Verifier. Constructed without metrics here; the metrics
+	// instance is built later (step 13). After metrics is available we
+	// rebuild the verifier so each Verify call records
+	// stirrup.verifier.runs / stirrup.verifier.duration_ms with the
+	// appropriate type label, including for composite sub-verifiers.
+	v := buildVerifier(config.Verifier, prov, nil)
 
 	// 8. GuardRail. Constructed AFTER providers are built so cloud-judge
 	// can reuse the default ProviderAdapter. Returns guard.NewNoop() when
@@ -189,7 +201,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		t.Security = secLogger
 	}
 
-	// 10. Permission policy.
+	// 10. Permission policy. The raw policy is built once here; the
+	// metric-recording wrapper is applied below after the run's
+	// observability.Metrics instance is constructed. Splitting these
+	// steps avoids re-reading the Cedar policy file on the rebuild
+	// path — the previous double-call made the factory parse the
+	// policy file twice on every policy-engine run, which both cost
+	// extra latency and opened a TOCTOU window on workspace-relative
+	// paths between the two reads (CWE-367).
 	pp, err := buildPermissionPolicy(config, registry, tp, secLogger)
 	if err != nil {
 		cleanup()
@@ -233,6 +252,44 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	if metrics != nil {
 		secLogger.SetEventCounter(metrics.SecurityEvents)
 	}
+
+	// Field-inject Metrics into the MCP client so subsequent tools/call
+	// dispatches record stirrup.mcp.calls / stirrup.mcp.duration_ms.
+	// Done here (not at NewClient time) because the run's metrics
+	// instance is built after MCP discovery — if we waited until then
+	// to construct the client, callers would lose initial connection
+	// telemetry. A nil mcpClient (no servers configured) is a no-op.
+	if mcpClient != nil {
+		mcpClient.Metrics = metrics
+	}
+
+	// Field-inject Metrics into the edit strategy. The base strategy may
+	// be a *MultiStrategy and/or wrapped in a *ScannedStrategy — walk the
+	// outer wrapper first, then unwrap to reach an inner *MultiStrategy.
+	wireEditMetrics(es, metrics)
+
+	// Rebuild the verifier now that metrics is available so each Verify
+	// call records stirrup.verifier.runs / stirrup.verifier.duration_ms
+	// with the appropriate type label. The first pass at step 7 was
+	// metrics-less; this re-construction is cheap (no I/O) and keeps the
+	// metric-recorder wrapping centralised in buildVerifier.
+	v = buildVerifier(config.Verifier, prov, metrics)
+
+	// Wrap the previously-built permission policy with metrics so
+	// each Check call records stirrup.permission.decisions tagged
+	// with the policy class label. The wrapper is composition-only:
+	// it does not re-construct the policy, so the policy-engine
+	// branch's Cedar file is loaded exactly once.
+	pp = wrapPermissionPolicyMetrics(pp, config.PermissionPolicy, metrics)
+
+	// Wrap the context strategy with a metric recorder so each
+	// Prepare() call records stirrup.context.strategy_runs tagged
+	// with the strategy name and a kind label ("compaction"/"noop").
+	// The strategy name is the configured type rather than the Go
+	// type to keep dashboards consistent with the existing
+	// context.compactions counter (which tags by Strategy field of
+	// the CompactionEvent).
+	cs = wrapContextStrategy(cs, config.ContextStrategy, metrics)
 
 	// Wire security logger into executor if it supports it.
 	switch e := exec.(type) {
@@ -315,10 +372,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		// calls are gated by the control plane rather than silently
 		// auto-allowed. (See TestApprovalRequiredToolSet which asserts
 		// the load-bearing absence of spawn_agent in the unrefreshed
-		// set.)
-		if ask, ok := pp.(*permission.AskUpstreamPolicy); ok {
-			ask.AddApprovalTool("spawn_agent")
-		}
+		// set.) The policy may be wrapped in a metric recorder, so try
+		// the wrapper's pass-through first before falling back to a
+		// direct type assertion.
+		addApprovalTool(pp, "spawn_agent")
 	}
 
 	return loop, nil
@@ -497,6 +554,21 @@ func buildPromptBuilder(cfg types.PromptBuilderConfig, systemPromptOverride stri
 	default:
 		return prompt.NewDefaultPromptBuilder()
 	}
+}
+
+// wrapContextStrategy wraps the constructed ContextStrategy with a
+// metric recorder using the configured strategy name as the label. An
+// empty cfg.Type maps to "sliding-window" (the default constructor
+// branch), matching the behaviour of buildContextStrategy.
+func wrapContextStrategy(cs contextpkg.ContextStrategy, cfg types.ContextStrategyConfig, metrics *observability.Metrics) contextpkg.ContextStrategy {
+	if metrics == nil || cs == nil {
+		return cs
+	}
+	name := cfg.Type
+	if name == "" {
+		name = "sliding-window"
+	}
+	return contextpkg.NewMetricRecorder(cs, metrics, name)
 }
 
 func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.ProviderAdapter, model string, exec executor.Executor) contextpkg.ContextStrategy {
@@ -717,6 +789,44 @@ func wrapWithCodeScanner(inner edit.EditStrategy, cfg *types.CodeScannerConfig, 
 	return edit.NewScannedStrategy(inner, scanner, cfg, emitter), nil
 }
 
+// addApprovalTool routes an approval-tool registration to the
+// underlying *AskUpstreamPolicy, walking through any metric-recorder
+// wrapper via permission.Unwrap. Returns true when the registration
+// landed on an ask-upstream policy. Centralising the unwrap means the
+// metric wrapper does not need its own AddApprovalTool delegation —
+// the wrapper preserves Check() semantics; reaching the concrete
+// policy is the caller's job.
+func addApprovalTool(pp permission.PermissionPolicy, name string) bool {
+	if ask, ok := permission.Unwrap(pp).(*permission.AskUpstreamPolicy); ok {
+		ask.AddApprovalTool(name)
+		return true
+	}
+	return false
+}
+
+// wireEditMetrics field-injects metrics into a *MultiStrategy or
+// *ScannedStrategy(*MultiStrategy) chain. Direct strategies (whole-file,
+// search-replace, udiff, ScannedStrategy(direct)) carry no per-attempt
+// metric of their own — the edit_file tool path covers them at the loop
+// level — so the only writable target here is *MultiStrategy. Walking
+// through the ScannedStrategy wrapper means scanned + multi runs are
+// instrumented end-to-end without changing public APIs.
+func wireEditMetrics(es edit.EditStrategy, metrics *observability.Metrics) {
+	if metrics == nil || es == nil {
+		return
+	}
+	// Always wire Scanned wrapper first so codescanner metrics fire,
+	// then recurse into its inner strategy for Multi.
+	if scanned, ok := es.(*edit.ScannedStrategy); ok {
+		scanned.Metrics = metrics
+		wireEditMetrics(scanned.Inner(), metrics)
+		return
+	}
+	if multi, ok := es.(*edit.MultiStrategy); ok {
+		multi.Metrics = metrics
+	}
+}
+
 func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	fuzzyThreshold := 0.80
 	if cfg.FuzzyThreshold != nil {
@@ -737,27 +847,35 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	}
 }
 
-func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter) verifier.Verifier {
+// buildVerifier constructs a Verifier from cfg. Each leaf verifier (and
+// the composite at every level) is wrapped with verifier.NewMetricRecorder
+// when metrics is non-nil, so dashboards can see runs and durations
+// attributed to the specific verifier type — including individual
+// children of a composite. Passing metrics=nil skips wrapping entirely
+// (used during the first construction pass before the run's Metrics
+// instance is built; the factory rebuilds the verifier with metrics
+// once it's available).
+func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metrics *observability.Metrics) verifier.Verifier {
 	switch cfg.Type {
 	case "composite":
 		subs := make([]verifier.Verifier, len(cfg.Verifiers))
 		for i, sub := range cfg.Verifiers {
-			subs[i] = buildVerifier(sub, prov)
+			subs[i] = buildVerifier(sub, prov, metrics)
 		}
-		return verifier.NewCompositeVerifier(subs)
+		return verifier.NewMetricRecorder(verifier.NewCompositeVerifier(subs), metrics, "composite")
 	case "llm-judge":
 		model := cfg.Model
 		if model == "" {
 			model = "claude-haiku-4-5-20251001"
 		}
-		return verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria)
+		return verifier.NewMetricRecorder(verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria), metrics, "llm-judge")
 	case "test-runner":
 		timeout := time.Duration(cfg.Timeout) * time.Second
-		return verifier.NewTestRunnerVerifier(cfg.Command, timeout)
+		return verifier.NewMetricRecorder(verifier.NewTestRunnerVerifier(cfg.Command, timeout), metrics, "test-runner")
 	case "none", "":
-		return verifier.NewNoneVerifier()
+		return verifier.NewMetricRecorder(verifier.NewNoneVerifier(), metrics, "none")
 	default:
-		return verifier.NewNoneVerifier()
+		return verifier.NewMetricRecorder(verifier.NewNoneVerifier(), metrics, "none")
 	}
 }
 
@@ -853,6 +971,16 @@ func wrapWithPhases(g guard.GuardRail, phases []string) guard.GuardRail {
 
 // buildPermissionPolicy constructs the configured PermissionPolicy.
 //
+// The returned policy is raw: it is never wrapped in a metric recorder
+// here. Callers that want metric instrumentation should compose the
+// result through wrapPermissionPolicyMetrics — splitting the steps lets
+// the factory build the policy once (which, for the policy-engine arm,
+// involves a Cedar file read and parse) and wrap it with metrics
+// afterwards without re-reading the file. The previous design called
+// this function twice — once before metrics was constructed, once after
+// — and the second call re-loaded the policy file from disk, opening a
+// TOCTOU window on workspace-relative paths (CWE-367).
+//
 // The policy-engine arm requires loading a Cedar policy file from disk
 // and wiring a fallback policy in case Cedar returns "no decision". The
 // FallbackBuilder closure is the seam between the permission package
@@ -924,7 +1052,11 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 				SensitiveData:  config.SensitiveData,
 			}, registry, tp, secLogger)
 		}
-		return permission.New(cfg, env, fallback)
+		policy, err := permission.New(cfg, env, fallback)
+		if err != nil {
+			return nil, err
+		}
+		return policy, nil
 	default:
 		// Pre-fix this returned NewAllowAll() — silent permission
 		// bypass for any unknown type when callers skipped
@@ -932,6 +1064,20 @@ func buildPermissionPolicy(config *types.RunConfig, registry *tool.Registry, tp 
 		// buildVerifier and surface an explicit error (S2).
 		return nil, fmt.Errorf("unsupported permissionPolicy.type %q", cfg.Type)
 	}
+}
+
+// wrapPermissionPolicyMetrics wraps an already-built PermissionPolicy
+// with a metric recorder labelled with the configured policy type. A
+// nil metrics argument or an empty cfg.Type returns pp unchanged so the
+// no-metrics deployment has zero overhead. Splitting the wrap from
+// buildPermissionPolicy means the factory can construct the policy once
+// (avoiding a second Cedar policy file read) and add metric
+// instrumentation afterwards.
+func wrapPermissionPolicyMetrics(pp permission.PermissionPolicy, cfg types.PermissionPolicyConfig, metrics *observability.Metrics) permission.PermissionPolicy {
+	if pp == nil || metrics == nil || cfg.Type == "" {
+		return pp
+	}
+	return permission.NewMetricRecorder(pp, metrics, cfg.Type)
 }
 
 // mutatingToolSet returns the names of registered tools that mutate

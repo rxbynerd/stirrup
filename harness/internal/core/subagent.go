@@ -151,8 +151,17 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// preserves a pre-set TraceContext rather than overwriting it.
 	childLoop.TraceContext = ctx
 
-	// Run the child loop synchronously.
+	// Run the child loop synchronously while timing the spawn for
+	// stirrup.subagent.duration_ms / stirrup.subagent.spawns. Token
+	// observations come from the child's RunTrace (TokenUsage) so the
+	// counts align exactly with what was billed to the run.
+	start := time.Now()
 	runTrace, err := childLoop.Run(ctx, &childConfig)
+	elapsed := time.Since(start)
+
+	parentMode := parentConfig.Mode
+	recordSpawnMetrics(ctx, parent, parentMode, runTrace, elapsed, err == nil)
+
 	if err != nil {
 		return &SubAgentResult{
 			Outcome: "error",
@@ -172,6 +181,44 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Output:  output,
 		Turns:   runTrace.Turns,
 	}, nil
+}
+
+// recordSpawnMetrics emits stirrup.subagent.{spawns,duration_ms,
+// tokens.input,tokens.output} for one sub-agent run. parent.mode is
+// the *parent loop's* mode (not the sub-agent's), so dashboards can
+// attribute sub-agent activity to the calling run mode (e.g. an
+// execution-mode parent spawning a research-mode child still appears
+// under parent.mode=execution). A nil parent.Metrics short-circuits.
+//
+// runTrace may be nil when the child loop returned an error before any
+// trace was assembled; in that case the spawn counter still fires
+// (with success=false) but token counters are skipped.
+func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentMode string, runTrace *types.RunTrace, elapsed time.Duration, success bool) {
+	if parent == nil || parent.Metrics == nil {
+		return
+	}
+	// Route every observation through parent.metricAttrs so the loop's
+	// MetricAttrs (e.g. run.subagent / run.parent_id when the parent is
+	// itself a sub-agent) prepend correctly. Bypassing this with raw
+	// metric.WithAttributes would drop those attributes on multi-level
+	// spawn trees and break the attribution chain on dashboards
+	// (CWE-778).
+	parent.Metrics.SubagentSpawns.Add(ctx, 1, parent.metricAttrs(
+		attribute.String("parent.mode", parentMode),
+		attribute.Bool("success", success),
+	))
+	parent.Metrics.SubagentDuration.Record(ctx, float64(elapsed.Milliseconds()), parent.metricAttrs(
+		attribute.String("parent.mode", parentMode),
+	))
+	if runTrace == nil {
+		return
+	}
+	parent.Metrics.SubagentTokensInput.Add(ctx, int64(runTrace.TokenUsage.Input), parent.metricAttrs(
+		attribute.String("parent.mode", parentMode),
+	))
+	parent.Metrics.SubagentTokensOutput.Add(ctx, int64(runTrace.TokenUsage.Output), parent.metricAttrs(
+		attribute.String("parent.mode", parentMode),
+	))
 }
 
 // capSubAgentMaxTurns returns the effective MaxTurns a sub-agent should

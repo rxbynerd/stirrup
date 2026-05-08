@@ -36,6 +36,19 @@ type Metrics struct {
 	GuardSkips           metric.Int64Counter
 	GuardSpotlights      metric.Int64Counter
 
+	// --- Component-level instruments (issue #97) ---
+	// Counters
+	SubagentSpawns       metric.Int64Counter
+	SubagentTokensInput  metric.Int64Counter
+	SubagentTokensOutput metric.Int64Counter
+	MCPCalls             metric.Int64Counter
+	EditAttempts         metric.Int64Counter
+	VerifierRuns         metric.Int64Counter
+	CodeScannerScans     metric.Int64Counter
+	CodeScannerFindings  metric.Int64Counter
+	PermissionDecisions  metric.Int64Counter
+	ContextStrategyRuns  metric.Int64Counter
+
 	// Histograms
 	RunDuration      metric.Float64Histogram
 	TurnDuration     metric.Float64Histogram
@@ -43,6 +56,12 @@ type Metrics struct {
 	ProviderLatency  metric.Float64Histogram
 	ProviderTTFB     metric.Float64Histogram
 	GuardDuration    metric.Float64Histogram
+
+	// --- Component-level histograms (issue #97) ---
+	SubagentDuration metric.Float64Histogram
+	MCPDuration      metric.Float64Histogram
+	EditDuration     metric.Float64Histogram
+	VerifierDuration metric.Float64Histogram
 
 	// Observable gauge: per-run callbacks supply the live absolute token
 	// estimate. Multiple concurrent runs each register their own callback;
@@ -239,6 +258,94 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
+	// --- Component-level counters (issue #97) ---
+	//
+	// These instruments expose per-component activity (sub-agent, MCP,
+	// edit, verifier, codescanner, permission, context) so dashboards
+	// can attribute cost and latency to specific subsystems. Wiring at
+	// call sites is a follow-up chunk; the foundation lands first so
+	// the names are stable before any producer references them.
+
+	m.SubagentSpawns, err = meter.Int64Counter("stirrup.subagent.spawns",
+		metric.WithUnit("{spawn}"),
+		metric.WithDescription("Sub-agent spawns dispatched"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.SubagentTokensInput, err = meter.Int64Counter("stirrup.subagent.tokens.input",
+		metric.WithUnit("{token}"),
+		metric.WithDescription("Sub-agent input tokens"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.SubagentTokensOutput, err = meter.Int64Counter("stirrup.subagent.tokens.output",
+		metric.WithUnit("{token}"),
+		metric.WithDescription("Sub-agent output tokens"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.MCPCalls, err = meter.Int64Counter("stirrup.mcp.calls",
+		metric.WithUnit("{call}"),
+		metric.WithDescription("MCP tools/call dispatches"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.EditAttempts, err = meter.Int64Counter("stirrup.edit.attempts",
+		metric.WithUnit("{attempt}"),
+		metric.WithDescription("Edit strategy attempts"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.VerifierRuns, err = meter.Int64Counter("stirrup.verifier.runs",
+		metric.WithUnit("{run}"),
+		metric.WithDescription("Verifier runs"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.CodeScannerScans, err = meter.Int64Counter("stirrup.codescanner.scans",
+		metric.WithUnit("{scan}"),
+		metric.WithDescription("Code scanner scans"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.CodeScannerFindings, err = meter.Int64Counter("stirrup.codescanner.findings",
+		metric.WithUnit("{finding}"),
+		metric.WithDescription("Code scanner findings"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.PermissionDecisions, err = meter.Int64Counter("stirrup.permission.decisions",
+		metric.WithUnit("{decision}"),
+		metric.WithDescription("Permission decisions"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.ContextStrategyRuns, err = meter.Int64Counter("stirrup.context.strategy_runs",
+		metric.WithUnit("{run}"),
+		metric.WithDescription("Context strategy invocations"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// --- Histograms ---
 
 	m.RunDuration, err = meter.Float64Histogram("stirrup.harness.run_duration",
@@ -284,6 +391,43 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.GuardDuration, err = meter.Float64Histogram("stirrup.guard.duration_ms",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Wall-clock latency of guard.Check calls"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// --- Component-level histograms (issue #97) ---
+	// Default histogram buckets are reused; per-component bucket
+	// configuration is intentionally deferred until call-site wiring
+	// reveals the actual latency distribution.
+
+	m.SubagentDuration, err = meter.Float64Histogram("stirrup.subagent.duration_ms",
+		metric.WithUnit("ms"),
+		metric.WithDescription("Sub-agent run duration"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.MCPDuration, err = meter.Float64Histogram("stirrup.mcp.duration_ms",
+		metric.WithUnit("ms"),
+		metric.WithDescription("MCP call duration"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.EditDuration, err = meter.Float64Histogram("stirrup.edit.duration_ms",
+		metric.WithUnit("ms"),
+		metric.WithDescription("Edit strategy duration"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.VerifierDuration, err = meter.Float64Histogram("stirrup.verifier.duration_ms",
+		metric.WithUnit("ms"),
+		metric.WithDescription("Verifier run duration"),
 	)
 	if err != nil {
 		return nil, err

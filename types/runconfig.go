@@ -684,6 +684,20 @@ var validBuiltInToolNames = map[string]bool{
 	"spawn_agent":    true,
 }
 
+// validRunModes is the closed set of values accepted on RunConfig.Mode.
+// "execution" is the default editable mode; the read-only modes are
+// enumerated separately in readOnlyModes for tool-level enforcement.
+// Any string outside this set would otherwise flow verbatim into the
+// `parent.mode` / `run.mode` metric attribute, where an attacker-
+// controlled value could blow up cardinality on the OTLP exporter.
+var validRunModes = map[string]bool{
+	"execution": true,
+	"planning":  true,
+	"review":    true,
+	"research":  true,
+	"toil":      true,
+}
+
 var readOnlyModes = map[string]bool{
 	"planning": true, "review": true, "research": true, "toil": true,
 }
@@ -746,6 +760,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	var errs []string
 
 	validateSessionName(config.SessionName, &errs)
+	validateRequiredType("mode", config.Mode, validRunModes, &errs)
 	validateRequiredType("provider", config.Provider.Type, validProviderTypes, &errs)
 	validateOptionalType("modelRouter", config.ModelRouter.Type, validModelRouterTypes, &errs)
 	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
