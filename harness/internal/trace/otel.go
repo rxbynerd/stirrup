@@ -31,7 +31,7 @@ import (
 //
 // Spec: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 const (
-	genAISystemKey         = "gen_ai.system"
+	genAIProviderNameKey   = "gen_ai.provider.name"
 	genAIRequestModelKey   = "gen_ai.request.model"
 	genAIAgentIDKey        = "gen_ai.agent.id"
 	genAIConversationIDKey = "gen_ai.conversation.id"
@@ -132,9 +132,9 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	if config != nil {
 		span.SetAttributes(
 			attribute.String("run.mode", config.Mode),
-			// Dual-emit pair: run.provider (stirrup) + gen_ai.system (GenAI semconv).
+			// Dual-emit pair: run.provider (stirrup) + gen_ai.provider.name (GenAI semconv).
 			attribute.String("run.provider", config.Provider.Type),
-			attribute.String(genAISystemKey, config.Provider.Type),
+			attribute.String(genAIProviderNameKey, config.Provider.Type),
 		)
 		if config.ModelRouter.Model != "" {
 			// Dual-emit pair: run.model (stirrup) + gen_ai.request.model (GenAI semconv).

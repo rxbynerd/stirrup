@@ -153,7 +153,7 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	// the stirrup-prefixed names on the root span, with the same
 	// values, so vendor-shipped APM dashboards recognise the spans.
 	assertAttribute(t, rootSpan, genAIAgentIDKey, "run-otel-1")
-	assertAttribute(t, rootSpan, genAISystemKey, "anthropic")
+	assertAttribute(t, rootSpan, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, rootSpan, genAIRequestModelKey, "claude-sonnet-4-6")
 
 	// Same dual-emit invariant on a turn span: per-turn token usage
@@ -522,7 +522,7 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 
 	// Root span: agent identity, model, provider, conversation.
 	assertAttribute(t, root, genAIAgentIDKey, "run-genai-1")
-	assertAttribute(t, root, genAISystemKey, "anthropic")
+	assertAttribute(t, root, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, root, genAIRequestModelKey, "claude-sonnet-4-6")
 	assertAttribute(t, root, genAIConversationIDKey, "alignment-test")
 
