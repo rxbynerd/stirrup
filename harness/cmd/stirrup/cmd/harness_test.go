@@ -369,6 +369,9 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("base-url", "", "")
 	f.String("api-key-header", "", "")
 	f.StringArray("query-param", nil, "")
+	f.String("gcp-project", "", "")
+	f.String("gcp-location", "global", "")
+	f.String("gcp-credentials-file", "", "")
 	f.StringP("workspace", "w", "", "")
 	f.Int("max-turns", 20, "")
 	f.Int("timeout", 600, "")
@@ -774,6 +777,52 @@ func TestExampleAzureOpenAIJSONLoadsAndValidates(t *testing.T) {
 	}
 	if !strings.Contains(cfg.Provider.BaseURL, "openai.azure.com") {
 		t.Errorf("Provider.BaseURL should target Azure, got %q", cfg.Provider.BaseURL)
+	}
+}
+
+// TestExampleVertexGeminiJSONLoadsAndValidates pins the shipped Vertex
+// AI fixture: the file must round-trip through loadRunConfigFile, pass
+// ValidateRunConfig, and demonstrate execution-mode-consistent
+// permissionPolicy / built-in tool combinations.
+//
+// Specifically guards B6: prior to the fix the example shipped with
+// permissionPolicy=deny-side-effects on an execution-mode config that
+// listed run_command and edit_file in tools.builtIn. The combination
+// validated, but at runtime every side-effecting tool would have been
+// blocked by the permission layer — silently breaking the example.
+func TestExampleVertexGeminiJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "vertex-gemini.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/vertex-gemini.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/vertex-gemini.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "gemini" {
+		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
+	}
+	if cfg.Provider.GCPProject == "" || cfg.Provider.GCPLocation == "" {
+		t.Errorf("Provider must set gcpProject and gcpLocation, got %+v", cfg.Provider)
+	}
+	// Execution-mode + side-effecting tools must not be paired with
+	// deny-side-effects: every workspace-mutating call would be denied
+	// at runtime and the example would silently fail to do anything.
+	if cfg.Mode == "execution" {
+		hasSideEffectTool := false
+		for _, name := range cfg.Tools.BuiltIn {
+			if name == "run_command" || name == "edit_file" || name == "write_file" {
+				hasSideEffectTool = true
+				break
+			}
+		}
+		if hasSideEffectTool && cfg.PermissionPolicy.Type == "deny-side-effects" {
+			t.Errorf("execution-mode example with side-effecting tools must not use deny-side-effects (got %q + %v)",
+				cfg.PermissionPolicy.Type, cfg.Tools.BuiltIn)
+		}
 	}
 }
 
@@ -1611,5 +1660,345 @@ func TestApplyOverrides_GuardRailEmptyTypeClears(t *testing.T) {
 	}
 	if cfg.GuardRail != nil {
 		t.Errorf("expected GuardRail to be cleared by --guardrail='', got %+v", cfg.GuardRail)
+	}
+}
+
+// TestBuildHarnessRunConfig_GeminiProvider verifies that the Vertex AI
+// Gemini provider type passes through the flag-only path: GCPProject
+// and GCPLocation flow into ProviderConfig, the resulting RunConfig
+// validates, and ModelRouter.Provider is wired to "gemini".
+func TestBuildHarnessRunConfig_GeminiProvider(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "gemini",
+		Model:         "gemini-2.5-pro",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		GCPProject:    "my-project",
+		GCPLocation:   "us-central1",
+	})
+
+	if cfg.Provider.Type != "gemini" {
+		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
+	}
+	if cfg.Provider.GCPProject != "my-project" {
+		t.Errorf("GCPProject = %q, want my-project", cfg.Provider.GCPProject)
+	}
+	if cfg.Provider.GCPLocation != "us-central1" {
+		t.Errorf("GCPLocation = %q, want us-central1", cfg.Provider.GCPLocation)
+	}
+	if cfg.ModelRouter.Provider != "gemini" {
+		t.Errorf("ModelRouter.Provider = %q, want gemini", cfg.ModelRouter.Provider)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig rejected gemini config: %v", err)
+	}
+}
+
+// TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef ensures the
+// flag-only path drops APIKeyRef when the provider is gemini. The CLI
+// default for --api-key-ref is "secret://ANTHROPIC_API_KEY", so a user
+// switching only --provider would otherwise carry that ref through and
+// trip the validator (which forbids apiKeyRef on gemini runs).
+func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "gemini",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "gemini-2.5-pro",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		GCPProject:    "my-project",
+		GCPLocation:   "global",
+	})
+
+	if cfg.Provider.APIKeyRef != "" {
+		t.Errorf("APIKeyRef should be cleared for gemini, got %q", cfg.Provider.APIKeyRef)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig rejected gemini-with-suppressed-apikeyref config: %v", err)
+	}
+}
+
+// TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType verifies
+// that --gcp-credentials-file implies credential.type=gcp-service-account
+// in the flag-only path, mirroring how --permission-policy-file implies
+// type=policy-engine. This is the convenience shortcut documented on
+// the flag's help string.
+func TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:              "test-run",
+		Mode:               "execution",
+		Prompt:             "test",
+		ProviderType:       "gemini",
+		Model:              "gemini-2.5-pro",
+		MaxTurns:           20,
+		Timeout:            600,
+		TransportType:      "stdio",
+		LogLevel:           "info",
+		GCPProject:         "my-project",
+		GCPLocation:        "global",
+		GCPCredentialsFile: "/tmp/sa.json",
+	})
+
+	if cfg.Provider.GCPCredentialsFile != "/tmp/sa.json" {
+		t.Errorf("GCPCredentialsFile = %q, want /tmp/sa.json", cfg.Provider.GCPCredentialsFile)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Credential to be inferred from --gcp-credentials-file")
+	}
+	if cfg.Provider.Credential.Type != "gcp-service-account" {
+		t.Errorf("Credential.Type = %q, want gcp-service-account", cfg.Provider.Credential.Type)
+	}
+}
+
+// TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType pins the
+// safety invariant: GCP fields supplied while --provider is not gemini
+// must NOT leak into the resulting RunConfig (the validator would reject
+// them anyway, but we want clean configs to keep --provider switching
+// ergonomic).
+func TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		// These flags are at their default values when the user is not
+		// running a gemini provider, but the harness still threads them
+		// through opts. The flag-only path must drop them.
+		GCPProject:  "leaked-project",
+		GCPLocation: "global",
+	})
+
+	if cfg.Provider.GCPProject != "" {
+		t.Errorf("GCPProject leaked onto anthropic provider: %q", cfg.Provider.GCPProject)
+	}
+	if cfg.Provider.GCPLocation != "" {
+		t.Errorf("GCPLocation leaked onto anthropic provider: %q", cfg.Provider.GCPLocation)
+	}
+}
+
+// TestApplyOverrides_GeminiFlags exercises the --gcp-project,
+// --gcp-location, and --gcp-credentials-file overrides on the --config
+// path. Explicitly-set flags must clobber the file's values, and the
+// credentials-file flag must imply a Credential.Type when none is set.
+func TestApplyOverrides_GeminiFlags(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:        "gemini",
+		GCPProject:  "from-file",
+		GCPLocation: "global",
+	}
+	cfg.ModelRouter.Provider = "gemini"
+	cfg.ModelRouter.Model = "gemini-2.5-pro"
+
+	must := func(name, value string) {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	must("provider", "gemini")
+	must("gcp-project", "from-flag")
+	must("gcp-location", "us-central1")
+	must("gcp-credentials-file", "/tmp/sa.json")
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.GCPProject != "from-flag" {
+		t.Errorf("GCPProject override failed: %q", cfg.Provider.GCPProject)
+	}
+	if cfg.Provider.GCPLocation != "us-central1" {
+		t.Errorf("GCPLocation override failed: %q", cfg.Provider.GCPLocation)
+	}
+	if cfg.Provider.GCPCredentialsFile != "/tmp/sa.json" {
+		t.Errorf("GCPCredentialsFile override failed: %q", cfg.Provider.GCPCredentialsFile)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Credential to be inferred from --gcp-credentials-file")
+	}
+	if cfg.Provider.Credential.Type != "gcp-service-account" {
+		t.Errorf("Credential.Type = %q, want gcp-service-account", cfg.Provider.Credential.Type)
+	}
+}
+
+// TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile verifies B7:
+// switching providers to gemini via --provider must clear an APIKeyRef
+// the config file inherited from a previous (non-gemini) configuration.
+// Without this clear, validateGeminiProviderFields rejects the run with
+// a confusing error about an apiKeyRef the operator never set
+// intentionally on this invocation. The flag-only path
+// (buildHarnessRunConfig) already does this; the --config path must
+// match for parity.
+func TestApplyOverrides_GeminiClearsAPIKeyRefFromConfigFile(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	// Simulate a config file that originally targeted Anthropic and
+	// carries the matching APIKeyRef. The operator now flips the
+	// provider to gemini at the CLI.
+	cfg.Provider = types.ProviderConfig{
+		Type:      "anthropic",
+		APIKeyRef: "secret://ANTHROPIC_API_KEY",
+	}
+	cfg.ModelRouter.Provider = "anthropic"
+	cfg.ModelRouter.Model = "claude-sonnet-4-6"
+
+	must := func(name, value string) {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	must("provider", "gemini")
+	must("gcp-project", "my-proj")
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.Type != "gemini" {
+		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
+	}
+	if cfg.Provider.APIKeyRef != "" {
+		t.Errorf("APIKeyRef should be cleared on gemini switch, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyOverrides_GeminiPreservesExplicitAPIKeyRef pins the inverse
+// invariant: if the operator explicitly passes --api-key-ref alongside
+// --provider gemini, that value wins. This shape is wrong on its face
+// (validateGeminiProviderFields will reject it later with a clear
+// error), but the CLI layer must not silently drop an explicit operator
+// choice.
+func TestApplyOverrides_GeminiPreservesExplicitAPIKeyRef(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{Type: "anthropic"}
+	cfg.ModelRouter.Provider = "anthropic"
+	cfg.ModelRouter.Model = "claude-sonnet-4-6"
+
+	must := func(name, value string) {
+		if err := cmd.Flags().Set(name, value); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	must("provider", "gemini")
+	must("api-key-ref", "secret://EXPLICIT")
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.APIKeyRef != "secret://EXPLICIT" {
+		t.Errorf("explicit --api-key-ref dropped: %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyOverrides_GeminiDefaultLocationFallback verifies H3:
+// a config file that omits gcpLocation and a CLI invocation that does
+// not pass --gcp-location must end up with the documented default
+// ("global") rather than failing validation with "gcpLocation is
+// required". The flag-only path gets this for free via cobra defaulting;
+// the --config path must explicitly fall back when the file omits it.
+func TestApplyOverrides_GeminiDefaultLocationFallback(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:       "gemini",
+		GCPProject: "my-proj",
+		// GCPLocation deliberately empty.
+	}
+	cfg.ModelRouter.Provider = "gemini"
+	cfg.ModelRouter.Model = "gemini-2.5-pro"
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.GCPLocation != "global" {
+		t.Errorf("GCPLocation = %q, want fallback default \"global\"", cfg.Provider.GCPLocation)
+	}
+}
+
+// TestApplyOverrides_GeminiDefaultFlagsDoNotOverride pins that the
+// gemini flag overrides only fire when the operator changed them.
+// A config file that sets gcpProject and gcpLocation must not be
+// silently overwritten when the CLI invocation leaves the flags at
+// their defaults.
+func TestApplyOverrides_GeminiDefaultFlagsDoNotOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:        "gemini",
+		GCPProject:  "from-file",
+		GCPLocation: "us-central1",
+	}
+	cfg.ModelRouter.Provider = "gemini"
+	cfg.ModelRouter.Model = "gemini-2.5-pro"
+
+	// Note: NOT calling Flags().Set on any gcp-* flag — they remain at
+	// their cobra-registered defaults (empty / "global"). With H3's
+	// fallback only applying when GCPLocation is empty, the file's
+	// "us-central1" must be preserved.
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.GCPProject != "from-file" {
+		t.Errorf("GCPProject silently overridden: %q", cfg.Provider.GCPProject)
+	}
+	if cfg.Provider.GCPLocation != "us-central1" {
+		t.Errorf("GCPLocation silently overridden: %q", cfg.Provider.GCPLocation)
+	}
+}
+
+// TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential
+// verifies that --gcp-credentials-file does NOT clobber a Credential
+// type that the --config file already set explicitly. The "imply only
+// when unset" rule mirrors how --permission-policy-file behaves.
+func TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:        "gemini",
+		GCPProject:  "p",
+		GCPLocation: "global",
+		// User has explicitly chosen workload-identity in --config; the
+		// flag must not silently downgrade them to a service-account file.
+		Credential: &types.CredentialConfig{Type: "gcp-workload-identity"},
+	}
+	cfg.ModelRouter.Provider = "gemini"
+	cfg.ModelRouter.Model = "gemini-2.5-pro"
+
+	if err := cmd.Flags().Set("gcp-credentials-file", "/tmp/sa.json"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.GCPCredentialsFile != "/tmp/sa.json" {
+		t.Errorf("GCPCredentialsFile override failed: %q", cfg.Provider.GCPCredentialsFile)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("Credential cleared unexpectedly")
+	}
+	if cfg.Provider.Credential.Type != "gcp-workload-identity" {
+		t.Errorf("Credential.Type clobbered: got %q, want gcp-workload-identity", cfg.Provider.Credential.Type)
 	}
 }

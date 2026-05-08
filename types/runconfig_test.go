@@ -1830,3 +1830,399 @@ func TestValidateGuardRailConfig(t *testing.T) {
 		})
 	}
 }
+
+// geminiValidConfig is the smallest RunConfig that exercises a healthy
+// gemini provider — wave-1 baseline used by the negative-path tests
+// below to swap one field at a time.
+func geminiValidConfig() *RunConfig {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:        "gemini",
+		GCPProject:  "my-project",
+		GCPLocation: "us-central1",
+	}
+	return c
+}
+
+func TestValidateRunConfig_GeminiProvider(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(c *RunConfig)
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name:    "minimal gemini config passes",
+			mutate:  func(c *RunConfig) {},
+			wantErr: false,
+		},
+		{
+			name: "global location passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.GCPLocation = "global"
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing gcpProject fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.GCPProject = ""
+			},
+			wantErr:   true,
+			errSubstr: "gcpProject is required",
+		},
+		{
+			name: "missing gcpLocation fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.GCPLocation = ""
+			},
+			wantErr:   true,
+			errSubstr: "gcpLocation is required",
+		},
+		{
+			name: "apiKeyRef on gemini rejected with redirect",
+			mutate: func(c *RunConfig) {
+				c.Provider.APIKeyRef = "secret://GEMINI_KEY"
+			},
+			wantErr:   true,
+			errSubstr: "configure provider.credential instead",
+		},
+		{
+			name: "uppercase project ID fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.GCPProject = "MyProject"
+			},
+			wantErr:   true,
+			errSubstr: "gcpProject",
+		},
+		{
+			name: "project ID with underscore fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.GCPProject = "my_project"
+			},
+			wantErr:   true,
+			errSubstr: "gcpProject",
+		},
+		{
+			name: "project ID too short fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.GCPProject = "abcde"
+			},
+			wantErr:   true,
+			errSubstr: "gcpProject",
+		},
+		{
+			name: "credentials file with traversal rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.GCPCredentialsFile = "../../etc/passwd"
+				c.Provider.Credential = &CredentialConfig{Type: "gcp-service-account"}
+			},
+			wantErr:   true,
+			errSubstr: "must not contain \"..\"",
+		},
+		{
+			name: "gcp-service-account without credentials file fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{Type: "gcp-service-account"}
+			},
+			wantErr:   true,
+			errSubstr: "gcpCredentialsFile is required",
+		},
+		{
+			name: "gcp-default with credentials file fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{Type: "gcp-default"}
+				c.Provider.GCPCredentialsFile = "/etc/sa.json"
+			},
+			wantErr:   true,
+			errSubstr: "only valid when credential.type is",
+		},
+		{
+			name: "gcp-service-account with credentials file passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{Type: "gcp-service-account"}
+				c.Provider.GCPCredentialsFile = "/etc/sa.json"
+			},
+			wantErr: false,
+		},
+		{
+			name: "gcp-default credential type accepted",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{Type: "gcp-default"}
+			},
+			wantErr: false,
+		},
+		{
+			name: "gcp-workload-identity credential type accepted",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{Type: "gcp-workload-identity"}
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid safety setting passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiSafetySettings = []GeminiSafetySetting{
+					{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_ONLY_HIGH"},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "all five categories pass",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiSafetySettings = []GeminiSafetySetting{
+					{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
+					{Category: "HARM_CATEGORY_HARASSMENT", Threshold: "BLOCK_LOW_AND_ABOVE"},
+					{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_MEDIUM_AND_ABOVE"},
+					{Category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", Threshold: "BLOCK_ONLY_HIGH"},
+					{Category: "HARM_CATEGORY_CIVIC_INTEGRITY", Threshold: "BLOCK_NONE"},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "bogus safety category rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiSafetySettings = []GeminiSafetySetting{
+					{Category: "HARM_CATEGORY_BOGUS", Threshold: "BLOCK_NONE"},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "is not a valid HARM_CATEGORY_*",
+		},
+		{
+			name: "bogus safety threshold rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiSafetySettings = []GeminiSafetySetting{
+					{Category: "HARM_CATEGORY_DANGEROUS_CONTENT", Threshold: "BLOCK_ALMOST_NONE"},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "is not a valid BLOCK_*",
+		},
+		{
+			name: "empty category rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiSafetySettings = []GeminiSafetySetting{
+					{Threshold: "BLOCK_NONE"},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "category is required",
+		},
+		{
+			name: "empty threshold rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.GeminiSafetySettings = []GeminiSafetySetting{
+					{Category: "HARM_CATEGORY_DANGEROUS_CONTENT"},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "threshold is required",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := geminiValidConfig()
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_GeminiModelNameWithSlash verifies B5: a Vertex
+// model name containing a slash (or other URL-reserved bytes) is
+// rejected at validation time. The adapter url.PathEscape's the name
+// at the request-construction layer, but a model identifier with
+// slashes is almost always a copy-paste error or malicious input —
+// surface it loudly rather than letting a percent-encoded path land at
+// a real (but unintended) Vertex endpoint.
+func TestValidateRunConfig_GeminiModelNameWithSlash(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(c *RunConfig)
+		errSubstr string
+	}{
+		{
+			name: "modelRouter.model with traversal",
+			mutate: func(c *RunConfig) {
+				c.ModelRouter = ModelRouterConfig{
+					Type:     "static",
+					Provider: "gemini",
+					Model:    "gemini-pro/../../evil",
+				}
+			},
+			errSubstr: "modelRouter.model",
+		},
+		{
+			name: "modelRouter.model with bare slash",
+			mutate: func(c *RunConfig) {
+				c.ModelRouter = ModelRouterConfig{
+					Type:     "static",
+					Provider: "gemini",
+					Model:    "publishers/google/models/gemini-2.5-pro",
+				}
+			},
+			errSubstr: "modelRouter.model",
+		},
+		{
+			name: "modelRouter.model with percent",
+			mutate: func(c *RunConfig) {
+				c.ModelRouter = ModelRouterConfig{
+					Type:     "static",
+					Provider: "gemini",
+					Model:    "gemini%2F../alt",
+				}
+			},
+			errSubstr: "modelRouter.model",
+		},
+		{
+			name: "default provider gemini, empty router provider",
+			mutate: func(c *RunConfig) {
+				// ModelRouter.Provider unset — falls back to top-level
+				// Provider.Type which is gemini. Validation must still
+				// fire for the model-name shape.
+				c.ModelRouter = ModelRouterConfig{
+					Type:  "static",
+					Model: "gemini-pro/../../evil",
+				}
+			},
+			errSubstr: "modelRouter.model",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := geminiValidConfig()
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected validation error containing %q, got nil", tc.errSubstr)
+			}
+			if !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_GeminiModelNameValid pins that an ordinary
+// Vertex model identifier passes through cleanly. Catches a regression
+// where the new check accidentally rejects all gemini configs.
+func TestValidateRunConfig_GeminiModelNameValid(t *testing.T) {
+	for _, model := range []string{"gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro_001"} {
+		t.Run(model, func(t *testing.T) {
+			c := geminiValidConfig()
+			c.ModelRouter = ModelRouterConfig{
+				Type:     "static",
+				Provider: "gemini",
+				Model:    model,
+			}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for valid model %q, got: %v", model, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_GeminiFieldsLeakRejected verifies that the four
+// gemini-only ProviderConfig fields cannot ride along on a non-gemini
+// provider. A stale value from an earlier provider-type choice would
+// otherwise sit unused in the config and fool a future operator into
+// thinking it was active. The check fires for both the default
+// provider and named entries in the Providers map.
+func TestValidateRunConfig_GeminiFieldsLeakRejected(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(p *ProviderConfig)
+		errSubstr string
+	}{
+		{
+			name:      "gcpProject on anthropic",
+			mutate:    func(p *ProviderConfig) { p.GCPProject = "my-project" },
+			errSubstr: "gcpProject is only valid",
+		},
+		{
+			name:      "gcpLocation on anthropic",
+			mutate:    func(p *ProviderConfig) { p.GCPLocation = "us-central1" },
+			errSubstr: "gcpLocation is only valid",
+		},
+		{
+			name:      "gcpCredentialsFile on anthropic",
+			mutate:    func(p *ProviderConfig) { p.GCPCredentialsFile = "/etc/sa.json" },
+			errSubstr: "gcpCredentialsFile is only valid",
+		},
+		{
+			name: "geminiSafetySettings on anthropic",
+			mutate: func(p *ProviderConfig) {
+				p.GeminiSafetySettings = []GeminiSafetySetting{
+					{Category: "HARM_CATEGORY_HATE_SPEECH", Threshold: "BLOCK_NONE"},
+				}
+			},
+			errSubstr: "geminiSafetySettings is only valid",
+		},
+	}
+	for _, tc := range cases {
+		t.Run("default/"+tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mutate(&c.Provider)
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+			}
+			if !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+			}
+		})
+		t.Run("map/"+tc.name, func(t *testing.T) {
+			c := validConfig()
+			named := ProviderConfig{Type: "anthropic"}
+			tc.mutate(&named)
+			c.Providers = map[string]ProviderConfig{"alt": named}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+			}
+			if !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_GeminiInProvidersMap pins that the gemini
+// validation runs on the Providers map entries too, not just on the
+// default Provider. Without this coverage a future refactor that
+// touched validateProviderConfigs could silently skip the gemini
+// gate for named providers.
+func TestValidateRunConfig_GeminiInProvidersMap(t *testing.T) {
+	c := validConfig()
+	c.Providers = map[string]ProviderConfig{
+		"vertex": {
+			Type:        "gemini",
+			GCPLocation: "us-central1",
+			// missing GCPProject
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for gemini provider in map missing gcpProject")
+	}
+	if !strings.Contains(err.Error(), "providers[vertex].gcpProject") {
+		t.Errorf("expected error path providers[vertex].gcpProject, got: %v", err)
+	}
+}

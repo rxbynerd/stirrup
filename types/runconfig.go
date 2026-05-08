@@ -313,7 +313,7 @@ func (rc RunConfig) Redact() RunConfig {
 
 // ProviderConfig selects the model provider implementation.
 type ProviderConfig struct {
-	Type       string            `json:"type"`                 // "anthropic" | "bedrock" | "openai-compatible" | "openai-responses"
+	Type       string            `json:"type"`                 // "anthropic" | "bedrock" | "openai-compatible" | "openai-responses" | "gemini"
 	APIKeyRef  string            `json:"apiKeyRef,omitempty"`  // e.g. "secret://anthropic-key"
 	Region     string            `json:"region,omitempty"`     // bedrock
 	Profile    string            `json:"profile,omitempty"`    // bedrock
@@ -334,13 +334,67 @@ type ProviderConfig struct {
 	// supplied here override any duplicate keys present in BaseURL's query
 	// string. Ignored by other provider types.
 	QueryParams map[string]string `json:"queryParams,omitempty"`
+
+	// GCPProject is the Google Cloud project ID hosting the Vertex AI
+	// usage. Required for the "gemini" provider; rejected for every
+	// other type so a stale config does not silently keep a project
+	// reference alive across a provider-type change.
+	GCPProject string `json:"gcpProject,omitempty"`
+
+	// GCPLocation is the Vertex AI location. Either "global" or a
+	// region like "us-central1". Determines both the URL host and the
+	// project location path segment of the streamGenerateContent
+	// endpoint. Required for the "gemini" provider.
+	GCPLocation string `json:"gcpLocation,omitempty"`
+
+	// GCPCredentialsFile is the path to a Google service account JSON
+	// key file. Only consulted when Credential.Type ==
+	// "gcp-service-account"; setting it with any other credential type
+	// is a hard error so a misconfigured run fails loudly rather than
+	// silently ignoring the path. The path itself is not treated as a
+	// secret (it appears in traces); the file's contents are.
+	GCPCredentialsFile string `json:"gcpCredentialsFile,omitempty"`
+
+	// GeminiSafetySettings overrides the default safety thresholds for
+	// the "gemini" provider. When the list is empty, the adapter
+	// applies BLOCK_NONE to all five HARM_CATEGORY_* categories — the
+	// only sane default for a coding harness producing security
+	// tooling, where false positives on code samples are operationally
+	// unacceptable.
+	GeminiSafetySettings []GeminiSafetySetting `json:"geminiSafetySettings,omitempty"`
+}
+
+// GeminiSafetySetting overrides the threshold for one Gemini safety
+// category. Used by the "gemini" provider only.
+type GeminiSafetySetting struct {
+	// Category is one of the five HARM_CATEGORY_* identifiers accepted
+	// by Vertex AI:
+	//   HARM_CATEGORY_HATE_SPEECH | HARM_CATEGORY_HARASSMENT |
+	//   HARM_CATEGORY_DANGEROUS_CONTENT | HARM_CATEGORY_SEXUALLY_EXPLICIT |
+	//   HARM_CATEGORY_CIVIC_INTEGRITY
+	Category string `json:"category"`
+	// Threshold is one of:
+	//   BLOCK_NONE | BLOCK_LOW_AND_ABOVE | BLOCK_MEDIUM_AND_ABOVE | BLOCK_ONLY_HIGH
+	Threshold string `json:"threshold"`
 }
 
 // CredentialConfig selects the credential acquisition method for a provider.
 // When omitted from ProviderConfig, the credential type is inferred:
-// bedrock uses "aws-default", all others use "static" (resolving APIKeyRef).
+// bedrock uses "aws-default", gemini uses "gcp-default", all others use
+// "static" (resolving APIKeyRef).
+//
+// Valid Type values:
+//   - "static"                — resolve APIKeyRef via SecretStore.
+//   - "aws-default"           — AWS SDK default credential chain.
+//   - "web-identity"          — OIDC -> STS AssumeRoleWithWebIdentity.
+//   - "gcp-default"           — Google Application Default Credentials.
+//     Default for "gemini". Rejects user-mode gcloud creds.
+//   - "gcp-service-account"   — explicit service account JSON key file.
+//     Requires ProviderConfig.GCPCredentialsFile.
+//   - "gcp-workload-identity" — GKE Workload Identity (compute metadata
+//     access token).
 type CredentialConfig struct {
-	Type        string             `json:"type"`                  // "static" | "aws-default" | "web-identity"
+	Type        string             `json:"type"`
 	TokenSource *TokenSourceConfig `json:"tokenSource,omitempty"` // required for "web-identity"
 	RoleARN     string             `json:"roleArn,omitempty"`     // required for "web-identity": IAM role to assume
 	SessionName string             `json:"sessionName,omitempty"` // for "web-identity" (default: "stirrup")
@@ -500,6 +554,51 @@ var validProviderTypes = map[string]bool{
 	"bedrock":           true,
 	"openai-compatible": true,
 	"openai-responses":  true,
+	"gemini":            true,
+}
+
+// gcpProjectIDPattern matches the GCP project ID rules: starts with a
+// lowercase letter, 6-30 chars, lowercase letters/digits/hyphen, ends in
+// alphanumeric. The closed shape lets us reject obvious typos at config
+// time rather than waiting for a 403 from the Vertex AI endpoint.
+var gcpProjectIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
+
+// gcpLocationPattern intentionally accepts "global" or a region-like
+// string. The regional set evolves too quickly for a closed list (Vertex
+// adds new regions multiple times per year); we just bound the shape so
+// an obviously bad value (CRLF, path component) is rejected at boot.
+var gcpLocationPattern = regexp.MustCompile(`^global$|^[a-z][a-z0-9-]{1,30}$`)
+
+// geminiModelNamePattern bounds the character set of a Vertex AI model
+// name so a value containing slashes or percent signs cannot rewrite
+// the request URL. Standard Vertex names like "gemini-2.5-pro",
+// "gemini-2.0-flash", "publishers/google/models/gemini-..." are not
+// allowed here — the harness uses the short name and lets the URL
+// builder add the publisher prefix. The 64-char cap matches the
+// longest published model identifier with comfortable headroom.
+var geminiModelNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// validGeminiSafetyCategories enumerates the five HARM_CATEGORY_*
+// identifiers Vertex AI accepts for the safetySettings array. Closed
+// set so a typo surfaces at config time rather than as a silent default
+// from the API.
+var validGeminiSafetyCategories = map[string]bool{
+	"HARM_CATEGORY_HATE_SPEECH":       true,
+	"HARM_CATEGORY_HARASSMENT":        true,
+	"HARM_CATEGORY_DANGEROUS_CONTENT": true,
+	"HARM_CATEGORY_SEXUALLY_EXPLICIT": true,
+	"HARM_CATEGORY_CIVIC_INTEGRITY":   true,
+}
+
+// validGeminiSafetyThresholds enumerates the four threshold values
+// Vertex AI accepts. BLOCK_NONE is the harness's adapter-default for
+// every category; the other three exist so an operator can dial the
+// classifier up for non-coding workloads.
+var validGeminiSafetyThresholds = map[string]bool{
+	"BLOCK_NONE":             true,
+	"BLOCK_LOW_AND_ABOVE":    true,
+	"BLOCK_MEDIUM_AND_ABOVE": true,
+	"BLOCK_ONLY_HIGH":        true,
 }
 
 // apiKeyHeaderPattern restricts APIKeyHeader to a conservative subset of
@@ -604,9 +703,12 @@ var validTraceEmitterTypes = map[string]bool{
 }
 
 var validCredentialTypes = map[string]bool{
-	"static":       true,
-	"aws-default":  true,
-	"web-identity": true,
+	"static":                true,
+	"aws-default":           true,
+	"web-identity":          true,
+	"gcp-default":           true,
+	"gcp-service-account":   true,
+	"gcp-workload-identity": true,
 }
 
 var validTokenSourceTypes = map[string]bool{
@@ -1118,6 +1220,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 		knownProviders[config.Provider.Type] = true
 	}
 	validateOpenAIAuthFields("provider", config.Provider, errs)
+	validateGeminiProviderFields("provider", config.Provider, errs)
 	for name, provider := range config.Providers {
 		if name == "" {
 			*errs = append(*errs, "providers map contains an empty provider name")
@@ -1128,9 +1231,21 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 			continue
 		}
 		knownProviders[name] = true
-		validateRequiredType(fmt.Sprintf("providers[%s]", name), provider.Type, validProviderTypes, errs)
-		validateOpenAIAuthFields(fmt.Sprintf("providers[%s]", name), provider, errs)
+		path := fmt.Sprintf("providers[%s]", name)
+		validateRequiredType(path, provider.Type, validProviderTypes, errs)
+		validateOpenAIAuthFields(path, provider, errs)
+		validateGeminiProviderFields(path, provider, errs)
 	}
+
+	// Per-provider model-name validation for Vertex AI Gemini. The
+	// model substring is interpolated into the request URL path; the
+	// adapter url.PathEscape's it as defence-in-depth, but reject
+	// obvious abuse here so a typo or injection attempt surfaces at
+	// boot rather than producing a request to an unintended Vertex
+	// endpoint. Apply when the static / per-mode default provider
+	// resolves to a gemini-typed entry, OR when the top-level
+	// Provider.Type is "gemini" and ModelRouter.Provider is unset.
+	validateGeminiModelName(config, errs)
 
 	checkProviderRef := func(path, name string) {
 		if name == "" {
@@ -1261,6 +1376,180 @@ func validateOpenAIAuthFields(path string, cfg ProviderConfig, errs *[]string) {
 		}
 		if size := len(encoded.Encode()); size > maxQueryStringBytes {
 			*errs = append(*errs, fmt.Sprintf("%s.queryParams encoded form is %d bytes, exceeds %d byte cap", path, size, maxQueryStringBytes))
+		}
+	}
+}
+
+// validateGeminiProviderFields enforces the cross-field constraints on
+// the four Vertex AI Gemini fields (GCPProject, GCPLocation,
+// GCPCredentialsFile, GeminiSafetySettings). Guard rails:
+//
+//   - The four fields are scoped to type="gemini". Setting any of
+//     them on a non-gemini provider is a hard error so a stale value
+//     does not silently linger across a provider-type change.
+//   - "gemini" requires both GCPProject and GCPLocation; the URL the
+//     adapter builds depends on each.
+//   - "gemini" runs use OAuth2 Bearer tokens from
+//     google.golang.org/x/oauth2/google — APIKeyRef has no meaning
+//     here. Reject loudly with the redirect to provider.credential.
+//   - GCPCredentialsFile pairs only with the gcp-service-account
+//     credential type. Set with another type, the file is silently
+//     ignored and the operator never knows the SA key did nothing;
+//     unset with gcp-service-account, the credential source has
+//     nothing to load. Both shapes are hard errors.
+//   - GCPCredentialsFile may arrive over gRPC. Reject ".." segments
+//     with the same logic permissionPolicy.policyFile uses (M6).
+//   - Each GeminiSafetySetting must reference a category and threshold
+//     from the closed Vertex AI set; values that pass through to the
+//     API verbatim would otherwise produce confusing 400s.
+func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]string) {
+	if cfg.Type != "gemini" {
+		// Reject leakage of gemini-shaped fields onto non-gemini providers.
+		if cfg.GCPProject != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.gcpProject is only valid for provider type %q", path, "gemini"))
+		}
+		if cfg.GCPLocation != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.gcpLocation is only valid for provider type %q", path, "gemini"))
+		}
+		if cfg.GCPCredentialsFile != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.gcpCredentialsFile is only valid for provider type %q", path, "gemini"))
+		}
+		if len(cfg.GeminiSafetySettings) > 0 {
+			*errs = append(*errs, fmt.Sprintf("%s.geminiSafetySettings is only valid for provider type %q", path, "gemini"))
+		}
+		return
+	}
+
+	// Gemini-only constraints from here.
+	if cfg.GCPProject == "" {
+		*errs = append(*errs, fmt.Sprintf("%s.gcpProject is required for provider type %q", path, "gemini"))
+	} else if !gcpProjectIDPattern.MatchString(cfg.GCPProject) {
+		*errs = append(*errs, fmt.Sprintf("%s.gcpProject %q must match %s", path, cfg.GCPProject, gcpProjectIDPattern.String()))
+	}
+
+	if cfg.GCPLocation == "" {
+		*errs = append(*errs, fmt.Sprintf("%s.gcpLocation is required for provider type %q", path, "gemini"))
+	} else if !gcpLocationPattern.MatchString(cfg.GCPLocation) {
+		*errs = append(*errs, fmt.Sprintf("%s.gcpLocation %q must match %s", path, cfg.GCPLocation, gcpLocationPattern.String()))
+	}
+
+	// Vertex AI uses GCP IAM, not API keys. APIKeyRef on a gemini
+	// provider is almost always a copy-paste from another provider
+	// config — surface it loudly with a redirect to the right field.
+	if cfg.APIKeyRef != "" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.apiKeyRef must not be set for provider type %q; Vertex AI uses GCP IAM (configure provider.credential instead)",
+			path, "gemini"))
+	}
+
+	// Pair gcpCredentialsFile with gcp-service-account in both directions.
+	credType := ""
+	if cfg.Credential != nil {
+		credType = cfg.Credential.Type
+	}
+	if credType == "gcp-service-account" && cfg.GCPCredentialsFile == "" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.gcpCredentialsFile is required when credential.type is %q",
+			path, "gcp-service-account"))
+	}
+	if cfg.GCPCredentialsFile != "" && credType != "" && credType != "gcp-service-account" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.gcpCredentialsFile is only valid when credential.type is %q (got %q)",
+			path, "gcp-service-account", credType))
+	}
+	if cfg.GCPCredentialsFile != "" {
+		// Mirror the policyFile traversal check: a malicious control plane
+		// could otherwise craft a path that escapes the workspace and
+		// surface the file's contents as part of an oauth2 parser error.
+		if pathHasDotDotSegment(cfg.GCPCredentialsFile) || pathHasDotDotSegment(filepath.Clean(cfg.GCPCredentialsFile)) {
+			*errs = append(*errs, fmt.Sprintf("%s.gcpCredentialsFile must not contain \"..\" path segments", path))
+		}
+	}
+
+	for i, s := range cfg.GeminiSafetySettings {
+		entryPath := fmt.Sprintf("%s.geminiSafetySettings[%d]", path, i)
+		if s.Category == "" {
+			*errs = append(*errs, fmt.Sprintf("%s.category is required", entryPath))
+		} else if !validGeminiSafetyCategories[s.Category] {
+			*errs = append(*errs, fmt.Sprintf("%s.category %q is not a valid HARM_CATEGORY_*", entryPath, s.Category))
+		}
+		if s.Threshold == "" {
+			*errs = append(*errs, fmt.Sprintf("%s.threshold is required", entryPath))
+		} else if !validGeminiSafetyThresholds[s.Threshold] {
+			*errs = append(*errs, fmt.Sprintf("%s.threshold %q is not a valid BLOCK_* value", entryPath, s.Threshold))
+		}
+	}
+}
+
+// validateGeminiModelName rejects Vertex AI model identifiers that
+// contain reserved URL bytes (slashes, percent signs, etc.). The
+// adapter url.PathEscape's the model name into the request URL path,
+// but operators frequently copy-paste model identifiers between
+// providers and we want a typo like "publishers/google/models/foo" or
+// a deliberate traversal like "gemini-pro/../../evil" to fail at
+// boot, not as a confusing 404 from an unintended Vertex endpoint.
+//
+// We apply the check whenever a gemini-typed provider would actually
+// service the configured ModelRouter. Three cases trigger the check:
+//
+//   - ModelRouter.Provider explicitly names a gemini-typed entry
+//     (default Provider OR a Providers[name] entry).
+//   - ModelRouter.Provider is empty and the top-level Provider.Type is
+//     "gemini" (the implicit default).
+//   - ModelRouter.ModeModels[*] contains "gemini-named-entry/<model>"
+//     overrides — each is checked individually.
+//
+// We do not check CheapModel / ExpensiveModel here because the dynamic
+// router never targets gemini today; revisit when that lands.
+func validateGeminiModelName(config *RunConfig, errs *[]string) {
+	// providerIsGemini reports whether a ModelRouter.Provider name
+	// (possibly empty) ends up resolving to a gemini-typed provider.
+	providerIsGemini := func(name string) bool {
+		// Two shapes: name == "" and we fall back to top-level Provider;
+		// or name matches a Providers[k] entry whose Type is gemini.
+		// Note that names in validProviderTypes are also accepted as
+		// type aliases, so name == "gemini" is gemini regardless of
+		// whether the operator declared it under Providers.
+		if name == "" {
+			return config.Provider.Type == "gemini"
+		}
+		if name == "gemini" {
+			return true
+		}
+		if p, ok := config.Providers[name]; ok {
+			return p.Type == "gemini"
+		}
+		return false
+	}
+
+	checkModel := func(label, model string) {
+		if model == "" {
+			return
+		}
+		if !geminiModelNamePattern.MatchString(model) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s %q must match %s for provider type %q (no slashes, percent signs, or special characters)",
+				label, model, geminiModelNamePattern.String(), "gemini"))
+		}
+	}
+
+	if providerIsGemini(config.ModelRouter.Provider) {
+		checkModel("modelRouter.model", config.ModelRouter.Model)
+	}
+
+	for mode, spec := range config.ModelRouter.ModeModels {
+		// Per-mode entries take the form "provider/model". When the
+		// provider half resolves to gemini we check the model half.
+		providerName, model, ok := strings.Cut(spec, "/")
+		if !ok {
+			// No provider prefix — the entry inherits ModelRouter.Provider.
+			if providerIsGemini(config.ModelRouter.Provider) {
+				checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), spec)
+			}
+			continue
+		}
+		if providerIsGemini(providerName) {
+			checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), model)
 		}
 	}
 }

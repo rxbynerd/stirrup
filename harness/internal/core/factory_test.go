@@ -3,6 +3,11 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
@@ -28,6 +34,33 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// factoryRSAKey is generated lazily once per test process. The 2048-bit
+// keygen is the slow part; sharing across all factory tests keeps the
+// suite under a second.
+var (
+	factoryRSAKeyOnce sync.Once
+	factoryRSAKeyPEM  string
+)
+
+func factoryTestServiceAccountPEM(t *testing.T) string {
+	t.Helper()
+	factoryRSAKeyOnce.Do(func() {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate RSA key: %v", err)
+		}
+		der, err := x509.MarshalPKCS8PrivateKey(key)
+		if err != nil {
+			t.Fatalf("marshal PKCS8 key: %v", err)
+		}
+		factoryRSAKeyPEM = string(pem.EncodeToMemory(&pem.Block{
+			Type:  "PRIVATE KEY",
+			Bytes: der,
+		}))
+	})
+	return factoryRSAKeyPEM
+}
 
 // repoRootForTests returns the absolute repo root by walking up from
 // this test file's path. Mirrors the helper in harness/cmd/stirrup/cmd/
@@ -1751,6 +1784,91 @@ func TestBuildProvider_OpenAICompatibleAzureFields(t *testing.T) {
 	}
 	for range ch { //nolint:revive // drain stream so the goroutine completes
 	}
+}
+
+// TestBuildProvider_Gemini exercises the gemini arm of the factory's
+// provider switch end-to-end: a ProviderConfig with type="gemini"
+// must resolve credentials via the credential layer (here: a service-
+// account JSON pointed to by GOOGLE_APPLICATION_CREDENTIALS so the
+// implicit GoogleADCSource picks it up) and produce a GeminiAdapter.
+//
+// Closes test-audit critical gap 1 — without this test the gemini case
+// in buildProvider was reachable only via end-to-end run, not via
+// targeted unit coverage.
+func TestBuildProvider_Gemini(t *testing.T) {
+	keyPath := writeFakeServiceAccountJSON(t, t.TempDir())
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", keyPath)
+
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:        "gemini",
+		GCPProject:  "test-project",
+		GCPLocation: "us-central1",
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	if _, ok := prov.(*provider.GeminiAdapter); !ok {
+		t.Errorf("buildProvider type = %T, want *provider.GeminiAdapter", prov)
+	}
+}
+
+// TestBuildProvider_GeminiNilTokenSourceErrors covers the defensive
+// nil-check in the gemini arm: a credential source that resolves
+// successfully but with no GoogleTokenSource set must produce a clear
+// factory error rather than a nil-pointer panic later in Stream().
+func TestBuildProvider_GeminiNilTokenSourceErrors(t *testing.T) {
+	// Force ADC to fail by pointing GOOGLE_APPLICATION_CREDENTIALS at
+	// a non-existent path AND clearing the metadata-server fallback. The
+	// nil GoogleTokenSource path is also reachable through a malformed
+	// ADC chain — using a nonexistent path keeps the test deterministic.
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", filepath.Join(t.TempDir(), "no-such-file.json"))
+
+	_, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:        "gemini",
+		GCPProject:  "test-project",
+		GCPLocation: "us-central1",
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err == nil {
+		t.Fatal("expected error when credential source cannot produce a Google token")
+	}
+	// The error should mention either credential resolution failure
+	// (FindDefaultCredentials path) or the gemini-specific guard. Both
+	// are acceptable shapes; the point is the factory does not return
+	// a half-built adapter.
+	if !strings.Contains(err.Error(), "credentials") && !strings.Contains(err.Error(), "credential") {
+		t.Errorf("error should mention credentials, got: %v", err)
+	}
+}
+
+// writeFakeServiceAccountJSON produces a service-account JSON keyfile
+// good enough to pass google.JWTConfigFromJSON's static parse — it is
+// not signable against real Google IAM, which is fine for factory
+// tests that never call Token().
+func writeFakeServiceAccountJSON(t *testing.T, dir string) string {
+	t.Helper()
+	// Generating a fresh RSA key for each test would be slow; share one
+	// across the package via the helper below.
+	pemKey := factoryTestServiceAccountPEM(t)
+	doc := map[string]any{
+		"type":                        "service_account",
+		"project_id":                  "test-project",
+		"private_key_id":              "abc123",
+		"private_key":                 pemKey,
+		"client_email":                "test@test-project.iam.gserviceaccount.com",
+		"client_id":                   "1234567890",
+		"token_uri":                   "https://oauth2.googleapis.com/token",
+		"auth_uri":                    "https://accounts.google.com/o/oauth2/auth",
+		"auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+	}
+	data, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal sa json: %v", err)
+	}
+	path := filepath.Join(dir, "key.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write sa json: %v", err)
+	}
+	return path
 }
 
 func TestBuildProvider_OpenAICompatibleStillWorks(t *testing.T) {

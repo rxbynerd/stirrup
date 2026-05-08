@@ -24,7 +24,7 @@ stirrup/
     internal/
       core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, stall detection
       credential/            # Cross-cloud credential federation (token sources + credential sources)
-      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses
+      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI)
       router/                # ModelRouter: static, per-mode, dynamic
       prompt/                # PromptBuilder: per-mode templates
       context/               # ContextStrategy: sliding window, summarise, offload-to-file
@@ -74,11 +74,14 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--prompt` | (required) | User prompt (also accepted as positional arg) |
 | `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
 | `--model` | `claude-sonnet-4-6` | Model to use |
-| `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API). Both OpenAI variants accept `--base-url`, `--api-key-header`, and `--query-param` for Azure / gateway scenarios. |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |
+| `--provider` | `anthropic` | Provider type: anthropic, bedrock, gemini (Vertex AI), openai-compatible (Chat Completions), openai-responses (Responses API). Both OpenAI variants accept `--base-url`, `--api-key-header`, and `--query-param` for Azure / gateway scenarios. Gemini accepts `--gcp-project`, `--gcp-location`, and `--gcp-credentials-file`. |
+| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key. Ignored for `--provider=gemini` (Vertex AI uses GCP IAM). |
 | `--base-url` | (none) | Provider base URL (openai-compatible, openai-responses). E.g. `https://<resource>.openai.azure.com/openai/v1`. |
 | `--api-key-header` | (none) | Header name for sending the API key. Empty means `Authorization: Bearer` (default). Set to `api-key` for Azure OpenAI key auth, or `x-api-key` / `Ocp-Apim-Subscription-Key` for gateway variants. |
 | `--query-param` | (none) | Repeatable `key=value`. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
+| `--gcp-project` | (none) | GCP project ID hosting the Vertex AI usage. Required when `--provider=gemini`. |
+| `--gcp-location` | `global` | Vertex AI location: `global` or a region like `us-central1`. Determines the URL host and project location segment. |
+| `--gcp-credentials-file` | (none) | Path to a Google service account JSON key file. When set, implies `credential.type=gcp-service-account` (otherwise the credential layer falls back to Application Default Credentials). |
 | `--workspace`, `-w` | current directory | Workspace directory |
 | `--max-turns` | `20` | Maximum agentic loop turns |
 | `--timeout` | `600` | Wall-clock timeout in seconds |
@@ -133,7 +136,7 @@ go build -o stirrup-eval ./eval/cmd/eval
 
 13 swappable components, all interface-based:
 
-1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses)
+1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini via Vertex AI)
 2. **ModelRouter** — selects provider+model per turn (static, per-mode, dynamic)
 3. **PromptBuilder** — assembles system prompt (default per-mode templates, composed)
 4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file)
@@ -155,6 +158,7 @@ The core loop is a pure function of its interfaces. All dependencies are injecte
 - **Bedrock** (`provider/bedrock.go`) — AWS ConverseStream API via `aws-sdk-go-v2`. Translates between internal types and Bedrock's union-type wire format. Auth is IAM (not API key); uses `config.LoadDefaultConfig()`. Accepts optional `aws.CredentialsProvider` for cross-cloud credential federation.
 - **OpenAI-compatible** (`provider/openai.go`) — OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure OpenAI, vLLM, Ollama via configurable `baseURL`. Azure OpenAI key auth is supported by setting `provider.apiKeyHeader: "api-key"` (Entra ID bearer tokens still work with the empty default), and required api-version pins ride through `provider.queryParams`.
 - **OpenAI Responses** (`provider/openai_responses.go`) — OpenAI Responses API (`POST /v1/responses`) streaming. Distinct wire format from Chat Completions: top-level `instructions` field, typed `input[]` items (`message` / `function_call` / `function_call_output`), flat tool schema, `max_output_tokens`, explicit `store: false`, and named SSE events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.completed`, `response.incomplete`, `response.failed`). Selected explicitly via `provider.type: "openai-responses"` — there is no auto-detection between the two OpenAI adapters because silent fallback would mask configuration errors. Built-in OpenAI-side tools (`web_search`, `file_search`, `computer_use`, `code_interpreter`), server-side state via `previous_response_id`, and reasoning controls are intentionally not supported in this adapter; the harness manages its own conversation history. Azure Foundry's `/openai/v1/responses` endpoint is wire-compatible: point `provider.baseUrl` at the Azure resource, set `provider.apiKeyHeader: "api-key"` for key auth (or leave empty for Entra ID Bearer), and add `provider.queryParams: {"api-version": "preview"}` (or whatever the deployment expects). Azure-only Responses extensions ride the existing forward-compatible "unknown SSE event" path and are silently ignored. See `examples/runconfig/azure-openai.json`.
+- **Gemini via Vertex AI** (`provider/gemini.go`) — Vertex AI `:streamGenerateContent` with `?alt=sse`. SSE-framed, hand-rolled HTTP. Auth is GCP IAM (OAuth2 Bearer tokens) — never an AI Studio API key. Defaults to Application Default Credentials with explicit rejection of user-mode `gcloud` credentials (autonomy invariant). Tools, safety settings, system instruction, and generation config are translated by `provider/gemini_request.go`; JSON Schema → Gemini OpenAPI Schema conversion is in `provider/gemini_schema.go`. The adapter synthesises tool-call IDs (`gemini-{streamN}-{partIdx}`) because Vertex does not echo IDs through `functionResponse`. Vertex's `finishReason: STOP` is remapped to `tool_use` whenever the same stream emitted at least one `functionCall` part, since Vertex uses STOP for both end-of-turn and tool-dispatch turns and the agentic loop dispatches tools only on `tool_use`. Multimodal input, server-side built-in tools (`google_search`, `code_execution`, etc.), and AI Studio direct support are intentionally out of scope; see issues #93 (built-in tools) and the never-implemented AI Studio path. Default safety thresholds are `BLOCK_NONE` for all five categories — secure for a coding harness producing security tooling, where false positives on code samples block legitimate work; override via `provider.geminiSafetySettings`. Configure via `provider.gcpProject`, `provider.gcpLocation` (region or `global`), and optionally `provider.credential` (defaults to `gcp-default` ADC; explicit options are `gcp-service-account` requiring `gcpCredentialsFile`, or `gcp-workload-identity` for GKE/GCE). See `examples/runconfig/vertex-gemini.json`.
 
 ### Credential federation
 
@@ -381,6 +385,7 @@ Exceptions where external deps are accepted:
 - `aws-sdk-go-v2` for Bedrock and SSM SecretStore (IAM SigV4 auth is complex enough to justify)
 - `google.golang.org/grpc` + `google.golang.org/protobuf` for gRPC transport (the reference Go gRPC implementation)
 - `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace and metrics (the reference OTel SDK)
+- `golang.org/x/oauth2` for the Gemini Vertex AI credential layer (Application Default Credentials, JWT service-account flow, and metadata-server token sources). `cloud.google.com/go/compute/metadata` rides as an indirect dep used through `google.ComputeTokenSource`; no other Google SDK packages are pulled in.
 
 ## Lint policy
 

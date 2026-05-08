@@ -322,6 +322,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		case *provider.BedrockAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
+		case *provider.GeminiAdapter:
+			pa.Tracer = tracer
+			pa.Metrics = metrics
 		}
 	}
 
@@ -427,8 +430,13 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		return provider.NewOpenAIResponsesAdapter(cred.BearerToken, cfg.BaseURL, auth), nil
 	case "bedrock":
 		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials)
+	case "gemini":
+		if cred.GoogleTokenSource == nil {
+			return nil, fmt.Errorf("gemini provider requires Google credentials but the credential source produced none")
+		}
+		return provider.NewGeminiAdapter(cred.GoogleTokenSource, cfg.GCPProject, cfg.GCPLocation, cfg.GeminiSafetySettings), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, openai-compatible, openai-responses)", cfg.Type)
+		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses)", cfg.Type)
 	}
 }
 

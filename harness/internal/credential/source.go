@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"golang.org/x/oauth2"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -48,17 +49,26 @@ type Resolved struct {
 	// nil signals "use the SDK default credential chain."
 	// When set, the SDK's CredentialsCache handles automatic refresh.
 	AWSCredentials aws.CredentialsProvider
+
+	// GoogleTokenSource for GCP-based providers (Gemini via Vertex AI).
+	// nil signals "no Google credentials resolved." When non-nil, the
+	// adapter should call Token() per-request to fetch a fresh access token;
+	// oauth2.ReuseTokenSource caches and refreshes for free.
+	GoogleTokenSource oauth2.TokenSource
 }
 
 // BuildSource returns a Source for the given provider config.
 // When cfg.Credential is nil, the source type is inferred:
 //   - bedrock → AWSDefaultSource (SDK default credential chain)
+//   - gemini  → GoogleADCSource (Application Default Credentials)
 //   - all others → StaticSource (resolve APIKeyRef via SecretStore)
 func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source, error) {
 	if cfg.Credential == nil {
 		switch cfg.Type {
 		case "bedrock":
 			return &AWSDefaultSource{}, nil
+		case "gemini":
+			return &GoogleADCSource{}, nil
 		default:
 			return &StaticSource{secrets: secrets, ref: cfg.APIKeyRef}, nil
 		}
@@ -75,6 +85,12 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 			return nil, fmt.Errorf("build token source: %w", err)
 		}
 		return NewWebIdentityAWSSource(ts, cfg.Region, cfg.Credential.RoleARN, cfg.Credential.SessionName), nil
+	case "gcp-default":
+		return &GoogleADCSource{}, nil
+	case "gcp-service-account":
+		return NewServiceAccountKeySource(cfg.GCPCredentialsFile), nil
+	case "gcp-workload-identity":
+		return NewGoogleWorkloadIdentitySource(), nil
 	default:
 		return nil, fmt.Errorf("unsupported credential type: %q", cfg.Credential.Type)
 	}
