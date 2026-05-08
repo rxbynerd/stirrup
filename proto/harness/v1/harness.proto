@@ -699,6 +699,15 @@ message CredentialConfig {
   //                                         service_account_id, and token_source.
   //                                         Mutually exclusive with provider api_key_ref
   //                                         on the same provider entry.
+  //   "azure-workload-identity"           — Azure Entra ID Workload Identity Federation.
+  //                                         Exchanges an OIDC JWT (from token_source)
+  //                                         for an Entra access token via the OAuth2
+  //                                         client_credentials + jwt-bearer grant.
+  //                                         Requires azure_tenant_id, azure_client_id,
+  //                                         and token_source. Use this for AKS workloads,
+  //                                         GHA → Azure OpenAI, and other non-Azure
+  //                                         runtimes calling Azure OpenAI / Foundry
+  //                                         without a static client secret.
   string type = 1;
 
   // Required when type is "web-identity". Configuration for the identity
@@ -750,6 +759,26 @@ message CredentialConfig {
   // omit (empty string) when the rule is bound to a single workspace.
   // Non-secret per Anthropic's docs.
   string workspace_id = 10;
+
+  // Required when type is "azure-workload-identity". UUID identifying the
+  // Azure AD tenant that owns the App Registration / federated identity
+  // credential (e.g. "00000000-0000-0000-0000-000000000000"). Lowercase
+  // canonical 8-4-4-4-12 form is required; ValidateRunConfig rejects
+  // upper-case or shortened variants so a typo surfaces here rather than
+  // as an opaque 400 from login.microsoftonline.com.
+  string azure_tenant_id = 11;
+
+  // Required when type is "azure-workload-identity". UUID identifying the
+  // App Registration / federated identity credential client ID. Same
+  // canonical form and rationale as azure_tenant_id.
+  string azure_client_id = 12;
+
+  // Optional when type is "azure-workload-identity". OAuth2 scope to
+  // request. Default is "https://cognitiveservices.azure.com/.default" —
+  // the audience for Azure OpenAI / Foundry. Override only for non-default
+  // Azure audiences (custom AAD app registrations, sovereign clouds).
+  // Must be a syntactically valid HTTPS URL when set.
+  string azure_scope = 13;
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.

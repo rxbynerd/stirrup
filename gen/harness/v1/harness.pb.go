@@ -1606,6 +1606,15 @@ type CredentialConfig struct {
 	//	                                      service_account_id, and token_source.
 	//	                                      Mutually exclusive with provider api_key_ref
 	//	                                      on the same provider entry.
+	//	"azure-workload-identity"           — Azure Entra ID Workload Identity Federation.
+	//	                                      Exchanges an OIDC JWT (from token_source)
+	//	                                      for an Entra access token via the OAuth2
+	//	                                      client_credentials + jwt-bearer grant.
+	//	                                      Requires azure_tenant_id, azure_client_id,
+	//	                                      and token_source. Use this for AKS workloads,
+	//	                                      GHA → Azure OpenAI, and other non-Azure
+	//	                                      runtimes calling Azure OpenAI / Foundry
+	//	                                      without a static client secret.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Required when type is "web-identity". Configuration for the identity
 	// token source used in the OIDC token exchange.
@@ -1649,7 +1658,24 @@ type CredentialConfig struct {
 	// Required when the federation rule is enabled for more than one workspace;
 	// omit (empty string) when the rule is bound to a single workspace.
 	// Non-secret per Anthropic's docs.
-	WorkspaceId   string `protobuf:"bytes,10,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	WorkspaceId string `protobuf:"bytes,10,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	// Required when type is "azure-workload-identity". UUID identifying the
+	// Azure AD tenant that owns the App Registration / federated identity
+	// credential (e.g. "00000000-0000-0000-0000-000000000000"). Lowercase
+	// canonical 8-4-4-4-12 form is required; ValidateRunConfig rejects
+	// upper-case or shortened variants so a typo surfaces here rather than
+	// as an opaque 400 from login.microsoftonline.com.
+	AzureTenantId string `protobuf:"bytes,11,opt,name=azure_tenant_id,json=azureTenantId,proto3" json:"azure_tenant_id,omitempty"`
+	// Required when type is "azure-workload-identity". UUID identifying the
+	// App Registration / federated identity credential client ID. Same
+	// canonical form and rationale as azure_tenant_id.
+	AzureClientId string `protobuf:"bytes,12,opt,name=azure_client_id,json=azureClientId,proto3" json:"azure_client_id,omitempty"`
+	// Optional when type is "azure-workload-identity". OAuth2 scope to
+	// request. Default is "https://cognitiveservices.azure.com/.default" —
+	// the audience for Azure OpenAI / Foundry. Override only for non-default
+	// Azure audiences (custom AAD app registrations, sovereign clouds).
+	// Must be a syntactically valid HTTPS URL when set.
+	AzureScope    string `protobuf:"bytes,13,opt,name=azure_scope,json=azureScope,proto3" json:"azure_scope,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1750,6 +1776,27 @@ func (x *CredentialConfig) GetServiceAccountId() string {
 func (x *CredentialConfig) GetWorkspaceId() string {
 	if x != nil {
 		return x.WorkspaceId
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetAzureTenantId() string {
+	if x != nil {
+		return x.AzureTenantId
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetAzureClientId() string {
+	if x != nil {
+		return x.AzureClientId
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetAzureScope() string {
+	if x != nil {
+		return x.AzureScope
 	}
 	return ""
 }
@@ -3222,7 +3269,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x16gemini_safety_settings\x18\f \x03(\v2'.stirrup.harness.v1.GeminiSafetySettingR\x14geminiSafetySettings\x1a>\n" +
 	"\x10QueryParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9b\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8c\x04\n" +
 	"\x10CredentialConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12H\n" +
 	"\ftoken_source\x18\x02 \x01(\v2%.stirrup.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
@@ -3234,7 +3281,11 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0forganization_id\x18\b \x01(\tR\x0eorganizationId\x12,\n" +
 	"\x12service_account_id\x18\t \x01(\tR\x10serviceAccountId\x12!\n" +
 	"\fworkspace_id\x18\n" +
-	" \x01(\tR\vworkspaceId\"\xa9\x01\n" +
+	" \x01(\tR\vworkspaceId\x12&\n" +
+	"\x0fazure_tenant_id\x18\v \x01(\tR\razureTenantId\x12&\n" +
+	"\x0fazure_client_id\x18\f \x01(\tR\razureClientId\x12\x1f\n" +
+	"\vazure_scope\x18\r \x01(\tR\n" +
+	"azureScope\"\xa9\x01\n" +
 	"\x11TokenSourceConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x12\n" +
