@@ -205,6 +205,15 @@ func TestScrubWithStats_PatternNames(t *testing.T) {
 			pattern: "anthropic_api_key",
 		},
 		{
+			// anthropic_wif_token must take precedence over the generic
+			// anthropic_api_key pattern for sk-ant-oat01-* tokens, so
+			// audit events distinguish federated leaks from static-key
+			// leaks. Order in secretPatterns is load-bearing.
+			name:    "anthropic_wif_token",
+			input:   "sk-ant-oat01-abcDEF_123-xyz",
+			pattern: "anthropic_wif_token",
+		},
+		{
 			name:    "openai_api_key",
 			input:   "sk-abcdefghijklmnop12345",
 			pattern: "openai_api_key",

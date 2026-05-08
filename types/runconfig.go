@@ -1608,6 +1608,14 @@ func validateTokenSourceConfig(cfg *TokenSourceConfig, path string, errs *[]stri
 	case "file":
 		if cfg.Path == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: file requires path", path))
+		} else if pathHasDotDotSegment(cfg.Path) || pathHasDotDotSegment(filepath.Clean(cfg.Path)) {
+			// Reject ".." segments with the same logic
+			// permissionPolicy.policyFile and provider.gcpCredentialsFile
+			// already use. Without this an env var like
+			// ANTHROPIC_IDENTITY_TOKEN_FILE=../../etc/passwd would pass
+			// validation; the credential source fails closed at
+			// Token()-time, but a config-load error is cleaner.
+			*errs = append(*errs, fmt.Sprintf("%s.path must not contain \"..\" segments: %q", path, cfg.Path))
 		}
 	case "env":
 		if cfg.EnvVar == "" {
