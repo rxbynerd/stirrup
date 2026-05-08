@@ -764,8 +764,8 @@ var validCredentialTypes = map[string]bool{
 	"gcp-workload-identity-federation": true,
 }
 
-// gcpWIFAudiencePattern bounds the shape of a Workload Identity Federation
-// audience. The full identifier always takes the form
+// GCPWIFAudiencePatternString bounds the shape of a Workload Identity
+// Federation audience. The full identifier always takes the form
 //
 //	//iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER}
 //
@@ -776,9 +776,15 @@ var validCredentialTypes = map[string]bool{
 // The pool/provider segments use Google's documented identifier rules
 // (lowercase letter + lowercase letters/digits/hyphen, 4–32 chars,
 // ending in alphanumeric). Project number is purely digits.
-var gcpWIFAudiencePattern = regexp.MustCompile(
-	`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z][a-z0-9-]{2,30}[a-z0-9]/providers/[a-z][a-z0-9-]{2,30}[a-z0-9]$`,
-)
+//
+// Exported as a string (rather than a *regexp.Regexp) so the
+// credential package can compile its own copy without taking a runtime
+// dependency on this var. This is the single source of truth — the
+// credential layer's federatedAudiencePattern is built from this
+// constant so the two regexes cannot drift.
+const GCPWIFAudiencePatternString = `^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z][a-z0-9-]{2,30}[a-z0-9]/providers/[a-z][a-z0-9-]{2,30}[a-z0-9]$`
+
+var gcpWIFAudiencePattern = regexp.MustCompile(GCPWIFAudiencePatternString)
 
 var validTokenSourceTypes = map[string]bool{
 	"gke-metadata":        true,

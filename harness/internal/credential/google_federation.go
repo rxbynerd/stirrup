@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // stsResponseLimit caps the response body when reading from the STS or
@@ -37,14 +39,15 @@ const gcpSTSURL = "https://sts.googleapis.com/v1/token"
 // `%s` is filled with the URL-escaped target service-account email.
 const gcpIAMCredURLTemplate = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/%s:generateAccessToken"
 
-// federatedAudiencePattern is duplicated from types/runconfig.go
-// (gcpWIFAudiencePattern) so the credential source can validate at
-// Resolve time without taking a `types` import dependency. The two
-// regexes must stay in sync; both expressions describe the same
-// closed shape.
-var federatedAudiencePattern = regexp.MustCompile(
-	`^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z][a-z0-9-]{2,30}[a-z0-9]/providers/[a-z][a-z0-9-]{2,30}[a-z0-9]$`,
-)
+// federatedAudiencePattern is the Resolve-time guard that mirrors the
+// config-time guard in types.ValidateRunConfig. Compiled from
+// types.GCPWIFAudiencePatternString so the two layers cannot drift —
+// updating the regex in one place automatically keeps both checks
+// honest. Without the package-level dependency, two byte-identical
+// regex literals would risk diverging on a future change (regional
+// pools, additional segments) and silently letting one layer accept
+// what the other rejects.
+var federatedAudiencePattern = regexp.MustCompile(types.GCPWIFAudiencePatternString)
 
 // GCPWorkloadIdentityFederationSource exchanges an OIDC identity token
 // (from any TokenSource — IRSA, Azure IMDS, GHA, file, env, …) for a
