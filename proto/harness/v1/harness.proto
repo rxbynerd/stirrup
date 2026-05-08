@@ -569,6 +569,10 @@ message ProviderConfig {
   //   "bedrock"           — AWS Bedrock ConverseStream API (via aws-sdk-go-v2).
   //   "openai-compatible" — OpenAI chat completions (works with OpenAI, LiteLLM,
   //                         Azure OpenAI, vLLM, Ollama via configurable base_url).
+  //   "openai-responses"  — OpenAI Responses API (POST /v1/responses; also
+  //                         Azure Foundry's /openai/v1/responses endpoint).
+  //   "gemini"            — Google Vertex AI streamGenerateContent
+  //                         (OAuth2 Bearer via google.golang.org/x/oauth2/google).
   string type = 1;
 
   // Secret reference for the API key (e.g. "secret://ANTHROPIC_API_KEY").
@@ -607,6 +611,22 @@ message ProviderConfig {
   // gateway parameters. Keys supplied here override any duplicate keys
   // present in base_url's query string.
   map<string, string> query_params = 8;
+
+  // For "gemini": the Google Cloud project ID hosting the Vertex AI usage.
+  string gcp_project = 9;
+
+  // For "gemini": the Vertex AI location ("global" or a region like
+  // "us-central1"). Determines both the URL host and the project location
+  // path segment.
+  string gcp_location = 10;
+
+  // Optional. For "gemini": the path to a Google service account JSON key
+  // file. Only consulted when credential.type == "gcp-service-account".
+  string gcp_credentials_file = 11;
+
+  // Optional. For "gemini": override the default safety thresholds.
+  // When omitted, all five HARM_CATEGORY_* categories default to BLOCK_NONE.
+  repeated GeminiSafetySetting gemini_safety_settings = 12;
 }
 
 // CredentialConfig selects the credential acquisition method for a provider.
@@ -615,13 +635,19 @@ message ProviderConfig {
 message CredentialConfig {
   // Required. The credential acquisition strategy.
   // Valid values:
-  //   "static"       — resolve api_key_ref via SecretStore (default for
-  //                    anthropic/openai-compatible).
-  //   "aws-default"  — use the AWS SDK default credential chain (env vars,
-  //                    shared config, IMDS). Default for bedrock.
-  //   "web-identity" — exchange an OIDC identity token for AWS credentials
-  //                    via STS AssumeRoleWithWebIdentity. Requires role_arn
-  //                    and token_source.
+  //   "static"                 — resolve api_key_ref via SecretStore (default for
+  //                              anthropic/openai-compatible).
+  //   "aws-default"            — use the AWS SDK default credential chain (env vars,
+  //                              shared config, IMDS). Default for bedrock.
+  //   "web-identity"           — exchange an OIDC identity token for AWS credentials
+  //                              via STS AssumeRoleWithWebIdentity. Requires role_arn
+  //                              and token_source.
+  //   "gcp-default"            — Google Application Default Credentials (env
+  //                              GOOGLE_APPLICATION_CREDENTIALS, metadata server).
+  //                              Default for "gemini". Rejects user-mode gcloud creds.
+  //   "gcp-service-account"    — explicit service account JSON key file. Requires
+  //                              gcp_credentials_file on the provider config.
+  //   "gcp-workload-identity"  — GKE Workload Identity (compute metadata access token).
   string type = 1;
 
   // Required when type is "web-identity". Configuration for the identity
@@ -661,6 +687,22 @@ message TokenSourceConfig {
   // Required when type is "env". Name of the environment variable containing
   // the identity token.
   string env_var = 4;
+}
+
+// GeminiSafetySetting overrides the threshold for one Gemini safety category.
+// Used by the "gemini" provider only. When the gemini_safety_settings list
+// is empty, the adapter applies BLOCK_NONE to all five categories — the
+// secure default for a coding harness producing security tooling, where
+// false positives on code samples are operationally unacceptable.
+message GeminiSafetySetting {
+  // Required. One of:
+  //   HARM_CATEGORY_HATE_SPEECH | HARM_CATEGORY_HARASSMENT |
+  //   HARM_CATEGORY_DANGEROUS_CONTENT | HARM_CATEGORY_SEXUALLY_EXPLICIT |
+  //   HARM_CATEGORY_CIVIC_INTEGRITY
+  string category = 1;
+  // Required. One of:
+  //   BLOCK_NONE | BLOCK_LOW_AND_ABOVE | BLOCK_MEDIUM_AND_ABOVE | BLOCK_ONLY_HIGH
+  string threshold = 2;
 }
 
 // ---------------------------------------------------------------------------
