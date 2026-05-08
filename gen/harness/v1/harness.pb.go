@@ -1596,6 +1596,16 @@ type CredentialConfig struct {
 	//	                                      Identity Federation (STS + optional
 	//	                                      service-account impersonation). Requires
 	//	                                      audience and token_source.
+	//	"anthropic-wif"                     — non-Anthropic runtime → Anthropic API via
+	//	                                      Workload Identity Federation. Exchanges an
+	//	                                      OIDC JWT (from token_source) at
+	//	                                      https://api.anthropic.com/v1/oauth/token
+	//	                                      for a short-lived Anthropic access token
+	//	                                      bound to a service account. Requires
+	//	                                      federation_rule_id, organization_id,
+	//	                                      service_account_id, and token_source.
+	//	                                      Mutually exclusive with provider api_key_ref
+	//	                                      on the same provider entry.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Required when type is "web-identity". Configuration for the identity
 	// token source used in the OIDC token exchange.
@@ -1619,8 +1629,29 @@ type CredentialConfig struct {
 	// itself holds. When omitted, the federated access token is used directly.
 	// Only consulted when type is "gcp-workload-identity-federation".
 	ServiceAccount string `protobuf:"bytes,6,opt,name=service_account,json=serviceAccount,proto3" json:"service_account,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Required when type is "anthropic-wif". The Anthropic federation rule ID
+	// (format: "fdrl_..."). The rule binds the issuer + subject claim of the
+	// incoming JWT to a specific Anthropic service account and OAuth scope.
+	// Per Anthropic's WIF reference docs, this is a non-secret identifier safe
+	// to commit to source control or bake into a container image.
+	FederationRuleId string `protobuf:"bytes,7,opt,name=federation_rule_id,json=federationRuleId,proto3" json:"federation_rule_id,omitempty"`
+	// Required when type is "anthropic-wif". The Anthropic organization UUID
+	// (lowercase, RFC 4122 form, e.g. "550e8400-e29b-41d4-a716-446655440000").
+	// Identifies which Anthropic organization the federation rule belongs to.
+	// Non-secret per Anthropic's docs.
+	OrganizationId string `protobuf:"bytes,8,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
+	// Required when type is "anthropic-wif". The Anthropic service account ID
+	// (format: "svac_..."). The non-human principal that the resulting access
+	// token acts as. Non-secret per Anthropic's docs.
+	ServiceAccountId string `protobuf:"bytes,9,opt,name=service_account_id,json=serviceAccountId,proto3" json:"service_account_id,omitempty"`
+	// Optional / conditional when type is "anthropic-wif". The Anthropic
+	// workspace ID (format: "wrkspc_...") or the literal string "default".
+	// Required when the federation rule is enabled for more than one workspace;
+	// omit (empty string) when the rule is bound to a single workspace.
+	// Non-secret per Anthropic's docs.
+	WorkspaceId   string `protobuf:"bytes,10,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CredentialConfig) Reset() {
@@ -1691,6 +1722,34 @@ func (x *CredentialConfig) GetAudience() string {
 func (x *CredentialConfig) GetServiceAccount() string {
 	if x != nil {
 		return x.ServiceAccount
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetFederationRuleId() string {
+	if x != nil {
+		return x.FederationRuleId
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetOrganizationId() string {
+	if x != nil {
+		return x.OrganizationId
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetServiceAccountId() string {
+	if x != nil {
+		return x.ServiceAccountId
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetWorkspaceId() string {
+	if x != nil {
+		return x.WorkspaceId
 	}
 	return ""
 }
@@ -3163,14 +3222,19 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x16gemini_safety_settings\x18\f \x03(\v2'.stirrup.harness.v1.GeminiSafetySettingR\x14geminiSafetySettings\x1a>\n" +
 	"\x10QueryParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf3\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9b\x03\n" +
 	"\x10CredentialConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12H\n" +
 	"\ftoken_source\x18\x02 \x01(\v2%.stirrup.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
 	"\brole_arn\x18\x03 \x01(\tR\aroleArn\x12!\n" +
 	"\fsession_name\x18\x04 \x01(\tR\vsessionName\x12\x1a\n" +
 	"\baudience\x18\x05 \x01(\tR\baudience\x12'\n" +
-	"\x0fservice_account\x18\x06 \x01(\tR\x0eserviceAccount\"\xa9\x01\n" +
+	"\x0fservice_account\x18\x06 \x01(\tR\x0eserviceAccount\x12,\n" +
+	"\x12federation_rule_id\x18\a \x01(\tR\x10federationRuleId\x12'\n" +
+	"\x0forganization_id\x18\b \x01(\tR\x0eorganizationId\x12,\n" +
+	"\x12service_account_id\x18\t \x01(\tR\x10serviceAccountId\x12!\n" +
+	"\fworkspace_id\x18\n" +
+	" \x01(\tR\vworkspaceId\"\xa9\x01\n" +
 	"\x11TokenSourceConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x12\n" +
