@@ -2902,6 +2902,68 @@ func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
 			errSubstr: "azure-workload-identity requires Authorization: Bearer",
 		},
 		{
+			name: "explicit https azureTokenUrl (sovereign cloud) passes",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:    "openai-compatible",
+					BaseURL: "https://example.openai.azure.us/openai/v1",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						AzureTokenURL: "https://login.microsoftonline.us/" + validTenant + "/oauth2/v2.0/token",
+						TokenSource: &TokenSourceConfig{
+							Type: "file",
+							Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+						},
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "azureTokenUrl http rejected (HTTPS-only)",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:    "openai-compatible",
+					BaseURL: "https://example.openai.azure.com/openai/v1",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						AzureTokenURL: "http://login.microsoftonline.com/" + validTenant + "/oauth2/v2.0/token",
+						TokenSource: &TokenSourceConfig{
+							Type: "file",
+							Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+						},
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azureTokenUrl",
+		},
+		{
+			name: "azureTokenUrl plain string rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:    "openai-compatible",
+					BaseURL: "https://example.openai.azure.com/openai/v1",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						AzureTokenURL: "login.microsoftonline.us",
+						TokenSource: &TokenSourceConfig{
+							Type: "file",
+							Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+						},
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azureTokenUrl",
+		},
+		{
 			name: "azure-workload-identity rejected with anthropic provider type",
 			mutate: func(c *RunConfig) {
 				c.Provider = ProviderConfig{

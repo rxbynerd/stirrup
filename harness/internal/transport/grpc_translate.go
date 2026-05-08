@@ -293,6 +293,7 @@ func credentialConfigFromProto(pc *pb.CredentialConfig) *types.CredentialConfig 
 		AzureTenantID: pc.GetAzureTenantId(),
 		AzureClientID: pc.GetAzureClientId(),
 		AzureScope:    pc.GetAzureScope(),
+		AzureTokenURL: pc.GetAzureTokenUrl(),
 	}
 	if pc.TokenSource != nil {
 		cfg.TokenSource = &types.TokenSourceConfig{

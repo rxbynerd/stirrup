@@ -21,9 +21,11 @@ const azureDefaultScope = "https://cognitiveservices.azure.com/.default"
 
 // azureTokenURLTemplate is a printf template for the Microsoft Entra ID
 // token endpoint. The `%s` is filled with the URL-escaped tenant UUID.
-// This is the global Azure cloud endpoint; sovereign clouds
-// (login.microsoftonline.us / .cn / .de) are not yet exposed via
-// RunConfig (tracked as future work in issue #118).
+// This is the global Azure cloud endpoint. Sovereign clouds
+// (login.microsoftonline.us, login.partner.microsoftonline.cn,
+// login.microsoftonline.de) are reachable via the
+// CredentialConfig.AzureTokenURL override — see
+// NewAzureWorkloadIdentitySource and docs/azure-workload-identity.md.
 const azureTokenURLTemplate = "https://login.microsoftonline.com/%s/oauth2/v2.0/token"
 
 // AzureWorkloadIdentitySource exchanges an OIDC identity token (from any
@@ -70,9 +72,27 @@ type AzureWorkloadIdentitySource struct {
 // clientID identifies the App Registration / federated identity, and
 // scope is the OAuth2 audience (empty defaults to Azure OpenAI /
 // Cognitive Services).
-func NewAzureWorkloadIdentitySource(ts TokenSource, tenantID, clientID, scope string) *AzureWorkloadIdentitySource {
+//
+// The optional variadic tokenURLOverride argument lets sovereign-cloud
+// deployments (Azure Government, Azure China) point the exchange at a
+// non-default authority (login.microsoftonline.us /
+// .partner.microsoftonline.cn / .microsoftonline.de). The first
+// non-empty entry wins; any other entries are ignored. Empty or
+// omitted means "fill in the global-cloud endpoint at
+// login.microsoftonline.com". Variadic rather than a positional
+// argument so existing callers (and embedding-API callers who do not
+// need sovereign-cloud support) keep their four-arg call sites
+// unchanged.
+func NewAzureWorkloadIdentitySource(ts TokenSource, tenantID, clientID, scope string, tokenURLOverride ...string) *AzureWorkloadIdentitySource {
 	if scope == "" {
 		scope = azureDefaultScope
+	}
+	tokenURL := fmt.Sprintf(azureTokenURLTemplate, url.PathEscape(tenantID))
+	for _, override := range tokenURLOverride {
+		if override != "" {
+			tokenURL = override
+			break
+		}
 	}
 	return &AzureWorkloadIdentitySource{
 		tokenSource: ts,
@@ -86,7 +106,7 @@ func NewAzureWorkloadIdentitySource(ts TokenSource, tenantID, clientID, scope st
 				ResponseHeaderTimeout: 10 * time.Second,
 			},
 		},
-		tokenURL: fmt.Sprintf(azureTokenURLTemplate, url.PathEscape(tenantID)),
+		tokenURL: tokenURL,
 	}
 }
 

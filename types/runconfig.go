@@ -495,6 +495,15 @@ type CredentialConfig struct {
 	// (custom AAD app registrations, sovereign clouds). Must be a valid
 	// HTTPS URL when set.
 	AzureScope string `json:"azureScope,omitempty"`
+
+	// AzureTokenURL is optional for "azure-workload-identity". Overrides
+	// the OAuth2 token endpoint URL. Default fills in
+	// https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token (Azure
+	// global cloud); set this for sovereign clouds — login.microsoftonline.us
+	// (Azure Government), login.partner.microsoftonline.cn (Azure China),
+	// or login.microsoftonline.de (Azure Germany, deprecated). Must be a
+	// syntactically valid HTTPS URL when set.
+	AzureTokenURL string `json:"azureTokenUrl,omitempty"`
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
@@ -1666,7 +1675,31 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 				))
 			}
 		}
-		// Mutual-exclusion: azure-workload-identity consumes its three
+		// AzureTokenURL is optional; the credential source fills in
+		// the global-cloud authority
+		// (https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token)
+		// when empty. The override exists for sovereign clouds whose
+		// authorities live at login.microsoftonline.us /
+		// .partner.microsoftonline.cn / .microsoftonline.de. Same
+		// HTTPS-only invariant as azureScope: a misconfigured http://
+		// or schemeless override would surface as a token-exchange
+		// failure rather than a validation error, which is a worse
+		// debugging experience.
+		if cfg.AzureTokenURL != "" {
+			u, err := url.Parse(cfg.AzureTokenURL)
+			if err != nil {
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.azureTokenUrl %q is not a valid URL: %v",
+					path, cfg.AzureTokenURL, err,
+				))
+			} else if u.Scheme != "https" || u.Host == "" {
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.azureTokenUrl %q must be an https:// URL with a host (Entra authorities are HTTPS-only)",
+					path, cfg.AzureTokenURL,
+				))
+			}
+		}
+		// Mutual-exclusion: azure-workload-identity consumes its
 		// Azure fields, not AWS / GCP / Anthropic federation fields.
 		// Surface stale copy-paste values loudly.
 		if cfg.RoleARN != "" {
@@ -1704,7 +1737,7 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 		}
 	}
 
-	// Reciprocal mutual-exclusion: the three azure-workload-identity
+	// Reciprocal mutual-exclusion: the four azure-workload-identity
 	// fields are scoped to type="azure-workload-identity". Same rationale
 	// as the anthropic-wif block above.
 	if cfg.Type != "azure-workload-identity" {
@@ -1716,6 +1749,9 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 		}
 		if cfg.AzureScope != "" {
 			*errs = append(*errs, fmt.Sprintf("%s.azureScope is only valid for credential type %q", path, "azure-workload-identity"))
+		}
+		if cfg.AzureTokenURL != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.azureTokenUrl is only valid for credential type %q", path, "azure-workload-identity"))
 		}
 	}
 }

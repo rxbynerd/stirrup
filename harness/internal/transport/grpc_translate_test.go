@@ -360,6 +360,7 @@ func TestRunConfigFromProto_AzureWIFFieldsPreserved(t *testing.T) {
 				AzureTenantId: "11111111-2222-3333-4444-555555555555",
 				AzureClientId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
 				AzureScope:    "https://cognitiveservices.azure.com/.default",
+				AzureTokenUrl: "https://login.microsoftonline.us/11111111-2222-3333-4444-555555555555/oauth2/v2.0/token",
 				TokenSource: &pb.TokenSourceConfig{
 					Type: "file",
 					Path: "/var/run/secrets/azure/token",
@@ -384,6 +385,9 @@ func TestRunConfigFromProto_AzureWIFFieldsPreserved(t *testing.T) {
 	}
 	if got, want := rc.Provider.Credential.AzureScope, "https://cognitiveservices.azure.com/.default"; got != want {
 		t.Errorf("Credential.AzureScope: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.AzureTokenURL, "https://login.microsoftonline.us/11111111-2222-3333-4444-555555555555/oauth2/v2.0/token"; got != want {
+		t.Errorf("Credential.AzureTokenURL: got %q, want %q", got, want)
 	}
 	if rc.Provider.Credential.TokenSource == nil || rc.Provider.Credential.TokenSource.Path != "/var/run/secrets/azure/token" {
 		t.Errorf("TokenSource dropped or mangled: %+v", rc.Provider.Credential.TokenSource)

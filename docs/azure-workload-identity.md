@@ -242,6 +242,35 @@ The `tokenSource.audience` here is the audience claim *requested* on
 the OIDC token — it must match the `audiences[0]` value of the
 federated identity credential on the Azure side.
 
+## Sovereign cloud deployments
+
+The default token endpoint
+(`https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`) is the
+authority for the Azure global cloud. Sovereign clouds use distinct
+authorities — set `credential.azureTokenUrl` to the appropriate value
+when running against one:
+
+| Cloud | Authority host | `azureTokenUrl` |
+| --- | --- | --- |
+| Azure global (default) | `login.microsoftonline.com` | leave unset |
+| Azure Government (US) | `login.microsoftonline.us` | `https://login.microsoftonline.us/{TENANT_ID}/oauth2/v2.0/token` |
+| Azure China | `login.partner.microsoftonline.cn` | `https://login.partner.microsoftonline.cn/{TENANT_ID}/oauth2/v2.0/token` |
+| Azure Germany (deprecated) | `login.microsoftonline.de` | `https://login.microsoftonline.de/{TENANT_ID}/oauth2/v2.0/token` |
+
+A complete US Government fixture lives at
+[`examples/runconfig/azure-openai-wif-usgov.json`](../examples/runconfig/azure-openai-wif-usgov.json).
+
+`provider.baseUrl` must independently be pointed at the matching
+sovereign-cloud Azure OpenAI resource (e.g.
+`https://<resource>.openai.azure.us/openai/v1` for US Government). The
+authority and the resource are separate decisions: the authority issues
+the access token; the `baseUrl` accepts it.
+
+The `azureTokenUrl` field is validated as an HTTPS URL with a non-empty
+host — `http://` and schemeless values are rejected at config load
+time so a misconfigured override surfaces immediately rather than 60
+minutes into a long run.
+
 ## Mutual exclusion with `apiKeyHeader: "api-key"`
 
 Entra access tokens are accepted only on the `Authorization: Bearer`

@@ -168,6 +168,7 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 			cfg.Credential.AzureTenantID,
 			cfg.Credential.AzureClientID,
 			cfg.Credential.AzureScope,
+			cfg.Credential.AzureTokenURL,
 		), nil
 	default:
 		return nil, fmt.Errorf("unsupported credential type: %q", cfg.Credential.Type)

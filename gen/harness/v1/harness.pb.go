@@ -1675,7 +1675,21 @@ type CredentialConfig struct {
 	// the audience for Azure OpenAI / Foundry. Override only for non-default
 	// Azure audiences (custom AAD app registrations, sovereign clouds).
 	// Must be a syntactically valid HTTPS URL when set.
-	AzureScope    string `protobuf:"bytes,13,opt,name=azure_scope,json=azureScope,proto3" json:"azure_scope,omitempty"`
+	AzureScope string `protobuf:"bytes,13,opt,name=azure_scope,json=azureScope,proto3" json:"azure_scope,omitempty"`
+	// Optional when type is "azure-workload-identity". Overrides the
+	// OAuth2 token endpoint URL. Default behaviour fills in
+	//
+	//	https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+	//
+	// for the Azure global cloud. Set to one of the sovereign cloud
+	// authorities — login.microsoftonline.us (Azure Government),
+	// login.partner.microsoftonline.cn (Azure China), or
+	// login.microsoftonline.de (Azure Germany, deprecated) — when the
+	// workload runs against a non-global cloud. Must be a syntactically
+	// valid HTTPS URL when set; ValidateRunConfig rejects http:// and
+	// schemeless values.
+	// Next available field number: 15.
+	AzureTokenUrl string `protobuf:"bytes,14,opt,name=azure_token_url,json=azureTokenUrl,proto3" json:"azure_token_url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1797,6 +1811,13 @@ func (x *CredentialConfig) GetAzureClientId() string {
 func (x *CredentialConfig) GetAzureScope() string {
 	if x != nil {
 		return x.AzureScope
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetAzureTokenUrl() string {
+	if x != nil {
+		return x.AzureTokenUrl
 	}
 	return ""
 }
@@ -3269,7 +3290,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x16gemini_safety_settings\x18\f \x03(\v2'.stirrup.harness.v1.GeminiSafetySettingR\x14geminiSafetySettings\x1a>\n" +
 	"\x10QueryParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8c\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xb4\x04\n" +
 	"\x10CredentialConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12H\n" +
 	"\ftoken_source\x18\x02 \x01(\v2%.stirrup.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
@@ -3285,7 +3306,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0fazure_tenant_id\x18\v \x01(\tR\razureTenantId\x12&\n" +
 	"\x0fazure_client_id\x18\f \x01(\tR\razureClientId\x12\x1f\n" +
 	"\vazure_scope\x18\r \x01(\tR\n" +
-	"azureScope\"\xa9\x01\n" +
+	"azureScope\x12&\n" +
+	"\x0fazure_token_url\x18\x0e \x01(\tR\razureTokenUrl\"\xa9\x01\n" +
 	"\x11TokenSourceConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x12\n" +

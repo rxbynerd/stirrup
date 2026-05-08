@@ -642,6 +642,73 @@ func lastN(s string, n int) string {
 	return s[len(s)-n:]
 }
 
+// TestAzureWIFSource_CustomTokenURL exercises the sovereign-cloud
+// override path: when a non-empty tokenURLOverride is supplied to the
+// constructor, the exchange must POST to that URL instead of the
+// global-cloud authority at login.microsoftonline.com. The override
+// path is the only way Azure Government / China / Germany workloads
+// reach their authority — without coverage here, a regression that
+// silently re-derives the global URL would break sovereign-cloud
+// deployments without a single failing test.
+func TestAzureWIFSource_CustomTokenURL(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(azureTokenResponse{
+			AccessToken: "tok", TokenType: "Bearer", ExpiresIn: 3600,
+		})
+	}))
+	defer srv.Close()
+
+	// Construct directly (not via the test helper, which patches
+	// tokenURL after the fact) so the variadic override path is
+	// exercised end-to-end.
+	src := NewAzureWorkloadIdentitySource(
+		&stubTokenSource{token: []byte("jwt")},
+		testAzureTenantID,
+		testAzureClientID,
+		"",
+		srv.URL,
+	)
+
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if _, err := cred.BearerToken(context.Background()); err != nil {
+		t.Fatalf("BearerToken: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("override URL hit %d times, want 1", got)
+	}
+
+	// Defensive cross-check: src.tokenURL must be the override, not a
+	// derived login.microsoftonline.com URL.
+	if src.tokenURL != srv.URL {
+		t.Errorf("tokenURL = %q, want %q (override should win over global default)", src.tokenURL, srv.URL)
+	}
+}
+
+// TestAzureWIFSource_EmptyTokenURLOverrideFallsBack confirms that an
+// empty override leaves the constructor at its default global-cloud
+// URL. This pins the variadic-arg semantics: empty means "use the
+// default" rather than "use the empty string".
+func TestAzureWIFSource_EmptyTokenURLOverrideFallsBack(t *testing.T) {
+	src := NewAzureWorkloadIdentitySource(
+		&stubTokenSource{token: []byte("jwt")},
+		testAzureTenantID,
+		testAzureClientID,
+		"",
+		"",
+	)
+
+	want := fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/token", testAzureTenantID)
+	if src.tokenURL != want {
+		t.Errorf("tokenURL = %q, want %q (empty override must fall back to global default)", src.tokenURL, want)
+	}
+}
+
 // TestAzureWIFSource_CorrelationIDSanitised guards correlationIDSuffix
 // against a hostile / malfunctioning Entra-shaped endpoint that returns
 // a correlation_id containing ANSI escape sequences, control bytes, or

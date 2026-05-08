@@ -779,6 +779,19 @@ message CredentialConfig {
   // Azure audiences (custom AAD app registrations, sovereign clouds).
   // Must be a syntactically valid HTTPS URL when set.
   string azure_scope = 13;
+
+  // Optional when type is "azure-workload-identity". Overrides the
+  // OAuth2 token endpoint URL. Default behaviour fills in
+  //   https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+  // for the Azure global cloud. Set to one of the sovereign cloud
+  // authorities — login.microsoftonline.us (Azure Government),
+  // login.partner.microsoftonline.cn (Azure China), or
+  // login.microsoftonline.de (Azure Germany, deprecated) — when the
+  // workload runs against a non-global cloud. Must be a syntactically
+  // valid HTTPS URL when set; ValidateRunConfig rejects http:// and
+  // schemeless values.
+  // Next available field number: 15.
+  string azure_token_url = 14;
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
