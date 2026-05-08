@@ -641,3 +641,58 @@ func lastN(s string, n int) string {
 	}
 	return s[len(s)-n:]
 }
+
+// TestAzureWIFSource_CorrelationIDSanitised guards correlationIDSuffix
+// against a hostile / malfunctioning Entra-shaped endpoint that returns
+// a correlation_id containing ANSI escape sequences, control bytes, or
+// an oversized payload. These values would otherwise land verbatim in
+// slog attributes, OTel span events, and the terminal — a scrubber
+// further downstream would have to know to clean them up. Since the
+// correlation_id is end-user-rendered (operators paste it into
+// Microsoft support tickets), bounding it at the source is the
+// cheapest fix.
+func TestAzureWIFSource_CorrelationIDSanitised(t *testing.T) {
+	t.Run("ANSI escape and control bytes stripped", func(t *testing.T) {
+		// A real-world hostile body: a 401 with an "id" containing an
+		// ANSI red sequence (ESC + [31m), an embedded carriage return,
+		// and a NUL byte. Use json.Marshal so the wire-format escapes
+		// are correct (a hand-typed raw string literal can't carry the
+		// 0x1b control byte through the JSON parser).
+		raw := "abc\x1b[31m\rde\x00f"
+		jsonBody, err := json.Marshal(map[string]string{
+			"error":          "x",
+			"correlation_id": raw,
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		got := correlationIDSuffix(jsonBody)
+		// Bytes < 0x20 (ESC, CR, NUL) must all be dropped. The "[31m"
+		// printable tail of the ANSI sequence is permitted because in
+		// isolation it's just brackets and digits — the danger is the
+		// ESC byte that turns it into a control sequence.
+		want := " (correlation_id=abc[31mdef)"
+		if got != want {
+			t.Errorf("correlationIDSuffix = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("oversized correlation_id truncated to 64 bytes", func(t *testing.T) {
+		long := strings.Repeat("a", 200)
+		body := []byte(fmt.Sprintf(`{"correlation_id":%q}`, long))
+		got := correlationIDSuffix(body)
+		want := " (correlation_id=" + strings.Repeat("a", 64) + ")"
+		if got != want {
+			t.Errorf("correlationIDSuffix length-cap failed:\n got: %q\nwant: %q", got, want)
+		}
+	})
+
+	t.Run("normal UUID passes through unchanged", func(t *testing.T) {
+		body := []byte(`{"correlation_id":"7c14b6a4-9d28-4a3a-b3a3-1234567890ab"}`)
+		got := correlationIDSuffix(body)
+		want := " (correlation_id=7c14b6a4-9d28-4a3a-b3a3-1234567890ab)"
+		if got != want {
+			t.Errorf("correlationIDSuffix = %q, want %q", got, want)
+		}
+	})
+}

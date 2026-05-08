@@ -229,6 +229,12 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 	}, nil
 }
 
+// maxCorrelationIDLen caps the correlation_id surfaced through error
+// messages. Real Entra correlation IDs are 36-byte UUIDs; 64 leaves
+// modest headroom while bounding the worst case if a hostile or
+// malfunctioning endpoint returns a much larger value.
+const maxCorrelationIDLen = 64
+
 // correlationIDSuffix returns " (correlation_id=<id>)" when the body
 // parses as JSON and carries a correlation_id (snake_case or
 // camelCase). On non-JSON or absent IDs it returns the empty string —
@@ -236,6 +242,11 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 // no defensive recover is required. The correlation ID is the only
 // handle operators have when filing a Microsoft support ticket; the
 // JWT itself never appears in error output.
+//
+// The id passes through sanitiseCorrelationID before formatting so
+// control characters, ANSI escapes, and oversized values from a
+// hostile or malfunctioning endpoint cannot land in slog / OTel /
+// terminal output verbatim.
 func correlationIDSuffix(body []byte) string {
 	var parsed azureErrorResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -248,5 +259,29 @@ func correlationIDSuffix(body []byte) string {
 	if id == "" {
 		return ""
 	}
-	return fmt.Sprintf(" (correlation_id=%s)", id)
+	return fmt.Sprintf(" (correlation_id=%s)", sanitiseCorrelationID(id))
+}
+
+// sanitiseCorrelationID strips non-printable bytes (control chars, ANSI
+// escapes, embedded NULs) and caps the length at maxCorrelationIDLen.
+// The resulting string is safe to embed verbatim in slog attributes,
+// OTel span events, and terminal output — none of which expects to
+// receive control sequences from a remote authority server.
+func sanitiseCorrelationID(id string) string {
+	var b strings.Builder
+	b.Grow(len(id))
+	for _, r := range id {
+		// Restrict to printable ASCII (space through tilde). The Entra
+		// correlation_id is documented as a UUID, so any byte outside
+		// that range is anomalous and we drop it rather than try to
+		// preserve it.
+		if r >= 0x20 && r < 0x7f {
+			b.WriteRune(r)
+		}
+	}
+	s := b.String()
+	if len(s) > maxCorrelationIDLen {
+		s = s[:maxCorrelationIDLen]
+	}
+	return s
 }
