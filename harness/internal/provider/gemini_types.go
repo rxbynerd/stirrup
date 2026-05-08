@@ -130,8 +130,6 @@ type geminiGenerationConfig struct {
 // to the previous chunk's parts. Declared here alongside the request
 // shapes so Wave 4 (the SSE stream consumer in gemini.go) does not need
 // to retype it.
-//
-//nolint:unused // Consumed by gemini.go (Wave 4: SSE stream consumer).
 type generateContentChunk struct {
 	Candidates     []geminiCandidate    `json:"candidates,omitempty"`
 	UsageMetadata  *geminiUsageMetadata `json:"usageMetadata,omitempty"`
@@ -142,8 +140,6 @@ type generateContentChunk struct {
 // uses Index 0; multi-candidate responses are not requested. SafetyRatings
 // is opaque (RawMessage) — they are surfaced verbatim to the trace and
 // never decoded by the adapter.
-//
-//nolint:unused // Consumed by gemini.go (Wave 4: SSE stream consumer).
 type geminiCandidate struct {
 	Content       *geminiContent   `json:"content,omitempty"`
 	FinishReason  string           `json:"finishReason,omitempty"`
@@ -154,8 +150,6 @@ type geminiCandidate struct {
 // geminiUsageMetadata mirrors Vertex's usageMetadata. The harness reports
 // CandidatesTokenCount as the OutputTokens for stop-event compatibility
 // with the other adapters.
-//
-//nolint:unused // Consumed by gemini.go (Wave 4: SSE stream consumer).
 type geminiUsageMetadata struct {
 	PromptTokenCount     int `json:"promptTokenCount,omitempty"`
 	CandidatesTokenCount int `json:"candidatesTokenCount,omitempty"`
