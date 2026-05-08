@@ -144,6 +144,31 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 			cfg.Credential.ServiceAccountID,
 			cfg.Credential.WorkspaceID,
 		), nil
+	case "azure-workload-identity":
+		// Defence-in-depth: validateRunConfig already rejects these
+		// missing-field cases at config-load time. Re-checking here
+		// keeps a programmatic caller of BuildSource (e.g. a future
+		// embedded harness invocation) from reaching an Entra exchange
+		// with a malformed assertion request.
+		if cfg.Credential.AzureTenantID == "" {
+			return nil, fmt.Errorf("azure-workload-identity requires azureTenantId")
+		}
+		if cfg.Credential.AzureClientID == "" {
+			return nil, fmt.Errorf("azure-workload-identity requires azureClientId")
+		}
+		if cfg.Credential.TokenSource == nil {
+			return nil, fmt.Errorf("azure-workload-identity requires tokenSource")
+		}
+		ts, err := BuildTokenSource(cfg.Credential.TokenSource)
+		if err != nil {
+			return nil, fmt.Errorf("build token source: %w", err)
+		}
+		return NewAzureWorkloadIdentitySource(
+			ts,
+			cfg.Credential.AzureTenantID,
+			cfg.Credential.AzureClientID,
+			cfg.Credential.AzureScope,
+		), nil
 	default:
 		return nil, fmt.Errorf("unsupported credential type: %q", cfg.Credential.Type)
 	}
