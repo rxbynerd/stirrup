@@ -143,8 +143,8 @@ func TestServiceAccountKeySource_RejectsMissingFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
-	if !strings.Contains(err.Error(), "stat service account key") {
-		t.Errorf("error should mention stat failure, got: %v", err)
+	if !strings.Contains(err.Error(), "open service account key") {
+		t.Errorf("error should mention open failure, got: %v", err)
 	}
 }
 
@@ -242,6 +242,40 @@ func TestServiceAccountKeySource_RejectsUnknownType(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `"external_account"`) {
 		t.Errorf("error should mention the rejected type, got: %v", err)
+	}
+}
+
+// TestServiceAccountKeySource_ContextCancelDoesNotFailRefresh verifies
+// the B1 fix: a Resolve(ctx) call must not bind ctx to subsequent token
+// refreshes. Otherwise cancelling the factory/pre-run context (as
+// happens on signal, sub-agent teardown, or factory failure) would
+// poison every future Token() call even though the long-lived
+// agentic-loop context is still valid.
+//
+// We do not verify that Token() succeeds — the fake credentials are
+// not signed with a key Google IAM trusts — only that the error, if
+// any, is not "context canceled".
+func TestServiceAccountKeySource_ContextCancelDoesNotFailRefresh(t *testing.T) {
+	dir := t.TempDir()
+	path := writeServiceAccountJSON(t, dir, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	src := NewServiceAccountKeySource(path)
+	cred, err := src.Resolve(ctx)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if cred.GoogleTokenSource == nil {
+		t.Fatal("expected GoogleTokenSource")
+	}
+	cancel()
+
+	// Token() will hit the OAuth2 endpoint and likely fail because the
+	// JWT was signed with a fake key. The point is that the failure
+	// must not be due to the cancelled Resolve ctx.
+	_, err = cred.GoogleTokenSource.Token()
+	if err != nil && strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("Token() failed with cancelled Resolve context — refresh ctx is still bound to factory ctx: %v", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"golang.org/x/oauth2"
@@ -85,23 +86,39 @@ func (s *ServiceAccountKeySource) Resolve(ctx context.Context) (*Resolved, error
 		return nil, fmt.Errorf("service account key path is empty")
 	}
 
-	info, err := os.Stat(s.path)
+	// Open + LimitReader rather than Stat + ReadFile to avoid a TOCTOU
+	// gap. With Stat-then-ReadFile, a symlink swap between the two
+	// syscalls could repoint s.path at /dev/zero (which Stat reports as
+	// size 0, passing the size cap) and stream an unbounded zero-filled
+	// buffer into the JSON parser. A single open + bounded read closes
+	// that gap.
+	f, err := os.Open(s.path)
+	if err != nil {
+		return nil, fmt.Errorf("open service account key %q: %w", s.path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat service account key %q: %w", s.path, err)
 	}
 	if info.IsDir() {
 		return nil, fmt.Errorf("service account key %q is a directory, not a file", s.path)
 	}
-	if info.Size() > maxServiceAccountKeyBytes {
-		return nil, fmt.Errorf(
-			"service account key %q is %d bytes; refusing to read files larger than %d bytes",
-			s.path, info.Size(), maxServiceAccountKeyBytes,
-		)
-	}
 
-	data, err := os.ReadFile(s.path)
+	// Read up to maxServiceAccountKeyBytes+1 to detect over-cap files
+	// without buffering an unbounded payload. The +1 lets us
+	// distinguish "exactly at the cap" (allowed) from "over the cap"
+	// (rejected) without a separate Stat-based size check.
+	data, err := io.ReadAll(io.LimitReader(f, maxServiceAccountKeyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read service account key %q: %w", s.path, err)
+	}
+	if int64(len(data)) > maxServiceAccountKeyBytes {
+		return nil, fmt.Errorf(
+			"service account key %q exceeds %d bytes; refusing to read files larger than that",
+			s.path, maxServiceAccountKeyBytes,
+		)
 	}
 
 	// Validate the JSON shape before handing to JWTConfigFromJSON so we
@@ -138,10 +155,18 @@ func (s *ServiceAccountKeySource) Resolve(ctx context.Context) (*Resolved, error
 		return nil, fmt.Errorf("build JWT config from %q: %w", s.path, err)
 	}
 
-	// jwt.Config.TokenSource returns an oauth2.TokenSource that handles
-	// signing the JWT and exchanging it for an access token, with caching
-	// and refresh built in.
-	return &Resolved{GoogleTokenSource: cfg.TokenSource(ctx)}, nil
+	// jwt.Config.TokenSource(ctx) binds ctx to ALL future Token() calls —
+	// initial acquisition AND every subsequent refresh. Passing the
+	// caller's Resolve context here would cancel token refresh whenever
+	// the factory/pre-run context is cancelled (signal, sub-agent
+	// teardown, timeout), even when the agentic loop's own runCtx is
+	// still valid. Decouple by binding refresh to context.Background().
+	//
+	// Wrap with oauth2.ReuseTokenSource so the access token is cached
+	// in memory between Stream calls — without the wrapper every
+	// Token() call signs a fresh JWT and round-trips to the OAuth2
+	// endpoint. Mirrors the pattern used by GoogleWorkloadIdentitySource.
+	return &Resolved{GoogleTokenSource: oauth2.ReuseTokenSource(nil, cfg.TokenSource(context.Background()))}, nil
 }
 
 // GoogleWorkloadIdentitySource resolves credentials via the GCE/GKE
