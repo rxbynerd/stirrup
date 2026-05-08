@@ -377,6 +377,14 @@ message RunConfig {
   // design.
   GuardRailConfig guard_rail = 28;
 
+  // Optional. Run-scoped attributes that ride on the OTel Resource
+  // (deployment.environment, service.namespace) so traces and metrics
+  // emitted by this run share a consistent resource identity with
+  // other runs in the same deployment. Only low-cardinality fields
+  // belong here — high-cardinality identifiers (run_id, provider,
+  // model) stay span/instrument-level so metric series do not explode.
+  ObservabilityConfig observability = 29;
+
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -526,6 +534,29 @@ message GuardRailConfig {
   // skipped (no HTTP call). Default 256 (applied at construction
   // time); 0 disables. Range [0, 4096].
   int32 min_chunk_chars = 12;
+}
+
+// ObservabilityConfig carries operator-supplied attributes that ride on
+// the OTel Resource shared by traces and metrics. Values left empty fall
+// through to env-var fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT,
+// OTEL_SERVICE_NAMESPACE) and finally to defaults at resource-
+// construction time. Only low-cardinality fields belong here — putting
+// run_id / provider / model on the resource would explode metric series
+// cardinality, so those continue to be emitted as span / instrument
+// attributes instead.
+message ObservabilityConfig {
+  // Optional. The deployment tier (e.g. "production", "staging",
+  // "local"). When empty the resource builder falls back to the
+  // OTEL_DEPLOYMENT_ENVIRONMENT environment variable, then to "local".
+  // Values must match ^[A-Za-z0-9._-]{1,64}$ so they round-trip safely
+  // through the wire format.
+  string environment = 1;
+
+  // Optional. The service-grouping namespace (e.g. "stirrup",
+  // "stirrup-eval", "team-a"). When empty the resource builder falls
+  // back to the OTEL_SERVICE_NAMESPACE environment variable, then to
+  // "stirrup". Values must match ^[A-Za-z0-9._-]{1,64}$.
+  string service_namespace = 2;
 }
 
 // RunTrace is included with "done" HarnessEvents. It provides execution

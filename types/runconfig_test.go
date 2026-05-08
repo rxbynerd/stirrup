@@ -2226,3 +2226,58 @@ func TestValidateRunConfig_GeminiInProvidersMap(t *testing.T) {
 		t.Errorf("expected error path providers[vertex].gcpProject, got: %v", err)
 	}
 }
+
+// TestValidateRunConfig_ObservabilityValid pins that the typical
+// non-empty Observability values used in production (deployment tier,
+// org-scoped namespace) pass validation. Empty values are also valid —
+// they fall through to env-var fallbacks at resource construction.
+func TestValidateRunConfig_ObservabilityValid(t *testing.T) {
+	cases := []ObservabilityConfig{
+		{},
+		{Environment: "production"},
+		{ServiceNamespace: "stirrup-eval"},
+		{Environment: "staging-eu", ServiceNamespace: "stirrup_team-a"},
+		{Environment: strings.Repeat("a", 64), ServiceNamespace: strings.Repeat("b", 64)},
+	}
+	for _, obs := range cases {
+		t.Run(fmt.Sprintf("env=%q ns=%q", obs.Environment, obs.ServiceNamespace), func(t *testing.T) {
+			c := validConfig()
+			c.Observability = obs
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected nil error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_ObservabilityRejectsBadShape protects the OTel
+// resource-attribute encoding from operator-supplied values that would
+// not survive round-tripping through the wire format. CRLF and path
+// separators are the immediately dangerous shapes; the regex also
+// rejects spaces and the empty-after-trimming case (everything past
+// the 64-char cap).
+func TestValidateRunConfig_ObservabilityRejectsBadShape(t *testing.T) {
+	cases := map[string]ObservabilityConfig{
+		"newline in env":      {Environment: "prod\nuction"},
+		"slash in env":        {Environment: "prod/uction"},
+		"space in env":        {Environment: "prod uction"},
+		"too long env":        {Environment: strings.Repeat("a", 65)},
+		"newline in ns":       {ServiceNamespace: "stirrup\neval"},
+		"colon in ns":         {ServiceNamespace: "stirrup:eval"},
+		"too long ns":         {ServiceNamespace: strings.Repeat("a", 65)},
+		"both fields invalid": {Environment: "x y", ServiceNamespace: "x y"},
+	}
+	for name, obs := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := validConfig()
+			c.Observability = obs
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for %s", name)
+			}
+			if !strings.Contains(err.Error(), "observability.") {
+				t.Errorf("expected error to mention observability.*, got: %v", err)
+			}
+		})
+	}
+}

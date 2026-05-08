@@ -116,6 +116,28 @@ type RunConfig struct {
 	// factory installs a "none" guard so call sites never nil-check.
 	// See GuardRailConfig for the available implementations.
 	GuardRail *GuardRailConfig `json:"guardRail,omitempty"`
+
+	// Observability carries the run-scoped attributes that ride on the
+	// OTel Resource (deployment.environment, service.namespace) so
+	// traces and metrics emitted by this run share a consistent
+	// resource identity with other runs in the same deployment. Only
+	// low-cardinality fields belong here — high-cardinality identifiers
+	// like RunID stay span/instrument-level so metric series do not
+	// explode. When unset the resource builder falls back to environment
+	// variables and finally to safe defaults ("local" / "stirrup").
+	Observability ObservabilityConfig `json:"observability,omitempty"`
+}
+
+// ObservabilityConfig carries operator-supplied OTel resource attributes
+// shared across traces and metrics for the run. The fields are free-form
+// labels with a deliberately conservative character set so they cannot
+// inject CRLF, query-string separators, or other URL/header surprises
+// into downstream backends. Values left empty fall through to env-var
+// fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT, OTEL_SERVICE_NAMESPACE) and
+// finally to defaults at resource-construction time.
+type ObservabilityConfig struct {
+	Environment      string `json:"environment,omitempty"`
+	ServiceNamespace string `json:"serviceNamespace,omitempty"`
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -613,6 +635,16 @@ var apiKeyHeaderPattern = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 // (e.g. "deployment.id").
 var queryParamKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// observabilityLabelPattern bounds the character set of operator-supplied
+// OTel resource labels (deployment.environment, service.namespace) so an
+// errant value cannot inject path separators or wire-protocol delimiters
+// into the resource attributes that ride on every span and metric. The
+// 64-char cap matches what backends like Grafana truncate at in default
+// label rendering, and the closed character set is the intersection of
+// what OTLP, Prometheus, and most backend-side label encoders accept
+// without further escaping.
+var observabilityLabelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
 // maxQueryStringBytes caps the encoded-form size of QueryParams to bound
 // the URL we eventually emit. 2 KiB is comfortably above what any real
 // gateway-pin scenario needs while still rejecting a footgun like
@@ -943,6 +975,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateRuleOfTwo(config, &errs)
 	validateCodeScannerConfig(config.CodeScanner, &errs)
 	validateGuardRailConfig(config.GuardRail, "guardRail", false, &errs)
+	validateObservabilityConfig(config.Observability, &errs)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
@@ -1736,5 +1769,21 @@ func validateGuardRailEndpoint(endpoint, path string, errs *[]string) {
 	}
 	if u.Host == "" {
 		*errs = append(*errs, fmt.Sprintf("%s %q must include a host", path, endpoint))
+	}
+}
+
+// validateObservabilityConfig rejects operator-supplied OTel resource
+// labels that would not survive round-tripping through the wire format
+// (CRLF, path separators, embedded quotes, etc.). Empty values are
+// permitted — they fall through to env-var fallbacks at resource-
+// construction time. The shape check is deliberately pragmatic: we don't
+// constrain values to a list because operators legitimately want labels
+// like "stirrup-eval", "production-eu", "shadow-canary".
+func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
+	if cfg.Environment != "" && !observabilityLabelPattern.MatchString(cfg.Environment) {
+		*errs = append(*errs, fmt.Sprintf("observability.environment %q must match %s", cfg.Environment, observabilityLabelPattern))
+	}
+	if cfg.ServiceNamespace != "" && !observabilityLabelPattern.MatchString(cfg.ServiceNamespace) {
+		*errs = append(*errs, fmt.Sprintf("observability.serviceNamespace %q must match %s", cfg.ServiceNamespace, observabilityLabelPattern))
 	}
 }
