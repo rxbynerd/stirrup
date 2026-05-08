@@ -438,10 +438,12 @@ type CredentialConfig struct {
 // TokenSourceConfig selects where identity tokens are fetched from.
 // Used by credential types that require an OIDC/JWT token for exchange.
 type TokenSourceConfig struct {
-	Type     string `json:"type"`               // "gke-metadata" | "file" | "env"
-	Audience string `json:"audience,omitempty"` // for "gke-metadata": target audience claim (e.g. "sts.amazonaws.com")
+	Type     string `json:"type"`               // "gke-metadata" | "file" | "env" | "aws-irsa" | "azure-imds" | "github-actions-oidc"
+	Audience string `json:"audience,omitempty"` // for "gke-metadata", "github-actions-oidc": target audience claim (e.g. "sts.amazonaws.com")
 	Path     string `json:"path,omitempty"`     // for "file": filesystem path to token
 	EnvVar   string `json:"envVar,omitempty"`   // for "env": environment variable name
+	Resource string `json:"resource,omitempty"` // for "azure-imds": Azure AD resource URI (e.g. "https://management.azure.com/")
+	ClientID string `json:"clientId,omitempty"` // for "azure-imds": user-assigned managed identity client ID (optional)
 }
 
 // ModelRouterConfig selects the model router implementation.
@@ -757,9 +759,12 @@ var validCredentialTypes = map[string]bool{
 }
 
 var validTokenSourceTypes = map[string]bool{
-	"gke-metadata": true,
-	"file":         true,
-	"env":          true,
+	"gke-metadata":        true,
+	"file":                true,
+	"env":                 true,
+	"aws-irsa":            true,
+	"azure-imds":          true,
+	"github-actions-oidc": true,
 }
 
 // validCodeScannerTypes is the closed set of CodeScanner.Type values.
@@ -1380,6 +1385,20 @@ func validateTokenSourceConfig(cfg *TokenSourceConfig, path string, errs *[]stri
 	case "env":
 		if cfg.EnvVar == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: env requires envVar", path))
+		}
+	case "aws-irsa":
+		// No required fields. AWS_WEB_IDENTITY_TOKEN_FILE is read at
+		// Token() time and validated against the running environment;
+		// validating it at config-load time would prevent operators
+		// from authoring a config that runs in an EKS environment but
+		// is loaded in a CI step that has no IRSA mount.
+	case "azure-imds":
+		if cfg.Resource == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: azure-imds requires resource", path))
+		}
+	case "github-actions-oidc":
+		if cfg.Audience == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: github-actions-oidc requires audience", path))
 		}
 	}
 }

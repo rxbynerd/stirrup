@@ -714,6 +714,104 @@ func TestValidateRunConfig_EnvTokenSourceMissingEnvVar(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_AWSIRSATokenSourceValid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:   "bedrock",
+		Region: "us-east-1",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "aws-irsa",
+			},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("aws-irsa should validate without extra fields, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_AzureIMDSTokenSourceValid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:   "bedrock",
+		Region: "us-east-1",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type:     "azure-imds",
+				Resource: "https://management.azure.com/",
+			},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("azure-imds with resource should validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_AzureIMDSTokenSourceMissingResource(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "azure-imds",
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing resource")
+	}
+	if !strings.Contains(err.Error(), "resource") {
+		t.Errorf("error should mention resource: %v", err)
+	}
+}
+
+func TestValidateRunConfig_GitHubActionsOIDCTokenSourceValid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:   "bedrock",
+		Region: "us-east-1",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type:     "github-actions-oidc",
+				Audience: "sts.amazonaws.com",
+			},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("github-actions-oidc with audience should validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_GitHubActionsOIDCTokenSourceMissingAudience(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "github-actions-oidc",
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing audience")
+	}
+	if !strings.Contains(err.Error(), "audience") {
+		t.Errorf("error should mention audience: %v", err)
+	}
+}
+
 func TestValidateRunConfig_CredentialInProvidersMap(t *testing.T) {
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{

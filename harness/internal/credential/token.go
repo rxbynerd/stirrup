@@ -207,7 +207,7 @@ func (a *AzureIMDSTokenSource) Token(ctx context.Context) ([]byte, error) {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Azure IMDS request: %w", err)
+		return nil, fmt.Errorf("azure IMDS request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -217,7 +217,7 @@ func (a *AzureIMDSTokenSource) Token(ctx context.Context) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Azure IMDS returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("azure IMDS returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var parsed azureIMDSResponse
@@ -225,7 +225,7 @@ func (a *AzureIMDSTokenSource) Token(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("parse Azure IMDS response: %w", err)
 	}
 	if parsed.AccessToken == "" {
-		return nil, fmt.Errorf("Azure IMDS returned empty access_token")
+		return nil, fmt.Errorf("azure IMDS returned empty access_token")
 	}
 	return []byte(parsed.AccessToken), nil
 }

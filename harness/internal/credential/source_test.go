@@ -264,8 +264,58 @@ func TestBuildTokenSource_Nil(t *testing.T) {
 }
 
 func TestBuildTokenSource_UnsupportedType(t *testing.T) {
-	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "azure-imds"})
+	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "unknown-source"})
 	if err == nil {
 		t.Fatal("expected error for unsupported token source type")
+	}
+}
+
+func TestBuildTokenSource_AWSIRSA(t *testing.T) {
+	ts, err := BuildTokenSource(&types.TokenSourceConfig{Type: "aws-irsa"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := ts.(*AWSIRSATokenSource); !ok {
+		t.Errorf("expected *AWSIRSATokenSource, got %T", ts)
+	}
+}
+
+func TestBuildTokenSource_AzureIMDS(t *testing.T) {
+	ts, err := BuildTokenSource(&types.TokenSourceConfig{
+		Type:     "azure-imds",
+		Resource: "https://management.azure.com/",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := ts.(*AzureIMDSTokenSource); !ok {
+		t.Errorf("expected *AzureIMDSTokenSource, got %T", ts)
+	}
+}
+
+func TestBuildTokenSource_AzureIMDSMissingResource(t *testing.T) {
+	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "azure-imds"})
+	if err == nil {
+		t.Fatal("expected error for azure-imds without resource")
+	}
+}
+
+func TestBuildTokenSource_GitHubActionsOIDC(t *testing.T) {
+	ts, err := BuildTokenSource(&types.TokenSourceConfig{
+		Type:     "github-actions-oidc",
+		Audience: "sts.amazonaws.com",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := ts.(*GitHubActionsOIDCTokenSource); !ok {
+		t.Errorf("expected *GitHubActionsOIDCTokenSource, got %T", ts)
+	}
+}
+
+func TestBuildTokenSource_GitHubActionsOIDCMissingAudience(t *testing.T) {
+	_, err := BuildTokenSource(&types.TokenSourceConfig{Type: "github-actions-oidc"})
+	if err == nil {
+		t.Fatal("expected error for github-actions-oidc without audience")
 	}
 }

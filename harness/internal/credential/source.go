@@ -123,6 +123,18 @@ func BuildTokenSource(cfg *types.TokenSourceConfig) (TokenSource, error) {
 		return &FileTokenSource{path: cfg.Path}, nil
 	case "env":
 		return &EnvTokenSource{envVar: cfg.EnvVar}, nil
+	case "aws-irsa":
+		return &AWSIRSATokenSource{}, nil
+	case "azure-imds":
+		if cfg.Resource == "" {
+			return nil, fmt.Errorf("azure-imds requires resource")
+		}
+		return NewAzureIMDSTokenSource(cfg.Resource, cfg.ClientID, ""), nil
+	case "github-actions-oidc":
+		if cfg.Audience == "" {
+			return nil, fmt.Errorf("github-actions-oidc requires audience")
+		}
+		return NewGitHubActionsOIDCTokenSource(cfg.Audience), nil
 	default:
 		return nil, fmt.Errorf("unsupported token source type: %q", cfg.Type)
 	}
