@@ -662,23 +662,33 @@ message ProviderConfig {
 
 // CredentialConfig selects the credential acquisition method for a provider.
 // Used for cross-cloud authentication scenarios (e.g. a GKE-hosted harness
-// accessing Bedrock via OIDC federation).
+// accessing Bedrock via OIDC federation, or an EKS-hosted harness accessing
+// Vertex AI Gemini via GCP Workload Identity Federation).
 message CredentialConfig {
   // Required. The credential acquisition strategy.
   // Valid values:
-  //   "static"                 — resolve api_key_ref via SecretStore (default for
-  //                              anthropic/openai-compatible).
-  //   "aws-default"            — use the AWS SDK default credential chain (env vars,
-  //                              shared config, IMDS). Default for bedrock.
-  //   "web-identity"           — exchange an OIDC identity token for AWS credentials
-  //                              via STS AssumeRoleWithWebIdentity. Requires role_arn
-  //                              and token_source.
-  //   "gcp-default"            — Google Application Default Credentials (env
-  //                              GOOGLE_APPLICATION_CREDENTIALS, metadata server).
-  //                              Default for "gemini". Rejects user-mode gcloud creds.
-  //   "gcp-service-account"    — explicit service account JSON key file. Requires
-  //                              gcp_credentials_file on the provider config.
-  //   "gcp-workload-identity"  — GKE Workload Identity (compute metadata access token).
+  //   "static"                            — resolve api_key_ref via SecretStore
+  //                                         (default for anthropic / openai-compatible).
+  //   "aws-default"                       — use the AWS SDK default credential chain
+  //                                         (env vars, shared config, IMDS). Default
+  //                                         for bedrock.
+  //   "web-identity"                      — exchange an OIDC identity token for AWS
+  //                                         credentials via STS
+  //                                         AssumeRoleWithWebIdentity. Requires
+  //                                         role_arn and token_source.
+  //   "gcp-default"                       — Google Application Default Credentials
+  //                                         (env GOOGLE_APPLICATION_CREDENTIALS,
+  //                                         metadata server). Default for "gemini".
+  //                                         Rejects user-mode gcloud creds.
+  //   "gcp-service-account"               — explicit service account JSON key file.
+  //                                         Requires gcp_credentials_file on the
+  //                                         provider config.
+  //   "gcp-workload-identity"              — GKE Workload Identity (compute metadata
+  //                                         access token). Requires running on GCP.
+  //   "gcp-workload-identity-federation"  — non-GCP runtime → GCP via Workload
+  //                                         Identity Federation (STS + optional
+  //                                         service-account impersonation). Requires
+  //                                         audience and token_source.
   string type = 1;
 
   // Required when type is "web-identity". Configuration for the identity
@@ -692,32 +702,63 @@ message CredentialConfig {
   // Optional. Session name for STS AssumeRole calls. Default: "stirrup".
   // Only used when type is "web-identity".
   string session_name = 4;
+
+  // Required when type is "gcp-workload-identity-federation". The WIF
+  // audience identifier formatted as
+  //   //iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER}
+  // identifying the Workload Identity Pool provider that will accept the
+  // OIDC token surfaced by token_source.
+  string audience = 5;
+
+  // Optional. Service account email to impersonate after the STS exchange,
+  // for narrower IAM grants on the target SA than the federated identity
+  // itself holds. When omitted, the federated access token is used directly.
+  // Only consulted when type is "gcp-workload-identity-federation".
+  string service_account = 6;
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
 // Used by credential types that require an OIDC/JWT token for exchange
-// (e.g. web-identity credential federation).
+// (e.g. web-identity credential federation, GCP Workload Identity
+// Federation).
 message TokenSourceConfig {
   // Required. The token source implementation.
   // Valid values:
-  //   "gke-metadata" — fetch from the GKE Workload Identity metadata server.
-  //                    Requires audience.
-  //   "file"         — read from a file (e.g. Kubernetes projected service
-  //                    account token volume). Requires path.
-  //   "env"          — read from an environment variable. Requires env_var.
+  //   "gke-metadata"        — GKE Workload Identity metadata server.
+  //                           Requires audience.
+  //   "file"                — read from a file (e.g. Kubernetes projected
+  //                           service account token volume). Requires path.
+  //   "env"                 — read from an environment variable. Requires
+  //                           env_var.
+  //   "aws-irsa"            — read AWS_WEB_IDENTITY_TOKEN_FILE
+  //                           (EKS Pod Identity / IRSA).
+  //   "azure-imds"          — Azure Instance Metadata Service identity
+  //                           endpoint. Requires resource. Optional
+  //                           client_id for user-assigned managed
+  //                           identities.
+  //   "github-actions-oidc" — GitHub Actions OIDC token endpoint.
+  //                           Requires audience.
   string type = 1;
 
-  // Required when type is "gke-metadata". The target audience claim for the
-  // identity token (e.g. "sts.amazonaws.com" for AWS federation).
+  // For "gke-metadata" and "github-actions-oidc": target audience claim
+  // for the identity token (e.g. "sts.amazonaws.com" for AWS federation,
+  // or a GCP WIF provider audience for "gcp-workload-identity-federation").
   string audience = 2;
 
-  // Required when type is "file". Filesystem path to a file containing the
-  // identity token (e.g. "/var/run/secrets/tokens/oidc-token").
+  // For "file": filesystem path to a file containing the identity token
+  // (e.g. "/var/run/secrets/tokens/oidc-token").
   string path = 3;
 
-  // Required when type is "env". Name of the environment variable containing
-  // the identity token.
+  // For "env": name of the environment variable containing the identity token.
   string env_var = 4;
+
+  // For "azure-imds": Azure AD resource URI for which the token is requested
+  // (e.g. "https://management.azure.com/" or a custom AAD app registration URI).
+  string resource = 5;
+
+  // For "azure-imds": user-assigned managed identity client ID.
+  // Optional; omit for system-assigned identities.
+  string client_id = 6;
 }
 
 // GeminiSafetySetting overrides the threshold for one Gemini safety category.

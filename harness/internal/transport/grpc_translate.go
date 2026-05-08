@@ -274,9 +274,11 @@ func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 
 func credentialConfigFromProto(pc *pb.CredentialConfig) *types.CredentialConfig {
 	cfg := &types.CredentialConfig{
-		Type:        pc.Type,
-		RoleARN:     pc.RoleArn,
-		SessionName: pc.SessionName,
+		Type:           pc.Type,
+		RoleARN:        pc.RoleArn,
+		SessionName:    pc.SessionName,
+		Audience:       pc.Audience,
+		ServiceAccount: pc.ServiceAccount,
 	}
 	if pc.TokenSource != nil {
 		cfg.TokenSource = &types.TokenSourceConfig{
@@ -284,6 +286,8 @@ func credentialConfigFromProto(pc *pb.CredentialConfig) *types.CredentialConfig 
 			Audience: pc.TokenSource.Audience,
 			Path:     pc.TokenSource.Path,
 			EnvVar:   pc.TokenSource.EnvVar,
+			Resource: pc.TokenSource.Resource,
+			ClientID: pc.TokenSource.ClientId,
 		}
 	}
 	return cfg
