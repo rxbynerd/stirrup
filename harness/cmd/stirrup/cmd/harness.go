@@ -46,6 +46,23 @@ type harnessCLIOptions struct {
 	GCPLocation        string
 	GCPCredentialsFile string
 
+	// Anthropic Workload Identity Federation fields (issue #117). Only
+	// meaningful when ProviderType == "anthropic" and the operator wants
+	// federated auth instead of a static API key. Validation rejects
+	// these on every other provider type. When any of the four ID fields
+	// is set, the flag-only path infers credential.type=anthropic-wif
+	// and the JWT-source flag (or env var) selects the IdP wiring.
+	AnthropicFederationRuleID string
+	AnthropicOrganizationID   string
+	AnthropicServiceAccountID string
+	AnthropicWorkspaceID      string
+	// AnthropicFromGitHubActions opts the workload-identity flow into
+	// the runner-injected ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN
+	// fallback. Implicit selection from env presence is deliberately
+	// rejected (issue #117 risk #5: silent IdP selection makes
+	// credential bugs unfixable).
+	AnthropicFromGitHubActions bool
+
 	// Component-selection escape hatches. These let the caller steer the
 	// non-trivial component choices without having to reach for a full
 	// --config file. Empty strings fall back to the documented default
@@ -190,6 +207,34 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	// redundant. An explicit Credential.Type set elsewhere wins.
 	if opts.ProviderType == "gemini" && opts.GCPCredentialsFile != "" && config.Provider.Credential == nil {
 		config.Provider.Credential = &types.CredentialConfig{Type: "gcp-service-account"}
+	}
+
+	// Anthropic Workload Identity Federation (issue #117). Setting any
+	// of the four ID fields implies credential.type=anthropic-wif
+	// because the IDs are meaningless under the static-API-key default.
+	// The flag-only path can populate them directly here; env-var
+	// fallback and token-source inference run later via
+	// applyAnthropicWIFOverrides so both --config and flag-only paths
+	// agree on the env precedence chain.
+	if opts.ProviderType == "anthropic" && (opts.AnthropicFederationRuleID != "" ||
+		opts.AnthropicOrganizationID != "" ||
+		opts.AnthropicServiceAccountID != "" ||
+		opts.AnthropicWorkspaceID != "") {
+		if config.Provider.Credential == nil {
+			config.Provider.Credential = &types.CredentialConfig{Type: "anthropic-wif"}
+		}
+		if opts.AnthropicFederationRuleID != "" {
+			config.Provider.Credential.FederationRuleID = opts.AnthropicFederationRuleID
+		}
+		if opts.AnthropicOrganizationID != "" {
+			config.Provider.Credential.OrganizationID = opts.AnthropicOrganizationID
+		}
+		if opts.AnthropicServiceAccountID != "" {
+			config.Provider.Credential.ServiceAccountID = opts.AnthropicServiceAccountID
+		}
+		if opts.AnthropicWorkspaceID != "" {
+			config.Provider.Credential.WorkspaceID = opts.AnthropicWorkspaceID
+		}
 	}
 
 	// Safety-ring fields are wired only when the caller supplied them
@@ -350,6 +395,17 @@ func init() {
 	f.String("gcp-project", "", "GCP project ID hosting the Vertex AI usage. Required when --provider=gemini.")
 	f.String("gcp-location", "global", "Vertex AI location: \"global\" or a region (e.g. us-central1). Determines the URL host and project location segment.")
 	f.String("gcp-credentials-file", "", "Path to a Google service account JSON key file. When set, implies credential.type=gcp-service-account.")
+
+	// Anthropic Workload Identity Federation flags (issue #117). Setting
+	// any of the four ID flags implies credential.type=anthropic-wif when
+	// the credential type is otherwise unset; the JWT source is selected
+	// by --anthropic-from-github-actions or the ANTHROPIC_IDENTITY_TOKEN*
+	// env vars (precedence documented in the operator walkthrough).
+	f.String("anthropic-federation-rule-id", "", "Anthropic federation rule ID (`fdrl_...`). Implies `credential.type=anthropic-wif` when set. Env fallback: ANTHROPIC_FEDERATION_RULE_ID.")
+	f.String("anthropic-organization-id", "", "Anthropic organization UUID. Required with WIF. Env fallback: ANTHROPIC_ORGANIZATION_ID.")
+	f.String("anthropic-service-account-id", "", "Anthropic service account ID (`svac_...`). Required with WIF. Env fallback: ANTHROPIC_SERVICE_ACCOUNT_ID.")
+	f.String("anthropic-workspace-id", "", "Anthropic workspace ID (`wrkspc_...`) or `default`. Conditional. Env fallback: ANTHROPIC_WORKSPACE_ID.")
+	f.Bool("anthropic-from-github-actions", false, "Enable GitHub Actions OIDC token source for Anthropic WIF. Reads ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN from the runner environment. Mutually exclusive with `--config` token sources.")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
 	f.Int("timeout", 600, "Wall-clock timeout in seconds")
@@ -522,6 +578,14 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		if path != "" && cfg.Provider.Credential == nil {
 			cfg.Provider.Credential = &types.CredentialConfig{Type: "gcp-service-account"}
 		}
+	}
+
+	// Anthropic Workload Identity Federation overrides (issue #117).
+	// Encapsulated for readability; the helper handles the four ID
+	// fields, the inferred credential.type, the token-source inference
+	// chain, and the apiKeyRef mutual-exclusion guard.
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		return err
 	}
 	if changed("query-param") {
 		// Replace rather than merge: explicit --query-param flags clear any
@@ -706,6 +770,11 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	gcpProject, _ := f.GetString("gcp-project")
 	gcpLocation, _ := f.GetString("gcp-location")
 	gcpCredentialsFile, _ := f.GetString("gcp-credentials-file")
+	anthropicFederationRuleID, _ := f.GetString("anthropic-federation-rule-id")
+	anthropicOrganizationID, _ := f.GetString("anthropic-organization-id")
+	anthropicServiceAccountID, _ := f.GetString("anthropic-service-account-id")
+	anthropicWorkspaceID, _ := f.GetString("anthropic-workspace-id")
+	anthropicFromGitHubActions, _ := f.GetBool("anthropic-from-github-actions")
 	workspace, _ := f.GetString("workspace")
 	maxTurns, _ := f.GetInt("max-turns")
 	timeout, _ := f.GetInt("timeout")
@@ -752,48 +821,214 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	config := buildHarnessRunConfig(harnessCLIOptions{
-		RunID:                 generateRunID(),
-		Mode:                  mode,
-		SessionName:           sessionName,
-		Prompt:                prompt,
-		ProviderType:          providerType,
-		BaseURL:               baseURL,
-		APIKeyHeader:          apiKeyHeader,
-		QueryParams:           queryParams,
-		APIKeyRef:             apiKeyRef,
-		GCPProject:            gcpProject,
-		GCPLocation:           gcpLocation,
-		GCPCredentialsFile:    gcpCredentialsFile,
-		Model:                 model,
-		Workspace:             workspace,
-		MaxTurns:              maxTurns,
-		Timeout:               timeout,
-		TracePath:             tracePath,
-		TransportType:         transportType,
-		TransportAddr:         transportAddr,
-		FollowUpGrace:         followUpGrace,
-		LogLevel:              logLevel,
-		ExecutorType:          executorType,
-		EditStrategyType:      editStrategyType,
-		VerifierType:          verifierType,
-		GitStrategyType:       gitStrategyType,
-		TraceEmitterType:      traceEmitterType,
-		OTelEndpoint:          otelEndpoint,
-		ContainerRuntime:      containerRuntime,
-		PermissionPolicyFile:  permissionPolicyFile,
-		CodeScannerType:       codeScannerType,
-		GuardRailType:         guardRailType,
-		GuardRailEndpoint:     guardRailEndpoint,
-		GuardRailModel:        guardRailModel,
-		GuardRailFailOpen:     guardRailFailOpen,
-		DeploymentEnvironment: deploymentEnvironment,
-		ServiceNamespace:      serviceNamespace,
+		RunID:                      generateRunID(),
+		Mode:                       mode,
+		SessionName:                sessionName,
+		Prompt:                     prompt,
+		ProviderType:               providerType,
+		BaseURL:                    baseURL,
+		APIKeyHeader:               apiKeyHeader,
+		QueryParams:                queryParams,
+		APIKeyRef:                  apiKeyRef,
+		GCPProject:                 gcpProject,
+		GCPLocation:                gcpLocation,
+		GCPCredentialsFile:         gcpCredentialsFile,
+		AnthropicFederationRuleID:  anthropicFederationRuleID,
+		AnthropicOrganizationID:    anthropicOrganizationID,
+		AnthropicServiceAccountID:  anthropicServiceAccountID,
+		AnthropicWorkspaceID:       anthropicWorkspaceID,
+		AnthropicFromGitHubActions: anthropicFromGitHubActions,
+		Model:                      model,
+		Workspace:                  workspace,
+		MaxTurns:                   maxTurns,
+		Timeout:                    timeout,
+		TracePath:                  tracePath,
+		TransportType:              transportType,
+		TransportAddr:              transportAddr,
+		FollowUpGrace:              followUpGrace,
+		LogLevel:                   logLevel,
+		ExecutorType:               executorType,
+		EditStrategyType:           editStrategyType,
+		VerifierType:               verifierType,
+		GitStrategyType:            gitStrategyType,
+		TraceEmitterType:           traceEmitterType,
+		OTelEndpoint:               otelEndpoint,
+		ContainerRuntime:           containerRuntime,
+		PermissionPolicyFile:       permissionPolicyFile,
+		CodeScannerType:            codeScannerType,
+		GuardRailType:              guardRailType,
+		GuardRailEndpoint:          guardRailEndpoint,
+		GuardRailModel:             guardRailModel,
+		GuardRailFailOpen:          guardRailFailOpen,
+		DeploymentEnvironment:      deploymentEnvironment,
+		ServiceNamespace:           serviceNamespace,
 	})
+
+	// Anthropic WIF env-var fallbacks and token-source inference run
+	// after buildHarnessRunConfig so the flag-only path mirrors the
+	// --config path's resolution chain. Errors here surface with the
+	// offending flag name rather than as an opaque ValidateRunConfig
+	// rejection.
+	if err := applyAnthropicWIFOverrides(cmd, config); err != nil {
+		return err
+	}
 
 	if err := types.ValidateRunConfig(config); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 	return runWithConfig(config)
+}
+
+// applyAnthropicWIFOverrides folds the Anthropic-WIF flag surface and
+// the documented env-var fallbacks into the RunConfig. Called from
+// both paths so --config users and flag-only users see the same
+// resolution chain:
+//
+//  1. Federation IDs: explicit flag > ANTHROPIC_*_ID env var > file value.
+//     Setting any ID without a Credential block infers
+//     credential.type=anthropic-wif.
+//  2. Token source inference (only when Credential.TokenSource is nil
+//     so a config-file source always wins):
+//     - --anthropic-from-github-actions → github-actions-oidc with
+//     Anthropic OAuth audience
+//     - ANTHROPIC_IDENTITY_TOKEN_FILE → file source pointing at it
+//     - ANTHROPIC_IDENTITY_TOKEN → env source
+//     - Naked ACTIONS_ID_TOKEN_REQUEST_URL is NOT auto-selected
+//     (issue #117 risk #5: silent IdP selection makes credential
+//     bugs unfixable; require explicit opt-in).
+//  3. apiKeyRef mutual exclusion: anthropic + anthropic-wif must not
+//     also carry a static API key (issue #117 risk #4 — leftover
+//     ANTHROPIC_API_KEY silently shadows federation in the SDK).
+//     Explicit --api-key-ref is a hard error; the default
+//     "secret://ANTHROPIC_API_KEY" is cleared silently because no
+//     intent was expressed.
+//
+// Returns a non-nil error only on the apiKeyRef guard; everything
+// else is best-effort folding that ValidateRunConfig will reject if
+// the resulting shape is invalid.
+func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
+	f := cmd.Flags()
+	changed := func(name string) bool { return f.Changed(name) }
+
+	// Step 1 — federation IDs from flags + env. Local helpers keep the
+	// dispatch table compact.
+	resolveID := func(flagName, envName string) string {
+		if changed(flagName) {
+			v, _ := f.GetString(flagName)
+			return v
+		}
+		// Cobra returns the registered default when the flag was not
+		// passed; for these flags the default is "" so we can use the
+		// flag value directly when no env var is set.
+		flagVal, _ := f.GetString(flagName)
+		if flagVal != "" {
+			return flagVal
+		}
+		return os.Getenv(envName)
+	}
+
+	ruleID := resolveID("anthropic-federation-rule-id", "ANTHROPIC_FEDERATION_RULE_ID")
+	orgID := resolveID("anthropic-organization-id", "ANTHROPIC_ORGANIZATION_ID")
+	saID := resolveID("anthropic-service-account-id", "ANTHROPIC_SERVICE_ACCOUNT_ID")
+	wsID := resolveID("anthropic-workspace-id", "ANTHROPIC_WORKSPACE_ID")
+	fromGHA, _ := f.GetBool("anthropic-from-github-actions")
+
+	anyIDSet := ruleID != "" || orgID != "" || saID != "" || wsID != ""
+
+	// Step 2 — type inference. Only fire when the operator has
+	// signalled WIF intent (any ID set, the GHA opt-in, or an existing
+	// type=anthropic-wif config). A config that already names a
+	// non-anthropic-wif credential type plus a federation ID is
+	// inconsistent — surface it loudly rather than silently rewriting
+	// the operator's choice.
+	if !anyIDSet && !fromGHA &&
+		(cfg.Provider.Credential == nil || cfg.Provider.Credential.Type != "anthropic-wif") {
+		return nil
+	}
+
+	if cfg.Provider.Credential == nil {
+		cfg.Provider.Credential = &types.CredentialConfig{Type: "anthropic-wif"}
+	} else if cfg.Provider.Credential.Type == "" || cfg.Provider.Credential.Type == "static" {
+		cfg.Provider.Credential.Type = "anthropic-wif"
+	} else if cfg.Provider.Credential.Type != "anthropic-wif" && anyIDSet {
+		return fmt.Errorf(
+			"--anthropic-* federation flags imply credential.type=anthropic-wif, "+
+				"but credential.type is already %q; remove the conflicting type or "+
+				"the federation flags",
+			cfg.Provider.Credential.Type)
+	}
+
+	// Apply IDs after the type is settled; an explicit/env value
+	// overrides an existing value from --config. (changed() above is
+	// the precedence gate — env-only fills in unset values.)
+	if ruleID != "" {
+		cfg.Provider.Credential.FederationRuleID = ruleID
+	}
+	if orgID != "" {
+		cfg.Provider.Credential.OrganizationID = orgID
+	}
+	if saID != "" {
+		cfg.Provider.Credential.ServiceAccountID = saID
+	}
+	if wsID != "" {
+		cfg.Provider.Credential.WorkspaceID = wsID
+	}
+
+	// Step 3 — token-source inference. A config-file token source
+	// always wins; we only fill in the slot when it is nil. Order
+	// follows the issue's documented precedence: explicit GHA opt-in
+	// first, then the two ANTHROPIC_IDENTITY_TOKEN_* env vars.
+	if cfg.Provider.Credential.TokenSource == nil {
+		switch {
+		case fromGHA:
+			// Audience defaults to the Anthropic OAuth host; operators
+			// who need a different audience claim must use --config.
+			cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
+				Type:     "github-actions-oidc",
+				Audience: "https://api.anthropic.com",
+			}
+		case os.Getenv("ANTHROPIC_IDENTITY_TOKEN_FILE") != "":
+			cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
+				Type: "file",
+				Path: os.Getenv("ANTHROPIC_IDENTITY_TOKEN_FILE"),
+			}
+		case os.Getenv("ANTHROPIC_IDENTITY_TOKEN") != "":
+			cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
+				Type:   "env",
+				EnvVar: "ANTHROPIC_IDENTITY_TOKEN",
+			}
+			// Bare ACTIONS_ID_TOKEN_REQUEST_URL is intentionally NOT
+			// handled here. Silent IdP selection from env presence is
+			// rejected per issue #117 risk #5 — operators must opt in
+			// via --anthropic-from-github-actions.
+		}
+	}
+
+	// Step 4 — apiKeyRef mutual exclusion. Only enforce on the
+	// anthropic provider with anthropic-wif credentials; other
+	// combinations are validated separately (validateAnthropicProviderFields
+	// catches a leftover --config value, but it does not know about the
+	// per-provider default flag value being "secret://ANTHROPIC_API_KEY",
+	// so we have to reconcile the default-vs-explicit case here before
+	// validation runs).
+	if cfg.Provider.Type == "anthropic" &&
+		cfg.Provider.Credential != nil &&
+		cfg.Provider.Credential.Type == "anthropic-wif" &&
+		cfg.Provider.APIKeyRef != "" {
+		if changed("api-key-ref") {
+			return fmt.Errorf(
+				"--api-key-ref must not be set with --anthropic-federation-rule-id " +
+					"(or any other --anthropic-* federation flag): WIF authenticates " +
+					"via OAuth bearer tokens and a static API key would silently " +
+					"shadow the federated credential (issue #117 risk #4)")
+		}
+		// Default flag value carries no operator intent under WIF —
+		// clear it silently so validateAnthropicProviderFields does not
+		// reject the otherwise-valid config.
+		cfg.Provider.APIKeyRef = ""
+	}
+
+	return nil
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
