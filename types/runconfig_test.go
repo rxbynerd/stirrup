@@ -865,6 +865,335 @@ func TestRedact_CredentialConfigPreserved(t *testing.T) {
 	}
 }
 
+// TestRedact_AnthropicWIFFieldsPreserved verifies that the four
+// Anthropic federation identifiers ride through Redact() unchanged.
+// Per issue #117 and Anthropic's WIF reference docs, these are
+// non-secret values intended to be safe to commit to source control or
+// bake into a container image; redacting them would needlessly hide
+// information operators need to debug a federation failure from a
+// stored trace.
+func TestRedact_AnthropicWIFFieldsPreserved(t *testing.T) {
+	rc := RunConfig{
+		Provider: ProviderConfig{
+			Type: "anthropic",
+			Credential: &CredentialConfig{
+				Type:             "anthropic-wif",
+				FederationRuleID: "fdrl_abc123",
+				OrganizationID:   "550e8400-e29b-41d4-a716-446655440000",
+				ServiceAccountID: "svac_xyz789",
+				WorkspaceID:      "wrkspc_def456",
+				TokenSource: &TokenSourceConfig{
+					Type:     "github-actions-oidc",
+					Audience: "https://api.anthropic.com",
+				},
+			},
+		},
+	}
+	redacted := rc.Redact()
+	cred := redacted.Provider.Credential
+	if cred == nil {
+		t.Fatal("Credential should not be nil after redaction")
+	}
+	if cred.FederationRuleID != "fdrl_abc123" {
+		t.Errorf("FederationRuleID should be preserved, got %q", cred.FederationRuleID)
+	}
+	if cred.OrganizationID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Errorf("OrganizationID should be preserved, got %q", cred.OrganizationID)
+	}
+	if cred.ServiceAccountID != "svac_xyz789" {
+		t.Errorf("ServiceAccountID should be preserved, got %q", cred.ServiceAccountID)
+	}
+	if cred.WorkspaceID != "wrkspc_def456" {
+		t.Errorf("WorkspaceID should be preserved, got %q", cred.WorkspaceID)
+	}
+}
+
+// validAnthropicWIFCredential builds a credential config that satisfies
+// every required field for the anthropic-wif type. Negative-path tests
+// mutate one field at a time off this baseline.
+func validAnthropicWIFCredential() *CredentialConfig {
+	return &CredentialConfig{
+		Type:             "anthropic-wif",
+		FederationRuleID: "fdrl_abc123",
+		OrganizationID:   "550e8400-e29b-41d4-a716-446655440000",
+		ServiceAccountID: "svac_xyz789",
+		TokenSource: &TokenSourceConfig{
+			Type:     "github-actions-oidc",
+			Audience: "https://api.anthropic.com",
+		},
+	}
+}
+
+func TestValidateRunConfig_AnthropicWIF(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(c *RunConfig)
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "minimal anthropic-wif config passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = validAnthropicWIFCredential()
+			},
+			wantErr: false,
+		},
+		{
+			name: "workspaceId default literal accepted",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.WorkspaceID = "default"
+				c.Provider.Credential = cred
+			},
+			wantErr: false,
+		},
+		{
+			name: "workspaceId structured wrkspc_ accepted",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.WorkspaceID = "wrkspc_def456"
+				c.Provider.Credential = cred
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing federationRuleId fails",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.FederationRuleID = ""
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "anthropic-wif requires federationRuleId",
+		},
+		{
+			name: "missing organizationId fails",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.OrganizationID = ""
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "anthropic-wif requires organizationId",
+		},
+		{
+			name: "missing serviceAccountId fails",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.ServiceAccountID = ""
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "anthropic-wif requires serviceAccountId",
+		},
+		{
+			name: "missing tokenSource fails",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.TokenSource = nil
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "anthropic-wif requires tokenSource",
+		},
+		{
+			name: "federationRuleId without fdrl_ prefix rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.FederationRuleID = "abc123"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "federationRuleId",
+		},
+		{
+			name: "federationRuleId with empty suffix rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.FederationRuleID = "fdrl_"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "federationRuleId",
+		},
+		{
+			name: "organizationId uppercase rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.OrganizationID = "550E8400-E29B-41D4-A716-446655440000"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "organizationId",
+		},
+		{
+			name: "organizationId not a UUID rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.OrganizationID = "not-a-uuid"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "organizationId",
+		},
+		{
+			name: "serviceAccountId without svac_ prefix rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.ServiceAccountID = "xyz789"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "serviceAccountId",
+		},
+		{
+			name: "workspaceId other plain string rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.WorkspaceID = "main"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "workspaceId",
+		},
+		{
+			name: "workspaceId without wrkspc_ prefix rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.WorkspaceID = "def456"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "workspaceId",
+		},
+		{
+			name: "apiKeyRef set alongside anthropic-wif rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.APIKeyRef = "secret://ANTHROPIC_API_KEY"
+				c.Provider.Credential = validAnthropicWIFCredential()
+			},
+			wantErr:   true,
+			errSubstr: "apiKeyRef must not be set when credential.type is \"anthropic-wif\"",
+		},
+		{
+			name: "roleArn on anthropic-wif rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.RoleARN = "arn:aws:iam::123456789012:role/StirrupBedrock"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "roleArn is only valid for credential type",
+		},
+		{
+			name: "audience on anthropic-wif rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.Audience = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/q"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "audience is only valid for credential type",
+		},
+		{
+			name: "serviceAccount on anthropic-wif rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.ServiceAccount = "vertex@my-project.iam.gserviceaccount.com"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "serviceAccount is only valid for credential type",
+		},
+		{
+			name: "sessionName on anthropic-wif rejected",
+			mutate: func(c *RunConfig) {
+				cred := validAnthropicWIFCredential()
+				cred.SessionName = "stirrup"
+				c.Provider.Credential = cred
+			},
+			wantErr:   true,
+			errSubstr: "sessionName is only valid for credential type",
+		},
+		{
+			name: "federationRuleId on web-identity rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:   "bedrock",
+					Region: "us-east-1",
+					Credential: &CredentialConfig{
+						Type:             "web-identity",
+						RoleARN:          "arn:aws:iam::123456789012:role/test",
+						FederationRuleID: "fdrl_leak",
+						TokenSource: &TokenSourceConfig{
+							Type: "aws-irsa",
+						},
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "federationRuleId is only valid for credential type \"anthropic-wif\"",
+		},
+		{
+			name: "organizationId on static rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "static",
+					OrganizationID: "550e8400-e29b-41d4-a716-446655440000",
+				}
+			},
+			wantErr:   true,
+			errSubstr: "organizationId is only valid for credential type \"anthropic-wif\"",
+		},
+		{
+			name: "serviceAccountId on gcp-default rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:             "gcp-default",
+					ServiceAccountID: "svac_leak",
+				}
+			},
+			wantErr:   true,
+			errSubstr: "serviceAccountId is only valid for credential type \"anthropic-wif\"",
+		},
+		{
+			name: "workspaceId on aws-default rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:   "bedrock",
+					Region: "us-east-1",
+					Credential: &CredentialConfig{
+						Type:        "aws-default",
+						WorkspaceID: "default",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "workspaceId is only valid for credential type \"anthropic-wif\"",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
 // --- ValidateRunConfig: APIKeyHeader / QueryParams (issue #48) ---
 
 func TestValidateRunConfig_APIKeyHeader_Valid(t *testing.T) {
