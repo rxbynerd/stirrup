@@ -983,6 +983,64 @@ func TestExampleVertexGeminiJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleAzureOpenAIWIFAKSJSONLoadsAndValidates pins the shipped
+// AKS Azure-WIF fixture: the file must round-trip through
+// loadRunConfigFile, pass ValidateRunConfig, and demonstrate the
+// azure-workload-identity credential type with a file-projected token
+// source. Drift fails this test before users hit the same error.
+func TestExampleAzureOpenAIWIFAKSJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-aks.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai-wif-aks.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai-wif-aks.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "azure-workload-identity" {
+		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "file" {
+		t.Errorf("expected file token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+}
+
+// TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates pins the
+// shipped GitHub-Actions Azure-WIF fixture. Same shape as the AKS test
+// above but with a github-actions-oidc token source. Validates the
+// audience field reaches the schema cleanly.
+func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-github-actions.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai-wif-github-actions.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai-wif-github-actions.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "azure-workload-identity" {
+		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != "api://AzureADTokenExchange" {
+		t.Errorf("audience = %q, want api://AzureADTokenExchange", cfg.Provider.Credential.TokenSource.Audience)
+	}
+}
+
 // TestBuildHarnessRunConfig_SafetyRingFlags verifies that the three new
 // safety-ring flags (issue #42) propagate to the matching RunConfig
 // fields. Each is independently exercised so a future refactor that
