@@ -1,0 +1,25 @@
+# RuntimeClass resources for the Stirrup K8sExecutor sandbox.
+#
+# Two RuntimeClasses are exposed so a Pod-per-task executor can pick
+# its sandbox boundary at scheduling time:
+#
+#   * runc   — default OCI runtime; lowest overhead, weakest isolation.
+#   * gvisor — Google gVisor (handler `runsc`); user-space kernel,
+#             stronger isolation at a startup-time cost.
+#
+# Kata Containers backends are intentionally absent: kind nodes are
+# themselves containers and Kata requires nested KVM, which is not
+# available inside a containerised host. Exercise Kata on a real
+# cluster (see the production cluster prep doc, future).
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: runc
+handler: runc
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
