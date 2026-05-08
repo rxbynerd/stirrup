@@ -206,7 +206,7 @@ The LLM judge verifier (`verifier/llmjudge.go`) evaluates conversation output ag
 
 The OTel trace emitter (`trace/otel.go`) implements TraceEmitter using real OTel spans exported via OTLP/gRPC. Creates a root `run` span with child spans for turns, tool calls, provider streaming, context compaction, verification, permission checks, and git operations. Default endpoint: `localhost:4317`.
 
-Span attributes are dual-emitted under both stirrup-prefixed names (`run.*`, `turn.*`, `tool.*`) and the OpenTelemetry GenAI semantic-convention names (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, etc.) so off-the-shelf APM dashboards recognise stirrup spans without custom config; see [`docs/adr/0001-otel-genai-attribute-alignment.md`](docs/adr/0001-otel-genai-attribute-alignment.md) for the alignment policy and removal timeline.
+Span attributes use the OpenTelemetry GenAI semantic-convention names (`gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, etc.) wherever a counterpart exists, so off-the-shelf APM dashboards recognise stirrup spans without custom config. Stirrup-specific attributes with no GenAI counterpart (run.id, run.mode, run.outcome, run.turns, harness.version, turn.number, turn.tool_calls, turn.duration_ms, tool.success, tool.duration_ms) keep their stirrup-prefixed names. See [`docs/adr/0001-otel-genai-attribute-alignment.md`](docs/adr/0001-otel-genai-attribute-alignment.md) for the alignment decision and provider enum translation.
 
 ### Structured logging
 
