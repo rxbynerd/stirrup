@@ -145,18 +145,16 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	assertAttribute(t, rootSpan, "run.id", "run-otel-1")
 	assertAttribute(t, rootSpan, "run.mode", "execution")
 	assertAttribute(t, rootSpan, "run.outcome", "success")
-	assertAttribute(t, rootSpan, "run.model", "claude-sonnet-4-6")
 	assertAttribute(t, rootSpan, "harness.version", "dev")
 
-	// Dual-emit assertions (issue #108, ADR-0001): the OTel GenAI
-	// semantic-convention attribute names must be present alongside
-	// the stirrup-prefixed names on the root span, with the same
-	// values, so vendor-shipped APM dashboards recognise the spans.
+	// GenAI semconv assertions (issue #108, ADR-0001): provider and
+	// model surface under the GenAI namespace so vendor-shipped APM
+	// dashboards recognise the spans.
 	assertAttribute(t, rootSpan, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, rootSpan, genAIRequestModelKey, "claude-sonnet-4-6")
 
-	// Same dual-emit invariant on a turn span: per-turn token usage
-	// and finish reason must surface under both naming schemes.
+	// Per-turn token usage and finish reason surface under the GenAI
+	// namespace.
 	var turn1 tracetest.SpanStub
 	for _, s := range spans {
 		if s.Name == "turn[1]" {
@@ -167,11 +165,8 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	if turn1.Name == "" {
 		t.Fatal("no turn[1] span found")
 	}
-	assertIntAttribute(t, turn1, "turn.tokens.input", 100)
-	assertIntAttribute(t, turn1, "turn.tokens.output", 50)
 	assertIntAttribute(t, turn1, genAIUsageInputTokens, 100)
 	assertIntAttribute(t, turn1, genAIUsageOutputTokens, 50)
-	assertAttribute(t, turn1, "turn.stop_reason", "tool_use")
 	assertStringSliceAttribute(t, turn1, genAIFinishReasonsKey, []string{"tool_use"})
 	assertAttribute(t, turn1, genAIOperationNameKey, "chat")
 }
@@ -232,14 +227,11 @@ func TestOTelTraceEmitter_ToolCallAttributes(t *testing.T) {
 		t.Fatal("no tool_call span found")
 	}
 
-	assertAttribute(t, toolSpan, "tool.name", "shell")
-	// Dual-emit (issue #108, ADR-0001): tool.name has a GenAI
-	// semconv counterpart that must carry the same value.
 	assertAttribute(t, toolSpan, genAIToolNameKey, "shell")
 }
 
 // TestOTelTraceEmitter_SessionNameAttribute verifies that SessionName, when
-// set on the RunConfig, appears as run.session_name on the root span.
+// set on the RunConfig, appears as gen_ai.conversation.id on the root span.
 // Child spans inherit access to it via context, so setting it on the root
 // is sufficient.
 func TestOTelTraceEmitter_SessionNameAttribute(t *testing.T) {
@@ -263,16 +255,13 @@ func TestOTelTraceEmitter_SessionNameAttribute(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
-	assertAttribute(t, spans[0], "run.session_name", "nightly-eval")
-	// Dual-emit (issue #108, ADR-0001): SessionName surfaces under
-	// both run.session_name and the GenAI semconv conversation.id.
 	assertAttribute(t, spans[0], genAIConversationIDKey, "nightly-eval")
 }
 
 // TestOTelTraceEmitter_SessionNameAbsentWhenEmpty pins the inverse: when
-// no session name is set, the run.session_name attribute must not appear
-// on the root span. Empty attributes pollute downstream filtering and
-// would cost real money on usage-billed backends.
+// no session name is set, the gen_ai.conversation.id attribute must not
+// appear on the root span. Empty attributes pollute downstream filtering
+// and would cost real money on usage-billed backends.
 func TestOTelTraceEmitter_SessionNameAbsentWhenEmpty(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 
@@ -294,14 +283,6 @@ func TestOTelTraceEmitter_SessionNameAbsentWhenEmpty(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
 	for _, attr := range spans[0].Attributes {
-		if string(attr.Key) == "run.session_name" {
-			t.Errorf("run.session_name should be absent when SessionName is empty, found value %q", attr.Value.AsString())
-		}
-		// Dual-emit (issue #108, ADR-0001): the GenAI counterpart
-		// must follow the same absent-when-unset rule, otherwise we
-		// would silently emit empty conversation IDs that pollute
-		// downstream filtering and cost real money on usage-billed
-		// backends.
 		if string(attr.Key) == genAIConversationIDKey {
 			t.Errorf("%s should be absent when SessionName is empty, found value %q", genAIConversationIDKey, attr.Value.AsString())
 		}
@@ -482,11 +463,9 @@ func TestGenAIProviderName(t *testing.T) {
 }
 
 // TestOTelTraceEmitter_GenAIAttributes exhaustively pins the OTel
-// GenAI semantic-convention attribute set added by issue #108. The
-// dual-emit invariant is also asserted opportunistically inside the
-// FullLifecycle, ToolCallAttributes, and SessionName tests, but those
-// tests focus on the legacy schema and would not catch an accidental
-// omission of, say, gen_ai.operation.name on the turn span. This test
+// GenAI semantic-convention attribute set adopted by issue #108. The
+// individual GenAI attributes are also asserted opportunistically by
+// FullLifecycle, ToolCallAttributes, and SessionName, but this test
 // exists so a regression in any single GenAI attribute fails loudly
 // at the dedicated test name rather than as a side-effect of an
 // unrelated assertion.
