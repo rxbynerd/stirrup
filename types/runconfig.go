@@ -786,6 +786,24 @@ const GCPWIFAudiencePatternString = `^//iam\.googleapis\.com/projects/[0-9]+/loc
 
 var gcpWIFAudiencePattern = regexp.MustCompile(GCPWIFAudiencePatternString)
 
+// gcpServiceAccountPattern bounds the shape of a GCP service-account
+// email used for impersonation under Workload Identity Federation.
+// The format is documented at
+// https://cloud.google.com/iam/docs/service-account-overview#identifying-projects:
+// the local part must start with a lowercase letter, be 6–30 chars
+// total, end in a letter or digit, and the domain segment names a
+// project ID (lowercase letter prefix, lowercase letters/digits/hyphen)
+// followed by the fixed `.iam.gserviceaccount.com` suffix.
+//
+// Validating at config time gives operators a precise error rather
+// than a 403/404 from IAM Credentials with up to 1024 bytes of error
+// body wrapped in the bearer-resolution failure message — the
+// federation source's truncateForError keeps the body bounded but a
+// typo'd email is still better caught locally.
+var gcpServiceAccountPattern = regexp.MustCompile(
+	`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]+\.iam\.gserviceaccount\.com$`,
+)
+
 var validTokenSourceTypes = map[string]bool{
 	"gke-metadata":        true,
 	"file":                true,
@@ -1409,6 +1427,16 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 			*errs = append(*errs, fmt.Sprintf("%s: gcp-workload-identity-federation requires tokenSource", path))
 		} else {
 			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
+		}
+		// ServiceAccount is optional (omitted = use the federated
+		// identity directly). When set, validate the email format so
+		// operators see a precise error here rather than a 403/404
+		// from iamcredentials.googleapis.com at first use.
+		if cfg.ServiceAccount != "" && !gcpServiceAccountPattern.MatchString(cfg.ServiceAccount) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.serviceAccount %q is not a valid service account email (expected <name>@<project>.iam.gserviceaccount.com)",
+				path, cfg.ServiceAccount,
+			))
 		}
 	}
 }

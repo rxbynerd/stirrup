@@ -2151,6 +2151,79 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 			errSubstr: "must match",
 		},
 		{
+			name: "gcp-workload-identity-federation rejects malformed serviceAccount email",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "not-an-email",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "not a valid service account email",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects wrong-domain serviceAccount",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "vertex@my-project.gmail.com",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "not a valid service account email",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects too-short serviceAccount local part",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "vx@my-project.iam.gserviceaccount.com",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "not a valid service account email",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects uppercase serviceAccount",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "Vertex@my-project.iam.gserviceaccount.com",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "not a valid service account email",
+		},
+		{
+			name: "gcp-workload-identity-federation accepts empty serviceAccount (federated identity used directly)",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
 			name: "valid safety setting passes",
 			mutate: func(c *RunConfig) {
 				c.Provider.GeminiSafetySettings = []GeminiSafetySetting{
