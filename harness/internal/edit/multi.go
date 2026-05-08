@@ -105,15 +105,18 @@ type strategyCandidate struct {
 // hard error; hard errors (non-nil error return) are propagated immediately.
 func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec executor.Executor) (*EditResult, error) {
 	start := time.Now()
-	// lastStrategy tracks the last strategy that ran (or attempted to
-	// run) so we can record the edit.duration_ms histogram with the
-	// "ultimate" strategy label. Empty if we never reached the candidate
-	// loop (parse error or no candidates).
-	var lastStrategy string
+	// appliedStrategy tracks the last strategy that ran (or attempted
+	// to run) so we can record the edit.duration_ms histogram with
+	// the strategy label that actually carried the work — the one
+	// that succeeded if any did, otherwise the final candidate that
+	// failed. Empty if we never reached the candidate loop (parse
+	// error or no candidates). Renamed from "lastStrategy" because
+	// "last" was ambiguous about success vs failure attribution.
+	var appliedStrategy string
 	defer func() {
-		if m.Metrics != nil && lastStrategy != "" {
+		if m.Metrics != nil && appliedStrategy != "" {
 			m.Metrics.EditDuration.Record(ctx, float64(time.Since(start).Milliseconds()),
-				metric.WithAttributes(attribute.String("strategy", lastStrategy)),
+				metric.WithAttributes(attribute.String("strategy", appliedStrategy)),
 			)
 		}
 	}()
@@ -141,7 +144,7 @@ func (m *MultiStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 	var failures []string
 	var fellBackFrom string
 	for _, c := range candidates {
-		lastStrategy = c.name
+		appliedStrategy = c.name
 		result, err := c.strat.Apply(ctx, c.input, exec)
 		// Record the attempt regardless of outcome. A hard error still
 		// counts as an attempt so dashboards show that the strategy
