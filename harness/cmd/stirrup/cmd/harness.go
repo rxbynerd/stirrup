@@ -38,6 +38,14 @@ type harnessCLIOptions struct {
 	FollowUpGrace int
 	LogLevel      string
 
+	// Vertex AI Gemini provider fields. Only meaningful when
+	// ProviderType == "gemini"; ValidateRunConfig rejects them on
+	// every other provider type, so the flag-only path safely
+	// passes them through whatever the user typed.
+	GCPProject         string
+	GCPLocation        string
+	GCPCredentialsFile string
+
 	// Component-selection escape hatches. These let the caller steer the
 	// non-trivial component choices without having to reach for a full
 	// --config file. Empty strings fall back to the documented default
@@ -118,8 +126,18 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 		SessionName: opts.SessionName,
 		Prompt:      opts.Prompt,
 		Provider: types.ProviderConfig{
-			Type:         opts.ProviderType,
-			APIKeyRef:    opts.APIKeyRef,
+			Type: opts.ProviderType,
+			// APIKeyRef is dropped for the gemini provider because Vertex
+			// AI uses GCP IAM rather than API keys; the validator rejects
+			// APIKeyRef on a gemini run, and forcing the user to type
+			// --api-key-ref="" alongside --provider gemini would be
+			// hostile UX.
+			APIKeyRef: func() string {
+				if opts.ProviderType == "gemini" {
+					return ""
+				}
+				return opts.APIKeyRef
+			}(),
 			BaseURL:      opts.BaseURL,
 			APIKeyHeader: opts.APIKeyHeader,
 			QueryParams:  opts.QueryParams,
@@ -144,6 +162,26 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	if opts.FollowUpGrace > 0 {
 		grace := opts.FollowUpGrace
 		config.FollowUpGrace = &grace
+	}
+
+	// Vertex AI Gemini fields. The validator rejects these on every
+	// other provider type, so the flag-only path scopes them to gemini
+	// to keep --provider switching ergonomic (you can leave --gcp-*
+	// flags at their defaults and they will not leak onto non-gemini
+	// runs).
+	if opts.ProviderType == "gemini" {
+		config.Provider.GCPProject = opts.GCPProject
+		config.Provider.GCPLocation = opts.GCPLocation
+		config.Provider.GCPCredentialsFile = opts.GCPCredentialsFile
+	}
+
+	// --gcp-credentials-file implies credential.type=gcp-service-account
+	// when no other credential type is configured. This mirrors how
+	// --permission-policy-file implies type=policy-engine: the file
+	// path is the discriminator, so requiring the user to set both is
+	// redundant. An explicit Credential.Type set elsewhere wins.
+	if opts.ProviderType == "gemini" && opts.GCPCredentialsFile != "" && config.Provider.Credential == nil {
+		config.Provider.Credential = &types.CredentialConfig{Type: "gcp-service-account"}
 	}
 
 	// Safety-ring fields are wired only when the caller supplied them
@@ -283,11 +321,14 @@ func init() {
 	f.String("config", "", "Path to a JSON RunConfig file (mirrors proto/harness/v1/harness.proto). Explicit flags still override individual fields; unset flags do not.")
 	f.StringP("mode", "m", "execution", "Run mode: execution, planning, review, research, toil")
 	f.String("model", "claude-sonnet-4-6", "Model to use (sets ModelRouter.Model; for dynamic/per-mode routers in --config files this only sets the default-model field, not the cheap/expensive override)")
-	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API). The two OpenAI variants speak different wire formats and must be selected explicitly.")
+	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, gemini (Vertex AI), openai-compatible (Chat Completions), openai-responses (Responses API). The two OpenAI variants speak different wire formats and must be selected explicitly.")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "Secret reference for API key")
 	f.String("base-url", "", "API base URL for openai-compatible / openai-responses providers (e.g. https://<resource>.openai.azure.com/openai/v1)")
 	f.String("api-key-header", "", "Header name for sending the API key. Empty = Authorization: Bearer (default). Set to \"api-key\" for Azure OpenAI key auth.")
 	f.StringArray("query-param", nil, "Repeatable key=value query parameter appended to every provider request URL (e.g. api-version=preview). Used by the openai-* adapters.")
+	f.String("gcp-project", "", "GCP project ID hosting the Vertex AI usage. Required when --provider=gemini.")
+	f.String("gcp-location", "global", "Vertex AI location: \"global\" or a region (e.g. us-central1). Determines the URL host and project location segment.")
+	f.String("gcp-credentials-file", "", "Path to a Google service account JSON key file. When set, implies credential.type=gcp-service-account.")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
 	f.Int("timeout", 600, "Wall-clock timeout in seconds")
@@ -412,6 +453,25 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("api-key-header") {
 		cfg.Provider.APIKeyHeader, _ = f.GetString("api-key-header")
+	}
+	if changed("gcp-project") {
+		cfg.Provider.GCPProject, _ = f.GetString("gcp-project")
+	}
+	if changed("gcp-location") {
+		cfg.Provider.GCPLocation, _ = f.GetString("gcp-location")
+	}
+	if changed("gcp-credentials-file") {
+		path, _ := f.GetString("gcp-credentials-file")
+		cfg.Provider.GCPCredentialsFile = path
+		// Setting --gcp-credentials-file implies the explicit
+		// gcp-service-account credential type so the credential layer
+		// reads the file rather than falling through to ADC. Mirrors
+		// the convenience shortcut buildHarnessRunConfig applies for
+		// the flag-only path. An existing Credential.Type from the
+		// config file wins (this only fills in unset).
+		if path != "" && cfg.Provider.Credential == nil {
+			cfg.Provider.Credential = &types.CredentialConfig{Type: "gcp-service-account"}
+		}
 	}
 	if changed("query-param") {
 		// Replace rather than merge: explicit --query-param flags clear any
@@ -583,6 +643,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	baseURL, _ := f.GetString("base-url")
 	apiKeyHeader, _ := f.GetString("api-key-header")
 	queryParamRaw, _ := f.GetStringArray("query-param")
+	gcpProject, _ := f.GetString("gcp-project")
+	gcpLocation, _ := f.GetString("gcp-location")
+	gcpCredentialsFile, _ := f.GetString("gcp-credentials-file")
 	workspace, _ := f.GetString("workspace")
 	maxTurns, _ := f.GetInt("max-turns")
 	timeout, _ := f.GetInt("timeout")
@@ -636,6 +699,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		APIKeyHeader:         apiKeyHeader,
 		QueryParams:          queryParams,
 		APIKeyRef:            apiKeyRef,
+		GCPProject:           gcpProject,
+		GCPLocation:          gcpLocation,
+		GCPCredentialsFile:   gcpCredentialsFile,
 		Model:                model,
 		Workspace:            workspace,
 		MaxTurns:             maxTurns,
