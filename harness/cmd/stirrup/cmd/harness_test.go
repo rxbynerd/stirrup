@@ -701,6 +701,38 @@ func TestApplyOverrides_ObservabilityFlags(t *testing.T) {
 	}
 }
 
+// TestApplyOverrides_ObservabilityServiceNamespaceFlag pins the second
+// branch of applyOverrides for the observability flags. The pre-existing
+// TestApplyOverrides_ObservabilityFlags exercises only the
+// deployment-environment branch; the service-namespace branch was
+// untouched in tests, so a typo in the flag name or a negated guard
+// (changed("environment") instead of changed("service-namespace")) would
+// silently drop the flag override and the test suite would never notice.
+func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Observability = types.ObservabilityConfig{
+		Environment:      "from-file-env",
+		ServiceNamespace: "from-file-ns",
+	}
+
+	if err := cmd.Flags().Set("service-namespace", "from-flag-ns"); err != nil {
+		t.Fatalf("set service-namespace: %v", err)
+	}
+	// deployment-environment deliberately not set — file value should survive.
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Observability.ServiceNamespace != "from-flag-ns" {
+		t.Errorf("Observability.ServiceNamespace: explicit flag should win, got %q", cfg.Observability.ServiceNamespace)
+	}
+	if cfg.Observability.Environment != "from-file-env" {
+		t.Errorf("Observability.Environment: file value should survive when flag unset, got %q", cfg.Observability.Environment)
+	}
+}
+
 // TestApplyOverrides_PositionalPromptFillsFileGap covers the precedence
 // edge case where the file omits a prompt and the user passes one as a
 // positional argument (no --prompt flag). The positional should fill the

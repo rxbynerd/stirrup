@@ -12,12 +12,18 @@ import (
 )
 
 func newTestOTelEmitter() (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
+	return newTestOTelEmitterWithOpts(observability.ResourceOptions{})
+}
+
+// newTestOTelEmitterWithOpts mirrors NewOTelTraceEmitter's TracerProvider
+// construction with a caller-supplied ResourceOptions so issue #95 resource
+// attributes (deployment.environment, service.namespace, harness.run.mode)
+// can be asserted end-to-end on emitted spans.
+func newTestOTelEmitterWithOpts(opts observability.ResourceOptions) (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
 	exporter := tracetest.NewInMemoryExporter()
-	// Mirror NewOTelTraceEmitter's TracerProvider construction so resource
-	// attributes round-trip through emitted spans in tests.
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSyncer(exporter),
-		sdktrace.WithResource(observability.BuildResource(observability.ResourceOptions{})),
+		sdktrace.WithResource(observability.BuildResource(opts)),
 	)
 	emitter := newOTelTraceEmitterForTest(tp)
 	return emitter, exporter
@@ -299,6 +305,57 @@ func TestOTelTraceEmitter_ResourceAttributes(t *testing.T) {
 		}
 		if got["service.instance.id"] == "" {
 			t.Errorf("span %q: service.instance.id missing", span.Name)
+		}
+	}
+}
+
+// TestOTelTraceEmitter_ResourceAttributesOnSpan locks down the issue #95
+// acceptance criterion that operator-supplied ResourceOptions reach every
+// emitted span via the TracerProvider's Resource. The pre-existing
+// TestOTelTraceEmitter_ResourceAttributes covers only the default-value
+// path (service.name etc.); without this test, a regression that stopped
+// threading explicit ResourceOptions through to the TracerProvider would
+// not surface — Grafana queries grouping by deployment.environment would
+// quietly return empty rows.
+func TestOTelTraceEmitter_ResourceAttributesOnSpan(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithOpts(observability.ResourceOptions{
+		Environment:      "test-env",
+		ServiceNamespace: "test-ns",
+		RunMode:          "execution",
+	})
+
+	emitter.Start("run-resource-explicit", nil)
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:       1,
+		Tokens:     types.TokenUsage{Input: 10, Output: 5},
+		StopReason: "end_turn",
+		DurationMs: 10,
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	if len(spans) == 0 {
+		t.Fatal("expected at least one span")
+	}
+	for _, span := range spans {
+		if span.Resource == nil {
+			t.Errorf("span %q: Resource is nil", span.Name)
+			continue
+		}
+		got := make(map[string]string)
+		for _, kv := range span.Resource.Attributes() {
+			got[string(kv.Key)] = kv.Value.AsString()
+		}
+		if got["deployment.environment"] != "test-env" {
+			t.Errorf("span %q: deployment.environment=%q, want test-env", span.Name, got["deployment.environment"])
+		}
+		if got["service.namespace"] != "test-ns" {
+			t.Errorf("span %q: service.namespace=%q, want test-ns", span.Name, got["service.namespace"])
+		}
+		if got["harness.run.mode"] != "execution" {
+			t.Errorf("span %q: harness.run.mode=%q, want execution", span.Name, got["harness.run.mode"])
 		}
 	}
 }

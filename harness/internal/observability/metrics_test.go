@@ -204,7 +204,19 @@ func TestMetricsRecording_Histograms(t *testing.T) {
 // stream with the SDK fallback service name. We assert here that the
 // resource carried alongside collected metrics carries service.name=stirrup
 // so this can't silently regress on the metrics path either.
+//
+// We also assert the issue #95 attributes (deployment.environment,
+// service.namespace) reach the metric resource — without these, any
+// Grafana group-by-environment or per-namespace dashboard query produces
+// nothing because the metric stream has no such labels. The default-value
+// path is exercised here; the explicit-options path is exercised by
+// TestMetricsRecording_ResourceWithExplicitOptions.
 func TestMetricsRecording_Resource(t *testing.T) {
+	// Pin env-var fallbacks to empty so the defaults are deterministic
+	// regardless of what the developer's shell happens to set.
+	t.Setenv(envEnvironment, "")
+	t.Setenv(envServiceNamespace, "")
+
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(
@@ -239,6 +251,60 @@ func TestMetricsRecording_Resource(t *testing.T) {
 	}
 	if got["service.instance.id"] == "" {
 		t.Errorf("service.instance.id missing from metrics resource")
+	}
+	if got["deployment.environment"] != DefaultEnvironment {
+		t.Errorf("deployment.environment=%q, want %q", got["deployment.environment"], DefaultEnvironment)
+	}
+	if got["service.namespace"] != DefaultServiceNamespace {
+		t.Errorf("service.namespace=%q, want %q", got["service.namespace"], DefaultServiceNamespace)
+	}
+}
+
+// TestMetricsRecording_ResourceWithExplicitOptions locks down the issue #95
+// acceptance criterion that operator-supplied ResourceOptions reach the
+// metric resource end-to-end. If a future refactor stopped threading
+// resourceOpts into the MeterProvider's Resource (e.g. dropped the
+// WithResource call in NewMetrics), this test would catch it.
+func TestMetricsRecording_ResourceWithExplicitOptions(t *testing.T) {
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	resOpts := ResourceOptions{
+		Environment:      "staging",
+		ServiceNamespace: "stirrup-eval",
+		RunMode:          "execution",
+	}
+	provider := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(reader),
+		sdkmetric.WithResource(BuildResource(resOpts)),
+	)
+	meter := provider.Meter("test")
+
+	m, err := newMetricsFromMeter(meter, provider)
+	if err != nil {
+		t.Fatalf("newMetricsFromMeter() error: %v", err)
+	}
+	m.Runs.Add(ctx, 1)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect() error: %v", err)
+	}
+	if rm.Resource == nil {
+		t.Fatal("ResourceMetrics.Resource is nil")
+	}
+
+	got := make(map[string]string)
+	for _, kv := range rm.Resource.Attributes() {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["deployment.environment"] != "staging" {
+		t.Errorf("deployment.environment=%q, want staging", got["deployment.environment"])
+	}
+	if got["service.namespace"] != "stirrup-eval" {
+		t.Errorf("service.namespace=%q, want stirrup-eval", got["service.namespace"])
+	}
+	if got["harness.run.mode"] != "execution" {
+		t.Errorf("harness.run.mode=%q, want execution", got["harness.run.mode"])
 	}
 }
 
