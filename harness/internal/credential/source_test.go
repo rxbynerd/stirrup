@@ -319,3 +319,64 @@ func TestBuildTokenSource_GitHubActionsOIDCMissingAudience(t *testing.T) {
 		t.Fatal("expected error for github-actions-oidc without audience")
 	}
 }
+
+func TestBuildSource_GCPWorkloadIdentityFederation(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "gemini",
+		Credential: &types.CredentialConfig{
+			Type:           "gcp-workload-identity-federation",
+			Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+			ServiceAccount: "vertex@my-project.iam.gserviceaccount.com",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "aws-irsa",
+			},
+		},
+	}
+	src, err := BuildSource(cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wif, ok := src.(*GCPWorkloadIdentityFederationSource)
+	if !ok {
+		t.Fatalf("expected *GCPWorkloadIdentityFederationSource, got %T", src)
+	}
+	if wif.audience != cfg.Credential.Audience {
+		t.Errorf("audience = %q, want %q", wif.audience, cfg.Credential.Audience)
+	}
+	if wif.serviceAccount != cfg.Credential.ServiceAccount {
+		t.Errorf("serviceAccount = %q, want %q", wif.serviceAccount, cfg.Credential.ServiceAccount)
+	}
+	if _, ok := wif.tokenSource.(*AWSIRSATokenSource); !ok {
+		t.Errorf("expected wrapped AWSIRSATokenSource, got %T", wif.tokenSource)
+	}
+}
+
+func TestBuildSource_GCPWorkloadIdentityFederationMissingAudience(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "gemini",
+		Credential: &types.CredentialConfig{
+			Type: "gcp-workload-identity-federation",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "aws-irsa",
+			},
+		},
+	}
+	_, err := BuildSource(cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for missing audience")
+	}
+}
+
+func TestBuildSource_GCPWorkloadIdentityFederationMissingTokenSource(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "gemini",
+		Credential: &types.CredentialConfig{
+			Type:     "gcp-workload-identity-federation",
+			Audience: "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/q",
+		},
+	}
+	_, err := BuildSource(cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for missing token source")
+	}
+}

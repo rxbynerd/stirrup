@@ -2058,6 +2058,99 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "gcp-workload-identity-federation with valid audience and tokenSource passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "gcp-workload-identity-federation with serviceAccount impersonation passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "vertex@my-project.iam.gserviceaccount.com",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "gcp-workload-identity-federation missing audience fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type: "gcp-workload-identity-federation",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "gcp-workload-identity-federation requires audience",
+		},
+		{
+			name: "gcp-workload-identity-federation missing tokenSource fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+				}
+			},
+			wantErr:   true,
+			errSubstr: "gcp-workload-identity-federation requires tokenSource",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects plain-string audience",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "not-an-audience",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "must match //iam.googleapis.com/projects/{N}/",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects wrong-host audience",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//example.com/projects/1/locations/global/workloadIdentityPools/p/providers/q",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "must match",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects non-numeric project",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//iam.googleapis.com/projects/abc/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "must match",
+		},
+		{
 			name: "valid safety setting passes",
 			mutate: func(c *RunConfig) {
 				c.Provider.GeminiSafetySettings = []GeminiSafetySetting{
