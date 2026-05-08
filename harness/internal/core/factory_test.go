@@ -1900,6 +1900,49 @@ func TestBuildProvider_UnknownTypeMentionsResponses(t *testing.T) {
 	}
 }
 
+// TestResourceOptionsFromConfig pins the three branches of
+// resourceOptionsFromConfig in isolation. The full factory exercises the
+// populated and empty branches indirectly, but the nil-config guard is
+// structurally unreachable from BuildLoopWithTransport (which validates
+// for nil before calling) and is easy to remove as "dead code" in a future
+// refactor — this test documents that the guard is load-bearing for any
+// caller that constructs ResourceOptions outside the agentic loop (eval
+// runners, ad-hoc tools).
+func TestResourceOptionsFromConfig(t *testing.T) {
+	t.Run("nil config", func(t *testing.T) {
+		got := resourceOptionsFromConfig(nil)
+		if got != (observability.ResourceOptions{}) {
+			t.Errorf("nil config: got %+v, want zero ResourceOptions", got)
+		}
+	})
+
+	t.Run("empty observability with mode", func(t *testing.T) {
+		got := resourceOptionsFromConfig(&types.RunConfig{Mode: "execution"})
+		want := observability.ResourceOptions{RunMode: "execution"}
+		if got != want {
+			t.Errorf("empty observability: got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("populated observability and mode", func(t *testing.T) {
+		got := resourceOptionsFromConfig(&types.RunConfig{
+			Mode: "planning",
+			Observability: types.ObservabilityConfig{
+				Environment:      "prod",
+				ServiceNamespace: "eval",
+			},
+		})
+		want := observability.ResourceOptions{
+			Environment:      "prod",
+			ServiceNamespace: "eval",
+			RunMode:          "planning",
+		}
+		if got != want {
+			t.Errorf("populated config: got %+v, want %+v", got, want)
+		}
+	})
+}
+
 // --- stubSecretStore ---
 
 type stubSecretStore struct {

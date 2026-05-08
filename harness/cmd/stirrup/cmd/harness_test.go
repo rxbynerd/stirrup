@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -238,6 +239,56 @@ func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 	}
 	if cfg.TraceEmitter.Type != "jsonl" {
 		t.Errorf("default trace emitter should be 'jsonl', got %q", cfg.TraceEmitter.Type)
+	}
+}
+
+// TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv pins the K8s
+// production path: the operator pins OTEL_DEPLOYMENT_ENVIRONMENT in the
+// pod spec rather than threading the value through a CLI flag. The test
+// proves that buildHarnessRunConfig leaves Observability empty when no
+// flag is set, and that observability.BuildResource then picks the env
+// var up via its fallback chain. Without this end-to-end coverage at the
+// harness layer, REC-2's guard ("only assign when at least one flag is
+// non-empty") could be reverted by accident and the env-var fallback
+// would silently lose to an empty-string Observability value passed
+// through to the resource builder.
+func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
+	t.Setenv("OTEL_DEPLOYMENT_ENVIRONMENT", "production-eu")
+	t.Setenv("OTEL_SERVICE_NAMESPACE", "")
+
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		// Observability flags deliberately empty: this is the K8s pod-spec
+		// path where the operator only sets OTEL_DEPLOYMENT_ENVIRONMENT.
+	})
+
+	// The flag-only path leaves Observability at its zero value when both
+	// flags are empty (REC-2 guard). The env-var fallback is delegated
+	// to BuildResource so it stays a single, validated entry point.
+	if cfg.Observability.Environment != "" {
+		t.Errorf("Observability.Environment should remain empty when flag is unset; got %q", cfg.Observability.Environment)
+	}
+
+	res := observability.BuildResource(observability.ResourceOptions{
+		Environment:      cfg.Observability.Environment,
+		ServiceNamespace: cfg.Observability.ServiceNamespace,
+		RunMode:          cfg.Mode,
+	})
+	got := make(map[string]string)
+	for _, kv := range res.Attributes() {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["deployment.environment"] != "production-eu" {
+		t.Errorf("deployment.environment should fall through to env var; got %q want production-eu", got["deployment.environment"])
 	}
 }
 

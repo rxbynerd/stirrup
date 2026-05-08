@@ -221,14 +221,17 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 		}
 	}
 
-	// Observability resource attributes (issue #95). Empty values fall
-	// through to env-var fallbacks at OTel resource construction time, so
-	// the field stays empty here when the operator has not touched the
-	// flag — that lets OTEL_DEPLOYMENT_ENVIRONMENT in the K8s pod spec
-	// take precedence without anyone having to mirror it on the CLI.
-	config.Observability = types.ObservabilityConfig{
-		Environment:      opts.DeploymentEnvironment,
-		ServiceNamespace: opts.ServiceNamespace,
+	// Observability resource attributes (issue #95). Only construct the
+	// sub-config when the caller touched at least one of the two flags.
+	// An entirely-empty pair leaves config.Observability at the zero value
+	// so a future validator or factory branch that distinguishes
+	// "operator pinned" from "fall through to env" can do so. Matches the
+	// flag-only construction pattern used for GuardRail above.
+	if opts.DeploymentEnvironment != "" || opts.ServiceNamespace != "" {
+		config.Observability = types.ObservabilityConfig{
+			Environment:      opts.DeploymentEnvironment,
+			ServiceNamespace: opts.ServiceNamespace,
+		}
 	}
 
 	applyModeDefaults(config)

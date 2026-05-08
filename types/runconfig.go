@@ -128,13 +128,26 @@ type RunConfig struct {
 	Observability ObservabilityConfig `json:"observability,omitempty"`
 }
 
-// ObservabilityConfig carries operator-supplied OTel resource attributes
-// shared across traces and metrics for the run. The fields are free-form
-// labels with a deliberately conservative character set so they cannot
-// inject CRLF, query-string separators, or other URL/header surprises
-// into downstream backends. Values left empty fall through to env-var
-// fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT, OTEL_SERVICE_NAMESPACE) and
-// finally to defaults at resource-construction time.
+// ObservabilityConfig carries operator-supplied labels that are promoted to
+// the OTel Resource shared by all signals (traces, metrics) for a run. The
+// fields are free-form labels with a deliberately conservative character
+// set so they cannot inject CRLF, query-string separators, or other URL/
+// header surprises into downstream backends.
+//
+// Derived attributes (e.g. harness.run.mode from RunConfig.Mode) are added
+// at resource-construction time in observability.BuildResource and must NOT
+// be added here or to the proto message — they are not operator-configurable
+// labels, so plumbing them through the wire format would create a confusing
+// "you can override the run mode in your RunConfig but only for telemetry"
+// surface. New issue #94 attributes that are pure operator metadata belong
+// here; new derived attributes belong in observability.ResourceOptions.
+//
+// Zero-value fields (empty string) are NOT stored defaults. Defaults
+// ("local" for Environment, "stirrup" for ServiceNamespace) are applied in
+// observability.BuildResource via a precedence chain:
+// RunConfig → OTEL_* env vars → hardcoded defaults. A recorded RunConfig
+// with empty observability fields does not mean the attribute was absent
+// from emitted spans — it means the default or env-var value was used.
 type ObservabilityConfig struct {
 	Environment      string `json:"environment,omitempty"`
 	ServiceNamespace string `json:"serviceNamespace,omitempty"`
