@@ -642,19 +642,25 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			cfg.Provider.APIKeyRef = ""
 		}
 	}
+	// --azure-client-id and --azure-scope amend an EXISTING Credential
+	// block but never create one on their own. Only --azure-tenant-id is
+	// the discriminator that materialises a Credential block (mirroring
+	// --gcp-credentials-file). Without this restriction, a user passing
+	// --azure-client-id alone would silently produce an
+	// azure-workload-identity Credential missing tenantID, which the
+	// validator would then reject with a "requires azureTenantId" error
+	// the operator never asked for.
 	if changed("azure-client-id") {
 		clientID, _ := f.GetString("azure-client-id")
-		if cfg.Provider.Credential == nil {
-			cfg.Provider.Credential = &types.CredentialConfig{Type: "azure-workload-identity"}
+		if cfg.Provider.Credential != nil {
+			cfg.Provider.Credential.AzureClientID = clientID
 		}
-		cfg.Provider.Credential.AzureClientID = clientID
 	}
 	if changed("azure-scope") {
 		scope, _ := f.GetString("azure-scope")
-		if cfg.Provider.Credential == nil {
-			cfg.Provider.Credential = &types.CredentialConfig{Type: "azure-workload-identity"}
+		if cfg.Provider.Credential != nil {
+			cfg.Provider.Credential.AzureScope = scope
 		}
-		cfg.Provider.Credential.AzureScope = scope
 	}
 	if changed("query-param") {
 		// Replace rather than merge: explicit --query-param flags clear any

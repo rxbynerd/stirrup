@@ -2878,3 +2878,93 @@ func TestApplyOverrides_AzureWIFRespectsExplicitCredential(t *testing.T) {
 		t.Errorf("AzureTenantID not propagated to existing Credential: %q", cfg.Provider.Credential.AzureTenantID)
 	}
 }
+
+// TestApplyOverrides_AzureWIFClientIDAloneDoesNotCreateCredential pins
+// that --azure-client-id without --azure-tenant-id leaves the Credential
+// untouched. Only --azure-tenant-id is the discriminator that
+// materialises an azure-workload-identity Credential block (mirroring
+// --gcp-credentials-file). Without this guard, a stray --azure-client-id
+// would produce a Credential block missing tenantID and surface as a
+// confusing "azure-workload-identity requires azureTenantId" validation
+// error the operator never asked for.
+func TestApplyOverrides_AzureWIFClientIDAloneDoesNotCreateCredential(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:      "openai-compatible",
+		BaseURL:   "https://example.openai.azure.com/openai/v1",
+		APIKeyRef: "secret://OPENAI_KEY",
+	}
+
+	if err := cmd.Flags().Set("azure-client-id", "22222222-2222-2222-2222-222222222222"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential != nil {
+		t.Errorf("--azure-client-id alone must not create a Credential block, got %+v", cfg.Provider.Credential)
+	}
+}
+
+// TestApplyOverrides_AzureWIFScopeAloneDoesNotCreateCredential is the
+// companion to the client-id test above. --azure-scope without
+// --azure-tenant-id must not produce an orphan Credential block.
+func TestApplyOverrides_AzureWIFScopeAloneDoesNotCreateCredential(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:      "openai-compatible",
+		BaseURL:   "https://example.openai.azure.com/openai/v1",
+		APIKeyRef: "secret://OPENAI_KEY",
+	}
+
+	if err := cmd.Flags().Set("azure-scope", "https://cognitiveservices.azure.com/.default"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential != nil {
+		t.Errorf("--azure-scope alone must not create a Credential block, got %+v", cfg.Provider.Credential)
+	}
+}
+
+// TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride pins the central
+// precedence rule for the --azure-* family: when none of the three
+// flags is passed, an existing Credential block from --config must
+// survive untouched. This is the file-wins-over-default check the rest
+// of the override surface enforces; the WIF flags are no exception.
+func TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:    "openai-compatible",
+		BaseURL: "https://example.openai.azure.com/openai/v1",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "33333333-3333-3333-3333-333333333333",
+			AzureClientID: "44444444-4444-4444-4444-444444444444",
+			AzureScope:    "https://existing.example.com/.default",
+		},
+	}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential == nil {
+		t.Fatal("file-provided Credential cleared unexpectedly")
+	}
+	if cfg.Provider.Credential.AzureTenantID != "33333333-3333-3333-3333-333333333333" {
+		t.Errorf("AzureTenantID overwritten by default: %q", cfg.Provider.Credential.AzureTenantID)
+	}
+	if cfg.Provider.Credential.AzureClientID != "44444444-4444-4444-4444-444444444444" {
+		t.Errorf("AzureClientID overwritten by default: %q", cfg.Provider.Credential.AzureClientID)
+	}
+	if cfg.Provider.Credential.AzureScope != "https://existing.example.com/.default" {
+		t.Errorf("AzureScope overwritten by default: %q", cfg.Provider.Credential.AzureScope)
+	}
+}
