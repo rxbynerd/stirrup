@@ -419,29 +419,36 @@ type GeminiSafetySetting struct {
 // "static" (resolving APIKeyRef).
 //
 // Valid Type values:
-//   - "static"                — resolve APIKeyRef via SecretStore.
-//   - "aws-default"           — AWS SDK default credential chain.
-//   - "web-identity"          — OIDC -> STS AssumeRoleWithWebIdentity.
-//   - "gcp-default"           — Google Application Default Credentials.
-//     Default for "gemini". Rejects user-mode gcloud creds.
-//   - "gcp-service-account"   — explicit service account JSON key file.
-//     Requires ProviderConfig.GCPCredentialsFile.
-//   - "gcp-workload-identity" — GKE Workload Identity (compute metadata
-//     access token).
+//   - "static"                            — resolve APIKeyRef via SecretStore.
+//   - "aws-default"                       — AWS SDK default credential chain.
+//   - "web-identity"                      — OIDC -> STS AssumeRoleWithWebIdentity.
+//   - "gcp-default"                       — Google Application Default
+//     Credentials. Default for "gemini". Rejects user-mode gcloud creds.
+//   - "gcp-service-account"               — explicit service account JSON key
+//     file. Requires ProviderConfig.GCPCredentialsFile.
+//   - "gcp-workload-identity"             — GKE Workload Identity (compute
+//     metadata access token).
+//   - "gcp-workload-identity-federation"  — non-GCP runtime → GCP via Workload
+//     Identity Federation (STS + optional service-account impersonation).
+//     Requires Audience and TokenSource.
 type CredentialConfig struct {
-	Type        string             `json:"type"`
-	TokenSource *TokenSourceConfig `json:"tokenSource,omitempty"` // required for "web-identity"
-	RoleARN     string             `json:"roleArn,omitempty"`     // required for "web-identity": IAM role to assume
-	SessionName string             `json:"sessionName,omitempty"` // for "web-identity" (default: "stirrup")
+	Type           string             `json:"type"`
+	TokenSource    *TokenSourceConfig `json:"tokenSource,omitempty"`    // required for "web-identity" and "gcp-workload-identity-federation"
+	RoleARN        string             `json:"roleArn,omitempty"`        // required for "web-identity": IAM role to assume
+	SessionName    string             `json:"sessionName,omitempty"`    // for "web-identity" (default: "stirrup")
+	Audience       string             `json:"audience,omitempty"`       // required for "gcp-workload-identity-federation": WIF provider audience
+	ServiceAccount string             `json:"serviceAccount,omitempty"` // optional for "gcp-workload-identity-federation": SA email to impersonate
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
 // Used by credential types that require an OIDC/JWT token for exchange.
 type TokenSourceConfig struct {
-	Type     string `json:"type"`               // "gke-metadata" | "file" | "env"
-	Audience string `json:"audience,omitempty"` // for "gke-metadata": target audience claim (e.g. "sts.amazonaws.com")
+	Type     string `json:"type"`               // "gke-metadata" | "file" | "env" | "aws-irsa" | "azure-imds" | "github-actions-oidc"
+	Audience string `json:"audience,omitempty"` // for "gke-metadata", "github-actions-oidc": target audience claim (e.g. "sts.amazonaws.com")
 	Path     string `json:"path,omitempty"`     // for "file": filesystem path to token
 	EnvVar   string `json:"envVar,omitempty"`   // for "env": environment variable name
+	Resource string `json:"resource,omitempty"` // for "azure-imds": Azure AD resource URI (e.g. "https://management.azure.com/")
+	ClientID string `json:"clientId,omitempty"` // for "azure-imds": user-assigned managed identity client ID (optional)
 }
 
 // ModelRouterConfig selects the model router implementation.
@@ -748,18 +755,62 @@ var validTraceEmitterTypes = map[string]bool{
 }
 
 var validCredentialTypes = map[string]bool{
-	"static":                true,
-	"aws-default":           true,
-	"web-identity":          true,
-	"gcp-default":           true,
-	"gcp-service-account":   true,
-	"gcp-workload-identity": true,
+	"static":                           true,
+	"aws-default":                      true,
+	"web-identity":                     true,
+	"gcp-default":                      true,
+	"gcp-service-account":              true,
+	"gcp-workload-identity":            true,
+	"gcp-workload-identity-federation": true,
 }
 
+// GCPWIFAudiencePatternString bounds the shape of a Workload Identity
+// Federation audience. The full identifier always takes the form
+//
+//	//iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER}
+//
+// Validating the shape at config time gives operators a precise error
+// message ("must match …") instead of a 400 from the STS exchange when
+// the audience is ill-formed (typo, missing segment, wrong host).
+//
+// The pool/provider segments use Google's documented identifier rules
+// (lowercase letter + lowercase letters/digits/hyphen, 4–32 chars,
+// ending in alphanumeric). Project number is purely digits.
+//
+// Exported as a string (rather than a *regexp.Regexp) so the
+// credential package can compile its own copy without taking a runtime
+// dependency on this var. This is the single source of truth — the
+// credential layer's federatedAudiencePattern is built from this
+// constant so the two regexes cannot drift.
+const GCPWIFAudiencePatternString = `^//iam\.googleapis\.com/projects/[0-9]+/locations/global/workloadIdentityPools/[a-z][a-z0-9-]{2,30}[a-z0-9]/providers/[a-z][a-z0-9-]{2,30}[a-z0-9]$`
+
+var gcpWIFAudiencePattern = regexp.MustCompile(GCPWIFAudiencePatternString)
+
+// gcpServiceAccountPattern bounds the shape of a GCP service-account
+// email used for impersonation under Workload Identity Federation.
+// The format is documented at
+// https://cloud.google.com/iam/docs/service-account-overview#identifying-projects:
+// the local part must start with a lowercase letter, be 6–30 chars
+// total, end in a letter or digit, and the domain segment names a
+// project ID (lowercase letter prefix, lowercase letters/digits/hyphen)
+// followed by the fixed `.iam.gserviceaccount.com` suffix.
+//
+// Validating at config time gives operators a precise error rather
+// than a 403/404 from IAM Credentials with up to 1024 bytes of error
+// body wrapped in the bearer-resolution failure message — the
+// federation source's truncateForError keeps the body bounded but a
+// typo'd email is still better caught locally.
+var gcpServiceAccountPattern = regexp.MustCompile(
+	`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]+\.iam\.gserviceaccount\.com$`,
+)
+
 var validTokenSourceTypes = map[string]bool{
-	"gke-metadata": true,
-	"file":         true,
-	"env":          true,
+	"gke-metadata":        true,
+	"file":                true,
+	"env":                 true,
+	"aws-irsa":            true,
+	"azure-imds":          true,
+	"github-actions-oidc": true,
 }
 
 // validCodeScannerTypes is the closed set of CodeScanner.Type values.
@@ -1353,7 +1404,8 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 	}
 	validateRequiredType(path, cfg.Type, validCredentialTypes, errs)
 
-	if cfg.Type == "web-identity" {
+	switch cfg.Type {
+	case "web-identity":
 		if cfg.RoleARN == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: web-identity requires roleArn", path))
 		}
@@ -1361,6 +1413,30 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 			*errs = append(*errs, fmt.Sprintf("%s: web-identity requires tokenSource", path))
 		} else {
 			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
+		}
+	case "gcp-workload-identity-federation":
+		if cfg.Audience == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: gcp-workload-identity-federation requires audience", path))
+		} else if !gcpWIFAudiencePattern.MatchString(cfg.Audience) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.audience %q must match //iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER}",
+				path, cfg.Audience,
+			))
+		}
+		if cfg.TokenSource == nil {
+			*errs = append(*errs, fmt.Sprintf("%s: gcp-workload-identity-federation requires tokenSource", path))
+		} else {
+			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
+		}
+		// ServiceAccount is optional (omitted = use the federated
+		// identity directly). When set, validate the email format so
+		// operators see a precise error here rather than a 403/404
+		// from iamcredentials.googleapis.com at first use.
+		if cfg.ServiceAccount != "" && !gcpServiceAccountPattern.MatchString(cfg.ServiceAccount) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.serviceAccount %q is not a valid service account email (expected <name>@<project>.iam.gserviceaccount.com)",
+				path, cfg.ServiceAccount,
+			))
 		}
 	}
 }
@@ -1380,6 +1456,20 @@ func validateTokenSourceConfig(cfg *TokenSourceConfig, path string, errs *[]stri
 	case "env":
 		if cfg.EnvVar == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: env requires envVar", path))
+		}
+	case "aws-irsa":
+		// No required fields. AWS_WEB_IDENTITY_TOKEN_FILE is read at
+		// Token() time and validated against the running environment;
+		// validating it at config-load time would prevent operators
+		// from authoring a config that runs in an EKS environment but
+		// is loaded in a CI step that has no IRSA mount.
+	case "azure-imds":
+		if cfg.Resource == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: azure-imds requires resource", path))
+		}
+	case "github-actions-oidc":
+		if cfg.Audience == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: github-actions-oidc requires audience", path))
 		}
 	}
 }

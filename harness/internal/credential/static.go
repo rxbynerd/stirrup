@@ -16,10 +16,19 @@ type StaticSource struct {
 	ref     string
 }
 
+// Resolve fetches the secret once via the SecretStore, then returns a
+// Resolved whose BearerToken closure yields the captured value on every
+// call without further IO. The closure is safe for concurrent use because
+// it reads only the captured immutable string.
 func (s *StaticSource) Resolve(ctx context.Context) (*Resolved, error) {
 	token, err := s.secrets.Resolve(ctx, s.ref)
 	if err != nil {
 		return nil, fmt.Errorf("resolve static credential: %w", err)
 	}
-	return &Resolved{BearerToken: token}, nil
+	cached := token
+	return &Resolved{
+		BearerToken: func(_ context.Context) (string, error) {
+			return cached, nil
+		},
+	}, nil
 }

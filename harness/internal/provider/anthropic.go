@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -26,7 +27,7 @@ const (
 
 // AnthropicAdapter implements ProviderAdapter for the Anthropic Messages API.
 type AnthropicAdapter struct {
-	apiKey     string
+	bearer     credential.BearerTokenFunc
 	httpClient *http.Client
 	baseURL    string                 // overridable for testing
 	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
@@ -37,9 +38,15 @@ type AnthropicAdapter struct {
 // The HTTP client is configured with explicit timeouts to prevent unbounded
 // connections. The overall timeout is generous (120s) because streaming
 // responses can be long-lived; transport-level timeouts are tighter.
-func NewAnthropicAdapter(apiKey string) *AnthropicAdapter {
+//
+// bearer is invoked on every Stream call to fetch the current API key —
+// this lets refresh-aware credential sources (e.g. future OIDC-to-Anthropic
+// federation) rotate the token without rebuilding the adapter. Static
+// sources return a captured value with no IO, so the per-request call is
+// effectively free.
+func NewAnthropicAdapter(bearer credential.BearerTokenFunc) *AnthropicAdapter {
 	return &AnthropicAdapter{
-		apiKey: apiKey,
+		bearer: bearer,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
@@ -123,6 +130,15 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	// Resolve the bearer credential before issuing the HTTP request so a
+	// failure in the credential layer is surfaced as a synchronous Stream
+	// error rather than a half-built request with a missing header.
+	apiKey, err := a.bearer(ctx)
+	if err != nil {
+		a.recordLatency(ctx, start, metricAttrs)
+		return nil, fmt.Errorf("resolve bearer token: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		a.recordLatency(ctx, start, metricAttrs)
@@ -130,7 +146,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", a.apiKey)
+	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 
 	resp, err := a.httpClient.Do(req)

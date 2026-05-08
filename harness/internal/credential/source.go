@@ -11,6 +11,22 @@
 // environment. Source exchanges those proofs (or resolves static secrets)
 // into provider-specific credentials. Both are interface-based and
 // constructed from RunConfig by BuildSource.
+//
+// Bearer credentials are surfaced through Resolved.BearerToken, a closure
+// invoked by provider adapters at request time. The closure contract is:
+//
+//   - Safe for concurrent use: the closure may be called from multiple
+//     goroutines (e.g. concurrent Stream calls on the same adapter).
+//   - Internally caches and refreshes: static sources capture a resolved
+//     value once and return it on every call with no IO; federation sources
+//     (e.g. Google ADC, future OIDC-to-Anthropic exchange) implement an
+//     OAuth2-style cache + refresh internally (typically via
+//     oauth2.ReuseTokenSource).
+//   - Called per provider request: adapters MUST NOT cache the returned
+//     string across requests, because the cache/refresh logic lives behind
+//     the closure. A nil BearerToken signals "this source produces no
+//     bearer" (e.g. AWSDefaultSource — the AWS SDK consumes AWSCredentials
+//     instead).
 package credential
 
 import (
@@ -18,7 +34,6 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"golang.org/x/oauth2"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -36,25 +51,25 @@ type Source interface {
 	Resolve(ctx context.Context) (*Resolved, error)
 }
 
+// BearerTokenFunc returns the current bearer credential for a provider
+// request. See the package doc comment for the closure contract (concurrency
+// safety, internal cache/refresh, per-request invocation).
+type BearerTokenFunc = func(ctx context.Context) (string, error)
+
 // Resolved holds authentication material produced by a Source.
-// Exactly one field is meaningful, determined by the provider type.
 type Resolved struct {
-	// BearerToken for API-key-based providers (Anthropic, OpenAI).
-	// For providers that need continuous token refresh (e.g. Azure AD),
-	// the adapter should hold a Source reference and call Resolve()
-	// per-request rather than caching this value.
-	BearerToken string
+	// BearerToken returns the current bearer credential. Static sources
+	// return a closure that yields a cached value with no IO. Federation
+	// sources implement OAuth2-style cache + refresh internally (e.g. via
+	// oauth2.ReuseTokenSource). The closure is called by adapters at
+	// request time. Nil means the source produced no bearer (e.g.
+	// AWSDefaultSource).
+	BearerToken BearerTokenFunc
 
 	// AWSCredentials for AWS-based providers (Bedrock).
 	// nil signals "use the SDK default credential chain."
 	// When set, the SDK's CredentialsCache handles automatic refresh.
 	AWSCredentials aws.CredentialsProvider
-
-	// GoogleTokenSource for GCP-based providers (Gemini via Vertex AI).
-	// nil signals "no Google credentials resolved." When non-nil, the
-	// adapter should call Token() per-request to fetch a fresh access token;
-	// oauth2.ReuseTokenSource caches and refreshes for free.
-	GoogleTokenSource oauth2.TokenSource
 }
 
 // BuildSource returns a Source for the given provider config.
@@ -91,6 +106,22 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 		return NewServiceAccountKeySource(cfg.GCPCredentialsFile), nil
 	case "gcp-workload-identity":
 		return NewGoogleWorkloadIdentitySource(), nil
+	case "gcp-workload-identity-federation":
+		if cfg.Credential.Audience == "" {
+			return nil, fmt.Errorf("gcp-workload-identity-federation requires audience")
+		}
+		if cfg.Credential.TokenSource == nil {
+			return nil, fmt.Errorf("gcp-workload-identity-federation requires tokenSource")
+		}
+		ts, err := BuildTokenSource(cfg.Credential.TokenSource)
+		if err != nil {
+			return nil, fmt.Errorf("build token source: %w", err)
+		}
+		return NewGCPWorkloadIdentityFederationSource(
+			ts,
+			cfg.Credential.Audience,
+			cfg.Credential.ServiceAccount,
+		), nil
 	default:
 		return nil, fmt.Errorf("unsupported credential type: %q", cfg.Credential.Type)
 	}
@@ -108,6 +139,18 @@ func BuildTokenSource(cfg *types.TokenSourceConfig) (TokenSource, error) {
 		return &FileTokenSource{path: cfg.Path}, nil
 	case "env":
 		return &EnvTokenSource{envVar: cfg.EnvVar}, nil
+	case "aws-irsa":
+		return &AWSIRSATokenSource{}, nil
+	case "azure-imds":
+		if cfg.Resource == "" {
+			return nil, fmt.Errorf("azure-imds requires resource")
+		}
+		return NewAzureIMDSTokenSource(cfg.Resource, cfg.ClientID, ""), nil
+	case "github-actions-oidc":
+		if cfg.Audience == "" {
+			return nil, fmt.Errorf("github-actions-oidc requires audience")
+		}
+		return NewGitHubActionsOIDCTokenSource(cfg.Audience)
 	default:
 		return nil, fmt.Errorf("unsupported token source type: %q", cfg.Type)
 	}

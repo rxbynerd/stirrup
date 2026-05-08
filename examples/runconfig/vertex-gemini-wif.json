@@ -1,0 +1,65 @@
+{
+  "runId": "vertex-gemini-wif-example",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "gemini",
+    "gcpProject": "my-project-id",
+    "gcpLocation": "global",
+    "credential": {
+      "type": "gcp-workload-identity-federation",
+      "audience": "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+      "serviceAccount": "stirrup-vertex@my-project-id.iam.gserviceaccount.com",
+      "tokenSource": {
+        "type": "aws-irsa"
+      }
+    }
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "gemini",
+    "model": "gemini-2.5-pro"
+  },
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 200000
+  },
+  "executor": {
+    "type": "local",
+    "workspace": "/tmp/stirrup-workspace"
+  },
+  "editStrategy": {
+    "type": "multi"
+  },
+  "verifier": {
+    "type": "none"
+  },
+  "permissionPolicy": {
+    "type": "allow-all"
+  },
+  "gitStrategy": {
+    "type": "none"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "traceEmitter": {
+    "type": "jsonl",
+    "filePath": "/tmp/stirrup.trace.jsonl"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory",
+      "search_files",
+      "edit_file",
+      "run_command"
+    ]
+  },
+  "maxTurns": 20,
+  "timeout": 600,
+  "logLevel": "info"
+}

@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -45,7 +46,7 @@ import (
 // server-side state and content_part lifecycle events ride the same
 // forward-compatible "unknown SSE event" path implemented in dispatchEvent.
 type OpenAIResponsesAdapter struct {
-	apiKey       string
+	bearer       credential.BearerTokenFunc
 	httpClient   *http.Client
 	baseURL      string
 	apiKeyHeader string
@@ -61,13 +62,18 @@ type OpenAIResponsesAdapter struct {
 // so callers can switch the provider type without re-deriving the URL. The
 // auth argument carries optional header-name and query-parameter overrides;
 // pass a zero value for OpenAI-default behaviour.
-func NewOpenAIResponsesAdapter(apiKey, baseURL string, auth OpenAIAuthConfig) *OpenAIResponsesAdapter {
+//
+// bearer is invoked on every Stream call to fetch the current API key.
+// See NewOpenAICompatibleAdapter for the closure contract; both adapters
+// share the same auth shape so swapping provider.type does not require
+// reconfiguring credentials.
+func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string, auth OpenAIAuthConfig) *OpenAIResponsesAdapter {
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
 	}
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAIResponsesAdapter{
-		apiKey: apiKey,
+		bearer: bearer,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
@@ -328,6 +334,14 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	// Resolve the bearer credential before issuing the HTTP request so a
+	// failure in the credential layer surfaces synchronously.
+	apiKey, err := resolveBearer(ctx, o.bearer)
+	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, err
+	}
+
 	requestURL, err := composeOpenAIURL(o.baseURL, "/responses", o.queryParams)
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
@@ -341,7 +355,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
-	setOpenAIAuthHeader(req, o.apiKey, o.apiKeyHeader)
+	setOpenAIAuthHeader(req, apiKey, o.apiKeyHeader)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {

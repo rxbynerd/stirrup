@@ -1567,25 +1567,35 @@ func (x *ProviderConfig) GetGeminiSafetySettings() []*GeminiSafetySetting {
 
 // CredentialConfig selects the credential acquisition method for a provider.
 // Used for cross-cloud authentication scenarios (e.g. a GKE-hosted harness
-// accessing Bedrock via OIDC federation).
+// accessing Bedrock via OIDC federation, or an EKS-hosted harness accessing
+// Vertex AI Gemini via GCP Workload Identity Federation).
 type CredentialConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The credential acquisition strategy.
 	// Valid values:
 	//
-	//	"static"                 — resolve api_key_ref via SecretStore (default for
-	//	                           anthropic/openai-compatible).
-	//	"aws-default"            — use the AWS SDK default credential chain (env vars,
-	//	                           shared config, IMDS). Default for bedrock.
-	//	"web-identity"           — exchange an OIDC identity token for AWS credentials
-	//	                           via STS AssumeRoleWithWebIdentity. Requires role_arn
-	//	                           and token_source.
-	//	"gcp-default"            — Google Application Default Credentials (env
-	//	                           GOOGLE_APPLICATION_CREDENTIALS, metadata server).
-	//	                           Default for "gemini". Rejects user-mode gcloud creds.
-	//	"gcp-service-account"    — explicit service account JSON key file. Requires
-	//	                           gcp_credentials_file on the provider config.
-	//	"gcp-workload-identity"  — GKE Workload Identity (compute metadata access token).
+	//	"static"                            — resolve api_key_ref via SecretStore
+	//	                                      (default for anthropic / openai-compatible).
+	//	"aws-default"                       — use the AWS SDK default credential chain
+	//	                                      (env vars, shared config, IMDS). Default
+	//	                                      for bedrock.
+	//	"web-identity"                      — exchange an OIDC identity token for AWS
+	//	                                      credentials via STS
+	//	                                      AssumeRoleWithWebIdentity. Requires
+	//	                                      role_arn and token_source.
+	//	"gcp-default"                       — Google Application Default Credentials
+	//	                                      (env GOOGLE_APPLICATION_CREDENTIALS,
+	//	                                      metadata server). Default for "gemini".
+	//	                                      Rejects user-mode gcloud creds.
+	//	"gcp-service-account"               — explicit service account JSON key file.
+	//	                                      Requires gcp_credentials_file on the
+	//	                                      provider config.
+	//	"gcp-workload-identity"              — GKE Workload Identity (compute metadata
+	//	                                      access token). Requires running on GCP.
+	//	"gcp-workload-identity-federation"  — non-GCP runtime → GCP via Workload
+	//	                                      Identity Federation (STS + optional
+	//	                                      service-account impersonation). Requires
+	//	                                      audience and token_source.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Required when type is "web-identity". Configuration for the identity
 	// token source used in the OIDC token exchange.
@@ -1595,9 +1605,22 @@ type CredentialConfig struct {
 	RoleArn string `protobuf:"bytes,3,opt,name=role_arn,json=roleArn,proto3" json:"role_arn,omitempty"`
 	// Optional. Session name for STS AssumeRole calls. Default: "stirrup".
 	// Only used when type is "web-identity".
-	SessionName   string `protobuf:"bytes,4,opt,name=session_name,json=sessionName,proto3" json:"session_name,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SessionName string `protobuf:"bytes,4,opt,name=session_name,json=sessionName,proto3" json:"session_name,omitempty"`
+	// Required when type is "gcp-workload-identity-federation". The WIF
+	// audience identifier formatted as
+	//
+	//	//iam.googleapis.com/projects/{N}/locations/global/workloadIdentityPools/{POOL}/providers/{PROVIDER}
+	//
+	// identifying the Workload Identity Pool provider that will accept the
+	// OIDC token surfaced by token_source.
+	Audience string `protobuf:"bytes,5,opt,name=audience,proto3" json:"audience,omitempty"`
+	// Optional. Service account email to impersonate after the STS exchange,
+	// for narrower IAM grants on the target SA than the federated identity
+	// itself holds. When omitted, the federated access token is used directly.
+	// Only consulted when type is "gcp-workload-identity-federation".
+	ServiceAccount string `protobuf:"bytes,6,opt,name=service_account,json=serviceAccount,proto3" json:"service_account,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CredentialConfig) Reset() {
@@ -1658,29 +1681,59 @@ func (x *CredentialConfig) GetSessionName() string {
 	return ""
 }
 
+func (x *CredentialConfig) GetAudience() string {
+	if x != nil {
+		return x.Audience
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetServiceAccount() string {
+	if x != nil {
+		return x.ServiceAccount
+	}
+	return ""
+}
+
 // TokenSourceConfig selects where identity tokens are fetched from.
 // Used by credential types that require an OIDC/JWT token for exchange
-// (e.g. web-identity credential federation).
+// (e.g. web-identity credential federation, GCP Workload Identity
+// Federation).
 type TokenSourceConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The token source implementation.
 	// Valid values:
 	//
-	//	"gke-metadata" — fetch from the GKE Workload Identity metadata server.
-	//	                 Requires audience.
-	//	"file"         — read from a file (e.g. Kubernetes projected service
-	//	                 account token volume). Requires path.
-	//	"env"          — read from an environment variable. Requires env_var.
+	//	"gke-metadata"        — GKE Workload Identity metadata server.
+	//	                        Requires audience.
+	//	"file"                — read from a file (e.g. Kubernetes projected
+	//	                        service account token volume). Requires path.
+	//	"env"                 — read from an environment variable. Requires
+	//	                        env_var.
+	//	"aws-irsa"            — read AWS_WEB_IDENTITY_TOKEN_FILE
+	//	                        (EKS Pod Identity / IRSA).
+	//	"azure-imds"          — Azure Instance Metadata Service identity
+	//	                        endpoint. Requires resource. Optional
+	//	                        client_id for user-assigned managed
+	//	                        identities.
+	//	"github-actions-oidc" — GitHub Actions OIDC token endpoint.
+	//	                        Requires audience.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	// Required when type is "gke-metadata". The target audience claim for the
-	// identity token (e.g. "sts.amazonaws.com" for AWS federation).
+	// For "gke-metadata" and "github-actions-oidc": target audience claim
+	// for the identity token (e.g. "sts.amazonaws.com" for AWS federation,
+	// or a GCP WIF provider audience for "gcp-workload-identity-federation").
 	Audience string `protobuf:"bytes,2,opt,name=audience,proto3" json:"audience,omitempty"`
-	// Required when type is "file". Filesystem path to a file containing the
-	// identity token (e.g. "/var/run/secrets/tokens/oidc-token").
+	// For "file": filesystem path to a file containing the identity token
+	// (e.g. "/var/run/secrets/tokens/oidc-token").
 	Path string `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
-	// Required when type is "env". Name of the environment variable containing
-	// the identity token.
-	EnvVar        string `protobuf:"bytes,4,opt,name=env_var,json=envVar,proto3" json:"env_var,omitempty"`
+	// For "env": name of the environment variable containing the identity token.
+	EnvVar string `protobuf:"bytes,4,opt,name=env_var,json=envVar,proto3" json:"env_var,omitempty"`
+	// For "azure-imds": Azure AD resource URI for which the token is requested
+	// (e.g. "https://management.azure.com/" or a custom AAD app registration URI).
+	Resource string `protobuf:"bytes,5,opt,name=resource,proto3" json:"resource,omitempty"`
+	// For "azure-imds": user-assigned managed identity client ID.
+	// Optional; omit for system-assigned identities.
+	ClientId      string `protobuf:"bytes,6,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1739,6 +1792,20 @@ func (x *TokenSourceConfig) GetPath() string {
 func (x *TokenSourceConfig) GetEnvVar() string {
 	if x != nil {
 		return x.EnvVar
+	}
+	return ""
+}
+
+func (x *TokenSourceConfig) GetResource() string {
+	if x != nil {
+		return x.Resource
+	}
+	return ""
+}
+
+func (x *TokenSourceConfig) GetClientId() string {
+	if x != nil {
+		return x.ClientId
 	}
 	return ""
 }
@@ -3096,17 +3163,21 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x16gemini_safety_settings\x18\f \x03(\v2'.stirrup.harness.v1.GeminiSafetySettingR\x14geminiSafetySettings\x1a>\n" +
 	"\x10QueryParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xae\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf3\x01\n" +
 	"\x10CredentialConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12H\n" +
 	"\ftoken_source\x18\x02 \x01(\v2%.stirrup.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
 	"\brole_arn\x18\x03 \x01(\tR\aroleArn\x12!\n" +
-	"\fsession_name\x18\x04 \x01(\tR\vsessionName\"p\n" +
+	"\fsession_name\x18\x04 \x01(\tR\vsessionName\x12\x1a\n" +
+	"\baudience\x18\x05 \x01(\tR\baudience\x12'\n" +
+	"\x0fservice_account\x18\x06 \x01(\tR\x0eserviceAccount\"\xa9\x01\n" +
 	"\x11TokenSourceConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x12\n" +
 	"\x04path\x18\x03 \x01(\tR\x04path\x12\x17\n" +
-	"\aenv_var\x18\x04 \x01(\tR\x06envVar\"O\n" +
+	"\aenv_var\x18\x04 \x01(\tR\x06envVar\x12\x1a\n" +
+	"\bresource\x18\x05 \x01(\tR\bresource\x12\x1b\n" +
+	"\tclient_id\x18\x06 \x01(\tR\bclientId\"O\n" +
 	"\x13GeminiSafetySetting\x12\x1a\n" +
 	"\bcategory\x18\x01 \x01(\tR\bcategory\x12\x1c\n" +
 	"\tthreshold\x18\x02 \x01(\tR\tthreshold\"\xb4\x04\n" +

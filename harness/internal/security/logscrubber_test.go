@@ -254,6 +254,16 @@ func TestScrubWithStats_PatternNames(t *testing.T) {
 			input:   "Ocp-Apim-Subscription-Key: opaque-token-here",
 			pattern: "api_key_header",
 		},
+		{
+			name:    "oidc_jwt",
+			input:   "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.abc123",
+			pattern: "oidc_jwt",
+		},
+		{
+			name:    "gcp_access_token",
+			input:   "ya29.AbCdEfGhIjKl",
+			pattern: "gcp_access_token",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -265,6 +275,57 @@ func TestScrubWithStats_PatternNames(t *testing.T) {
 				t.Errorf("stats.Patterns = %v, want first entry %q", stats.Patterns, tc.pattern)
 			}
 		})
+	}
+}
+
+// TestScrub_OIDCJWT exercises the federation-token redaction pattern.
+// Federation error paths (truncateForError, GHA OIDC error body, Azure
+// IMDS error body) embed the subject token verbatim if the upstream
+// endpoint echoes it; without this scrubber entry, a hostile STS would
+// leak a usable JWT into slog/OTel output.
+func TestScrub_OIDCJWT(t *testing.T) {
+	jwt := "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.abc123"
+	input := "got " + jwt + " from endpoint"
+	got := Scrub(input)
+	want := "got [REDACTED] from endpoint"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestScrub_OIDCJWTNoBoundary asserts the JWT redaction does not
+// over-extend past the token. Adjacent text on either side must
+// survive intact so error messages remain debuggable.
+func TestScrub_OIDCJWTNoBoundary(t *testing.T) {
+	input := "prefix eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.signature suffix"
+	got := Scrub(input)
+	want := "prefix [REDACTED] suffix"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestScrub_GCPAccessToken exercises the ya29.* prefix common to all
+// Google OAuth2 access tokens (Application Default Credentials, IAM
+// generateAccessToken impersonation results, federated tokens).
+func TestScrub_GCPAccessToken(t *testing.T) {
+	input := "token ya29.AbCdEfGhIjKl"
+	got := Scrub(input)
+	want := "token [REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestScrub_GCPAccessTokenWithSurroundingText asserts the redaction
+// stops at any character outside the base64url alphabet so trailing
+// punctuation does not get pulled into the [REDACTED] span.
+func TestScrub_GCPAccessTokenWithSurroundingText(t *testing.T) {
+	input := `prefix ya29.AbCdEfGhIjKl and "ya29.MoreToken_Here-x" plus more`
+	got := Scrub(input)
+	want := `prefix [REDACTED] and "[REDACTED]" plus more`
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

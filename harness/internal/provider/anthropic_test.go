@@ -60,7 +60,7 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -106,7 +106,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -148,7 +148,7 @@ func TestAnthropicAdapter_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("bad-key")
+	adapter := NewAnthropicAdapter(staticBearer("bad-key"))
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -169,7 +169,7 @@ func TestAnthropicAdapter_HTTPErrorNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("key")
+	adapter := NewAnthropicAdapter(staticBearer("key"))
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -192,7 +192,7 @@ func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("key")
+	adapter := NewAnthropicAdapter(staticBearer("key"))
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -225,7 +225,7 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -271,7 +271,7 @@ func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -314,7 +314,7 @@ func TestSSE_MalformedContentBlockStart(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -359,7 +359,7 @@ func TestSSE_MalformedToolInput(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -408,7 +408,7 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -473,7 +473,7 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -499,8 +499,36 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 	}
 }
 
+// TestAnthropicAdapter_BearerClosureError asserts that a failure
+// inside the bearer closure (e.g. a federation source whose STS
+// exchange returned a 4xx) is surfaced synchronously by Stream
+// without ever hitting the upstream API. Without this, a
+// credential-layer failure would result in a half-built request that
+// only error out after the network round-trip, masking the original
+// cause behind a HTTP-shaped failure.
+func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("anthropic adapter should not have hit the network when the bearer closure errors")
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(erroringBearer("federation: STS returned 401"))
+	adapter.baseURL = srv.URL
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 16,
+	})
+	if err == nil {
+		t.Fatal("expected error from bearer closure failure")
+	}
+	if !strings.Contains(err.Error(), "STS returned 401") {
+		t.Errorf("error should preserve closure cause, got: %v", err)
+	}
+}
+
 func TestAnthropicAdapter_HasTimeout(t *testing.T) {
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	if adapter.httpClient.Timeout == 0 {
 		t.Error("HTTP client should have a non-zero timeout")
 	}
@@ -576,7 +604,7 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 	adapter.Metrics = metrics
 
@@ -630,7 +658,7 @@ func TestAnthropicAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewAnthropicAdapter("bad-key")
+	adapter := NewAnthropicAdapter(staticBearer("bad-key"))
 	adapter.baseURL = srv.URL
 	adapter.Metrics = metrics
 

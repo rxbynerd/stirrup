@@ -340,3 +340,57 @@ func TestRunConfigFromProto_ObservabilityAbsentWhenNil(t *testing.T) {
 		t.Errorf("Observability.ServiceNamespace should be empty when proto field is nil, got %q", rc.Observability.ServiceNamespace)
 	}
 }
+
+// TestRunConfigFromProto_CredentialWIFFieldsPreserved guards the
+// credential federation proto fields against silent drop on the
+// control-plane / K8s-job path. Without coverage here, a future edit
+// to credentialConfigFromProto could omit one of the four fields
+// (audience, serviceAccount on CredentialConfig; resource, clientId
+// on the nested TokenSourceConfig) and operators would only discover
+// it as a 401 from the federation endpoint at first run.
+func TestRunConfigFromProto_CredentialWIFFieldsPreserved(t *testing.T) {
+	pc := &pb.RunConfig{
+		Provider: &pb.ProviderConfig{
+			Type: "gemini",
+			Credential: &pb.CredentialConfig{
+				Type:           "gcp-workload-identity-federation",
+				Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/azure-pool/providers/azure-provider",
+				ServiceAccount: "vertex@my-project.iam.gserviceaccount.com",
+				TokenSource: &pb.TokenSourceConfig{
+					Type:     "azure-imds",
+					Resource: "api://AzureADTokenExchange",
+					ClientId: "11111111-1111-1111-1111-111111111111",
+				},
+			},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.Provider.Credential == nil {
+		t.Fatal("Credential dropped during proto translation")
+	}
+	if got, want := rc.Provider.Credential.Type, "gcp-workload-identity-federation"; got != want {
+		t.Errorf("Credential.Type: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.Audience, "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/azure-pool/providers/azure-provider"; got != want {
+		t.Errorf("Credential.Audience: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.ServiceAccount, "vertex@my-project.iam.gserviceaccount.com"; got != want {
+		t.Errorf("Credential.ServiceAccount: got %q, want %q", got, want)
+	}
+
+	ts := rc.Provider.Credential.TokenSource
+	if ts == nil {
+		t.Fatal("TokenSource dropped during proto translation")
+	}
+	if got, want := ts.Type, "azure-imds"; got != want {
+		t.Errorf("TokenSource.Type: got %q, want %q", got, want)
+	}
+	if got, want := ts.Resource, "api://AzureADTokenExchange"; got != want {
+		t.Errorf("TokenSource.Resource: got %q, want %q", got, want)
+	}
+	if got, want := ts.ClientID, "11111111-1111-1111-1111-111111111111"; got != want {
+		t.Errorf("TokenSource.ClientID: got %q, want %q", got, want)
+	}
+}

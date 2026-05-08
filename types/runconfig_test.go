@@ -714,6 +714,104 @@ func TestValidateRunConfig_EnvTokenSourceMissingEnvVar(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_AWSIRSATokenSourceValid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:   "bedrock",
+		Region: "us-east-1",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "aws-irsa",
+			},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("aws-irsa should validate without extra fields, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_AzureIMDSTokenSourceValid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:   "bedrock",
+		Region: "us-east-1",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type:     "azure-imds",
+				Resource: "https://management.azure.com/",
+			},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("azure-imds with resource should validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_AzureIMDSTokenSourceMissingResource(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "azure-imds",
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing resource")
+	}
+	if !strings.Contains(err.Error(), "resource") {
+		t.Errorf("error should mention resource: %v", err)
+	}
+}
+
+func TestValidateRunConfig_GitHubActionsOIDCTokenSourceValid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type:   "bedrock",
+		Region: "us-east-1",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type:     "github-actions-oidc",
+				Audience: "sts.amazonaws.com",
+			},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("github-actions-oidc with audience should validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_GitHubActionsOIDCTokenSourceMissingAudience(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "bedrock",
+		Credential: &CredentialConfig{
+			Type:    "web-identity",
+			RoleARN: "arn:aws:iam::123456789012:role/test",
+			TokenSource: &TokenSourceConfig{
+				Type: "github-actions-oidc",
+			},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for missing audience")
+	}
+	if !strings.Contains(err.Error(), "audience") {
+		t.Errorf("error should mention audience: %v", err)
+	}
+}
+
 func TestValidateRunConfig_CredentialInProvidersMap(t *testing.T) {
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
@@ -1956,6 +2054,172 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 			name: "gcp-workload-identity credential type accepted",
 			mutate: func(c *RunConfig) {
 				c.Provider.Credential = &CredentialConfig{Type: "gcp-workload-identity"}
+			},
+			wantErr: false,
+		},
+		{
+			name: "gcp-workload-identity-federation with valid audience and tokenSource passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "gcp-workload-identity-federation with serviceAccount impersonation passes",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "vertex@my-project.iam.gserviceaccount.com",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "gcp-workload-identity-federation missing audience fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type: "gcp-workload-identity-federation",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "gcp-workload-identity-federation requires audience",
+		},
+		{
+			name: "gcp-workload-identity-federation missing tokenSource fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+				}
+			},
+			wantErr:   true,
+			errSubstr: "gcp-workload-identity-federation requires tokenSource",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects plain-string audience",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "not-an-audience",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "must match //iam.googleapis.com/projects/{N}/",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects wrong-host audience",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//example.com/projects/1/locations/global/workloadIdentityPools/p/providers/q",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "must match",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects non-numeric project",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//iam.googleapis.com/projects/abc/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "must match",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects malformed serviceAccount email",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "not-an-email",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "not a valid service account email",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects wrong-domain serviceAccount",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "vertex@my-project.gmail.com",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "not a valid service account email",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects too-short serviceAccount local part",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "vx@my-project.iam.gserviceaccount.com",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "not a valid service account email",
+		},
+		{
+			name: "gcp-workload-identity-federation rejects uppercase serviceAccount",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:           "gcp-workload-identity-federation",
+					Audience:       "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					ServiceAccount: "Vertex@my-project.iam.gserviceaccount.com",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "not a valid service account email",
+		},
+		{
+			name: "gcp-workload-identity-federation accepts empty serviceAccount (federated identity used directly)",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:     "gcp-workload-identity-federation",
+					Audience: "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/aws-pool/providers/aws-provider",
+					TokenSource: &TokenSourceConfig{
+						Type: "aws-irsa",
+					},
+				}
 			},
 			wantErr: false,
 		},

@@ -63,7 +63,26 @@ func (g *GoogleADCSource) Resolve(ctx context.Context) (*Resolved, error) {
 		}
 	}
 
-	return &Resolved{GoogleTokenSource: creds.TokenSource}, nil
+	return &Resolved{BearerToken: bearerFromTokenSource(creds.TokenSource)}, nil
+}
+
+// bearerFromTokenSource adapts an oauth2.TokenSource to the BearerTokenFunc
+// closure contract. The closure ignores the request context because
+// oauth2.TokenSource.Token() does not accept one — token acquisition and
+// refresh are bound to whatever context the caller used when constructing
+// the underlying TokenSource (typically context.Background() so a cancelled
+// Resolve context cannot poison subsequent refreshes; see B1 fix).
+//
+// Errors from Token() are surfaced through the closure return so adapters
+// can translate them into request-scoped failures.
+func bearerFromTokenSource(ts oauth2.TokenSource) BearerTokenFunc {
+	return func(_ context.Context) (string, error) {
+		tok, err := ts.Token()
+		if err != nil {
+			return "", fmt.Errorf("acquire google token: %w", err)
+		}
+		return tok.AccessToken, nil
+	}
 }
 
 // ServiceAccountKeySource resolves credentials from an explicit Google
@@ -166,7 +185,8 @@ func (s *ServiceAccountKeySource) Resolve(ctx context.Context) (*Resolved, error
 	// in memory between Stream calls — without the wrapper every
 	// Token() call signs a fresh JWT and round-trips to the OAuth2
 	// endpoint. Mirrors the pattern used by GoogleWorkloadIdentitySource.
-	return &Resolved{GoogleTokenSource: oauth2.ReuseTokenSource(nil, cfg.TokenSource(context.Background()))}, nil
+	ts := oauth2.ReuseTokenSource(nil, cfg.TokenSource(context.Background()))
+	return &Resolved{BearerToken: bearerFromTokenSource(ts)}, nil
 }
 
 // GoogleWorkloadIdentitySource resolves credentials via the GCE/GKE
@@ -192,5 +212,6 @@ func (g *GoogleWorkloadIdentitySource) Resolve(_ context.Context) (*Resolved, er
 	ts := google.ComputeTokenSource("", cloudPlatformScope)
 	// ReuseTokenSource caches the access token in memory and refreshes
 	// it lazily before expiry. ComputeTokenSource itself does not cache.
-	return &Resolved{GoogleTokenSource: oauth2.ReuseTokenSource(nil, ts)}, nil
+	cached := oauth2.ReuseTokenSource(nil, ts)
+	return &Resolved{BearerToken: bearerFromTokenSource(cached)}, nil
 }
