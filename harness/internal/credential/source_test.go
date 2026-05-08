@@ -3,6 +3,7 @@ package credential
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -301,6 +302,13 @@ func TestBuildTokenSource_AzureIMDSMissingResource(t *testing.T) {
 }
 
 func TestBuildTokenSource_GitHubActionsOIDC(t *testing.T) {
+	// The GHA constructor reads + validates the issuance URL at
+	// construction time so the URL is frozen across the source's
+	// lifetime (a malicious sidecar with env-write access cannot swap
+	// it between Token() calls). The env var must therefore be
+	// populated before BuildTokenSource is invoked.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://token.actions.githubusercontent.com/?api-version=2.0")
+
 	ts, err := BuildTokenSource(&types.TokenSourceConfig{
 		Type:     "github-actions-oidc",
 		Audience: "sts.amazonaws.com",
@@ -310,6 +318,21 @@ func TestBuildTokenSource_GitHubActionsOIDC(t *testing.T) {
 	}
 	if _, ok := ts.(*GitHubActionsOIDCTokenSource); !ok {
 		t.Errorf("expected *GitHubActionsOIDCTokenSource, got %T", ts)
+	}
+}
+
+func TestBuildTokenSource_GitHubActionsOIDCMissingURLEnv(t *testing.T) {
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+
+	_, err := BuildTokenSource(&types.TokenSourceConfig{
+		Type:     "github-actions-oidc",
+		Audience: "sts.amazonaws.com",
+	})
+	if err == nil {
+		t.Fatal("expected error when ACTIONS_ID_TOKEN_REQUEST_URL is unset at build time")
+	}
+	if !strings.Contains(err.Error(), "ACTIONS_ID_TOKEN_REQUEST_URL") {
+		t.Errorf("error should name the missing env var: %v", err)
 	}
 }
 

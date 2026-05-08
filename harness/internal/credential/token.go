@@ -84,7 +84,7 @@ func (g *GKEMetadataTokenSource) Token(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("GKE metadata returned %d: %s", resp.StatusCode, string(body))
 	}
 
-	token, err := io.ReadAll(resp.Body)
+	token, err := io.ReadAll(io.LimitReader(resp.Body, metadataResponseLimit))
 	if err != nil {
 		return nil, fmt.Errorf("read GKE identity token: %w", err)
 	}
@@ -240,11 +240,14 @@ func (a *AzureIMDSTokenSource) Token(ctx context.Context) ([]byte, error) {
 //     authenticates the request to the runner.
 //
 // Both env vars are only present when the workflow declares
-// `permissions: id-token: write`; we read them in Token() rather than
-// the constructor so a misconfigured workflow fails at request time
-// with a message that names the missing var.
+// `permissions: id-token: write`. The URL is read and validated at
+// construction time so a malicious sidecar that mutates the env after
+// the harness has started cannot redirect subsequent token refreshes
+// to an attacker-controlled host. The bearer token continues to be
+// read at call time (the runner refreshes it).
 type GitHubActionsOIDCTokenSource struct {
 	audience   string
+	requestURL string // captured + validated at construction time
 	httpClient *http.Client
 }
 
@@ -253,13 +256,36 @@ type GitHubActionsOIDCTokenSource struct {
 // The audience is the value the downstream relying party (e.g. AWS STS,
 // GCP STS, an OIDC-enabled Anthropic/Azure exchange) expects to see in
 // the `aud` claim — choose it to match the policy on the relying party.
-func NewGitHubActionsOIDCTokenSource(audience string) *GitHubActionsOIDCTokenSource {
+//
+// ACTIONS_ID_TOKEN_REQUEST_URL is read and validated here rather than
+// in Token() to (a) fail fast with a clear error when the workflow is
+// misconfigured (`permissions: id-token: write` not set) and (b) close
+// the SSRF window where a process with write access to the runner's
+// environment can swap the URL between Token() calls. The URL must
+// parse and use the https scheme — sending the runner bearer token
+// over plain HTTP would let any on-path attacker on a self-hosted
+// runner exfiltrate it and exchange it for a valid OIDC JWT (CWE-319,
+// CWE-918).
+func NewGitHubActionsOIDCTokenSource(audience string) (*GitHubActionsOIDCTokenSource, error) {
+	requestURL := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL")
+	if requestURL == "" {
+		return nil, fmt.Errorf("ACTIONS_ID_TOKEN_REQUEST_URL is unset; this token source only works in a GitHub Actions workflow with `permissions: id-token: write`")
+	}
+	parsed, err := url.Parse(requestURL)
+	if err != nil {
+		return nil, fmt.Errorf("ACTIONS_ID_TOKEN_REQUEST_URL must be an https URL, got %q: %w", requestURL, err)
+	}
+	if parsed.Scheme != "https" {
+		return nil, fmt.Errorf("ACTIONS_ID_TOKEN_REQUEST_URL must be an https URL, got %q", requestURL)
+	}
+
 	return &GitHubActionsOIDCTokenSource{
-		audience: audience,
+		audience:   audience,
+		requestURL: requestURL,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
-	}
+	}, nil
 }
 
 // ghaOIDCResponse is the documented JSON shape returned by the GitHub
@@ -270,18 +296,16 @@ type ghaOIDCResponse struct {
 
 // Token fetches a fresh OIDC token from the runner. The request URL
 // already contains a `?api-version=...` query parameter (set by the
-// runner), so we append the audience with `&audience=...`.
+// runner), so we append the audience with `&audience=...`. The URL was
+// validated and frozen at construction time; only the bearer token is
+// re-read on each call (the runner rotates it).
 func (g *GitHubActionsOIDCTokenSource) Token(ctx context.Context) ([]byte, error) {
-	requestURL := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_URL")
-	if requestURL == "" {
-		return nil, fmt.Errorf("ACTIONS_ID_TOKEN_REQUEST_URL is unset; this token source only works in a GitHub Actions workflow with `permissions: id-token: write`")
-	}
 	requestToken := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 	if requestToken == "" {
 		return nil, fmt.Errorf("ACTIONS_ID_TOKEN_REQUEST_TOKEN is unset; this token source only works in a GitHub Actions workflow with `permissions: id-token: write`")
 	}
 
-	endpoint := requestURL + "&audience=" + url.QueryEscape(g.audience)
+	endpoint := g.requestURL + "&audience=" + url.QueryEscape(g.audience)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

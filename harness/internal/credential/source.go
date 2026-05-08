@@ -150,7 +150,7 @@ func BuildTokenSource(cfg *types.TokenSourceConfig) (TokenSource, error) {
 		if cfg.Audience == "" {
 			return nil, fmt.Errorf("github-actions-oidc requires audience")
 		}
-		return NewGitHubActionsOIDCTokenSource(cfg.Audience), nil
+		return NewGitHubActionsOIDCTokenSource(cfg.Audience)
 	default:
 		return nil, fmt.Errorf("unsupported token source type: %q", cfg.Type)
 	}
