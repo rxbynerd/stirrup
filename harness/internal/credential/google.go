@@ -53,7 +53,7 @@ func (g *GoogleADCSource) Resolve(ctx context.Context) (*Resolved, error) {
 		}
 		if probe.Type == "authorized_user" {
 			return nil, fmt.Errorf(
-				"Google Application Default Credentials are user-mode (authorized_user); " +
+				"refusing user-mode Google Application Default Credentials (authorized_user): " +
 					"the harness must not run with personal gcloud credentials. " +
 					"Set GOOGLE_APPLICATION_CREDENTIALS to a service account JSON key, " +
 					"deploy on GKE/GCE with Workload Identity, " +
