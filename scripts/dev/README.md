@@ -10,8 +10,9 @@ under `scripts/dev/` ships in a production image.
 - Two `RuntimeClass` resources: `runc` (default OCI runtime) and
   `gvisor` (handler `runsc`, gVisor user-space kernel).
 - gVisor (`runsc` + `containerd-shim-runsc-v1`) installed into the
-  kind node from the upstream `latest` channel and verified against
-  the project's published SHA-512 sums.
+  kind node from a pinned upstream release. SHA-512 verified against
+  pinned hashes committed to this repository; the upstream `.sha512`
+  file is not used as the trust anchor.
 
 The cluster is enough to validate that a Pod with
 `runtimeClassName: gvisor` schedules and runs under gVisor. It is
@@ -68,9 +69,17 @@ cover this when the K8sExecutor moves past the kind-only stage.
 
 ## Staying current
 
-The bring-up script pulls gVisor's `latest` track. That moving target
-is fine for a dev sandbox but is not production-pinned — operators
-deploying gVisor for real should pin to a specific gVisor release tag
-and reuse the project's SHA-512 verification pattern. The kind node
-image is pinned by digest in `kind-config.yaml`; bump it together with
-gVisor if compatibility shifts.
+The bring-up script pins a specific gVisor release (`GVISOR_VERSION`
+in `kind-up.sh`) and verifies downloaded binaries against SHA-512
+hashes hardcoded in the script. To bump:
+
+1. Pick a release from <https://github.com/google/gvisor/releases>.
+2. Update `GVISOR_VERSION` in `kind-up.sh`.
+3. Refresh the four `RUNSC_SHA512_*` / `SHIM_SHA512_*` constants.
+   The `# bump:` comment in `kind-up.sh` documents the exact curl
+   incantation.
+
+The kind node image is pinned by digest in `kind-config.yaml`; bump
+it together with gVisor if compatibility shifts. Production deployers
+should additionally pull binaries from a private mirror and verify
+out-of-band signatures — neither is in scope for this dev sandbox.
