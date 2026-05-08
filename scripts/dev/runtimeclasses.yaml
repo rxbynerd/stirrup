@@ -7,10 +7,34 @@
 #   * gvisor — Google gVisor (handler `runsc`); user-space kernel,
 #             stronger isolation at a startup-time cost.
 #
+# Naming note: the gVisor RuntimeClass is `gvisor`, not `runsc`. This
+# intentionally diverges from the existing container executor's
+# closed runtime token set in `types/runconfig.go`, which uses the
+# string `"runsc"` for the same isolation backend. We keep `gvisor`
+# here because it is the conventional name shipped by Kubernetes
+# distributions and gVisor's own documentation, and operators reading
+# `kubectl get runtimeclass` expect to see it. The future K8sExecutor
+# `runtimeClassName` field is expected to accept these RuntimeClass
+# names (`runc`, `gvisor`) verbatim — it does NOT reuse the closed
+# runtime token set; the two are different vocabularies for different
+# layers (Pod spec vs container engine).
+#
 # Kata Containers backends are intentionally absent: kind nodes are
 # themselves containers and Kata requires nested KVM, which is not
 # available inside a containerised host. Exercise Kata on a real
 # cluster (see the production cluster prep doc, future).
+#
+# Future Kata RuntimeClasses (requires nested KVM — not applicable to
+# kind, listed here so the K8sExecutor implementer has a starting
+# point when targeting production clusters):
+#
+#   name: kata        handler: kata-qemu  (or per-cluster handler name)
+#   name: kata-qemu   handler: kata-qemu
+#   name: kata-fc     handler: kata-fc
+#
+# These names intentionally align with executor.runtime tokens in
+# types/runconfig.go (the gvisor/runsc divergence above is the only
+# planned mismatch).
 ---
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass

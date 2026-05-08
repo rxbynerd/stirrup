@@ -7,8 +7,9 @@
 #
 # Image: kindest/node v1.31.0 (Kubernetes 1.31, kernel well above the
 # 5.10 floor required for modern containerd + gVisor builds). Pinned by
-# digest so re-running kind-up.sh on a different machine deterministic.
-# Bump this together with the gVisor binaries if compatibility shifts.
+# digest so re-running kind-up.sh on a different machine is
+# deterministic. Bump this together with the gVisor binaries if
+# compatibility shifts.
 ---
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
