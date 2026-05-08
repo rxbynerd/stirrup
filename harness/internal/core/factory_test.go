@@ -2018,8 +2018,40 @@ func TestBuildProvider_AnthropicWIF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider returned error: %v", err)
 	}
-	if _, ok := prov.(*provider.AnthropicAdapter); !ok {
+	adapter, ok := prov.(*provider.AnthropicAdapter)
+	if !ok {
 		t.Errorf("buildProvider type = %T, want *provider.AnthropicAdapter", prov)
+		return
+	}
+	// BLOCKING B2 (issue #117): the factory must wire AuthModeBearer
+	// when credential.type=anthropic-wif, otherwise the adapter sends
+	// the WIF OAuth access token via x-api-key and Anthropic returns
+	// 401 on every /v1/messages request.
+	if got := adapter.AuthMode(); got != provider.AuthModeBearer {
+		t.Errorf("AuthMode = %v, want AuthModeBearer (WIF requires Authorization: Bearer)", got)
+	}
+}
+
+// TestBuildProvider_AnthropicStaticKeyUsesAPIKeyMode pins the factory's
+// header-mode default for the static API key code path. Static keys
+// (sk-ant-api03-...) ride x-api-key, not Authorization: Bearer; the
+// adapter would still work for static keys via Bearer, but the symmetry
+// matters as a regression guard against a future change to
+// buildProvider that flips the default.
+func TestBuildProvider_AnthropicStaticKeyUsesAPIKeyMode(t *testing.T) {
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:      "anthropic",
+		APIKeyRef: "secret://ANTHROPIC_API_KEY",
+	}, &stubSecretStore{secrets: map[string]string{"secret://ANTHROPIC_API_KEY": "sk-ant-api03-fake"}})
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	adapter, ok := prov.(*provider.AnthropicAdapter)
+	if !ok {
+		t.Fatalf("buildProvider type = %T, want *provider.AnthropicAdapter", prov)
+	}
+	if got := adapter.AuthMode(); got != provider.AuthModeAPIKey {
+		t.Errorf("AuthMode = %v, want AuthModeAPIKey for static-key path", got)
 	}
 }
 

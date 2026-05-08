@@ -60,7 +60,7 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -106,7 +106,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -148,7 +148,7 @@ func TestAnthropicAdapter_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("bad-key"))
+	adapter := NewAnthropicAdapter(staticBearer("bad-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -169,7 +169,7 @@ func TestAnthropicAdapter_HTTPErrorNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("key"))
+	adapter := NewAnthropicAdapter(staticBearer("key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -192,7 +192,7 @@ func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("key"))
+	adapter := NewAnthropicAdapter(staticBearer("key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -225,7 +225,7 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -271,7 +271,7 @@ func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -314,7 +314,7 @@ func TestSSE_MalformedContentBlockStart(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -359,7 +359,7 @@ func TestSSE_MalformedToolInput(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -408,7 +408,7 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -473,7 +473,7 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -512,7 +512,7 @@ func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter(erroringBearer("federation: STS returned 401"))
+	adapter := NewAnthropicAdapter(erroringBearer("federation: STS returned 401"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -528,7 +528,7 @@ func TestAnthropicAdapter_BearerClosureError(t *testing.T) {
 }
 
 func TestAnthropicAdapter_HasTimeout(t *testing.T) {
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	if adapter.httpClient.Timeout == 0 {
 		t.Error("HTTP client should have a non-zero timeout")
 	}
@@ -604,7 +604,7 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewAnthropicAdapter(staticBearer("test-key"))
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 	adapter.Metrics = metrics
 
@@ -658,7 +658,7 @@ func TestAnthropicAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewAnthropicAdapter(staticBearer("bad-key"))
+	adapter := NewAnthropicAdapter(staticBearer("bad-key"), AuthModeAPIKey)
 	adapter.baseURL = srv.URL
 	adapter.Metrics = metrics
 
@@ -674,5 +674,74 @@ func TestAnthropicAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 	}
 	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"); got != 0 {
 		t.Errorf("provider_ttfb count = %d, want 0 (no stream observed)", got)
+	}
+}
+
+// TestAnthropicAdapter_StaticKeyModeUsesXApiKey asserts that AuthModeAPIKey
+// sends the credential in the x-api-key header and does NOT set
+// Authorization. This pins the static-key code path against a future
+// regression that would silently swap the header on every request.
+// Together with TestAnthropicAdapter_WIFModeUsesAuthorizationBearer this
+// captures the BLOCKING B2 contract from issue #117.
+func TestAnthropicAdapter_StaticKeyModeUsesXApiKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("x-api-key"); got != "sk-ant-api03-fake" {
+			t.Errorf("x-api-key = %q, want sk-ant-api03-fake", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization should be empty in API key mode, got %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("sk-ant-api03-fake"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 16,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+}
+
+// TestAnthropicAdapter_WIFModeUsesAuthorizationBearer asserts that
+// AuthModeBearer sends the credential as Authorization: Bearer and
+// does NOT set x-api-key. WIF OAuth access tokens (sk-ant-oat01-...)
+// are rejected by Anthropic's /v1/messages endpoint when sent via
+// x-api-key; this is the issue #117 BLOCKING B2 invariant — pinning
+// the test prevents a future regression that would 401 every
+// WIF-authenticated run.
+func TestAnthropicAdapter_WIFModeUsesAuthorizationBearer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-ant-oat01-fake" {
+			t.Errorf("Authorization = %q, want Bearer sk-ant-oat01-fake", got)
+		}
+		if got := r.Header.Get("x-api-key"); got != "" {
+			t.Errorf("x-api-key should be empty in WIF mode, got %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("sk-ant-oat01-fake"), AuthModeBearer)
+	adapter.baseURL = srv.URL
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 16,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
 	}
 }

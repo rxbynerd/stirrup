@@ -25,9 +25,35 @@ const (
 	maxToolInputSize    = 10 * 1024 * 1024 // 10 MB cap on streamed tool input JSON
 )
 
+// AuthMode selects the authentication header sent on every /v1/messages
+// request. Anthropic's API accepts two header shapes that are NOT
+// interchangeable:
+//
+//   - x-api-key: <token>            for static API keys (sk-ant-api03-...).
+//   - Authorization: Bearer <token> for OAuth access tokens issued by the
+//     WIF token-exchange flow (sk-ant-oat01-...).
+//
+// Sending a WIF access token via x-api-key returns a 401 from Anthropic;
+// the discriminator is therefore load-bearing for issue #117 — the
+// credential source returns a Bearer token either way, but the adapter
+// must know which header to set.
+type AuthMode int
+
+const (
+	// AuthModeAPIKey sends the credential in the x-api-key header.
+	// Use for static API keys (sk-ant-api03-...). This is the default
+	// to preserve compatibility with the static-key code path.
+	AuthModeAPIKey AuthMode = iota
+	// AuthModeBearer sends the credential as Authorization: Bearer.
+	// Use for WIF OAuth access tokens (sk-ant-oat01-...) returned by
+	// the AnthropicWIFSource credential-exchange flow.
+	AuthModeBearer
+)
+
 // AnthropicAdapter implements ProviderAdapter for the Anthropic Messages API.
 type AnthropicAdapter struct {
 	bearer     credential.BearerTokenFunc
+	authMode   AuthMode
 	httpClient *http.Client
 	baseURL    string                 // overridable for testing
 	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
@@ -40,13 +66,19 @@ type AnthropicAdapter struct {
 // responses can be long-lived; transport-level timeouts are tighter.
 //
 // bearer is invoked on every Stream call to fetch the current API key —
-// this lets refresh-aware credential sources (e.g. future OIDC-to-Anthropic
-// federation) rotate the token without rebuilding the adapter. Static
-// sources return a captured value with no IO, so the per-request call is
-// effectively free.
-func NewAnthropicAdapter(bearer credential.BearerTokenFunc) *AnthropicAdapter {
+// this lets refresh-aware credential sources (e.g. AnthropicWIFSource)
+// rotate the token without rebuilding the adapter. Static sources return
+// a captured value with no IO, so the per-request call is effectively
+// free.
+//
+// authMode selects which HTTP header carries the credential. The factory
+// passes AuthModeBearer when credential.type=anthropic-wif (the credential
+// source returns short-lived OAuth access tokens), and AuthModeAPIKey for
+// every other code path (static API key from secret://).
+func NewAnthropicAdapter(bearer credential.BearerTokenFunc, authMode AuthMode) *AnthropicAdapter {
 	return &AnthropicAdapter{
-		bearer: bearer,
+		bearer:   bearer,
+		authMode: authMode,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
@@ -57,6 +89,13 @@ func NewAnthropicAdapter(bearer credential.BearerTokenFunc) *AnthropicAdapter {
 		},
 		baseURL: anthropicAPIURL,
 	}
+}
+
+// AuthMode returns the configured authentication header mode. Exported
+// for tests in adjacent packages (e.g. core/factory_test.go) that need
+// to assert the factory wires the correct mode for WIF vs static credentials.
+func (a *AnthropicAdapter) AuthMode() AuthMode {
+	return a.authMode
 }
 
 // anthropicRequest is the JSON body sent to the Anthropic Messages API.
@@ -146,7 +185,17 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
+	// Header selection per AuthMode (issue #117 BLOCKING B2). Anthropic's
+	// /v1/messages accepts x-api-key for static API keys but requires
+	// Authorization: Bearer for WIF OAuth access tokens; sending a WIF
+	// token via x-api-key returns 401. Both modes pin the same
+	// anthropic-version header.
+	switch a.authMode {
+	case AuthModeBearer:
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	default:
+		req.Header.Set("x-api-key", apiKey)
+	}
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 
 	resp, err := a.httpClient.Do(req)
