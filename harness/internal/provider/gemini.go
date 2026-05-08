@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -96,17 +98,30 @@ func NewGeminiAdapter(
 // runs, "global" routes to aiplatform.googleapis.com; every other
 // location goes to the regional subdomain.
 func (g *GeminiAdapter) buildURL(model string) string {
+	// url.PathEscape every path component so a value containing slashes,
+	// percent signs, or other reserved bytes cannot rewrite the URL
+	// shape. projectID and location are validated by
+	// gcpProjectIDPattern / gcpLocationPattern (no slashes possible),
+	// but model arrives from RunConfig.ModelRouter.Model — its
+	// validation lives in validateGeminiProviderFields. Even with that
+	// validation in place we escape here too, so the URL builder is
+	// defence-in-depth and never relies on a callers-validate-everything
+	// invariant.
+	projID := url.PathEscape(g.projectID)
+	loc := url.PathEscape(g.location)
+	mdl := url.PathEscape(model)
+
 	if g.baseURLOverride != "" {
 		// Tests inject a httptest server URL; we still substitute project
 		// and model so the test can assert the path was built correctly.
-		path := fmt.Sprintf(geminiAPIPathTemplate, g.projectID, g.location, model)
+		path := fmt.Sprintf(geminiAPIPathTemplate, projID, loc, mdl)
 		return strings.TrimRight(g.baseURLOverride, "/") + path
 	}
 	host := geminiAPIGlobalHost
 	if g.location != "global" {
 		host = fmt.Sprintf(geminiAPIRegionalHost, g.location)
 	}
-	path := fmt.Sprintf(geminiAPIPathTemplate, g.projectID, g.location, model)
+	path := fmt.Sprintf(geminiAPIPathTemplate, projID, loc, mdl)
 	return "https://" + host + path
 }
 
@@ -178,7 +193,15 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		_ = resp.Body.Close()
 		g.recordLatency(ctx, start, metricAttrs)
 		if len(bodyBytes) > 0 {
-			return nil, fmt.Errorf("vertex AI returned status %d: %s", resp.StatusCode, bodyBytes)
+			// Scrub the error body at the point of construction.
+			// LogScrubber already runs downstream at the agentic loop's
+			// error boundary, but defence-in-depth: any future
+			// instrumentation between here and that boundary (test
+			// logging, retry wrapper, telemetry hook) would otherwise
+			// surface unscrubbed Vertex diagnostic strings (project IDs,
+			// quota identifiers, internal trace IDs).
+			safeBody := security.Scrub(string(bodyBytes))
+			return nil, fmt.Errorf("vertex AI returned status %d: %s", resp.StatusCode, safeBody)
 		}
 		return nil, fmt.Errorf("vertex AI returned status %d", resp.StatusCode)
 	}
@@ -294,11 +317,18 @@ func (g *GeminiAdapter) consumeSSE(
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), geminiMaxScannerBuffer)
 
-	// Tool-call accumulation slots, keyed by the candidate part index.
-	// Vertex re-uses the same slot across continuation chunks until
-	// willContinue=false closes the call. nextPartIdx tracks
-	// the position for ID synthesis.
-	toolBufs := make(map[int]*toolCallBuf)
+	// Tool-call accumulation slots, keyed by function name. Vertex
+	// includes the function name on every chunk of a streamed call, so
+	// keying by name lets two simultaneous calls with willContinue=true
+	// (interleaved chunks) accumulate into separate slots without
+	// colliding. A monotonic part-index counter would not work here:
+	// before either call closes both arrive at index 0 and the second
+	// call's partial args overwrite the first's.
+	//
+	// nextPartIdx is preserved purely for tool-call ID synthesis — it
+	// gives each emitted call a unique sequence number within this
+	// stream. It is not used to address slots in toolBufs.
+	toolBufs := make(map[string]*toolCallBuf)
 	nextPartIdx := 0
 	// sawFunctionCall flips true the first time a functionCall part is
 	// observed in this stream. The loop's stop-reason switch dispatches
@@ -308,10 +338,12 @@ func (g *GeminiAdapter) consumeSSE(
 	// vocabularies.
 	sawFunctionCall := false
 
-	// emitToolCall finalises the buffer at slot idx (if present) and emits
-	// a tool_call StreamEvent. The slot is cleared so a follow-up chunk
-	// at the same index does not double-emit.
-	emitToolCall := func(idx int, name string, fullArgs []byte) bool {
+	// emitToolCall finalises the buffer at the named slot (if present)
+	// and emits a tool_call StreamEvent. The slot is cleared so a
+	// follow-up chunk with the same name does not double-emit. The ID
+	// is synthesised from streamN and the monotonic nextPartIdx counter
+	// (incremented by the caller after a successful emit).
+	emitToolCall := func(name string, fullArgs []byte, idForSeq int) bool {
 		var input map[string]any
 		argsBytes := fullArgs
 		if len(argsBytes) == 0 {
@@ -323,11 +355,11 @@ func (g *GeminiAdapter) consumeSSE(
 		}
 		emitEvent(types.StreamEvent{
 			Type:  "tool_call",
-			ID:    fmt.Sprintf("gemini-%d-%d", streamN, idx),
+			ID:    fmt.Sprintf("gemini-%d-%d", streamN, idForSeq),
 			Name:  name,
 			Input: input,
 		})
-		delete(toolBufs, idx)
+		delete(toolBufs, name)
 		return true
 	}
 
@@ -349,11 +381,16 @@ func (g *GeminiAdapter) consumeSSE(
 		if strings.HasPrefix(line, "event: ") || strings.HasPrefix(line, "event:") {
 			continue
 		}
-		if !strings.HasPrefix(line, "data: ") && !strings.HasPrefix(line, "data:") {
+		// Single-pass CutPrefix so a payload that itself starts with
+		// "data:" (e.g. a JSON string value) is not corrupted by a
+		// double TrimPrefix. Per the SSE spec the optional space after
+		// the colon is part of the framing, not the payload, so trim
+		// only the leading space(s).
+		rest, ok := strings.CutPrefix(line, "data:")
+		if !ok {
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
-		data = strings.TrimPrefix(data, "data:")
+		data := strings.TrimLeft(rest, " ")
 		if data == "" {
 			continue
 		}
@@ -380,16 +417,25 @@ func (g *GeminiAdapter) consumeSSE(
 					case part.FunctionCall != nil:
 						sawFunctionCall = true
 						fc := part.FunctionCall
-						idx := nextPartIdx
-						buf, ok := toolBufs[idx]
+						// Slot key is the function name. Vertex sends the
+						// name on every chunk of a streamed call, so two
+						// simultaneous calls (e.g. tool_a / tool_b each
+						// with willContinue=true) accumulate cleanly into
+						// distinct slots — keying by a monotonic counter
+						// would collide them at index 0 until the first
+						// closes.
+						//
+						// A blank Name on a continuation chunk is a
+						// protocol violation; surface it rather than
+						// silently bucketing the chunk into a "" slot.
+						if fc.Name == "" {
+							emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("functionCall part missing name")})
+							return
+						}
+						buf, ok := toolBufs[fc.Name]
 						if !ok {
 							buf = &toolCallBuf{name: fc.Name}
-							toolBufs[idx] = buf
-						}
-						// Vertex may set Name on every chunk; trust the
-						// first non-empty value seen.
-						if buf.name == "" && fc.Name != "" {
-							buf.name = fc.Name
+							toolBufs[fc.Name] = buf
 						}
 
 						// Each chunk's partialArgs (or args, on the final
@@ -411,10 +457,12 @@ func (g *GeminiAdapter) consumeSSE(
 						}
 
 						if !fc.WillContinue {
-							// Final chunk for this part: emit and advance
-							// the part index so the next functionCall
-							// occupies a fresh slot.
-							if !emitToolCall(idx, buf.name, buf.args) {
+							// Final chunk for this call: emit, then
+							// advance the sequence counter used for ID
+							// synthesis. nextPartIdx is no longer the
+							// slot key — emitting deletes the named
+							// slot directly.
+							if !emitToolCall(buf.name, buf.args, nextPartIdx) {
 								return
 							}
 							nextPartIdx++
@@ -427,11 +475,15 @@ func (g *GeminiAdapter) consumeSSE(
 				// Drain any still-open tool-call buffers as a defensive
 				// measure: a server that sets finishReason without first
 				// closing a willContinue buffer would otherwise leave
-				// the call invisible to the loop.
-				for idx, buf := range toolBufs {
-					if !emitToolCall(idx, buf.name, buf.args) {
+				// the call invisible to the loop. Iteration order over
+				// a Go map is non-deterministic, but each buffer here
+				// represents a distinct tool name — order between
+				// drained calls is not load-bearing.
+				for _, buf := range toolBufs {
+					if !emitToolCall(buf.name, buf.args, nextPartIdx) {
 						return
 					}
+					nextPartIdx++
 				}
 
 				stop := mapGeminiFinishReason(cand.FinishReason)
@@ -462,6 +514,20 @@ func (g *GeminiAdapter) consumeSSE(
 				emitEvent(ev)
 				return
 			}
+		}
+
+		// Vertex blocks the *prompt itself* with promptFeedback +
+		// no candidates when the system prompt or user input trips a
+		// safety policy. Without this branch the loop receives an
+		// empty stream that closes silently — the agent then surfaces
+		// the resulting "no model output" as a generic stall rather
+		// than the safety_blocked verdict the operator needs to see.
+		if chunk.PromptFeedback != nil && chunk.PromptFeedback.BlockReason != "" {
+			emitEvent(types.StreamEvent{
+				Type:       "message_complete",
+				StopReason: "safety_blocked",
+			})
+			return
 		}
 	}
 

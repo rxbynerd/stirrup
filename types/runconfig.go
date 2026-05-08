@@ -569,6 +569,15 @@ var gcpProjectIDPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 // an obviously bad value (CRLF, path component) is rejected at boot.
 var gcpLocationPattern = regexp.MustCompile(`^global$|^[a-z][a-z0-9-]{1,30}$`)
 
+// geminiModelNamePattern bounds the character set of a Vertex AI model
+// name so a value containing slashes or percent signs cannot rewrite
+// the request URL. Standard Vertex names like "gemini-2.5-pro",
+// "gemini-2.0-flash", "publishers/google/models/gemini-..." are not
+// allowed here — the harness uses the short name and lets the URL
+// builder add the publisher prefix. The 64-char cap matches the
+// longest published model identifier with comfortable headroom.
+var geminiModelNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
 // validGeminiSafetyCategories enumerates the five HARM_CATEGORY_*
 // identifiers Vertex AI accepts for the safetySettings array. Closed
 // set so a typo surfaces at config time rather than as a silent default
@@ -1228,6 +1237,16 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 		validateGeminiProviderFields(path, provider, errs)
 	}
 
+	// Per-provider model-name validation for Vertex AI Gemini. The
+	// model substring is interpolated into the request URL path; the
+	// adapter url.PathEscape's it as defence-in-depth, but reject
+	// obvious abuse here so a typo or injection attempt surfaces at
+	// boot rather than producing a request to an unintended Vertex
+	// endpoint. Apply when the static / per-mode default provider
+	// resolves to a gemini-typed entry, OR when the top-level
+	// Provider.Type is "gemini" and ModelRouter.Provider is unset.
+	validateGeminiModelName(config, errs)
+
 	checkProviderRef := func(path, name string) {
 		if name == "" {
 			return
@@ -1458,6 +1477,79 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 			*errs = append(*errs, fmt.Sprintf("%s.threshold is required", entryPath))
 		} else if !validGeminiSafetyThresholds[s.Threshold] {
 			*errs = append(*errs, fmt.Sprintf("%s.threshold %q is not a valid BLOCK_* value", entryPath, s.Threshold))
+		}
+	}
+}
+
+// validateGeminiModelName rejects Vertex AI model identifiers that
+// contain reserved URL bytes (slashes, percent signs, etc.). The
+// adapter url.PathEscape's the model name into the request URL path,
+// but operators frequently copy-paste model identifiers between
+// providers and we want a typo like "publishers/google/models/foo" or
+// a deliberate traversal like "gemini-pro/../../evil" to fail at
+// boot, not as a confusing 404 from an unintended Vertex endpoint.
+//
+// We apply the check whenever a gemini-typed provider would actually
+// service the configured ModelRouter. Three cases trigger the check:
+//
+//   - ModelRouter.Provider explicitly names a gemini-typed entry
+//     (default Provider OR a Providers[name] entry).
+//   - ModelRouter.Provider is empty and the top-level Provider.Type is
+//     "gemini" (the implicit default).
+//   - ModelRouter.ModeModels[*] contains "gemini-named-entry/<model>"
+//     overrides — each is checked individually.
+//
+// We do not check CheapModel / ExpensiveModel here because the dynamic
+// router never targets gemini today; revisit when that lands.
+func validateGeminiModelName(config *RunConfig, errs *[]string) {
+	// providerIsGemini reports whether a ModelRouter.Provider name
+	// (possibly empty) ends up resolving to a gemini-typed provider.
+	providerIsGemini := func(name string) bool {
+		// Two shapes: name == "" and we fall back to top-level Provider;
+		// or name matches a Providers[k] entry whose Type is gemini.
+		// Note that names in validProviderTypes are also accepted as
+		// type aliases, so name == "gemini" is gemini regardless of
+		// whether the operator declared it under Providers.
+		if name == "" {
+			return config.Provider.Type == "gemini"
+		}
+		if name == "gemini" {
+			return true
+		}
+		if p, ok := config.Providers[name]; ok {
+			return p.Type == "gemini"
+		}
+		return false
+	}
+
+	checkModel := func(label, model string) {
+		if model == "" {
+			return
+		}
+		if !geminiModelNamePattern.MatchString(model) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s %q must match %s for provider type %q (no slashes, percent signs, or special characters)",
+				label, model, geminiModelNamePattern.String(), "gemini"))
+		}
+	}
+
+	if providerIsGemini(config.ModelRouter.Provider) {
+		checkModel("modelRouter.model", config.ModelRouter.Model)
+	}
+
+	for mode, spec := range config.ModelRouter.ModeModels {
+		// Per-mode entries take the form "provider/model". When the
+		// provider half resolves to gemini we check the model half.
+		providerName, model, ok := strings.Cut(spec, "/")
+		if !ok {
+			// No provider prefix — the entry inherits ModelRouter.Provider.
+			if providerIsGemini(config.ModelRouter.Provider) {
+				checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), spec)
+			}
+			continue
+		}
+		if providerIsGemini(providerName) {
+			checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), model)
 		}
 	}
 }

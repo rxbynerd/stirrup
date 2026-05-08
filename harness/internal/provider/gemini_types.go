@@ -131,9 +131,20 @@ type geminiGenerationConfig struct {
 // shapes so Wave 4 (the SSE stream consumer in gemini.go) does not need
 // to retype it.
 type generateContentChunk struct {
-	Candidates     []geminiCandidate    `json:"candidates,omitempty"`
-	UsageMetadata  *geminiUsageMetadata `json:"usageMetadata,omitempty"`
-	PromptFeedback *json.RawMessage     `json:"promptFeedback,omitempty"`
+	Candidates     []geminiCandidate     `json:"candidates,omitempty"`
+	UsageMetadata  *geminiUsageMetadata  `json:"usageMetadata,omitempty"`
+	PromptFeedback *geminiPromptFeedback `json:"promptFeedback,omitempty"`
+}
+
+// geminiPromptFeedback is set on a response (or terminal SSE chunk)
+// when Vertex blocks the *prompt itself* on safety policy — the model
+// never produced any candidates, so the chunk has no Candidates array
+// and the only signal is BlockReason ("SAFETY", "OTHER", etc.). The
+// adapter surfaces these as a synthetic message_complete with
+// StopReason="safety_blocked" so the agentic loop terminates cleanly
+// rather than seeing a silent empty stream.
+type geminiPromptFeedback struct {
+	BlockReason string `json:"blockReason,omitempty"`
 }
 
 // geminiCandidate is one branch of the model's output. The harness only
