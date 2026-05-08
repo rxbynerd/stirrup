@@ -169,9 +169,15 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 			// AI uses GCP IAM rather than API keys; the validator rejects
 			// APIKeyRef on a gemini run, and forcing the user to type
 			// --api-key-ref="" alongside --provider gemini would be
-			// hostile UX.
+			// hostile UX. Same logic for Azure WIF: the validator rejects
+			// APIKeyRef alongside credential.type=azure-workload-identity
+			// because the Bearer is fetched via OAuth2 token exchange, so
+			// a flag-only Azure WIF run with the cobra default
+			// --api-key-ref="secret://ANTHROPIC_API_KEY" would otherwise
+			// fail validation with a confusing message about a value the
+			// operator never set.
 			APIKeyRef: func() string {
-				if opts.ProviderType == "gemini" {
+				if opts.ProviderType == "gemini" || opts.AzureTenantID != "" {
 					return ""
 				}
 				return opts.APIKeyRef
@@ -624,6 +630,16 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 		if cfg.Provider.Credential != nil {
 			cfg.Provider.Credential.AzureTenantID = tenantID
+		}
+		// Azure WIF resolves the bearer dynamically via OAuth2 token
+		// exchange; the validator rejects APIKeyRef alongside
+		// credential.type=azure-workload-identity. Mirror the gemini
+		// clear above so an operator who switches an existing config to
+		// Azure WIF via --azure-tenant-id does not have to also pass
+		// --api-key-ref="" to clear a stale value the file kept around.
+		// An explicit --api-key-ref on the same command line wins.
+		if tenantID != "" && !changed("api-key-ref") {
+			cfg.Provider.APIKeyRef = ""
 		}
 	}
 	if changed("azure-client-id") {

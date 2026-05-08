@@ -2663,6 +2663,61 @@ func TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential(t *testing.T) {
 	if cfg.Provider.Credential.AzureScope != "https://cognitiveservices.azure.com/.default" {
 		t.Errorf("AzureScope = %q", cfg.Provider.Credential.AzureScope)
 	}
+	// APIKeyRef must be cleared for an Azure WIF run: the validator
+	// rejects the combination because the bearer is fetched via OAuth2
+	// token exchange. The cobra default for --api-key-ref is
+	// secret://ANTHROPIC_API_KEY, so without the gemini-style clear in
+	// buildHarnessRunConfig a flag-only Azure WIF run would fail
+	// validation with a confusing error about a value the operator
+	// never set.
+	if cfg.Provider.APIKeyRef != "" {
+		t.Errorf("APIKeyRef should be cleared for Azure WIF, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestBuildHarnessRunConfig_AzureWIFPassesValidation is the regression
+// guard that the rest of the WIF flag-only-path tests cannot provide
+// on their own. It runs buildHarnessRunConfig with the minimum WIF
+// shape that the validator accepts (tenant + client + tokenSource via
+// CLI options the way runHarness wires them), then hands the result
+// directly to types.ValidateRunConfig and asserts the run is valid.
+// The pre-remediation buildHarnessRunConfig left APIKeyRef set to the
+// cobra default secret://ANTHROPIC_API_KEY; ValidateRunConfig would
+// then reject the run with "azure-workload-identity does not use
+// apiKeyRef". The test pins that an Azure WIF flag-only run is valid
+// end-to-end so the regression cannot recur.
+func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "openai-compatible",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY", // cobra default; should be cleared
+		BaseURL:       "https://example.openai.azure.com/openai/v1",
+		Model:         "gpt-4o",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		AzureTenantID: "11111111-1111-1111-1111-111111111111",
+		AzureClientID: "22222222-2222-2222-2222-222222222222",
+		AzureScope:    "https://cognitiveservices.azure.com/.default",
+	})
+	// buildHarnessRunConfig only assembles the flag-implied Credential
+	// shell — TokenSource still has to come from --config in the real
+	// CLI, but the validator needs one to accept the run. Wire a file
+	// source by hand so the validation path actually runs end-to-end.
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Credential to be inferred from --azure-tenant-id")
+	}
+	cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
+		Type: "file",
+		Path: "/var/run/secrets/azure/token",
+	}
+
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig should accept Azure WIF flag-only run, got: %v", err)
+	}
 }
 
 // TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient verifies that a
