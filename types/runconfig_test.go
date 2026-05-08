@@ -2655,6 +2655,275 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_AzureWorkloadIdentity covers the Azure WIF
+// credential type's field-level rules (UUID format on tenant/client,
+// required token source, optional but HTTPS-only scope) and the two
+// cross-field invariants (apiKeyRef and apiKeyHeader="api-key" are
+// mutually exclusive with the WIF type because the bearer is fetched
+// via OAuth2 token-exchange and must travel on Authorization: Bearer).
+//
+// The cases mirror the structural shape of the GCP WIF table-driven
+// tests above so a reviewer reading the two side by side can see the
+// federation paths' invariants line up.
+func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
+	const (
+		validTenant = "11111111-2222-3333-4444-555555555555"
+		validClient = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	)
+
+	cases := []struct {
+		name      string
+		mutate    func(c *RunConfig)
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "azure-imds token source with valid UUIDs and default scope passes",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:    "openai-compatible",
+					BaseURL: "https://example.openai.azure.com/openai/v1",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						TokenSource: &TokenSourceConfig{
+							Type:     "azure-imds",
+							Resource: "api://AzureADTokenExchange",
+						},
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "file token source with valid UUIDs passes",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:    "openai-compatible",
+					BaseURL: "https://example.openai.azure.com/openai/v1",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						TokenSource: &TokenSourceConfig{
+							Type: "file",
+							Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+						},
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "explicit https scope passes",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:    "openai-compatible",
+					BaseURL: "https://example.openai.azure.com/openai/v1",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						AzureScope:    "https://cognitiveservices.azure.com/.default",
+						TokenSource: &TokenSourceConfig{
+							Type: "file",
+							Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+						},
+					},
+				}
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing azureTenantId fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:          "azure-workload-identity",
+					AzureClientID: validClient,
+					TokenSource: &TokenSourceConfig{
+						Type: "file",
+						Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azure-workload-identity requires azureTenantId",
+		},
+		{
+			name: "missing azureClientId fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:          "azure-workload-identity",
+					AzureTenantID: validTenant,
+					TokenSource: &TokenSourceConfig{
+						Type: "file",
+						Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azure-workload-identity requires azureClientId",
+		},
+		{
+			name: "missing tokenSource fails",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:          "azure-workload-identity",
+					AzureTenantID: validTenant,
+					AzureClientID: validClient,
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azure-workload-identity requires tokenSource",
+		},
+		{
+			name: "malformed azureTenantId rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:          "azure-workload-identity",
+					AzureTenantID: "not-a-uuid",
+					AzureClientID: validClient,
+					TokenSource: &TokenSourceConfig{
+						Type: "file",
+						Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azureTenantId",
+		},
+		{
+			name: "uppercase azureTenantId rejected (canonical lowercase only)",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:          "azure-workload-identity",
+					AzureTenantID: "11111111-2222-3333-4444-555555555555",
+					AzureClientID: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+					TokenSource: &TokenSourceConfig{
+						Type: "file",
+						Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azureClientId",
+		},
+		{
+			name: "malformed azureClientId rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:          "azure-workload-identity",
+					AzureTenantID: validTenant,
+					AzureClientID: "1234",
+					TokenSource: &TokenSourceConfig{
+						Type: "file",
+						Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azureClientId",
+		},
+		{
+			name: "azureScope plain string rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:          "azure-workload-identity",
+					AzureTenantID: validTenant,
+					AzureClientID: validClient,
+					AzureScope:    "not-a-url",
+					TokenSource: &TokenSourceConfig{
+						Type: "file",
+						Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azureScope",
+		},
+		{
+			name: "azureScope http rejected (HTTPS-only)",
+			mutate: func(c *RunConfig) {
+				c.Provider.Credential = &CredentialConfig{
+					Type:          "azure-workload-identity",
+					AzureTenantID: validTenant,
+					AzureClientID: validClient,
+					AzureScope:    "http://cognitiveservices.azure.com/.default",
+					TokenSource: &TokenSourceConfig{
+						Type: "file",
+						Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azureScope",
+		},
+		{
+			name: "apiKeyRef alongside azure-workload-identity is mutually exclusive",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:      "openai-compatible",
+					BaseURL:   "https://example.openai.azure.com/openai/v1",
+					APIKeyRef: "secret://AZURE_OPENAI_KEY",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						TokenSource: &TokenSourceConfig{
+							Type: "file",
+							Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+						},
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azure-workload-identity does not use apiKeyRef",
+		},
+		{
+			name: "apiKeyHeader=api-key alongside azure-workload-identity is mutually exclusive",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:         "openai-compatible",
+					BaseURL:      "https://example.openai.azure.com/openai/v1",
+					APIKeyHeader: "api-key",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						TokenSource: &TokenSourceConfig{
+							Type: "file",
+							Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+						},
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azure-workload-identity requires Authorization: Bearer",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
 // TestValidateRunConfig_GeminiModelNameWithSlash verifies B5: a Vertex
 // model name containing a slash (or other URL-reserved bytes) is
 // rejected at validation time. The adapter url.PathEscape's the name
