@@ -206,6 +206,8 @@ The LLM judge verifier (`verifier/llmjudge.go`) evaluates conversation output ag
 
 The OTel trace emitter (`trace/otel.go`) implements TraceEmitter using real OTel spans exported via OTLP/gRPC. Creates a root `run` span with child spans for turns, tool calls, provider streaming, context compaction, verification, permission checks, and git operations. Default endpoint: `localhost:4317`.
 
+Span attributes are dual-emitted under both stirrup-prefixed names (`run.*`, `turn.*`, `tool.*`) and the OpenTelemetry GenAI semantic-convention names (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.input_tokens`, etc.) so off-the-shelf APM dashboards recognise stirrup spans without custom config; see [`docs/adr/0001-otel-genai-attribute-alignment.md`](docs/adr/0001-otel-genai-attribute-alignment.md) for the alignment policy and removal timeline.
+
 ### Structured logging
 
 The harness uses `log/slog` (stdlib) with a custom `ScrubHandler` (`observability/logger.go`) that wraps any `slog.Handler` and runs `security.Scrub()` on all string attribute values before delegation. This makes secret leakage through logs structurally impossible. JSON logs are written to stderr with a `runId` field on every line. Log level is configurable via `--log-level` flag or `RunConfig.LogLevel`.
