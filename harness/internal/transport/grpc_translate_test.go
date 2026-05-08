@@ -341,6 +341,55 @@ func TestRunConfigFromProto_ObservabilityAbsentWhenNil(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_AzureWIFFieldsPreserved guards the three
+// Azure Workload Identity Federation fields (azure_tenant_id,
+// azure_client_id, azure_scope) against silent drop in
+// credentialConfigFromProto. Without this coverage, a control plane
+// dispatching an Azure WIF run via the K8s job path would have its
+// credential block stripped to type+tokenSource on the harness side,
+// and the run would fail with a misleading "azureTenantId is required"
+// validation error — the wire payload was correct but the translation
+// layer dropped it on the floor. Mirrors the GCP federation coverage in
+// TestRunConfigFromProto_CredentialWIFFieldsPreserved.
+func TestRunConfigFromProto_AzureWIFFieldsPreserved(t *testing.T) {
+	pc := &pb.RunConfig{
+		Provider: &pb.ProviderConfig{
+			Type: "openai-compatible",
+			Credential: &pb.CredentialConfig{
+				Type:          "azure-workload-identity",
+				AzureTenantId: "11111111-2222-3333-4444-555555555555",
+				AzureClientId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+				AzureScope:    "https://cognitiveservices.azure.com/.default",
+				TokenSource: &pb.TokenSourceConfig{
+					Type: "file",
+					Path: "/var/run/secrets/azure/token",
+				},
+			},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.Provider.Credential == nil {
+		t.Fatal("Credential dropped during proto translation")
+	}
+	if got, want := rc.Provider.Credential.Type, "azure-workload-identity"; got != want {
+		t.Errorf("Credential.Type: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.AzureTenantID, "11111111-2222-3333-4444-555555555555"; got != want {
+		t.Errorf("Credential.AzureTenantID: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.AzureClientID, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"; got != want {
+		t.Errorf("Credential.AzureClientID: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.AzureScope, "https://cognitiveservices.azure.com/.default"; got != want {
+		t.Errorf("Credential.AzureScope: got %q, want %q", got, want)
+	}
+	if rc.Provider.Credential.TokenSource == nil || rc.Provider.Credential.TokenSource.Path != "/var/run/secrets/azure/token" {
+		t.Errorf("TokenSource dropped or mangled: %+v", rc.Provider.Credential.TokenSource)
+	}
+}
+
 // TestRunConfigFromProto_CredentialWIFFieldsPreserved guards the
 // credential federation proto fields against silent drop on the
 // control-plane / K8s-job path. Without coverage here, a future edit

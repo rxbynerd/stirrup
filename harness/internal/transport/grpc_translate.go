@@ -289,6 +289,10 @@ func credentialConfigFromProto(pc *pb.CredentialConfig) *types.CredentialConfig 
 		OrganizationID:   pc.GetOrganizationId(),
 		ServiceAccountID: pc.GetServiceAccountId(),
 		WorkspaceID:      pc.GetWorkspaceId(),
+		// Azure Entra ID Workload Identity Federation fields (issue #118).
+		AzureTenantID: pc.GetAzureTenantId(),
+		AzureClientID: pc.GetAzureClientId(),
+		AzureScope:    pc.GetAzureScope(),
 	}
 	if pc.TokenSource != nil {
 		cfg.TokenSource = &types.TokenSourceConfig{
