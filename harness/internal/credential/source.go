@@ -122,6 +122,28 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 			cfg.Credential.Audience,
 			cfg.Credential.ServiceAccount,
 		), nil
+	case "anthropic-wif":
+		// Belt-and-braces. types.validateCredentialConfig already enforces
+		// these field shapes at config-load time; the redundant guard here
+		// keeps BuildSource self-contained for callers (e.g. eval harness)
+		// that bypass full RunConfig validation.
+		if cfg.Credential.FederationRuleID == "" || cfg.Credential.OrganizationID == "" || cfg.Credential.ServiceAccountID == "" {
+			return nil, fmt.Errorf("anthropic-wif requires federationRuleId, organizationId, and serviceAccountId")
+		}
+		if cfg.Credential.TokenSource == nil {
+			return nil, fmt.Errorf("anthropic-wif requires tokenSource")
+		}
+		ts, err := BuildTokenSource(cfg.Credential.TokenSource)
+		if err != nil {
+			return nil, fmt.Errorf("build token source: %w", err)
+		}
+		return NewAnthropicWIFSource(
+			ts,
+			cfg.Credential.FederationRuleID,
+			cfg.Credential.OrganizationID,
+			cfg.Credential.ServiceAccountID,
+			cfg.Credential.WorkspaceID,
+		), nil
 	default:
 		return nil, fmt.Errorf("unsupported credential type: %q", cfg.Credential.Type)
 	}

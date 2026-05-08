@@ -423,6 +423,11 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("gcp-project", "", "")
 	f.String("gcp-location", "global", "")
 	f.String("gcp-credentials-file", "", "")
+	f.String("anthropic-federation-rule-id", "", "")
+	f.String("anthropic-organization-id", "", "")
+	f.String("anthropic-service-account-id", "", "")
+	f.String("anthropic-workspace-id", "", "")
+	f.Bool("anthropic-from-github-actions", false, "")
 	f.StringP("workspace", "w", "", "")
 	f.Int("max-turns", 20, "")
 	f.Int("timeout", 600, "")
@@ -2149,5 +2154,412 @@ func TestApplyOverrides_GeminiCredentialsFileRespectsExplicitCredential(t *testi
 	}
 	if cfg.Provider.Credential.Type != "gcp-workload-identity" {
 		t.Errorf("Credential.Type clobbered: got %q, want gcp-workload-identity", cfg.Provider.Credential.Type)
+	}
+}
+
+// --- Anthropic Workload Identity Federation (issue #117) ---
+
+// anthropicWIFBaseConfig produces a RunConfig stand-in for tests in this
+// section. Anthropic provider, no federation block — each test layers on
+// the WIF flags / env vars it wants and asserts the resulting Credential
+// shape.
+func anthropicWIFBaseConfig() *types.RunConfig {
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:      "anthropic",
+		APIKeyRef: "secret://ANTHROPIC_API_KEY",
+	}
+	return cfg
+}
+
+// clearAnthropicWIFEnv hermetically scrubs the env vars
+// applyAnthropicWIFOverrides reads. Tests that do not set them
+// explicitly must still see them as empty so a contaminated CI runner
+// does not flip an inference branch under our feet.
+func clearAnthropicWIFEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"ANTHROPIC_FEDERATION_RULE_ID",
+		"ANTHROPIC_ORGANIZATION_ID",
+		"ANTHROPIC_SERVICE_ACCOUNT_ID",
+		"ANTHROPIC_WORKSPACE_ID",
+		"ANTHROPIC_IDENTITY_TOKEN_FILE",
+		"ANTHROPIC_IDENTITY_TOKEN",
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+	} {
+		t.Setenv(name, "")
+	}
+}
+
+// TestApplyAnthropicWIF_EnvVarFallback verifies that ANTHROPIC_*_ID env
+// vars fill in the four federation fields when no flag is set, and that
+// the inferred credential type is anthropic-wif. This is the primary
+// integration point with the documented Anthropic SDK env-var contract.
+func TestApplyAnthropicWIF_EnvVarFallback(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_envrule")
+	t.Setenv("ANTHROPIC_ORGANIZATION_ID", "11111111-1111-1111-1111-111111111111")
+	t.Setenv("ANTHROPIC_SERVICE_ACCOUNT_ID", "svac_envsa")
+	t.Setenv("ANTHROPIC_WORKSPACE_ID", "default")
+	t.Setenv("ANTHROPIC_IDENTITY_TOKEN_FILE", "/var/run/secrets/idp/jwt")
+
+	cmd := newTestHarnessCommand()
+	cfg := anthropicWIFBaseConfig()
+
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	cred := cfg.Provider.Credential
+	if cred == nil {
+		t.Fatal("expected Credential to be inferred from env vars")
+	}
+	if cred.Type != "anthropic-wif" {
+		t.Errorf("Credential.Type = %q, want anthropic-wif", cred.Type)
+	}
+	if cred.FederationRuleID != "fdrl_envrule" {
+		t.Errorf("FederationRuleID = %q, want fdrl_envrule", cred.FederationRuleID)
+	}
+	if cred.OrganizationID != "11111111-1111-1111-1111-111111111111" {
+		t.Errorf("OrganizationID = %q", cred.OrganizationID)
+	}
+	if cred.ServiceAccountID != "svac_envsa" {
+		t.Errorf("ServiceAccountID = %q", cred.ServiceAccountID)
+	}
+	if cred.WorkspaceID != "default" {
+		t.Errorf("WorkspaceID = %q", cred.WorkspaceID)
+	}
+	if cred.TokenSource == nil {
+		t.Fatal("expected TokenSource to be inferred from ANTHROPIC_IDENTITY_TOKEN_FILE")
+	}
+	if cred.TokenSource.Type != "file" {
+		t.Errorf("TokenSource.Type = %q, want file", cred.TokenSource.Type)
+	}
+	if cred.TokenSource.Path != "/var/run/secrets/idp/jwt" {
+		t.Errorf("TokenSource.Path = %q", cred.TokenSource.Path)
+	}
+	// Default APIKeyRef must be cleared because no operator intent.
+	if cfg.Provider.APIKeyRef != "" {
+		t.Errorf("APIKeyRef should be cleared under WIF, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyAnthropicWIF_ExplicitFlagBeatsEnv pins the precedence rule:
+// when both flag and env var are set, the explicit flag wins.
+func TestApplyAnthropicWIF_ExplicitFlagBeatsEnv(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+	t.Setenv("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_envrule")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := cmd.Flags().Set("anthropic-organization-id", "22222222-2222-2222-2222-222222222222"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := cmd.Flags().Set("anthropic-service-account-id", "svac_flagsa"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	cfg := anthropicWIFBaseConfig()
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential == nil || cfg.Provider.Credential.FederationRuleID != "fdrl_flagrule" {
+		t.Errorf("explicit flag should beat env, got %+v", cfg.Provider.Credential)
+	}
+}
+
+// TestApplyAnthropicWIF_FromGitHubActionsSelectsTokenSource pins the
+// explicit GHA opt-in: when --anthropic-from-github-actions is set, the
+// inferred token source is github-actions-oidc with the Anthropic
+// audience, regardless of any env vars present.
+func TestApplyAnthropicWIF_FromGitHubActionsSelectsTokenSource(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+	// GHA env vars are present (as on a real runner), but they alone
+	// must not select the OIDC source. Only the flag opts in.
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
+	mustSet("anthropic-organization-id", "33333333-3333-3333-3333-333333333333")
+	mustSet("anthropic-service-account-id", "svac_flagsa")
+	mustSet("anthropic-from-github-actions", "true")
+
+	cfg := anthropicWIFBaseConfig()
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	cred := cfg.Provider.Credential
+	if cred == nil || cred.TokenSource == nil {
+		t.Fatalf("expected TokenSource set, got %+v", cred)
+	}
+	if cred.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("TokenSource.Type = %q, want github-actions-oidc", cred.TokenSource.Type)
+	}
+	if cred.TokenSource.Audience != "https://api.anthropic.com" {
+		t.Errorf("TokenSource.Audience = %q, want https://api.anthropic.com", cred.TokenSource.Audience)
+	}
+}
+
+// TestApplyAnthropicWIF_GHAEnvAloneDoesNotInferTokenSource is the
+// negative test for issue #117 risk #5: presence of
+// ACTIONS_ID_TOKEN_REQUEST_URL in the env is NOT a green light to
+// auto-select github-actions-oidc. The operator must explicitly opt in
+// via --anthropic-from-github-actions. Silent IdP selection makes
+// credential bugs unfixable.
+func TestApplyAnthropicWIF_GHAEnvAloneDoesNotInferTokenSource(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
+	mustSet("anthropic-organization-id", "44444444-4444-4444-4444-444444444444")
+	mustSet("anthropic-service-account-id", "svac_flagsa")
+	// Deliberately NOT setting --anthropic-from-github-actions.
+
+	cfg := anthropicWIFBaseConfig()
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	cred := cfg.Provider.Credential
+	if cred == nil {
+		t.Fatal("expected Credential to be inferred from federation flags")
+	}
+	if cred.TokenSource != nil {
+		t.Errorf("TokenSource should NOT be inferred from bare GHA env, got %+v", cred.TokenSource)
+	}
+}
+
+// TestApplyAnthropicWIF_IdentityTokenEnvVarSelectsEnvSource pins the
+// fallback for ANTHROPIC_IDENTITY_TOKEN: a literal token in the env
+// implies tokenSource={type:env, envVar:ANTHROPIC_IDENTITY_TOKEN}.
+func TestApplyAnthropicWIF_IdentityTokenEnvVarSelectsEnvSource(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+	t.Setenv("ANTHROPIC_IDENTITY_TOKEN", "eyJ.fake.jwt")
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
+	mustSet("anthropic-organization-id", "55555555-5555-5555-5555-555555555555")
+	mustSet("anthropic-service-account-id", "svac_flagsa")
+
+	cfg := anthropicWIFBaseConfig()
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	cred := cfg.Provider.Credential
+	if cred == nil || cred.TokenSource == nil {
+		t.Fatalf("expected TokenSource set, got %+v", cred)
+	}
+	if cred.TokenSource.Type != "env" {
+		t.Errorf("TokenSource.Type = %q, want env", cred.TokenSource.Type)
+	}
+	if cred.TokenSource.EnvVar != "ANTHROPIC_IDENTITY_TOKEN" {
+		t.Errorf("TokenSource.EnvVar = %q, want ANTHROPIC_IDENTITY_TOKEN", cred.TokenSource.EnvVar)
+	}
+}
+
+// TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected is the issue #117
+// risk #4 enforcement: when --api-key-ref is explicitly passed alongside
+// the WIF flags, the override layer must hard-fail rather than silently
+// dropping one or the other. A leftover API key would silently shadow
+// federation in the SDK precedence chain.
+func TestApplyAnthropicWIF_ExplicitAPIKeyRefRejected(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
+	mustSet("anthropic-organization-id", "66666666-6666-6666-6666-666666666666")
+	mustSet("anthropic-service-account-id", "svac_flagsa")
+	mustSet("api-key-ref", "secret://OPERATOR_KEY")
+
+	cfg := anthropicWIFBaseConfig()
+	cfg.Provider.APIKeyRef = "secret://OPERATOR_KEY"
+
+	err := applyAnthropicWIFOverrides(cmd, cfg)
+	if err == nil {
+		t.Fatal("expected error when --api-key-ref is set with WIF flags")
+	}
+	if !strings.Contains(err.Error(), "api-key-ref") {
+		t.Errorf("error should mention api-key-ref, got: %v", err)
+	}
+}
+
+// TestApplyAnthropicWIF_DefaultAPIKeyRefSilentlyCleared documents the
+// other half of the apiKeyRef guard: the default flag value
+// "secret://ANTHROPIC_API_KEY" is structurally non-meaningful under
+// WIF (no operator intent expressed), so the override layer clears it
+// silently rather than failing loudly. This mirrors the gemini
+// pattern at applyOverrides line ~477.
+func TestApplyAnthropicWIF_DefaultAPIKeyRefSilentlyCleared(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
+	mustSet("anthropic-organization-id", "77777777-7777-7777-7777-777777777777")
+	mustSet("anthropic-service-account-id", "svac_flagsa")
+	// Deliberately NOT setting --api-key-ref. cfg carries the default.
+
+	cfg := anthropicWIFBaseConfig()
+	// The default-from-flag path: APIKeyRef holds the registered default.
+	cfg.Provider.APIKeyRef = "secret://ANTHROPIC_API_KEY"
+
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	if cfg.Provider.APIKeyRef != "" {
+		t.Errorf("default APIKeyRef should be cleared under WIF, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyAnthropicWIF_NoIntentNoOp guards the no-op early return: if
+// the operator has set neither WIF flags nor env vars, and the
+// credential block does not already name anthropic-wif, the helper
+// must leave the config untouched. This protects every non-WIF code
+// path from accidental mutation.
+func TestApplyAnthropicWIF_NoIntentNoOp(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+
+	cmd := newTestHarnessCommand()
+	cfg := anthropicWIFBaseConfig()
+
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential != nil {
+		t.Errorf("Credential should be nil with no WIF intent, got %+v", cfg.Provider.Credential)
+	}
+	if cfg.Provider.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
+		t.Errorf("APIKeyRef should be untouched without WIF intent, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyAnthropicWIF_ConflictingExplicitTypeRejected covers the
+// inconsistent-config rejection: if the user has already named a
+// non-anthropic-wif credential type in --config and then layers WIF
+// federation flags on top, the helper must fail loudly rather than
+// silently rewriting the operator's choice.
+func TestApplyAnthropicWIF_ConflictingExplicitTypeRejected(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("anthropic-federation-rule-id", "fdrl_flagrule"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	cfg := anthropicWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{Type: "aws-default"}
+
+	err := applyAnthropicWIFOverrides(cmd, cfg)
+	if err == nil {
+		t.Fatal("expected error when WIF flags conflict with explicit non-WIF type")
+	}
+	if !strings.Contains(err.Error(), "anthropic-wif") {
+		t.Errorf("error should mention anthropic-wif, got: %v", err)
+	}
+}
+
+// TestApplyAnthropicWIF_ExistingStaticTypePromoted documents the
+// "static" sub-path of the type-inference branch: when a --config file
+// names credential.type="static" (the documented synonym for the
+// default key-based path) and the operator layers WIF flags on top,
+// applyAnthropicWIFOverrides must promote the type to anthropic-wif
+// rather than rejecting the run as a conflict. This is the upgrade
+// path from a key-based config to a federated one.
+func TestApplyAnthropicWIF_ExistingStaticTypePromoted(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
+	mustSet("anthropic-organization-id", "99999999-9999-9999-9999-999999999999")
+	mustSet("anthropic-service-account-id", "svac_flagsa")
+
+	cfg := anthropicWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{Type: "static"}
+
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential.Type != "anthropic-wif" {
+		t.Errorf("Credential.Type = %q, want anthropic-wif (static must be promoted)", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.FederationRuleID != "fdrl_flagrule" {
+		t.Errorf("FederationRuleID = %q, want fdrl_flagrule", cfg.Provider.Credential.FederationRuleID)
+	}
+}
+
+// TestApplyAnthropicWIF_ExistingTokenSourcePreserved guards the rule
+// that an explicit token source from --config always wins. Even when
+// --anthropic-from-github-actions is set, an existing TokenSource must
+// not be silently overwritten.
+func TestApplyAnthropicWIF_ExistingTokenSourcePreserved(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("anthropic-from-github-actions", "true"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	cfg := anthropicWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{
+		Type:             "anthropic-wif",
+		FederationRuleID: "fdrl_filerule",
+		OrganizationID:   "88888888-8888-8888-8888-888888888888",
+		ServiceAccountID: "svac_filesa",
+		TokenSource: &types.TokenSourceConfig{
+			Type: "file",
+			Path: "/var/run/file/jwt",
+		},
+	}
+
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential.TokenSource.Type != "file" {
+		t.Errorf("file-provided TokenSource overwritten: got %q", cfg.Provider.Credential.TokenSource.Type)
+	}
+	if cfg.Provider.Credential.TokenSource.Path != "/var/run/file/jwt" {
+		t.Errorf("file-provided TokenSource.Path overwritten: got %q", cfg.Provider.Credential.TokenSource.Path)
 	}
 }

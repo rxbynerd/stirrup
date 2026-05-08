@@ -426,7 +426,16 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		if cred.BearerToken == nil {
 			return nil, fmt.Errorf("anthropic provider requires a bearer credential but the credential source produced none")
 		}
-		return provider.NewAnthropicAdapter(cred.BearerToken), nil
+		// Anthropic accepts two auth header shapes (issue #117 BLOCKING
+		// B2). Static API keys (sk-ant-api03-...) ride x-api-key; WIF
+		// OAuth access tokens (sk-ant-oat01-...) require Authorization:
+		// Bearer. The credential source produces a Bearer token either
+		// way; only the adapter knows which header to set.
+		authMode := provider.AuthModeAPIKey
+		if cfg.Credential != nil && cfg.Credential.Type == "anthropic-wif" {
+			authMode = provider.AuthModeBearer
+		}
+		return provider.NewAnthropicAdapter(cred.BearerToken, authMode), nil
 	case "openai-compatible":
 		if cred.BearerToken == nil {
 			return nil, fmt.Errorf("openai-compatible provider requires a bearer credential but the credential source produced none")

@@ -13,6 +13,14 @@ type namedPattern struct {
 // Names are stable identifiers safe to log (they reveal pattern type, not the
 // matched secret value).
 var secretPatterns = []namedPattern{
+	// anthropic_wif_token MUST come before anthropic_api_key. Both
+	// match `sk-ant-oat01-...` strings (WIF OAuth access tokens), but
+	// the more specific name attaches the right label to scrub events
+	// in audit logs so operators can distinguish federated leaks
+	// (a credential rotation problem) from static-key leaks (a
+	// secrets-management problem). The replacement is `[REDACTED]`
+	// either way; only the stats label differs.
+	{"anthropic_wif_token", regexp.MustCompile(`sk-ant-oat01-[a-zA-Z0-9_-]+`)},
 	{"anthropic_api_key", regexp.MustCompile(`sk-ant-[a-zA-Z0-9_-]+`)},
 	{"openai_api_key", regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`)},
 	{"github_pat", regexp.MustCompile(`ghp_[a-zA-Z0-9]+`)},

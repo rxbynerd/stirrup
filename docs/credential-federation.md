@@ -54,6 +54,7 @@ authentication material.
 | `gcp-service-account` | Vertex AI from anywhere | `gcpCredentialsFile` on the provider config |
 | `gcp-workload-identity` | Vertex AI from GKE/GCE | none — uses the metadata server |
 | `gcp-workload-identity-federation` | Vertex AI from a non-GCP runtime | `audience`, `tokenSource`; optional `serviceAccount` |
+| `anthropic-wif` | Anthropic Messages API from any OIDC-aware runtime | `federationRuleId`, `organizationId`, `serviceAccountId`, `tokenSource`; optional `workspaceId`. See [`anthropic-wif.md`](anthropic-wif.md). |
 
 ## Cross-cloud → Vertex AI Gemini via Workload Identity Federation
 
@@ -262,6 +263,10 @@ WIF — they avoid the STS round-trip entirely:
 
 ## See also
 
+- [`anthropic-wif.md`](anthropic-wif.md) — the operator walkthrough
+  for the Anthropic Messages API counterpart of this design (OIDC →
+  Anthropic `/v1/oauth/token` exchange, federation rules, GHA / EKS /
+  AKS / generic-k8s runtimes).
 - [`harness/internal/credential/source.go`](../harness/internal/credential/source.go)
   — the full closure contract on `Resolved.BearerToken`.
 - [`harness/internal/credential/google_federation.go`](../harness/internal/credential/google_federation.go)

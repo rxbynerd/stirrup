@@ -689,6 +689,16 @@ message CredentialConfig {
   //                                         Identity Federation (STS + optional
   //                                         service-account impersonation). Requires
   //                                         audience and token_source.
+  //   "anthropic-wif"                     — non-Anthropic runtime → Anthropic API via
+  //                                         Workload Identity Federation. Exchanges an
+  //                                         OIDC JWT (from token_source) at
+  //                                         https://api.anthropic.com/v1/oauth/token
+  //                                         for a short-lived Anthropic access token
+  //                                         bound to a service account. Requires
+  //                                         federation_rule_id, organization_id,
+  //                                         service_account_id, and token_source.
+  //                                         Mutually exclusive with provider api_key_ref
+  //                                         on the same provider entry.
   string type = 1;
 
   // Required when type is "web-identity". Configuration for the identity
@@ -715,6 +725,31 @@ message CredentialConfig {
   // itself holds. When omitted, the federated access token is used directly.
   // Only consulted when type is "gcp-workload-identity-federation".
   string service_account = 6;
+
+  // Required when type is "anthropic-wif". The Anthropic federation rule ID
+  // (format: "fdrl_..."). The rule binds the issuer + subject claim of the
+  // incoming JWT to a specific Anthropic service account and OAuth scope.
+  // Per Anthropic's WIF reference docs, this is a non-secret identifier safe
+  // to commit to source control or bake into a container image.
+  string federation_rule_id = 7;
+
+  // Required when type is "anthropic-wif". The Anthropic organization UUID
+  // (lowercase, RFC 4122 form, e.g. "550e8400-e29b-41d4-a716-446655440000").
+  // Identifies which Anthropic organization the federation rule belongs to.
+  // Non-secret per Anthropic's docs.
+  string organization_id = 8;
+
+  // Required when type is "anthropic-wif". The Anthropic service account ID
+  // (format: "svac_..."). The non-human principal that the resulting access
+  // token acts as. Non-secret per Anthropic's docs.
+  string service_account_id = 9;
+
+  // Optional / conditional when type is "anthropic-wif". The Anthropic
+  // workspace ID (format: "wrkspc_...") or the literal string "default".
+  // Required when the federation rule is enabled for more than one workspace;
+  // omit (empty string) when the rule is bound to a single workspace.
+  // Non-secret per Anthropic's docs.
+  string workspace_id = 10;
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.

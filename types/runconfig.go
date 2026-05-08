@@ -311,8 +311,12 @@ type GuardRailConfig struct {
 
 // Redact returns a copy of the RunConfig with secret references replaced
 // by placeholder values, safe for persistence in traces and recordings.
-// Note: CredentialConfig fields (roleArn, audience, sessionName) are not
-// secrets and are preserved for diagnostics.
+// Note: CredentialConfig fields (roleArn, audience, sessionName,
+// federationRuleId, organizationId, serviceAccountId, workspaceId) are
+// not secrets and are preserved for diagnostics. Anthropic's WIF docs
+// explicitly call out the four federation identifiers as non-secret
+// values safe to commit to source control or bake into a container
+// image.
 func (rc RunConfig) Redact() RunConfig {
 	redacted := rc
 	if redacted.Provider.APIKeyRef != "" {
@@ -431,13 +435,42 @@ type GeminiSafetySetting struct {
 //   - "gcp-workload-identity-federation"  — non-GCP runtime → GCP via Workload
 //     Identity Federation (STS + optional service-account impersonation).
 //     Requires Audience and TokenSource.
+//   - "anthropic-wif"                     — non-Anthropic runtime → Anthropic
+//     API via Workload Identity Federation. Exchanges an OIDC JWT (from
+//     TokenSource) at https://api.anthropic.com/v1/oauth/token for a
+//     short-lived Anthropic access token. Requires FederationRuleID,
+//     OrganizationID, ServiceAccountID, and TokenSource. Mutually exclusive
+//     with the provider's APIKeyRef on the same provider entry.
 type CredentialConfig struct {
 	Type           string             `json:"type"`
-	TokenSource    *TokenSourceConfig `json:"tokenSource,omitempty"`    // required for "web-identity" and "gcp-workload-identity-federation"
+	TokenSource    *TokenSourceConfig `json:"tokenSource,omitempty"`    // required for "web-identity", "gcp-workload-identity-federation", "anthropic-wif"
 	RoleARN        string             `json:"roleArn,omitempty"`        // required for "web-identity": IAM role to assume
 	SessionName    string             `json:"sessionName,omitempty"`    // for "web-identity" (default: "stirrup")
 	Audience       string             `json:"audience,omitempty"`       // required for "gcp-workload-identity-federation": WIF provider audience
 	ServiceAccount string             `json:"serviceAccount,omitempty"` // optional for "gcp-workload-identity-federation": SA email to impersonate
+
+	// FederationRuleID is required for "anthropic-wif". Format: "fdrl_...".
+	// Per Anthropic's WIF reference docs this is a non-secret identifier
+	// safe to commit to source control or bake into a container image.
+	FederationRuleID string `json:"federationRuleId,omitempty"`
+
+	// OrganizationID is required for "anthropic-wif". Format: lowercase
+	// RFC 4122 UUID (e.g. "550e8400-e29b-41d4-a716-446655440000").
+	// Identifies which Anthropic organization the federation rule belongs
+	// to. Non-secret per Anthropic's docs.
+	OrganizationID string `json:"organizationId,omitempty"`
+
+	// ServiceAccountID is required for "anthropic-wif". Format: "svac_...".
+	// The non-human principal the resulting access token acts as.
+	// Non-secret per Anthropic's docs.
+	ServiceAccountID string `json:"serviceAccountId,omitempty"`
+
+	// WorkspaceID is conditional for "anthropic-wif". Either the literal
+	// string "default" or a "wrkspc_..." identifier. Required when the
+	// federation rule is enabled for more than one workspace; omit (empty
+	// string) when the rule is bound to a single workspace.
+	// Non-secret per Anthropic's docs.
+	WorkspaceID string `json:"workspaceId,omitempty"`
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
@@ -762,6 +795,7 @@ var validCredentialTypes = map[string]bool{
 	"gcp-service-account":              true,
 	"gcp-workload-identity":            true,
 	"gcp-workload-identity-federation": true,
+	"anthropic-wif":                    true,
 }
 
 // GCPWIFAudiencePatternString bounds the shape of a Workload Identity
@@ -802,6 +836,49 @@ var gcpWIFAudiencePattern = regexp.MustCompile(GCPWIFAudiencePatternString)
 // typo'd email is still better caught locally.
 var gcpServiceAccountPattern = regexp.MustCompile(
 	`^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]+\.iam\.gserviceaccount\.com$`,
+)
+
+// AnthropicFederationRuleIDPatternString bounds the shape of an Anthropic
+// federation rule identifier. The Anthropic Console issues these as
+// "fdrl_" + an opaque base62-style suffix; we accept any non-empty
+// alphanumeric suffix to stay forward-compatible with future tweaks to
+// Anthropic's identifier shape while still rejecting obvious typos
+// (missing prefix, embedded whitespace, control characters) up front
+// rather than letting them surface as a 400 from /v1/oauth/token.
+//
+// Exported as a string so the credential package can compile its own
+// regex without a runtime dependency on this var (mirrors
+// GCPWIFAudiencePatternString).
+const AnthropicFederationRuleIDPatternString = `^fdrl_[A-Za-z0-9]+$`
+
+// AnthropicServiceAccountIDPatternString bounds the shape of an
+// Anthropic service-account identifier. Format is "svac_" plus an
+// opaque alphanumeric suffix. See the doc on
+// AnthropicFederationRuleIDPatternString for the rationale on
+// validating shape at config time.
+const AnthropicServiceAccountIDPatternString = `^svac_[A-Za-z0-9]+$`
+
+// AnthropicWorkspaceIDPatternString bounds the shape of an Anthropic
+// workspace identifier. Format is "wrkspc_" plus an opaque alphanumeric
+// suffix. The literal string "default" is also accepted by Anthropic's
+// /v1/oauth/token endpoint as a workspace selector but is handled
+// outside this regex (in validateCredentialConfig) — the regex is the
+// shape check for the structured form only.
+const AnthropicWorkspaceIDPatternString = `^wrkspc_[A-Za-z0-9]+$`
+
+// AnthropicOrganizationIDPatternString bounds the shape of an Anthropic
+// organization identifier. The Console issues these as lowercase
+// RFC 4122 UUIDs (e.g. "550e8400-e29b-41d4-a716-446655440000"); reject
+// uppercase hex and surrounding whitespace at config time so a typo
+// surfaces with a "must match …" error here rather than as an
+// invalid_grant 400 from the token-exchange endpoint.
+const AnthropicOrganizationIDPatternString = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
+
+var (
+	anthropicFederationRuleIDPattern = regexp.MustCompile(AnthropicFederationRuleIDPatternString)
+	anthropicServiceAccountIDPattern = regexp.MustCompile(AnthropicServiceAccountIDPatternString)
+	anthropicWorkspaceIDPattern      = regexp.MustCompile(AnthropicWorkspaceIDPatternString)
+	anthropicOrganizationIDPattern   = regexp.MustCompile(AnthropicOrganizationIDPatternString)
 )
 
 var validTokenSourceTypes = map[string]bool{
@@ -1318,6 +1395,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 	}
 	validateOpenAIAuthFields("provider", config.Provider, errs)
 	validateGeminiProviderFields("provider", config.Provider, errs)
+	validateAnthropicProviderFields("provider", config.Provider, errs)
 	for name, provider := range config.Providers {
 		if name == "" {
 			*errs = append(*errs, "providers map contains an empty provider name")
@@ -1332,6 +1410,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 		validateRequiredType(path, provider.Type, validProviderTypes, errs)
 		validateOpenAIAuthFields(path, provider, errs)
 		validateGeminiProviderFields(path, provider, errs)
+		validateAnthropicProviderFields(path, provider, errs)
 	}
 
 	// Per-provider model-name validation for Vertex AI Gemini. The
@@ -1438,6 +1517,83 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 				path, cfg.ServiceAccount,
 			))
 		}
+	case "anthropic-wif":
+		if cfg.FederationRuleID == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: anthropic-wif requires federationRuleId", path))
+		} else if !anthropicFederationRuleIDPattern.MatchString(cfg.FederationRuleID) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.federationRuleId %q must match %s (e.g. \"fdrl_abc123\")",
+				path, cfg.FederationRuleID, AnthropicFederationRuleIDPatternString,
+			))
+		}
+		if cfg.OrganizationID == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: anthropic-wif requires organizationId", path))
+		} else if !anthropicOrganizationIDPattern.MatchString(cfg.OrganizationID) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.organizationId %q must be a lowercase RFC 4122 UUID (e.g. \"550e8400-e29b-41d4-a716-446655440000\")",
+				path, cfg.OrganizationID,
+			))
+		}
+		if cfg.ServiceAccountID == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: anthropic-wif requires serviceAccountId", path))
+		} else if !anthropicServiceAccountIDPattern.MatchString(cfg.ServiceAccountID) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.serviceAccountId %q must match %s (e.g. \"svac_abc123\")",
+				path, cfg.ServiceAccountID, AnthropicServiceAccountIDPatternString,
+			))
+		}
+		// WorkspaceID is conditional. Empty is valid (rule bound to a
+		// single workspace); when set, accept either the literal
+		// "default" magic string or a structured "wrkspc_..." identifier.
+		if cfg.WorkspaceID != "" && cfg.WorkspaceID != "default" && !anthropicWorkspaceIDPattern.MatchString(cfg.WorkspaceID) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.workspaceId %q must be \"default\" or match %s (e.g. \"wrkspc_abc123\")",
+				path, cfg.WorkspaceID, AnthropicWorkspaceIDPatternString,
+			))
+		}
+		if cfg.TokenSource == nil {
+			*errs = append(*errs, fmt.Sprintf("%s: anthropic-wif requires tokenSource", path))
+		} else {
+			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
+		}
+		// Mutual-exclusion: anthropic-wif consumes the four federation
+		// fields, not the AWS web-identity / GCP WIF fields. A stale
+		// roleArn / audience / serviceAccount on an anthropic-wif config
+		// is almost always a copy-paste error; surface it loudly rather
+		// than silently ignoring the value.
+		if cfg.RoleARN != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.roleArn is only valid for credential type %q", path, "web-identity"))
+		}
+		if cfg.SessionName != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.sessionName is only valid for credential type %q", path, "web-identity"))
+		}
+		if cfg.Audience != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.audience is only valid for credential type %q", path, "gcp-workload-identity-federation"))
+		}
+		if cfg.ServiceAccount != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.serviceAccount is only valid for credential type %q", path, "gcp-workload-identity-federation"))
+		}
+	}
+
+	// Reciprocal mutual-exclusion: the four anthropic-wif fields are
+	// scoped to type="anthropic-wif". Setting any of them on another
+	// credential type is a hard error so a stale value does not silently
+	// linger across a credential-type change. Mirrors how the gemini
+	// validator scopes GCPProject / GCPLocation / GCPCredentialsFile to
+	// type="gemini" only.
+	if cfg.Type != "anthropic-wif" {
+		if cfg.FederationRuleID != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.federationRuleId is only valid for credential type %q", path, "anthropic-wif"))
+		}
+		if cfg.OrganizationID != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.organizationId is only valid for credential type %q", path, "anthropic-wif"))
+		}
+		if cfg.ServiceAccountID != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.serviceAccountId is only valid for credential type %q", path, "anthropic-wif"))
+		}
+		if cfg.WorkspaceID != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.workspaceId is only valid for credential type %q", path, "anthropic-wif"))
+		}
 	}
 }
 
@@ -1452,6 +1608,14 @@ func validateTokenSourceConfig(cfg *TokenSourceConfig, path string, errs *[]stri
 	case "file":
 		if cfg.Path == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: file requires path", path))
+		} else if pathHasDotDotSegment(cfg.Path) || pathHasDotDotSegment(filepath.Clean(cfg.Path)) {
+			// Reject ".." segments with the same logic
+			// permissionPolicy.policyFile and provider.gcpCredentialsFile
+			// already use. Without this an env var like
+			// ANTHROPIC_IDENTITY_TOKEN_FILE=../../etc/passwd would pass
+			// validation; the credential source fails closed at
+			// Token()-time, but a config-load error is cleaner.
+			*errs = append(*errs, fmt.Sprintf("%s.path must not contain \"..\" segments: %q", path, cfg.Path))
 		}
 	case "env":
 		if cfg.EnvVar == "" {
@@ -1614,6 +1778,57 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 		} else if !validGeminiSafetyThresholds[s.Threshold] {
 			*errs = append(*errs, fmt.Sprintf("%s.threshold %q is not a valid BLOCK_* value", entryPath, s.Threshold))
 		}
+	}
+}
+
+// validateAnthropicProviderFields enforces two cross-field invariants
+// related to the anthropic-wif credential type:
+//
+//  1. An "anthropic" provider using credential.type="anthropic-wif"
+//     must NOT also carry an apiKeyRef. The Anthropic SDK precedence
+//     chain puts ANTHROPIC_API_KEY above federation, which means a
+//     leftover key silently shadows WIF and the operator never knows
+//     the federated path went unused. Per issue #117 (Risk #4),
+//     stirrup fails closed at validation time rather than replicating
+//     that surprise.
+//
+//  2. credential.type="anthropic-wif" must only pair with
+//     provider.type="anthropic". An operator who passes
+//     `--anthropic-federation-rule-id ... --provider openai-compatible`
+//     would otherwise exchange a WIF token (sk-ant-oat01-...) and
+//     hand it to a third-party endpoint. The third party rejects the
+//     token (fail-closed at runtime), but a validation error is
+//     cleaner — and it prevents the very narrow case of a malicious
+//     base-url being asked to exfiltrate the access token.
+//
+// Beyond those two cases this function is a no-op (Bedrock keeps the
+// key as a no-op, Gemini already rejects apiKeyRef in
+// validateGeminiProviderFields, and the OpenAI adapters legitimately
+// use apiKeyRef alongside any of their supported credential types).
+func validateAnthropicProviderFields(path string, cfg ProviderConfig, errs *[]string) {
+	// Cross-provider check applies regardless of cfg.Type; an
+	// anthropic-wif credential paired with a non-anthropic provider
+	// is structurally a misconfiguration.
+	if cfg.Credential != nil && cfg.Credential.Type == "anthropic-wif" && cfg.Type != "anthropic" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.credential.type=%q is only valid when provider.type=%q; got provider.type=%q "+
+				"(an Anthropic WIF access token must not be sent to a non-Anthropic endpoint)",
+			path, "anthropic-wif", "anthropic", cfg.Type))
+		return
+	}
+
+	if cfg.Type != "anthropic" {
+		return
+	}
+	if cfg.Credential == nil || cfg.Credential.Type != "anthropic-wif" {
+		return
+	}
+	if cfg.APIKeyRef != "" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.apiKeyRef must not be set when credential.type is %q; "+
+				"Anthropic WIF authenticates via OAuth bearer tokens, and a static "+
+				"API key would silently shadow the federated credential",
+			path, "anthropic-wif"))
 	}
 }
 

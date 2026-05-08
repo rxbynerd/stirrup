@@ -394,3 +394,52 @@ func TestRunConfigFromProto_CredentialWIFFieldsPreserved(t *testing.T) {
 		t.Errorf("TokenSource.ClientID: got %q, want %q", got, want)
 	}
 }
+
+// TestRunConfigFromProto_AnthropicWIFFieldsPreserved guards the four
+// Anthropic Workload Identity Federation proto fields against silent
+// drop on the control-plane / K8s-job path (issue #117 BLOCKING B1).
+// Without coverage here, an operator delivering a RunConfig with
+// credential.type=anthropic-wif via gRPC receives a CredentialConfig
+// with all four required fields as empty strings — validation then
+// rejects the config and the K8s job fails to start. Mirrors the GCP
+// WIF round-trip test above; uses the generated getters in the
+// translate layer to stay nil-safe.
+func TestRunConfigFromProto_AnthropicWIFFieldsPreserved(t *testing.T) {
+	pc := &pb.RunConfig{
+		Provider: &pb.ProviderConfig{
+			Type: "anthropic",
+			Credential: &pb.CredentialConfig{
+				Type:             "anthropic-wif",
+				FederationRuleId: "fdrl_abc123",
+				OrganizationId:   "550e8400-e29b-41d4-a716-446655440000",
+				ServiceAccountId: "svac_xyz789",
+				WorkspaceId:      "default",
+				TokenSource: &pb.TokenSourceConfig{
+					Type: "file",
+					Path: "/var/run/secrets/idp/jwt",
+				},
+			},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.Provider.Credential == nil {
+		t.Fatal("Credential dropped during proto translation")
+	}
+	if got, want := rc.Provider.Credential.Type, "anthropic-wif"; got != want {
+		t.Errorf("Credential.Type: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.FederationRuleID, "fdrl_abc123"; got != want {
+		t.Errorf("Credential.FederationRuleID: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.OrganizationID, "550e8400-e29b-41d4-a716-446655440000"; got != want {
+		t.Errorf("Credential.OrganizationID: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.ServiceAccountID, "svac_xyz789"; got != want {
+		t.Errorf("Credential.ServiceAccountID: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.WorkspaceID, "default"; got != want {
+		t.Errorf("Credential.WorkspaceID: got %q, want %q", got, want)
+	}
+}
