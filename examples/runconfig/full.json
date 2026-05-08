@@ -107,6 +107,10 @@
     "minChunkChars": 256,
     "failOpen": false
   },
+  "observability": {
+    "environment": "production",
+    "serviceNamespace": "stirrup-eval"
+  },
   "maxTurns": 20,
   "timeout": 600,
   "logLevel": "info"
