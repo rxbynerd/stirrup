@@ -30,7 +30,7 @@
     "type": "none"
   },
   "permissionPolicy": {
-    "type": "deny-side-effects"
+    "type": "allow-all"
   },
   "gitStrategy": {
     "type": "none"

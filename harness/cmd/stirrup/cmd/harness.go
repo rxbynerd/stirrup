@@ -438,6 +438,17 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("provider") {
 		cfg.Provider.Type, _ = f.GetString("provider")
+		// Vertex AI uses GCP IAM, not API keys. When the operator
+		// switches an existing config to gemini via --provider, the old
+		// provider's APIKeyRef would otherwise linger and trip
+		// validateGeminiProviderFields with a confusing "apiKeyRef must
+		// not be set" error about a value the operator did not
+		// intentionally set on this run. Mirror buildHarnessRunConfig's
+		// flag-only behaviour by clearing APIKeyRef unless the operator
+		// explicitly passed --api-key-ref alongside --provider gemini.
+		if cfg.Provider.Type == "gemini" && !changed("api-key-ref") {
+			cfg.Provider.APIKeyRef = ""
+		}
 	}
 	if changed("model") {
 		// Override the router's model. The config file may set the model
@@ -459,6 +470,17 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("gcp-location") {
 		cfg.Provider.GCPLocation, _ = f.GetString("gcp-location")
+	}
+	// When a config file omits gcpLocation and the operator has not
+	// explicitly passed --gcp-location, the validator otherwise rejects
+	// with "gcpLocation is required" even though the flag carries a
+	// documented default of "global". Apply the default explicitly on
+	// the gemini path so the same default reaches both flag-only and
+	// --config users. (The flag-only buildHarnessRunConfig path already
+	// gets this for free because cobra populates GCPLocation with the
+	// flag default before harnessCLIOptions is read.)
+	if cfg.Provider.Type == "gemini" && cfg.Provider.GCPLocation == "" {
+		cfg.Provider.GCPLocation = "global"
 	}
 	if changed("gcp-credentials-file") {
 		path, _ := f.GetString("gcp-credentials-file")
