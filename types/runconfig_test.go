@@ -1171,6 +1171,24 @@ func TestValidateRunConfig_AnthropicWIF(t *testing.T) {
 			wantErr:   true,
 			errSubstr: "workspaceId is only valid for credential type \"anthropic-wif\"",
 		},
+		{
+			// Cross-provider validation (issue #117 N4 / important):
+			// pairing credential.type=anthropic-wif with a non-Anthropic
+			// provider type would result in stirrup exchanging a WIF
+			// access token (sk-ant-oat01-...) and handing it to a
+			// third-party endpoint. Fail closed at config-load time.
+			name: "anthropic-wif paired with openai-compatible rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:       "openai-compatible",
+					BaseURL:    "https://example.invalid/v1",
+					APIKeyRef:  "secret://OPENAI_KEY",
+					Credential: validAnthropicWIFCredential(),
+				}
+			},
+			wantErr:   true,
+			errSubstr: "anthropic-wif",
+		},
 	}
 
 	for _, tc := range cases {

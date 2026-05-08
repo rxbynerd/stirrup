@@ -1773,19 +1773,42 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 	}
 }
 
-// validateAnthropicProviderFields enforces the cross-field invariant
-// that an "anthropic" provider using credential.type="anthropic-wif"
-// must NOT also carry an apiKeyRef. The Anthropic SDK precedence chain
-// puts ANTHROPIC_API_KEY above federation, which means a leftover key
-// silently shadows WIF and the operator never knows the federated path
-// went unused. Per issue #117 (Risk #4), stirrup fails closed at
-// validation time rather than replicating that surprise.
+// validateAnthropicProviderFields enforces two cross-field invariants
+// related to the anthropic-wif credential type:
 //
-// The check is a no-op for any provider type other than "anthropic"
-// (Bedrock keeps the key as a no-op, Gemini already rejects apiKeyRef
-// in validateGeminiProviderFields, and the OpenAI adapters legitimately
+//  1. An "anthropic" provider using credential.type="anthropic-wif"
+//     must NOT also carry an apiKeyRef. The Anthropic SDK precedence
+//     chain puts ANTHROPIC_API_KEY above federation, which means a
+//     leftover key silently shadows WIF and the operator never knows
+//     the federated path went unused. Per issue #117 (Risk #4),
+//     stirrup fails closed at validation time rather than replicating
+//     that surprise.
+//
+//  2. credential.type="anthropic-wif" must only pair with
+//     provider.type="anthropic". An operator who passes
+//     `--anthropic-federation-rule-id ... --provider openai-compatible`
+//     would otherwise exchange a WIF token (sk-ant-oat01-...) and
+//     hand it to a third-party endpoint. The third party rejects the
+//     token (fail-closed at runtime), but a validation error is
+//     cleaner — and it prevents the very narrow case of a malicious
+//     base-url being asked to exfiltrate the access token.
+//
+// Beyond those two cases this function is a no-op (Bedrock keeps the
+// key as a no-op, Gemini already rejects apiKeyRef in
+// validateGeminiProviderFields, and the OpenAI adapters legitimately
 // use apiKeyRef alongside any of their supported credential types).
 func validateAnthropicProviderFields(path string, cfg ProviderConfig, errs *[]string) {
+	// Cross-provider check applies regardless of cfg.Type; an
+	// anthropic-wif credential paired with a non-anthropic provider
+	// is structurally a misconfiguration.
+	if cfg.Credential != nil && cfg.Credential.Type == "anthropic-wif" && cfg.Type != "anthropic" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.credential.type=%q is only valid when provider.type=%q; got provider.type=%q "+
+				"(an Anthropic WIF access token must not be sent to a non-Anthropic endpoint)",
+			path, "anthropic-wif", "anthropic", cfg.Type))
+		return
+	}
+
 	if cfg.Type != "anthropic" {
 		return
 	}
