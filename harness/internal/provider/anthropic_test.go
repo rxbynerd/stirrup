@@ -60,7 +60,7 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -106,7 +106,7 @@ func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -148,7 +148,7 @@ func TestAnthropicAdapter_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("bad-key")
+	adapter := NewAnthropicAdapter(staticBearer("bad-key"))
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -169,7 +169,7 @@ func TestAnthropicAdapter_HTTPErrorNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("key")
+	adapter := NewAnthropicAdapter(staticBearer("key"))
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -192,7 +192,7 @@ func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("key")
+	adapter := NewAnthropicAdapter(staticBearer("key"))
 	adapter.baseURL = srv.URL
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -225,7 +225,7 @@ func TestAnthropicAdapter_RequestBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -271,7 +271,7 @@ func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -314,7 +314,7 @@ func TestSSE_MalformedContentBlockStart(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -359,7 +359,7 @@ func TestSSE_MalformedToolInput(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -408,7 +408,7 @@ func TestSSE_MultipleBlocks(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -473,7 +473,7 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -500,7 +500,7 @@ func TestAnthropicAdapter_ContextCancellation(t *testing.T) {
 }
 
 func TestAnthropicAdapter_HasTimeout(t *testing.T) {
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	if adapter.httpClient.Timeout == 0 {
 		t.Error("HTTP client should have a non-zero timeout")
 	}
@@ -576,7 +576,7 @@ func TestAnthropicAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewAnthropicAdapter("test-key")
+	adapter := NewAnthropicAdapter(staticBearer("test-key"))
 	adapter.baseURL = srv.URL
 	adapter.Metrics = metrics
 
@@ -630,7 +630,7 @@ func TestAnthropicAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewAnthropicAdapter("bad-key")
+	adapter := NewAnthropicAdapter(staticBearer("bad-key"))
 	adapter.baseURL = srv.URL
 	adapter.Metrics = metrics
 

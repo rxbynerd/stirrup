@@ -45,7 +45,7 @@ func TestOpenAIAdapter_StreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -92,7 +92,7 @@ func TestOpenAIAdapter_StreamToolCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -143,7 +143,7 @@ func TestOpenAIAdapter_MultipleToolCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -192,7 +192,7 @@ func TestOpenAIAdapter_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("bad-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -212,7 +212,7 @@ func TestOpenAIAdapter_HTTPErrorNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), srv.URL, OpenAIAuthConfig{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -237,7 +237,7 @@ func TestOpenAIAdapter_HTTPErrorLargeBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), srv.URL, OpenAIAuthConfig{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -266,7 +266,7 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	tools := []types.ToolDefinition{
 		{
@@ -345,7 +345,7 @@ func TestOpenAIAdapter_ContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -382,7 +382,7 @@ func TestOpenAIAdapter_MalformedChunk(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -424,7 +424,7 @@ func TestOpenAIAdapter_MalformedToolArguments(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -453,14 +453,14 @@ func TestOpenAIAdapter_MalformedToolArguments(t *testing.T) {
 }
 
 func TestOpenAIAdapter_DefaultBaseURL(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter("key", "", OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), "", OpenAIAuthConfig{})
 	if adapter.baseURL != openaiDefaultBaseURL {
 		t.Errorf("baseURL = %q, want %q", adapter.baseURL, openaiDefaultBaseURL)
 	}
 }
 
 func TestOpenAIAdapter_TrailingSlashBaseURL(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter("key", "https://example.com/v1/", OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), "https://example.com/v1/", OpenAIAuthConfig{})
 	if adapter.baseURL != "https://example.com/v1" {
 		t.Errorf("baseURL = %q, want https://example.com/v1", adapter.baseURL)
 	}
@@ -478,7 +478,7 @@ func TestOpenAIAdapter_NoAPIKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer(""), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "llama3",
@@ -608,7 +608,7 @@ func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -636,7 +636,7 @@ func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
 }
 
 func TestOpenAIAdapter_HasTimeout(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter("test-key", "", OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{})
 	if adapter.httpClient.Timeout == 0 {
 		t.Error("HTTP client should have a non-zero timeout")
 	}
@@ -675,7 +675,7 @@ func TestOpenAIAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
 	adapter.Metrics = metrics
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -722,7 +722,7 @@ func TestOpenAIAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewOpenAICompatibleAdapter("bad-key", srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{})
 	adapter.Metrics = metrics
 
 	if _, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024}); err == nil {
@@ -770,7 +770,7 @@ func TestOpenAIAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("AZURE-KEY", srv.URL+"/openai/v1", OpenAIAuthConfig{
+	adapter := NewOpenAICompatibleAdapter(staticBearer("AZURE-KEY"), srv.URL+"/openai/v1", OpenAIAuthConfig{
 		APIKeyHeader: "api-key",
 		QueryParams:  map[string]string{"api-version": "preview"},
 	})
@@ -814,7 +814,7 @@ func TestOpenAIAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter("KEY", srv.URL+"/v1?api-version=2024-10-01-preview&deployment-id=gpt4-prod", OpenAIAuthConfig{
+	adapter := NewOpenAICompatibleAdapter(staticBearer("KEY"), srv.URL+"/v1?api-version=2024-10-01-preview&deployment-id=gpt4-prod", OpenAIAuthConfig{
 		QueryParams: map[string]string{"api-version": "preview"},
 	})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
@@ -908,7 +908,7 @@ func TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed(t *testing.T) {
 		"deployment":  sensitive, // crafted to match the anthropic_api_key pattern
 	}
 
-	adapter := NewOpenAICompatibleAdapter("test-key", srv.URL, OpenAIAuthConfig{
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{
 		QueryParams: queryParams,
 	})
 

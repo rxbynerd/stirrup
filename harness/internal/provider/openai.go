@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -51,7 +52,7 @@ const (
 // QueryParams; values supplied there override any duplicate keys present
 // in baseURL's query string.
 type OpenAICompatibleAdapter struct {
-	apiKey       string
+	bearer       credential.BearerTokenFunc
 	httpClient   *http.Client
 	baseURL      string
 	apiKeyHeader string
@@ -66,14 +67,21 @@ type OpenAICompatibleAdapter struct {
 // automatically. Pass an empty string for the default OpenAI URL. The auth
 // argument carries optional header-name and query-parameter overrides; pass
 // a zero value for OpenAI-default behaviour.
-func NewOpenAICompatibleAdapter(apiKey, baseURL string, auth OpenAIAuthConfig) *OpenAICompatibleAdapter {
+//
+// bearer is invoked on every Stream call to fetch the current API key. For
+// Azure Entra ID and other refresh-aware credentials this lets the
+// underlying credential.Source rotate tokens transparently; static keys
+// return a captured value with no IO. A nil bearer or one returning an
+// empty string is treated as "no auth header" (some local gateways accept
+// anonymous requests).
+func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL string, auth OpenAIAuthConfig) *OpenAICompatibleAdapter {
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
 	}
 	// Trim trailing slash so we get a clean URL join.
 	baseURL = strings.TrimRight(baseURL, "/")
 	return &OpenAICompatibleAdapter{
-		apiKey: apiKey,
+		bearer: bearer,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
@@ -333,6 +341,14 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
+	// Resolve the bearer credential before issuing the HTTP request so a
+	// failure in the credential layer surfaces synchronously.
+	apiKey, err := resolveBearer(ctx, o.bearer)
+	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, err
+	}
+
 	requestURL, err := composeOpenAIURL(o.baseURL, "/chat/completions", o.queryParams)
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
@@ -345,7 +361,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	setOpenAIAuthHeader(req, o.apiKey, o.apiKeyHeader)
+	setOpenAIAuthHeader(req, apiKey, o.apiKeyHeader)
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -543,6 +559,21 @@ func setOpenAIAuthHeader(req *http.Request, apiKey, apiKeyHeader string) {
 		return
 	}
 	req.Header.Set(apiKeyHeader, apiKey)
+}
+
+// resolveBearer invokes the bearer closure to fetch the current API key. A
+// nil closure is treated as "no auth"; empty-string returns are also valid
+// for local gateways that accept anonymous requests. Errors are wrapped so
+// the provider name does not need to be repeated at every call site.
+func resolveBearer(ctx context.Context, bearer credential.BearerTokenFunc) (string, error) {
+	if bearer == nil {
+		return "", nil
+	}
+	tok, err := bearer(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve bearer token: %w", err)
+	}
+	return tok, nil
 }
 
 // flushToolCallsVia emits tool_call events for all accumulated tool calls via

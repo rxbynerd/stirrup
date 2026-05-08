@@ -40,7 +40,7 @@ func makeGeminiData(payload string) string {
 }
 
 func newGeminiTestAdapter(srvURL string, ts oauth2.TokenSource) *GeminiAdapter {
-	a := NewGeminiAdapter(ts, "test-project", "us-central1", nil)
+	a := NewGeminiAdapter(bearerFromTokenSource(ts), "test-project", "us-central1", nil)
 	a.baseURLOverride = srvURL
 	return a
 }
@@ -520,7 +520,7 @@ func TestGeminiAdapter_BuildURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a := NewGeminiAdapter(&stubTokenSource{}, tc.project, tc.location, nil)
+			a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), tc.project, tc.location, nil)
 			if got := a.buildURL(tc.model); got != tc.want {
 				t.Errorf("buildURL = %q, want %q", got, tc.want)
 			}
@@ -740,7 +740,7 @@ func TestGeminiAdapter_PromptFeedbackBlock(t *testing.T) {
 // also escapes defensively so a future caller that bypasses validation
 // still cannot redirect the request.
 func TestGeminiAdapter_BuildURLEscapesModel(t *testing.T) {
-	a := NewGeminiAdapter(&stubTokenSource{}, "test-project", "global", nil)
+	a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), "test-project", "global", nil)
 	got := a.buildURL("model/with/slashes")
 	if !strings.Contains(got, "%2F") {
 		t.Errorf("buildURL did not percent-encode slashes in model name: %s", got)
@@ -907,7 +907,7 @@ func TestGeminiAdapter_EmptyStream(t *testing.T) {
 // TestGeminiAdapter_HasTimeout pins the HTTP client timeout shape so a
 // future refactor cannot accidentally drop the safety bounds.
 func TestGeminiAdapter_HasTimeout(t *testing.T) {
-	a := NewGeminiAdapter(&stubTokenSource{}, "p", "global", nil)
+	a := NewGeminiAdapter(bearerFromTokenSource(&stubTokenSource{}), "p", "global", nil)
 	if a.httpClient.Timeout == 0 {
 		t.Error("HTTP client should have a non-zero timeout")
 	}

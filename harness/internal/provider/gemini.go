@@ -15,8 +15,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
-	"golang.org/x/oauth2"
 
+	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -40,15 +40,15 @@ const (
 
 // GeminiAdapter implements ProviderAdapter for Vertex AI's
 // :streamGenerateContent endpoint. Auth is OAuth2 (a Google access token
-// fetched from the configured TokenSource on every Stream call) — never
-// an AI Studio API key. The adapter is text-and-tools only; multimodal
-// input and Google's server-side built-in tools are out of scope.
+// fetched via the bearer closure on every Stream call) — never an AI
+// Studio API key. The adapter is text-and-tools only; multimodal input
+// and Google's server-side built-in tools are out of scope.
 type GeminiAdapter struct {
-	tokenSource oauth2.TokenSource
-	projectID   string
-	location    string
-	safety      []types.GeminiSafetySetting
-	httpClient  *http.Client
+	bearer     credential.BearerTokenFunc
+	projectID  string
+	location   string
+	safety     []types.GeminiSafetySetting
+	httpClient *http.Client
 
 	// baseURLOverride is set by tests to point the adapter at an
 	// httptest.Server. Production runs leave it empty so the URL is
@@ -72,16 +72,22 @@ type GeminiAdapter struct {
 // :streamGenerateContent endpoint. The HTTP client mirrors the
 // timeout shape used by the other adapters (120s overall, 10s TLS,
 // 30s response-header, 90s idle).
+//
+// bearer is invoked on every Stream call to fetch a fresh Google OAuth2
+// access token. The credential layer is responsible for caching and
+// refreshing (see credential.bearerFromTokenSource, which wraps an
+// oauth2.ReuseTokenSource); the adapter just forwards the resulting
+// string into the Authorization header.
 func NewGeminiAdapter(
-	ts oauth2.TokenSource,
+	bearer credential.BearerTokenFunc,
 	projectID, location string,
 	safety []types.GeminiSafetySetting,
 ) *GeminiAdapter {
 	return &GeminiAdapter{
-		tokenSource: ts,
-		projectID:   projectID,
-		location:    location,
-		safety:      safety,
+		bearer:    bearer,
+		projectID: projectID,
+		location:  location,
+		safety:    safety,
 		httpClient: &http.Client{
 			Timeout: 120 * time.Second,
 			Transport: &http.Transport{
@@ -150,13 +156,14 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	// adapter does not need it. Future work that surfaces tool-call IDs
 	// across turns (e.g. issue #93 follow-up) would consume this map here.
 
-	// Acquire a fresh Google access token. ReuseTokenSource (the
-	// recommended wrapper) caches and refreshes for free, so Token()
-	// returns immediately when the cached token is still valid.
-	token, err := g.tokenSource.Token()
+	// Acquire a fresh Google access token via the bearer closure. The
+	// credential layer wraps oauth2.ReuseTokenSource so a cached token is
+	// returned with no IO when still valid; only on expiry does the
+	// closure round-trip to the OAuth2 endpoint.
+	token, err := g.bearer(ctx)
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)
-		return nil, fmt.Errorf("acquire google token: %w", err)
+		return nil, fmt.Errorf("resolve bearer token: %w", err)
 	}
 
 	url := g.buildURL(params.Model)
@@ -166,7 +173,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
