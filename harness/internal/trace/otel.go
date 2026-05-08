@@ -42,6 +42,26 @@ const (
 	genAIToolNameKey       = "gen_ai.tool.name"
 )
 
+// genAIProviderName maps stirrup provider type strings to the OTel GenAI
+// `gen_ai.provider.name` enum values defined at
+// https://opentelemetry.io/docs/specs/semconv/attributes-registry/gen-ai/.
+// Unknown stirrup types fall through to the raw value so future provider
+// types are still observable, even if dashboards don't recognise them.
+func genAIProviderName(stirrupType string) string {
+	switch stirrupType {
+	case "anthropic":
+		return "anthropic"
+	case "bedrock":
+		return "aws.bedrock"
+	case "openai-compatible", "openai-responses":
+		return "openai"
+	case "gemini":
+		return "gcp.vertex_ai"
+	default:
+		return stirrupType
+	}
+}
+
 // OTelTraceEmitter records harness run telemetry as OpenTelemetry spans,
 // exported via OTLP/gRPC to a collector endpoint.
 type OTelTraceEmitter struct {
@@ -132,9 +152,13 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	if config != nil {
 		span.SetAttributes(
 			attribute.String("run.mode", config.Mode),
-			// Dual-emit pair: run.provider (stirrup) + gen_ai.provider.name (GenAI semconv).
+			// Dual-emit pair: run.provider (stirrup, raw internal type) +
+			// gen_ai.provider.name (GenAI semconv, translated enum value).
+			// run.provider keeps stirrup's internal vocabulary (e.g.
+			// "openai-compatible") while gen_ai.provider.name surfaces the
+			// spec enum value ("openai") so vendor APM dashboards match.
 			attribute.String("run.provider", config.Provider.Type),
-			attribute.String(genAIProviderNameKey, config.Provider.Type),
+			attribute.String(genAIProviderNameKey, genAIProviderName(config.Provider.Type)),
 		)
 		if config.ModelRouter.Model != "" {
 			// Dual-emit pair: run.model (stirrup) + gen_ai.request.model (GenAI semconv).

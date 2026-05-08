@@ -458,6 +458,30 @@ func assertStringSliceAttribute(t *testing.T, span tracetest.SpanStub, key strin
 	t.Errorf("attribute %q not found on span %q", key, span.Name)
 }
 
+// TestGenAIProviderName pins the stirrup→OTel GenAI provider enum
+// translation table. Vendor APM dashboards filter on the spec enum
+// values; if any of these mappings drift, dashboards stop matching
+// stirrup spans for that provider with no other surface signal.
+func TestGenAIProviderName(t *testing.T) {
+	cases := []struct {
+		stirrupType string
+		want        string
+	}{
+		{"anthropic", "anthropic"},
+		{"bedrock", "aws.bedrock"},
+		{"openai-compatible", "openai"},
+		{"openai-responses", "openai"},
+		{"gemini", "gcp.vertex_ai"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.stirrupType, func(t *testing.T) {
+			if got := genAIProviderName(tc.stirrupType); got != tc.want {
+				t.Errorf("genAIProviderName(%q) = %q, want %q", tc.stirrupType, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestOTelTraceEmitter_GenAIAttributes exhaustively pins the OTel
 // GenAI semantic-convention attribute set added by issue #108. The
 // dual-emit invariant is also asserted opportunistically inside the
