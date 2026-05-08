@@ -569,6 +569,153 @@ func TestAnthropicWIFSource_MissingRequiredFieldsAtResolve(t *testing.T) {
 	}
 }
 
+// TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight pins the
+// oauth2.ReuseTokenSource single-flight contract under contention.
+// Twenty goroutines start simultaneously, each call cred.BearerToken
+// expecting a fresh token; the underlying exchange must run exactly
+// once because ReuseTokenSource serialises refresh while the cached
+// token is still missing/expired. Without this, every concurrent
+// adapter request during a token-rotation window would slam the
+// exchange endpoint in parallel, exhausting Anthropic's rate budget
+// and amplifying any transient federation failure.
+func TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
+	var exchanges atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Sleep widens the contention window so a non-locking
+		// implementation would reliably produce >1 exchange.
+		exchanges.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(anthropicOAuthResponse{
+			AccessToken: "concurrent-tok",
+			TokenType:   "Bearer",
+			ExpiresIn:   3600,
+		})
+	}))
+	defer srv.Close()
+
+	src := newAnthropicWIFSourceForTest(
+		t,
+		&stubTokenSource{token: []byte("oidc")},
+		testFederationRuleID, testOrganizationID, testServiceAccountID, "",
+		srv.URL,
+	)
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	const goroutines = 20
+	results := make(chan string, goroutines)
+	errs := make(chan error, goroutines)
+	start := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			<-start
+			tok, err := cred.BearerToken(context.Background())
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- tok
+		}()
+	}
+	close(start) // all 20 race on the cached-token slot at once
+
+	for i := 0; i < goroutines; i++ {
+		select {
+		case tok := <-results:
+			if tok != "concurrent-tok" {
+				t.Errorf("goroutine %d got %q, want concurrent-tok", i, tok)
+			}
+		case err := <-errs:
+			t.Fatalf("goroutine returned error: %v", err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for goroutines")
+		}
+	}
+	if got := exchanges.Load(); got != 1 {
+		t.Errorf("exchange count = %d, want 1 (ReuseTokenSource must serialise refresh)", got)
+	}
+}
+
+// TestAnthropicWIFSource_NetworkError covers the http.Client.Do
+// failure path: a closed/refused server should produce a clear
+// "token request" error rather than a nil-pointer panic or a generic
+// I/O error operators cannot triage. Mirrors the HTTP-status-error
+// test above but exercises the connection-establishment branch.
+func TestAnthropicWIFSource_NetworkError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Fatal("handler must not be reached after server is closed")
+	}))
+	url := srv.URL
+	srv.Close() // server is now refusing connections
+
+	src := newAnthropicWIFSourceForTest(
+		t,
+		&stubTokenSource{token: []byte("oidc")},
+		testFederationRuleID, testOrganizationID, testServiceAccountID, "",
+		url,
+	)
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = cred.BearerToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error against closed server")
+	}
+	if !strings.Contains(err.Error(), "Anthropic WIF:") {
+		t.Errorf("error should be prefixed with \"Anthropic WIF:\", got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "token request") {
+		t.Errorf("error should mention \"token request\", got: %v", err)
+	}
+}
+
+// TestAnthropicWIFSource_NegativeExpiresInFallback documents the
+// safe-default behaviour for a malformed expires_in. The same code
+// branch (lifetime <= 0 → 1h) covers both the JSON-omitted case
+// (already tested above) and a hostile/buggy server returning a
+// negative value; without this test, a future refactor that uses
+// `if parsed.ExpiresIn == 0` would silently regress on the negative
+// case and produce a token whose Expiry is in the past — every
+// adapter request would re-exchange.
+func TestAnthropicWIFSource_NegativeExpiresInFallback(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"tok","token_type":"Bearer","expires_in":-600}`))
+	}))
+	defer srv.Close()
+
+	src := newAnthropicWIFSourceForTest(
+		t,
+		&stubTokenSource{token: []byte("oidc")},
+		testFederationRuleID, testOrganizationID, testServiceAccountID, "",
+		srv.URL,
+	)
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	tok1, err := cred.BearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("BearerToken first: %v", err)
+	}
+	tok2, err := cred.BearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("BearerToken second: %v", err)
+	}
+	if tok1 != "tok" || tok2 != "tok" {
+		t.Errorf("bearer = (%q, %q), want both \"tok\"", tok1, tok2)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("exchange hit %d times, want 1 (negative expires_in must trigger 1-hour fallback)", got)
+	}
+}
+
 // TestAnthropicWIFSource_TokenSourceError verifies that an underlying
 // TokenSource failure is wrapped, not swallowed. Operators need the
 // inner cause to debug "the GHA OIDC endpoint is down" vs "Anthropic

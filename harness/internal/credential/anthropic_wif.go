@@ -197,6 +197,15 @@ func (t *anthropicWIFTokenSource) Token() (*oauth2.Token, error) {
 
 	resp, err := t.src.httpClient.Do(req)
 	if err != nil {
+		// TODO(issue #117 follow-up): emit a `federation_exchange_failed`
+		// security event here so operators can dashboard refresh
+		// failures alongside other security events. The credential
+		// package today has no SecurityLogger handle — adding one
+		// requires either a callback wired by the factory (preferred)
+		// or moving SecurityLogger into a leaf package. Tracked in
+		// the remediation brief I-finding "Missing federation_exchange_failed
+		// security event" and deferred from this remediation pass to
+		// keep its scope tight.
 		return nil, fmt.Errorf("Anthropic WIF: token request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
