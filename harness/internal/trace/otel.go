@@ -16,6 +16,32 @@ import (
 	"github.com/rxbynerd/stirrup/types/version"
 )
 
+// OpenTelemetry GenAI semantic-convention attribute keys.
+//
+// These are dual-emitted alongside the original stirrup-prefixed
+// attributes (run.*, turn.*, tool.*) per ADR-0001
+// (docs/adr/0001-otel-genai-attribute-alignment.md). The dual-emit
+// window keeps existing operator dashboards working while letting
+// off-the-shelf APM dashboards (Honeycomb, Datadog, Grafana, New
+// Relic) recognise stirrup spans via the GenAI namespace. The
+// stirrup-prefixed names are scheduled for removal in a future minor
+// release once the GenAI semconv attributes graduate from
+// Development to Stable; see ADR-0001 for the timeline and
+// rationale.
+//
+// Spec: https://opentelemetry.io/docs/specs/semconv/gen-ai/
+const (
+	genAISystemKey         = "gen_ai.system"
+	genAIRequestModelKey   = "gen_ai.request.model"
+	genAIAgentIDKey        = "gen_ai.agent.id"
+	genAIConversationIDKey = "gen_ai.conversation.id"
+	genAIOperationNameKey  = "gen_ai.operation.name"
+	genAIUsageInputTokens  = "gen_ai.usage.input_tokens"
+	genAIUsageOutputTokens = "gen_ai.usage.output_tokens"
+	genAIFinishReasonsKey  = "gen_ai.response.finish_reasons"
+	genAIToolNameKey       = "gen_ai.tool.name"
+)
+
 // OTelTraceEmitter records harness run telemetry as OpenTelemetry spans,
 // exported via OTLP/gRPC to a collector endpoint.
 type OTelTraceEmitter struct {
@@ -96,7 +122,9 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	ctx := context.Background()
 	ctx, span := e.tracer.Start(ctx, "run",
 		oteltrace.WithAttributes(
+			// Dual-emit pair: run.id (stirrup) + gen_ai.agent.id (GenAI semconv).
 			attribute.String("run.id", runID),
+			attribute.String(genAIAgentIDKey, runID),
 			attribute.String("harness.version", version.Version()),
 		),
 	)
@@ -104,16 +132,28 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	if config != nil {
 		span.SetAttributes(
 			attribute.String("run.mode", config.Mode),
+			// Dual-emit pair: run.provider (stirrup) + gen_ai.system (GenAI semconv).
 			attribute.String("run.provider", config.Provider.Type),
+			attribute.String(genAISystemKey, config.Provider.Type),
 		)
 		if config.ModelRouter.Model != "" {
-			span.SetAttributes(attribute.String("run.model", config.ModelRouter.Model))
+			// Dual-emit pair: run.model (stirrup) + gen_ai.request.model (GenAI semconv).
+			span.SetAttributes(
+				attribute.String("run.model", config.ModelRouter.Model),
+				attribute.String(genAIRequestModelKey, config.ModelRouter.Model),
+			)
 		}
 		if config.SessionName != "" {
 			// Set on the root span so child spans inherit access via context.
 			// Skipped when empty so we don't pollute traces with empty
 			// attributes for runs that did not specify a label.
-			span.SetAttributes(attribute.String("run.session_name", config.SessionName))
+			//
+			// Dual-emit pair: run.session_name (stirrup) +
+			// gen_ai.conversation.id (GenAI semconv).
+			span.SetAttributes(
+				attribute.String("run.session_name", config.SessionName),
+				attribute.String(genAIConversationIDKey, config.SessionName),
+			)
 		}
 	}
 
@@ -148,11 +188,26 @@ func (e *OTelTraceEmitter) RecordTurn(turn types.TurnTrace) {
 		oteltrace.WithTimestamp(spanStart),
 		oteltrace.WithAttributes(
 			attribute.Int("turn.number", turn.Turn),
+			// Dual-emit pair: turn.tokens.input (stirrup) +
+			// gen_ai.usage.input_tokens (GenAI semconv).
 			attribute.Int("turn.tokens.input", turn.Tokens.Input),
+			attribute.Int(genAIUsageInputTokens, turn.Tokens.Input),
+			// Dual-emit pair: turn.tokens.output (stirrup) +
+			// gen_ai.usage.output_tokens (GenAI semconv).
 			attribute.Int("turn.tokens.output", turn.Tokens.Output),
+			attribute.Int(genAIUsageOutputTokens, turn.Tokens.Output),
 			attribute.Int("turn.tool_calls", turn.ToolCalls),
+			// Dual-emit pair: turn.stop_reason (stirrup, scalar) +
+			// gen_ai.response.finish_reasons (GenAI semconv, array).
+			// The GenAI semconv defines finish_reasons as a string
+			// array, so we wrap our single reason in a one-element
+			// slice rather than emitting a scalar that downstream
+			// consumers would have to special-case.
 			attribute.String("turn.stop_reason", turn.StopReason),
+			attribute.StringSlice(genAIFinishReasonsKey, []string{turn.StopReason}),
 			attribute.Int64("turn.duration_ms", turn.DurationMs),
+			// Per GenAI semconv, a turn is a chat completion.
+			attribute.String(genAIOperationNameKey, "chat"),
 		),
 	)
 	span.End(oteltrace.WithTimestamp(spanEnd))
@@ -175,7 +230,9 @@ func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	_, span := e.tracer.Start(e.rootCtx, "tool_call",
 		oteltrace.WithTimestamp(spanStart),
 		oteltrace.WithAttributes(
+			// Dual-emit pair: tool.name (stirrup) + gen_ai.tool.name (GenAI semconv).
 			attribute.String("tool.name", call.Name),
+			attribute.String(genAIToolNameKey, call.Name),
 			attribute.Bool("tool.success", call.Success),
 			attribute.Int64("tool.duration_ms", call.DurationMs),
 		),
