@@ -1825,6 +1825,21 @@ func validateAzureWIFCrossField(path string, cfg ProviderConfig, errs *[]string)
 	if cfg.Credential == nil || cfg.Credential.Type != "azure-workload-identity" {
 		return
 	}
+	// Azure WIF only makes sense for the OpenAI-shaped adapters that
+	// speak to Azure OpenAI / Foundry. The other provider types
+	// (anthropic, bedrock, gemini) have their own auth contracts and
+	// would silently ignore a Bearer produced by an Entra exchange,
+	// so an operator pointing them at azure-workload-identity is
+	// almost certainly a configuration mistake. Defence-in-depth: the
+	// CLI shortcut path requires --provider=openai-* in practice, but
+	// a hand-authored --config or a control-plane payload could still
+	// reach validation with this combination.
+	if cfg.Type != "openai-compatible" && cfg.Type != "openai-responses" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: azure-workload-identity is only supported with openai-compatible or openai-responses provider types (got %q)",
+			path, cfg.Type,
+		))
+	}
 	if cfg.APIKeyRef != "" {
 		*errs = append(*errs, fmt.Sprintf(
 			"%s: azure-workload-identity does not use apiKeyRef; remove it (the bearer is fetched via OAuth2 token exchange)",

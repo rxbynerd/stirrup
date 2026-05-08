@@ -2901,6 +2901,30 @@ func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
 			wantErr:   true,
 			errSubstr: "azure-workload-identity requires Authorization: Bearer",
 		},
+		{
+			name: "azure-workload-identity rejected with anthropic provider type",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type: "anthropic",
+					Credential: &CredentialConfig{
+						Type:          "azure-workload-identity",
+						AzureTenantID: validTenant,
+						AzureClientID: validClient,
+						TokenSource: &TokenSourceConfig{
+							Type: "file",
+							Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+						},
+					},
+				}
+				c.ModelRouter = ModelRouterConfig{
+					Type:     "static",
+					Provider: "anthropic",
+					Model:    "claude-sonnet-4-6",
+				}
+			},
+			wantErr:   true,
+			errSubstr: "azure-workload-identity is only supported with openai-compatible or openai-responses",
+		},
 	}
 
 	for _, tc := range cases {
@@ -2921,6 +2945,46 @@ func TestValidateRunConfig_AzureWorkloadIdentity(t *testing.T) {
 				t.Fatalf("expected no error, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestValidateRunConfig_AzureWIFIncompatibleProvider is a focused
+// regression check on the provider-type guard: a credential block of
+// type azure-workload-identity must not pair with non-OpenAI provider
+// types. The error message must name both the failing credential type
+// and the accepted provider types so an operator can grep for the
+// fix path. Defence-in-depth alongside the in-table coverage in
+// TestValidateRunConfig_AzureWorkloadIdentity.
+func TestValidateRunConfig_AzureWIFIncompatibleProvider(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{
+		Type: "anthropic",
+		Credential: &CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-2222-3333-4444-555555555555",
+			AzureClientID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			TokenSource: &TokenSourceConfig{
+				Type: "file",
+				Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+			},
+		},
+	}
+	c.ModelRouter = ModelRouterConfig{
+		Type:     "static",
+		Provider: "anthropic",
+		Model:    "claude-sonnet-4-6",
+	}
+
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "azure-workload-identity") {
+		t.Errorf("error should name azure-workload-identity, got: %v", err)
+	}
+	if !strings.Contains(msg, "openai-compatible") {
+		t.Errorf("error should name openai-compatible as accepted type, got: %v", err)
 	}
 }
 
