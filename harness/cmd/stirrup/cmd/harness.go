@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"time"
@@ -209,33 +210,13 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 		config.Provider.Credential = &types.CredentialConfig{Type: "gcp-service-account"}
 	}
 
-	// Anthropic Workload Identity Federation (issue #117). Setting any
-	// of the four ID fields implies credential.type=anthropic-wif
-	// because the IDs are meaningless under the static-API-key default.
-	// The flag-only path can populate them directly here; env-var
-	// fallback and token-source inference run later via
-	// applyAnthropicWIFOverrides so both --config and flag-only paths
-	// agree on the env precedence chain.
-	if opts.ProviderType == "anthropic" && (opts.AnthropicFederationRuleID != "" ||
-		opts.AnthropicOrganizationID != "" ||
-		opts.AnthropicServiceAccountID != "" ||
-		opts.AnthropicWorkspaceID != "") {
-		if config.Provider.Credential == nil {
-			config.Provider.Credential = &types.CredentialConfig{Type: "anthropic-wif"}
-		}
-		if opts.AnthropicFederationRuleID != "" {
-			config.Provider.Credential.FederationRuleID = opts.AnthropicFederationRuleID
-		}
-		if opts.AnthropicOrganizationID != "" {
-			config.Provider.Credential.OrganizationID = opts.AnthropicOrganizationID
-		}
-		if opts.AnthropicServiceAccountID != "" {
-			config.Provider.Credential.ServiceAccountID = opts.AnthropicServiceAccountID
-		}
-		if opts.AnthropicWorkspaceID != "" {
-			config.Provider.Credential.WorkspaceID = opts.AnthropicWorkspaceID
-		}
-	}
+	// Anthropic Workload Identity Federation (issue #117) is populated
+	// exclusively by applyAnthropicWIFOverrides at the runHarness call
+	// site — it owns flag + env-var precedence for both the --config
+	// path and the flag-only path, so duplicating the flag path here
+	// would only create drift the next time a fifth WIF field lands.
+	// Keep this comment as a signpost so future edits do not re-add a
+	// parallel population block.
 
 	// Safety-ring fields are wired only when the caller supplied them
 	// so ValidateRunConfig's mode-aware defaulting (e.g. CodeScanner
@@ -405,7 +386,7 @@ func init() {
 	f.String("anthropic-organization-id", "", "Anthropic organization UUID. Required with WIF. Env fallback: ANTHROPIC_ORGANIZATION_ID.")
 	f.String("anthropic-service-account-id", "", "Anthropic service account ID (`svac_...`). Required with WIF. Env fallback: ANTHROPIC_SERVICE_ACCOUNT_ID.")
 	f.String("anthropic-workspace-id", "", "Anthropic workspace ID (`wrkspc_...`) or `default`. Conditional. Env fallback: ANTHROPIC_WORKSPACE_ID.")
-	f.Bool("anthropic-from-github-actions", false, "Enable GitHub Actions OIDC token source for Anthropic WIF. Reads ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN from the runner environment. Mutually exclusive with `--config` token sources.")
+	f.Bool("anthropic-from-github-actions", false, "Enable GitHub Actions OIDC token source for Anthropic WIF. Reads ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN from the runner environment. Ignored (with a warning) if `--config` already sets `credential.tokenSource`.")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
 	f.Int("timeout", 600, "Wall-clock timeout in seconds")
@@ -910,19 +891,17 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 	f := cmd.Flags()
 	changed := func(name string) bool { return f.Changed(name) }
 
-	// Step 1 — federation IDs from flags + env. Local helpers keep the
-	// dispatch table compact.
+	// Step 1 — federation IDs from flags + env. Local helper keeps the
+	// dispatch table compact. The middle "registered-default" branch
+	// from an earlier draft has been collapsed: all four
+	// --anthropic-* WIF flags register an empty-string default, so a
+	// non-changed flag is always "", and falling through to env-var
+	// lookup is the correct behaviour. Mirrors the gcp-credentials-file
+	// shape elsewhere in this file.
 	resolveID := func(flagName, envName string) string {
 		if changed(flagName) {
 			v, _ := f.GetString(flagName)
 			return v
-		}
-		// Cobra returns the registered default when the flag was not
-		// passed; for these flags the default is "" so we can use the
-		// flag value directly when no env var is set.
-		flagVal, _ := f.GetString(flagName)
-		if flagVal != "" {
-			return flagVal
 		}
 		return os.Getenv(envName)
 	}
@@ -978,6 +957,16 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 	// always wins; we only fill in the slot when it is nil. Order
 	// follows the issue's documented precedence: explicit GHA opt-in
 	// first, then the two ANTHROPIC_IDENTITY_TOKEN_* env vars.
+	//
+	// If the operator passed --anthropic-from-github-actions but a
+	// --config file already set credential.tokenSource, the flag has
+	// no effect. Surface this as a warning so it is not silently
+	// dropped — the config file wins, but the operator should know
+	// their flag was discarded so they can fix the redundancy.
+	if fromGHA && cfg.Provider.Credential.TokenSource != nil {
+		slog.Warn("--anthropic-from-github-actions ignored: config file already specifies credential.tokenSource",
+			"existing_type", cfg.Provider.Credential.TokenSource.Type)
+	}
 	if cfg.Provider.Credential.TokenSource == nil {
 		switch {
 		case fromGHA:

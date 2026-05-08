@@ -2493,6 +2493,41 @@ func TestApplyAnthropicWIF_ConflictingExplicitTypeRejected(t *testing.T) {
 	}
 }
 
+// TestApplyAnthropicWIF_ExistingStaticTypePromoted documents the
+// "static" sub-path of the type-inference branch: when a --config file
+// names credential.type="static" (the documented synonym for the
+// default key-based path) and the operator layers WIF flags on top,
+// applyAnthropicWIFOverrides must promote the type to anthropic-wif
+// rather than rejecting the run as a conflict. This is the upgrade
+// path from a key-based config to a federated one.
+func TestApplyAnthropicWIF_ExistingStaticTypePromoted(t *testing.T) {
+	clearAnthropicWIFEnv(t)
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("anthropic-federation-rule-id", "fdrl_flagrule")
+	mustSet("anthropic-organization-id", "99999999-9999-9999-9999-999999999999")
+	mustSet("anthropic-service-account-id", "svac_flagsa")
+
+	cfg := anthropicWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{Type: "static"}
+
+	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyAnthropicWIFOverrides: %v", err)
+	}
+
+	if cfg.Provider.Credential.Type != "anthropic-wif" {
+		t.Errorf("Credential.Type = %q, want anthropic-wif (static must be promoted)", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.FederationRuleID != "fdrl_flagrule" {
+		t.Errorf("FederationRuleID = %q, want fdrl_flagrule", cfg.Provider.Credential.FederationRuleID)
+	}
+}
+
 // TestApplyAnthropicWIF_ExistingTokenSourcePreserved guards the rule
 // that an explicit token source from --config always wins. Even when
 // --anthropic-from-github-actions is set, an existing TokenSource must
