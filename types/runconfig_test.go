@@ -2044,6 +2044,101 @@ func TestValidateRunConfig_GeminiProvider(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_GeminiModelNameWithSlash verifies B5: a Vertex
+// model name containing a slash (or other URL-reserved bytes) is
+// rejected at validation time. The adapter url.PathEscape's the name
+// at the request-construction layer, but a model identifier with
+// slashes is almost always a copy-paste error or malicious input —
+// surface it loudly rather than letting a percent-encoded path land at
+// a real (but unintended) Vertex endpoint.
+func TestValidateRunConfig_GeminiModelNameWithSlash(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(c *RunConfig)
+		errSubstr string
+	}{
+		{
+			name: "modelRouter.model with traversal",
+			mutate: func(c *RunConfig) {
+				c.ModelRouter = ModelRouterConfig{
+					Type:     "static",
+					Provider: "gemini",
+					Model:    "gemini-pro/../../evil",
+				}
+			},
+			errSubstr: "modelRouter.model",
+		},
+		{
+			name: "modelRouter.model with bare slash",
+			mutate: func(c *RunConfig) {
+				c.ModelRouter = ModelRouterConfig{
+					Type:     "static",
+					Provider: "gemini",
+					Model:    "publishers/google/models/gemini-2.5-pro",
+				}
+			},
+			errSubstr: "modelRouter.model",
+		},
+		{
+			name: "modelRouter.model with percent",
+			mutate: func(c *RunConfig) {
+				c.ModelRouter = ModelRouterConfig{
+					Type:     "static",
+					Provider: "gemini",
+					Model:    "gemini%2F../alt",
+				}
+			},
+			errSubstr: "modelRouter.model",
+		},
+		{
+			name: "default provider gemini, empty router provider",
+			mutate: func(c *RunConfig) {
+				// ModelRouter.Provider unset — falls back to top-level
+				// Provider.Type which is gemini. Validation must still
+				// fire for the model-name shape.
+				c.ModelRouter = ModelRouterConfig{
+					Type:  "static",
+					Model: "gemini-pro/../../evil",
+				}
+			},
+			errSubstr: "modelRouter.model",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := geminiValidConfig()
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected validation error containing %q, got nil", tc.errSubstr)
+			}
+			if !strings.Contains(err.Error(), tc.errSubstr) {
+				t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_GeminiModelNameValid pins that an ordinary
+// Vertex model identifier passes through cleanly. Catches a regression
+// where the new check accidentally rejects all gemini configs.
+func TestValidateRunConfig_GeminiModelNameValid(t *testing.T) {
+	for _, model := range []string{"gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro_001"} {
+		t.Run(model, func(t *testing.T) {
+			c := geminiValidConfig()
+			c.ModelRouter = ModelRouterConfig{
+				Type:     "static",
+				Provider: "gemini",
+				Model:    model,
+			}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for valid model %q, got: %v", model, err)
+			}
+		})
+	}
+}
+
 // TestValidateRunConfig_GeminiFieldsLeakRejected verifies that the four
 // gemini-only ProviderConfig fields cannot ride along on a non-gemini
 // provider. A stale value from an earlier provider-type choice would

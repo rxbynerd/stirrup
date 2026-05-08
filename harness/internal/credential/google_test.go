@@ -355,6 +355,24 @@ func TestBuildSource_ExplicitGCPServiceAccount(t *testing.T) {
 	}
 }
 
+// TestBuildSource_UnsupportedGCPCredentialTypeReturnsError verifies
+// that an unrecognised credential.type on a gemini provider produces
+// a clear error rather than silently falling through to the default
+// ADC source. A typo like "gcp-unkown" should fail loudly so the
+// operator knows the credential layer never honoured their intent.
+func TestBuildSource_UnsupportedGCPCredentialTypeReturnsError(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "gemini",
+		Credential: &types.CredentialConfig{
+			Type: "gcp-unknown",
+		},
+	}
+	_, err := BuildSource(cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for unsupported gcp credential type, got nil")
+	}
+}
+
 func TestBuildSource_ExplicitGCPWorkloadIdentity(t *testing.T) {
 	cfg := types.ProviderConfig{
 		Type: "gemini",

@@ -18,6 +18,16 @@ import "encoding/json"
 // surfaces as the run's outcome string. The authoritative consumer is
 // harness/internal/core/loop.go (see the run loop's stop-reason switch
 // near the end of the turn handler).
+//
+// ProviderAdapter implementer note: the agentic loop dispatches tool
+// calls only when StopReason == "tool_use". Adapters MUST emit
+// "tool_use" whenever the stream contains one or more tool/function
+// calls, regardless of the provider's own finish-reason vocabulary —
+// for example, Vertex AI returns finishReason="STOP" for both plain
+// end-of-turn responses and tool-call turns, and the gemini adapter
+// remaps STOP → "tool_use" when at least one functionCall part was
+// observed in the stream. Skipping this remap leaves the model's tool
+// calls undispatched and the loop terminates with end_turn instead.
 type StreamEvent struct {
 	Type         string         `json:"type"` // "text_delta" | "tool_call" | "message_complete" | "error"
 	Text         string         `json:"text,omitempty"`

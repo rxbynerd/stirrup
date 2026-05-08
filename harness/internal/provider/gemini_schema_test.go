@@ -120,6 +120,16 @@ func TestConvertSchema_Cases(t *testing.T) {
 			expectErr: "discriminated unions",
 		},
 		{
+			// Mirror of the anyOf nullable-collapse case for the oneOf
+			// keyword. Both keywords share the same collapse logic
+			// (collapseUnionBranches), but exercising both keeps the
+			// converter symmetric and guards against a future refactor
+			// that splits one branch from the other.
+			name: "oneOf with one branch plus null is nullable",
+			in:   `{"oneOf":[{"type":"string"},{"type":"null"}]}`,
+			want: `{"type":"STRING","nullable":true}`,
+		},
+		{
 			name:      "ref errors",
 			in:        `{"$ref":"#/$defs/Foo"}`,
 			expectErr: "$ref is not supported",
