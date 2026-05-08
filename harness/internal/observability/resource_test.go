@@ -127,6 +127,76 @@ func TestBuildResource_RunModeOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestBuildResource_EnvVarSanitisation locks down the BLK-2 fix: hostile
+// env-var values must not reach OTLP exporters. The RunConfig validation
+// path screens via validateObservabilityConfig, but the env-var fallback
+// used to call attribute.String() with the raw os.Getenv result. An
+// attacker with K8s ConfigMap write access could inject newlines, oversized
+// strings, or "=" delimiters into every emitted span and metric batch.
+// Sanitisation is now applied symmetrically.
+func TestBuildResource_EnvVarSanitisation(t *testing.T) {
+	t.Run("newline-laced env value falls back to default", func(t *testing.T) {
+		// A real attack vector: an environment variable that smuggles a
+		// second key=value pair via newline delimiters. OTLP serialisers do
+		// not see this as malformed because attribute.String accepts any
+		// UTF-8 — the damage is done at the backend's parsing layer.
+		t.Setenv(envEnvironment, "prod\nservice.name=evil")
+		t.Setenv(envServiceNamespace, "")
+
+		got := attrMap(BuildResource(ResourceOptions{}))
+
+		if v := got["deployment.environment"]; v != DefaultEnvironment {
+			t.Errorf("deployment.environment: hostile env value should be rejected, got %q want %q", v, DefaultEnvironment)
+		}
+	})
+
+	t.Run("oversized env value falls back to default", func(t *testing.T) {
+		// 65 chars; the pattern caps at 64. Exceeding the cap is a
+		// realistic operator mistake (paste-from-uuid-tooling) as well as
+		// a deliberate flood: backends like Prometheus truncate or reject
+		// over-long labels, and Grafana dashboards then group rows in
+		// surprising ways.
+		oversized := "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl5"
+		if len(oversized) != 65 {
+			t.Fatalf("test fixture broken: oversized has %d chars, want 65", len(oversized))
+		}
+		t.Setenv(envEnvironment, oversized)
+		t.Setenv(envServiceNamespace, "")
+
+		got := attrMap(BuildResource(ResourceOptions{}))
+
+		if v := got["deployment.environment"]; v != DefaultEnvironment {
+			t.Errorf("deployment.environment: oversized env value should be rejected, got %q (len %d) want %q", v, len(v), DefaultEnvironment)
+		}
+	})
+
+	t.Run("valid env value passes through", func(t *testing.T) {
+		// A name that satisfies the pattern must reach the resource
+		// untouched — sanitisation is a screen, not a transform.
+		t.Setenv(envEnvironment, "")
+		t.Setenv(envServiceNamespace, "valid-ns")
+
+		got := attrMap(BuildResource(ResourceOptions{}))
+
+		if v := got["service.namespace"]; v != "valid-ns" {
+			t.Errorf("service.namespace: valid env value should pass through, got %q want valid-ns", v)
+		}
+	})
+
+	t.Run("equals-sign env value falls back to default", func(t *testing.T) {
+		// "=" is rejected by the pattern; an attacker could otherwise
+		// smuggle a key=value pair into a single attribute body.
+		t.Setenv(envEnvironment, "")
+		t.Setenv(envServiceNamespace, "evil=injected")
+
+		got := attrMap(BuildResource(ResourceOptions{}))
+
+		if v := got["service.namespace"]; v != DefaultServiceNamespace {
+			t.Errorf("service.namespace: env value with '=' should be rejected, got %q want %q", v, DefaultServiceNamespace)
+		}
+	})
+}
+
 // TestInstanceID_Stable proves the instance ID is generated once per
 // process and reused for the lifetime of that process. Spec compliance:
 // service.instance.id must uniquely identify a single running instance,

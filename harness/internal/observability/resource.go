@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"os"
+	"regexp"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -36,15 +37,22 @@ const DefaultServiceNamespace = "stirrup"
 const DefaultEnvironment = "local"
 
 // envEnvironment / envServiceNamespace are the env-var fallbacks consulted
-// when ResourceOptions does not pin a value. We use Stirrup-prefixed env
-// vars (OTEL_*) to ride the same convention OpenTelemetry's own SDK uses for
-// resource-attribute env vars; see resource.Default()'s handling of
-// OTEL_RESOURCE_ATTRIBUTES, which still applies on top of the values we set
-// explicitly here.
+// when ResourceOptions does not pin a value. We adopt the OTEL_ naming prefix
+// for discoverability alongside the SDK's own OTEL_RESOURCE_ATTRIBUTES.
+// These are Stirrup-specific env vars — they are not part of the OTel SDK
+// specification.
 const (
 	envEnvironment      = "OTEL_DEPLOYMENT_ENVIRONMENT"
 	envServiceNamespace = "OTEL_SERVICE_NAMESPACE"
 )
+
+// observabilityLabelPattern mirrors the canonical types.observabilityLabelPattern
+// used by ValidateRunConfig. It is duplicated here (rather than imported) to
+// keep the observability package free of any dependency on the types package's
+// validation surface, which would create an import cycle if the types package
+// ever needs to read a constructed Resource. If the canonical pattern in
+// types/runconfig.go changes, update this one too.
+var observabilityLabelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 var (
 	instanceIDOnce sync.Once
@@ -87,12 +95,15 @@ func InstanceID() string {
 type ResourceOptions struct {
 	Environment      string
 	ServiceNamespace string
-	RunMode          string
+	// RunMode is derived from RunConfig.Mode — not from ObservabilityConfig.
+	// Do not add it to ObservabilityConfig or the proto message: it is a
+	// derived attribute, not an operator-configurable label.
+	RunMode string
 }
 
 // BuildResource builds the OTel Resource that identifies this Stirrup process.
 //
-// It merges three sources, in order of increasing specificity (later wins):
+// It merges two sources, in order of increasing specificity (later wins):
 //  1. resource.Default() — provides telemetry.sdk.{name,language,version},
 //     host.name, and any operator-supplied OTEL_RESOURCE_ATTRIBUTES.
 //     resource.Default() also seeds service.name as
@@ -116,8 +127,14 @@ type ResourceOptions struct {
 // upstream conventions stabilise on the .name form across the ecosystem we
 // will re-evaluate.
 func BuildResource(opts ResourceOptions) *resource.Resource {
-	env := firstNonEmpty(opts.Environment, os.Getenv(envEnvironment), DefaultEnvironment)
-	ns := firstNonEmpty(opts.ServiceNamespace, os.Getenv(envServiceNamespace), DefaultServiceNamespace)
+	// Env-var fallbacks are sanitised against the same character set the
+	// RunConfig validator enforces. Without this, a hostile pod-spec
+	// OTEL_DEPLOYMENT_ENVIRONMENT (e.g. embedded newline, > 64 chars,
+	// containing `=`) would propagate verbatim to every OTLP span and
+	// metric batch — the RunConfig path validates via
+	// validateObservabilityConfig but the env-var path bypassed it.
+	env := sanitiseLabel(firstNonEmpty(opts.Environment, os.Getenv(envEnvironment)), DefaultEnvironment)
+	ns := sanitiseLabel(firstNonEmpty(opts.ServiceNamespace, os.Getenv(envServiceNamespace)), DefaultServiceNamespace)
 
 	attrs := []attribute.KeyValue{
 		semconv.ServiceName(ServiceName),
@@ -136,6 +153,14 @@ func BuildResource(opts ResourceOptions) *resource.Resource {
 		attrs = append(attrs, attribute.String("harness.run.mode", opts.RunMode))
 	}
 
+	// resource.Default() picks up OTEL_RESOURCE_ATTRIBUTES and other SDK
+	// defaults. Our overlay is the second argument and wins on key
+	// conflicts, so our service.namespace and deployment.environment take
+	// precedence over any OTEL_RESOURCE_ATTRIBUTES value for those keys.
+	// Operators who need to set these attributes should use
+	// --deployment-environment / --service-namespace, RunConfig.Observability,
+	// or OTEL_DEPLOYMENT_ENVIRONMENT / OTEL_SERVICE_NAMESPACE — not
+	// OTEL_RESOURCE_ATTRIBUTES.
 	base := resource.Default()
 	overlay := resource.NewWithAttributes(base.SchemaURL(), attrs...)
 	merged, err := resource.Merge(base, overlay)
@@ -155,4 +180,21 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// sanitiseLabel returns v if it matches observabilityLabelPattern, otherwise
+// fallback. Empty inputs also resolve to fallback so callers can use it as
+// a unified "first valid label, else default" reducer. Without this, a
+// hostile env-var value (containing newlines, over 64 bytes, or characters
+// outside the validated charset) would propagate verbatim to every OTLP
+// span and metric batch — the RunConfig path validates via
+// types.validateObservabilityConfig but the env-var path used to bypass it.
+func sanitiseLabel(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	if observabilityLabelPattern.MatchString(v) {
+		return v
+	}
+	return fallback
 }
