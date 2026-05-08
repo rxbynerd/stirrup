@@ -23,6 +23,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -868,7 +869,7 @@ func TestBuildGitStrategy_UnknownFallsBack(t *testing.T) {
 // --- buildTraceEmitter ---
 
 func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, observability.ResourceOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -879,7 +880,7 @@ func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
 
 func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path}, observability.ResourceOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -893,7 +894,7 @@ func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{}, observability.ResourceOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -903,7 +904,7 @@ func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_UnsupportedType(t *testing.T) {
-	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"})
+	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"}, observability.ResourceOptions{})
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -916,7 +917,7 @@ func TestBuildTraceEmitter_JSONLBadPath(t *testing.T) {
 	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{
 		Type:     "jsonl",
 		FilePath: "/nonexistent/deeply/nested/dir/trace.jsonl",
-	})
+	}, observability.ResourceOptions{})
 	if err == nil {
 		t.Fatal("expected error for bad trace file path")
 	}
@@ -1897,6 +1898,49 @@ func TestBuildProvider_UnknownTypeMentionsResponses(t *testing.T) {
 	if !strings.Contains(err.Error(), "openai-responses") {
 		t.Errorf("error message should advertise openai-responses, got: %v", err)
 	}
+}
+
+// TestResourceOptionsFromConfig pins the three branches of
+// resourceOptionsFromConfig in isolation. The full factory exercises the
+// populated and empty branches indirectly, but the nil-config guard is
+// structurally unreachable from BuildLoopWithTransport (which validates
+// for nil before calling) and is easy to remove as "dead code" in a future
+// refactor — this test documents that the guard is load-bearing for any
+// caller that constructs ResourceOptions outside the agentic loop (eval
+// runners, ad-hoc tools).
+func TestResourceOptionsFromConfig(t *testing.T) {
+	t.Run("nil config", func(t *testing.T) {
+		got := resourceOptionsFromConfig(nil)
+		if got != (observability.ResourceOptions{}) {
+			t.Errorf("nil config: got %+v, want zero ResourceOptions", got)
+		}
+	})
+
+	t.Run("empty observability with mode", func(t *testing.T) {
+		got := resourceOptionsFromConfig(&types.RunConfig{Mode: "execution"})
+		want := observability.ResourceOptions{RunMode: "execution"}
+		if got != want {
+			t.Errorf("empty observability: got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("populated observability and mode", func(t *testing.T) {
+		got := resourceOptionsFromConfig(&types.RunConfig{
+			Mode: "planning",
+			Observability: types.ObservabilityConfig{
+				Environment:      "prod",
+				ServiceNamespace: "eval",
+			},
+		})
+		want := observability.ResourceOptions{
+			Environment:      "prod",
+			ServiceNamespace: "eval",
+			RunMode:          "planning",
+		}
+		if got != want {
+			t.Errorf("populated config: got %+v, want %+v", got, want)
+		}
+	})
 }
 
 // --- stubSecretStore ---

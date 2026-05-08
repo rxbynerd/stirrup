@@ -183,6 +183,19 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		gr := guardRailConfigFromProto(pc.GuardRail)
 		rc.GuardRail = &gr
 	}
+	// Observability is a value-typed sub-config in types.RunConfig but a
+	// pointer-typed message on the wire; the nil-guard here is mandatory
+	// to keep an absent proto sub-message from synthesising a zero-value
+	// types.ObservabilityConfig. Same pattern as SessionName / GuardRail
+	// translation: silently dropping this would make a K8s job land in
+	// deployment.environment=local even when the control plane sent a
+	// staging label, which is the exact regression issue #95 fixed.
+	if pc.Observability != nil {
+		rc.Observability = types.ObservabilityConfig{
+			Environment:      pc.Observability.GetEnvironment(),
+			ServiceNamespace: pc.Observability.GetServiceNamespace(),
+		}
+	}
 
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride

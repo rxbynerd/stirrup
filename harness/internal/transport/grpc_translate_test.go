@@ -296,3 +296,47 @@ func TestRunConfigProtoRoundTrip_GuardRailNilStaysNil(t *testing.T) {
 		t.Errorf("GuardRail should be nil when proto field absent; got %+v", rc.GuardRail)
 	}
 }
+
+// TestRunConfigFromProto_ObservabilityPropagates ensures that an
+// ObservabilityConfig set on the proto RunConfig (the wire format used by
+// the gRPC / K8s job path) is copied into the internal types.RunConfig.
+// Without this translation block, every K8s job dispatched via the control
+// plane would silently land in deployment.environment=local because the
+// resource builder would only see the empty fallback after the proto value
+// was dropped on the floor — the same class of bug as the prior SessionName
+// (issue #50) and GuardRail (issue #43) regressions.
+func TestRunConfigFromProto_ObservabilityPropagates(t *testing.T) {
+	pc := &pb.RunConfig{
+		Observability: &pb.ObservabilityConfig{
+			Environment:      "staging",
+			ServiceNamespace: "eval",
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.Observability.Environment != "staging" {
+		t.Errorf("Observability.Environment: got %q, want staging", rc.Observability.Environment)
+	}
+	if rc.Observability.ServiceNamespace != "eval" {
+		t.Errorf("Observability.ServiceNamespace: got %q, want eval", rc.Observability.ServiceNamespace)
+	}
+}
+
+// TestRunConfigFromProto_ObservabilityAbsentWhenNil documents the safe
+// default: when the proto omits the Observability sub-message, the internal
+// RunConfig surfaces a zero-value ObservabilityConfig rather than panicking
+// on a nil dereference. The resource builder then falls through to env-var
+// fallbacks and finally to the documented defaults, which is exactly the
+// path a no-config K8s job (operator pinning environment via OTEL_*
+// variables on the pod spec) takes.
+func TestRunConfigFromProto_ObservabilityAbsentWhenNil(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{})
+
+	if rc.Observability.Environment != "" {
+		t.Errorf("Observability.Environment should be empty when proto field is nil, got %q", rc.Observability.Environment)
+	}
+	if rc.Observability.ServiceNamespace != "" {
+		t.Errorf("Observability.ServiceNamespace should be empty when proto field is nil, got %q", rc.Observability.ServiceNamespace)
+	}
+}

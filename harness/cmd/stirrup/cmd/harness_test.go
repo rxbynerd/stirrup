@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -241,6 +242,56 @@ func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv pins the K8s
+// production path: the operator pins OTEL_DEPLOYMENT_ENVIRONMENT in the
+// pod spec rather than threading the value through a CLI flag. The test
+// proves that buildHarnessRunConfig leaves Observability empty when no
+// flag is set, and that observability.BuildResource then picks the env
+// var up via its fallback chain. Without this end-to-end coverage at the
+// harness layer, REC-2's guard ("only assign when at least one flag is
+// non-empty") could be reverted by accident and the env-var fallback
+// would silently lose to an empty-string Observability value passed
+// through to the resource builder.
+func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
+	t.Setenv("OTEL_DEPLOYMENT_ENVIRONMENT", "production-eu")
+	t.Setenv("OTEL_SERVICE_NAMESPACE", "")
+
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		// Observability flags deliberately empty: this is the K8s pod-spec
+		// path where the operator only sets OTEL_DEPLOYMENT_ENVIRONMENT.
+	})
+
+	// The flag-only path leaves Observability at its zero value when both
+	// flags are empty (REC-2 guard). The env-var fallback is delegated
+	// to BuildResource so it stays a single, validated entry point.
+	if cfg.Observability.Environment != "" {
+		t.Errorf("Observability.Environment should remain empty when flag is unset; got %q", cfg.Observability.Environment)
+	}
+
+	res := observability.BuildResource(observability.ResourceOptions{
+		Environment:      cfg.Observability.Environment,
+		ServiceNamespace: cfg.Observability.ServiceNamespace,
+		RunMode:          cfg.Mode,
+	})
+	got := make(map[string]string)
+	for _, kv := range res.Attributes() {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["deployment.environment"] != "production-eu" {
+		t.Errorf("deployment.environment should fall through to env var; got %q want production-eu", got["deployment.environment"])
+	}
+}
+
 // TestLoadRunConfigFile_RoundTrip writes a minimal RunConfig JSON to a
 // tempfile, loads it through loadRunConfigFile, and asserts the parsed
 // fields match. This is the core happy-path for the --config loader.
@@ -395,6 +446,8 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("guardrail-endpoint", "", "")
 	f.String("guardrail-model", "", "")
 	f.Bool("guardrail-fail-open", false, "")
+	f.String("deployment-environment", "", "")
+	f.String("service-namespace", "", "")
 	return cmd
 }
 
@@ -632,6 +685,102 @@ func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
 	}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig: %v", err)
+	}
+}
+
+// TestBuildHarnessRunConfig_ObservabilityPropagates pins that the
+// --deployment-environment / --service-namespace flags propagate into
+// RunConfig.Observability without further translation. The fields then
+// drive the OTel resource attributes via the factory's
+// resourceOptionsFromConfig helper, so a regression here would silently
+// break operator dashboards (Grafana group-by-environment would fall
+// back to the default "local" tile).
+func TestBuildHarnessRunConfig_ObservabilityPropagates(t *testing.T) {
+	cfg := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:                 "test-run",
+		Mode:                  "execution",
+		Prompt:                "test",
+		ProviderType:          "anthropic",
+		APIKeyRef:             "secret://ANTHROPIC_API_KEY",
+		Model:                 "claude-sonnet-4-6",
+		MaxTurns:              20,
+		Timeout:               600,
+		TransportType:         "stdio",
+		LogLevel:              "info",
+		DeploymentEnvironment: "production",
+		ServiceNamespace:      "stirrup-eval",
+	})
+
+	if cfg.Observability.Environment != "production" {
+		t.Errorf("Observability.Environment: got %q, want %q", cfg.Observability.Environment, "production")
+	}
+	if cfg.Observability.ServiceNamespace != "stirrup-eval" {
+		t.Errorf("Observability.ServiceNamespace: got %q, want %q", cfg.Observability.ServiceNamespace, "stirrup-eval")
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig: %v", err)
+	}
+}
+
+// TestApplyOverrides_ObservabilityFlags pins the file -> flag override
+// chain for the new observability flags. An explicit flag must clobber
+// the file's value; a flag at its default (empty string) must leave the
+// file value alone — that's the same precedence convention every other
+// override flag follows.
+func TestApplyOverrides_ObservabilityFlags(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Observability = types.ObservabilityConfig{
+		Environment:      "from-file-env",
+		ServiceNamespace: "from-file-ns",
+	}
+
+	if err := cmd.Flags().Set("deployment-environment", "from-flag-env"); err != nil {
+		t.Fatalf("set deployment-environment: %v", err)
+	}
+	// service-namespace deliberately not set — file value should survive.
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Observability.Environment != "from-flag-env" {
+		t.Errorf("Observability.Environment: explicit flag should win, got %q", cfg.Observability.Environment)
+	}
+	if cfg.Observability.ServiceNamespace != "from-file-ns" {
+		t.Errorf("Observability.ServiceNamespace: file value should survive when flag unset, got %q", cfg.Observability.ServiceNamespace)
+	}
+}
+
+// TestApplyOverrides_ObservabilityServiceNamespaceFlag pins the second
+// branch of applyOverrides for the observability flags. The pre-existing
+// TestApplyOverrides_ObservabilityFlags exercises only the
+// deployment-environment branch; the service-namespace branch was
+// untouched in tests, so a typo in the flag name or a negated guard
+// (changed("environment") instead of changed("service-namespace")) would
+// silently drop the flag override and the test suite would never notice.
+func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Observability = types.ObservabilityConfig{
+		Environment:      "from-file-env",
+		ServiceNamespace: "from-file-ns",
+	}
+
+	if err := cmd.Flags().Set("service-namespace", "from-flag-ns"); err != nil {
+		t.Fatalf("set service-namespace: %v", err)
+	}
+	// deployment-environment deliberately not set — file value should survive.
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.Observability.ServiceNamespace != "from-flag-ns" {
+		t.Errorf("Observability.ServiceNamespace: explicit flag should win, got %q", cfg.Observability.ServiceNamespace)
+	}
+	if cfg.Observability.Environment != "from-file-env" {
+		t.Errorf("Observability.Environment: file value should survive when flag unset, got %q", cfg.Observability.Environment)
 	}
 }
 

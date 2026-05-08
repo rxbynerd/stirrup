@@ -75,6 +75,14 @@ type harnessCLIOptions struct {
 	GuardRailEndpoint string
 	GuardRailModel    string
 	GuardRailFailOpen bool
+
+	// Observability resource attributes (issue #95). Empty values fall
+	// through to env-var fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT,
+	// OTEL_SERVICE_NAMESPACE) and finally to defaults at OTel resource
+	// construction time, so leaving these unset is a valid choice for
+	// local development.
+	DeploymentEnvironment string
+	ServiceNamespace      string
 }
 
 // buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
@@ -210,6 +218,19 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 			Endpoint: opts.GuardRailEndpoint,
 			Model:    opts.GuardRailModel,
 			FailOpen: opts.GuardRailFailOpen,
+		}
+	}
+
+	// Observability resource attributes (issue #95). Only construct the
+	// sub-config when the caller touched at least one of the two flags.
+	// An entirely-empty pair leaves config.Observability at the zero value
+	// so a future validator or factory branch that distinguishes
+	// "operator pinned" from "fall through to env" can do so. Matches the
+	// flag-only construction pattern used for GuardRail above.
+	if opts.DeploymentEnvironment != "" || opts.ServiceNamespace != "" {
+		config.Observability = types.ObservabilityConfig{
+			Environment:      opts.DeploymentEnvironment,
+			ServiceNamespace: opts.ServiceNamespace,
 		}
 	}
 
@@ -366,6 +387,13 @@ func init() {
 	f.String("guardrail-endpoint", "", "Endpoint URL for the granite-guardian or cloud-judge adapter.")
 	f.String("guardrail-model", "", "Model identifier for the GuardRail classifier. Granite-guardian default: ibm-granite/granite-guardian-4.1-8b. Cloud-judge default: claude-haiku-4-5-20251001 (Anthropic API format) — when the primary provider is Bedrock, use the Bedrock-format ID (e.g. us.anthropic.claude-haiku-4-5-20251001-v1:0).")
 	f.Bool("guardrail-fail-open", false, "When true, transport errors / timeouts produce VerdictAllow with a security event rather than blocking. Default false (fail closed).")
+
+	// Observability resource attributes (issue #95). No default at the
+	// flag level — empty values fall through to env-var fallbacks
+	// (OTEL_DEPLOYMENT_ENVIRONMENT, OTEL_SERVICE_NAMESPACE) and finally
+	// to defaults ("local" / "stirrup") at resource construction time.
+	f.String("deployment-environment", "", "OTel deployment.environment resource attribute (e.g. production, staging). Empty falls through to OTEL_DEPLOYMENT_ENVIRONMENT, then to \"local\".")
+	f.String("service-namespace", "", "OTel service.namespace resource attribute (e.g. stirrup-eval, team-a). Empty falls through to OTEL_SERVICE_NAMESPACE, then to \"stirrup\".")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -602,6 +630,16 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 		cfg.GuardRail.FailOpen = failOpen
 	}
+	// Observability resource attributes (issue #95). Each flag overrides
+	// the corresponding RunConfig field independently so an operator can
+	// fine-tune one (e.g. swap the environment label) without restating
+	// the rest of the file's observability block.
+	if changed("deployment-environment") {
+		cfg.Observability.Environment, _ = f.GetString("deployment-environment")
+	}
+	if changed("service-namespace") {
+		cfg.Observability.ServiceNamespace, _ = f.GetString("service-namespace")
+	}
 	return nil
 }
 
@@ -689,6 +727,8 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	guardRailEndpoint, _ := f.GetString("guardrail-endpoint")
 	guardRailModel, _ := f.GetString("guardrail-model")
 	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
+	deploymentEnvironment, _ := f.GetString("deployment-environment")
+	serviceNamespace, _ := f.GetString("service-namespace")
 
 	var queryParams map[string]string
 	for _, entry := range queryParamRaw {
@@ -712,40 +752,42 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	config := buildHarnessRunConfig(harnessCLIOptions{
-		RunID:                generateRunID(),
-		Mode:                 mode,
-		SessionName:          sessionName,
-		Prompt:               prompt,
-		ProviderType:         providerType,
-		BaseURL:              baseURL,
-		APIKeyHeader:         apiKeyHeader,
-		QueryParams:          queryParams,
-		APIKeyRef:            apiKeyRef,
-		GCPProject:           gcpProject,
-		GCPLocation:          gcpLocation,
-		GCPCredentialsFile:   gcpCredentialsFile,
-		Model:                model,
-		Workspace:            workspace,
-		MaxTurns:             maxTurns,
-		Timeout:              timeout,
-		TracePath:            tracePath,
-		TransportType:        transportType,
-		TransportAddr:        transportAddr,
-		FollowUpGrace:        followUpGrace,
-		LogLevel:             logLevel,
-		ExecutorType:         executorType,
-		EditStrategyType:     editStrategyType,
-		VerifierType:         verifierType,
-		GitStrategyType:      gitStrategyType,
-		TraceEmitterType:     traceEmitterType,
-		OTelEndpoint:         otelEndpoint,
-		ContainerRuntime:     containerRuntime,
-		PermissionPolicyFile: permissionPolicyFile,
-		CodeScannerType:      codeScannerType,
-		GuardRailType:        guardRailType,
-		GuardRailEndpoint:    guardRailEndpoint,
-		GuardRailModel:       guardRailModel,
-		GuardRailFailOpen:    guardRailFailOpen,
+		RunID:                 generateRunID(),
+		Mode:                  mode,
+		SessionName:           sessionName,
+		Prompt:                prompt,
+		ProviderType:          providerType,
+		BaseURL:               baseURL,
+		APIKeyHeader:          apiKeyHeader,
+		QueryParams:           queryParams,
+		APIKeyRef:             apiKeyRef,
+		GCPProject:            gcpProject,
+		GCPLocation:           gcpLocation,
+		GCPCredentialsFile:    gcpCredentialsFile,
+		Model:                 model,
+		Workspace:             workspace,
+		MaxTurns:              maxTurns,
+		Timeout:               timeout,
+		TracePath:             tracePath,
+		TransportType:         transportType,
+		TransportAddr:         transportAddr,
+		FollowUpGrace:         followUpGrace,
+		LogLevel:              logLevel,
+		ExecutorType:          executorType,
+		EditStrategyType:      editStrategyType,
+		VerifierType:          verifierType,
+		GitStrategyType:       gitStrategyType,
+		TraceEmitterType:      traceEmitterType,
+		OTelEndpoint:          otelEndpoint,
+		ContainerRuntime:      containerRuntime,
+		PermissionPolicyFile:  permissionPolicyFile,
+		CodeScannerType:       codeScannerType,
+		GuardRailType:         guardRailType,
+		GuardRailEndpoint:     guardRailEndpoint,
+		GuardRailModel:        guardRailModel,
+		GuardRailFailOpen:     guardRailFailOpen,
+		DeploymentEnvironment: deploymentEnvironment,
+		ServiceNamespace:      serviceNamespace,
 	})
 
 	if err := types.ValidateRunConfig(config); err != nil {
