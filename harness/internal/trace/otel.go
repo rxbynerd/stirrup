@@ -35,7 +35,14 @@ type OTelTraceEmitter struct {
 // NewOTelTraceEmitter creates an OTel trace emitter that exports spans to the
 // given OTLP/gRPC endpoint (e.g. "localhost:4317"). The caller must eventually
 // call Finish to flush and shut down the exporter.
-func NewOTelTraceEmitter(ctx context.Context, endpoint string) (*OTelTraceEmitter, error) {
+//
+// resourceOpts threads the run-scoped resource attributes
+// (deployment.environment, service.namespace, harness.run.mode) so traces
+// emitted here share a consistent resource identity with metrics emitted
+// from the same run. Callers that don't have a config in hand can pass a
+// zero ResourceOptions and the resource builder will fall through to env-var
+// fallbacks and the documented defaults.
+func NewOTelTraceEmitter(ctx context.Context, endpoint string, resourceOpts observability.ResourceOptions) (*OTelTraceEmitter, error) {
 	exporter, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithEndpoint(endpoint),
 		otlptracegrpc.WithInsecure(),
@@ -46,7 +53,7 @@ func NewOTelTraceEmitter(ctx context.Context, endpoint string) (*OTelTraceEmitte
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(observability.Resource()),
+		sdktrace.WithResource(observability.BuildResource(resourceOpts)),
 	)
 	tracer := tp.Tracer("stirrup-harness")
 

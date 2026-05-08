@@ -209,7 +209,7 @@ func TestMetricsRecording_Resource(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(reader),
-		sdkmetric.WithResource(Resource()),
+		sdkmetric.WithResource(BuildResource(ResourceOptions{})),
 	)
 	meter := provider.Meter("test")
 

@@ -23,6 +23,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -868,7 +869,7 @@ func TestBuildGitStrategy_UnknownFallsBack(t *testing.T) {
 // --- buildTraceEmitter ---
 
 func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, observability.ResourceOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -879,7 +880,7 @@ func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
 
 func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path}, observability.ResourceOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -893,7 +894,7 @@ func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{})
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{}, observability.ResourceOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -903,7 +904,7 @@ func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
 }
 
 func TestBuildTraceEmitter_UnsupportedType(t *testing.T) {
-	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"})
+	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"}, observability.ResourceOptions{})
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -916,7 +917,7 @@ func TestBuildTraceEmitter_JSONLBadPath(t *testing.T) {
 	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{
 		Type:     "jsonl",
 		FilePath: "/nonexistent/deeply/nested/dir/trace.jsonl",
-	})
+	}, observability.ResourceOptions{})
 	if err == nil {
 		t.Fatal("expected error for bad trace file path")
 	}

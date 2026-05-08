@@ -78,7 +78,14 @@ type Metrics struct {
 // NewMetrics creates a Metrics instance backed by an OTLP/gRPC metric exporter
 // connected to the given endpoint. The exporter uses insecure connections,
 // matching the pattern established by the OTel trace emitter.
-func NewMetrics(ctx context.Context, endpoint string) (*Metrics, error) {
+//
+// resourceOpts threads the run-scoped resource attributes
+// (deployment.environment, service.namespace, harness.run.mode) so metrics
+// emitted here share a consistent resource identity with traces emitted
+// from the same run. Callers without a config in hand can pass a zero
+// ResourceOptions and the resource builder will fall through to env-var
+// fallbacks and the documented defaults.
+func NewMetrics(ctx context.Context, endpoint string, resourceOpts ResourceOptions) (*Metrics, error) {
 	exporter, err := otlpmetricgrpc.New(ctx,
 		otlpmetricgrpc.WithEndpoint(endpoint),
 		otlpmetricgrpc.WithInsecure(),
@@ -89,7 +96,7 @@ func NewMetrics(ctx context.Context, endpoint string) (*Metrics, error) {
 
 	provider := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
-		sdkmetric.WithResource(Resource()),
+		sdkmetric.WithResource(BuildResource(resourceOpts)),
 	)
 	meter := provider.Meter("stirrup-harness")
 

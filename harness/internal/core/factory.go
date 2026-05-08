@@ -219,7 +219,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	gs := buildGitStrategy(config.GitStrategy)
 
 	// 12. Trace emitter.
-	te, err := buildTraceEmitter(ctx, config.TraceEmitter)
+	// resourceOpts captures the run-scoped attributes that ride on the
+	// OTel Resource (deployment.environment, service.namespace,
+	// harness.run.mode). Threaded into both the trace emitter and the
+	// metrics provider so the two signals share a consistent resource
+	// identity — without that, a Grafana query that joins traces to
+	// metrics on resource attributes would silently miss rows when the
+	// two providers carried different defaults.
+	resourceOpts := resourceOptionsFromConfig(config)
+	te, err := buildTraceEmitter(ctx, config.TraceEmitter, resourceOpts)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build trace emitter: %w", err)
@@ -235,7 +243,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		metricsEndpoint = config.TraceEmitter.Endpoint
 	}
 	if config.TraceEmitter.Type == "otel" && metricsEndpoint != "" {
-		metrics, err = observability.NewMetrics(ctx, metricsEndpoint)
+		metrics, err = observability.NewMetrics(ctx, metricsEndpoint, resourceOpts)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("build metrics: %w", err)
@@ -1140,14 +1148,31 @@ func buildGitStrategy(cfg types.GitStrategyConfig) git.GitStrategy {
 	}
 }
 
-func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig) (trace.TraceEmitter, error) {
+// resourceOptionsFromConfig assembles the OTel ResourceOptions for this run
+// from the RunConfig. The precedence chain (explicit RunConfig field ->
+// env var -> default) is implemented inside observability.BuildResource;
+// this helper just plumbs the explicit values through and pins the run
+// mode (which is always available from the config and has no env-var
+// fallback).
+func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptions {
+	if cfg == nil {
+		return observability.ResourceOptions{}
+	}
+	return observability.ResourceOptions{
+		Environment:      cfg.Observability.Environment,
+		ServiceNamespace: cfg.Observability.ServiceNamespace,
+		RunMode:          cfg.Mode,
+	}
+}
+
+func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, resourceOpts observability.ResourceOptions) (trace.TraceEmitter, error) {
 	switch cfg.Type {
 	case "otel":
 		endpoint := cfg.Endpoint
 		if endpoint == "" {
 			endpoint = "localhost:4317"
 		}
-		return trace.NewOTelTraceEmitter(ctx, endpoint)
+		return trace.NewOTelTraceEmitter(ctx, endpoint, resourceOpts)
 	case "jsonl", "":
 		var w io.Writer
 		if cfg.FilePath != "" {

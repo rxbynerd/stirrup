@@ -17,7 +17,7 @@ func newTestOTelEmitter() (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
 	// attributes round-trip through emitted spans in tests.
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSyncer(exporter),
-		sdktrace.WithResource(observability.Resource()),
+		sdktrace.WithResource(observability.BuildResource(observability.ResourceOptions{})),
 	)
 	emitter := newOTelTraceEmitterForTest(tp)
 	return emitter, exporter
