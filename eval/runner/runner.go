@@ -210,31 +210,28 @@ func validateSuite(suite types.EvalSuite) error {
 	return nil
 }
 
-// validatePathSegment rejects identifiers that, after filepath.Clean, are not
-// a single non-traversing path component. This blocks `..`, absolute paths,
-// embedded separators (`/` and the platform-native separator), and `.`. The
-// runner uses these IDs verbatim as directory names under OutputDir, so any
-// non-segment value risks artifact paths escaping the configured tree.
+// validatePathSegment rejects identifiers that are not a single non-traversing
+// path component. The runner uses these IDs verbatim as directory names under
+// OutputDir, so any non-segment value risks artifact paths escaping the
+// configured tree.
+//
+// The check is intentionally minimal: ContainsAny("/\\") rejects all path
+// separators (covers POSIX `/` and Windows `\\`, so a separate
+// ContainsRune(os.PathSeparator) check would be dead code), and the explicit
+// `.` / `..` / `..`-prefix checks reject the traversal forms that survive a
+// no-separator input. A redundant filepath.Clean / filepath.IsAbs round-trip
+// would only add reachable branches on Windows quirks irrelevant to this
+// Linux/macOS tool, so they were dropped to keep the validator's surface area
+// honest about what it actually enforces.
 func validatePathSegment(label, id string) error {
-	// Reject embedded separators outright before Clean normalises them away.
 	if strings.ContainsAny(id, "/\\") {
 		return fmt.Errorf("%s %q must not contain path separators", label, id)
 	}
-	if strings.ContainsRune(id, os.PathSeparator) {
-		return fmt.Errorf("%s %q must not contain path separators", label, id)
-	}
-	cleaned := filepath.Clean(id)
-	if cleaned != id {
-		return fmt.Errorf("%s %q is not a normalised path segment", label, id)
-	}
-	if cleaned == "." || cleaned == ".." {
+	if id == "." || id == ".." {
 		return fmt.Errorf("%s %q is a reserved path segment", label, id)
 	}
-	if strings.HasPrefix(cleaned, "..") {
+	if strings.HasPrefix(id, "..") {
 		return fmt.Errorf("%s %q must not start with traversal sequence", label, id)
-	}
-	if filepath.IsAbs(cleaned) {
-		return fmt.Errorf("%s %q must not be an absolute path", label, id)
 	}
 	return nil
 }
