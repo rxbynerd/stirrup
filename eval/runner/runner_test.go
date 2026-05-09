@@ -3,9 +3,13 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -260,6 +264,46 @@ func TestValidateSuite(t *testing.T) {
 			name:  "valid",
 			suite: types.EvalSuite{ID: "s1", Tasks: []types.EvalTask{{ID: "t1"}}},
 		},
+		{
+			name: "traversal in suite ID",
+			suite: types.EvalSuite{
+				ID:    "../evil",
+				Tasks: []types.EvalTask{{ID: "t1"}},
+			},
+			wantErr: `suite ID "../evil" must not contain path separators`,
+		},
+		{
+			name: "absolute suite ID",
+			suite: types.EvalSuite{
+				ID:    "/etc/passwd",
+				Tasks: []types.EvalTask{{ID: "t1"}},
+			},
+			wantErr: `suite ID "/etc/passwd" must not contain path separators`,
+		},
+		{
+			name: "duplicate task IDs",
+			suite: types.EvalSuite{
+				ID:    "s1",
+				Tasks: []types.EvalTask{{ID: "t1"}, {ID: "t1"}},
+			},
+			wantErr: `duplicate task ID "t1"`,
+		},
+		{
+			name: "traversal in task ID",
+			suite: types.EvalSuite{
+				ID:    "s1",
+				Tasks: []types.EvalTask{{ID: "../escape"}},
+			},
+			wantErr: `task ID "../escape" must not contain path separators`,
+		},
+		{
+			name: "dot-segment task ID",
+			suite: types.EvalSuite{
+				ID:    "s1",
+				Tasks: []types.EvalTask{{ID: "."}},
+			},
+			wantErr: `task ID "." is a reserved path segment`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -276,6 +320,323 @@ func TestValidateSuite(t *testing.T) {
 			}
 			if err.Error() != tt.wantErr {
 				t.Fatalf("error = %q, want %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+// writeFakeHarness writes a POSIX-shell harness double that records its
+// invocation order, optionally sleeps for a per-task amount, optionally
+// exits non-zero, and writes a minimal trace file. It returns the harness
+// path and an "order log" path the caller can inspect to see which task
+// the harness was last called with. Skips on non-Unix runners since
+// /bin/sh is not portable to Windows.
+func writeFakeHarness(t *testing.T, body string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake harness uses /bin/sh; skipped on Windows")
+	}
+	harnessDir := t.TempDir()
+	path := filepath.Join(harnessDir, "fake-harness")
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestRunSuite_ConcurrencyOrdersDeterministically verifies the worker pool
+// preserves suite task order in the returned SuiteResult.Tasks slice
+// regardless of which workers finished first. The fake harness sleeps for a
+// per-task amount inferred from the workspace path so earlier tasks return
+// LATER than later ones — exactly the ordering hazard a naive append-as-
+// you-finish loop would expose.
+func TestRunSuite_ConcurrencyOrdersDeterministically(t *testing.T) {
+	// Sleep ms is decoded from the workspace path: the fake harness extracts
+	// the leading numeric component of the workspace basename. We pass the
+	// expected sleep via the prompt because cmd.Dir is not visible to the
+	// shell wrapper on stdin.
+	script := `#!/bin/sh
+PROMPT=""
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prompt) PROMPT="$2"; shift 2 ;;
+    --trace)  TRACE="$2";  shift 2 ;;
+    *) shift ;;
+  esac
+done
+# PROMPT format: "<sleep-ms>:<task-id>".
+SLEEP_MS=$(echo "$PROMPT" | cut -d: -f1)
+# busybox/dash sleep accepts decimals; convert ms -> seconds.
+SLEEP_S=$(awk -v ms="$SLEEP_MS" 'BEGIN { printf "%.3f", ms/1000 }')
+sleep "$SLEEP_S"
+if [ -n "$TRACE" ]; then
+  echo "{\"id\":\"trace-$PROMPT\",\"turns\":1,\"outcome\":\"success\"}" > "$TRACE"
+fi
+`
+	harness := writeFakeHarness(t, script)
+
+	// Pre-create a workspace file each task asserts the existence of, so all
+	// judges pass and we get a deterministic outcome distribution.
+	// Sleeps are chosen so that (a) the sum-of-sleeps is large enough for
+	// concurrency to make a measurable dent, and (b) the spread across tasks
+	// is wide enough to make ordering-by-completion-time differ from
+	// ordering-by-input. Each fork+exec of /bin/sh adds ~30–90ms of
+	// platform-dependent overhead which we conservatively bound below.
+	tasks := []types.EvalTask{
+		{ID: "t1", Prompt: "500:t1", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t2", Prompt: "50:t2", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t3", Prompt: "400:t3", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t4", Prompt: "20:t4", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t5", Prompt: "300:t5", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+	}
+	suite := types.EvalSuite{ID: "concurrency-suite", Tasks: tasks}
+
+	out := t.TempDir()
+	start := time.Now()
+	result, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harness,
+		OutputDir:   out,
+		Concurrency: 4,
+	})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Tasks) != len(tasks) {
+		t.Fatalf("got %d task results, want %d", len(result.Tasks), len(tasks))
+	}
+	for i, want := range tasks {
+		if result.Tasks[i].TaskID != want.ID {
+			t.Errorf("Tasks[%d].TaskID = %q, want %q (suite order not preserved)", i, result.Tasks[i].TaskID, want.ID)
+		}
+	}
+
+	// Sanity-check that we actually exploited concurrency. Total serial
+	// sleep time is 1270ms; concurrency=4 with one straggler should bring
+	// wall-clock well under that. We pick a generous 80% bound (1016ms) so
+	// the test stays stable on slow CI runners while still catching a
+	// regression to fully sequential execution.
+	totalSerial := 500 + 50 + 400 + 20 + 300
+	bound := time.Duration(float64(totalSerial)*0.8) * time.Millisecond
+	if elapsed >= bound {
+		t.Errorf("elapsed %v looks sequential (>= %v of %dms total)", elapsed, bound, totalSerial)
+	}
+}
+
+// TestRunSuite_ConcurrencyZeroDefaultsToOne pins the documented behaviour
+// that Concurrency<=0 collapses to a sequential run. The test passes when
+// the run completes successfully; a regression that, for example, blocked
+// on a zero-buffered channel with no workers would deadlock here.
+func TestRunSuite_ConcurrencyZeroDefaultsToOne(t *testing.T) {
+	script := `#!/bin/sh
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+`
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "seq-suite",
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+			{ID: "t2", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_, err := RunSuite(context.Background(), suite, RunConfig{
+			HarnessPath: harness,
+			Concurrency: 0,
+		})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// expected
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunSuite with Concurrency=0 deadlocked")
+	}
+}
+
+// TestRunSuite_FailureDoesNotAbortSiblings verifies the per-task error
+// containment invariant: if one task's harness returns non-zero (or its
+// trace is malformed), the other tasks still produce TaskResults and the
+// suite result still surfaces all of them.
+func TestRunSuite_FailureDoesNotAbortSiblings(t *testing.T) {
+	// The fake harness fails iff prompt == "boom", otherwise writes a valid trace.
+	script := `#!/bin/sh
+PROMPT=""
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prompt) PROMPT="$2"; shift 2 ;;
+    --trace)  TRACE="$2";  shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "$PROMPT" = "boom" ]; then
+  echo "harness boom" >&2
+  exit 7
+fi
+[ -n "$TRACE" ] && echo '{"id":"ok","turns":1,"outcome":"success"}' > "$TRACE"
+`
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "failure-suite",
+		Tasks: []types.EvalTask{
+			{ID: "ok-1", Prompt: "ok", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+			{ID: "broken", Prompt: "boom", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+			{ID: "ok-2", Prompt: "ok", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harness,
+		Concurrency: 2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected suite error: %v", err)
+	}
+
+	if len(result.Tasks) != 3 {
+		t.Fatalf("got %d task results, want 3 (sibling failures must not abort)", len(result.Tasks))
+	}
+	if result.Tasks[0].TaskID != "ok-1" || result.Tasks[1].TaskID != "broken" || result.Tasks[2].TaskID != "ok-2" {
+		t.Errorf("Tasks ordering = [%s, %s, %s], want [ok-1, broken, ok-2]",
+			result.Tasks[0].TaskID, result.Tasks[1].TaskID, result.Tasks[2].TaskID)
+	}
+	if result.Tasks[1].Outcome != "error" {
+		t.Errorf("broken task Outcome = %q, want %q", result.Tasks[1].Outcome, "error")
+	}
+	// Siblings must each get a verdict, even if it's a fail (the placeholder
+	// file does not exist in the temp workspace).
+	for _, idx := range []int{0, 2} {
+		if result.Tasks[idx].Outcome == "" {
+			t.Errorf("sibling task %s has empty outcome", result.Tasks[idx].TaskID)
+		}
+	}
+}
+
+// TestRunSuite_RetainsArtifacts asserts that, when OutputDir is set, every
+// task gets a per-task directory under <OutputDir>/<suiteID>/<taskID>/ with
+// trace.jsonl, harness.stdout.txt, and harness.stderr.txt files. The
+// stdout/stderr files exist even when empty (so consumers don't need to
+// branch on file existence).
+func TestRunSuite_RetainsArtifacts(t *testing.T) {
+	script := `#!/bin/sh
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+echo "stdout chatter"
+echo "stderr chatter" >&2
+[ -n "$TRACE" ] && echo '{"id":"trace-1","turns":1,"outcome":"success"}' > "$TRACE"
+`
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "artifact-suite",
+		Tasks: []types.EvalTask{
+			{ID: "alpha", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+			{ID: "beta", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	out := t.TempDir()
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harness,
+		OutputDir:   out,
+		Concurrency: 2,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, taskID := range []string{"alpha", "beta"} {
+		base := filepath.Join(out, "artifact-suite", taskID)
+		for _, name := range []string{"trace.jsonl", "harness.stdout.txt", "harness.stderr.txt"} {
+			p := filepath.Join(base, name)
+			info, err := os.Stat(p)
+			if err != nil {
+				t.Errorf("missing artifact %s: %v", p, err)
+				continue
+			}
+			if info.IsDir() {
+				t.Errorf("artifact %s is a directory, want regular file", p)
+			}
+		}
+
+		// Trace content should be the harness's last JSON line.
+		traceData, err := os.ReadFile(filepath.Join(base, "trace.jsonl"))
+		if err == nil && !strings.Contains(string(traceData), `"id":"trace-1"`) {
+			t.Errorf("trace.jsonl for %s did not contain expected payload: %q", taskID, string(traceData))
+		}
+		// Stdout/stderr files should contain the chatter we emitted.
+		stdout, _ := os.ReadFile(filepath.Join(base, "harness.stdout.txt"))
+		if !strings.Contains(string(stdout), "stdout chatter") {
+			t.Errorf("harness.stdout.txt for %s = %q, want to contain %q", taskID, string(stdout), "stdout chatter")
+		}
+		stderr, _ := os.ReadFile(filepath.Join(base, "harness.stderr.txt"))
+		if !strings.Contains(string(stderr), "stderr chatter") {
+			t.Errorf("harness.stderr.txt for %s = %q, want to contain %q", taskID, string(stderr), "stderr chatter")
+		}
+	}
+}
+
+// TestRunSuite_RejectsTraversalIDs is the load-bearing security test: any
+// suite/task ID that would resolve outside <OutputDir>/<suiteID>/<taskID>/
+// must be rejected at validation time so the runner never attempts the
+// MkdirAll. We pick the rejection strategy (over silent sanitisation)
+// because silently rewriting an attacker-controlled ID into a different
+// path would shadow legitimate IDs and produce nondeterministic artifact
+// trees.
+func TestRunSuite_RejectsTraversalIDs(t *testing.T) {
+	cases := []struct {
+		name    string
+		suiteID string
+		taskID  string
+		wantSub string
+	}{
+		{name: "suite parent traversal", suiteID: "../evil", taskID: "t", wantSub: "suite ID"},
+		{name: "task parent traversal", suiteID: "ok", taskID: "../evil", wantSub: "task ID"},
+		{name: "task absolute path", suiteID: "ok", taskID: "/etc/passwd", wantSub: "task ID"},
+		{name: "task with separator", suiteID: "ok", taskID: "sub/dir", wantSub: "task ID"},
+		{name: "task dot segment", suiteID: "ok", taskID: "..", wantSub: "task ID"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			suite := types.EvalSuite{
+				ID:    tc.suiteID,
+				Tasks: []types.EvalTask{{ID: tc.taskID, Prompt: "p"}},
+			}
+			_, err := RunSuite(context.Background(), suite, RunConfig{OutputDir: t.TempDir()})
+			if err == nil {
+				t.Fatal("expected validation error for traversal ID")
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error = %q, want it to mention %q", err.Error(), tc.wantSub)
+			}
+			// Belt-and-braces: the error must come back BEFORE any directory
+			// creation under OutputDir. We verify the error payload does not
+			// leak a path that escaped the sandbox.
+			if strings.Contains(err.Error(), fmt.Sprintf("%c..%c", os.PathSeparator, os.PathSeparator)) {
+				t.Errorf("error contains escaped path traversal: %q", err.Error())
 			}
 		})
 	}

@@ -4,12 +4,15 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
@@ -23,11 +26,16 @@ type RunConfig struct {
 	// If empty, defaults to "stirrup" on PATH.
 	HarnessPath string
 
-	// OutputDir is created before running so callers can write suite artifacts there.
+	// OutputDir, when non-empty, enables per-task artifact retention. The
+	// runner writes trace.jsonl, harness.stdout.txt, and harness.stderr.txt
+	// for every task under <OutputDir>/<suiteID>/<taskID>/. The temporary
+	// workspace is intentionally NOT copied: it can be large for repo-cloned
+	// tasks and is out of scope for issue #31.
 	OutputDir string
 
-	// Concurrency is the desired number of parallel tasks.
-	// TODO: not yet implemented; tasks currently run sequentially.
+	// Concurrency caps the number of tasks executed in parallel. Values <= 0
+	// fall back to 1 (sequential). Values larger than the task count are
+	// capped at len(tasks) so we never spawn idle workers.
 	Concurrency int
 
 	// DryRun if true, validates the suite without executing tasks.
@@ -35,6 +43,8 @@ type RunConfig struct {
 }
 
 // RunSuite executes all tasks in a suite and returns the aggregate result.
+// Returned SuiteResult.Tasks preserves suite task order regardless of the
+// order in which the workers actually finished.
 func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.SuiteResult, error) {
 	if err := validateSuite(suite); err != nil {
 		return eval.SuiteResult{}, err
@@ -44,9 +54,16 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		cfg.HarnessPath = "stirrup"
 	}
 
+	suiteArtifactDir := ""
 	if cfg.OutputDir != "" {
 		if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {
 			return eval.SuiteResult{}, fmt.Errorf("creating output directory: %w", err)
+		}
+		// suite.ID has already been validated as a safe single-segment path,
+		// so this join cannot escape OutputDir.
+		suiteArtifactDir = filepath.Join(cfg.OutputDir, suite.ID)
+		if err := os.MkdirAll(suiteArtifactDir, 0o755); err != nil {
+			return eval.SuiteResult{}, fmt.Errorf("creating suite artifact directory: %w", err)
 		}
 	}
 
@@ -75,22 +92,18 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		}, nil
 	}
 
-	tasks := make([]eval.TaskResult, 0, len(suite.Tasks))
-	for _, t := range suite.Tasks {
-		result := runTask(ctx, t, cfg)
-		tasks = append(tasks, result)
-	}
+	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir)
 
 	passCount := 0
-	for _, tr := range tasks {
+	for _, tr := range results {
 		if tr.Outcome == "pass" {
 			passCount++
 		}
 	}
 
 	passRate := float64(0)
-	if len(tasks) > 0 {
-		passRate = float64(passCount) / float64(len(tasks))
+	if len(results) > 0 {
+		passRate = float64(passCount) / float64(len(results))
 	}
 
 	return eval.SuiteResult{
@@ -98,24 +111,139 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		RunID:       runID,
 		StartedAt:   startedAt,
 		CompletedAt: time.Now(),
-		Tasks:       tasks,
+		Tasks:       results,
 		PassRate:    passRate,
 	}, nil
 }
 
-// validateSuite checks that a suite has the minimum required fields.
+// runTasksConcurrently dispatches tasks across a bounded worker pool while
+// preserving the input order in the returned slice. Concurrency is capped at
+// len(tasks) so we never spawn idle workers; values <= 0 collapse to 1
+// (the historical sequential behaviour). Per-task errors do not abort
+// siblings — every task contributes a TaskResult.
+func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string) []eval.TaskResult {
+	concurrency := cfg.Concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > len(tasks) {
+		concurrency = len(tasks)
+	}
+
+	results := make([]eval.TaskResult, len(tasks))
+
+	type job struct {
+		idx  int
+		task types.EvalTask
+	}
+	jobs := make(chan job)
+
+	var wg sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir)
+			}
+		}()
+	}
+
+	// Feed jobs; honour ctx cancellation so we don't deadlock if all workers
+	// have exited (e.g. on context cancellation, runTask still produces a
+	// result via the harness exec error path, but the dispatcher needs to
+	// stop pushing too).
+	for i, t := range tasks {
+		select {
+		case <-ctx.Done():
+			// Drain remaining tasks as cancellation errors so the result
+			// slice stays in sync with the input slice.
+			for ; i < len(tasks); i++ {
+				results[i] = eval.TaskResult{
+					TaskID:  tasks[i].ID,
+					Outcome: "error",
+					Error:   ctx.Err().Error(),
+					JudgeVerdict: eval.JudgeVerdict{
+						Passed: false,
+						Reason: ctx.Err().Error(),
+					},
+				}
+			}
+			close(jobs)
+			wg.Wait()
+			return results
+		case jobs <- job{idx: i, task: t}:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	return results
+}
+
+// validateSuite checks that a suite has the minimum required fields and that
+// every task ID is a path-safe single segment (so per-task artifact directories
+// cannot escape OutputDir via traversal sequences).
 func validateSuite(suite types.EvalSuite) error {
 	if suite.ID == "" {
 		return fmt.Errorf("suite ID is required")
 	}
+	if err := validatePathSegment("suite ID", suite.ID); err != nil {
+		return err
+	}
 	if len(suite.Tasks) == 0 {
 		return fmt.Errorf("suite must contain at least one task")
+	}
+	seen := make(map[string]struct{}, len(suite.Tasks))
+	for _, t := range suite.Tasks {
+		if t.ID == "" {
+			return fmt.Errorf("task ID is required")
+		}
+		if err := validatePathSegment("task ID", t.ID); err != nil {
+			return err
+		}
+		if _, dup := seen[t.ID]; dup {
+			return fmt.Errorf("duplicate task ID %q", t.ID)
+		}
+		seen[t.ID] = struct{}{}
 	}
 	return nil
 }
 
-// runTask executes a single eval task and returns the result.
-func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig) eval.TaskResult {
+// validatePathSegment rejects identifiers that, after filepath.Clean, are not
+// a single non-traversing path component. This blocks `..`, absolute paths,
+// embedded separators (`/` and the platform-native separator), and `.`. The
+// runner uses these IDs verbatim as directory names under OutputDir, so any
+// non-segment value risks artifact paths escaping the configured tree.
+func validatePathSegment(label, id string) error {
+	// Reject embedded separators outright before Clean normalises them away.
+	if strings.ContainsAny(id, "/\\") {
+		return fmt.Errorf("%s %q must not contain path separators", label, id)
+	}
+	if strings.ContainsRune(id, os.PathSeparator) {
+		return fmt.Errorf("%s %q must not contain path separators", label, id)
+	}
+	cleaned := filepath.Clean(id)
+	if cleaned != id {
+		return fmt.Errorf("%s %q is not a normalised path segment", label, id)
+	}
+	if cleaned == "." || cleaned == ".." {
+		return fmt.Errorf("%s %q is a reserved path segment", label, id)
+	}
+	if strings.HasPrefix(cleaned, "..") {
+		return fmt.Errorf("%s %q must not start with traversal sequence", label, id)
+	}
+	if filepath.IsAbs(cleaned) {
+		return fmt.Errorf("%s %q must not be an absolute path", label, id)
+	}
+	return nil
+}
+
+// runTask executes a single eval task and returns the result. If
+// suiteArtifactDir is non-empty, the task's trace and harness output streams
+// are copied into <suiteArtifactDir>/<taskID>/ before the temp workspace is
+// removed.
+func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string) eval.TaskResult {
 	start := time.Now()
 
 	tmpDir, err := os.MkdirTemp("", "eval-task-"+task.ID+"-")
@@ -144,13 +272,26 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig) eval.TaskR
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
 	cmd.Dir = workspaceDir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	cmdErr := cmd.Run()
+
+	// Persist artifacts before consuming results so we capture state even
+	// when the harness exits non-zero. retainArtifacts is best-effort:
+	// retention failures must not mask the harness/judge result.
+	if suiteArtifactDir != "" {
+		retainArtifacts(suiteArtifactDir, task.ID, traceFile, stdoutBuf.Bytes(), stderrBuf.Bytes())
+	}
+
+	if cmdErr != nil {
 		// The harness may still have produced a trace even on failure.
 		// Try to parse it before giving up entirely.
 		trace, traceErr := parseTraceFile(traceFile)
 		if traceErr != nil {
-			return errorResult(task.ID, start, fmt.Errorf("harness failed: %w\noutput: %s", err, output))
+			return errorResult(task.ID, start, fmt.Errorf("harness failed: %w\nstdout: %s\nstderr: %s", cmdErr, stdoutBuf.String(), stderrBuf.String()))
 		}
 		// Harness failed but left a trace — use it for the result.
 		verdict, judgeErr := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
@@ -175,6 +316,32 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig) eval.TaskR
 	}
 
 	return buildResult(task.ID, start, trace, verdict)
+}
+
+// retainArtifacts copies the per-task harness output and trace into the
+// suite's artifact directory. taskID has already been validated as a safe
+// single-segment path. Retention errors are intentionally swallowed — they
+// must not mask the underlying TaskResult — but failures are still reported
+// via stderr so an operator can see when the artifact tree is incomplete.
+func retainArtifacts(suiteArtifactDir, taskID, traceFile string, stdout, stderr []byte) {
+	taskDir := filepath.Join(suiteArtifactDir, taskID)
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: mkdir: %v\n", taskID, err)
+		return
+	}
+	// Copy the trace file (best-effort: if the harness never wrote one, skip
+	// silently — that case is already reflected in the TaskResult).
+	if data, err := os.ReadFile(traceFile); err == nil {
+		if err := os.WriteFile(filepath.Join(taskDir, "trace.jsonl"), data, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: trace: %v\n", taskID, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, "harness.stdout.txt"), stdout, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: stdout: %v\n", taskID, err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, "harness.stderr.txt"), stderr, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: stderr: %v\n", taskID, err)
+	}
 }
 
 // cloneRepo clones a git repository at the given ref into the target directory.
