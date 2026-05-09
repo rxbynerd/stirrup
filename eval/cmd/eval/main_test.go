@@ -41,6 +41,100 @@ func TestRun_Version(t *testing.T) {
 	}
 }
 
+// TestCmdRun_DualWrite pins the backward-compatibility guarantee that
+// `eval run` writes result.json in two places: <outputDir>/result.json
+// (the legacy location existing CI workflows read) and
+// <outputDir>/<suiteID>/result.json (the per-suite canonical location
+// that lives alongside per-task artifact directories). Both must exist
+// after a run, and the two files must be byte-identical so neither
+// reader sees a stale snapshot. A regression that, for example, dropped
+// the top-level write would silently break downstream tooling without
+// any test catching it.
+//
+// We use --dry-run to avoid needing a fake harness binary; dry-run
+// still walks the output-directory creation and both writeJSON calls
+// in cmdRun, which is the surface this test is here to cover.
+func TestCmdRun_DualWrite(t *testing.T) {
+	dir := t.TempDir()
+	suitePath := filepath.Join(dir, "dual-write.hcl")
+	hclSrc := `
+suite "dual-write-suite" {
+  description = "fixture for TestCmdRun_DualWrite"
+
+  task "task-a" {
+    prompt = "do task a"
+    judge {
+      type = "test-command"
+      command = "true"
+    }
+  }
+
+  task "task-b" {
+    prompt = "do task b"
+    judge {
+      type = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	if err := os.WriteFile(suitePath, []byte(hclSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	outputDir := filepath.Join(dir, "out")
+	// Note: cmdRun uses log.Fatalf on error, which would os.Exit the
+	// test binary. The success path with --dry-run does not hit that
+	// branch, so we can exercise it from inside a test. If this ever
+	// regresses to call log.Fatalf on the happy path, the test process
+	// will die loudly — which is itself a useful signal.
+	exitCode := run([]string{
+		"run",
+		"--suite", suitePath,
+		"--output", outputDir,
+		"--dry-run",
+	}, io.Discard)
+	if exitCode != 0 {
+		t.Fatalf("run() exit code = %d, want 0", exitCode)
+	}
+
+	topLevel := filepath.Join(outputDir, "result.json")
+	perSuite := filepath.Join(outputDir, "dual-write-suite", "result.json")
+
+	topLevelData, err := os.ReadFile(topLevel)
+	if err != nil {
+		t.Fatalf("reading top-level result.json: %v", err)
+	}
+	perSuiteData, err := os.ReadFile(perSuite)
+	if err != nil {
+		t.Fatalf("reading per-suite result.json: %v", err)
+	}
+
+	// Both files must contain identical bytes — neither is a partial
+	// snapshot or a different serialisation.
+	if !bytes.Equal(topLevelData, perSuiteData) {
+		t.Errorf("top-level and per-suite result.json differ:\n  top-level:\n%s\n  per-suite:\n%s",
+			topLevelData, perSuiteData)
+	}
+
+	// And both must parse as a SuiteResult with the right SuiteID, so a
+	// regression that wrote an empty file or a different schema would
+	// surface here.
+	var top, per eval.SuiteResult
+	if err := json.Unmarshal(topLevelData, &top); err != nil {
+		t.Fatalf("unmarshal top-level: %v", err)
+	}
+	if err := json.Unmarshal(perSuiteData, &per); err != nil {
+		t.Fatalf("unmarshal per-suite: %v", err)
+	}
+	if top.SuiteID != "dual-write-suite" {
+		t.Errorf("top-level SuiteID = %q, want %q", top.SuiteID, "dual-write-suite")
+	}
+	if per.SuiteID != "dual-write-suite" {
+		t.Errorf("per-suite SuiteID = %q, want %q", per.SuiteID, "dual-write-suite")
+	}
+}
+
 // TestRun_NoArgs documents the empty-args contract: usage goes to stderr,
 // stdout stays untouched, exit code is 1.
 func TestRun_NoArgs(t *testing.T) {
