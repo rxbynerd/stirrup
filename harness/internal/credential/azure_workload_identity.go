@@ -122,13 +122,13 @@ func NewAzureWorkloadIdentitySource(ts TokenSource, tenantID, clientID, scope st
 // Entra.
 func (a *AzureWorkloadIdentitySource) Resolve(_ context.Context) (*Resolved, error) {
 	if a.tokenSource == nil {
-		return nil, fmt.Errorf("Azure WIF: token source is required")
+		return nil, fmt.Errorf("azure-workload-identity: token source is required")
 	}
 	if a.tenantID == "" {
-		return nil, fmt.Errorf("Azure WIF: tenantID is required")
+		return nil, fmt.Errorf("azure-workload-identity: tenantID is required")
 	}
 	if a.clientID == "" {
-		return nil, fmt.Errorf("Azure WIF: clientID is required")
+		return nil, fmt.Errorf("azure-workload-identity: clientID is required")
 	}
 
 	// Refresh runs on its own context (mirrors federationTokenSource):
@@ -177,10 +177,10 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 
 	jwt, err := a.src.tokenSource.Token(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("Azure WIF: fetch OIDC token: %w", err)
+		return nil, fmt.Errorf("azure-workload-identity: fetch OIDC token: %w", err)
 	}
 	if len(jwt) == 0 {
-		return nil, fmt.Errorf("Azure WIF: token source returned empty subject token")
+		return nil, fmt.Errorf("azure-workload-identity: token source returned empty subject token")
 	}
 
 	form := url.Values{}
@@ -192,14 +192,14 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.src.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("Azure WIF: build token request: %w", err)
+		return nil, fmt.Errorf("azure-workload-identity: build token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := a.src.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("Azure WIF: token request: %w", err)
+		return nil, fmt.Errorf("azure-workload-identity: token request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -209,11 +209,11 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 	// JSON parser.
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, stsResponseLimit))
 	if err != nil {
-		return nil, fmt.Errorf("Azure WIF: read token response: %w", err)
+		return nil, fmt.Errorf("azure-workload-identity: read token response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Azure WIF: token endpoint returned %d%s: %s",
+		return nil, fmt.Errorf("azure-workload-identity: token endpoint returned %d%s: %s",
 			resp.StatusCode,
 			correlationIDSuffix(respBody),
 			truncateForError(respBody),
@@ -222,10 +222,10 @@ func (a *azureTokenSource) Token() (*oauth2.Token, error) {
 
 	var parsed azureTokenResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("Azure WIF: parse token response: %w", err)
+		return nil, fmt.Errorf("azure-workload-identity: parse token response: %w", err)
 	}
 	if parsed.AccessToken == "" {
-		return nil, fmt.Errorf("Azure WIF: token endpoint returned empty access_token")
+		return nil, fmt.Errorf("azure-workload-identity: token endpoint returned empty access_token")
 	}
 
 	tokenType := parsed.TokenType

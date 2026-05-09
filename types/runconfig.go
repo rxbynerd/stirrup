@@ -908,7 +908,7 @@ const AnthropicWorkspaceIDPatternString = `^wrkspc_[A-Za-z0-9]+$`
 // invalid_grant 400 from the token-exchange endpoint.
 const AnthropicOrganizationIDPatternString = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 
-// uuidPattern bounds Azure tenant and client IDs to the canonical
+// azureUUIDPattern bounds Azure tenant and client IDs to the canonical
 // 8-4-4-4-12 lowercase hex form. Microsoft documents both fields as
 // UUIDs and the Azure portal renders them in lowercase; we deliberately
 // reject upper-case and case-fold variants here so a typo (e.g. an "O"
@@ -921,7 +921,7 @@ const AnthropicOrganizationIDPatternString = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{
 // Note: the regex is identical to AnthropicOrganizationIDPatternString,
 // but the two are intentionally kept separate. The Anthropic constant
 // is exported (consumed by the credential package's own pattern compile)
-// while uuidPattern is a private validator local to this package; they
+// while azureUUIDPattern is a private validator local to this package; they
 // have different semantic provenances and may diverge if either vendor
 // relaxes their canonical form.
 var (
@@ -929,7 +929,7 @@ var (
 	anthropicServiceAccountIDPattern = regexp.MustCompile(AnthropicServiceAccountIDPatternString)
 	anthropicWorkspaceIDPattern      = regexp.MustCompile(AnthropicWorkspaceIDPatternString)
 	anthropicOrganizationIDPattern   = regexp.MustCompile(AnthropicOrganizationIDPatternString)
-	uuidPattern                      = regexp.MustCompile(
+	azureUUIDPattern                 = regexp.MustCompile(
 		`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
 	)
 )
@@ -1636,7 +1636,7 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 		// login.microsoftonline.com on the first token exchange.
 		if cfg.AzureTenantID == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: azure-workload-identity requires azureTenantId", path))
-		} else if !uuidPattern.MatchString(cfg.AzureTenantID) {
+		} else if !azureUUIDPattern.MatchString(cfg.AzureTenantID) {
 			*errs = append(*errs, fmt.Sprintf(
 				"%s.azureTenantId %q is not a canonical lowercase UUID (expected 8-4-4-4-12 hex form)",
 				path, cfg.AzureTenantID,
@@ -1644,7 +1644,7 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 		}
 		if cfg.AzureClientID == "" {
 			*errs = append(*errs, fmt.Sprintf("%s: azure-workload-identity requires azureClientId", path))
-		} else if !uuidPattern.MatchString(cfg.AzureClientID) {
+		} else if !azureUUIDPattern.MatchString(cfg.AzureClientID) {
 			*errs = append(*errs, fmt.Sprintf(
 				"%s.azureClientId %q is not a canonical lowercase UUID (expected 8-4-4-4-12 hex form)",
 				path, cfg.AzureClientID,
