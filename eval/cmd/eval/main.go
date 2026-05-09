@@ -136,10 +136,17 @@ func cmdRun(args []string) {
 	}
 
 	if *junitPath != "" {
+		// JUnit XML is a secondary derived artifact; result.json has
+		// already been written. Demote a write failure to a warning so
+		// the CI loop's primary artifact survives even when the JUnit
+		// emit fails (e.g. read-only filesystem, exhausted inode quota).
+		// cmdConvert keeps log.Fatalf — it has no prior artifact to
+		// protect.
 		if err := writeJUnit(*junitPath, result); err != nil {
-			log.Fatalf("writing JUnit XML: %v", err)
+			fmt.Fprintf(os.Stderr, "warning: writing JUnit XML: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *junitPath)
 		}
-		fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *junitPath)
 	}
 
 	printSummary(result)

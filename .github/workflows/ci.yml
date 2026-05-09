@@ -71,6 +71,8 @@ jobs:
           for suite in eval/suites/*.hcl; do
             name=$(basename "$suite")
             name="${name%.*}"
+            # JUnit XML is an annotation/artifact only; the eval gate
+            # is enforced by the `compare` step below.
             ./stirrup-eval run \
               --suite "$suite" \
               --harness ./stirrup \
@@ -97,7 +99,11 @@ jobs:
           done
 
       - name: Upload eval results
-        if: steps.check-suites.outputs.has_suites == 'true'
+        # Always upload whatever made it to disk so result.json survives
+        # an unrelated failure (e.g. compare step regression exit, future
+        # secondary-artifact steps). The eval-gate's pass/fail signal is
+        # carried by the compare step's exit code, not artifact presence.
+        if: always() && steps.check-suites.outputs.has_suites == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: eval-results
