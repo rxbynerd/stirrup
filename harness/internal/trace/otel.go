@@ -16,6 +16,54 @@ import (
 	"github.com/rxbynerd/stirrup/types/version"
 )
 
+// OpenTelemetry GenAI semantic-convention attribute keys.
+//
+// These are the sole names emitted by the OTel trace emitter for any
+// concept that has a GenAI semconv counterpart.
+// Stirrup-specific attributes with no GenAI counterpart
+// (run.id, run.mode, run.outcome, run.turns, harness.version,
+// turn.number, turn.tool_calls, turn.duration_ms, tool.success,
+// tool.duration_ms) keep their stirrup-prefixed names alongside.
+//
+// Spec: https://opentelemetry.io/docs/specs/semconv/gen-ai/
+const (
+	genAIProviderNameKey   = "gen_ai.provider.name"
+	genAIRequestModelKey   = "gen_ai.request.model"
+	genAIConversationIDKey = "gen_ai.conversation.id"
+	genAIOperationNameKey  = "gen_ai.operation.name"
+	genAIUsageInputTokens  = "gen_ai.usage.input_tokens"
+	genAIUsageOutputTokens = "gen_ai.usage.output_tokens"
+	genAIFinishReasonsKey  = "gen_ai.response.finish_reasons"
+	genAIToolNameKey       = "gen_ai.tool.name"
+)
+
+// genAIProviderName maps stirrup provider type strings to the OTel GenAI
+// `gen_ai.provider.name` enum values defined at
+// https://opentelemetry.io/docs/specs/semconv/attributes-registry/gen-ai/.
+// Unknown stirrup types fall through to the raw value so future provider
+// types are still observable, even if dashboards don't recognise them.
+//
+// `openai-compatible` is intentionally NOT mapped to `openai`: it is the
+// generic Chat Completions adapter used by vLLM, Granite Guardian, Ollama,
+// Azure OpenAI, LiteLLM, and other vendors. Tagging those runs as
+// `gen_ai.provider.name = "openai"` would mislabel telemetry. It falls
+// through to the default branch and surfaces as the raw string until/unless
+// a more specific provider type is configured.
+func genAIProviderName(stirrupType string) string {
+	switch stirrupType {
+	case "anthropic":
+		return "anthropic"
+	case "bedrock":
+		return "aws.bedrock"
+	case "openai-responses":
+		return "openai"
+	case "gemini":
+		return "gcp.vertex_ai"
+	default:
+		return stirrupType
+	}
+}
+
 // OTelTraceEmitter records harness run telemetry as OpenTelemetry spans,
 // exported via OTLP/gRPC to a collector endpoint.
 type OTelTraceEmitter struct {
@@ -94,6 +142,10 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 
 	ctx := context.Background()
+	// NOTE: gen_ai.agent.id is intentionally NOT emitted. The OTel GenAI spec
+	// defines this as a persistent agent identity (e.g. an OpenAI Assistant ID),
+	// not a per-execution run ID. Stirrup has no first-class named-agent concept;
+	// emit when one exists. See follow-up issue (#127).
 	ctx, span := e.tracer.Start(ctx, "run",
 		oteltrace.WithAttributes(
 			attribute.String("run.id", runID),
@@ -104,16 +156,24 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	if config != nil {
 		span.SetAttributes(
 			attribute.String("run.mode", config.Mode),
-			attribute.String("run.provider", config.Provider.Type),
+			// gen_ai.provider.name surfaces the spec enum value
+			// ("openai", "aws.bedrock", ...) translated from stirrup's
+			// internal Provider.Type vocabulary so vendor APM
+			// dashboards filter correctly.
+			attribute.String(genAIProviderNameKey, genAIProviderName(config.Provider.Type)),
 		)
 		if config.ModelRouter.Model != "" {
-			span.SetAttributes(attribute.String("run.model", config.ModelRouter.Model))
+			span.SetAttributes(
+				attribute.String(genAIRequestModelKey, config.ModelRouter.Model),
+			)
 		}
 		if config.SessionName != "" {
 			// Set on the root span so child spans inherit access via context.
 			// Skipped when empty so we don't pollute traces with empty
 			// attributes for runs that did not specify a label.
-			span.SetAttributes(attribute.String("run.session_name", config.SessionName))
+			span.SetAttributes(
+				attribute.String(genAIConversationIDKey, config.SessionName),
+			)
 		}
 	}
 
@@ -148,11 +208,18 @@ func (e *OTelTraceEmitter) RecordTurn(turn types.TurnTrace) {
 		oteltrace.WithTimestamp(spanStart),
 		oteltrace.WithAttributes(
 			attribute.Int("turn.number", turn.Turn),
-			attribute.Int("turn.tokens.input", turn.Tokens.Input),
-			attribute.Int("turn.tokens.output", turn.Tokens.Output),
+			attribute.Int(genAIUsageInputTokens, turn.Tokens.Input),
+			attribute.Int(genAIUsageOutputTokens, turn.Tokens.Output),
 			attribute.Int("turn.tool_calls", turn.ToolCalls),
-			attribute.String("turn.stop_reason", turn.StopReason),
+			// gen_ai.response.finish_reasons is defined as a string
+			// array in the GenAI semconv; we wrap our single scalar
+			// StopReason in a one-element slice rather than emitting
+			// a scalar that downstream consumers would have to
+			// special-case.
+			attribute.StringSlice(genAIFinishReasonsKey, []string{turn.StopReason}),
 			attribute.Int64("turn.duration_ms", turn.DurationMs),
+			// Per GenAI semconv, a turn is a chat completion.
+			attribute.String(genAIOperationNameKey, "chat"),
 		),
 	)
 	span.End(oteltrace.WithTimestamp(spanEnd))
@@ -175,7 +242,7 @@ func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	_, span := e.tracer.Start(e.rootCtx, "tool_call",
 		oteltrace.WithTimestamp(spanStart),
 		oteltrace.WithAttributes(
-			attribute.String("tool.name", call.Name),
+			attribute.String(genAIToolNameKey, call.Name),
 			attribute.Bool("tool.success", call.Success),
 			attribute.Int64("tool.duration_ms", call.DurationMs),
 		),

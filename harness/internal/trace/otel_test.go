@@ -145,8 +145,30 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	assertAttribute(t, rootSpan, "run.id", "run-otel-1")
 	assertAttribute(t, rootSpan, "run.mode", "execution")
 	assertAttribute(t, rootSpan, "run.outcome", "success")
-	assertAttribute(t, rootSpan, "run.model", "claude-sonnet-4-6")
 	assertAttribute(t, rootSpan, "harness.version", "dev")
+
+	// GenAI semconv assertions (issue #108): provider and
+	// model surface under the GenAI namespace so vendor-shipped APM
+	// dashboards recognise the spans.
+	assertAttribute(t, rootSpan, genAIProviderNameKey, "anthropic")
+	assertAttribute(t, rootSpan, genAIRequestModelKey, "claude-sonnet-4-6")
+
+	// Per-turn token usage and finish reason surface under the GenAI
+	// namespace.
+	var turn1 tracetest.SpanStub
+	for _, s := range spans {
+		if s.Name == "turn[1]" {
+			turn1 = s
+			break
+		}
+	}
+	if turn1.Name == "" {
+		t.Fatal("no turn[1] span found")
+	}
+	assertIntAttribute(t, turn1, genAIUsageInputTokens, 100)
+	assertIntAttribute(t, turn1, genAIUsageOutputTokens, 50)
+	assertStringSliceAttribute(t, turn1, genAIFinishReasonsKey, []string{"tool_use"})
+	assertAttribute(t, turn1, genAIOperationNameKey, "chat")
 }
 
 func TestOTelTraceEmitter_EmptyRun(t *testing.T) {
@@ -205,11 +227,11 @@ func TestOTelTraceEmitter_ToolCallAttributes(t *testing.T) {
 		t.Fatal("no tool_call span found")
 	}
 
-	assertAttribute(t, toolSpan, "tool.name", "shell")
+	assertAttribute(t, toolSpan, genAIToolNameKey, "shell")
 }
 
 // TestOTelTraceEmitter_SessionNameAttribute verifies that SessionName, when
-// set on the RunConfig, appears as run.session_name on the root span.
+// set on the RunConfig, appears as gen_ai.conversation.id on the root span.
 // Child spans inherit access to it via context, so setting it on the root
 // is sufficient.
 func TestOTelTraceEmitter_SessionNameAttribute(t *testing.T) {
@@ -233,13 +255,13 @@ func TestOTelTraceEmitter_SessionNameAttribute(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
-	assertAttribute(t, spans[0], "run.session_name", "nightly-eval")
+	assertAttribute(t, spans[0], genAIConversationIDKey, "nightly-eval")
 }
 
 // TestOTelTraceEmitter_SessionNameAbsentWhenEmpty pins the inverse: when
-// no session name is set, the run.session_name attribute must not appear
-// on the root span. Empty attributes pollute downstream filtering and
-// would cost real money on usage-billed backends.
+// no session name is set, the gen_ai.conversation.id attribute must not
+// appear on the root span. Empty attributes pollute downstream filtering
+// and would cost real money on usage-billed backends.
 func TestOTelTraceEmitter_SessionNameAbsentWhenEmpty(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 
@@ -261,8 +283,8 @@ func TestOTelTraceEmitter_SessionNameAbsentWhenEmpty(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
 	for _, attr := range spans[0].Attributes {
-		if string(attr.Key) == "run.session_name" {
-			t.Errorf("run.session_name should be absent when SessionName is empty, found value %q", attr.Value.AsString())
+		if string(attr.Key) == genAIConversationIDKey {
+			t.Errorf("%s should be absent when SessionName is empty, found value %q", genAIConversationIDKey, attr.Value.AsString())
 		}
 	}
 }
@@ -373,4 +395,150 @@ func assertAttribute(t *testing.T, span tracetest.SpanStub, key, want string) {
 		}
 	}
 	t.Errorf("attribute %q not found on span %q", key, span.Name)
+}
+
+// assertIntAttribute checks that a span has the expected int64 attribute
+// value. The OTel SDK promotes attribute.Int(...) to attribute.INT64
+// internally, so this helper covers both Int and Int64 attributes.
+func assertIntAttribute(t *testing.T, span tracetest.SpanStub, key string, want int64) {
+	t.Helper()
+	for _, attr := range span.Attributes {
+		if string(attr.Key) == key {
+			got := attr.Value.AsInt64()
+			if got != want {
+				t.Errorf("attribute %q: got %d, want %d", key, got, want)
+			}
+			return
+		}
+	}
+	t.Errorf("attribute %q not found on span %q", key, span.Name)
+}
+
+// assertStringSliceAttribute checks that a span has the expected string
+// slice attribute. Used for the GenAI gen_ai.response.finish_reasons
+// attribute, which the semconv defines as an array.
+func assertStringSliceAttribute(t *testing.T, span tracetest.SpanStub, key string, want []string) {
+	t.Helper()
+	for _, attr := range span.Attributes {
+		if string(attr.Key) == key {
+			got := attr.Value.AsStringSlice()
+			if len(got) != len(want) {
+				t.Errorf("attribute %q: got %v, want %v", key, got, want)
+				return
+			}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Errorf("attribute %q: got %v, want %v", key, got, want)
+					return
+				}
+			}
+			return
+		}
+	}
+	t.Errorf("attribute %q not found on span %q", key, span.Name)
+}
+
+// TestGenAIProviderName pins the stirrup→OTel GenAI provider enum
+// translation table. Vendor APM dashboards filter on the spec enum
+// values; if any of these mappings drift, dashboards stop matching
+// stirrup spans for that provider with no other surface signal.
+func TestGenAIProviderName(t *testing.T) {
+	cases := []struct {
+		stirrupType string
+		want        string
+	}{
+		{"anthropic", "anthropic"},
+		{"bedrock", "aws.bedrock"},
+		// openai-compatible falls through unchanged: it is generic Chat Completions, not OpenAI specifically.
+		{"openai-compatible", "openai-compatible"},
+		{"openai-responses", "openai"},
+		{"gemini", "gcp.vertex_ai"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.stirrupType, func(t *testing.T) {
+			if got := genAIProviderName(tc.stirrupType); got != tc.want {
+				t.Errorf("genAIProviderName(%q) = %q, want %q", tc.stirrupType, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOTelTraceEmitter_GenAIAttributes exhaustively pins the OTel
+// GenAI semantic-convention attribute set adopted by issue #108. The
+// individual GenAI attributes are also asserted opportunistically by
+// FullLifecycle, ToolCallAttributes, and SessionName, but this test
+// exists so a regression in any single GenAI attribute fails loudly
+// at the dedicated test name rather than as a side-effect of an
+// unrelated assertion.
+func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+
+	timeout := 60
+	config := &types.RunConfig{
+		RunID:       "run-genai-1",
+		Mode:        "execution",
+		SessionName: "alignment-test",
+		MaxTurns:    5,
+		Timeout:     &timeout,
+		Provider:    types.ProviderConfig{Type: "anthropic"},
+		ModelRouter: types.ModelRouterConfig{Model: "claude-sonnet-4-6"},
+	}
+	emitter.Start("run-genai-1", config)
+	emitter.RecordTurn(types.TurnTrace{
+		Turn:       1,
+		Tokens:     types.TokenUsage{Input: 42, Output: 17},
+		ToolCalls:  1,
+		StopReason: "end_turn",
+		DurationMs: 5,
+	})
+	emitter.RecordToolCall(types.ToolCallTrace{
+		Name:       "read_file",
+		DurationMs: 1,
+		Success:    true,
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	spans := exporter.GetSpans()
+	var (
+		root tracetest.SpanStub
+		turn tracetest.SpanStub
+		tool tracetest.SpanStub
+	)
+	for _, s := range spans {
+		switch s.Name {
+		case "run":
+			root = s
+		case "turn[1]":
+			turn = s
+		case "tool_call":
+			tool = s
+		}
+	}
+	if root.Name == "" || turn.Name == "" || tool.Name == "" {
+		t.Fatalf("expected run, turn[1], tool_call spans; got %v", spans)
+	}
+
+	// Root span: model, provider, conversation. gen_ai.agent.id is
+	// intentionally NOT emitted; the spec defines it as a persistent
+	// agent identity (e.g. an OpenAI Assistant ID), not a per-execution
+	// run ID.
+	assertAttribute(t, root, genAIProviderNameKey, "anthropic")
+	assertAttribute(t, root, genAIRequestModelKey, "claude-sonnet-4-6")
+	assertAttribute(t, root, genAIConversationIDKey, "alignment-test")
+	for _, attr := range root.Attributes {
+		if string(attr.Key) == "gen_ai.agent.id" {
+			t.Errorf("gen_ai.agent.id should not be emitted, found value %q", attr.Value.AsString())
+		}
+	}
+
+	// Turn span: usage tokens, finish reasons, operation name.
+	assertIntAttribute(t, turn, genAIUsageInputTokens, 42)
+	assertIntAttribute(t, turn, genAIUsageOutputTokens, 17)
+	assertStringSliceAttribute(t, turn, genAIFinishReasonsKey, []string{"end_turn"})
+	assertAttribute(t, turn, genAIOperationNameKey, "chat")
+
+	// Tool span: tool name.
+	assertAttribute(t, tool, genAIToolNameKey, "read_file")
 }
