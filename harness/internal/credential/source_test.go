@@ -205,6 +205,39 @@ func TestBuildSource_WebIdentity(t *testing.T) {
 	}
 }
 
+// TestBuildSource_AzureWorkloadIdentityBadTokenSourceType pins the
+// error-path BuildSource takes when an Azure WIF Credential is paired
+// with a TokenSource of an unsupported type. The error must wrap the
+// inner BuildTokenSource failure with "build token source" so the
+// operator's stack trace points at the right config field.
+//
+// Without this coverage, a future refactor that swallows the
+// BuildTokenSource error would silently fall through to a malformed
+// AzureWorkloadIdentitySource construction (or worse, a nil source)
+// and the misconfiguration would only surface inside the agentic loop
+// as a vague "token source returned empty subject token" failure 60s
+// into a run.
+func TestBuildSource_AzureWorkloadIdentityBadTokenSourceType(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "openai-compatible",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-2222-3333-4444-555555555555",
+			AzureClientID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "unsupported-type",
+			},
+		},
+	}
+	_, err := BuildSource(cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for unsupported inner token source type, got nil")
+	}
+	if !strings.Contains(err.Error(), "build token source") {
+		t.Errorf("error should wrap with 'build token source', got: %v", err)
+	}
+}
+
 func TestBuildSource_UnsupportedType(t *testing.T) {
 	cfg := types.ProviderConfig{
 		Type: "anthropic",
@@ -401,5 +434,138 @@ func TestBuildSource_GCPWorkloadIdentityFederationMissingTokenSource(t *testing.
 	_, err := BuildSource(cfg, nil)
 	if err == nil {
 		t.Fatal("expected error for missing token source")
+	}
+}
+
+// TestBuildSource_AzureWorkloadIdentity verifies that the dispatch
+// constructs an *AzureWorkloadIdentitySource with the configured tenant,
+// client, scope, and token source. Tenant/client UUIDs and scope are
+// validated upstream (in types.ValidateRunConfig), so the dispatch
+// itself only needs to wire fields.
+func TestBuildSource_AzureWorkloadIdentity(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "openai-compatible",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-1111-1111-1111-111111111111",
+			AzureClientID: "22222222-2222-2222-2222-222222222222",
+			AzureScope:    "https://cognitiveservices.azure.com/.default",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "file",
+				Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+			},
+		},
+	}
+	src, err := BuildSource(cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	azure, ok := src.(*AzureWorkloadIdentitySource)
+	if !ok {
+		t.Fatalf("expected *AzureWorkloadIdentitySource, got %T", src)
+	}
+	if azure.tenantID != cfg.Credential.AzureTenantID {
+		t.Errorf("tenantID = %q, want %q", azure.tenantID, cfg.Credential.AzureTenantID)
+	}
+	if azure.clientID != cfg.Credential.AzureClientID {
+		t.Errorf("clientID = %q, want %q", azure.clientID, cfg.Credential.AzureClientID)
+	}
+	if azure.scope != cfg.Credential.AzureScope {
+		t.Errorf("scope = %q, want %q", azure.scope, cfg.Credential.AzureScope)
+	}
+	if _, ok := azure.tokenSource.(*FileTokenSource); !ok {
+		t.Errorf("expected wrapped FileTokenSource, got %T", azure.tokenSource)
+	}
+}
+
+// TestBuildSource_AzureWorkloadIdentityDefaultsScope verifies that an
+// empty AzureScope in the RunConfig is left empty at the dispatch layer
+// — the constructor itself applies the default
+// "https://cognitiveservices.azure.com/.default". This split keeps the
+// "what was the operator's input" record honest while still producing a
+// usable source.
+func TestBuildSource_AzureWorkloadIdentityDefaultsScope(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "openai-responses",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-1111-1111-1111-111111111111",
+			AzureClientID: "22222222-2222-2222-2222-222222222222",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "file",
+				Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+			},
+		},
+	}
+	src, err := BuildSource(cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	azure, ok := src.(*AzureWorkloadIdentitySource)
+	if !ok {
+		t.Fatalf("expected *AzureWorkloadIdentitySource, got %T", src)
+	}
+	if azure.scope != "https://cognitiveservices.azure.com/.default" {
+		t.Errorf("scope default not applied: got %q", azure.scope)
+	}
+}
+
+func TestBuildSource_AzureWorkloadIdentityMissingTenant(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "openai-compatible",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureClientID: "22222222-2222-2222-2222-222222222222",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "file",
+				Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+			},
+		},
+	}
+	_, err := BuildSource(cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for missing azureTenantId")
+	}
+	if !strings.Contains(err.Error(), "azureTenantId") {
+		t.Errorf("error should name azureTenantId: %v", err)
+	}
+}
+
+func TestBuildSource_AzureWorkloadIdentityMissingClient(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "openai-compatible",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-1111-1111-1111-111111111111",
+			TokenSource: &types.TokenSourceConfig{
+				Type: "file",
+				Path: "/var/run/secrets/azure/tokens/azure-identity-token",
+			},
+		},
+	}
+	_, err := BuildSource(cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for missing azureClientId")
+	}
+	if !strings.Contains(err.Error(), "azureClientId") {
+		t.Errorf("error should name azureClientId: %v", err)
+	}
+}
+
+func TestBuildSource_AzureWorkloadIdentityMissingTokenSource(t *testing.T) {
+	cfg := types.ProviderConfig{
+		Type: "openai-compatible",
+		Credential: &types.CredentialConfig{
+			Type:          "azure-workload-identity",
+			AzureTenantID: "11111111-1111-1111-1111-111111111111",
+			AzureClientID: "22222222-2222-2222-2222-222222222222",
+		},
+	}
+	_, err := BuildSource(cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for missing token source")
+	}
+	if !strings.Contains(err.Error(), "tokenSource") {
+		t.Errorf("error should name tokenSource: %v", err)
 	}
 }

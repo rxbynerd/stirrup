@@ -441,9 +441,16 @@ type GeminiSafetySetting struct {
 //     short-lived Anthropic access token. Requires FederationRuleID,
 //     OrganizationID, ServiceAccountID, and TokenSource. Mutually exclusive
 //     with the provider's APIKeyRef on the same provider entry.
+//   - "azure-workload-identity"           — Azure Entra ID Workload Identity
+//     Federation. Exchanges an OIDC JWT (from TokenSource) for an Entra
+//     access token via the OAuth2 client_credentials + jwt-bearer grant
+//     against login.microsoftonline.com. Requires AzureTenantID,
+//     AzureClientID, and TokenSource. Bearer is sent as
+//     "Authorization: Bearer" — APIKeyRef and APIKeyHeader="api-key" are
+//     mutually exclusive with this type.
 type CredentialConfig struct {
 	Type           string             `json:"type"`
-	TokenSource    *TokenSourceConfig `json:"tokenSource,omitempty"`    // required for "web-identity", "gcp-workload-identity-federation", "anthropic-wif"
+	TokenSource    *TokenSourceConfig `json:"tokenSource,omitempty"`    // required for "web-identity", "gcp-workload-identity-federation", "anthropic-wif", "azure-workload-identity"
 	RoleARN        string             `json:"roleArn,omitempty"`        // required for "web-identity": IAM role to assume
 	SessionName    string             `json:"sessionName,omitempty"`    // for "web-identity" (default: "stirrup")
 	Audience       string             `json:"audience,omitempty"`       // required for "gcp-workload-identity-federation": WIF provider audience
@@ -471,6 +478,32 @@ type CredentialConfig struct {
 	// string) when the rule is bound to a single workspace.
 	// Non-secret per Anthropic's docs.
 	WorkspaceID string `json:"workspaceId,omitempty"`
+
+	// AzureTenantID is required for "azure-workload-identity". UUID of the
+	// Azure AD tenant that owns the App Registration / federated identity
+	// credential. Lowercase canonical 8-4-4-4-12 form is required.
+	AzureTenantID string `json:"azureTenantId,omitempty"`
+
+	// AzureClientID is required for "azure-workload-identity". UUID of the
+	// App Registration / federated identity credential client ID. Same
+	// canonical form as AzureTenantID.
+	AzureClientID string `json:"azureClientId,omitempty"`
+
+	// AzureScope is optional for "azure-workload-identity". OAuth2 scope to
+	// request; default is "https://cognitiveservices.azure.com/.default"
+	// (Azure OpenAI / Foundry). Override for non-default Azure audiences
+	// (custom AAD app registrations, sovereign clouds). Must be a valid
+	// HTTPS URL when set.
+	AzureScope string `json:"azureScope,omitempty"`
+
+	// AzureTokenURL is optional for "azure-workload-identity". Overrides
+	// the OAuth2 token endpoint URL. Default fills in
+	// https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token (Azure
+	// global cloud); set this for sovereign clouds — login.microsoftonline.us
+	// (Azure Government), login.partner.microsoftonline.cn (Azure China),
+	// or login.microsoftonline.de (Azure Germany, deprecated). Must be a
+	// syntactically valid HTTPS URL when set.
+	AzureTokenURL string `json:"azureTokenUrl,omitempty"`
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
@@ -796,6 +829,7 @@ var validCredentialTypes = map[string]bool{
 	"gcp-workload-identity":            true,
 	"gcp-workload-identity-federation": true,
 	"anthropic-wif":                    true,
+	"azure-workload-identity":          true,
 }
 
 // GCPWIFAudiencePatternString bounds the shape of a Workload Identity
@@ -874,11 +908,30 @@ const AnthropicWorkspaceIDPatternString = `^wrkspc_[A-Za-z0-9]+$`
 // invalid_grant 400 from the token-exchange endpoint.
 const AnthropicOrganizationIDPatternString = `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 
+// azureUUIDPattern bounds Azure tenant and client IDs to the canonical
+// 8-4-4-4-12 lowercase hex form. Microsoft documents both fields as
+// UUIDs and the Azure portal renders them in lowercase; we deliberately
+// reject upper-case and case-fold variants here so a typo (e.g. an "O"
+// for a "0") does not pass validation only to fail later as an opaque
+// 400 from login.microsoftonline.com. login.microsoftonline.com itself
+// canonicalises the path, so accepting upper-case at the config layer
+// would also create a UX trap where two superficially-different configs
+// behave identically — better to enforce one form.
+//
+// Note: the regex is identical to AnthropicOrganizationIDPatternString,
+// but the two are intentionally kept separate. The Anthropic constant
+// is exported (consumed by the credential package's own pattern compile)
+// while azureUUIDPattern is a private validator local to this package; they
+// have different semantic provenances and may diverge if either vendor
+// relaxes their canonical form.
 var (
 	anthropicFederationRuleIDPattern = regexp.MustCompile(AnthropicFederationRuleIDPatternString)
 	anthropicServiceAccountIDPattern = regexp.MustCompile(AnthropicServiceAccountIDPatternString)
 	anthropicWorkspaceIDPattern      = regexp.MustCompile(AnthropicWorkspaceIDPatternString)
 	anthropicOrganizationIDPattern   = regexp.MustCompile(AnthropicOrganizationIDPatternString)
+	azureUUIDPattern                 = regexp.MustCompile(
+		`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
+	)
 )
 
 var validTokenSourceTypes = map[string]bool{
@@ -1396,6 +1449,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 	validateOpenAIAuthFields("provider", config.Provider, errs)
 	validateGeminiProviderFields("provider", config.Provider, errs)
 	validateAnthropicProviderFields("provider", config.Provider, errs)
+	validateAzureWIFCrossField("provider", config.Provider, errs)
 	for name, provider := range config.Providers {
 		if name == "" {
 			*errs = append(*errs, "providers map contains an empty provider name")
@@ -1411,6 +1465,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 		validateOpenAIAuthFields(path, provider, errs)
 		validateGeminiProviderFields(path, provider, errs)
 		validateAnthropicProviderFields(path, provider, errs)
+		validateAzureWIFCrossField(path, provider, errs)
 	}
 
 	// Per-provider model-name validation for Vertex AI Gemini. The
@@ -1573,6 +1628,92 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 		if cfg.ServiceAccount != "" {
 			*errs = append(*errs, fmt.Sprintf("%s.serviceAccount is only valid for credential type %q", path, "gcp-workload-identity-federation"))
 		}
+	case "azure-workload-identity":
+		// AzureTenantID and AzureClientID are both required and must
+		// match the canonical lowercase UUID form. Validate at config
+		// time so an operator who pastes a malformed ID sees a precise
+		// error here rather than a generic 400 from
+		// login.microsoftonline.com on the first token exchange.
+		if cfg.AzureTenantID == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: azure-workload-identity requires azureTenantId", path))
+		} else if !azureUUIDPattern.MatchString(cfg.AzureTenantID) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.azureTenantId %q is not a canonical lowercase UUID (expected 8-4-4-4-12 hex form)",
+				path, cfg.AzureTenantID,
+			))
+		}
+		if cfg.AzureClientID == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: azure-workload-identity requires azureClientId", path))
+		} else if !azureUUIDPattern.MatchString(cfg.AzureClientID) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.azureClientId %q is not a canonical lowercase UUID (expected 8-4-4-4-12 hex form)",
+				path, cfg.AzureClientID,
+			))
+		}
+		if cfg.TokenSource == nil {
+			*errs = append(*errs, fmt.Sprintf("%s: azure-workload-identity requires tokenSource", path))
+		} else {
+			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
+		}
+		// AzureScope is optional; the credential source applies the
+		// Azure OpenAI default ("https://cognitiveservices.azure.com/.default")
+		// when empty. When set, must be a syntactically valid HTTPS
+		// URL — Azure rejects http and bare strings, so failing here
+		// is strictly more useful than letting the token-exchange
+		// surface the same error 60 minutes into a long run.
+		if cfg.AzureScope != "" {
+			u, err := url.Parse(cfg.AzureScope)
+			if err != nil {
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.azureScope %q is not a valid URL: %v",
+					path, cfg.AzureScope, err,
+				))
+			} else if u.Scheme != "https" || u.Host == "" {
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.azureScope %q must be an https:// URL with a host (Azure scopes are HTTPS-only)",
+					path, cfg.AzureScope,
+				))
+			}
+		}
+		// AzureTokenURL is optional; the credential source fills in
+		// the global-cloud authority
+		// (https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token)
+		// when empty. The override exists for sovereign clouds whose
+		// authorities live at login.microsoftonline.us /
+		// .partner.microsoftonline.cn / .microsoftonline.de. Same
+		// HTTPS-only invariant as azureScope: a misconfigured http://
+		// or schemeless override would surface as a token-exchange
+		// failure rather than a validation error, which is a worse
+		// debugging experience.
+		if cfg.AzureTokenURL != "" {
+			u, err := url.Parse(cfg.AzureTokenURL)
+			if err != nil {
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.azureTokenUrl %q is not a valid URL: %v",
+					path, cfg.AzureTokenURL, err,
+				))
+			} else if u.Scheme != "https" || u.Host == "" {
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.azureTokenUrl %q must be an https:// URL with a host (Entra authorities are HTTPS-only)",
+					path, cfg.AzureTokenURL,
+				))
+			}
+		}
+		// Mutual-exclusion: azure-workload-identity consumes its
+		// Azure fields, not AWS / GCP / Anthropic federation fields.
+		// Surface stale copy-paste values loudly.
+		if cfg.RoleARN != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.roleArn is only valid for credential type %q", path, "web-identity"))
+		}
+		if cfg.SessionName != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.sessionName is only valid for credential type %q", path, "web-identity"))
+		}
+		if cfg.Audience != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.audience is only valid for credential type %q", path, "gcp-workload-identity-federation"))
+		}
+		if cfg.ServiceAccount != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.serviceAccount is only valid for credential type %q", path, "gcp-workload-identity-federation"))
+		}
 	}
 
 	// Reciprocal mutual-exclusion: the four anthropic-wif fields are
@@ -1593,6 +1734,24 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 		}
 		if cfg.WorkspaceID != "" {
 			*errs = append(*errs, fmt.Sprintf("%s.workspaceId is only valid for credential type %q", path, "anthropic-wif"))
+		}
+	}
+
+	// Reciprocal mutual-exclusion: the four azure-workload-identity
+	// fields are scoped to type="azure-workload-identity". Same rationale
+	// as the anthropic-wif block above.
+	if cfg.Type != "azure-workload-identity" {
+		if cfg.AzureTenantID != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.azureTenantId is only valid for credential type %q", path, "azure-workload-identity"))
+		}
+		if cfg.AzureClientID != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.azureClientId is only valid for credential type %q", path, "azure-workload-identity"))
+		}
+		if cfg.AzureScope != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.azureScope is only valid for credential type %q", path, "azure-workload-identity"))
+		}
+		if cfg.AzureTokenURL != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.azureTokenUrl is only valid for credential type %q", path, "azure-workload-identity"))
 		}
 	}
 }
@@ -1677,6 +1836,57 @@ func validateOpenAIAuthFields(path string, cfg ProviderConfig, errs *[]string) {
 		if size := len(encoded.Encode()); size > maxQueryStringBytes {
 			*errs = append(*errs, fmt.Sprintf("%s.queryParams encoded form is %d bytes, exceeds %d byte cap", path, size, maxQueryStringBytes))
 		}
+	}
+}
+
+// validateAzureWIFCrossField enforces the auth-field invariants that
+// only make sense once we know the credential type is
+// "azure-workload-identity". Two combinations are rejected:
+//
+//   - APIKeyRef set: Azure WIF resolves the bearer dynamically via the
+//     OAuth2 token-exchange flow; an APIKeyRef alongside would either
+//     be silently ignored (confusing UX) or actively conflict with
+//     the federated bearer (security: a stale static key may be picked
+//     up if the federation flow ever falls back). Either way, mixing
+//     the two is a configuration error.
+//   - APIKeyHeader == "api-key": Entra ID access tokens are only
+//     accepted on the Authorization: Bearer header; the "api-key"
+//     header is reserved for static Azure OpenAI key auth and would
+//     produce a 401 from the Azure resource. Catching this at config
+//     load saves the operator the surprise of a 401 mid-run.
+//
+// Both errors are written with the field paths that surface in the
+// JSON config so an operator can grep for them.
+func validateAzureWIFCrossField(path string, cfg ProviderConfig, errs *[]string) {
+	if cfg.Credential == nil || cfg.Credential.Type != "azure-workload-identity" {
+		return
+	}
+	// Azure WIF only makes sense for the OpenAI-shaped adapters that
+	// speak to Azure OpenAI / Foundry. The other provider types
+	// (anthropic, bedrock, gemini) have their own auth contracts and
+	// would silently ignore a Bearer produced by an Entra exchange,
+	// so an operator pointing them at azure-workload-identity is
+	// almost certainly a configuration mistake. Defence-in-depth: the
+	// CLI shortcut path requires --provider=openai-* in practice, but
+	// a hand-authored --config or a control-plane payload could still
+	// reach validation with this combination.
+	if cfg.Type != "openai-compatible" && cfg.Type != "openai-responses" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: azure-workload-identity is only supported with openai-compatible or openai-responses provider types (got %q)",
+			path, cfg.Type,
+		))
+	}
+	if cfg.APIKeyRef != "" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: azure-workload-identity does not use apiKeyRef; remove it (the bearer is fetched via OAuth2 token exchange)",
+			path,
+		))
+	}
+	if cfg.APIKeyHeader == "api-key" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: azure-workload-identity requires Authorization: Bearer; apiKeyHeader=\"api-key\" is mutually exclusive (use empty apiKeyHeader for Bearer auth)",
+			path,
+		))
 	}
 }
 

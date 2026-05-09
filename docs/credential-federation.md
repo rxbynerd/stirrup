@@ -55,6 +55,7 @@ authentication material.
 | `gcp-workload-identity` | Vertex AI from GKE/GCE | none — uses the metadata server |
 | `gcp-workload-identity-federation` | Vertex AI from a non-GCP runtime | `audience`, `tokenSource`; optional `serviceAccount` |
 | `anthropic-wif` | Anthropic Messages API from any OIDC-aware runtime | `federationRuleId`, `organizationId`, `serviceAccountId`, `tokenSource`; optional `workspaceId`. See [`anthropic-wif.md`](anthropic-wif.md). |
+| `azure-workload-identity` | Azure OpenAI / Foundry from anywhere | `azureTenantId`, `azureClientId`, `tokenSource`; optional `azureScope`. See [`azure-workload-identity.md`](azure-workload-identity.md). |
 
 ## Cross-cloud → Vertex AI Gemini via Workload Identity Federation
 
