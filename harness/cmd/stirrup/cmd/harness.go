@@ -87,6 +87,7 @@ type harnessCLIOptions struct {
 	GitStrategyType  string
 	TraceEmitterType string
 	OTelEndpoint     string
+	OTelProtocol     string
 
 	// Safety-ring escape hatches (issue #42). These set RunConfig fields
 	// on the matching sub-config; an empty string leaves the field unset
@@ -156,6 +157,11 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 		traceEmitter.FilePath = opts.TracePath
 	case "otel":
 		traceEmitter.Endpoint = opts.OTelEndpoint
+		// Protocol stays empty by default so the exporter falls
+		// through to the OTel SDK's grpc default. Operators who
+		// want OTLP/HTTP set --otel-protocol=http/protobuf;
+		// validation rejects any other value.
+		traceEmitter.Protocol = opts.OTelProtocol
 	}
 
 	config := &types.RunConfig{
@@ -451,7 +457,8 @@ func init() {
 	f.String("verifier", "none", "Verifier: none, test-runner, llm-judge (composite available only via --config)")
 	f.String("git-strategy", "none", "Git strategy: none, deterministic")
 	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel")
-	f.String("otel-endpoint", "", "OTLP endpoint for the otel trace emitter (default: localhost:4317)")
+	f.String("otel-endpoint", "", "OTLP endpoint for the otel trace emitter (default: localhost:4317 for grpc; full URL ending in the gateway base path for http/protobuf, e.g. https://otlp-gateway-prod-us-east-0.grafana.net/otlp)")
+	f.String("otel-protocol", "", "OTLP wire protocol for the otel trace emitter: \"\" (default — grpc), grpc, http/protobuf. HTTP/JSON is not supported; managed gateways like Grafana Cloud use http/protobuf. See docs/observability-cloud.md.")
 
 	// Safety-ring flags (issue #42). Each maps to a single RunConfig
 	// field; precedence with --config is the same as the rest of the
@@ -706,6 +713,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("otel-endpoint") {
 		cfg.TraceEmitter.Endpoint, _ = f.GetString("otel-endpoint")
 	}
+	if changed("otel-protocol") {
+		cfg.TraceEmitter.Protocol, _ = f.GetString("otel-protocol")
+	}
 	if changed("container-runtime") {
 		cfg.Executor.Runtime, _ = f.GetString("container-runtime")
 	}
@@ -867,6 +877,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	gitStrategyType, _ := f.GetString("git-strategy")
 	traceEmitterType, _ := f.GetString("trace-emitter")
 	otelEndpoint, _ := f.GetString("otel-endpoint")
+	otelProtocol, _ := f.GetString("otel-protocol")
 	containerRuntime, _ := f.GetString("container-runtime")
 	permissionPolicyFile, _ := f.GetString("permission-policy-file")
 	codeScannerType, _ := f.GetString("code-scanner")
@@ -934,6 +945,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		GitStrategyType:            gitStrategyType,
 		TraceEmitterType:           traceEmitterType,
 		OTelEndpoint:               otelEndpoint,
+		OTelProtocol:               otelProtocol,
 		ContainerRuntime:           containerRuntime,
 		PermissionPolicyFile:       permissionPolicyFile,
 		CodeScannerType:            codeScannerType,
