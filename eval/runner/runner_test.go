@@ -346,16 +346,21 @@ func writeFakeHarness(t *testing.T, body string) string {
 
 // TestRunSuite_ConcurrencyOrdersDeterministically verifies the worker pool
 // preserves suite task order in the returned SuiteResult.Tasks slice
-// regardless of which workers finished first. The fake harness sleeps for a
-// per-task amount inferred from the workspace path so earlier tasks return
-// LATER than later ones — exactly the ordering hazard a naive append-as-
-// you-finish loop would expose.
+// regardless of which workers actually finished first. The fake harness
+// records a completion-order log keyed by task ID; the assertion is on
+// (a) the result-slice order matching the input order, and (b) the
+// completion-order log being a non-input order — i.e. concurrency
+// genuinely happened. We avoid wall-clock thresholds because they're
+// notoriously flaky under load (issue #31 review).
 func TestRunSuite_ConcurrencyOrdersDeterministically(t *testing.T) {
-	// Sleep ms is decoded from the workspace path: the fake harness extracts
-	// the leading numeric component of the workspace basename. We pass the
-	// expected sleep via the prompt because cmd.Dir is not visible to the
-	// shell wrapper on stdin.
-	script := `#!/bin/sh
+	logDir := t.TempDir()
+	completionLog := filepath.Join(logDir, "completion.log")
+
+	// Per-task sleep is decoded from the prompt; the harness appends the
+	// task ID to completionLog atomically (using a tempfile rename trick is
+	// unnecessary because we only need the *finishing order* of distinct
+	// IDs, and POSIX guarantees small (<= PIPE_BUF) appends are atomic).
+	script := fmt.Sprintf(`#!/bin/sh
 PROMPT=""
 TRACE=""
 while [ $# -gt 0 ]; do
@@ -367,39 +372,33 @@ while [ $# -gt 0 ]; do
 done
 # PROMPT format: "<sleep-ms>:<task-id>".
 SLEEP_MS=$(echo "$PROMPT" | cut -d: -f1)
-# busybox/dash sleep accepts decimals; convert ms -> seconds.
-SLEEP_S=$(awk -v ms="$SLEEP_MS" 'BEGIN { printf "%.3f", ms/1000 }')
+TASK_ID=$(echo "$PROMPT" | cut -d: -f2)
+SLEEP_S=$(awk -v ms="$SLEEP_MS" 'BEGIN { printf "%%.3f", ms/1000 }')
 sleep "$SLEEP_S"
-if [ -n "$TRACE" ]; then
-  echo "{\"id\":\"trace-$PROMPT\",\"turns\":1,\"outcome\":\"success\"}" > "$TRACE"
-fi
-`
+echo "$TASK_ID" >> %q
+[ -n "$TRACE" ] && echo "{\"id\":\"trace-$TASK_ID\",\"turns\":1,\"outcome\":\"success\"}" > "$TRACE"
+`, completionLog)
 	harness := writeFakeHarness(t, script)
 
-	// Pre-create a workspace file each task asserts the existence of, so all
-	// judges pass and we get a deterministic outcome distribution.
-	// Sleeps are chosen so that (a) the sum-of-sleeps is large enough for
-	// concurrency to make a measurable dent, and (b) the spread across tasks
-	// is wide enough to make ordering-by-completion-time differ from
-	// ordering-by-input. Each fork+exec of /bin/sh adds ~30–90ms of
-	// platform-dependent overhead which we conservatively bound below.
+	// Sleeps are chosen so that finishing order strictly differs from input
+	// order under any realistic concurrency level: the longest sleep is on
+	// the first task so a sequential run would put t1 first in the
+	// completion log, but a concurrent run will not.
 	tasks := []types.EvalTask{
-		{ID: "t1", Prompt: "500:t1", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
-		{ID: "t2", Prompt: "50:t2", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
-		{ID: "t3", Prompt: "400:t3", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
-		{ID: "t4", Prompt: "20:t4", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
-		{ID: "t5", Prompt: "300:t5", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t1", Prompt: "300:t1", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t2", Prompt: "20:t2", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t3", Prompt: "200:t3", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t4", Prompt: "10:t4", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		{ID: "t5", Prompt: "100:t5", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
 	}
 	suite := types.EvalSuite{ID: "concurrency-suite", Tasks: tasks}
 
 	out := t.TempDir()
-	start := time.Now()
 	result, err := RunSuite(context.Background(), suite, RunConfig{
 		HarnessPath: harness,
 		OutputDir:   out,
 		Concurrency: 4,
 	})
-	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -413,15 +412,20 @@ fi
 		}
 	}
 
-	// Sanity-check that we actually exploited concurrency. Total serial
-	// sleep time is 1270ms; concurrency=4 with one straggler should bring
-	// wall-clock well under that. We pick a generous 80% bound (1016ms) so
-	// the test stays stable on slow CI runners while still catching a
-	// regression to fully sequential execution.
-	totalSerial := 500 + 50 + 400 + 20 + 300
-	bound := time.Duration(float64(totalSerial)*0.8) * time.Millisecond
-	if elapsed >= bound {
-		t.Errorf("elapsed %v looks sequential (>= %v of %dms total)", elapsed, bound, totalSerial)
+	// Concurrency must have actually happened — the completion order must
+	// differ from the input order. With concurrency=4 and t1 sleeping
+	// longest, t1 cannot be first in the completion log on any machine
+	// that's not pathologically slow.
+	logBytes, err := os.ReadFile(completionLog)
+	if err != nil {
+		t.Fatalf("reading completion log: %v", err)
+	}
+	completionOrder := strings.Fields(string(logBytes))
+	if len(completionOrder) != len(tasks) {
+		t.Fatalf("completion log has %d entries, want %d: %q", len(completionOrder), len(tasks), completionOrder)
+	}
+	if completionOrder[0] == "t1" {
+		t.Errorf("first task to finish was t1 (longest sleep): suggests sequential execution. log=%v", completionOrder)
 	}
 }
 
