@@ -147,7 +147,7 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	assertAttribute(t, rootSpan, "run.outcome", "success")
 	assertAttribute(t, rootSpan, "harness.version", "dev")
 
-	// GenAI semconv assertions (issue #108, ADR-0001): provider and
+	// GenAI semconv assertions (issue #108): provider and
 	// model surface under the GenAI namespace so vendor-shipped APM
 	// dashboards recognise the spans.
 	assertAttribute(t, rootSpan, genAIProviderNameKey, "anthropic")
@@ -470,9 +470,6 @@ func TestGenAIProviderName(t *testing.T) {
 // exists so a regression in any single GenAI attribute fails loudly
 // at the dedicated test name rather than as a side-effect of an
 // unrelated assertion.
-//
-// See ADR-0001 (docs/adr/0001-otel-genai-attribute-alignment.md) for
-// the alignment decision.
 func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	emitter, exporter := newTestOTelEmitter()
 
@@ -526,7 +523,7 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 	// Root span: model, provider, conversation. gen_ai.agent.id is
 	// intentionally NOT emitted; the spec defines it as a persistent
 	// agent identity (e.g. an OpenAI Assistant ID), not a per-execution
-	// run ID. See otel.go and ADR-0001.
+	// run ID.
 	assertAttribute(t, root, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, root, genAIRequestModelKey, "claude-sonnet-4-6")
 	assertAttribute(t, root, genAIConversationIDKey, "alignment-test")

@@ -19,12 +19,11 @@ import (
 // OpenTelemetry GenAI semantic-convention attribute keys.
 //
 // These are the sole names emitted by the OTel trace emitter for any
-// concept that has a GenAI semconv counterpart, per ADR-0001
-// (docs/adr/0001-otel-genai-attribute-alignment.md). Stirrup-specific
-// attributes with no GenAI counterpart (run.id, run.mode, run.outcome,
-// run.turns, harness.version, turn.number, turn.tool_calls,
-// turn.duration_ms, tool.success, tool.duration_ms) keep their
-// stirrup-prefixed names alongside.
+// concept that has a GenAI semconv counterpart.
+// Stirrup-specific attributes with no GenAI counterpart
+// (run.id, run.mode, run.outcome, run.turns, harness.version,
+// turn.number, turn.tool_calls, turn.duration_ms, tool.success,
+// tool.duration_ms) keep their stirrup-prefixed names alongside.
 //
 // Spec: https://opentelemetry.io/docs/specs/semconv/gen-ai/
 const (
@@ -146,7 +145,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	// NOTE: gen_ai.agent.id is intentionally NOT emitted. The OTel GenAI spec
 	// defines this as a persistent agent identity (e.g. an OpenAI Assistant ID),
 	// not a per-execution run ID. Stirrup has no first-class named-agent concept;
-	// emit when one exists. See ADR-0001 and follow-up issue (#127).
+	// emit when one exists. See follow-up issue (#127).
 	ctx, span := e.tracer.Start(ctx, "run",
 		oteltrace.WithAttributes(
 			attribute.String("run.id", runID),
