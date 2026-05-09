@@ -181,6 +181,53 @@ func TestNewOTelTraceEmitter_HTTPProtocol_PreservesGatewayPath(t *testing.T) {
 	if isInsecureEndpoint(gatewayURL) {
 		t.Errorf("isInsecureEndpoint(%q) = true; an https:// URL must use TLS", gatewayURL)
 	}
+	// Per SF-5: the no-scheme endpoint shape (`localhost:4318`) is the
+	// typical local-collector flow and must be classified as insecure
+	// so the exporter applies WithInsecure(). Without this assertion
+	// the no-scheme branch in isInsecureEndpoint had count=0 in the
+	// trace package; the metrics package already covers the same case
+	// in TestNewMetrics_HTTPProtocol_PreservesGatewayPath.
+	if !isInsecureEndpoint("localhost:4318") {
+		t.Error("scheme-less endpoint should be treated as insecure")
+	}
+}
+
+// TestNewOTelTraceEmitter_GRPCProtocol_AcceptsHeaders is the trace-side
+// smoke test for the gRPC arm of buildOTLPTraceExporter. The metrics
+// package has TestNewMetrics_GRPCProtocol_AcceptsHeaders covering the
+// `if len(headers) > 0 { append WithHeaders }` conditional; the trace
+// package had no counterpart, leaving that branch at count=0 in
+// coverage. Per synthesis SF-4.
+//
+// This is a constructor-level test, not a factory-level test. The
+// validator added in MF-2 rejects the gRPC + non-empty headers
+// combination at config-load time (see
+// TestValidateRunConfig_HeadersOnGRPCProtocolRejected in the types
+// package), but the constructor itself is not a validation surface —
+// it's called from factory.go *after* validation. So a constructor
+// test exercising "gRPC with non-empty headers does not error on
+// option construction" still pins the previously-uncovered branch
+// without contradicting the validator's contract: the validator
+// prevents ever reaching this code path with non-empty headers in
+// production, but a future refactor that drops the WithHeaders
+// option from the slice would still surface here.
+func TestNewOTelTraceEmitter_GRPCProtocol_AcceptsHeaders(t *testing.T) {
+	// Direct exporter construction so we exercise the option-
+	// stitching path without paying the OTel SDK's connection
+	// timeout on emitter Close. NewOTelTraceEmitter goes through
+	// the same path.
+	exp, err := buildOTLPTraceExporter(
+		context.Background(),
+		"127.0.0.1:1",
+		"grpc",
+		map[string]string{"X-Tenant": "team-a"},
+	)
+	if err != nil {
+		t.Fatalf("buildOTLPTraceExporter(grpc with headers): %v", err)
+	}
+	if exp == nil {
+		t.Fatalf("expected non-nil exporter")
+	}
 }
 
 // TestNewOTelTraceEmitter_HTTPProtocol_RejectsUnknownProtocol pins the

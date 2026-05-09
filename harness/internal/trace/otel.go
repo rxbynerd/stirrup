@@ -3,6 +3,7 @@ package trace
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -391,7 +392,15 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	if e.provider != nil {
 		if err := e.provider.ForceFlush(ctx); err != nil {
 			// Non-fatal: log but continue building the trace.
-			_ = err
+			// A ForceFlush failure means the in-memory span batch
+			// could not be exported before the run ended; the
+			// RunTrace aggregate below is still valid for the
+			// caller, but downstream observers querying the OTel
+			// backend will be missing the tail of this run.
+			// ScrubHandler still runs over the message, so any
+			// secret-shaped substring in the wrapped error is
+			// redacted before it lands in stderr JSONL.
+			slog.Default().Warn("OTel ForceFlush failed, spans may be lost", "error", err)
 		}
 	}
 
