@@ -174,6 +174,8 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			FilePath:        pc.TraceEmitter.FilePath,
 			Endpoint:        pc.TraceEmitter.Endpoint,
 			MetricsEndpoint: pc.TraceEmitter.MetricsEndpoint,
+			Protocol:        pc.TraceEmitter.Protocol,
+			Headers:         pc.TraceEmitter.Headers,
 		}
 	}
 	if pc.Tools != nil {

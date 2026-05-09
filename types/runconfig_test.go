@@ -105,6 +105,39 @@ func TestRedact_EmptyConfig(t *testing.T) {
 	}
 }
 
+// TestRedact_TraceEmitterHeaders pins that a "secret://" value in a
+// trace-emitter header is rewritten to "secret://[REDACTED]" by Redact()
+// while plaintext values pass through unchanged. Issue #100: when
+// Stirrup ships traces directly to a cloud gateway (Grafana Cloud,
+// Honeycomb, etc.) the auth token rides on the Authorization header. The
+// resolved bearer must never enter a persisted RunTrace, but the secret
+// reference itself shouldn't either — an operator rotating the env var
+// expects no trace of the old reference to remain.
+func TestRedact_TraceEmitterHeaders(t *testing.T) {
+	rc := RunConfig{
+		TraceEmitter: TraceEmitterConfig{
+			Type: "otel",
+			Headers: map[string]string{
+				"Authorization": "secret://GRAFANA_CLOUD_AUTH",
+				"X-Tenant":      "team-a",
+			},
+		},
+	}
+	redacted := rc.Redact()
+
+	if got := redacted.TraceEmitter.Headers["Authorization"]; got != "secret://[REDACTED]" {
+		t.Errorf("Authorization header = %q, want secret://[REDACTED]", got)
+	}
+	if got := redacted.TraceEmitter.Headers["X-Tenant"]; got != "team-a" {
+		t.Errorf("X-Tenant plaintext header = %q, want team-a (plaintext should pass through)", got)
+	}
+
+	// Original unchanged.
+	if rc.TraceEmitter.Headers["Authorization"] != "secret://GRAFANA_CLOUD_AUTH" {
+		t.Error("Redact mutated original TraceEmitter.Headers")
+	}
+}
+
 // --- ValidateRunConfig tests ---
 
 func validConfig() *RunConfig {

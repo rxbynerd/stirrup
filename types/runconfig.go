@@ -347,6 +347,25 @@ func (rc RunConfig) Redact() RunConfig {
 		}
 		redacted.Tools.MCPServers = servers
 	}
+	// Trace-emitter headers may carry secret:// references for cloud
+	// gateway auth (e.g. {"Authorization": "secret://GRAFANA_CLOUD_AUTH"}).
+	// The reference itself is not sensitive (it points at the env var
+	// name, not the token) but persisting it through to the trace would
+	// undercut the SecretStore contract and surprise an operator who
+	// rotated a key. Plaintext values stay untouched — operators who
+	// inline a header (e.g. {"X-Tenant": "team-a"}) consented to having
+	// it appear in traces.
+	if len(redacted.TraceEmitter.Headers) > 0 {
+		headers := make(map[string]string, len(redacted.TraceEmitter.Headers))
+		for k, v := range redacted.TraceEmitter.Headers {
+			if strings.HasPrefix(v, "secret://") {
+				headers[k] = "secret://[REDACTED]"
+			} else {
+				headers[k] = v
+			}
+		}
+		redacted.TraceEmitter.Headers = headers
+	}
 	return redacted
 }
 
@@ -640,8 +659,28 @@ type TransportConfig struct {
 type TraceEmitterConfig struct {
 	Type            string `json:"type"`                      // "jsonl" | "otel"
 	FilePath        string `json:"filePath,omitempty"`        // for jsonl
-	Endpoint        string `json:"endpoint,omitempty"`        // for otel tracing (default: localhost:4317)
+	Endpoint        string `json:"endpoint,omitempty"`        // for otel tracing (default: localhost:4317 for grpc; full URL for http/protobuf)
 	MetricsEndpoint string `json:"metricsEndpoint,omitempty"` // for otel metrics (defaults to Endpoint if unset)
+
+	// Protocol selects the OTLP wire protocol for the otel emitter.
+	// Closed set: "" (defaults to "grpc"), "grpc", "http/protobuf".
+	// HTTP/JSON is intentionally not supported; binary protobuf is the only
+	// HTTP encoding accepted by Grafana Cloud and most managed OTLP gateways
+	// and adding JSON has no clear demand. Ignored for the "jsonl" emitter.
+	Protocol string `json:"protocol,omitempty"`
+
+	// Headers are extra HTTP headers attached to every OTLP export
+	// request. Keys are header names; values may be plaintext or a
+	// "secret://" reference resolved via the SecretStore at exporter
+	// init time (e.g. {"Authorization": "secret://GRAFANA_CLOUD_AUTH"}).
+	// Resolved values flow through the same scrubbing layer as logs and
+	// are rewritten to "secret://[REDACTED]" by RunConfig.Redact() before
+	// any persisted trace or recording is written.
+	//
+	// Only applied when type=="otel". For protocol "grpc" the SDK sends
+	// these as gRPC metadata; for "http/protobuf" they are attached as
+	// HTTP request headers.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // ToolsConfig holds the tool configuration.
@@ -818,6 +857,19 @@ var validTransportTypes = map[string]bool{
 var validTraceEmitterTypes = map[string]bool{
 	"jsonl": true,
 	"otel":  true,
+}
+
+// validTraceEmitterProtocols is the closed set of OTLP wire protocols
+// accepted on TraceEmitterConfig.Protocol. Empty string is the unset
+// form and defaults to "grpc" at exporter-construction time. "http/json"
+// is intentionally excluded — Grafana Cloud and the managed APMs we
+// target prefer binary protobuf, and adding the JSON variant would
+// double the surface area of the exporter init path without an
+// operator demand to justify it. See docs/observability-cloud.md.
+var validTraceEmitterProtocols = map[string]bool{
+	"":              true,
+	"grpc":          true,
+	"http/protobuf": true,
 }
 
 var validCredentialTypes = map[string]bool{
@@ -1110,6 +1162,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
 	validateOptionalType("transport", config.Transport.Type, validTransportTypes, &errs)
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
+	validateTraceEmitterProtocolAndHeaders(config.TraceEmitter, &errs)
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
 	validateProviderConfigs(config, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
@@ -2313,5 +2366,43 @@ func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
 	}
 	if cfg.ServiceNamespace != "" && !observabilityLabelPattern.MatchString(cfg.ServiceNamespace) {
 		*errs = append(*errs, fmt.Sprintf("observability.serviceNamespace %q must match %s", cfg.ServiceNamespace, observabilityLabelPattern))
+	}
+}
+
+// validateTraceEmitterProtocolAndHeaders enforces the closed set of OTLP
+// wire protocols accepted on TraceEmitterConfig.Protocol and rejects
+// non-otel emitters that carry stale protocol/header fields. Catching a
+// typo'd "http" or "grpcs" here gives the operator a precise error at
+// boot rather than a "no exporter could be created" log line at the
+// first export.
+//
+// Protocol and Headers only have meaning for type=="otel"; rejecting them
+// on the jsonl emitter makes the wire schema unambiguous and prevents a
+// future migration from silently keeping a stale config working in a
+// way that hides the operator's intent.
+func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]string) {
+	if !validTraceEmitterProtocols[cfg.Protocol] {
+		*errs = append(*errs, fmt.Sprintf(
+			"unsupported traceEmitter.protocol %q (allowed: \"\", grpc, http/protobuf)",
+			cfg.Protocol,
+		))
+	}
+	// Protocol/Headers are otel-only. The jsonl emitter does not
+	// negotiate a wire protocol or send HTTP headers; carrying these
+	// fields on a jsonl run is almost certainly a leftover from a
+	// migration and should fail loudly.
+	if cfg.Type != "otel" && cfg.Type != "" {
+		if cfg.Protocol != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.protocol is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if len(cfg.Headers) > 0 {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.headers is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
 	}
 }

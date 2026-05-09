@@ -2935,20 +2935,38 @@ type TraceEmitterConfig struct {
 	// Valid values:
 	//
 	//	"jsonl" — append events as JSON lines to a file. Requires file_path.
-	//	"otel"  — export as OpenTelemetry spans via OTLP/gRPC. Creates a root
+	//	"otel"  — export as OpenTelemetry spans via OTLP. Creates a root
 	//	          "run" span with child spans for turns, tool calls, provider
 	//	          streaming, context compaction, verification, permission checks,
-	//	          and git operations.
+	//	          and git operations. The wire protocol is selected by `protocol`.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// For "jsonl": filesystem path to the output trace file.
 	FilePath string `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
-	// For "otel": gRPC exporter address for traces. Default: "localhost:4317".
+	// For "otel": exporter address for traces.
+	//   - protocol "grpc" (default): host:port (default "localhost:4317").
+	//   - protocol "http/protobuf": full URL ending in the gateway base path
+	//     (e.g. "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"). The
+	//     SDK appends "/v1/traces" and "/v1/metrics" per signal.
 	Endpoint string `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	// For "otel": gRPC exporter address for metrics. Defaults to the value of
-	// endpoint if unset.
+	// For "otel": exporter address for metrics. Defaults to the value of
+	// endpoint if unset. Same protocol as `endpoint`.
 	MetricsEndpoint string `protobuf:"bytes,4,opt,name=metrics_endpoint,json=metricsEndpoint,proto3" json:"metrics_endpoint,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// For "otel": OTLP wire protocol. Closed set:
+	//
+	//	"" (defaults to "grpc") | "grpc" | "http/protobuf"
+	//
+	// HTTP/JSON is intentionally not supported. See
+	// docs/observability-cloud.md for the operator walkthrough.
+	Protocol string `protobuf:"bytes,5,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	// For "otel": extra headers attached to every export request. Keys are
+	// header names; values may be plaintext or a "secret://" reference
+	// resolved via the SecretStore at exporter init time. Resolved values
+	// are scrubbed from logs and stripped from RunConfig.Redact() output.
+	// Used to authenticate to managed gateways like Grafana Cloud
+	// (e.g. {"Authorization": "secret://GRAFANA_CLOUD_AUTH"}).
+	Headers       map[string]string `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TraceEmitterConfig) Reset() {
@@ -3007,6 +3025,20 @@ func (x *TraceEmitterConfig) GetMetricsEndpoint() string {
 		return x.MetricsEndpoint
 	}
 	return ""
+}
+
+func (x *TraceEmitterConfig) GetProtocol() string {
+	if x != nil {
+		return x.Protocol
+	}
+	return ""
+}
+
+func (x *TraceEmitterConfig) GetHeaders() map[string]string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
 }
 
 // ToolsConfig selects which tools are available to the model during the run.
@@ -3384,12 +3416,17 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"policyFile\x12\x1a\n" +
 	"\bfallback\x18\x04 \x01(\tR\bfallback\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\x8c\x01\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\xb3\x02\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
 	"\bendpoint\x18\x03 \x01(\tR\bendpoint\x12)\n" +
-	"\x10metrics_endpoint\x18\x04 \x01(\tR\x0fmetricsEndpoint\"n\n" +
+	"\x10metrics_endpoint\x18\x04 \x01(\tR\x0fmetricsEndpoint\x12\x1a\n" +
+	"\bprotocol\x18\x05 \x01(\tR\bprotocol\x12M\n" +
+	"\aheaders\x18\x06 \x03(\v23.stirrup.harness.v1.TraceEmitterConfig.HeadersEntryR\aheaders\x1a:\n" +
+	"\fHeadersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"n\n" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
@@ -3414,7 +3451,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 34)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),           // 0: stirrup.harness.v1.HarnessEvent
 	(*ControlEvent)(nil),           // 1: stirrup.harness.v1.ControlEvent
@@ -3449,6 +3486,7 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	nil,                            // 30: stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
 	nil,                            // 31: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
 	nil,                            // 32: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	nil,                            // 33: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	9,  // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
@@ -3483,16 +3521,17 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	19, // 29: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
 	20, // 30: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
 	22, // 31: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
-	27, // 32: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	4,  // 33: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
-	10, // 34: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 35: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	1,  // 36: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	36, // [36:37] is the sub-list for method output_type
-	35, // [35:36] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	33, // 32: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	27, // 33: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	4,  // 34: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
+	10, // 35: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 36: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	1,  // 37: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	37, // [37:38] is the sub-list for method output_type
+	36, // [36:37] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -3510,7 +3549,7 @@ func file_harness_v1_harness_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   33,
+			NumMessages:   34,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
