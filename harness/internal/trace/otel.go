@@ -146,7 +146,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	// NOTE: gen_ai.agent.id is intentionally NOT emitted. The OTel GenAI spec
 	// defines this as a persistent agent identity (e.g. an OpenAI Assistant ID),
 	// not a per-execution run ID. Stirrup has no first-class named-agent concept;
-	// emit when one exists. See ADR-0001 and follow-up issue (TBD).
+	// emit when one exists. See ADR-0001 and follow-up issue (#127).
 	ctx, span := e.tracer.Start(ctx, "run",
 		oteltrace.WithAttributes(
 			attribute.String("run.id", runID),
