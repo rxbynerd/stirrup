@@ -181,6 +181,13 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 		GitStrategyType:  "deterministic",
 		TraceEmitterType: "otel",
 		OTelEndpoint:     "localhost:4317",
+		// Per synthesis SF-6: pin that the gh-100 OTelProtocol field
+		// flows through buildHarnessRunConfig into TraceEmitter.Protocol.
+		// Without this, the assignment at harness.go:164 has count=0
+		// and a future refactor that drops it would silently fall back
+		// to the SDK default ("grpc") for any operator who passes
+		// --otel-protocol on the CLI.
+		OTelProtocol: "http/protobuf",
 	})
 
 	if cfg.Executor.Type != "container" {
@@ -200,6 +207,9 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 	}
 	if cfg.TraceEmitter.Endpoint != "localhost:4317" {
 		t.Errorf("expected otel endpoint 'localhost:4317', got %q", cfg.TraceEmitter.Endpoint)
+	}
+	if cfg.TraceEmitter.Protocol != "http/protobuf" {
+		t.Errorf("expected otel protocol 'http/protobuf', got %q", cfg.TraceEmitter.Protocol)
 	}
 	// jsonl FilePath should not be populated when emitter type is otel.
 	if cfg.TraceEmitter.FilePath != "" {
