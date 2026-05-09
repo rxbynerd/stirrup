@@ -1,4 +1,4 @@
-name: Smoke Test (Anthropic WIF)
+name: Smoke Test - Anthropic WIF
 
 # End-to-end smoke test for Anthropic Workload Identity Federation.
 # Manually dispatched. Exchanges the GitHub Actions OIDC token for an
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  smoke-test:
+  smoke-anthropic-wif:
     name: Anthropic WIF Smoke Test
     runs-on: ubuntu-latest
     permissions:
@@ -55,12 +55,21 @@ jobs:
             --prompt "Write the string 'smoke test passed' to a file called hello.txt"
 
       - name: Verify trace outcome
-        run: tail -1 trace.jsonl | jq -e '.outcome == "success"'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -s trace.jsonl ] || { echo "trace.jsonl is missing or empty" >&2; exit 1; }
+          jq -e '.outcome == "success"' trace.jsonl
+
+      - name: Verify workspace output
+        run: |
+          test -f workspace/hello.txt || { echo "hello.txt was not created" >&2; exit 1; }
+          grep -qF 'smoke test passed' workspace/hello.txt || { echo "hello.txt does not contain expected string" >&2; cat workspace/hello.txt >&2; exit 1; }
 
       - name: Upload trace
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: smoke-trace
+          name: smoke-trace-anthropic-wif
           path: trace.jsonl
           retention-days: 7
