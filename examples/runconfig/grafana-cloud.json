@@ -1,0 +1,55 @@
+{
+  "runId": "example-grafana-cloud",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "anthropic",
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6"
+  },
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 200000
+  },
+  "executor": {
+    "type": "local"
+  },
+  "editStrategy": {
+    "type": "multi"
+  },
+  "verifier": {
+    "type": "none"
+  },
+  "permissionPolicy": {
+    "type": "allow-all"
+  },
+  "gitStrategy": {
+    "type": "none"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "traceEmitter": {
+    "type": "otel",
+    "protocol": "http/protobuf",
+    "endpoint": "https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
+    "metricsEndpoint": "https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
+    "headers": {
+      "Authorization": "secret://GRAFANA_CLOUD_AUTH"
+    }
+  },
+  "observability": {
+    "environment": "production",
+    "serviceNamespace": "stirrup"
+  },
+  "maxTurns": 20,
+  "timeout": 600,
+  "logLevel": "info"
+}

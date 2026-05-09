@@ -70,12 +70,7 @@
   },
   "traceEmitter": {
     "type": "otel",
-    "protocol": "http/protobuf",
-    "endpoint": "https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
-    "metricsEndpoint": "https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
-    "headers": {
-      "Authorization": "secret://GRAFANA_CLOUD_AUTH"
-    }
+    "endpoint": "localhost:4317"
   },
   "tools": {
     "builtIn": [
