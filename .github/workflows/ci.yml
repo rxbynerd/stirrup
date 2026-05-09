@@ -74,7 +74,8 @@ jobs:
             ./stirrup-eval run \
               --suite "$suite" \
               --harness ./stirrup \
-              --output "eval/results/${name}"
+              --output "eval/results/${name}" \
+              --junit "eval/results/${name}/junit.xml"
           done
 
       - name: Compare against baseline
