@@ -25,10 +25,17 @@ func TestResolveHeaders_PlaintextPassthrough(t *testing.T) {
 	if got, want := out["X-Region"], "eu-west-1"; got != want {
 		t.Errorf("X-Region: got %q, want %q", got, want)
 	}
-	// Input must not be mutated.
-	if &out == &in {
+	// Input must not be mutated. `&out == &in` would compare the
+	// addresses of two local stack variables (always distinct) and
+	// could never detect a regression where ResolveHeaders returned
+	// the input map by reference. Use a mutation probe instead: if
+	// `out` and `in` share the underlying map, writing to `out`
+	// will be visible in `in`.
+	out["__probe__"] = "x"
+	if in["__probe__"] == "x" {
 		t.Error("ResolveHeaders returned the input map; expected a fresh allocation")
 	}
+	delete(out, "__probe__")
 }
 
 func TestResolveHeaders_SecretEnvVar(t *testing.T) {
