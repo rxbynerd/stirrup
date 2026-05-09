@@ -44,7 +44,7 @@ stirrup/
     runner/                  # Suite runner (live + replay) and replay evaluator
     reporter/                # Comparison reporter and text formatting
     lakehouse/               # TraceLakehouse adapters: file-based FileStore
-    suites/                  # Eval suite definitions (JSON)
+    suites/                  # Eval suite definitions (HCL)
     baselines/               # Stored baseline results for CI comparison
 ```
 

@@ -49,8 +49,11 @@ jobs:
 
       - name: Check for eval suites
         id: check-suites
+        shell: bash
         run: |
-          if ls eval/suites/*.json 1>/dev/null 2>&1; then
+          shopt -s nullglob
+          suites=(eval/suites/*.hcl)
+          if [ ${#suites[@]} -gt 0 ]; then
             echo "has_suites=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_suites=false" >> "$GITHUB_OUTPUT"
@@ -59,23 +62,30 @@ jobs:
 
       - name: Run eval suite
         if: steps.check-suites.outputs.has_suites == 'true'
+        shell: bash
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
+          shopt -s nullglob
           mkdir -p eval/results
-          for suite in eval/suites/*.json; do
-            name=$(basename "$suite" .json)
+          for suite in eval/suites/*.hcl; do
+            name=$(basename "$suite")
+            name="${name%.*}"
             ./stirrup-eval run \
               --suite "$suite" \
               --harness ./stirrup \
-              --output "eval/results"
+              --output "eval/results/${name}"
           done
 
       - name: Compare against baseline
         if: steps.check-suites.outputs.has_suites == 'true'
+        shell: bash
         run: |
-          for result in eval/results/result.json; do
-            baseline="eval/baselines/$(basename "$result")"
+          shopt -s nullglob
+          for result_dir in eval/results/*/; do
+            name=$(basename "$result_dir")
+            result="${result_dir}result.json"
+            baseline="eval/baselines/${name}.json"
             if [ -f "$baseline" ]; then
               ./stirrup-eval compare \
                 --current "$result" \

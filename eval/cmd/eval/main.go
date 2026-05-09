@@ -19,10 +19,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hashicorp/hcl/v2/hclwrite"
+	"github.com/zclconf/go-cty/cty"
+
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/eval/reporter"
 	"github.com/rxbynerd/stirrup/eval/runner"
+	"github.com/rxbynerd/stirrup/eval/spec"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
 )
@@ -83,7 +87,7 @@ func run(args []string, stdout io.Writer) int {
 
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	suitePath := fs.String("suite", "", "Path to eval suite JSON file (required)")
+	suitePath := fs.String("suite", "", "Path to eval suite HCL file (required)")
 	harnessPath := fs.String("harness", "", "Path to stirrup binary (default: stirrup)")
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory)")
 	concurrency := fs.Int("concurrency", 1, "Requested task concurrency (currently tasks run sequentially)")
@@ -163,16 +167,16 @@ func cmdCompare(args []string) {
 	}
 }
 
+// loadSuite reads a suite HCL file at path and returns the parsed
+// types.EvalSuite. HCL is the only accepted authoring format; the
+// legacy JSON loader was removed once HCL became canonical, so any
+// extension other than .hcl is rejected with a clear error rather
+// than silently accepted and parsed as JSON.
 func loadSuite(path string) (types.EvalSuite, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return types.EvalSuite{}, err
+	if ext := strings.ToLower(filepath.Ext(path)); ext != ".hcl" {
+		return types.EvalSuite{}, fmt.Errorf("unsupported suite file extension %q (expected .hcl)", ext)
 	}
-	var suite types.EvalSuite
-	if err := json.Unmarshal(data, &suite); err != nil {
-		return types.EvalSuite{}, fmt.Errorf("parsing suite JSON: %w", err)
-	}
-	return suite, nil
+	return spec.LoadSuiteHCL(path)
 }
 
 func loadResult(path string) (eval.SuiteResult, error) {
@@ -282,7 +286,7 @@ func cmdMineFailures(args []string) {
 	lakehousePath := fs.String("lakehouse", "", "Path to lakehouse directory (required)")
 	afterStr := fs.String("after", "", "Filter traces after this date (RFC3339 or YYYY-MM-DD)")
 	limit := fs.Int("limit", 0, "Maximum number of failures to mine")
-	output := fs.String("output", "", "Write EvalSuite JSON to this file")
+	output := fs.String("output", "", "Write EvalSuite HCL to this file (.hcl recommended)")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -323,13 +327,81 @@ func cmdMineFailures(args []string) {
 	}
 
 	if *output != "" {
-		if err := writeJSON(*output, suite); err != nil {
+		if err := writeSuiteHCL(*output, suite); err != nil {
 			log.Fatalf("writing suite: %v", err)
 		}
 		fmt.Fprintf(os.Stderr, "Suite written to %s\n", *output)
 	}
 
 	fmt.Printf("%d failures mined from %d total recordings\n", len(tasks), len(recordings))
+}
+
+// writeSuiteHCL serialises a types.EvalSuite as canonical HCL and writes
+// it to path. Used by mine-failures to emit a starter suite that the
+// run subcommand can load directly. hclwrite is responsible for
+// escaping `"`, `\`, `${...}` interpolation markers, and other
+// HCL-significant sequences in user-supplied prompts.
+func writeSuiteHCL(path string, s types.EvalSuite) error {
+	f := hclwrite.NewEmptyFile()
+	suiteBody := f.Body().AppendNewBlock("suite", []string{s.ID}).Body()
+	if s.Description != "" {
+		suiteBody.SetAttributeValue("description", cty.StringVal(s.Description))
+	}
+	for _, t := range s.Tasks {
+		taskBody := suiteBody.AppendNewBlock("task", []string{t.ID}).Body()
+		if t.Description != "" {
+			taskBody.SetAttributeValue("description", cty.StringVal(t.Description))
+		}
+		if t.Repo != "" {
+			taskBody.SetAttributeValue("repo", cty.StringVal(t.Repo))
+		}
+		if t.Ref != "" {
+			taskBody.SetAttributeValue("ref", cty.StringVal(t.Ref))
+		}
+		if t.Mode != "" {
+			taskBody.SetAttributeValue("mode", cty.StringVal(t.Mode))
+		}
+		if t.Prompt != "" {
+			taskBody.SetAttributeValue("prompt", cty.StringVal(t.Prompt))
+		}
+		appendJudgeBlock(taskBody, t.Judge)
+	}
+	return os.WriteFile(path, f.Bytes(), 0o644)
+}
+
+// appendJudgeBlock appends an EvalJudge as a `judge { ... }` block on
+// parent. Recursive for composite judges so nested `judge` blocks
+// preserve source order.
+func appendJudgeBlock(parent *hclwrite.Body, j types.EvalJudge) {
+	body := parent.AppendNewBlock("judge", nil).Body()
+	body.SetAttributeValue("type", cty.StringVal(j.Type))
+	if j.Command != "" {
+		body.SetAttributeValue("command", cty.StringVal(j.Command))
+	}
+	if len(j.Paths) > 0 {
+		vals := make([]cty.Value, len(j.Paths))
+		for i, p := range j.Paths {
+			vals[i] = cty.StringVal(p)
+		}
+		body.SetAttributeValue("paths", cty.ListVal(vals))
+	}
+	if j.Path != "" {
+		body.SetAttributeValue("path", cty.StringVal(j.Path))
+	}
+	if j.Pattern != "" {
+		body.SetAttributeValue("pattern", cty.StringVal(j.Pattern))
+	}
+	if j.Criteria != "" {
+		body.SetAttributeValue("criteria", cty.StringVal(j.Criteria))
+	}
+	if j.Type == "composite" {
+		if j.Require != "" {
+			body.SetAttributeValue("require", cty.StringVal(j.Require))
+		}
+		for _, sub := range j.Judges {
+			appendJudgeBlock(body, sub)
+		}
+	}
 }
 
 // cmdDrift detects metric changes between two adjacent time windows.
@@ -581,7 +653,7 @@ func cmdCompareToProduction(args []string) {
 	}
 
 	fmt.Fprintln(os.Stderr)
-	printComparisonSummary(report)
+	printComparisonSummary(os.Stderr, report)
 }
 
 // buildLabVsProductionReport constructs a LabVsProductionReport from production
@@ -626,23 +698,25 @@ func buildLabVsProductionReport(experimentID string, prodMetrics types.TraceMetr
 	}
 }
 
-// printComparisonSummary prints a human-readable table comparing production
-// metrics to each lab variant.
-func printComparisonSummary(report types.LabVsProductionReport) {
-	fmt.Fprintf(os.Stderr, "Experiment: %s\n", report.ExperimentID)
-	fmt.Fprintf(os.Stderr, "Production sample size: %d\n\n", report.Production.SampleSize)
+// printComparisonSummary prints a human-readable table comparing
+// production metrics to each lab variant. The destination writer is
+// injected so tests can supply io.Discard rather than mutating
+// os.Stderr globally; callers in cmdCompareToProduction pass os.Stderr.
+func printComparisonSummary(w io.Writer, report types.LabVsProductionReport) {
+	fmt.Fprintf(w, "Experiment: %s\n", report.ExperimentID)
+	fmt.Fprintf(w, "Production sample size: %d\n\n", report.Production.SampleSize)
 
 	for _, v := range report.Variants {
-		fmt.Fprintf(os.Stderr, "Variant: %s\n", v.Name)
-		fmt.Fprintf(os.Stderr, "%-16s %12s %12s %12s\n", "Metric", "Production", "Lab", "Delta")
-		fmt.Fprintf(os.Stderr, "%-16s %12s %12s %12s\n", "------", "----------", "---", "-----")
+		fmt.Fprintf(w, "Variant: %s\n", v.Name)
+		fmt.Fprintf(w, "%-16s %12s %12s %12s\n", "Metric", "Production", "Lab", "Delta")
+		fmt.Fprintf(w, "%-16s %12s %12s %12s\n", "------", "----------", "---", "-----")
 
 		prodPassPct := report.Production.PassRate * 100
 		labPassPct := v.Results.PassRate * 100
-		fmt.Fprintf(os.Stderr, "%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
+		fmt.Fprintf(w, "%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
 			"Pass rate", prodPassPct, labPassPct, labPassPct-prodPassPct)
 
-		fmt.Fprintf(os.Stderr, "%-16s %12.1f %12d %+12.1f\n",
+		fmt.Fprintf(w, "%-16s %12.1f %12d %+12.1f\n",
 			"Mean turns",
 			report.Production.MeanTurns,
 			v.Results.MedianTurns,
