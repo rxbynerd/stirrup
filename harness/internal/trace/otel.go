@@ -43,13 +43,20 @@ const (
 // https://opentelemetry.io/docs/specs/semconv/attributes-registry/gen-ai/.
 // Unknown stirrup types fall through to the raw value so future provider
 // types are still observable, even if dashboards don't recognise them.
+//
+// `openai-compatible` is intentionally NOT mapped to `openai`: it is the
+// generic Chat Completions adapter used by vLLM, Granite Guardian, Ollama,
+// Azure OpenAI, LiteLLM, and other vendors. Tagging those runs as
+// `gen_ai.provider.name = "openai"` would mislabel telemetry. It falls
+// through to the default branch and surfaces as the raw string until/unless
+// a more specific provider type is configured.
 func genAIProviderName(stirrupType string) string {
 	switch stirrupType {
 	case "anthropic":
 		return "anthropic"
 	case "bedrock":
 		return "aws.bedrock"
-	case "openai-compatible", "openai-responses":
+	case "openai-responses":
 		return "openai"
 	case "gemini":
 		return "gcp.vertex_ai"

@@ -449,7 +449,8 @@ func TestGenAIProviderName(t *testing.T) {
 	}{
 		{"anthropic", "anthropic"},
 		{"bedrock", "aws.bedrock"},
-		{"openai-compatible", "openai"},
+		// openai-compatible falls through unchanged: it is generic Chat Completions, not OpenAI specifically.
+		{"openai-compatible", "openai-compatible"},
 		{"openai-responses", "openai"},
 		{"gemini", "gcp.vertex_ai"},
 	}
