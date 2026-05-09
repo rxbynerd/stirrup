@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/xml"
 	"os"
 	"path/filepath"
@@ -203,5 +204,89 @@ func TestConvert_LoadResultRejectsBadJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parsing result JSON") {
 		t.Errorf("error = %q, want it to mention parsing", err.Error())
+	}
+}
+
+// TestRun_ConvertDispatch exercises the `convert` arm of run()'s
+// switch end-to-end: it writes a result.json with writeJSON, calls
+// run([]string{"convert", "--from", ..., "--to-junit", ...}), and
+// asserts the JUnit XML lands at the requested path with the
+// expected header. Without this test, a refactor that miswired the
+// "convert" case (e.g. dispatching to cmdCompare) would have no
+// signal — the convert-side helpers (writeJUnit, loadResult) are
+// well-covered, but the run() dispatcher itself was untested.
+//
+// The two required-flag check paths inside cmdConvert
+// (`-from is required`, `-to-junit is required`) call log.Fatal,
+// which exits the test process. They are not unit-tested here;
+// covering them needs subprocess testing or a fatal-interceptor
+// shim, neither of which is justified for guard clauses this small.
+func TestRun_ConvertDispatch(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "result.json")
+	xmlPath := filepath.Join(dir, "junit.xml")
+
+	if err := writeJSON(jsonPath, sampleResult()); err != nil {
+		t.Fatalf("writeJSON: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	code := run([]string{"convert", "--from", jsonPath, "--to-junit", xmlPath}, &stdout)
+	if code != 0 {
+		t.Fatalf("run convert exit code = %d, want 0", code)
+	}
+
+	data, err := os.ReadFile(xmlPath)
+	if err != nil {
+		t.Fatalf("reading emitted XML: %v", err)
+	}
+	if !strings.HasPrefix(string(data), `<?xml version="1.0" encoding="UTF-8"?>`) {
+		t.Fatalf("missing XML header; first 64 bytes: %q", string(data[:min(len(data), 64)]))
+	}
+}
+
+// TestCmdRun_JUnitFlag drives the `run` arm of run()'s switch with
+// --dry-run + --junit and asserts the JUnit XML is created. Dry-run
+// mode short-circuits the harness binary requirement (see
+// runner.RunSuite), so this test works on a bare-bones runner and
+// has no external dependencies beyond a fixture suite.
+//
+// The assertions are deliberately coarse: this is a wiring test for
+// the `*junitPath != ""` guard, the writeJUnit call inside cmdRun,
+// and (post-B2) the warning-not-fatal behaviour. Per-suite content
+// shape is covered by reporter tests; per-helper file shape is
+// covered by TestWriteJUnit_CreatesFile. Here we only need to know
+// the flag value reached writeJUnit.
+func TestCmdRun_JUnitFlag(t *testing.T) {
+	dir := t.TempDir()
+	outputDir := filepath.Join(dir, "results")
+	xmlPath := filepath.Join(dir, "junit.xml")
+
+	// The fixture is checked in under testdata/ so the test does not
+	// depend on the precise HCL grammar — if the grammar changes,
+	// the fixture is updated alongside it.
+	suitePath, err := filepath.Abs(filepath.Join("testdata", "minimal_suite.hcl"))
+	if err != nil {
+		t.Fatalf("resolving fixture: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	code := run([]string{
+		"run",
+		"--suite", suitePath,
+		"--dry-run",
+		"--output", outputDir,
+		"--junit", xmlPath,
+	}, &stdout)
+	if code != 0 {
+		t.Fatalf("run exit code = %d, want 0", code)
+	}
+
+	data, err := os.ReadFile(xmlPath)
+	if err != nil {
+		t.Fatalf("reading emitted XML: %v", err)
+	}
+	if !strings.HasPrefix(string(data), `<?xml version="1.0" encoding="UTF-8"?>`) {
+		t.Fatalf("missing XML header; first 64 bytes: %q", string(data[:min(len(data), 64)]))
 	}
 }
