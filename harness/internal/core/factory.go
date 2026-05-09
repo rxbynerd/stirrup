@@ -226,8 +226,20 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// identity — without that, a Grafana query that joins traces to
 	// metrics on resource attributes would silently miss rows when the
 	// two providers carried different defaults.
+	//
+	// resolvedHeaders dereferences any "secret://" values in
+	// TraceEmitter.Headers via the SecretStore so neither the OTel SDK
+	// nor any downstream code path sees the raw reference. Resolving
+	// once here (rather than separately for traces and metrics) keeps
+	// both signals authenticated identically and ensures a missing-env
+	// failure surfaces with one error instead of two.
 	resourceOpts := resourceOptionsFromConfig(config)
-	te, err := buildTraceEmitter(ctx, config.TraceEmitter, resourceOpts)
+	resolvedHeaders, err := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("resolve trace emitter headers: %w", err)
+	}
+	te, err := buildTraceEmitter(ctx, config.TraceEmitter, resolvedHeaders, resourceOpts)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build trace emitter: %w", err)
@@ -243,7 +255,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		metricsEndpoint = config.TraceEmitter.Endpoint
 	}
 	if config.TraceEmitter.Type == "otel" && metricsEndpoint != "" {
-		metrics, err = observability.NewMetrics(ctx, metricsEndpoint, resourceOpts)
+		metrics, err = observability.NewMetrics(ctx, metricsEndpoint, config.TraceEmitter.Protocol, resolvedHeaders, resourceOpts)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("build metrics: %w", err)
@@ -1183,14 +1195,14 @@ func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptio
 	}
 }
 
-func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, resourceOpts observability.ResourceOptions) (trace.TraceEmitter, error) {
+func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, headers map[string]string, resourceOpts observability.ResourceOptions) (trace.TraceEmitter, error) {
 	switch cfg.Type {
 	case "otel":
 		endpoint := cfg.Endpoint
 		if endpoint == "" {
 			endpoint = "localhost:4317"
 		}
-		return trace.NewOTelTraceEmitter(ctx, endpoint, resourceOpts)
+		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts)
 	case "jsonl", "":
 		var w io.Writer
 		if cfg.FilePath != "" {

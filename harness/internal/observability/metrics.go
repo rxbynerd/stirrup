@@ -2,10 +2,13 @@ package observability
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -75,9 +78,19 @@ type Metrics struct {
 	ctxTokenCallbacks map[*ctxTokenCallback]metric.Registration
 }
 
-// NewMetrics creates a Metrics instance backed by an OTLP/gRPC metric exporter
-// connected to the given endpoint. The exporter uses insecure connections,
-// matching the pattern established by the OTel trace emitter.
+// NewMetrics creates a Metrics instance backed by an OTLP metric exporter
+// connected to the given endpoint over the chosen wire protocol.
+//
+// protocol selects the OTLP wire protocol:
+//   - "" or "grpc": OTLP/gRPC. endpoint is host:port.
+//   - "http/protobuf": OTLP/HTTP with binary protobuf bodies. endpoint is
+//     a full URL ending in the gateway base path; the SDK appends
+//     "/v1/metrics". TLS is on for "https://" URLs and off for plain
+//     "http://" or scheme-less endpoints (local collectors).
+//
+// headers is forwarded to the SDK transport unchanged; resolve any
+// "secret://" references upstream via ResolveHeaders so the SDK only
+// ever sees plaintext bearer tokens.
 //
 // resourceOpts threads the run-scoped resource attributes
 // (deployment.environment, service.namespace, harness.run.mode) so metrics
@@ -85,11 +98,8 @@ type Metrics struct {
 // from the same run. Callers without a config in hand can pass a zero
 // ResourceOptions and the resource builder will fall through to env-var
 // fallbacks and the documented defaults.
-func NewMetrics(ctx context.Context, endpoint string, resourceOpts ResourceOptions) (*Metrics, error) {
-	exporter, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithEndpoint(endpoint),
-		otlpmetricgrpc.WithInsecure(),
-	)
+func NewMetrics(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts ResourceOptions) (*Metrics, error) {
+	exporter, err := buildOTLPMetricExporter(ctx, endpoint, protocol, headers)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +116,103 @@ func NewMetrics(ctx context.Context, endpoint string, resourceOpts ResourceOptio
 		return nil, err
 	}
 	return m, nil
+}
+
+// buildOTLPMetricExporter dispatches on the configured wire protocol and
+// returns the matching OTel SDK metric exporter. Mirrors the trace
+// counterpart in harness/internal/trace/otel.go so an operator who sets
+// --otel-protocol=http/protobuf gets identical routing for both signals.
+func buildOTLPMetricExporter(ctx context.Context, endpoint, protocol string, headers map[string]string) (sdkmetric.Exporter, error) {
+	switch protocol {
+	case "", "grpc":
+		opts := []otlpmetricgrpc.Option{
+			otlpmetricgrpc.WithEndpoint(endpoint),
+			otlpmetricgrpc.WithInsecure(),
+		}
+		if len(headers) > 0 {
+			opts = append(opts, otlpmetricgrpc.WithHeaders(headers))
+		}
+		return otlpmetricgrpc.New(ctx, opts...)
+	case "http/protobuf":
+		opts := []otlpmetrichttp.Option{
+			otlpmetrichttp.WithEndpoint(stripURLScheme(endpoint)),
+		}
+		if path := urlPath(endpoint); path != "" {
+			opts = append(opts, otlpmetrichttp.WithURLPath(joinMetricsPath(path)))
+		}
+		if isInsecureEndpoint(endpoint) {
+			opts = append(opts, otlpmetrichttp.WithInsecure())
+		}
+		if len(headers) > 0 {
+			opts = append(opts, otlpmetrichttp.WithHeaders(headers))
+		}
+		return otlpmetrichttp.New(ctx, opts...)
+	default:
+		return nil, fmt.Errorf("unsupported OTLP protocol %q (allowed: grpc, http/protobuf)", protocol)
+	}
+}
+
+// stripURLScheme returns the host:port portion of an OTLP endpoint URL
+// for use with otlpmetrichttp.WithEndpoint, which expects a bare host
+// and toggles TLS via WithInsecure(). When the endpoint has no scheme
+// (e.g. "localhost:4318"), the value is returned unchanged. Path
+// components are dropped here and re-applied separately via
+// WithURLPath. Duplicated from the trace package because the two
+// packages are siblings under harness/internal and exporting helpers
+// for HTTP-URL parsing from one to the other adds public API surface
+// for a small amount of code.
+func stripURLScheme(endpoint string) string {
+	for _, scheme := range []string{"https://", "http://"} {
+		if strings.HasPrefix(endpoint, scheme) {
+			rest := strings.TrimPrefix(endpoint, scheme)
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				return rest[:i]
+			}
+			return rest
+		}
+	}
+	if i := strings.IndexByte(endpoint, '/'); i >= 0 {
+		return endpoint[:i]
+	}
+	return endpoint
+}
+
+// urlPath returns the path component of an OTLP endpoint URL, or the
+// empty string when the endpoint has no path beyond the host.
+func urlPath(endpoint string) string {
+	rest := endpoint
+	for _, scheme := range []string{"https://", "http://"} {
+		if strings.HasPrefix(endpoint, scheme) {
+			rest = strings.TrimPrefix(endpoint, scheme)
+			break
+		}
+	}
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[i:]
+	}
+	return ""
+}
+
+// joinMetricsPath appends the per-signal "/v1/metrics" suffix to a base
+// gateway path. See joinTracesPath in the trace package for the
+// rationale; symmetrical here so an operator pointing at
+// "https://otlp-gateway-prod-us-east-0.grafana.net/otlp" gets traces
+// shipped to .../otlp/v1/traces and metrics to .../otlp/v1/metrics.
+func joinMetricsPath(basePath string) string {
+	return strings.TrimRight(basePath, "/") + "/v1/metrics"
+}
+
+// isInsecureEndpoint returns true for plain "http://" or scheme-less
+// endpoints. Mirrors the trace-side logic so a Grafana Cloud HTTPS URL
+// never falls back to an unencrypted POST.
+func isInsecureEndpoint(endpoint string) bool {
+	if strings.HasPrefix(endpoint, "https://") {
+		return false
+	}
+	if strings.HasPrefix(endpoint, "http://") {
+		return true
+	}
+	return true
 }
 
 // NewNoopMetrics returns a Metrics instance where all instruments are no-ops.
