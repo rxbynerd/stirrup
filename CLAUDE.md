@@ -104,7 +104,8 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--verifier` | `none` | Verifier: none, test-runner, llm-judge (composite via `--config` only) |
 | `--git-strategy` | `none` | Git strategy: none, deterministic |
 | `--trace-emitter` | `jsonl` | Trace emitter: jsonl, otel |
-| `--otel-endpoint` | (none) | OTLP endpoint for the otel trace emitter (default: localhost:4317) |
+| `--otel-endpoint` | (none) | OTLP endpoint for the otel trace emitter (default: localhost:4317 for grpc; full URL ending in the gateway base path for http/protobuf, e.g. `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`) |
+| `--otel-protocol` | (none) | OTLP wire protocol: `""` (defaults to grpc), `grpc`, `http/protobuf`. HTTP/JSON is intentionally not supported. See [`docs/observability-cloud.md`](docs/observability-cloud.md). |
 | `--container-runtime` | (none) | OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. See `docs/safety-rings.md`. |
 | `--permission-policy-file` | (none) | Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and the policy type is unset elsewhere, also implies `permissionPolicy.type=policy-engine`. Starters live under `examples/policies/`. |
 | `--code-scanner` | (none) | CodeScanner type: none, patterns, semgrep, composite. Composite requires `--config` (`codeScanner.scanners`). Empty defers to the mode-aware default (patterns for execution, none for read-only modes). |
@@ -210,7 +211,9 @@ The LLM judge verifier (`verifier/llmjudge.go`) evaluates conversation output ag
 
 ### OpenTelemetry trace emitter
 
-The OTel trace emitter (`trace/otel.go`) implements TraceEmitter using real OTel spans exported via OTLP/gRPC. Creates a root `run` span with child spans for turns, tool calls, provider streaming, context compaction, verification, permission checks, and git operations. Default endpoint: `localhost:4317`.
+The OTel trace emitter (`trace/otel.go`) implements TraceEmitter using real OTel spans. Creates a root `run` span with child spans for turns, tool calls, provider streaming, context compaction, verification, permission checks, and git operations. Default endpoint: `localhost:4317` (gRPC).
+
+The wire protocol is selectable per RunConfig via `traceEmitter.protocol` (closed set: `""` defaults to grpc, `"grpc"`, `"http/protobuf"`) and the matching `--otel-protocol` CLI flag. The HTTP/protobuf path lets simple deployments ship native OTLP straight to managed gateways like Grafana Cloud (which is HTTP-only) without the Grafana Alloy bridge. Auth headers come from `traceEmitter.headers` and accept `secret://` references that resolve via the SecretStore at exporter init; resolved values are scrubbed from logs and stripped from `RunConfig.Redact()`. See [`docs/observability-cloud.md`](docs/observability-cloud.md).
 
 ### Structured logging
 

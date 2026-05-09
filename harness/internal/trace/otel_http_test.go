@@ -86,7 +86,7 @@ func TestNewOTelTraceEmitter_HTTPProtocol_RoutesToV1Traces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOTelTraceEmitter: %v", err)
 	}
-	defer emitter.Close()
+	t.Cleanup(func() { _ = emitter.Close() })
 
 	emitter.Start("run-http-1", &types.RunConfig{
 		RunID:    "run-http-1",
