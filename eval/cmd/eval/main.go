@@ -40,6 +40,7 @@ Commands:
   baseline               Pull production metrics as experiment baselines
   mine-failures          Turn production failures into eval tasks
   drift                  Detect metric changes over time windows
+  convert                Convert a result.json into another format (e.g. JUnit XML)
 
 Run "eval <command> -help" for details.
 `
@@ -78,6 +79,8 @@ func run(args []string, stdout io.Writer) int {
 		cmdDrift(args[1:])
 	case "compare-to-production":
 		cmdCompareToProduction(args[1:])
+	case "convert":
+		cmdConvert(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", args[0], usage)
 		return 1
@@ -92,6 +95,7 @@ func cmdRun(args []string) {
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory)")
 	concurrency := fs.Int("concurrency", 1, "Requested task concurrency (currently tasks run sequentially)")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks")
+	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -131,8 +135,61 @@ func cmdRun(args []string) {
 		log.Fatalf("writing result: %v", err)
 	}
 
+	if *junitPath != "" {
+		if err := writeJUnit(*junitPath, result); err != nil {
+			log.Fatalf("writing JUnit XML: %v", err)
+		}
+		fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *junitPath)
+	}
+
 	printSummary(result)
 	fmt.Fprintf(os.Stderr, "\nResults written to %s\n", resultPath)
+}
+
+// writeJUnit serialises a SuiteResult to path as JUnit XML using the
+// reporter package. The file is created with 0644 permissions, matching
+// writeJSON. Errors from os.Create or reporter.WriteJUnit are wrapped
+// with file context for the caller's log.Fatalf.
+func writeJUnit(path string, result eval.SuiteResult) error {
+	f, err := os.Create(path) //nolint:gosec // operator-supplied path; same trust model as --output / writeJSON
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := reporter.WriteJUnit(f, result); err != nil {
+		return fmt.Errorf("encoding %s: %w", path, err)
+	}
+	return nil
+}
+
+// cmdConvert converts an existing result.json into another format. Today
+// only --to-junit is supported; the subcommand is shaped so other targets
+// (TAP, GitHub annotations, etc.) can be slotted in without restructuring.
+func cmdConvert(args []string) {
+	fs := flag.NewFlagSet("convert", flag.ExitOnError)
+	fromPath := fs.String("from", "", "Path to a SuiteResult JSON produced by `eval run` (required)")
+	toJUnit := fs.String("to-junit", "", "Write JUnit XML to this path (required)")
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	if *fromPath == "" {
+		log.Fatal("-from is required")
+	}
+	if *toJUnit == "" {
+		log.Fatal("-to-junit is required")
+	}
+
+	result, err := loadResult(*fromPath)
+	if err != nil {
+		log.Fatalf("loading result: %v", err)
+	}
+
+	if err := writeJUnit(*toJUnit, result); err != nil {
+		log.Fatalf("writing JUnit XML: %v", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *toJUnit)
 }
 
 func cmdCompare(args []string) {
