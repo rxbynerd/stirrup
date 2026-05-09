@@ -89,6 +89,18 @@ func TestWriteJUnit_CreatesFile(t *testing.T) {
 	if suite.Name != "convert-suite" || suite.Tests != 2 || suite.Failures != 1 || suite.Errors != 0 {
 		t.Errorf("suite attrs unexpected: %+v", suite)
 	}
+
+	// File permissions must be a stable 0o644 regardless of the
+	// process umask — CI matrix runners ship with a wide range of
+	// umasks (e.g. 0077 on hardened images) and a JUnit artifact that
+	// the upload step cannot read would silently disappear.
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := stat.Mode().Perm(); perm != 0o644 {
+		t.Errorf("file mode = %o, want %o", perm, 0o644)
+	}
 }
 
 // TestWriteJUnit_BadPath confirms errors propagate when the target

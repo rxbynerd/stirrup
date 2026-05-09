@@ -147,17 +147,23 @@ func cmdRun(args []string) {
 }
 
 // writeJUnit serialises a SuiteResult to path as JUnit XML using the
-// reporter package. The file is created with 0644 permissions, matching
-// writeJSON. Errors from os.Create or reporter.WriteJUnit are wrapped
-// with file context for the caller's log.Fatalf.
+// reporter package. The file is created with explicit 0o644 permissions
+// (matching writeJSON; bypassing umask). Close errors are surfaced to
+// the caller — on NFS, tmpfs-over-full-disk, and Docker overlay volumes
+// the underlying write failure only materialises at close(2), not
+// write(2), so a deferred-and-discarded close would silently truncate
+// the file and ship it to CI with exit code 0.
 func writeJUnit(path string, result eval.SuiteResult) error {
-	f, err := os.Create(path) //nolint:gosec // operator-supplied path; same trust model as --output / writeJSON
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) //nolint:gosec // operator-supplied path; same trust model as --output / writeJSON
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", path, err)
 	}
-	defer func() { _ = f.Close() }()
 	if err := reporter.WriteJUnit(f, result); err != nil {
+		_ = f.Close() // encode error is the meaningful one
 		return fmt.Errorf("encoding %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", path, err)
 	}
 	return nil
 }
