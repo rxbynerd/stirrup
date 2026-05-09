@@ -93,6 +93,13 @@ func WriteJUnit(w io.Writer, result eval.SuiteResult) error {
 }
 
 // buildTestSuite converts a SuiteResult into the XML mirror struct.
+//
+// Outcome is a closed set: {"pass", "fail", "error"}. An unknown
+// value (e.g. a future "skipped" we forget to handle here) is
+// promoted to an error so it appears in CI render counts rather
+// than silently inflating Tests without bumping Failures or Errors.
+// buildTestCase mirrors the same default for the per-case child
+// element.
 func buildTestSuite(result eval.SuiteResult) xmlTestSuite {
 	failures := 0
 	errors := 0
@@ -102,6 +109,13 @@ func buildTestSuite(result eval.SuiteResult) xmlTestSuite {
 		case "fail":
 			failures++
 		case "error":
+			errors++
+		case "pass":
+			// no child element
+		default:
+			// Unknown outcome: count as error so suite-level totals
+			// stay consistent with the per-case element emitted by
+			// buildTestCase.
 			errors++
 		}
 		cases = append(cases, buildTestCase(result.SuiteID, t))
@@ -147,9 +161,18 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 
 	switch t.Outcome {
 	case "fail":
+		// Synthesise a non-empty Message when the judge verdict has
+		// no top-level Reason but does carry sub-judge Details — UI
+		// renderers (GitHub Actions, Jenkins) display the attribute
+		// as the headline and an empty headline reads as a missing
+		// failure to operators.
+		msg := t.JudgeVerdict.Reason
+		if msg == "" && len(t.JudgeVerdict.Details) > 0 {
+			msg = t.JudgeVerdict.Details[0].Reason
+		}
 		tc.Failure = &xmlFailure{
 			Type:    "EvalFailure",
-			Message: t.JudgeVerdict.Reason,
+			Message: msg,
 			Body:    failureBody(t.JudgeVerdict),
 		}
 	case "error":
@@ -157,6 +180,18 @@ func buildTestCase(suiteID string, t eval.TaskResult) xmlTestCase {
 			Type:    "HarnessError",
 			Message: t.Error,
 			Body:    t.Error,
+		}
+	case "pass":
+		// no child element
+	default:
+		// Unknown outcome — see buildTestSuite for the closed-set
+		// rationale. Surface as <error> so operators can grep for
+		// "UnknownOutcome" in the JUnit XML.
+		msg := fmt.Sprintf("unknown task outcome %q", t.Outcome)
+		tc.Error = &xmlError{
+			Type:    "UnknownOutcome",
+			Message: msg,
+			Body:    msg,
 		}
 	}
 

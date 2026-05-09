@@ -207,6 +207,22 @@ func TestConvert_LoadResultRejectsBadJSON(t *testing.T) {
 	}
 }
 
+// TestConvert_LoadResultMissingFile covers the os.ReadFile failure
+// branch of loadResult. The error shape differs from the bad-JSON
+// branch — it surfaces *PathError directly rather than the
+// "parsing result JSON" wrapper — and a refactor that accidentally
+// wrapped both branches the same way would lose information about
+// "file not found" vs "file present but corrupt".
+func TestConvert_LoadResultMissingFile(t *testing.T) {
+	_, err := loadResult("/nonexistent/path/result.json")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if strings.Contains(err.Error(), "parsing result JSON") {
+		t.Errorf("error = %q, missing-file path must not be wrapped as a parse error", err.Error())
+	}
+}
+
 // TestRun_ConvertDispatch exercises the `convert` arm of run()'s
 // switch end-to-end: it writes a result.json with writeJSON, calls
 // run([]string{"convert", "--from", ..., "--to-junit", ...}), and

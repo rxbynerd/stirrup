@@ -3,6 +3,8 @@ package reporter
 import (
 	"bytes"
 	"encoding/xml"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +174,68 @@ func TestWriteJUnit_FailEmitsFailure(t *testing.T) {
 	}
 }
 
+// TestWriteJUnit_FailMessageFallback pins the I3 message-synthesis
+// behaviour: when the judge verdict has no top-level Reason but
+// carries sub-judge Details, the <failure message=...> attribute
+// must be populated from the first detail rather than left blank.
+// CI UIs (mikepenz/action-junit-report, Jenkins) render this
+// attribute as the failure headline.
+func TestWriteJUnit_FailMessageFallback(t *testing.T) {
+	result := eval.SuiteResult{
+		SuiteID: "s",
+		Tasks: []eval.TaskResult{
+			{
+				TaskID:  "composite-no-reason",
+				Outcome: "fail",
+				JudgeVerdict: eval.JudgeVerdict{
+					Reason: "", // intentionally empty
+					Details: []eval.JudgeDetail{
+						{Type: "test-command", Reason: "exit code 1"},
+						{Type: "file-exists", Reason: "missing /tmp/x"},
+					},
+				},
+			},
+		},
+	}
+	doc := parseJUnit(t, runWriteJUnit(t, result))
+	tc := doc.TestSuites[0].TestCases[0]
+	if tc.Failure == nil {
+		t.Fatal("fail case should have <failure>")
+	}
+	if tc.Failure.Message != "exit code 1" {
+		t.Errorf("failure message = %q, want first detail reason %q", tc.Failure.Message, "exit code 1")
+	}
+}
+
+// TestWriteJUnit_UnknownOutcome pins the closed-set default branch:
+// an outcome value not in {"pass", "fail", "error"} must surface as
+// <error type="UnknownOutcome"> and increment the suite Errors count
+// so CI renderers don't silently inflate Tests against a placid 0/0
+// failures/errors total.
+func TestWriteJUnit_UnknownOutcome(t *testing.T) {
+	result := eval.SuiteResult{
+		SuiteID: "s",
+		Tasks: []eval.TaskResult{
+			{TaskID: "skipped-task", Outcome: "skipped"},
+		},
+	}
+	doc := parseJUnit(t, runWriteJUnit(t, result))
+	suite := doc.TestSuites[0]
+	if suite.Errors != 1 {
+		t.Errorf("suite errors = %d, want 1", suite.Errors)
+	}
+	tc := suite.TestCases[0]
+	if tc.Error == nil {
+		t.Fatal("unknown outcome case should have <error>")
+	}
+	if tc.Error.Type != "UnknownOutcome" {
+		t.Errorf("error type = %q, want %q", tc.Error.Type, "UnknownOutcome")
+	}
+	if !strings.Contains(tc.Error.Message, "skipped") {
+		t.Errorf("error message = %q, want it to mention the unknown outcome value", tc.Error.Message)
+	}
+}
+
 func TestWriteJUnit_ErrorEmitsError(t *testing.T) {
 	result := eval.SuiteResult{
 		SuiteID: "s",
@@ -309,16 +373,19 @@ func TestWriteJUnit_ProducesParseableXML(t *testing.T) {
 	}
 	out := runWriteJUnit(t, result)
 
-	// Round-trip via a token-walking decoder to ensure no malformed regions.
+	// Round-trip via a token-walking decoder to ensure no malformed
+	// regions. EOF terminates the loop on success; any other error is
+	// a parser-detected malformation and must fail the test — the
+	// previous "break on any error" formulation made this assertion a
+	// no-op for the very class of bug it claimed to catch.
 	dec := xml.NewDecoder(bytes.NewReader(out))
 	for {
 		_, err := dec.Token()
-		if err != nil {
-			// We accept any error as termination here — io.EOF on
-			// success, anything else is a parser-detected malformation
-			// and the Unmarshal-based assertions in the other tests
-			// would have caught it; this is a coarse safety net.
+		if errors.Is(err, io.EOF) {
 			break
+		}
+		if err != nil {
+			t.Fatalf("malformed XML token: %v\n--- output ---\n%s", err, out)
 		}
 	}
 }
