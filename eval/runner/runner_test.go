@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -427,6 +428,18 @@ echo "$TASK_ID" >> %q
 	if completionOrder[0] == "t1" {
 		t.Errorf("first task to finish was t1 (longest sleep): suggests sequential execution. log=%v", completionOrder)
 	}
+	// Stronger assertion: with a 300ms sleep on t1 and 10–200ms on the
+	// others, t1 must finish *last* under concurrency=4. A non-last t1
+	// would mean a faster task got dispatched after t1 yet still finished
+	// later — which is impossible without contention we don't introduce.
+	// This catches regressions where the scheduler drops to effective
+	// concurrency=1 but the first dispatch still happened to be a fast
+	// task (which would satisfy the not-first check).
+	last := completionOrder[len(completionOrder)-1]
+	if last != "t1" {
+		t.Errorf("expected t1 (300ms sleep) to finish last under concurrency=4; got %q; full order: %v",
+			last, completionOrder)
+	}
 }
 
 // TestRunSuite_ConcurrencyZeroDefaultsToOne pins the documented behaviour
@@ -622,6 +635,13 @@ func TestRunSuite_RejectsTraversalIDs(t *testing.T) {
 		{name: "task absolute path", suiteID: "ok", taskID: "/etc/passwd", wantSub: "task ID"},
 		{name: "task with separator", suiteID: "ok", taskID: "sub/dir", wantSub: "task ID"},
 		{name: "task dot segment", suiteID: "ok", taskID: "..", wantSub: "task ID"},
+		// `..`-prefixed IDs that are not exactly ".." must still be rejected,
+		// otherwise an attacker could land artifacts in directories the runner
+		// never intended (e.g. "..foo" on a hostile filesystem). These cover
+		// the HasPrefix(id, "..") branch of validatePathSegment specifically.
+		{name: "task dotdot prefix short", suiteID: "ok", taskID: "..foo", wantSub: "task ID"},
+		{name: "task triple dot prefix", suiteID: "ok", taskID: "...evil", wantSub: "task ID"},
+		{name: "task dotdot prefix hidden", suiteID: "ok", taskID: "..hidden", wantSub: "task ID"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -644,4 +664,119 @@ func TestRunSuite_RejectsTraversalIDs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRunSuite_ContextCancellation exercises the dispatcher's ctx.Done()
+// drain branch: when the context is cancelled mid-suite, the runner must
+// (a) return promptly without deadlocking, (b) return a result slice with
+// every slot populated (no zero-value TaskResults), and (c) record at
+// least the un-dispatched tasks as outcome="error" carrying the
+// ctx.Err() message. In-flight workers continue writing into their own
+// disjoint slots, so all slots end up populated by exactly one writer
+// (drain or worker) — confirming the ownership invariant the
+// implementation comment relies on.
+//
+// Without this test the goroutine-leak prevention path has zero coverage
+// and a regression that, for example, miscounted the drain start index
+// (leaving zero-value slots) or dropped wg.Wait() (leaking workers
+// writing into a returned slice) would not be caught.
+func TestRunSuite_ContextCancellation(t *testing.T) {
+	// A harness that sleeps 500ms so the dispatcher is guaranteed to be
+	// blocked on `jobs <-` for the un-dispatched tail when cancellation
+	// fires.
+	script := `#!/bin/sh
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+sleep 0.5
+[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+`
+	harness := writeFakeHarness(t, script)
+
+	tasks := make([]types.EvalTask, 8)
+	for i := range tasks {
+		tasks[i] = types.EvalTask{
+			ID:     fmt.Sprintf("c%d", i),
+			Prompt: "p",
+			Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+		}
+	}
+	suite := types.EvalSuite{ID: "cancel-suite", Tasks: tasks}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Fire cancellation 50ms after start. With concurrency=2 and a 500ms
+	// per-task sleep, only the first 2 tasks have a chance to dispatch
+	// before cancel; the remaining 6 must take the drain branch.
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	type runOutcome struct {
+		result []eval.TaskResult
+		err    error
+	}
+	done := make(chan runOutcome, 1)
+	go func() {
+		res, err := RunSuite(ctx, suite, RunConfig{
+			HarnessPath: harness,
+			Concurrency: 2,
+		})
+		done <- runOutcome{result: res.Tasks, err: err}
+	}()
+
+	var outcome runOutcome
+	select {
+	case outcome = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("RunSuite did not return after context cancellation (deadlock?)")
+	}
+
+	if outcome.err != nil {
+		t.Fatalf("RunSuite returned suite-level error after cancel: %v", outcome.err)
+	}
+
+	if len(outcome.result) != len(tasks) {
+		t.Fatalf("got %d task results, want %d (drain must populate every slot)",
+			len(outcome.result), len(tasks))
+	}
+	for i, tr := range outcome.result {
+		// Zero-value TaskResult would have empty TaskID and empty Outcome.
+		// Either branch (worker or drain) must produce a non-zero result.
+		if tr.TaskID == "" {
+			t.Errorf("Tasks[%d] has empty TaskID — drain left a zero-value slot", i)
+		}
+		if tr.Outcome == "" {
+			t.Errorf("Tasks[%d] (%s) has empty Outcome — slot was never written", i, tr.TaskID)
+		}
+		if tr.TaskID != tasks[i].ID {
+			t.Errorf("Tasks[%d].TaskID = %q, want %q (input order not preserved)",
+				i, tr.TaskID, tasks[i].ID)
+		}
+	}
+
+	// The drain path must have flagged at least one task as outcome="error"
+	// with the cancellation cause. (Tasks dispatched before cancel may
+	// finish either way depending on whether the harness exec returns
+	// before or after ctx cancel propagates; only the drain branch is
+	// deterministic about producing error outcomes.)
+	errCount := 0
+	for _, tr := range outcome.result {
+		if tr.Outcome == "error" && strings.Contains(tr.Error, "context canceled") {
+			errCount++
+		}
+	}
+	if errCount == 0 {
+		t.Errorf("expected at least one task to record context-canceled error; got outcomes: %v",
+			collectOutcomes(outcome.result))
+	}
+}
+
+func collectOutcomes(results []eval.TaskResult) []string {
+	out := make([]string, len(results))
+	for i, r := range results {
+		out[i] = fmt.Sprintf("%s=%s", r.TaskID, r.Outcome)
+	}
+	return out
 }
