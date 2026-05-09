@@ -770,6 +770,17 @@ var queryParamKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // without further escaping.
 var observabilityLabelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
+// traceEmitterHeaderNamePattern restricts trace-emitter header keys to
+// the same minimal set used elsewhere for HTTP header names. Including
+// `_` accommodates underscore-variant headers (e.g. `x_honeycomb_team`)
+// that some gateways accept; bracketing characters, whitespace, colon,
+// and CRLF are intentionally excluded so a typo in a RunConfig file
+// cannot smuggle a CRLF-injected secondary header into the OTel
+// SDK's request builder. Mirrors the validation contract on
+// `apiKeyHeaderPattern` above; see runconfig.go:1862-1887 for the
+// OpenAI-side counterpart.
+var traceEmitterHeaderNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 // maxQueryStringBytes caps the encoded-form size of QueryParams to bound
 // the URL we eventually emit. 2 KiB is comfortably above what any real
 // gateway-pin scenario needs while still rejecting a footgun like
@@ -2402,6 +2413,37 @@ func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]stri
 			*errs = append(*errs, fmt.Sprintf(
 				"traceEmitter.headers is only valid when traceEmitter.type is \"otel\" (got type %q)",
 				cfg.Type,
+			))
+		}
+	}
+	// Reject `headers` on the gRPC transport. The gRPC exporter path
+	// in harness/internal/trace/otel.go and observability/metrics.go
+	// unconditionally calls WithInsecure(), so any bearer/Basic
+	// credential supplied via headers would be transmitted in
+	// plaintext. The native HTTP path is the only protocol that
+	// accepts headers in this PR; full gRPC TLS support is a deferred
+	// follow-up (see synthesis DF-4). Empty Protocol defaults to gRPC
+	// at exporter construction time, so the check applies there too.
+	if (cfg.Protocol == "" || cfg.Protocol == "grpc") && len(cfg.Headers) > 0 {
+		*errs = append(*errs, "traceEmitter.headers requires protocol=http/protobuf; gRPC transport uses WithInsecure() and would send credentials in plaintext")
+	}
+	// Header name and value validation. Block CRLF injection at
+	// config-load time rather than letting a "Bearer foo\r\nX-Inj: e"
+	// value reach the net/http header builder, which panics on CRLF
+	// in Go 1.26. This mirrors the OpenAI-side validation at
+	// validateOpenAIAuthFields (runconfig.go:1862-1887) so the two
+	// auth-header surfaces share the same hardening.
+	for k, v := range cfg.Headers {
+		if !traceEmitterHeaderNamePattern.MatchString(k) {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.headers key %q must contain only alphanumeric, hyphen, or underscore characters (no CRLF, colon, or whitespace)",
+				k,
+			))
+		}
+		if strings.ContainsAny(v, "\r\n") {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.headers value for key %q must not contain CRLF",
+				k,
 			))
 		}
 	}

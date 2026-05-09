@@ -3320,3 +3320,196 @@ func TestValidateRunConfig_ObservabilityRejectsBadShape(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateRunConfig_InvalidTraceEmitterProtocol pins the closed-set
+// rejection on TraceEmitterConfig.Protocol. A typo'd "http" or "grpcs"
+// must surface at config-load time with a precise error rather than
+// silently falling through to the default at exporter init. Without
+// this coverage the closed-set check is invisible to the test suite —
+// a regression that whitelisted "http" would pass every existing test.
+func TestValidateRunConfig_InvalidTraceEmitterProtocol(t *testing.T) {
+	c := validConfig()
+	c.TraceEmitter = TraceEmitterConfig{Type: "otel", Protocol: "http"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unsupported protocol value")
+	}
+	if !strings.Contains(err.Error(), "unsupported traceEmitter.protocol") {
+		t.Errorf("expected error to call out the bad protocol, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_ProtocolOnNonOTelEmitter pins the cross-field
+// invariant: Protocol only has meaning when Type=="otel". Carrying it
+// on a jsonl emitter is almost certainly a stale-config artifact and
+// must fail loudly. Without this test, dropping the type guard from
+// validateTraceEmitterProtocolAndHeaders would go unnoticed.
+func TestValidateRunConfig_ProtocolOnNonOTelEmitter(t *testing.T) {
+	c := validConfig()
+	c.TraceEmitter = TraceEmitterConfig{Type: "jsonl", Protocol: "grpc"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for protocol on non-otel emitter")
+	}
+	if !strings.Contains(err.Error(), "only valid when traceEmitter.type is \"otel\"") {
+		t.Errorf("expected error to call out the type mismatch, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_HeadersOnNonOTelEmitter is the headers-side
+// counterpart to TestValidateRunConfig_ProtocolOnNonOTelEmitter. The
+// jsonl emitter does not send HTTP headers; carrying them must fail
+// loudly so an operator does not assume their auth header is being
+// honoured when it's silently dropped.
+func TestValidateRunConfig_HeadersOnNonOTelEmitter(t *testing.T) {
+	c := validConfig()
+	c.TraceEmitter = TraceEmitterConfig{
+		Type:    "jsonl",
+		Headers: map[string]string{"X-Tenant": "team-a"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for headers on non-otel emitter")
+	}
+	if !strings.Contains(err.Error(), "traceEmitter.headers is only valid") {
+		t.Errorf("expected error to call out the type mismatch, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_HeadersOnGRPCProtocolRejected pins the
+// MF-2 invariant: gRPC OTLP exporter paths in
+// harness/internal/trace/otel.go and observability/metrics.go
+// unconditionally call WithInsecure(), so any bearer/Basic credential
+// supplied via Headers would be transmitted in plaintext. The
+// validator must reject the combination at config-load time —
+// catching it here means an operator never even attempts to ship
+// credentials over an insecure gRPC channel.
+//
+// Empty Protocol defaults to gRPC at exporter construction, so the
+// rejection covers both `""` and `"grpc"`. The accept cases (gRPC
+// with empty headers, http/protobuf with non-empty headers) are
+// covered as subtests so a future regression that overzealously
+// rejects them would be caught.
+func TestValidateRunConfig_HeadersOnGRPCProtocolRejected(t *testing.T) {
+	t.Run("empty protocol with headers rejected", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "",
+			Headers:  map[string]string{"Authorization": "Basic abc"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for headers on default-gRPC protocol")
+		}
+		if !strings.Contains(err.Error(), "headers requires protocol=http/protobuf") {
+			t.Errorf("expected error to call out the gRPC plaintext footgun, got: %v", err)
+		}
+	})
+
+	t.Run("explicit grpc protocol with headers rejected", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "grpc",
+			Headers:  map[string]string{"Authorization": "Bearer abc"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for headers on gRPC protocol")
+		}
+		if !strings.Contains(err.Error(), "WithInsecure") {
+			t.Errorf("expected error to mention WithInsecure plaintext path, got: %v", err)
+		}
+	})
+
+	t.Run("grpc with empty headers accepted", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "otel", Protocol: "grpc"}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("gRPC with no headers must remain valid (the local-collector flow): %v", err)
+		}
+	})
+
+	t.Run("http/protobuf with headers accepted", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "http/protobuf",
+			Headers:  map[string]string{"Authorization": "Basic xxx"},
+		}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("http/protobuf with headers must remain valid (the Grafana Cloud flow): %v", err)
+		}
+	})
+}
+
+// TestValidateRunConfig_TraceEmitterHeaders_CRLFRejected pins the MF-6
+// hardening: a header name containing CRLF, or a value containing CRLF,
+// must be rejected at config-load. Go 1.26's net/http panics on CRLF in
+// header values; surfacing the misuse at validation time turns a
+// process-crash into an "invalid config" error message. Mirrors the
+// CRLF rejection on apiKeyHeader / queryParams in
+// validateOpenAIAuthFields (runconfig.go:1862-1887).
+func TestValidateRunConfig_TraceEmitterHeaders_CRLFRejected(t *testing.T) {
+	t.Run("CR in header name rejected", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "http/protobuf",
+			Headers:  map[string]string{"X-Inj\rected": "v"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for CR in header name")
+		}
+		if !strings.Contains(err.Error(), "alphanumeric") {
+			t.Errorf("expected error to describe accepted character set, got: %v", err)
+		}
+	})
+
+	t.Run("LF in header name rejected", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "http/protobuf",
+			Headers:  map[string]string{"X-Inj\nected": "v"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for LF in header name")
+		}
+	})
+
+	t.Run("CRLF in header value rejected", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "http/protobuf",
+			Headers:  map[string]string{"Authorization": "Bearer foo\r\nX-Injected: evil"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for CRLF in header value")
+		}
+		if !strings.Contains(err.Error(), "must not contain CRLF") {
+			t.Errorf("expected error to mention CRLF in value, got: %v", err)
+		}
+	})
+
+	t.Run("colon in header name rejected", func(t *testing.T) {
+		// Colon is the header separator; allowing it in the name
+		// would let an operator concatenate two headers into one
+		// validator-passing entry.
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "http/protobuf",
+			Headers:  map[string]string{"X-Foo: X-Bar": "v"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for colon in header name")
+		}
+	})
+}

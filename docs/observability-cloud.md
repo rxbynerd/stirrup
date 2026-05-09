@@ -258,6 +258,17 @@ rejected — those fields only have meaning for `type: "otel"`, and a
 leftover from a migration should fail loudly rather than silently
 keep the wrong config working.
 
+`headers` requires `protocol: http/protobuf`. The gRPC exporter path
+calls `WithInsecure()` unconditionally, so any bearer or Basic
+credential supplied via `headers` would ride a plaintext gRPC channel
+to the collector. To make this footgun unreachable, the validator
+rejects `headers` whenever `protocol` is `""` (which defaults to gRPC
+at exporter construction) or `"grpc"`. The gRPC path is the
+local/sidecar collector flow and assumes the collector itself does
+not require auth; if you need auth on a gRPC link, run a sidecar
+collector that handles the credential locally and forwards over a
+trusted boundary, or switch to `http/protobuf`.
+
 ## Out of scope
 
 - **gRPC ↔ HTTP fallback retry.** A misconfigured deployment should
