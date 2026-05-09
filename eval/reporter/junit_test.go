@@ -247,6 +247,52 @@ func TestWriteJUnit_XMLEscaping(t *testing.T) {
 	}
 }
 
+// TestWriteJUnit_ZeroTimestampFallback pins the dry-run-shaped path
+// in buildTestSuite where StartedAt/CompletedAt are both zero (so
+// wall-clock subtraction would either be zero or panic-adjacent
+// nonsense): the suite's Time attribute must be the sum of the
+// per-task DurationMs values converted to seconds, and Timestamp
+// must be empty rather than the Go zero-time string.
+func TestWriteJUnit_ZeroTimestampFallback(t *testing.T) {
+	result := eval.SuiteResult{
+		SuiteID: "fallback",
+		// StartedAt and CompletedAt are intentionally zero.
+		Tasks: []eval.TaskResult{
+			{TaskID: "t1", Outcome: "pass", DurationMs: 1200},
+			{TaskID: "t2", Outcome: "pass", DurationMs: 300},
+		},
+	}
+	doc := parseJUnit(t, runWriteJUnit(t, result))
+	suite := doc.TestSuites[0]
+	if suite.Time != "1.500" {
+		t.Errorf("time = %q, want %q (sum of DurationMs / 1000)", suite.Time, "1.500")
+	}
+	if suite.Timestamp != "" {
+		t.Errorf("timestamp = %q, want empty when StartedAt is zero", suite.Timestamp)
+	}
+}
+
+// TestWriteJUnit_BackwardTimestampFallback pins the second branch of
+// the fallback: when CompletedAt precedes StartedAt (clock skew, or a
+// recording deserialised with mismatched fields), we must not emit a
+// negative wall-clock duration. The DurationMs sum is used instead.
+func TestWriteJUnit_BackwardTimestampFallback(t *testing.T) {
+	started := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+	result := eval.SuiteResult{
+		SuiteID:     "skewed",
+		StartedAt:   started,
+		CompletedAt: started.Add(-time.Second), // 1s before StartedAt
+		Tasks: []eval.TaskResult{
+			{TaskID: "t1", Outcome: "pass", DurationMs: 2000},
+		},
+	}
+	doc := parseJUnit(t, runWriteJUnit(t, result))
+	suite := doc.TestSuites[0]
+	if suite.Time != "2.000" {
+		t.Errorf("time = %q, want %q (DurationMs sum, not negative wall-clock)", suite.Time, "2.000")
+	}
+}
+
 func TestWriteJUnit_ProducesParseableXML(t *testing.T) {
 	// A coarse smoke test: feed mixed outcomes through WriteJUnit and confirm
 	// the output is well-formed by re-parsing into a generic map.
