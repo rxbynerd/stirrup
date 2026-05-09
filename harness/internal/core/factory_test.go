@@ -1533,6 +1533,63 @@ func TestBuildLoopWithTransport_AllToolsRegisteredByDefault(t *testing.T) {
 	}
 }
 
+// TestBuildLoopWithTransport_TraceEmitterHeaderResolutionError pins
+// the factory init failure mode introduced by gh-100. When a
+// TraceEmitter.Headers value references a "secret://" target that
+// cannot be resolved, observability.ResolveHeaders returns a wrapped
+// error; the factory must surface this with the "resolve trace
+// emitter headers" prefix and run cleanup() so transient transports
+// and intermediate components don't leak. Without this test, a future
+// refactor that moves or drops the error return at factory.go:238-240
+// would silently fall through to a misleading "no exporter could be
+// created" log line at first export. Per synthesis MF-4.
+func TestBuildLoopWithTransport_TraceEmitterHeaderResolutionError(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	// Ensure the referenced env var is *not* set so EnvSecretStore
+	// returns a missing-secret error.
+	if err := os.Unsetenv("STIRRUP_TEST_MISSING_VAR"); err != nil {
+		t.Fatalf("unset env: %v", err)
+	}
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-header-resolve-fail",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter: types.TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "http/protobuf",
+			Endpoint: "https://example.invalid/otlp",
+			Headers: map[string]string{
+				"Authorization": "secret://STIRRUP_TEST_MISSING_VAR",
+			},
+		},
+		RuleOfTwo: disableRuleOfTwo(),
+		MaxTurns:  2,
+		Timeout:   &timeout,
+	}
+
+	_, err := BuildLoopWithTransport(context.Background(), config, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}))
+	if err == nil {
+		t.Fatal("expected error when trace emitter header resolution fails")
+	}
+	if !strings.Contains(err.Error(), "resolve trace emitter headers") {
+		t.Fatalf("expected error to be wrapped with 'resolve trace emitter headers' prefix, got: %v", err)
+	}
+}
+
 func TestBuildLoopWithTransport_SecretResolutionFailure(t *testing.T) {
 	// Don't set the env var — secret resolution will fail.
 	timeout := 30
