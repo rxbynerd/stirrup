@@ -90,7 +90,7 @@ func cmdRun(args []string) {
 	suitePath := fs.String("suite", "", "Path to eval suite HCL file (required)")
 	harnessPath := fs.String("harness", "", "Path to stirrup binary (default: stirrup)")
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory)")
-	concurrency := fs.Int("concurrency", 1, "Requested task concurrency (currently tasks run sequentially)")
+	concurrency := fs.Int("concurrency", 1, "Maximum number of tasks to run in parallel (values <= 0 are treated as 1)")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -126,13 +126,22 @@ func cmdRun(args []string) {
 		log.Fatalf("running suite: %v", err)
 	}
 
+	// Write the canonical per-suite result alongside the per-task artifact
+	// tree the runner already created. The top-level result.json is kept
+	// for backward compatibility with CI workflows and downstream tooling
+	// that currently read <outputDir>/result.json — duplicating it is
+	// cheap and keeps blast radius minimal.
+	suiteResultPath := filepath.Join(*outputDir, result.SuiteID, "result.json")
+	if err := writeJSON(suiteResultPath, result); err != nil {
+		log.Fatalf("writing per-suite result: %v", err)
+	}
 	resultPath := filepath.Join(*outputDir, "result.json")
 	if err := writeJSON(resultPath, result); err != nil {
 		log.Fatalf("writing result: %v", err)
 	}
 
 	printSummary(result)
-	fmt.Fprintf(os.Stderr, "\nResults written to %s\n", resultPath)
+	fmt.Fprintf(os.Stderr, "\nResults written to %s (per-suite copy at %s)\n", resultPath, suiteResultPath)
 }
 
 func cmdCompare(args []string) {
