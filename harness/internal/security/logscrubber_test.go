@@ -56,6 +56,34 @@ func TestScrub_BearerTokenWithBase64Chars(t *testing.T) {
 	}
 }
 
+// TestScrub_BasicAuth pins the gh-100 SF-2 hardening: Grafana Cloud's
+// documented OTLP gateway credential is `Basic <base64>`, not Bearer.
+// Without this pattern, a resolved Basic token (e.g. from
+// `Authorization: secret://GRAFANA_CLOUD_AUTH`) would survive any slog
+// output unscrubbed, defeating the ScrubHandler defence-in-depth
+// contract for the new OTLP/HTTP feature.
+func TestScrub_BasicAuth(t *testing.T) {
+	input := "Authorization: Basic dXNlcjpwYXNz"
+	got := Scrub(input)
+	want := "Authorization: [REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestScrub_BasicAuth_LongBase64 covers the realistic Grafana Cloud
+// shape: `Basic <base64(instanceID:glc_eyJ...)>`. The base64 alphabet
+// includes `+/=` which the regex must accept, otherwise long instance
+// IDs concatenated with API tokens would only be partially redacted.
+func TestScrub_BasicAuth_LongBase64(t *testing.T) {
+	input := "Authorization: Basic MTIzNDU2OmdsY19leUp2PT09"
+	got := Scrub(input)
+	want := "Authorization: [REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestScrub_OpenAIKey(t *testing.T) {
 	input := "openai=sk-abcdefghijklmnopqrstuvwxyz123456"
 	got := Scrub(input)
