@@ -1146,21 +1146,39 @@ message TraceEmitterConfig {
   // Optional. The trace emitter implementation.
   // Valid values:
   //   "jsonl" — append events as JSON lines to a file. Requires file_path.
-  //   "otel"  — export as OpenTelemetry spans via OTLP/gRPC. Creates a root
+  //   "otel"  — export as OpenTelemetry spans via OTLP. Creates a root
   //             "run" span with child spans for turns, tool calls, provider
   //             streaming, context compaction, verification, permission checks,
-  //             and git operations.
+  //             and git operations. The wire protocol is selected by `protocol`.
   string type = 1;
 
   // For "jsonl": filesystem path to the output trace file.
   string file_path = 2;
 
-  // For "otel": gRPC exporter address for traces. Default: "localhost:4317".
+  // For "otel": exporter address for traces.
+  //   - protocol "grpc" (default): host:port (default "localhost:4317").
+  //   - protocol "http/protobuf": full URL ending in the gateway base path
+  //     (e.g. "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"). The
+  //     SDK appends "/v1/traces" and "/v1/metrics" per signal.
   string endpoint = 3;
 
-  // For "otel": gRPC exporter address for metrics. Defaults to the value of
-  // endpoint if unset.
+  // For "otel": exporter address for metrics. Defaults to the value of
+  // endpoint if unset. Same protocol as `endpoint`.
   string metrics_endpoint = 4;
+
+  // For "otel": OTLP wire protocol. Closed set:
+  //   "" (defaults to "grpc") | "grpc" | "http/protobuf"
+  // HTTP/JSON is intentionally not supported. See
+  // docs/observability-cloud.md for the operator walkthrough.
+  string protocol = 5;
+
+  // For "otel": extra headers attached to every export request. Keys are
+  // header names; values may be plaintext or a "secret://" reference
+  // resolved via the SecretStore at exporter init time. Resolved values
+  // are scrubbed from logs and stripped from RunConfig.Redact() output.
+  // Used to authenticate to managed gateways like Grafana Cloud
+  // (e.g. {"Authorization": "secret://GRAFANA_CLOUD_AUTH"}).
+  map<string, string> headers = 6;
 }
 
 // ---------------------------------------------------------------------------

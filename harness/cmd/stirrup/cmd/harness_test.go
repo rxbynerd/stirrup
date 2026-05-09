@@ -181,6 +181,13 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 		GitStrategyType:  "deterministic",
 		TraceEmitterType: "otel",
 		OTelEndpoint:     "localhost:4317",
+		// Per synthesis SF-6: pin that the gh-100 OTelProtocol field
+		// flows through buildHarnessRunConfig into TraceEmitter.Protocol.
+		// Without this, the assignment at harness.go:164 has count=0
+		// and a future refactor that drops it would silently fall back
+		// to the SDK default ("grpc") for any operator who passes
+		// --otel-protocol on the CLI.
+		OTelProtocol: "http/protobuf",
 	})
 
 	if cfg.Executor.Type != "container" {
@@ -200,6 +207,9 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 	}
 	if cfg.TraceEmitter.Endpoint != "localhost:4317" {
 		t.Errorf("expected otel endpoint 'localhost:4317', got %q", cfg.TraceEmitter.Endpoint)
+	}
+	if cfg.TraceEmitter.Protocol != "http/protobuf" {
+		t.Errorf("expected otel protocol 'http/protobuf', got %q", cfg.TraceEmitter.Protocol)
 	}
 	// jsonl FilePath should not be populated when emitter type is otel.
 	if cfg.TraceEmitter.FilePath != "" {
@@ -447,6 +457,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("git-strategy", "none", "")
 	f.String("trace-emitter", "jsonl", "")
 	f.String("otel-endpoint", "", "")
+	f.String("otel-protocol", "", "")
 	f.String("container-runtime", "", "")
 	f.String("permission-policy-file", "", "")
 	f.String("code-scanner", "", "")
@@ -572,6 +583,7 @@ func TestApplyOverrides_ExplicitFlagsOverride(t *testing.T) {
 	must("git-strategy", "deterministic")
 	must("trace-emitter", "otel")
 	must("otel-endpoint", "otel.flag:4317")
+	must("otel-protocol", "http/protobuf")
 
 	if err := applyOverrides(cmd, cfg, nil); err != nil {
 		t.Fatalf("applyOverrides: %v", err)
@@ -633,6 +645,31 @@ func TestApplyOverrides_ExplicitFlagsOverride(t *testing.T) {
 	}
 	if cfg.TraceEmitter.Endpoint != "otel.flag:4317" {
 		t.Errorf("OTel endpoint override failed: %q", cfg.TraceEmitter.Endpoint)
+	}
+	if cfg.TraceEmitter.Protocol != "http/protobuf" {
+		t.Errorf("OTel protocol override failed: %q", cfg.TraceEmitter.Protocol)
+	}
+}
+
+// TestApplyOverrides_OTelProtocolFilePreserved pins that an unset
+// --otel-protocol flag (the default empty string) does NOT clobber a
+// Protocol value supplied by --config. This is the same precedence
+// rule that already applies to every other override flag.
+func TestApplyOverrides_OTelProtocolFilePreserved(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.TraceEmitter = types.TraceEmitterConfig{
+		Type:     "otel",
+		Endpoint: "https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
+		Protocol: "http/protobuf",
+	}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.TraceEmitter.Protocol != "http/protobuf" {
+		t.Errorf("Protocol from file should survive default flag, got %q", cfg.TraceEmitter.Protocol)
 	}
 }
 

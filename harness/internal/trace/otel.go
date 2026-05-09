@@ -3,11 +3,15 @@ package trace
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
@@ -80,21 +84,34 @@ type OTelTraceEmitter struct {
 	toolCalls []types.ToolCallTrace
 }
 
-// NewOTelTraceEmitter creates an OTel trace emitter that exports spans to the
-// given OTLP/gRPC endpoint (e.g. "localhost:4317"). The caller must eventually
-// call Finish to flush and shut down the exporter.
+// NewOTelTraceEmitter creates an OTel trace emitter that exports spans to
+// the given OTLP endpoint over the chosen wire protocol. The caller must
+// eventually call Finish to flush and shut down the exporter.
+//
+// protocol selects the OTLP wire protocol:
+//   - "" or "grpc": OTLP/gRPC. endpoint is host:port (default
+//     "localhost:4317" upstream of this constructor); on-the-wire frames
+//     are protobuf with gRPC framing.
+//   - "http/protobuf": OTLP/HTTP with binary protobuf bodies. endpoint
+//     is a full URL ending in the gateway base path
+//     (e.g. "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"); the
+//     SDK appends "/v1/traces". TLS is on by default; the constructor
+//     opts into WithInsecure() only when the endpoint scheme is plain
+//     "http://" or omitted entirely so a Grafana Cloud URL never falls
+//     back to an unencrypted POST.
+//
+// headers is forwarded to both transports unchanged. Resolve "secret://"
+// references upstream via observability.ResolveHeaders so the OTel SDK
+// only ever sees plaintext bearer tokens.
 //
 // resourceOpts threads the run-scoped resource attributes
 // (deployment.environment, service.namespace, harness.run.mode) so traces
 // emitted here share a consistent resource identity with metrics emitted
 // from the same run. Callers that don't have a config in hand can pass a
-// zero ResourceOptions and the resource builder will fall through to env-var
-// fallbacks and the documented defaults.
-func NewOTelTraceEmitter(ctx context.Context, endpoint string, resourceOpts observability.ResourceOptions) (*OTelTraceEmitter, error) {
-	exporter, err := otlptracegrpc.New(ctx,
-		otlptracegrpc.WithEndpoint(endpoint),
-		otlptracegrpc.WithInsecure(),
-	)
+// zero ResourceOptions and the resource builder will fall through to
+// env-var fallbacks and the documented defaults.
+func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts observability.ResourceOptions) (*OTelTraceEmitter, error) {
+	exporter, err := buildOTLPTraceExporter(ctx, endpoint, protocol, headers)
 	if err != nil {
 		return nil, fmt.Errorf("create OTLP exporter: %w", err)
 	}
@@ -109,6 +126,110 @@ func NewOTelTraceEmitter(ctx context.Context, endpoint string, resourceOpts obse
 		provider: tp,
 		tracer:   tracer,
 	}, nil
+}
+
+// buildOTLPTraceExporter dispatches on the configured wire protocol and
+// returns the matching OTel SDK trace exporter. Kept private so the
+// public NewOTelTraceEmitter signature stays stable while the dispatch
+// logic evolves (e.g. when otlploghttp lands per #96).
+func buildOTLPTraceExporter(ctx context.Context, endpoint, protocol string, headers map[string]string) (*otlptrace.Exporter, error) {
+	switch protocol {
+	case "", "grpc":
+		opts := []otlptracegrpc.Option{
+			otlptracegrpc.WithEndpoint(endpoint),
+			otlptracegrpc.WithInsecure(),
+		}
+		if len(headers) > 0 {
+			opts = append(opts, otlptracegrpc.WithHeaders(headers))
+		}
+		return otlptracegrpc.New(ctx, opts...)
+	case "http/protobuf":
+		opts := []otlptracehttp.Option{
+			otlptracehttp.WithEndpoint(stripURLScheme(endpoint)),
+		}
+		// The SDK's WithEndpointURL would parse the full URL and pick
+		// up scheme+path in one call, but it is not available in
+		// v1.43.0; emulate by stripping the scheme for the host
+		// component and toggling WithInsecure based on the original
+		// scheme. Path is propagated below via WithURLPath when the
+		// endpoint carries one.
+		if path := urlPath(endpoint); path != "" {
+			opts = append(opts, otlptracehttp.WithURLPath(joinTracesPath(path)))
+		}
+		if isInsecureEndpoint(endpoint) {
+			opts = append(opts, otlptracehttp.WithInsecure())
+		}
+		if len(headers) > 0 {
+			opts = append(opts, otlptracehttp.WithHeaders(headers))
+		}
+		return otlptracehttp.New(ctx, opts...)
+	default:
+		return nil, fmt.Errorf("unsupported OTLP protocol %q (allowed: grpc, http/protobuf)", protocol)
+	}
+}
+
+// stripURLScheme returns the host:port portion of an OTLP endpoint URL
+// for use with otlptracehttp.WithEndpoint, which expects a bare host
+// and toggles TLS via WithInsecure(). When the endpoint has no scheme
+// (e.g. "localhost:4318"), the value is returned unchanged. Path
+// components are dropped here and re-applied separately via
+// WithURLPath; the caller is responsible for that step.
+func stripURLScheme(endpoint string) string {
+	for _, scheme := range []string{"https://", "http://"} {
+		if strings.HasPrefix(endpoint, scheme) {
+			rest := strings.TrimPrefix(endpoint, scheme)
+			if i := strings.IndexByte(rest, '/'); i >= 0 {
+				return rest[:i]
+			}
+			return rest
+		}
+	}
+	if i := strings.IndexByte(endpoint, '/'); i >= 0 {
+		return endpoint[:i]
+	}
+	return endpoint
+}
+
+// urlPath returns the path component of an OTLP endpoint URL, or the
+// empty string when the endpoint has no path beyond the host.
+func urlPath(endpoint string) string {
+	rest := endpoint
+	for _, scheme := range []string{"https://", "http://"} {
+		if strings.HasPrefix(endpoint, scheme) {
+			rest = strings.TrimPrefix(endpoint, scheme)
+			break
+		}
+	}
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[i:]
+	}
+	return ""
+}
+
+// joinTracesPath appends the per-signal "/v1/traces" suffix to a base
+// gateway path, mirroring what the OTel SDK does when given an endpoint
+// without an explicit URL path. Grafana Cloud's gateway expects the
+// configured URL to end in "/otlp" and resolves the per-signal segment
+// itself, so we preserve the operator-supplied prefix and tack on the
+// suffix the SDK would otherwise apply silently.
+func joinTracesPath(basePath string) string {
+	return strings.TrimRight(basePath, "/") + "/v1/traces"
+}
+
+// isInsecureEndpoint returns true when the endpoint URL uses plain
+// HTTP — the only case in which the constructor opts into
+// WithInsecure(). A bare "localhost:4318" or any other scheme-less
+// endpoint also gets WithInsecure() (the typical local-collector
+// case); a "https://" scheme always means TLS.
+func isInsecureEndpoint(endpoint string) bool {
+	if strings.HasPrefix(endpoint, "https://") {
+		return false
+	}
+	if strings.HasPrefix(endpoint, "http://") {
+		return true
+	}
+	// No scheme: assume plaintext (developer / local collector flow).
+	return true
 }
 
 // newOTelTraceEmitterForTest creates an OTel trace emitter backed by the given
@@ -271,7 +392,15 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	if e.provider != nil {
 		if err := e.provider.ForceFlush(ctx); err != nil {
 			// Non-fatal: log but continue building the trace.
-			_ = err
+			// A ForceFlush failure means the in-memory span batch
+			// could not be exported before the run ended; the
+			// RunTrace aggregate below is still valid for the
+			// caller, but downstream observers querying the OTel
+			// backend will be missing the tail of this run.
+			// ScrubHandler still runs over the message, so any
+			// secret-shaped substring in the wrapped error is
+			// redacted before it lands in stderr JSONL.
+			slog.Default().Warn("OTel ForceFlush failed, spans may be lost", "error", err)
 		}
 	}
 

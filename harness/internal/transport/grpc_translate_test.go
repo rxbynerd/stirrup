@@ -496,3 +496,46 @@ func TestRunConfigFromProto_AnthropicWIFFieldsPreserved(t *testing.T) {
 		t.Errorf("Credential.WorkspaceID: got %q, want %q", got, want)
 	}
 }
+
+// TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved guards
+// the two new TraceEmitterConfig fields added by gh-100 (Protocol,
+// Headers) against silent drop in runConfigFromProto. Without this
+// coverage, a control plane dispatching a Grafana-Cloud-bound run via
+// the K8s job path would have its protocol and Authorization header
+// stripped on the harness side, falling back to the gRPC default with
+// no exporter able to reach the gateway. The translation layer at
+// grpc_translate.go:171-180 has caused this exact class of regression
+// in prior PRs (#50 SessionName, #95/#117/#118 federation fields), and
+// three reviewers independently flagged the gap on this PR — making
+// it a recurring pattern this test pins shut.
+//
+// Mirrors TestRunConfigFromProto_ObservabilityPropagates above. Per
+// synthesis MF-5 (3-reviewer consensus).
+func TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved(t *testing.T) {
+	pc := &pb.RunConfig{
+		TraceEmitter: &pb.TraceEmitterConfig{
+			Type:     "otel",
+			Protocol: "http/protobuf",
+			Endpoint: "https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
+			Headers: map[string]string{
+				"Authorization": "Basic xxx",
+				"X-Tenant":      "team-a",
+			},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if got, want := rc.TraceEmitter.Protocol, "http/protobuf"; got != want {
+		t.Errorf("TraceEmitter.Protocol: got %q, want %q", got, want)
+	}
+	if got, want := rc.TraceEmitter.Endpoint, "https://otlp-gateway-prod-us-east-0.grafana.net/otlp"; got != want {
+		t.Errorf("TraceEmitter.Endpoint: got %q, want %q", got, want)
+	}
+	if got, want := rc.TraceEmitter.Headers["Authorization"], "Basic xxx"; got != want {
+		t.Errorf("TraceEmitter.Headers[Authorization]: got %q, want %q", got, want)
+	}
+	if got, want := rc.TraceEmitter.Headers["X-Tenant"], "team-a"; got != want {
+		t.Errorf("TraceEmitter.Headers[X-Tenant]: got %q, want %q", got, want)
+	}
+}

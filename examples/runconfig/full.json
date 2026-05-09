@@ -70,8 +70,7 @@
   },
   "traceEmitter": {
     "type": "otel",
-    "endpoint": "localhost:4317",
-    "metricsEndpoint": "localhost:4317"
+    "endpoint": "localhost:4317"
   },
   "tools": {
     "builtIn": [
