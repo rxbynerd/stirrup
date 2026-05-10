@@ -78,9 +78,11 @@ Final image path:
 ### 3. Create the Workload Identity Pool and Provider
 
 Use the [`google-github-actions/auth`](https://github.com/google-github-actions/auth)
-**Direct Workload Identity Federation** path: no intermediate service
-account, IAM roles bind to the external identity directly. This avoids
-the long-lived service-account-key foot-gun entirely.
+**Workload Identity Federation through a Service Account** path: the
+GitHub principalSet impersonates a short-lived service account that
+holds the GAR-push role bindings. There is no service-account JSON
+key file at any point — the SA exists purely as the actor whose roles
+the federated GitHub identity is authorised to assume.
 
 The provider's `attribute-condition` pins the GitHub repository so a
 token minted by any other repository — even one in the same
@@ -123,30 +125,49 @@ on this path — without it, any GitHub-hosted runner from any repo can
 exchange for an access token. Confirm the condition before binding
 IAM roles.
 
-### 4. Bind IAM roles to the external identity
+### 4. Create the publisher service account and bind IAM roles
 
-Direct WIF binds roles to the *principalSet* representing the GitHub
-OIDC subject — not to a service account.
+Create the dedicated publisher SA. It owns no key file, has no
+console login, and exists solely as the actor whose role bindings
+the GitHub principalSet is authorised to assume via WIF.
+
+```sh
+gcloud iam service-accounts create stirrup-publisher \
+  --display-name="Stirrup container publisher" \
+  --description="Impersonated by the rxbynerd/stirrup GitHub Actions WIF principal to push to GAR." \
+  --project=rubynerd-net
+```
+
+The full SA email is
+`stirrup-publisher@rubynerd-net.iam.gserviceaccount.com`. This value
+goes into GitHub as `vars.GAR_PUBLISHER_SA`.
+
+Grant the GitHub principalSet permission to impersonate the SA. This
+is the only binding the principalSet itself receives — every GAR /
+Artifact Analysis role binds to the SA, not to the principalSet.
 
 `<PROJECT_NUMBER>` is the numeric project number (not the project ID).
 Find it with `gcloud projects describe rubynerd-net --format='value(projectNumber)'`.
-The number itself does NOT need to be saved as a GitHub repository
-variable — only the fully-constructed `GCP_WORKLOAD_IDENTITY_PROVIDER`
-string (which embeds it) does.
 
 ```sh
 PRINCIPAL="principalSet://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/stirrup-gha/attribute.repository/rxbynerd/stirrup"
+
+gcloud iam service-accounts add-iam-policy-binding \
+  stirrup-publisher@rubynerd-net.iam.gserviceaccount.com \
+  --role=roles/iam.workloadIdentityUser \
+  --member="$PRINCIPAL" \
+  --project=rubynerd-net
 ```
 
 #### Phase 1 (bind now)
 
-Phase 1 needs exactly one role on the WIF principal: the right to push
+Phase 1 needs exactly one role on the SA: the right to push
 container images.
 
 ```sh
 gcloud projects add-iam-policy-binding rubynerd-net \
   --role=roles/artifactregistry.writer \
-  --member="$PRINCIPAL"
+  --member="serviceAccount:stirrup-publisher@rubynerd-net.iam.gserviceaccount.com"
 ```
 
 | Role | Purpose | Phase |
@@ -173,7 +194,7 @@ for role in \
   roles/storage.objectAdmin; do
   gcloud projects add-iam-policy-binding rubynerd-net \
     --role="$role" \
-    --member="$PRINCIPAL"
+    --member="serviceAccount:stirrup-publisher@rubynerd-net.iam.gserviceaccount.com"
 done
 ```
 
@@ -191,6 +212,14 @@ project-scope binding is wider than strictly needed; a follow-up
 will narrow it to the Artifact Analysis bucket once that bucket's
 name is known.
 
+#### Transition note
+
+The original Phase 1 PR (#163) bound these roles directly to the
+principalSet. Issue #167 migrated to SA impersonation. Operators who
+ran the original bootstrap will have *both* sets of bindings in place
+during the transition; the follow-up cleanup PR revokes the
+principalSet bindings once the SA path is verified.
+
 ## GitHub-side configuration
 
 Set the following **repository variables** under
@@ -203,6 +232,7 @@ how `google-github-actions/auth` documents the pattern.
 |---|---|
 | `GCP_PROJECT_ID` | GCP project ID hosting the GAR repository (e.g. `rubynerd-net`). |
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Full resource path of the provider, e.g. `projects/<NUMBER>/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider`. The numeric project number is only needed to construct this string during bootstrap — it does not itself need to be stored as a separate repository variable. |
+| `GAR_PUBLISHER_SA` | Email of the publisher service account the GitHub principalSet impersonates (e.g. `stirrup-publisher@rubynerd-net.iam.gserviceaccount.com`). Holds all GAR / Artifact Analysis role bindings; the GitHub principalSet only holds `roles/iam.workloadIdentityUser` on this SA. |
 | `GAR_LOCATION` | Artifact Registry location, e.g. `europe-west4`. Determines the registry hostname `<location>-docker.pkg.dev`. |
 | `GAR_REPOSITORY` | Repository name within Artifact Registry (e.g. `stirrup`). |
 | `GAR_IMAGE` | Image name within the repository (e.g. `stirrup`). The final image path is `<GAR_LOCATION>-docker.pkg.dev/<GCP_PROJECT_ID>/<GAR_REPOSITORY>/<GAR_IMAGE>`. |
@@ -213,25 +243,25 @@ that depend on them will fail at run time with a clear "registry
 hostname empty" or "workload identity provider empty" error — there
 is no silent fallback to a different identity.
 
-### Why we mint the access token via `gcloud` rather than the `auth` action's output
+### Why short-lived service-account impersonation
 
-The publish workflows do **not** use `google-github-actions/auth`'s
-`token_format: access_token` output to feed
-`docker/login-action`. Direct WIF deliberately has no intermediate
-service account, and the `access_token` output path requires SA
-impersonation — the action exits with "the GitHub Action workflow
-must specify a service_account to use when generating an OAuth 2.0
-Access Token" if you try. The federated `external_account` credentials
-file the action *does* write is sufficient for Google client libraries
-that consume Application Default Credentials, but `docker login`
-needs a literal bearer token. The canonical Direct-WIF pattern is
-therefore: run `auth` without `token_format`, then
-`setup-gcloud`, then `gcloud auth print-access-token` to transparently
-perform the STS exchange and emit a usable bearer token. The minting
-step pipes `::add-mask::` before writing the token to
-`GITHUB_OUTPUT` so any accidental log echo downstream is redacted by
-the runner. Upstream reference:
-[`google-github-actions/auth` — Direct Workload Identity Federation](https://github.com/google-github-actions/auth#direct-workload-identity-federation).
+The publish workflows pass `service_account: ${{ vars.GAR_PUBLISHER_SA }}`
+and `token_format: access_token` to `google-github-actions/auth`. The
+action exchanges the GitHub OIDC JWT for STS-issued external-account
+credentials, then impersonates the SA to mint a short-lived OAuth2
+access token that `docker/login-action` consumes via
+`steps.gcp-auth.outputs.access_token`. No `gcloud` invocation, no
+`::add-mask::`, no extra step output — the canonical pattern. The
+predecessor design (PR #163, #166) used Direct WIF with no SA and
+piped `gcloud auth print-access-token` into a masked step output;
+issue #167 migrated to impersonation for parity with the upstream
+docs and to keep `gcloud`-based Phase 2 / Phase 3 work
+(SBOM upload, vulnerability gating) ergonomic. The blast radius is
+unchanged: an attacker who lands a malicious workflow on `main` or a
+`v*` tag still mints a token with the same five role grants — those
+roles now bind to the SA instead of the principalSet. Upstream
+reference:
+[`google-github-actions/auth` — Workload Identity Federation through a Service Account](https://github.com/google-github-actions/auth#workload-identity-federation-through-a-service-account).
 
 ## Verification
 
@@ -241,14 +271,16 @@ dual-publish worked end to end.
 ### 0. (Optional) Run the smoke workflow on `main`
 
 The smoke workflow at `.github/workflows/smoke-gar-publish.yml` mints
-a federated access token and runs `gcloud artifacts repositories
+a short-lived access token via the same WIF + SA-impersonation chain
+the publish workflows use, then runs `gcloud artifacts repositories
 describe` against the target repo without pushing or pulling any
 image. Dispatch with `gh workflow run smoke-gar-publish.yml --ref
-main`. It is the fastest way to confirm the WIF provider, IAM
-bindings, and access-token minting path are healthy after a provider
-rotation, IAM rebind, or after editing the `auth` / `setup-gcloud` /
-token-minting steps in `ci.yml` / `release.yml`. Note that it can
-only be dispatched from main or a v* tag (the same WIF
+main`. It is the fastest way to confirm the WIF provider, the
+`roles/iam.workloadIdentityUser` impersonation grant on
+`vars.GAR_PUBLISHER_SA`, and the SA's role bindings are healthy
+after a provider rotation, IAM rebind, or after editing the `auth`
+step in `ci.yml` / `release.yml`. Note that it can only be
+dispatched from main or a v* tag (the same WIF
 `attributeCondition` that gates the real publish path also gates the
 smoke). This is intentional, and means pre-merge verification of
 auth-surface changes on a feature branch is infeasible by design.
