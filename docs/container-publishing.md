@@ -96,9 +96,17 @@ gcloud iam workload-identity-pools providers create-oidc stirrup-gha-provider \
   --workload-identity-pool=stirrup-gha \
   --issuer-uri="https://token.actions.githubusercontent.com" \
   --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
-  --attribute-condition="assertion.repository == 'rxbynerd/stirrup'" \
+  --attribute-condition="assertion.repository == 'rxbynerd/stirrup' && (assertion.ref == 'refs/heads/main' || assertion.ref.startsWith('refs/tags/v'))" \
   --project=rubynerd-net
 ```
+
+The ref constraint pushes the trust decision from the workflow YAML
+(which any collaborator with write access can edit) down to the GCP
+credential layer (which they cannot). Token issuance is locked to
+`main` pushes and `v*` tag pushes — feature branches, scheduled runs,
+and `workflow_dispatch` against arbitrary refs cannot exchange their
+GHA OIDC JWT for a GCP access token even if a future workflow change
+requests `id-token: write`.
 
 After creation, verify the attribute condition is present:
 
