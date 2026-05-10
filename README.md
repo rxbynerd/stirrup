@@ -118,10 +118,22 @@ Or load a fully-populated `RunConfig` from a file:
 
 ### Container image
 
-The release pipeline publishes
-`ghcr.io/rxbynerd/stirrup:<tag>` (and `:main` from CI on every merge).
-The image is `gcr.io/distroless/static-debian12:nonroot`-based and runs
-as `nonroot`.
+The release pipeline publishes the same digest to both GitHub
+Container Registry and Google Cloud Artifact Registry:
+
+```sh
+docker pull ghcr.io/rxbynerd/stirrup:<tag>
+docker pull europe-west4-docker.pkg.dev/rubynerd-net/stirrup/stirrup:<tag>
+```
+
+CI also publishes `:main` (and `:sha-<7>`) on every merge to `main`.
+Release tags get `:vX.Y.Z`, `:X.Y`, and (for non-prerelease tags)
+`:latest`.
+
+The image is multi-arch (`linux/amd64`, `linux/arm64`),
+`gcr.io/distroless/static-debian12:nonroot`-based, and runs as
+`nonroot`. Operator-side bootstrap for the GAR mirror lives in
+[`docs/container-publishing.md`](docs/container-publishing.md).
 
 ## Configuration
 

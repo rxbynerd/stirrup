@@ -370,7 +370,7 @@ buf lint                 # Lint proto files
 GitHub Actions at `.github/workflows/ci.yml`:
 - **verify** job: delegates to the reusable `_verify.yml` workflow, which runs `go test` for types, harness, and eval modules and builds the stirrup and eval binaries with `-trimpath` and `types/version` ldflags (on every push)
 - **eval-gate** job: builds binaries, runs eval suites from `eval/suites/`, compares against baselines in `eval/baselines/`, uploads results as artifacts (on main branch push, after verify passes)
-- **publish-container** job: builds and pushes Docker image to `ghcr.io/rxbynerd/stirrup` (on main branch push only, after verify passes)
+- **publish-container** job: builds a multi-arch (`linux/amd64`, `linux/arm64`) Docker image and pushes the same digest to both `ghcr.io/rxbynerd/stirrup` and `<GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup` (on main branch push only, after verify passes). GCP push authenticates via Direct Workload Identity Federation (no PAT, no service account key). The GAR push is conditional on the repo `vars.*` being populated and the operator-side bootstrap described in [`docs/container-publishing.md`](docs/container-publishing.md) being complete.
 
 ### Releases
 
@@ -381,7 +381,7 @@ git tag -a v1.2.3 -m "Release notes"
 git push origin v1.2.3
 ```
 
-The workflow re-runs `_verify.yml`, then in parallel cross-compiles `stirrup` and `stirrup-eval` for linux/{amd64,arm64}, darwin/{amd64,arm64}, generates SPDX + CycloneDX SBOMs via `anchore/sbom-action`, and renders a changelog from `git log` since the previous tag (capped at 100 lines). A `release` job aggregates all artifacts into a single `SHA256SUMS` file and publishes a GitHub Release. Tags containing `-` (e.g. `v1.2.3-rc1`) are marked as prereleases automatically.
+The workflow re-runs `_verify.yml`, then in parallel cross-compiles `stirrup` and `stirrup-eval` for linux/{amd64,arm64}, darwin/{amd64,arm64}, generates SPDX + CycloneDX SBOMs via `anchore/sbom-action`, renders a changelog from `git log` since the previous tag (capped at 100 lines), and builds a multi-arch (`linux/amd64`, `linux/arm64`) container image published to both `ghcr.io/rxbynerd/stirrup` and `<GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup` with semver tags (`:vX.Y.Z`, `:X.Y`, plus `:latest` for non-prerelease tags). A `release` job aggregates all artifacts into a single `SHA256SUMS` file and publishes a GitHub Release. Tags containing `-` (e.g. `v1.2.3-rc1`) are marked as prereleases automatically.
 
 Version-label conventions injected via `-X github.com/rxbynerd/stirrup/types/version.version` and `...commit`:
 
