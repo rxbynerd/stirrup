@@ -2,9 +2,10 @@ name: Smoke Test - GAR WIF Publish
 
 # Pre-merge / pre-release sanity check for the GCP Workload Identity
 # Federation + Google Artifact Registry plumbing. Exchanges the GitHub
-# Actions OIDC token via the configured WIF provider, confirms a Google
-# access token can be minted, and verifies the federated identity has
-# read access to the target Artifact Registry repository.
+# Actions OIDC token via the configured WIF provider, impersonates the
+# `vars.GAR_PUBLISHER_SA` service account to mint a short-lived OAuth2
+# access token, and verifies that identity has read access to the
+# target Artifact Registry repository.
 #
 # This workflow does NOT push (or pull) any container image. The actual
 # dual-publish path lives in `ci.yml::publish-container` (on main pushes)
@@ -23,11 +24,12 @@ name: Smoke Test - GAR WIF Publish
 # attribute condition.`. This is intentional — the same condition
 # stops an attacker who lands a malicious workflow on a feature branch
 # from minting a token. To verify a change that touches the WIF auth
-# path (the `auth` / `setup-gcloud` / token-minting steps here or in
-# `ci.yml`/`release.yml`), merge fix-forward to `main` (failure mode
-# is fail-closed: the existing GHCR publish is unaffected by a broken
-# GAR auth step) and run `gh workflow run smoke-gar-publish.yml
-# --ref main` immediately as the first verification.
+# path (the `auth` step here or in `ci.yml`/`release.yml`, or the
+# impersonation grant on `vars.GAR_PUBLISHER_SA`), merge fix-forward
+# to `main` (failure mode is fail-closed: the existing GHCR publish
+# is unaffected by a broken GAR auth step) and run `gh workflow run
+# smoke-gar-publish.yml --ref main` immediately as the first
+# verification.
 
 on:
   workflow_dispatch:
@@ -60,19 +62,21 @@ jobs:
       # those workflows. SHA verified via the GitHub API on 2026-05-10
       # (`gh api repos/google-github-actions/auth/git/refs/tags/v3.0.0`).
       #
-      # `token_format` is intentionally omitted: Direct WIF (no
-      # intermediate service account) cannot synthesize an OAuth2 access
-      # token through this action's `access_token` output — that path
-      # requires SA impersonation. The verification step below calls
-      # `gcloud auth print-access-token` instead, which performs the STS
-      # exchange against the federated credentials file written here.
-      # See `docs/container-publishing.md` for the full rationale.
-      - name: Authenticate to Google Cloud (Direct WIF)
+      # `service_account` + `token_format: access_token` exercises the
+      # same impersonation chain the publish workflows depend on: the
+      # GitHub principalSet impersonates `vars.GAR_PUBLISHER_SA`, which
+      # holds the GAR role bindings. A failure here surfaces a broken
+      # impersonation grant or a missing role binding before the next
+      # real publish run hits the same wall. See
+      # `docs/container-publishing.md` for the full rationale.
+      - name: Authenticate to Google Cloud (WIF + SA impersonation)
         id: gcp-auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GAR_PUBLISHER_SA }}
+          token_format: access_token
 
       # SHA-pinned to v3.0.1. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/google-github-actions/setup-gcloud/git/refs/tags/v3.0.1`,
@@ -92,9 +96,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "--- Confirming federated identity can mint an access token ---"
+          echo "--- Confirming federated identity can mint an access token via SA impersonation ---"
           gcloud auth print-access-token >/dev/null
-          echo "OK: WIF exchange succeeded; access token minted."
+          echo "OK: WIF + SA impersonation succeeded; access token minted."
 
           echo "--- Confirming the WIF identity can describe the GAR repository ---"
           # artifactregistry.repositories.get is a subset of the
@@ -129,8 +133,8 @@ jobs:
             echo ""
             echo "Verified:"
             echo ""
-            echo "- GitHub Actions OIDC → GCP access-token exchange via the configured WIF provider."
-            echo "- WIF identity has at least \`artifactregistry.repositories.get\` on the target repo (subset of \`roles/artifactregistry.writer\`)."
+            echo "- GitHub Actions OIDC → GCP access-token exchange via the configured WIF provider, impersonating \`vars.GAR_PUBLISHER_SA\`."
+            echo "- The SA has at least \`artifactregistry.repositories.get\` on the target repo (subset of \`roles/artifactregistry.writer\`)."
             echo ""
             echo "Deliberately NOT verified (covered by the real publish workflows):"
             echo ""

@@ -179,48 +179,23 @@ jobs:
       # the trust hinge for GAR push — pinning to an immutable commit is
       # non-negotiable.
       #
-      # `token_format` is intentionally omitted: Direct WIF (no
-      # intermediate service account) cannot synthesize an OAuth2 access
-      # token through this action's `access_token` output — that path
-      # requires SA impersonation. Instead, this step writes the
-      # federated `external_account` ADC credentials file, and the
-      # follow-up `gcloud auth print-access-token` step mints the bearer
-      # token via the STS exchange. See `docs/container-publishing.md`.
-      - name: Authenticate to Google Cloud (Direct WIF)
+      # `service_account` + `token_format: access_token` instructs the
+      # action to exchange the federated GHA OIDC JWT for a short-lived
+      # OAuth2 access token via service-account impersonation. The SA
+      # `vars.GAR_PUBLISHER_SA` holds the GAR-push role bindings; the
+      # GitHub principalSet only holds `roles/iam.workloadIdentityUser`
+      # on the SA (the impersonation grant). This is the canonical
+      # google-github-actions/auth pattern — see
+      # `docs/container-publishing.md` for the migration rationale
+      # (issue #167).
+      - name: Authenticate to Google Cloud (WIF + SA impersonation)
         id: gcp-auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-
-      # SHA-pinned to v3.0.1. Same pin as
-      # `smoke-gar-publish.yml::Set up gcloud CLI` — must move in
-      # lockstep. SHA verified via the GitHub API on 2026-05-10
-      # (`gh api repos/google-github-actions/setup-gcloud/git/refs/tags/v3.0.1`,
-      # which also matches the v3 floating tag's current target). The
-      # auth step only writes credentials; `gcloud` is needed on PATH so
-      # the next step can mint the GAR access token.
-      - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-
-      # `gcloud auth print-access-token` transparently performs the STS
-      # token-exchange against the federated principal and prints a
-      # Google access token usable by GAR. This is the canonical
-      # Direct-WIF pattern: the auth action's `access_token` output is
-      # unavailable without SA impersonation, but ADC + `gcloud` can
-      # still mint a bearer token from the federated credentials file.
-      #
-      # `::add-mask::` MUST run before the token is emitted to
-      # GITHUB_OUTPUT — masking applies to all subsequent log output, so
-      # any later step that accidentally echoes the token gets it
-      # redacted automatically.
-      - name: Mint GAR access token
-        id: gar-token
-        shell: bash
-        run: |
-          TOKEN=$(gcloud auth print-access-token)
-          echo "::add-mask::$TOKEN"
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          service_account: ${{ vars.GAR_PUBLISHER_SA }}
+          token_format: access_token
 
       - name: Log in to Google Artifact Registry
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
@@ -231,7 +206,7 @@ jobs:
           # Substituting a service-account email here fails opaquely —
           # do not "fix" this to something more meaningful.
           username: oauth2accesstoken
-          password: ${{ steps.gar-token.outputs.token }}
+          password: ${{ steps.gcp-auth.outputs.access_token }}
 
       # SHA-pinned to v6.0.0. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/docker/metadata-action/git/refs/tags/v6.0.0`,
