@@ -11,6 +11,7 @@ name: Release
 #   sbom              → SPDX + CycloneDX from anchore/sbom-action         │ after
 #   changelog         → git log since the previous tag                    │ verify
 #   publish-container → multi-arch image pushed to GHCR + GAR             ┘
+#                       + image SBOM uploaded to Artifact Analysis
 #   release           → aggregates SHA256SUMS and creates the GitHub Release
 
 on:
@@ -383,7 +384,31 @@ jobs:
       # action performs the actual push using the live GHCR + GAR
       # credentials; pinning to an immutable commit is non-negotiable
       # here for the same reason as gcp-auth and login-action.
+      #
+      # `id: docker-push` exposes the pushed multi-arch manifest digest
+      # to downstream steps as `steps.docker-push.outputs.digest`. The
+      # Phase 2 `gcloud artifacts sbom load --uri` calls require the
+      # digest form of the image URI (tag form is rejected); the
+      # digest is the only stable handle that pins an SBOM to the
+      # exact manifest that was pushed.
+      #
+      # `sbom: true` instructs buildx to attach an SBOM as an OCI
+      # in-toto attestation alongside the image. This is NOT a
+      # substitute for the `gcloud artifacts sbom load` calls below —
+      # the two serve different consumers:
+      #
+      #   * OCI attestation (sbom: true) — read by cosign/syft
+      #     directly off the registry. Useful for ad-hoc image
+      #     inspection and downstream tools that follow the
+      #     SLSA / in-toto attestation chain.
+      #   * Container Analysis occurrence (`sbom load`) — queryable
+      #     via `gcloud artifacts sbom list` and consumed by Artifact
+      #     Analysis's vulnerability scanner. The format the GCP
+      #     console and Phase 3 vulnerability gate will read.
+      #
+      # Both ship; neither is redundant.
       - name: Build and push container image
+        id: docker-push
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
@@ -392,9 +417,133 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # sbom: true is intentionally release-only;
+          # ci.yml::publish-container deliberately omits this to avoid
+          # attaching OCI SBOM attestations to the transient :main /
+          # :sha-* images it pushes on every main-branch commit (those
+          # accumulate as registry noise). Future maintainers: do not
+          # "fix" this asymmetry by adding sbom: true to ci.yml without
+          # re-reading this comment and the matching note in
+          # docs/container-publishing.md.
+          sbom: true
           build-args: |
             VERSION=${{ env.TAG }}
             COMMIT=${{ steps.sha.outputs.short }}
+
+      # SHA-pinned to v3.0.1. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/google-github-actions/setup-gcloud/git/refs/tags/v3.0.1`,
+      # which also matches the v3 floating tag's current target).
+      # google-github-actions/auth only writes credentials; this action
+      # installs the `gcloud` CLI on PATH so the `sbom load` steps
+      # below can invoke it. Installed AFTER the push so a failed push
+      # short-circuits before we pay the install cost on the common
+      # path. The CLI inherits the access_token minted by the earlier
+      # gcp-auth step automatically — no separate `gcloud auth`
+      # invocation is needed.
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        # `project_id:` here is preferred over passing `--project` on
+        # every individual `gcloud` call: it makes the active project
+        # self-documenting and breaks the implicit dependency on
+        # CLOUDSDK_CORE_PROJECT being propagated from the gcp-auth
+        # step's `project_id:` (line ~343). If a future edit to
+        # gcp-auth removes that field for any reason, the
+        # `gcloud artifacts sbom load` calls below would otherwise
+        # silently target whatever project gcloud infers.
+        #
+        # `version:` floor is 502.0.0 (released 2024-11-19) — well
+        # after `gcloud artifacts sbom load` stabilised in 442.0.0
+        # (2023-08), early enough to be on every modern runner image
+        # `setup-gcloud` will install. The `>=` constraint allows
+        # forward-compatible patch upgrades while preventing a
+        # rollback to a version that lacks the subcommand.
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          version: '>= 502.0.0'
+
+      # SHA-pinned to v0.24.0. Same SHA as the source-tree SBOM job
+      # above; verified via the GitHub API on 2026-05-02 (`gh api
+      # repos/anchore/sbom-action/git/refs/tags/v0.24.0`). Pinning to
+      # an immutable commit defends against an upstream tag being
+      # silently retargeted to attacker-controlled code.
+      #
+      # Unlike the source-tree SBOM (which uses `path: .` and
+      # describes the Go module graph), the image SBOM uses `image:`
+      # with the digest form of the pushed manifest. anchore/sbom-action
+      # shells out to syft against the pushed image, capturing the
+      # distroless base layers and everything else actually present in
+      # the deployed container. The two SBOMs are complementary, not
+      # alternatives — Artifact Analysis vulnerability mapping needs
+      # the image SBOM specifically because vulnerabilities live in
+      # what got shipped, not in the source graph.
+      #
+      # upload-artifact / upload-release-assets are false: image SBOMs
+      # go ONLY to Artifact Analysis. The source-tree SBOMs in the
+      # release-asset bundle already cover the GitHub Release audience.
+      # github-token: "" suppresses the implicit GITHUB_TOKEN this job
+      # holds (with `packages: write` for the GHCR push above). The
+      # action does not need GHCR-push authority for our usage —
+      # `upload-artifact: false` and `upload-release-assets: false`
+      # already disable its token-gated sub-steps. Capability hygiene:
+      # do not pass write-scoped tokens into a third-party compiled
+      # bundle when none of its code paths require them. The image
+      # itself is fetched via the Docker daemon credential store
+      # (already logged in via docker/login-action above), not via
+      # this token.
+      - name: Generate image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
+          format: spdx-json
+          output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          github-token: ""
+
+      - name: Generate image CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
+          format: cyclonedx-json
+          output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          github-token: ""
+
+      # `gcloud artifacts sbom load --uri` REQUIRES the digest form of
+      # the image URI (`@sha256:...`). Tag-form URIs are rejected by
+      # the gcloud reference because an SBOM must bind to a specific
+      # manifest, and a tag can move. The digest comes from the
+      # earlier `id: docker-push` build-push step's output.
+      #
+      # These commands run as the impersonated service account from
+      # the `id: gcp-auth` step earlier — google-github-actions/auth
+      # exports ADC into the runner environment, and setup-gcloud
+      # honours it transparently. No explicit `gcloud auth activate`
+      # is needed. The four IAM roles `sbom load` requires
+      # (containeranalysis.notes.editor / .occurrences.editor /
+      # .notes.attacher / storage.objectAdmin) are bound to
+      # vars.GAR_PUBLISHER_SA by the Phase 1 bootstrap documented in
+      # docs/container-publishing.md.
+      - name: Upload image SPDX SBOM to Artifact Analysis
+        env:
+          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
+          SBOM_FILE: stirrup-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
+        run: |
+          set -euo pipefail
+          gcloud artifacts sbom load \
+            --source "${SBOM_FILE}" \
+            --uri "${IMAGE_URI}"
+
+      - name: Upload image CycloneDX SBOM to Artifact Analysis
+        env:
+          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
+          SBOM_FILE: stirrup-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
+        run: |
+          set -euo pipefail
+          gcloud artifacts sbom load \
+            --source "${SBOM_FILE}" \
+            --uri "${IMAGE_URI}"
 
   release:
     name: Publish Release
