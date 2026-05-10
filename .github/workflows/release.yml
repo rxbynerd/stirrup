@@ -454,6 +454,16 @@ jobs:
       # upload-artifact / upload-release-assets are false: image SBOMs
       # go ONLY to Artifact Analysis. The source-tree SBOMs in the
       # release-asset bundle already cover the GitHub Release audience.
+      # github-token: "" suppresses the implicit GITHUB_TOKEN this job
+      # holds (with `packages: write` for the GHCR push above). The
+      # action does not need GHCR-push authority for our usage —
+      # `upload-artifact: false` and `upload-release-assets: false`
+      # already disable its token-gated sub-steps. Capability hygiene:
+      # do not pass write-scoped tokens into a third-party compiled
+      # bundle when none of its code paths require them. The image
+      # itself is fetched via the Docker daemon credential store
+      # (already logged in via docker/login-action above), not via
+      # this token.
       - name: Generate image SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -462,6 +472,7 @@ jobs:
           output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
           upload-artifact: false
           upload-release-assets: false
+          github-token: ""
 
       - name: Generate image CycloneDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
@@ -471,6 +482,7 @@ jobs:
           output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
           upload-artifact: false
           upload-release-assets: false
+          github-token: ""
 
       # `gcloud artifacts sbom load --uri` REQUIRES the digest form of
       # the image URI (`@sha256:...`). Tag-form URIs are rejected by
