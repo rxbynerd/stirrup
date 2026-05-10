@@ -40,6 +40,7 @@ Commands:
   baseline               Pull production metrics as experiment baselines
   mine-failures          Turn production failures into eval tasks
   drift                  Detect metric changes over time windows
+  convert                Convert a result.json into another format (e.g. JUnit XML)
 
 Run "eval <command> -help" for details.
 `
@@ -78,6 +79,8 @@ func run(args []string, stdout io.Writer) int {
 		cmdDrift(args[1:])
 	case "compare-to-production":
 		cmdCompareToProduction(args[1:])
+	case "convert":
+		cmdConvert(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", args[0], usage)
 		return 1
@@ -92,6 +95,7 @@ func cmdRun(args []string) {
 	outputDir := fs.String("output", "", "Output directory for results (default: current directory)")
 	concurrency := fs.Int("concurrency", 1, "Maximum number of tasks to run in parallel (values <= 0 are treated as 1)")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks")
+	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -140,8 +144,74 @@ func cmdRun(args []string) {
 		log.Fatalf("writing result: %v", err)
 	}
 
+	if *junitPath != "" {
+		// JUnit XML is a secondary derived artifact; result.json has
+		// already been written. Demote a write failure to a warning so
+		// the CI loop's primary artifact survives even when the JUnit
+		// emit fails (e.g. read-only filesystem, exhausted inode quota).
+		// cmdConvert keeps log.Fatalf — it has no prior artifact to
+		// protect.
+		if err := writeJUnit(*junitPath, result); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: writing JUnit XML: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *junitPath)
+		}
+	}
+
 	printSummary(result)
 	fmt.Fprintf(os.Stderr, "\nResults written to %s (per-suite copy at %s)\n", resultPath, suiteResultPath)
+}
+
+// writeJUnit serialises a SuiteResult to path as JUnit XML using the
+// reporter package. The file is created with explicit 0o644 permissions
+// (matching writeJSON; bypassing umask). Close errors are surfaced to
+// the caller — on NFS, tmpfs-over-full-disk, and Docker overlay volumes
+// the underlying write failure only materialises at close(2), not
+// write(2), so a deferred-and-discarded close would silently truncate
+// the file and ship it to CI with exit code 0.
+func writeJUnit(path string, result eval.SuiteResult) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) //nolint:gosec // operator-supplied path; same trust model as --output / writeJSON
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", path, err)
+	}
+	if err := reporter.WriteJUnit(f, result); err != nil {
+		_ = f.Close() // encode error is the meaningful one
+		return fmt.Errorf("encoding %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", path, err)
+	}
+	return nil
+}
+
+// cmdConvert converts an existing result.json into another format. Today
+// only --to-junit is supported; the subcommand is shaped so other targets
+// (TAP, GitHub annotations, etc.) can be slotted in without restructuring.
+func cmdConvert(args []string) {
+	fs := flag.NewFlagSet("convert", flag.ExitOnError)
+	fromPath := fs.String("from", "", "Path to a SuiteResult JSON produced by `eval run` (required)")
+	toJUnit := fs.String("to-junit", "", "Write JUnit XML to this path (required)")
+	if err := fs.Parse(args); err != nil {
+		log.Fatalf("parsing flags: %v", err)
+	}
+
+	if *fromPath == "" {
+		log.Fatal("-from is required")
+	}
+	if *toJUnit == "" {
+		log.Fatal("-to-junit is required")
+	}
+
+	result, err := loadResult(*fromPath)
+	if err != nil {
+		log.Fatalf("loading result: %v", err)
+	}
+
+	if err := writeJUnit(*toJUnit, result); err != nil {
+		log.Fatalf("writing JUnit XML: %v", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "JUnit XML written to %s\n", *toJUnit)
 }
 
 func cmdCompare(args []string) {
