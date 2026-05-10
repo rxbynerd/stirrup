@@ -36,23 +36,30 @@ single `RunConfig`.
 ## Features
 
 **Architecture**
-- Twelve interface-based components (provider, router, prompt, context,
-  tools, executor, edit, verifier, permissions, transport, git, tracing)
-  composed via `RunConfig`.
+- Thirteen interface-based components (provider, router, prompt, context,
+  tools, executor, edit, verifier, permissions, transport, git, tracing,
+  guardrail) composed via `RunConfig`.
 - Five run modes: `execution`, `planning`, `review`, `research`, `toil`,
   each with mode-aware defaults for read-only invariants and code
   scanning.
 - Sub-agent spawning via the `spawn_agent` built-in tool: fresh loop,
   isolated context, capped recursion.
+- LLM-based guardrail classifier (`GuardRail`) at pre-turn, pre-tool,
+  and post-turn intervention points. Adapters: `none`,
+  `granite-guardian` (vLLM), `cloud-judge`, `composite`. See
+  [`docs/guardrails.md`](docs/guardrails.md).
 
 **Providers**
 - Anthropic SSE, AWS Bedrock ConverseStream, OpenAI Chat Completions,
-  OpenAI Responses API.
+  OpenAI Responses API, Google Gemini via Vertex AI.
 - Azure OpenAI works through either OpenAI adapter via `--base-url`,
   `--api-key-header`, and repeatable `--query-param key=value` for
   api-version pins.
-- Cross-cloud credential federation: GKE Workload Identity OIDC tokens
-  exchanged for AWS STS credentials (no static keys required).
+- Cross-cloud credential federation: two-tier `TokenSource` →
+  `credential.Source` abstraction covering GKE Workload Identity, AWS
+  IRSA, Azure IMDS, GitHub Actions OIDC, Anthropic WIF, and Azure Entra
+  ID federation. No static API keys required in CI/CD. See
+  [`docs/credential-federation.md`](docs/credential-federation.md).
 
 **Safety rings**
 - Container executor over the Docker Engine REST API (Docker or Podman),
@@ -70,8 +77,9 @@ single `RunConfig`.
 **Operability**
 - Bidirectional gRPC transport (`stirrup job` for K8s) and stdio
   transport for local development.
-- OpenTelemetry traces and metrics over OTLP/gRPC; JSONL traces for
-  fully local runs.
+- OpenTelemetry traces and metrics over OTLP/gRPC or OTLP/HTTP
+  (`--otel-protocol`); JSONL traces for fully local runs. See
+  [`docs/observability-cloud.md`](docs/observability-cloud.md).
 - Structured `slog` logging with a scrub handler that redacts secrets
   before any handler sees them.
 - File-based liveness probes for K8s job entrypoints.
@@ -82,7 +90,7 @@ single `RunConfig`.
 - Lakehouse interface for production trace metrics, with a file-backed
   adapter shipped for dev and CI.
 - Subcommands for live runs, baseline pulls, drift detection, failure
-  mining, and lab-vs-production comparison.
+  mining, lab-vs-production comparison, and JUnit XML export.
 
 ## Quick start
 
@@ -160,6 +168,7 @@ override the file.
 | `--trace <path>` | (none) | JSONL trace path. Implies `--trace-emitter jsonl` unless overridden. |
 | `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`. |
 | `--otel-endpoint` | (none) | Defaults to `localhost:4317` when `--trace-emitter otel`. |
+| `--otel-protocol` | (none) | OTLP wire protocol: `grpc` (default) or `http/protobuf`. Use `http/protobuf` for Grafana Cloud and other HTTP-only backends. |
 | `--executor` | `local` | One of `local`, `container`, `api`. |
 | `--edit-strategy` | `multi` | One of `whole-file`, `search-replace`, `udiff`, `multi`. Composite needs `--config`. |
 | `--verifier` | `none` | One of `none`, `test-runner`, `llm-judge`. Composite needs `--config`. |
@@ -250,7 +259,7 @@ metrics throughout.
 
 | # | Interface | Implementations |
 |---|---|---|
-| 1 | `ProviderAdapter` | `anthropic`, `bedrock`, `openai-compatible`, `openai-responses` |
+| 1 | `ProviderAdapter` | `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini` |
 | 2 | `ModelRouter` | `static`, `per-mode`, `dynamic` |
 | 3 | `PromptBuilder` | `default` (per-mode templates, composed) |
 | 4 | `ContextStrategy` | `sliding-window`, `summarise`, `offload-to-file` |
@@ -261,7 +270,8 @@ metrics throughout.
 | 9 | `PermissionPolicy` | `allow-all`, `deny-side-effects` (workspace-mutating tools only), `ask-upstream` (tools whose `RequiresApproval` flag is set), `policy-engine` (Cedar) |
 | 10 | `Transport` | `stdio`, `grpc` (outbound bidi streaming), `null` (sub-agents) |
 | 11 | `GitStrategy` | `none`, `deterministic` |
-| 12 | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC) |
+| 12 | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC or OTLP/HTTP) |
+| 13 | `GuardRail` | `none`, `granite-guardian` (vLLM), `cloud-judge`, `composite` |
 
 Whichever edit strategy you pick, the factory wraps it with the
 post-edit code scanner — so a `block` finding rolls the write back
@@ -301,7 +311,7 @@ Operator walkthrough with copy-pasteable configs:
 
 ## Evaluation
 
-`stirrup-eval` runs declarative `EvalSuite` JSON files, applies judges
+`stirrup-eval` runs declarative `EvalSuite` HCL files (`.hcl`), applies judges
 (`test-command`, `file-exists`, `file-contains`, `composite`), compares
 results against committed baselines, and exits non-zero on regressions
 — the gate that runs in CI on every merge to `main`. Beyond pass/fail,

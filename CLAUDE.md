@@ -35,16 +35,17 @@ stirrup/
       verifier/              # Verifier: none, test-runner, composite, llm-judge
       permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream, policy-engine (Cedar)
       git/                   # GitStrategy: none, deterministic
+      guard/                 # GuardRail: none, granite-guardian, cloud-judge, composite
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
-      trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC)
+      trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
       health/                # File-based K8s liveness probes
       security/              # SecretStore (env, file, AWS SSM), LogScrubber, input validation
       security/codescanner/  # Post-edit static analysis: patterns, semgrep, composite (B5)
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
   eval/                      # Eval framework
-    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift, compare-to-production)
-    spec/                    # HCL suite parser (spec.LoadSuiteHCL); .json legacy path lives in cmd/eval
+    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift, compare-to-production, convert)
+    spec/                    # HCL suite parser (spec.LoadSuiteHCL); .hcl only, JSON support removed
     judge/                   # Judge system: test-command, file-exists, file-contains, composite
     runner/                  # Suite runner (live + replay) and replay evaluator
     reporter/                # Comparison reporter: diffs two SuiteResults, text formatting
@@ -74,6 +75,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--config` | (none) | Path to a JSON RunConfig file (mirrors `proto/harness/v1/harness.proto`). Explicit flags still override individual fields; unset flags do not. |
 | `--prompt` | (required) | User prompt (also accepted as positional arg) |
 | `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
+| `--name` | (none) | Human-readable session label attached to logs/traces. Metadata only — not injected into the prompt. |
 | `--model` | `claude-sonnet-4-6` | Model to use |
 | `--provider` | `anthropic` | Provider type: anthropic, bedrock, gemini (Vertex AI), openai-compatible (Chat Completions), openai-responses (Responses API). Both OpenAI variants accept `--base-url`, `--api-key-header`, and `--query-param` for Azure / gateway scenarios. Gemini accepts `--gcp-project`, `--gcp-location`, and `--gcp-credentials-file`. |
 | `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key. Ignored for `--provider=gemini` (Vertex AI uses GCP IAM). |
@@ -166,24 +168,25 @@ The core loop is a pure function of its interfaces. All dependencies are injecte
 
 ### Provider adapters
 
-- **Anthropic** (`provider/anthropic.go`) — SSE streaming via `net/http` + `bufio.Scanner`. Hand-rolled, no SDK dependency.
-- **Bedrock** (`provider/bedrock.go`) — AWS ConverseStream API via `aws-sdk-go-v2`. Translates between internal types and Bedrock's union-type wire format. Auth is IAM (not API key); uses `config.LoadDefaultConfig()`. Accepts optional `aws.CredentialsProvider` for cross-cloud credential federation.
-- **OpenAI-compatible** (`provider/openai.go`) — OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure OpenAI, vLLM, Ollama via configurable `baseURL`. Azure OpenAI key auth is supported by setting `provider.apiKeyHeader: "api-key"` (Entra ID bearer tokens still work with the empty default), and required api-version pins ride through `provider.queryParams`.
-- **OpenAI Responses** (`provider/openai_responses.go`) — OpenAI Responses API (`POST /v1/responses`) streaming. Distinct wire format from Chat Completions: top-level `instructions` field, typed `input[]` items (`message` / `function_call` / `function_call_output`), flat tool schema, `max_output_tokens`, explicit `store: false`, and named SSE events (`response.output_text.delta`, `response.function_call_arguments.delta`, `response.completed`, `response.incomplete`, `response.failed`). Selected explicitly via `provider.type: "openai-responses"` — there is no auto-detection between the two OpenAI adapters because silent fallback would mask configuration errors. Built-in OpenAI-side tools (`web_search`, `file_search`, `computer_use`, `code_interpreter`), server-side state via `previous_response_id`, and reasoning controls are intentionally not supported in this adapter; the harness manages its own conversation history. Azure Foundry's `/openai/v1/responses` endpoint is wire-compatible: point `provider.baseUrl` at the Azure resource, set `provider.apiKeyHeader: "api-key"` for key auth (or leave empty for Entra ID Bearer), and add `provider.queryParams: {"api-version": "preview"}` (or whatever the deployment expects). Azure-only Responses extensions ride the existing forward-compatible "unknown SSE event" path and are silently ignored. See `examples/runconfig/azure-openai.json`.
-- **Gemini via Vertex AI** (`provider/gemini.go`) — Vertex AI `:streamGenerateContent` with `?alt=sse`. SSE-framed, hand-rolled HTTP. Auth is GCP IAM (OAuth2 Bearer tokens) — never an AI Studio API key. Defaults to Application Default Credentials with explicit rejection of user-mode `gcloud` credentials (autonomy invariant). Tools, safety settings, system instruction, and generation config are translated by `provider/gemini_request.go`; JSON Schema → Gemini OpenAPI Schema conversion is in `provider/gemini_schema.go`. The adapter synthesises tool-call IDs (`gemini-{streamN}-{partIdx}`) because Vertex does not echo IDs through `functionResponse`. Vertex's `finishReason: STOP` is remapped to `tool_use` whenever the same stream emitted at least one `functionCall` part, since Vertex uses STOP for both end-of-turn and tool-dispatch turns and the agentic loop dispatches tools only on `tool_use`. Multimodal input, server-side built-in tools (`google_search`, `code_execution`, etc.), and AI Studio direct support are intentionally out of scope; see issues #93 (built-in tools) and the never-implemented AI Studio path. Default safety thresholds are `BLOCK_NONE` for all five categories — secure for a coding harness producing security tooling, where false positives on code samples block legitimate work; override via `provider.geminiSafetySettings`. Configure via `provider.gcpProject`, `provider.gcpLocation` (region or `global`), and optionally `provider.credential` (defaults to `gcp-default` ADC; explicit options are `gcp-service-account` requiring `gcpCredentialsFile`, or `gcp-workload-identity` for GKE/GCE). See `examples/runconfig/vertex-gemini.json`.
+Five adapters: `anthropic` (SSE, hand-rolled), `bedrock` (ConverseStream,
+`aws-sdk-go-v2`), `openai-compatible` (Chat Completions, configurable
+`baseURL`), `openai-responses` (Responses API, distinct wire format —
+explicit type required, no auto-detection), and `gemini` (Vertex AI
+`streamGenerateContent`, GCP IAM, ADC only in production).
+
+Full configuration reference including wire protocol details, intentional
+exclusions, and Azure Foundry notes: [`docs/providers.md`](docs/providers.md).
 
 ### Credential federation
 
-The `credential` package (`credential/`) enables cross-cloud authentication for provider adapters. It has two composable layers:
+Two-tier abstraction in `credential/`:
 
-- **TokenSource** — fetches identity tokens from the runtime environment. Implementations: `GKEMetadataTokenSource` (GKE Workload Identity metadata server), `FileTokenSource` (k8s projected volumes), `EnvTokenSource` (environment variable), `AWSIRSATokenSource` (EKS Pod Identity / IRSA via `AWS_WEB_IDENTITY_TOKEN_FILE`), `AzureIMDSTokenSource` (Azure managed identity), `GitHubActionsOIDCTokenSource` (GHA `permissions: id-token: write`).
-- **credential.Source** — exchanges identity tokens (or resolves static secrets) into provider-specific credentials. Implementations: `StaticSource` (wraps SecretStore for API keys), `AWSDefaultSource` (SDK default chain), `WebIdentityAWSSource` (OIDC → STS `AssumeRoleWithWebIdentity` → AWS credentials), `GoogleADCSource` / `ServiceAccountKeySource` / `GoogleWorkloadIdentitySource` (GCP-native paths), `GCPWorkloadIdentityFederationSource` (non-GCP runtime → GCP via STS token-exchange + optional service-account impersonation), `AnthropicWIFSource` (any OIDC runtime → Anthropic via `/v1/oauth/token` JWT-bearer exchange), `AzureWorkloadIdentitySource` (any OIDC-bearing runtime → Microsoft Entra access token via OAuth2 `client_credentials` + JWT client assertion, scoped by default to Azure OpenAI / Cognitive Services).
+- **TokenSource** — fetches identity tokens from the runtime environment (GKE metadata server, k8s projected volumes, env var, AWS IRSA, Azure IMDS, GitHub Actions OIDC).
+- **credential.Source** — exchanges tokens (or resolves static secrets) into provider credentials. Implementations include `StaticSource`, `WebIdentityAWSSource`, `AnthropicWIFSource`, `AzureWorkloadIdentitySource`, and GCP-native paths.
 
-Token sources are reusable across targets — the same EKS IRSA projected token can be exchanged for AWS, GCP (via WIF), Anthropic (via Anthropic WIF), or any other OIDC-aware relying party. Federation `Source.Resolve()` is non-blocking: AWS web-identity sets up a lazy `aws.CredentialsCache`; GCP and Anthropic variants wrap their refresh in `oauth2.ReuseTokenSource`. Bearer credentials surface through `Resolved.BearerToken`, a refresh-aware closure that adapters call on every provider request — see the package doc on `harness/internal/credential/source.go` for the closure contract. Configured via `ProviderConfig.Credential` in RunConfig; when omitted, the source type is inferred from the provider type (backward compatible). Operator walkthrough: [`docs/credential-federation.md`](docs/credential-federation.md).
+`Source.Resolve()` returns `Resolved.BearerToken`, a refresh-aware closure adapters call per request — tokens refresh without restarting the run. `apiKeyRef` and `credential.type` are mutually exclusive on the same provider; the validator rejects the combination.
 
-Anthropic WIF (`AnthropicWIFSource`, configured via `credential.type: "anthropic-wif"`) is the keyless authentication path for the Anthropic Messages API. The four federation identifiers — `federationRuleId` (`fdrl_...`), `organizationId` (UUID), `serviceAccountId` (`svac_...`), and the conditional `workspaceId` (`wrkspc_...` or `default`) — bridge the IdP-issued JWT to an Anthropic service account. Any token source works: `github-actions-oidc` for GHA workflows with `permissions: id-token: write`, `aws-irsa` for EKS Pod Identity, `azure-imds` for AKS workload identity, or `file` for generic projected k8s tokens. The credential source is mutually exclusive with `apiKeyRef` on an anthropic provider — a leftover static key would silently shadow federation in the SDK precedence chain (issue #117 risk #4) so we reject the combination at validation time. Operator walkthrough: [`docs/anthropic-wif.md`](docs/anthropic-wif.md).
-
-The `azure-workload-identity` credential type targets long-running stirrup jobs against Azure OpenAI / Foundry that cannot tolerate a static client secret or expiring Entra Bearer in `apiKeyRef`. It composes with any of the existing TokenSources: `file` for AKS projected volumes (`/var/run/secrets/azure/tokens/azure-identity-token`), `github-actions-oidc` for GHA workflows with `permissions: id-token: write`, `aws-irsa` for the cross-cloud "AWS workload calling Azure" case, and `azure-imds` for VMs / AKS pods with managed identity. Required fields are `azureTenantId` (UUID) and `azureClientId` (UUID); `azureScope` defaults to `https://cognitiveservices.azure.com/.default` and only needs setting for non-default audiences. `apiKeyRef` and `apiKeyHeader: "api-key"` are mutually exclusive with this credential type — Entra access tokens flow only on `Authorization: Bearer`, so the validator rejects either combination at config-load time rather than letting a request reach Azure and surface as an opaque 401. Examples: [`examples/runconfig/azure-openai-wif-aks.json`](examples/runconfig/azure-openai-wif-aks.json), [`examples/runconfig/azure-openai-wif-github-actions.json`](examples/runconfig/azure-openai-wif-github-actions.json). Operator walkthrough: [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md).
+Operator walkthroughs: [`docs/credential-federation.md`](docs/credential-federation.md), [`docs/anthropic-wif.md`](docs/anthropic-wif.md), [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md).
 
 ### Container executor
 
@@ -211,9 +214,7 @@ The LLM judge verifier (`verifier/llmjudge.go`) evaluates conversation output ag
 
 ### OpenTelemetry trace emitter
 
-The OTel trace emitter (`trace/otel.go`) implements TraceEmitter using real OTel spans. Creates a root `run` span with child spans for turns, tool calls, provider streaming, context compaction, verification, permission checks, and git operations. Default endpoint: `localhost:4317` (gRPC).
-
-The wire protocol is selectable per RunConfig via `traceEmitter.protocol` (closed set: `""` defaults to grpc, `"grpc"`, `"http/protobuf"`) and the matching `--otel-protocol` CLI flag. The HTTP/protobuf path lets simple deployments ship native OTLP straight to managed gateways like Grafana Cloud (which is HTTP-only) without the Grafana Alloy bridge. Auth headers come from `traceEmitter.headers` and accept `secret://` references that resolve via the SecretStore at exporter init; resolved values are scrubbed from logs and stripped from `RunConfig.Redact()`. See [`docs/observability-cloud.md`](docs/observability-cloud.md).
+`trace/otel.go` creates a root `run` span with child spans for turns, tool calls, provider streaming, compaction, verification, permission checks, and git operations. Default endpoint: `localhost:4317` (gRPC). Protocol is selectable via `traceEmitter.protocol` / `--otel-protocol` (`""` → grpc, `"grpc"`, `"http/protobuf"`). Auth headers in `traceEmitter.headers` accept `secret://` references; they are scrubbed from logs and stripped from `RunConfig.Redact()`. See [`docs/observability-cloud.md`](docs/observability-cloud.md).
 
 ### Structured logging
 
@@ -225,7 +226,7 @@ The `observability/metrics.go` package emits OTel metrics via OTLP/gRPC alongsid
 
 ### OTel resource attributes
 
-`observability/resource.go` builds the OTel `Resource` shared by traces and metrics so backends can correlate the two signals on a consistent identity. The resource carries `service.name=stirrup`, `service.version`, `service.instance.id` (random 128-bit hex generated once per process), plus three run-scoped fields: `service.namespace` (default `"stirrup"`), `deployment.environment` (default `"local"`), and `harness.run.mode` (omitted entirely when empty). The first two are configurable via `RunConfig.Observability` → env vars (`OTEL_SERVICE_NAMESPACE`, `OTEL_DEPLOYMENT_ENVIRONMENT`) → defaults; CLI surface is `--service-namespace` / `--deployment-environment`. Only low-cardinality fields belong on the resource — `run.id`, `run.provider`, and `run.model` stay span/instrument-level because promoting them would explode metric series cardinality on backends like Mimir. `OTEL_RESOURCE_ATTRIBUTES` is still picked up via `resource.Default()`, but the Stirrup overlay is the second argument to `resource.Merge` and wins on key conflicts — `service.namespace` and `deployment.environment` set via `RunConfig.Observability`, the CLI flags, or the `OTEL_*` Stirrup-specific env vars take precedence over the same keys in `OTEL_RESOURCE_ATTRIBUTES`.
+`observability/resource.go` builds the shared `Resource` for traces and metrics: `service.name=stirrup`, `service.version`, `service.instance.id` (random 128-bit hex, once per process), `service.namespace` (default `"stirrup"`, CLI `--service-namespace`), `deployment.environment` (default `"local"`, CLI `--deployment-environment`), and `harness.run.mode`. Only low-cardinality fields live on the resource — `run.id`, `run.provider`, `run.model` stay at span/instrument level to avoid metric series cardinality explosion. Stirrup's overlay wins over `OTEL_RESOURCE_ATTRIBUTES` on key conflicts.
 
 ### Heartbeat and health probes
 
@@ -250,21 +251,11 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 
 ### Eval framework
 
-- **Spec** (`eval/spec/`) — HCLv2 suite loader (`spec.LoadSuiteHCL`). Mirrors `types.EvalSuite` one for one with `hcl:` tags on internal mirror structs so `types/eval.go` stays free of optional-dep tags. HCL is the only accepted authoring format; the legacy JSON loader was removed and `eval run --suite` now requires a `.hcl` extension. Top-level blocks other than `suite` (e.g. `variable`, `locals`, `for_each`) are rejected today and reserved for future grammar growth.
-- **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command` (shell exit code), `file-exists`, `file-contains` (regex), `composite` (`all`/`any`), and `diff-review` (stub). Path traversal prevention on all workspace-relative paths.
-- **Runner** (`eval/runner/`) — orchestrates suite execution: loads `EvalSuite` from disk (HCL or JSON), creates temp workspaces, optionally clones repos at specific refs, invokes the harness binary, parses JSONL traces, applies judges. Sequential task execution. Errors per-task are captured without halting the suite.
-- **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness. Useful for testing new judge criteria against existing recordings.
-- **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets. Detects regressions (pass→fail/error) and improvements (fail/error→pass). Computes turn deltas from `RunTrace`. Text formatter for human-readable output.
-- **CLI** (`eval/cmd/eval/`) — `run`, `compare`, `baseline`, `mine-failures`, `drift`, `compare-to-production` subcommands.
+Packages under `eval/`: `spec` (HCLv2 suite loader — `.hcl` only, JSON removed), `judge` (test-command / file-exists / file-contains / composite), `runner` (suite executor with bounded concurrency + replay evaluator), `reporter` (regression/improvement diffs), `lakehouse` (file-backed `TraceLakehouse`). CLI subcommands: `run`, `compare`, `baseline`, `mine-failures`, `drift`, `compare-to-production`, `convert` (JUnit XML).
 
-### Lakehouse (production feedback loop)
+Key invariants: `eval run --suite` requires a `.hcl` extension. `mine-failures` output is canonical HCL loadable without conversion. Drift exits 1 on pass-rate drops >5pp or turn increases >20%.
 
-- **TraceLakehouse interface** (`types/lakehouse.go`) — abstracts storage and querying of production run data. Any backing store (files, Postgres, BigQuery) can implement this interface.
-- **FileStore adapter** (`eval/lakehouse/filestore.go`) — file-based TraceLakehouse implementation. Stores traces and recordings as JSON files. Supports filtering by time range, outcome, mode, model. Computes aggregate metrics with p50/p95 duration percentiles.
-- **`eval baseline`** — pulls aggregate metrics from a lakehouse for use as experiment baselines.
-- **`eval mine-failures`** — queries non-success recordings and generates EvalSuite HCL with test-command judges. Output is canonical HCL (via `hclwrite`) so it can be loaded by `eval run` without conversion.
-- **`eval drift`** — compares metrics between two adjacent time windows, flags significant changes (pass rate >5pp drop, turns >20% increase), exits 1 on drift.
-- **`eval compare-to-production`** — loads eval results and production metrics from lakehouse, builds `LabVsProductionReport`, prints comparison table.
+Full reference: [`docs/eval.md`](docs/eval.md).
 
 ### Sub-agent spawning
 
@@ -367,21 +358,11 @@ buf lint                 # Lint proto files
 
 ### CI
 
-GitHub Actions at `.github/workflows/ci.yml`:
-- **verify** job: delegates to the reusable `_verify.yml` workflow, which runs `go test` for types, harness, and eval modules and builds the stirrup and eval binaries with `-trimpath` and `types/version` ldflags (on every push)
-- **eval-gate** job: builds binaries, runs eval suites from `eval/suites/`, compares against baselines in `eval/baselines/`, uploads results as artifacts (on main branch push, after verify passes)
-- **publish-container** job: builds a multi-arch (`linux/amd64`, `linux/arm64`) Docker image and pushes the same digest to both `ghcr.io/rxbynerd/stirrup` and `<GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup` (on main branch push only, after verify passes). GCP push authenticates via Direct Workload Identity Federation (no PAT, no service account key). The GAR push is conditional on the repo `vars.*` being populated and the operator-side bootstrap described in [`docs/container-publishing.md`](docs/container-publishing.md) being complete.
+`.github/workflows/ci.yml` runs three jobs on each push: **verify** (`go test` + binary builds for types/harness/eval), **eval-gate** (suite run + baseline comparison, main only), and **publish-container** (GHCR image push, main only). The reusable `_verify.yml` workflow is the shared build/test step.
 
 ### Releases
 
-Releases are produced by `.github/workflows/release.yml`, triggered by pushing a `v*.*.*` tag (or via `workflow_dispatch` against an existing tag for retries):
-
-```sh
-git tag -a v1.2.3 -m "Release notes"
-git push origin v1.2.3
-```
-
-The workflow re-runs `_verify.yml`, then in parallel cross-compiles `stirrup` and `stirrup-eval` for linux/{amd64,arm64}, darwin/{amd64,arm64}, generates SPDX + CycloneDX SBOMs via `anchore/sbom-action`, renders a changelog from `git log` since the previous tag (capped at 100 lines), and builds a multi-arch (`linux/amd64`, `linux/arm64`) container image published to both `ghcr.io/rxbynerd/stirrup` and `<GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup` with semver tags (`:vX.Y.Z`, `:X.Y`, plus `:latest` for non-prerelease tags). After the GAR push, `publish-container` also generates per-image SPDX + CycloneDX SBOMs and uploads them to Google Artifact Analysis via `gcloud artifacts sbom load` so vulnerabilities map to the deployed image manifest (see [`docs/container-publishing.md`](docs/container-publishing.md)). A `release` job aggregates all artifacts into a single `SHA256SUMS` file and publishes a GitHub Release. Tags containing `-` (e.g. `v1.2.3-rc1`) are marked as prereleases automatically.
+Tag-driven via `.github/workflows/release.yml`. Push `v*.*.*` (or `workflow_dispatch` against an existing tag) to trigger. The workflow cross-compiles for `linux/{amd64,arm64}` and `darwin/{amd64,arm64}`, generates SPDX + CycloneDX SBOMs, and publishes a GitHub Release with a `SHA256SUMS` manifest. Tags containing `-` are prereleases.
 
 Version-label conventions injected via `-X github.com/rxbynerd/stirrup/types/version.version` and `...commit`:
 
@@ -400,16 +381,16 @@ The LSP (gopls) frequently reports false positive diagnostics due to the `go.wor
 
 ## External dependencies rationale
 
-The project follows a minimal-dependency philosophy. Provider adapters and the container executor use hand-rolled HTTP clients against well-documented REST APIs rather than pulling in large SDK dependency trees. This is deliberate — for a security-sensitive harness that holds API keys and executes code, minimising the dependency surface is worth the cost of writing a few hundred lines of HTTP client code.
+Provider adapters and the container executor use hand-rolled HTTP clients against documented REST APIs — no vendor SDK dependency trees. Exceptions where external deps are accepted:
 
-Exceptions where external deps are accepted:
-- `github.com/spf13/cobra` for CLI framework (production-grade subcommand routing, help generation, flag parsing)
-- `github.com/santhosh-tekuri/jsonschema/v6` for full JSON Schema validation
-- `aws-sdk-go-v2` for Bedrock and SSM SecretStore (IAM SigV4 auth is complex enough to justify)
-- `google.golang.org/grpc` + `google.golang.org/protobuf` for gRPC transport (the reference Go gRPC implementation)
-- `go.opentelemetry.io/otel` + OTLP exporter for OpenTelemetry trace and metrics (the reference OTel SDK)
-- `golang.org/x/oauth2` for the Gemini Vertex AI credential layer (Application Default Credentials, JWT service-account flow, and metadata-server token sources). `cloud.google.com/go/compute/metadata` rides as an indirect dep used through `google.ComputeTokenSource`; no other Google SDK packages are pulled in.
-- `github.com/hashicorp/hcl/v2` for parsing eval suite HCL files (`eval/spec/`). Confined to the eval module so the harness binary stays unaffected; HCL grammar handling is in the same bucket as cobra/jsonschema — production-grade libraries for problems we don't want to re-invent.
+- `github.com/spf13/cobra` — CLI framework
+- `github.com/santhosh-tekuri/jsonschema/v6` — JSON Schema validation
+- `aws-sdk-go-v2` — Bedrock, STS, SSM SecretStore (SigV4 auth justifies the dep)
+- `google.golang.org/grpc` + `google.golang.org/protobuf` — gRPC transport
+- `go.opentelemetry.io/otel` + OTLP exporter — OTel traces and metrics
+- `golang.org/x/oauth2` — GCP ADC, JWT service-account flow, metadata-server token sources
+- `github.com/cedar-policy/cedar-go` — Cedar policy engine (`policy-engine` PermissionPolicy)
+- `github.com/hashicorp/hcl/v2` — eval suite HCL parsing (eval module only; harness binary unaffected)
 
 ## Lint policy
 
