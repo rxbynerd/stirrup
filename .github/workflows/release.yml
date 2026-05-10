@@ -434,6 +434,24 @@ jobs:
       # invocation is needed.
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        # `project_id:` here is preferred over passing `--project` on
+        # every individual `gcloud` call: it makes the active project
+        # self-documenting and breaks the implicit dependency on
+        # CLOUDSDK_CORE_PROJECT being propagated from the gcp-auth
+        # step's `project_id:` (line ~343). If a future edit to
+        # gcp-auth removes that field for any reason, the
+        # `gcloud artifacts sbom load` calls below would otherwise
+        # silently target whatever project gcloud infers.
+        #
+        # `version:` floor is 502.0.0 (released 2024-11-19) — well
+        # after `gcloud artifacts sbom load` stabilised in 442.0.0
+        # (2023-08), early enough to be on every modern runner image
+        # `setup-gcloud` will install. The `>=` constraint allows
+        # forward-compatible patch upgrades while preventing a
+        # rollback to a version that lacks the subcommand.
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          version: '>= 502.0.0'
 
       # SHA-pinned to v0.24.0. Same SHA as the source-tree SBOM job
       # above; verified via the GitHub API on 2026-05-02 (`gh api
