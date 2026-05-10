@@ -3,7 +3,8 @@
 Thanks for taking an interest. This document covers what you need to
 build, test, and submit changes. For project orientation start with the
 [README](README.md); for architectural depth see
-[`VERSION1.md`](VERSION1.md) and [`AGENTS.md`](AGENTS.md).
+[`docs/architecture.md`](docs/architecture.md) and per-package detail
+in [`AGENTS.md`](AGENTS.md).
 
 ## Environment
 

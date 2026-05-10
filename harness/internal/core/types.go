@@ -241,8 +241,7 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		inputForCall = cleaned
 	}
 
-	// Validate input against the tool's JSON Schema. This is mandatory and
-	// cannot be disabled (VERSION1.md section 7: "Tool input validation").
+	// Validate input against the tool's JSON Schema. Mandatory; cannot be disabled.
 	if err := security.ValidateJSONSchema(inputForCall, t.InputSchema); err != nil {
 		if l.Security != nil {
 			l.Security.ToolInputRejected(call.Name, []string{err.Error()})

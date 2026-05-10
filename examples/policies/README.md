@@ -1,7 +1,9 @@
 # Cedar policy starter set
 
 This directory contains starter [Cedar](https://www.cedarpolicy.com/) policies
-for the `policy-engine` permission policy (issue #42, Wave 2.3 — B3).
+for the `policy-engine` permission policy. See
+[`docs/safety-rings.md`](../../docs/safety-rings.md) for the
+operator-facing context.
 
 ## Loading a policy file
 

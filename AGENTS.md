@@ -1,6 +1,6 @@
 # stirrup
 
-A coding agent harness. Go monorepo with 13 swappable components that can be composed via `RunConfig`. See `VERSION1.md` for the Version 1 architecture summary.
+A coding agent harness. Go monorepo with 13 swappable components composed via `RunConfig`. See [`docs/architecture.md`](docs/architecture.md) for the architectural overview; this file is a per-package map for AI agents working on the codebase.
 
 ## Project Structure
 
@@ -45,7 +45,7 @@ stirrup/
     runner/                  # Suite runner (live + replay) and replay evaluator
     reporter/                # Comparison reporter and text formatting
     lakehouse/               # TraceLakehouse adapters: file-based FileStore
-    suites/                  # Eval suite definitions (HCL)
+    suites/                  # Eval suite definitions (HCLv2)
     baselines/               # Stored baseline results for CI comparison
 ```
 
@@ -137,7 +137,7 @@ The API executor (`executor/api.go`) implements the `Executor` interface for rea
 ### Eval framework
 
 - **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command`, `file-exists`, `file-contains`, and `composite`.
-- **Runner** (`eval/runner/`) — loads `EvalSuite` HCL (`.hcl` only — JSON was removed), creates temp workspaces, optionally clones repos, invokes the harness binary, parses JSONL traces, and applies judges. Supports bounded concurrency.
+- **Runner** (`eval/runner/`) — loads `EvalSuite` HCL (`.hcl` extension required), creates temp workspaces, optionally clones repos, invokes the harness binary, parses JSONL traces, and applies judges. Supports bounded concurrency.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness.
 - **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets and formats human-readable reports.
 - **Lakehouse** (`eval/lakehouse/filestore.go`) — file-backed `TraceLakehouse` adapter for production trace metrics and recordings.

@@ -130,12 +130,10 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	}
 	editStrategyType := opts.EditStrategyType
 	if editStrategyType == "" {
-		// Default changed from "whole-file" to "multi" because the
-		// multi-strategy edit tool is the highest-leverage configuration
-		// for production use (see VERSION1.md). Existing callers that
-		// still ask for write_file/search_replace/apply_diff are preserved
-		// by core/factory.go::editToolEnabled, which aliases those names
-		// to the multi-strategy's edit_file tool.
+		// "multi" is the default because the multi-strategy edit tool is the
+		// highest-leverage edit configuration for production. Callers asking
+		// for write_file/search_replace/apply_diff are aliased to the
+		// multi-strategy's edit_file tool by core/factory.go::editToolEnabled.
 		editStrategyType = "multi"
 	}
 	verifierType := opts.VerifierType

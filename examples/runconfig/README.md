@@ -135,8 +135,7 @@ not reachable through the historical CLI flag set:
 
   // Tools. builtIn[] selects which built-in tools are exposed; the
   // multi-strategy edit_file tool is registered when "edit_file" is
-  // present (or any of the legacy aliases write_file/search_replace/
-  // apply_diff). mcpServers[] connects to remote MCP endpoints; tool
+  // present. mcpServers[] connects to remote MCP endpoints; tool
   // names are namespaced as mcp_{name}_{toolName}.
   "tools": {
     "builtIn": [

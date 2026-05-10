@@ -44,8 +44,7 @@ go build -o stirrup ./harness/cmd/stirrup
 
 An `EvalSuite` describes a collection of tasks with reproducible
 starting states and outcome judges (`types/eval.go::EvalSuite`).
-Suites are authored in HCLv2 — this is the only accepted format. The
-legacy JSON loader was removed once HCL became canonical.
+Suites are authored in HCLv2.
 
 ```hcl
 suite "fix-nil-check-regressions" {
@@ -95,17 +94,14 @@ harness. Tasks currently execute sequentially even when
 `--concurrency` is passed (`eval/runner/runner.go:31`).
 
 Run output artifacts (`result.json`, the per-task JSON written by
-`eval run`, etc.) remain JSON — that's a separate format used for
+`eval run`, etc.) are JSON — a separate format used for
 machine-readable results, not for authoring suites. Mined suites from
 `mine-failures` are emitted as HCL so they can be loaded by `eval run`
 without conversion.
 
 Top-level blocks other than `suite` (e.g. `variable`, `locals`,
-`for_each`) are intentionally rejected today. The grammar deliberately
-leaves runway for those keywords; they'll be added in follow-up issues
-when concrete use cases land. Authors who need parameterisation today
-should generate suites from a higher-level tool and emit the static
-HCL.
+`for_each`) are rejected. Authors who need parameterisation should
+generate suites from a higher-level tool and emit the static HCL.
 
 Suite definitions live in `eval/suites/`. CI baselines live in
 `eval/baselines/`.
@@ -121,7 +117,6 @@ after the harness has run (`eval/judge/judge.go`):
 | `file-exists`   | At least one of `paths` exists.                                       |
 | `file-contains` | `path` exists and matches the regex in `pattern`.                     |
 | `composite`     | Combines child `judges` with `require: "all"` or `require: "any"`.    |
-| `diff-review`   | LLM judge — stubbed in V1, always returns `false`.                    |
 
 All workspace-relative paths go through symlink-aware containment so
 judges cannot escape the workspace.
@@ -147,10 +142,10 @@ new judge criteria without re-running the harness
 ### Trace lakehouse
 
 The `TraceLakehouse` interface (`types/lakehouse.go`) abstracts
-storage and querying of production run data. V1 ships a file-backed
-implementation (`eval/lakehouse/filestore.go`) suitable for dev and
-CI. Postgres / BigQuery adapters were deferred until the control
-plane chooses a backing store.
+storage and querying of production run data. A file-backed
+implementation (`eval/lakehouse/filestore.go`) ships for dev and CI;
+cloud-backed adapters are tracked under the `lakehouse` label in
+GitHub Issues.
 
 The lakehouse is what `baseline`, `mine-failures`, `drift`, and
 `compare-to-production` read from. It supports filtering by time
@@ -174,7 +169,7 @@ stirrup-eval <command> [options]
   --harness ./stirrup
 ```
 
-Loads the suite (HCL only; `.hcl` extension required), creates per-task
+Loads the suite (`.hcl` extension required), creates per-task
 temp workspaces (cloning `repo` at `ref` when set), invokes the harness
 binary as a subprocess, parses the JSONL trace it emits, and applies
 each task's judge to the workspace. Writes a `result.json`
@@ -330,16 +325,14 @@ recording set, see whether outcomes match expectations. Pair with
 
 ---
 
-## What's deferred
+## Roadmap
 
-Tracked in V1 design notes (`VERSION1.md`) and GitHub Issues:
+Active work tracked in GitHub Issues under the `eval` label:
 
-- **`diff-review` LLM judge** — stubbed; needs the LLM judge plumbing
-  the `Verifier` already uses.
-- **Concurrent task execution** — `--concurrency` is accepted but
-  ignored; runner is sequential.
-- **Postgres / BigQuery lakehouse adapters** — interface is stable;
-  adapters depend on control plane choices.
+- **Concurrent task execution** — `--concurrency` is currently
+  accepted but ignored; the runner is sequential.
+- **Cloud-backed lakehouse adapters** — interface is stable; cloud
+  adapters depend on control plane storage choices.
 - **A first mined suite** — CI infrastructure is ready; the
-  `eval/suites/` and `eval/baselines/` directories are empty until a
-  real repo is mined.
+  `eval/suites/` and `eval/baselines/` directories are seeded by
+  mining production traces from a real repo.
