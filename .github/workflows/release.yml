@@ -417,6 +417,14 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # sbom: true is intentionally release-only;
+          # ci.yml::publish-container deliberately omits this to avoid
+          # attaching OCI SBOM attestations to the transient :main /
+          # :sha-* images it pushes on every main-branch commit (those
+          # accumulate as registry noise). Future maintainers: do not
+          # "fix" this asymmetry by adding sbom: true to ci.yml without
+          # re-reading this comment and the matching note in
+          # docs/container-publishing.md.
           sbom: true
           build-args: |
             VERSION=${{ env.TAG }}
