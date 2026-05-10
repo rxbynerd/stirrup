@@ -176,17 +176,21 @@ gcloud projects add-iam-policy-binding rubynerd-net \
 
 If you are reading this after the operator already ran the full
 bootstrap, the Phase 2 bindings below are already in place — that is
-fine for now; they will be narrowed when Phase 2 ships.
+intentional. The Phase 2 release-time `gcloud artifacts sbom load`
+steps in `release.yml::publish-container` consume them; see the
+[Phase 2 — Image SBOMs in Artifact Analysis](#phase-2--image-sboms-in-artifact-analysis)
+section below for how they are exercised.
 
-#### Phase 2 (defer until `gcloud artifacts sbom load` ships)
+#### Phase 2 (bind now — `gcloud artifacts sbom load` ships in `release.yml`)
 
-The four roles below are needed only when the SBOM-upload step lands
-(Phase 2: `gcloud artifacts sbom load` from `release.yml::sbom`).
-**Do not apply them until Phase 2 ships** — binding them earlier is
-a permanent over-grant for capabilities that aren't exercised yet.
+The four roles below are exercised by the release-time SBOM upload
+steps. They were pre-bound by the Phase 1 bootstrap (the spec
+above lists them in the same `gcloud projects add-iam-policy-binding`
+loop run alongside the Phase 1 `roles/artifactregistry.writer`
+grant), so an operator who ran the full bootstrap once does not
+need to re-run this block when Phase 2 ships.
 
 ```sh
-# DO NOT RUN UNTIL PHASE 2 SHIPS.
 for role in \
   roles/containeranalysis.notes.editor \
   roles/containeranalysis.occurrences.editor \
@@ -336,6 +340,134 @@ docker pull europe-west4-docker.pkg.dev/rubynerd-net/stirrup/stirrup:latest
 
 A successful pull with no `gcloud auth login` and no PAT is the proof
 the Phase 1 goal is met.
+
+## Phase 2 — Image SBOMs in Artifact Analysis
+
+Phase 1 only puts the container in GAR. Phase 2 makes the container's
+contents *queryable* by Google's
+[Artifact Analysis](https://docs.cloud.google.com/artifact-analysis/docs/artifact-analysis)
+service: after each release tag pushes its image, the
+`release.yml::publish-container` job generates a per-image SBOM in
+both SPDX and CycloneDX formats and uploads them via
+`gcloud artifacts sbom load`. Once loaded, the SBOMs surface as
+[Container Analysis](https://docs.cloud.google.com/container-analysis/docs)
+occurrences against the image digest, alongside the discovery and
+vulnerability occurrences that the continuous-scanning service emits
+on its own.
+
+### Why a separate image SBOM
+
+The release workflow already ships SPDX + CycloneDX SBOMs as GitHub
+Release assets (`release.yml::sbom`). Those describe the *source
+tree* — the Go module graph that `anchore/sbom-action` builds by
+scanning `path: .`. They are the right input for someone auditing
+which versions of `aws-sdk-go-v2`, `google.golang.org/grpc`, or
+`cedar-go` are pinned in any given release, but they say nothing
+about what actually shipped in the container.
+
+The image SBOM is the inverse: `anchore/sbom-action` runs against
+the pushed image digest and walks every layer, including the
+`gcr.io/distroless/static-debian12:nonroot` base. The resulting
+package list is what Artifact Analysis maps to CVEs — vulnerabilities
+in libc, openssl, or any other base-layer package only show up in
+the image SBOM, not in the source SBOM. Both ship; both are
+necessary; neither is a substitute for the other.
+
+### What the workflow does
+
+The Phase 2 steps in `release.yml::publish-container` (in order):
+
+1. **`docker/build-push-action`** keeps `sbom: true` and exposes
+   `id: docker-push`. The OCI in-toto SBOM attestation written by
+   buildx is for cosign/syft consumers walking the SLSA chain off
+   the registry directly; it does *not* substitute for `sbom load`.
+2. **`google-github-actions/setup-gcloud`** installs the `gcloud`
+   CLI on PATH. The earlier `gcp-auth` step's access token is
+   already exported into the runner environment, so `gcloud`
+   commands authenticate as the impersonated `vars.GAR_PUBLISHER_SA`
+   without an explicit `gcloud auth activate` call.
+3. **Two `anchore/sbom-action` calls** generate
+   `stirrup-vX.Y.Z.image.spdx.json` and `.image.cdx.json`. The
+   `.image.` infix distinguishes them from the source SBOMs in the
+   release-asset bundle. `upload-artifact` and
+   `upload-release-assets` are both `false`: these files go *only*
+   to Artifact Analysis.
+4. **Two `gcloud artifacts sbom load` calls** push each file to
+   Artifact Analysis. The `--uri` is the digest form
+   `<location>-docker.pkg.dev/<project>/<repo>/<image>@sha256:...`
+   — `gcloud` rejects the tag form because an SBOM must bind to a
+   specific manifest, and a tag is mutable.
+
+### IAM (already bound)
+
+The four roles `sbom load` needs were pre-bound in the Phase 1
+bootstrap and are listed in the [Phase 2 IAM table](#phase-2-bind-now--gcloud-artifacts-sbom-load-ships-in-releaseyml)
+above:
+
+- `roles/containeranalysis.notes.editor`
+- `roles/containeranalysis.occurrences.editor`
+- `roles/containeranalysis.notes.attacher`
+- `roles/storage.objectAdmin` (for the managed Cloud Storage bucket
+  that backs Artifact Analysis SBOM storage — without this, `sbom
+  load` returns exit 0 but the SBOM never appears in `sbom list`)
+
+This is intentional, not a coincidence: the bootstrap was scoped to
+the full set of roles up front so Phase 2 would not require a
+second IAM pass. No `gcloud` / IAM changes are needed when Phase 2
+ships.
+
+### Verification
+
+After a `vX.Y.Z` tag push completes its release run, list the SBOMs
+loaded against the image digest:
+
+```sh
+DIGEST=$(gcloud artifacts docker images describe \
+  europe-west4-docker.pkg.dev/rubynerd-net/stirrup/stirrup:vX.Y.Z \
+  --format='value(image_summary.digest)' \
+  --project=rubynerd-net)
+
+gcloud artifacts sbom list \
+  --uri="europe-west4-docker.pkg.dev/rubynerd-net/stirrup/stirrup@${DIGEST}" \
+  --project=rubynerd-net
+```
+
+Expect two rows — one SPDX, one CycloneDX — both pointing at the
+same digest the release workflow pushed. A single row means one of
+the two upload steps failed silently and merits a re-dispatch of
+`release.yml` against the tag.
+
+For cross-checking: `grype sbom:stirrup-vX.Y.Z.image.spdx.json`
+locally (against the file the workflow uploaded) produces the same
+vulnerability set Artifact Analysis stores against the digest.
+
+### Operator's mental model
+
+Two SBOM streams exist for the same release, served to different
+audiences:
+
+| Stream | Lives in | Describes | Consumer |
+|---|---|---|---|
+| Source SBOM | GitHub Release assets (`*.spdx.json`, `*.cdx.json`) | Go module graph at the tagged commit | Anyone auditing the dependency pin set without `docker pull` |
+| Image SBOM | Artifact Analysis Container Analysis occurrences | Everything in the pushed multi-arch image, including the distroless base | The vulnerability scanner; future BinAuthz attestation chains; Phase 3's release gate |
+
+The OCI in-toto attestation written by `sbom: true` is a third,
+adjacent stream that lives in the image registry alongside the
+manifest itself; it's structurally close to the image SBOM but
+formatted for SLSA / cosign consumers rather than for Container
+Analysis ingestion.
+
+### Phase 3 (out of scope for this PR)
+
+The discovery occurrence Artifact Analysis emits on push — the one
+that powers `gcloud artifacts docker images list --show-occurrences`
+— comes from the continuous-scanning service that
+`containerscanning.googleapis.com` activates, *not* from `sbom
+load`. As soon as Phase 2 ships, `--show-occurrences` returns
+populated results without any further wiring; the Phase 3 work is
+to wait for the discovery state to reach `FINISHED_SUCCESS`, query
+vulnerability occurrences, and gate the release on severity + fix
+availability. That work belongs in a follow-up PR.
 
 ## Rolling the WIF provider
 
