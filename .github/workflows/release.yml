@@ -259,6 +259,18 @@ jobs:
     # mirror the belt-and-braces guard from ci.yml::publish-container so
     # a future change to the trigger condition cannot accidentally
     # surface silent WIF auth failures on someone else's fork.
+    #
+    # `github.event_name` is intentionally NOT part of this guard: the
+    # job must fire on both `push` (tag push from main) and
+    # `workflow_dispatch` (operator re-run against an existing tag when
+    # a transient GAR/GHCR failure left the release incomplete). Adding
+    # an event_name check would silently break the dispatch recovery
+    # path. The enforcement layers that DO matter are the repository
+    # guard above and the WIF provider's attribute-condition (see
+    # docs/container-publishing.md), which pins both
+    # `assertion.repository` and the ref to `refs/heads/main` /
+    # `refs/tags/v*`. Token issuance is locked at the GCP credential
+    # layer, not by this YAML.
     if: github.repository == 'rxbynerd/stirrup'
     # Workflow-level default is contents: read; this job needs id-token
     # for the WIF JWT exchange and packages: write for the GHCR push.
