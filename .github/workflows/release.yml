@@ -4,13 +4,14 @@ name: Release
 # existing tag via workflow_dispatch (useful when a transient failure
 # leaves the release incomplete and re-tagging would be heavy-handed).
 #
-# Pipeline (sequential by `needs:`):
-#   validate-tag  → resolves and validates the input/ref tag once
-#   verify        → reuses _verify.yml — the tagged SHA must pass tests
-#   build-binaries → matrix of GOOS/GOARCH cells, archives + SHA-256
-#   sbom          → SPDX + CycloneDX from anchore/sbom-action
-#   changelog     → git log since the previous tag
-#   release       → aggregates SHA256SUMS and creates the GitHub Release
+# Pipeline (DAG via `needs:` — fan-out after verify):
+#   validate-tag      → resolves and validates the input/ref tag once
+#   verify            → reuses _verify.yml — the tagged SHA must pass tests
+#   build-binaries    → matrix of GOOS/GOARCH cells, archives + SHA-256  ┐ parallel
+#   sbom              → SPDX + CycloneDX from anchore/sbom-action         │ after
+#   changelog         → git log since the previous tag                    │ verify
+#   publish-container → multi-arch image pushed to GHCR + GAR             ┘
+#   release           → aggregates SHA256SUMS and creates the GitHub Release
 
 on:
   push:
