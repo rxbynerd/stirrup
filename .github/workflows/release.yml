@@ -251,9 +251,106 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  publish-container:
+    name: Publish Container
+    needs: [validate-tag, verify]
+    runs-on: ubuntu-latest
+    # Tag-triggered workflows already do not run on forks by default, but
+    # mirror the belt-and-braces guard from ci.yml::publish-container so
+    # a future change to the trigger condition cannot accidentally
+    # surface silent WIF auth failures on someone else's fork.
+    if: github.repository == 'rxbynerd/stirrup'
+    # Workflow-level default is contents: read; this job needs id-token
+    # for the WIF JWT exchange and packages: write for the GHCR push.
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      TAG: ${{ needs.validate-tag.outputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-tag.outputs.tag }}
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      # SHA-pinned to v3.7.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/docker/setup-qemu-action/git/refs/tags/v3.7.0`,
+      # which also matches the v3 floating tag's current target).
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/google-github-actions/auth/git/refs/tags/v3.0.0`,
+      # which also matches the v3 floating tag's current target). This
+      # action mints a Google access token from the GHA OIDC JWT and is
+      # the trust hinge for GAR push — pinning to an immutable commit is
+      # non-negotiable.
+      - name: Authenticate to Google Cloud (Direct WIF)
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          token_format: access_token
+
+      - name: Log in to Google Artifact Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.GAR_LOCATION }}-docker.pkg.dev
+          # GAR demands the literal string "oauth2accesstoken" as the
+          # username when the password is a short-lived access token.
+          # Substituting a service-account email here fails opaquely —
+          # do not "fix" this to something more meaningful.
+          username: oauth2accesstoken
+          password: ${{ steps.gcp-auth.outputs.access_token }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ghcr.io/rxbynerd/stirrup
+            ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}
+          # Semver tagging at release time:
+          #   - {{version}}        — full vX.Y.Z (and prereleases like vX.Y.Z-rc1)
+          #   - {{major}}.{{minor}} — sliding vX.Y pointer for non-prerelease tags
+          #   - latest             — only on non-prerelease tags (hyphen-free)
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(needs.validate-tag.outputs.tag, '-') }}
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ env.TAG }}
+            COMMIT=${{ steps.sha.outputs.short }}
+
   release:
     name: Publish Release
-    needs: [validate-tag, verify, build-binaries, sbom, changelog]
+    needs: [validate-tag, verify, build-binaries, sbom, changelog, publish-container]
     runs-on: ubuntu-latest
     # Only the publish step needs write access to releases. Granting it at
     # the job level (rather than the workflow level) keeps the blast radius
