@@ -125,9 +125,37 @@ Find it with `gcloud projects describe rubynerd-net --format='value(projectNumbe
 
 ```sh
 PRINCIPAL="principalSet://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/stirrup-gha/attribute.repository/rxbynerd/stirrup"
+```
 
+#### Phase 1 (bind now)
+
+Phase 1 needs exactly one role on the WIF principal: the right to push
+container images.
+
+```sh
+gcloud projects add-iam-policy-binding rubynerd-net \
+  --role=roles/artifactregistry.writer \
+  --member="$PRINCIPAL"
+```
+
+| Role | Purpose | Phase |
+|---|---|---|
+| `roles/artifactregistry.writer` | Push container images. | 1 |
+
+If you are reading this after the operator already ran the full
+bootstrap, the Phase 2 bindings below are already in place — that is
+fine for now; they will be narrowed when Phase 2 ships.
+
+#### Phase 2 (defer until `gcloud artifacts sbom load` ships)
+
+The four roles below are needed only when the SBOM-upload step lands
+(Phase 2: `gcloud artifacts sbom load` from `release.yml::sbom`).
+**Do not apply them until Phase 2 ships** — binding them earlier is
+a permanent over-grant for capabilities that aren't exercised yet.
+
+```sh
+# DO NOT RUN UNTIL PHASE 2 SHIPS.
 for role in \
-  roles/artifactregistry.writer \
   roles/containeranalysis.notes.editor \
   roles/containeranalysis.occurrences.editor \
   roles/containeranalysis.notes.attacher \
@@ -138,11 +166,8 @@ for role in \
 done
 ```
 
-Roles, in order:
-
 | Role | Purpose | Phase |
 |---|---|---|
-| `roles/artifactregistry.writer` | Push container images. | 1 |
 | `roles/containeranalysis.notes.editor` | Create SBOM-reference notes. | 2 |
 | `roles/containeranalysis.occurrences.editor` | Create SBOM-reference occurrences. | 2 |
 | `roles/containeranalysis.notes.attacher` | Attach SBOM-reference notes to images. | 2 |
@@ -150,9 +175,10 @@ Roles, in order:
 
 [^1]: `gcloud artifacts sbom load` (Phase 2) writes SBOMs to a managed
 Cloud Storage bucket. Without this binding the load command exits 0
-but the SBOM never appears in `gcloud artifacts sbom list`. It is
-pre-bound here so the Phase 2 ship does not need a second bootstrap
-pass.
+but the SBOM never appears in `gcloud artifacts sbom list`. The
+project-scope binding is wider than strictly needed; a follow-up
+will narrow it to the Artifact Analysis bucket once that bucket's
+name is known.
 
 ## GitHub-side configuration
 
