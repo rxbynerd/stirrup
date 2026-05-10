@@ -65,10 +65,11 @@ Out of scope:
 ## Hardening summary
 
 For operator-side hardening — choosing a runtime class, an egress
-allowlist, a Cedar policy, the code scanner, and the Rule of Two — see
-the operator guide at [`docs/safety-rings.md`](docs/safety-rings.md). The README
-covers the in-harness security controls
-([README § Security](README.md#security)).
+allowlist, a Cedar policy, the code scanner, and the Rule of Two —
+see [`docs/safety-rings.md`](docs/safety-rings.md). The in-harness
+security foundations (SecretStore, log scrubbing, input validation,
+SSRF protection, etc.) are documented in
+[`docs/security.md`](docs/security.md).
 
 ## Coordinated disclosure
 

@@ -2,14 +2,9 @@
   "runId": "example-full-runconfig",
   "mode": "execution",
   "prompt": "Replace this prompt with the task you want the harness to run.",
-  "sensitiveData": true,
   "dynamicContext": {
     "issue_body": {
-      "value": "External issue body or PR comment text. Wrapped in <untrusted_context> by the prompt builder; not sensitive."
-    },
-    "customer_record": {
-      "value": "Private record the agent legitimately needs to operate on. Non-empty value omitted from this example.",
-      "sensitive": true
+      "value": "External issue body or PR comment text. Wrapped in <untrusted_context> by the prompt builder; treated as data, not instructions."
     }
   },
   "provider": {
@@ -91,7 +86,7 @@
     ]
   },
   "ruleOfTwo": {
-    "enforce": false
+    "enforce": true
   },
   "codeScanner": {
     "type": "patterns",

@@ -1,404 +1,165 @@
-# stirrup
+# Working in stirrup
 
-A coding agent harness. Go monorepo with 13 swappable components that can be composed via RunConfig.
+A coding-agent harness. Go workspace with four modules — `types`,
+`harness`, `eval`, `gen` — composed via a single `RunConfig`.
 
-VERSION1.md contains the summary of what was implemented during "version 1" (PR #1).
+This file is for AI assistants editing the codebase. The canonical
+docs are:
 
-## Project Structure
+- [`README.md`](README.md) — project orientation and a tour of a
+  secure run.
+- [`docs/architecture.md`](docs/architecture.md) — the 13-component
+  model, agentic loop, factory, and deep dives.
+- [`docs/configuration.md`](docs/configuration.md) — full CLI flag
+  reference and `RunConfig` schema.
+- [`docs/deployment.md`](docs/deployment.md) — `stirrup job`, gRPC
+  contract, container image, releases.
+- [`docs/security.md`](docs/security.md) and
+  [`docs/safety-rings.md`](docs/safety-rings.md) — security
+  foundations and the five operator-configurable rings.
+- [`AGENTS.md`](AGENTS.md) — per-package map of `harness/internal/*`.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test, lint,
+  commit/PR conventions.
 
-```
-stirrup/
-  go.work                    # Go workspace: types, harness, eval, gen modules
-  buf.yaml                   # Buf v2 config for proto linting/breaking
-  buf.gen.yaml               # Buf code generation config (protobuf + gRPC)
-  proto/harness/v1/          # Protobuf definitions for gRPC transport
-  gen/                       # Generated Go code from proto (separate module)
-  types/                     # Shared type definitions (zero dependencies)
-  harness/                   # The harness binary
-    cmd/stirrup/             # Unified CLI entrypoint (cobra: harness + job subcommands)
-      main.go
-      cmd/root.go
-      cmd/harness.go
-      cmd/job.go
-    harnessapi/              # Public embedding API
-    internal/
-      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, stall detection
-      credential/            # Cross-cloud credential federation (token sources + credential sources)
-      provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI)
-      router/                # ModelRouter: static, per-mode, dynamic
-      prompt/                # PromptBuilder: per-mode templates
-      context/               # ContextStrategy: sliding window, summarise, offload-to-file
-      tool/                  # ToolRegistry + built-in tools (incl. spawn_agent)
-      executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay
-      executor/egressproxy/  # In-process HTTP/CONNECT forward proxy for container allowlist mode (B2)
-      edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy, scanned
-      verifier/              # Verifier: none, test-runner, composite, llm-judge
-      permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream, policy-engine (Cedar)
-      git/                   # GitStrategy: none, deterministic
-      guard/                 # GuardRail: none, granite-guardian, cloud-judge, composite
-      transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
-      trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
-      observability/         # Structured logging (slog + ScrubHandler), OTel metrics
-      health/                # File-based K8s liveness probes
-      security/              # SecretStore (env, file, AWS SSM), LogScrubber, input validation
-      security/codescanner/  # Post-edit static analysis: patterns, semgrep, composite (B5)
-      mcp/                   # MCP client: remote tool discovery via Streamable HTTP
-  eval/                      # Eval framework
-    cmd/eval/main.go         # CLI entrypoint (run, compare, baseline, mine-failures, drift, compare-to-production, convert)
-    spec/                    # HCL suite parser (spec.LoadSuiteHCL); .hcl only, JSON support removed
-    judge/                   # Judge system: test-command, file-exists, file-contains, composite
-    runner/                  # Suite runner (live + replay) and replay evaluator
-    reporter/                # Comparison reporter: diffs two SuiteResults, text formatting
-    lakehouse/               # TraceLakehouse adapters: file-based (FileStore)
-    suites/                  # Eval suite definitions (HCL only)
-    baselines/               # Stored baseline results for CI comparison
-```
+Read these before duplicating their content here.
 
-## Running
+## Operational guardrails
 
-```sh
-go build -o stirrup ./harness/cmd/stirrup
-./stirrup harness --prompt "Your task here"
-```
+These are project-specific behaviours to apply on top of the
+default Claude Code conventions.
 
-Or directly:
-```sh
-go run ./harness/cmd/stirrup harness --prompt "Your task here"
-```
+### Build, test, lint
 
-Requires `ANTHROPIC_API_KEY` environment variable.
-
-### CLI Flags (`stirrup harness`)
-
-| Flag | Default | Description |
-|---|---|---|
-| `--config` | (none) | Path to a JSON RunConfig file (mirrors `proto/harness/v1/harness.proto`). Explicit flags still override individual fields; unset flags do not. |
-| `--prompt` | (required) | User prompt (also accepted as positional arg) |
-| `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
-| `--name` | (none) | Human-readable session label attached to logs/traces. Metadata only — not injected into the prompt. |
-| `--model` | `claude-sonnet-4-6` | Model to use |
-| `--provider` | `anthropic` | Provider type: anthropic, bedrock, gemini (Vertex AI), openai-compatible (Chat Completions), openai-responses (Responses API). Both OpenAI variants accept `--base-url`, `--api-key-header`, and `--query-param` for Azure / gateway scenarios. Gemini accepts `--gcp-project`, `--gcp-location`, and `--gcp-credentials-file`. |
-| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key. Ignored for `--provider=gemini` (Vertex AI uses GCP IAM). |
-| `--base-url` | (none) | Provider base URL (openai-compatible, openai-responses). E.g. `https://<resource>.openai.azure.com/openai/v1`. |
-| `--api-key-header` | (none) | Header name for sending the API key. Empty means `Authorization: Bearer` (default). Set to `api-key` for Azure OpenAI key auth, or `x-api-key` / `Ocp-Apim-Subscription-Key` for gateway variants. |
-| `--query-param` | (none) | Repeatable `key=value`. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
-| `--gcp-project` | (none) | GCP project ID hosting the Vertex AI usage. Required when `--provider=gemini`. |
-| `--gcp-location` | `global` | Vertex AI location: `global` or a region like `us-central1`. Determines the URL host and project location segment. |
-| `--gcp-credentials-file` | (none) | Path to a Google service account JSON key file. When set, implies `credential.type=gcp-service-account` (otherwise the credential layer falls back to Application Default Credentials). |
-| `--anthropic-federation-rule-id` | (none) | Anthropic federation rule ID (`fdrl_...`). Implies `credential.type=anthropic-wif` when set. Env fallback: `ANTHROPIC_FEDERATION_RULE_ID`. |
-| `--anthropic-organization-id` | (none) | Anthropic organization UUID. Required with WIF. Env fallback: `ANTHROPIC_ORGANIZATION_ID`. |
-| `--anthropic-service-account-id` | (none) | Anthropic service account ID (`svac_...`). Required with WIF. Env fallback: `ANTHROPIC_SERVICE_ACCOUNT_ID`. |
-| `--anthropic-workspace-id` | (none) | Anthropic workspace ID (`wrkspc_...`) or `default`. Conditional. Env fallback: `ANTHROPIC_WORKSPACE_ID`. |
-| `--anthropic-from-github-actions` | `false` | Enable GitHub Actions OIDC token source for Anthropic WIF. Reads `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` from the runner environment. Implicit selection from env presence is rejected — explicit opt-in is required. The `ANTHROPIC_IDENTITY_TOKEN_FILE` and `ANTHROPIC_IDENTITY_TOKEN` env vars also infer the file / env token sources respectively when unset by `--config`. |
-| `--azure-tenant-id` | (none) | Azure AD tenant UUID hosting the App Registration. When set, implies `credential.type=azure-workload-identity`. Use with `--provider=openai-compatible` or `openai-responses` against Azure OpenAI / Foundry. The TokenSource (file / github-actions-oidc / aws-irsa / azure-imds) must come from `--config`. |
-| `--azure-client-id` | (none) | App Registration / federated identity credential client ID (UUID). Required with `--azure-tenant-id`. |
-| `--azure-scope` | `https://cognitiveservices.azure.com/.default` | OAuth2 scope for the Entra access token. Override only for non-default Azure audiences (custom AAD app registrations, sovereign clouds). |
-| `--workspace`, `-w` | current directory | Workspace directory |
-| `--max-turns` | `20` | Maximum agentic loop turns |
-| `--timeout` | `600` | Wall-clock timeout in seconds |
-| `--trace` | (none) | Path to JSONL trace file |
-| `--log-level` | `info` | Log level: debug, info, warn, error |
-| `--transport` | `stdio` | Transport type: stdio, grpc |
-| `--transport-addr` | (none) | gRPC target address (required when transport=grpc) |
-| `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups (env: STIRRUP_FOLLOWUP_GRACE) |
-| `--executor` | `local` | Executor: local, container, api |
-| `--edit-strategy` | `multi` | Edit strategy: whole-file, search-replace, udiff, multi (composite via `--config` only) |
-| `--verifier` | `none` | Verifier: none, test-runner, llm-judge (composite via `--config` only) |
-| `--git-strategy` | `none` | Git strategy: none, deterministic |
-| `--trace-emitter` | `jsonl` | Trace emitter: jsonl, otel |
-| `--otel-endpoint` | (none) | OTLP endpoint for the otel trace emitter (default: localhost:4317 for grpc; full URL ending in the gateway base path for http/protobuf, e.g. `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`) |
-| `--otel-protocol` | (none) | OTLP wire protocol: `""` (defaults to grpc), `grpc`, `http/protobuf`. HTTP/JSON is intentionally not supported. See [`docs/observability-cloud.md`](docs/observability-cloud.md). |
-| `--container-runtime` | (none) | OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. See `docs/safety-rings.md`. |
-| `--permission-policy-file` | (none) | Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and the policy type is unset elsewhere, also implies `permissionPolicy.type=policy-engine`. Starters live under `examples/policies/`. |
-| `--code-scanner` | (none) | CodeScanner type: none, patterns, semgrep, composite. Composite requires `--config` (`codeScanner.scanners`). Empty defers to the mode-aware default (patterns for execution, none for read-only modes). |
-| `--deployment-environment` | (none) | OTel `deployment.environment` resource attribute (e.g. `production`, `staging`). Empty falls through to env `OTEL_DEPLOYMENT_ENVIRONMENT`, then to `local`. |
-| `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
-
-Precedence: `--config` file → explicit flags → defaults. Flags left at
-their default value do *not* override the file. The default edit strategy
-is `multi`; legacy tool names (`write_file`, `search_replace`,
-`apply_diff`) in `tools.builtIn` are aliased to the multi-strategy's
-`edit_file` tool by `core/factory.go::editToolEnabled`.
-
-A fully-populated example lives at `examples/runconfig/full.json`.
-
-### Eval CLI
-
-```sh
-go build -o stirrup-eval ./eval/cmd/eval
-
-# Run an eval suite
-./stirrup-eval run --suite path/to/suite.hcl --output results/ [--harness path/to/harness] [--dry-run]
-
-# Compare two eval results
-./stirrup-eval compare --current results/result.json --baseline baseline/result.json
-
-# Pull production metrics as a baseline
-./stirrup-eval baseline --lakehouse path/to/lakehouse [--after 2026-03-01] [--mode execution] [--output metrics.json]
-
-# Mine failures into eval tasks
-./stirrup-eval mine-failures --lakehouse path/to/lakehouse [--after 2026-03-01] [--limit 20] [--output suite.hcl]
-
-# Detect metric drift between time windows
-./stirrup-eval drift --lakehouse path/to/lakehouse --window 7d [--compare-window 7d] [--mode execution]
-
-# Compare eval results against production metrics
-./stirrup-eval compare-to-production --results results/result.json --lakehouse path/to/lakehouse [--after 2026-03-01] [--experiment-id exp1]
-```
-
-## Architecture
-
-13 swappable components, all interface-based:
-
-1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini via Vertex AI)
-2. **ModelRouter** — selects provider+model per turn (static, per-mode, dynamic)
-3. **PromptBuilder** — assembles system prompt (default per-mode templates, composed)
-4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file)
-5. **ToolRegistry** — resolves and dispatches tools (7 built-in tools + MCP remote tools)
-6. **Executor** — sandboxed file I/O and command execution (local, container, API)
-7. **EditStrategy** — how file changes are applied (whole-file, search-replace, udiff, multi-strategy)
-8. **Verifier** — validates run output (none, test-runner, composite, llm-judge)
-9. **PermissionPolicy** — gates tools that mutate the workspace or require operator approval (allow-all, deny-side-effects, ask-upstream, policy-engine). `deny-side-effects` rejects only workspace-mutating tools (write_file, run_command, edit_file); read-only-but-network/budget-touching tools like web_fetch and spawn_agent are still allowed and are gated separately by `ask-upstream`. `policy-engine` evaluates a Cedar policy file per tool call and falls back to one of the three other policies on no-decision.
-10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null for sub-agents)
-11. **GitStrategy** — manages branches/commits (none, deterministic)
-12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry)
-13. **GuardRail** — LLM-based safety classifier at three loop intervention points: pre-turn (untrusted content), pre-tool (proposed tool calls), post-turn (assistant text). Adapters: none, granite-guardian (vLLM), cloud-judge, composite. See [`docs/guardrails.md`](docs/guardrails.md).
-
-The core loop is a pure function of its interfaces. All dependencies are injected via the factory (`core.BuildLoop` / `core.BuildLoopWithTransport`), which constructs components from a `RunConfig`.
-
-### Provider adapters
-
-Five adapters: `anthropic` (SSE, hand-rolled), `bedrock` (ConverseStream,
-`aws-sdk-go-v2`), `openai-compatible` (Chat Completions, configurable
-`baseURL`), `openai-responses` (Responses API, distinct wire format —
-explicit type required, no auto-detection), and `gemini` (Vertex AI
-`streamGenerateContent`, GCP IAM, ADC only in production).
-
-Full configuration reference including wire protocol details, intentional
-exclusions, and Azure Foundry notes: [`docs/providers.md`](docs/providers.md).
-
-### Credential federation
-
-Two-tier abstraction in `credential/`:
-
-- **TokenSource** — fetches identity tokens from the runtime environment (GKE metadata server, k8s projected volumes, env var, AWS IRSA, Azure IMDS, GitHub Actions OIDC).
-- **credential.Source** — exchanges tokens (or resolves static secrets) into provider credentials. Implementations include `StaticSource`, `WebIdentityAWSSource`, `AnthropicWIFSource`, `AzureWorkloadIdentitySource`, and GCP-native paths.
-
-`Source.Resolve()` returns `Resolved.BearerToken`, a refresh-aware closure adapters call per request — tokens refresh without restarting the run. `apiKeyRef` and `credential.type` are mutually exclusive on the same provider; the validator rejects the combination.
-
-Operator walkthroughs: [`docs/credential-federation.md`](docs/credential-federation.md), [`docs/anthropic-wif.md`](docs/anthropic-wif.md), [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md).
-
-### Container executor
-
-The container executor (`executor/container.go`, `executor/container_api.go`) uses the Docker Engine REST API directly over a Unix socket, with zero external dependencies. This is a deliberate design choice: the official Docker Go SDK (`github.com/docker/docker`) has a massive transitive dependency tree (moby, containerd, OCI specs, etc.) which conflicts with the project's minimal-dependency philosophy.
-
-Both Docker and Podman implement the same Engine API, so the executor works transparently with either runtime. Socket auto-detection order: `DOCKER_HOST` env var, `/var/run/docker.sock`, `$XDG_RUNTIME_DIR/podman/podman.sock`, `/var/run/podman/podman.sock`.
-
-Container lifecycle: created at executor init with `sleep infinity`; operations go through the exec or archive API; destroyed on `Close()`. Hardened with `CapDrop: ALL`, `no-new-privileges`, `NetworkMode: none` by default. API keys never enter the container.
-
-### MCP client
-
-The MCP client (`mcp/client.go`) connects to remote MCP servers via Streamable HTTP transport (JSON-RPC 2.0 over HTTP POST). Remote-only by design — no stdio subprocess management. Tool names are prefixed as `mcp_{serverName}_{toolName}` to avoid collisions.
-
-### gRPC transport
-
-The gRPC transport (`transport/grpc.go`) implements the Transport interface as an outbound bidi streaming client. Proto definitions are in `proto/harness/v1/harness.proto`, generated with Buf (`buf generate`). The harness connects to the control plane, not the other way around.
-
-### API executor
-
-The API executor (`executor/api.go`) implements the Executor interface for read-only modes backed by the GitHub REST API (Contents endpoint). `ReadFile` and `ListDirectory` work; `WriteFile` and `Exec` return errors. Uses stdlib `net/http` only, consistent with the minimal-dependency philosophy.
-
-### LLM-as-Judge verifier
-
-The LLM judge verifier (`verifier/llmjudge.go`) evaluates conversation output against natural-language criteria by calling a cheap model (default: Haiku). It streams a structured prompt, collects the response, and parses a JSON verdict `{"passed": bool, "feedback": string}`. Malformed responses are treated as failures with the raw response preserved in details.
-
-### OpenTelemetry trace emitter
-
-`trace/otel.go` creates a root `run` span with child spans for turns, tool calls, provider streaming, compaction, verification, permission checks, and git operations. Default endpoint: `localhost:4317` (gRPC). Protocol is selectable via `traceEmitter.protocol` / `--otel-protocol` (`""` → grpc, `"grpc"`, `"http/protobuf"`). Auth headers in `traceEmitter.headers` accept `secret://` references; they are scrubbed from logs and stripped from `RunConfig.Redact()`. See [`docs/observability-cloud.md`](docs/observability-cloud.md).
-
-### Structured logging
-
-The harness uses `log/slog` (stdlib) with a custom `ScrubHandler` (`observability/logger.go`) that wraps any `slog.Handler` and runs `security.Scrub()` on all string attribute values before delegation. This makes secret leakage through logs structurally impossible. JSON logs are written to stderr with a `runId` field on every line. Log level is configurable via `--log-level` flag or `RunConfig.LogLevel`.
-
-### OTel metrics
-
-The `observability/metrics.go` package emits OTel metrics via OTLP/gRPC alongside tracing. Instruments: 12 counters (`stirrup.harness.runs`, `.turns`, `.tokens.input`, `.tokens.output`, `.tool_calls`, `.tool_errors`, `.provider.requests`, `.provider.errors`, `.context.compactions`, `.security.events`, `.verification.attempts`, `.stalls`), 5 histograms (run/turn/tool-call duration, provider latency, TTFB), and 1 UpDownCounter (context token estimate). All instruments use standard attributes (`run.mode`, `provider.type`, `tool.name`, etc.). `NewNoopMetrics()` provides a zero-cost no-op when metrics are disabled.
-
-### OTel resource attributes
-
-`observability/resource.go` builds the shared `Resource` for traces and metrics: `service.name=stirrup`, `service.version`, `service.instance.id` (random 128-bit hex, once per process), `service.namespace` (default `"stirrup"`, CLI `--service-namespace`), `deployment.environment` (default `"local"`, CLI `--deployment-environment`), and `harness.run.mode`. Only low-cardinality fields live on the resource — `run.id`, `run.provider`, `run.model` stay at span/instrument level to avoid metric series cardinality explosion. Stirrup's overlay wins over `OTEL_RESOURCE_ATTRIBUTES` on key conflicts.
-
-### Heartbeat and health probes
-
-The agentic loop emits `heartbeat` events on the transport every 30 seconds during execution. For K8s jobs, a file-based liveness probe (`health/probe.go`) writes `/tmp/healthy` after the ready event and removes it on shutdown.
-
-### K8s job entrypoint
-
-`stirrup job` is the K8s job subcommand. It dials the control plane at `CONTROL_PLANE_ADDR` via gRPC, emits a "ready" event, blocks until a `task_assignment` arrives, then runs the agentic loop over the pre-established transport using `BuildLoopWithTransport`.
-
-### Protobuf / Buf toolchain
-
-Proto files are managed with [Buf](https://buf.build). To regenerate after proto changes:
-```sh
-buf generate
-```
-Generated code lives in `gen/` (a separate Go module in the workspace). Buf config: `buf.yaml` (lint/breaking rules) and `buf.gen.yaml` (code generation with `buf.build/protocolbuffers/go` and `buf.build/grpc/go` remote plugins).
-
-### Replay doubles (for deterministic eval testing)
-
-- **ReplayProvider** (`provider/replay.go`) — implements `ProviderAdapter` by replaying recorded `TurnRecord.ModelOutput` as stream events. Atomic turn counter, no API calls.
-- **ReplayExecutor** (`executor/replay.go`) — implements `Executor` by replaying recorded tool call outputs indexed by `(toolName, canonicalInput)`. Tracks writes for assertion via `Writes()`.
-
-### Eval framework
-
-Packages under `eval/`: `spec` (HCLv2 suite loader — `.hcl` only, JSON removed), `judge` (test-command, file-exists, file-contains, composite), `runner` (suite executor with bounded concurrency + replay evaluator), `reporter` (regression/improvement diffs), `lakehouse` (file-backed `TraceLakehouse`). CLI subcommands: `run`, `compare`, `baseline`, `mine-failures`, `drift`, `compare-to-production`, `convert` (JUnit XML).
-
-Key invariants: `eval run --suite` requires a `.hcl` extension. `mine-failures` output is canonical HCL loadable without conversion. Drift exits 1 on pass-rate drops greater than 5 percentage points or turn increases greater than 20%.
-
-Full reference: [`docs/eval.md`](docs/eval.md).
-
-### Sub-agent spawning
-
-The `spawn_agent` built-in tool (`tool/builtins/subagent.go`) creates a fresh `AgenticLoop` with its own message history, running synchronously as a tool call. The sub-agent reuses the parent's provider, executor, and tools (except `spawn_agent` itself — preventing infinite recursion). It uses a `NullTransport` (no streaming to control plane), `NoneVerifier`, `NoneGitStrategy`, and a `captureTransport` that records text deltas for output extraction. Max turns capped at 20, defaults to 10.
-
-The `SubAgentSpawner` function type in `builtins` decouples the tool from the `core` package, avoiding circular imports. The factory provides the concrete closure.
-
-### Multi-strategy edit fallback
-
-The `MultiStrategy` (`edit/multi.go`) presents a unified `edit_file` tool that accepts fields from all three edit strategies. It routes based on which fields are present (diff → udiff, old_string → search-replace, content → whole-file) and automatically falls back to the next applicable strategy if the primary one fails.
-
-### Loop stall detection
-
-The `stallDetector` (`core/stall.go`) tracks consecutive identical tool calls and consecutive failures. The loop terminates with `"stalled"` after 3 repeated identical calls (same name + same input) or `"tool_failures"` after 5 consecutive failures.
-
-### Deterministic safety rings (issue #42)
-
-Five layered controls compose at run construction:
-
-- **Container runtimeClass** (`executor/container.go`) — optional `Runtime` field passed to the Docker Engine API selects `runc` (default), `runsc` (gVisor), or `kata-*` for kernel-isolation.
-- **Egress proxy** (`executor/egressproxy/`) — when `network.mode == "allowlist"` the container executor starts an in-process forward proxy on the host network namespace; the container is wired with `HTTP_PROXY`/`HTTPS_PROXY` and only well-formed requests to allowlisted FQDNs are forwarded. v1 fails closed only for cooperating clients (the iptables drop is a documented follow-up).
-- **Cedar policy engine** (`permission/policyengine.go`) — the fourth `PermissionPolicy` type. Backed by `github.com/cedar-policy/cedar-go`. Loads a `.cedar` file at boot, evaluates each tool call as `(principal=User::"<runId>", action=Action::"tool:<name>", resource=Tool::"<name>", context={input, workspace, dynamicContext})`, falls back to a configured non-policy-engine policy on no-decision.
-- **Rule of Two** (`types/runconfig.go::validateRuleOfTwo`) — structural invariant rejecting any RunConfig that simultaneously holds untrusted input, sensitive data, and external communication unless gated by `ask-upstream`. `RuleOfTwo.Enforce: false` is the only override; the factory emits a `rule_of_two_disabled` security event when it is used and `rule_of_two_warning` when exactly two of three flags hold.
-- **CodeScanner** (`security/codescanner/`, `edit/scanned.go`) — post-edit static analysis. Pure-Go pattern pack, optional shell-out to `semgrep`, or composite. Block findings roll back the write; warn findings emit `code_scan_warning`.
-
-Operator-facing walkthrough: [`docs/safety-rings.md`](docs/safety-rings.md). Starter Cedar policies: [`examples/policies/`](examples/policies/).
-
-#### RunConfig fields added in #42
-
-| Field | Default | Notes |
-|---|---|---|
-| `executor.runtime` | `""` (engine default) | Closed set: `runc`, `runsc`, `kata`, `kata-qemu`, `kata-fc`. Only valid when `executor.type == "container"`; `ValidateRunConfig` rejects the field on `local` / `api` executors. |
-| `permissionPolicy.type` (extended) | unchanged | Adds `policy-engine` alongside the existing three. Requires `policyFile`; rejects `..` traversal segments; `policyFile` set with any other type is a hard error. |
-| `permissionPolicy.policyFile` | (none) | Filesystem path to the Cedar policy file. Absolute paths are operator-managed; workspace-relative paths are resolved against `executor.workspace`. |
-| `permissionPolicy.fallback` | `deny-side-effects` (when `policy-engine`) | Closed set: `allow-all`, `deny-side-effects`, `ask-upstream`. Chained policy engines are rejected. |
-| `ruleOfTwo.enforce` | `nil` (enforce) | `*bool` so unset is wire-distinguishable from `false`. The proto field is declared `optional` for the same reason. The factory emits `rule_of_two_disabled` when enforcement is overridden and `rule_of_two_warning` when two of three flags hold without override. |
-| `codeScanner.type` | mode-aware (`patterns` for execution, `none` for read-only) | Closed set: `none`, `patterns`, `semgrep`, `composite`. Composite requires `codeScanner.scanners` (each entry from the non-composite set). |
-| `codeScanner.blockOnWarn` | `false` | Promotes warn findings to block; useful for production pinning. |
-| `codeScanner.semgrepConfigPath` | `""` (passes `--config auto`) | Local rules-bundle path. Set this for air-gapped deployments and supply-chain pinning — `auto` reaches out to `semgrep.dev` at scan time. See `docs/safety-rings.md`. |
-
-### Probabilistic guardrails (issue #43)
-
-The `GuardRail` component (`harness/internal/guard/`) is the
-probabilistic counterpart to the deterministic rings above: an
-LLM-based classifier called at three points in the agentic loop
-(pre-turn, pre-tool, post-turn) to catch *content-level* attacks the
-rings cannot see — prompt injection, jailbreaks, hallucinated tool
-calls, secret-shaped output. Two adapters ship: `granite-guardian`
-(IBM Granite Guardian 4.1-8B served via vLLM) and `cloud-judge`
-(reuses an existing ProviderAdapter, e.g. Anthropic Haiku, for
-deployments without GPU access). The component is opt-in: default is
-`none` and call sites are no-ops. Operator walkthrough:
-[`docs/guardrails.md`](docs/guardrails.md).
-
-## Security Foundations
-
-- **SecretStore**: resolves `secret://` references (env vars, files, AWS SSM via `secret://ssm:///param-name`). `AutoSecretStore` routes by scheme, only initialising SSM client when config refs require it. API keys never stored in RunConfig.
-- **LogScrubber**: regex-based redaction of 7 secret patterns in all log/trace output.
-- **Input validation**: JSON Schema Draft 2020-12 validation via `santhosh-tekuri/jsonschema`, with external schema loading disabled and prototype pollution keys stripped.
-- **RunConfig validation**: hard security invariants (read-only modes must use restrictive permissions, bounded maxTurns/timeout, FollowUpGrace <= 3600s, MaxCostBudget <= $100, MaxTokenBudget <= 50M).
-- **HTTP client timeouts**: all provider adapters (Anthropic, OpenAI, Bedrock) and MCP client use explicit HTTP clients with timeouts (120s streaming, 30s MCP) — never `http.DefaultClient`.
-- **Environment filtering**: command execution allowlists 27 safe env vars; blocks all API keys and cloud credentials.
-- **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.
-- **RunConfig.Redact()**: strips secret references before trace persistence.
-- **Stall detection**: repeated identical tool calls (3x) and consecutive failures (5x) terminate the loop.
-
-## Key Constants
-
-- `MaxTurns`: 20 by default, hard-capped at 100 by `ValidateRunConfig`
-- Default model: `claude-sonnet-4-6`
-- `max_tokens: 64000`, `temperature: 0.1`
-- File size limit: 10MB (read/write)
-- Command output cap: 1MB
-- Command timeout: 30s default, 5min max
-- Follow-up grace cap: 3600s
-- Token budget cap: 50M
-- Cost budget cap: $100
-
-## Development
-
-A `Justfile` is provided for common tasks (requires [just](https://github.com/casey/just)):
 ```sh
 just              # build + test (default)
-just build        # build stirrup + eval binaries
+just build        # ./stirrup and ./stirrup-eval
 just test         # go test ./harness/... ./types/... ./eval/...
-just lint         # golangci-lint
-just proto        # buf generate
-just buf-lint     # buf lint
-just docker       # build stirrup Docker image
-just clean        # remove built binaries
+just lint         # golangci-lint v2
+just proto        # buf generate (after editing proto/*.proto)
 ```
 
-Or directly:
-```sh
-go test ./harness/... ./types/... ./eval/...    # Run all tests
-go build ./harness/... ./types/... ./eval/...   # Build all packages
-buf generate             # Regenerate proto code (after editing .proto files)
-buf lint                 # Lint proto files
+A failing build or test is a real error. A failing `gopls`
+diagnostic against a workspace package (e.g. "X not declared by
+package Y") is almost always a false positive caused by `go.work`
+resolution. Always verify with `go build` and `go test` before
+acting on an LSP error.
+
+### Lint policy
+
+`golangci-lint v2` is the source of truth, but linter suggestions
+are not mandates. Diagnostics prefixed `QF` (quick-fix), `S`
+(simplification), or `SA` (static analysis suggestion) sometimes
+conflict with deliberate patterns: compile-time type assertions
+(`var _ T = expr`), interface satisfaction guards
+(`var _ Interface = (*Impl)(nil)`), defensive coding around hostile
+inputs, sentinel values for forward compatibility. Prefer
+`//nolint:<linter> // <reason>` when it preserves intent better
+than the suggested rewrite. Never weaken a safety mechanism to
+satisfy a linter. Treat `golangci-lint --fix` and `fmt` output as
+drafts and review the diff for semantic changes.
+
+### Commit conventions
+
+Subjects are `<area>: <imperative subject>` in lowercase. Comma
+separate when multiple areas share a change. Body explains *why*,
+not *what* — the diff already shows the *what*. Examples drawn
+from `git log`:
+
+```
+core: surface provider errors via slog and transport warning
+permission: bound Cedar value recursion depth
+docs: describe release workflow and version-label conventions
 ```
 
-### CI
+Branch names follow `<type>/<short-description>`
+(`feat/issue-42-...`, `fix/surface-provider-errors`,
+`docs/post-issue-42-readme-pass`).
 
-`.github/workflows/ci.yml` runs three jobs on each push: **verify** (`go test` + binary builds for types/harness/eval), **eval-gate** (suite run + baseline comparison, main only), and **publish-container** (GHCR image push, main only). The reusable `_verify.yml` workflow is the shared build/test step.
+### Documentation tone
 
-### Releases
+Docs use an **impersonal, instructional voice**. Avoid second-person
+("you", "your") where it can be removed without loss of meaning.
+Prefer "the harness" over "you", "operators" or "callers" over
+"you", "the run" over "your run". This matches the
+`doc-tone-reviewer` agent's convention and keeps prose stylistically
+consistent across docs.
 
-Tag-driven via `.github/workflows/release.yml`. Push `v*.*.*` (or `workflow_dispatch` against an existing tag) to trigger. The workflow cross-compiles for `linux/{amd64,arm64}` and `darwin/{amd64,arm64}`, generates SPDX + CycloneDX SBOMs, and publishes a GitHub Release with a `SHA256SUMS` manifest. Tags containing `-` are prereleases.
+## Project-specific invariants
 
-Version-label conventions injected via `-X github.com/rxbynerd/stirrup/types/version.version` and `...commit`:
+These are structurally enforced by the codebase. Do not weaken them
+to make a feature easier:
 
-| Build origin | `Full()` output |
+- **Secrets never in `RunConfig`.** API keys are `secret://`
+  references resolved at runtime through `security.SecretStore`.
+  `RunConfig.Redact()` strips secret references before any trace
+  or recording is persisted. Adding a "raw key" path is a
+  regression.
+- **`http.DefaultClient` is banned in production code.** Every
+  HTTP client must declare an explicit timeout (120 s for
+  streaming, 30 s for MCP / web fetch). The pattern in
+  `provider/anthropic.go` is the template.
+- **Read-only modes** (`planning`, `review`, `research`, `toil`)
+  enforce a hard invariant in `ValidateRunConfig`: the tool list
+  excludes `write_file` / `run_command` / `edit_file`, and the
+  permission policy is not `allow-all`. A new mode added to the
+  list inherits the invariant.
+- **Hand-rolled HTTP over SDKs.** The container executor uses the
+  Docker Engine REST API directly to avoid the `github.com/docker/docker`
+  dependency tree. Provider adapters are stdlib HTTP+SSE for the
+  same reason. Adding a vendor SDK requires a justification on
+  par with the existing exceptions in
+  [`docs/architecture.md#external-dependencies`](docs/architecture.md#external-dependencies).
+- **The agentic loop is a pure function of its interfaces.** The
+  loop in `harness/internal/core/loop.go` must not import a
+  concrete component implementation, must not read environment
+  variables directly, and must not access the filesystem. New
+  behaviour goes behind an interface and is injected by the
+  factory.
+- **`harness/internal/*` is private.** The public Go API surface is
+  `harness/harnessapi/`. Don't expand the embedding API
+  unintentionally by exporting types from `internal/`.
+
+## Where things live
+
+Quick map for "I need to change X" lookups:
+
+| Want to change… | Look in… |
 |---|---|
-| `release.yml` on a tag | `v1.2.3 (ab74b75)` |
-| `ci.yml` on `refs/heads/main` | `main (ab74b75)` |
-| `ci.yml` on any other ref | `dev (ab74b75)` |
-| `go build` / `go run` locally | `dev` |
+| Provider behaviour or wire format | `harness/internal/provider/<name>.go` |
+| Tool definition or schema | `harness/internal/tool/builtins/<name>.go` |
+| Edit fallback logic | `harness/internal/edit/multi.go` |
+| Permission gating logic | `harness/internal/permission/<type>.go` |
+| Cedar policy semantics | `harness/internal/permission/policyengine.go` |
+| Container runtime / network mode wiring | `harness/internal/executor/container*.go` |
+| Egress proxy | `harness/internal/executor/egressproxy/` |
+| Code scanner | `harness/internal/security/codescanner/` |
+| `RunConfig` validation | `types/runconfig.go` |
+| CLI flag definitions | `harness/cmd/stirrup/cmd/harness.go` |
+| gRPC schema | `proto/harness/v1/harness.proto` (then `buf generate`) |
+| Eval suite parser | `eval/spec/` |
+| Eval CLI subcommands | `eval/cmd/eval/main.go` |
 
-Artifact signing (cosign / Sigstore) is intentionally out of scope; a commented-out signing seam sits in `release.yml` between the SHA256SUMS step and the release-create step.
+## Things not to do
 
-### Known issue: gopls false positives
+- **Don't duplicate doc content.** If something belongs in a doc
+  under `docs/`, edit that doc and link to it from here. CLAUDE.md
+  is an index and a guardrail, not a knowledge base.
+- **Don't reintroduce backwards-compat shims** for removed concepts.
+  The project is pre-1.0; clean is preferred.
+- **Don't generate cosmetic comments.** Default to no comments.
+  Only write a comment when *why* is non-obvious — a hidden
+  constraint, a workaround for a specific bug, behaviour that
+  would surprise the next reader. Comments that describe *what*
+  the code already says are noise.
+- **Don't claim a UI / CLI feature is done from a passing build.**
+  Type-check passes ≠ feature works. If the change is observable,
+  drive it end-to-end before reporting completion.
 
-The LSP (gopls) frequently reports false positive diagnostics due to the `go.work` workspace module resolution. Errors referencing packages like `NewComposedPromptBuilder not declared by package prompt` or fields from other modules are almost always false. Always verify with `go build` and `go test` — if they pass, the LSP errors are spurious.
+## Known false positives
 
-## External dependencies rationale
-
-Provider adapters and the container executor use hand-rolled HTTP clients against documented REST APIs — no vendor SDK dependency trees. Exceptions where external deps are accepted:
-
-- `github.com/spf13/cobra` — CLI framework
-- `github.com/santhosh-tekuri/jsonschema/v6` — JSON Schema validation
-- `aws-sdk-go-v2` — Bedrock, STS, SSM SecretStore (SigV4 auth justifies the dep)
-- `google.golang.org/grpc` + `google.golang.org/protobuf` — gRPC transport
-- `go.opentelemetry.io/otel` + OTLP exporter — OTel traces and metrics
-- `golang.org/x/oauth2` — GCP ADC, JWT service-account flow, metadata-server token sources
-- `github.com/cedar-policy/cedar-go` — Cedar policy engine (`policy-engine` PermissionPolicy)
-- `github.com/hashicorp/hcl/v2` — eval suite HCL parsing (eval module only; harness binary unaffected)
-
-## Lint policy
-
-golangci-lint v2 is configured via `.golangci.yml`. `just lint` runs the linter across all workspace modules.
-
-When resolving lint findings, understand the code's intent before changing it:
-
-- **Linter suggestions are not mandates.** Diagnostics prefixed `QF` (quick-fix), `S` (simplification), or `SA` (static analysis suggestion) may conflict with deliberate patterns like compile-time type assertions, intentional sentinel patterns, or defensive coding. If suppressing with `//nolint:<linter> // <reason>` preserves the original intent better than the suggested rewrite, prefer the nolint directive.
-- **Never weaken a safety mechanism to satisfy a linter.** Compile-time type checks (`var _ T = expr`), interface satisfaction guards (`var _ Interface = (*Impl)(nil)`), and deliberate panics in unreachable branches exist for a reason. If a linter flags them, suppress with a comment explaining the intent.
-- **Treat auto-fix output as a draft.** `golangci-lint fmt` and `--fix` can rewrite code mechanically. Review the diff for semantic changes beyond formatting, especially in test assertions and type-checked expressions.
-- **Check for cascading breakage.** Removing an "unused" symbol may break a compile-time contract or a test helper reserved for future use in an in-progress branch. Grep for the symbol and read surrounding comments before deleting.
+- `gopls` reporting "X not declared by package Y" across module
+  boundaries (`gen/` ↔ `types/` ↔ `harness/`) is almost always a
+  workspace-resolution artefact. Verify with `go build`.
+- Lint suggestions to replace `var _ Interface = (*Impl)(nil)` with
+  the concrete value are wrong — the assertion form is the
+  intentional compile-time satisfaction guard.
