@@ -130,6 +130,9 @@ OIDC subject — not to a service account.
 
 `<PROJECT_NUMBER>` is the numeric project number (not the project ID).
 Find it with `gcloud projects describe rubynerd-net --format='value(projectNumber)'`.
+The number itself does NOT need to be saved as a GitHub repository
+variable — only the fully-constructed `GCP_WORKLOAD_IDENTITY_PROVIDER`
+string (which embeds it) does.
 
 ```sh
 PRINCIPAL="principalSet://iam.googleapis.com/projects/<PROJECT_NUMBER>/locations/global/workloadIdentityPools/stirrup-gha/attribute.repository/rxbynerd/stirrup"
@@ -199,8 +202,7 @@ how `google-github-actions/auth` documents the pattern.
 | Variable | Description |
 |---|---|
 | `GCP_PROJECT_ID` | GCP project ID hosting the GAR repository (e.g. `rubynerd-net`). |
-| `GCP_PROJECT_NUMBER` | Numeric project number. Used to construct the principalSet for IAM bindings during bootstrap; reserved for future workflow use. |
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Full resource path of the provider, e.g. `projects/<NUMBER>/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider`. |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Full resource path of the provider, e.g. `projects/<NUMBER>/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider`. The numeric project number is only needed to construct this string during bootstrap — it does not itself need to be stored as a separate repository variable. |
 | `GAR_LOCATION` | Artifact Registry location, e.g. `europe-west4`. Determines the registry hostname `<location>-docker.pkg.dev`. |
 | `GAR_REPOSITORY` | Repository name within Artifact Registry (e.g. `stirrup`). |
 | `GAR_IMAGE` | Image name within the repository (e.g. `stirrup`). The final image path is `<GAR_LOCATION>-docker.pkg.dev/<GCP_PROJECT_ID>/<GAR_REPOSITORY>/<GAR_IMAGE>`. |
