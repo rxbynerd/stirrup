@@ -128,9 +128,21 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Compute short SHA
+      # Mirrors the eval-gate version-computation step. The `if:` guard
+      # above currently restricts this job to refs/heads/main pushes, so
+      # `label` will always be `main` today; computing it indirectly
+      # keeps the build-args block honest if that condition is ever
+      # relaxed (e.g. tag-triggered runs added) and prevents the
+      # VERSION literal from drifting from the actual ref.
+      - name: Compute version label
         id: ver
-        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "label=main" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=dev" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       # SHA-pinned to v3.7.0. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/docker/setup-qemu-action/git/refs/tags/v3.7.0`,
@@ -219,5 +231,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=main
+            VERSION=${{ steps.ver.outputs.label }}
             COMMIT=${{ steps.ver.outputs.sha }}
