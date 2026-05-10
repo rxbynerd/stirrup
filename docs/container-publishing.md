@@ -213,10 +213,45 @@ that depend on them will fail at run time with a clear "registry
 hostname empty" or "workload identity provider empty" error — there
 is no silent fallback to a different identity.
 
+### Why we mint the access token via `gcloud` rather than the `auth` action's output
+
+The publish workflows do **not** use `google-github-actions/auth`'s
+`token_format: access_token` output to feed
+`docker/login-action`. Direct WIF deliberately has no intermediate
+service account, and the `access_token` output path requires SA
+impersonation — the action exits with "the GitHub Action workflow
+must specify a service_account to use when generating an OAuth 2.0
+Access Token" if you try. The federated `external_account` credentials
+file the action *does* write is sufficient for Google client libraries
+that consume Application Default Credentials, but `docker login`
+needs a literal bearer token. The canonical Direct-WIF pattern is
+therefore: run `auth` without `token_format`, then
+`setup-gcloud`, then `gcloud auth print-access-token` to transparently
+perform the STS exchange and emit a usable bearer token. The minting
+step pipes `::add-mask::` before writing the token to
+`GITHUB_OUTPUT` so any accidental log echo downstream is redacted by
+the runner. Upstream reference:
+[`google-github-actions/auth` — Direct Workload Identity Federation](https://github.com/google-github-actions/auth#direct-workload-identity-federation).
+
 ## Verification
 
 After the first `main` push merges with the new workflow, confirm the
 dual-publish worked end to end.
+
+### 0. (Optional) Run the smoke workflow on `main`
+
+The smoke workflow at `.github/workflows/smoke-gar-publish.yml` mints
+a federated access token and runs `gcloud artifacts repositories
+describe` against the target repo without pushing or pulling any
+image. Dispatch with `gh workflow run smoke-gar-publish.yml --ref
+main`. It is the fastest way to confirm the WIF provider, IAM
+bindings, and access-token minting path are healthy after a provider
+rotation, IAM rebind, or after editing the `auth` / `setup-gcloud` /
+token-minting steps in `ci.yml` / `release.yml`. Note that it can
+only be dispatched from main or a v* tag (the same WIF
+`attributeCondition` that gates the real publish path also gates the
+smoke). This is intentional, and means pre-merge verification of
+auth-surface changes on a feature branch is infeasible by design.
 
 ### 1. Confirm the image landed in GAR
 
