@@ -4,13 +4,14 @@ name: Release
 # existing tag via workflow_dispatch (useful when a transient failure
 # leaves the release incomplete and re-tagging would be heavy-handed).
 #
-# Pipeline (sequential by `needs:`):
-#   validate-tag  → resolves and validates the input/ref tag once
-#   verify        → reuses _verify.yml — the tagged SHA must pass tests
-#   build-binaries → matrix of GOOS/GOARCH cells, archives + SHA-256
-#   sbom          → SPDX + CycloneDX from anchore/sbom-action
-#   changelog     → git log since the previous tag
-#   release       → aggregates SHA256SUMS and creates the GitHub Release
+# Pipeline (DAG via `needs:` — fan-out after verify):
+#   validate-tag      → resolves and validates the input/ref tag once
+#   verify            → reuses _verify.yml — the tagged SHA must pass tests
+#   build-binaries    → matrix of GOOS/GOARCH cells, archives + SHA-256  ┐ parallel
+#   sbom              → SPDX + CycloneDX from anchore/sbom-action         │ after
+#   changelog         → git log since the previous tag                    │ verify
+#   publish-container → multi-arch image pushed to GHCR + GAR             ┘
+#   release           → aggregates SHA256SUMS and creates the GitHub Release
 
 on:
   push:
@@ -251,9 +252,142 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  publish-container:
+    name: Publish Container
+    needs: [validate-tag, verify]
+    runs-on: ubuntu-latest
+    # Tag-triggered workflows already do not run on forks by default, but
+    # mirror the belt-and-braces guard from ci.yml::publish-container so
+    # a future change to the trigger condition cannot accidentally
+    # surface silent WIF auth failures on someone else's fork.
+    #
+    # `github.event_name` is intentionally NOT part of this guard: the
+    # job must fire on both `push` (tag push from main) and
+    # `workflow_dispatch` (operator re-run against an existing tag when
+    # a transient GAR/GHCR failure left the release incomplete). Adding
+    # an event_name check would silently break the dispatch recovery
+    # path. The enforcement layers that DO matter are the repository
+    # guard above and the WIF provider's attribute-condition (see
+    # docs/container-publishing.md), which pins both
+    # `assertion.repository` and the ref to `refs/heads/main` /
+    # `refs/tags/v*`. Token issuance is locked at the GCP credential
+    # layer, not by this YAML.
+    if: github.repository == 'rxbynerd/stirrup'
+    # Workflow-level default is contents: read; this job needs id-token
+    # for the WIF JWT exchange and packages: write for the GHCR push.
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      TAG: ${{ needs.validate-tag.outputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.validate-tag.outputs.tag }}
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      # SHA-pinned to v3.7.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/docker/setup-qemu-action/git/refs/tags/v3.7.0`,
+      # which also matches the v3 floating tag's current target).
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      # SHA-pinned to v4.0.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/docker/setup-buildx-action/git/refs/tags/v4.0.0`,
+      # which also matches the v4 floating tag's current target). Pinned
+      # for the same reason as gcp-auth: this action runs inside the
+      # job that holds a live GAR access token; a retargeted floating
+      # tag could exfiltrate it.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      # SHA-pinned to v4.1.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/docker/login-action/git/refs/tags/v4.1.0`,
+      # which also matches the v4 floating tag's current target). This
+      # action receives the GHCR/GAR credentials as `password:` —
+      # downstream consumer of the token gcp-auth mints; pinning to an
+      # immutable commit is non-negotiable here too.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/google-github-actions/auth/git/refs/tags/v3.0.0`,
+      # which also matches the v3 floating tag's current target). This
+      # action mints a Google access token from the GHA OIDC JWT and is
+      # the trust hinge for GAR push — pinning to an immutable commit is
+      # non-negotiable.
+      - name: Authenticate to Google Cloud (Direct WIF)
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          token_format: access_token
+
+      - name: Log in to Google Artifact Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ${{ vars.GAR_LOCATION }}-docker.pkg.dev
+          # GAR demands the literal string "oauth2accesstoken" as the
+          # username when the password is a short-lived access token.
+          # Substituting a service-account email here fails opaquely —
+          # do not "fix" this to something more meaningful.
+          username: oauth2accesstoken
+          password: ${{ steps.gcp-auth.outputs.access_token }}
+
+      # SHA-pinned to v6.0.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/docker/metadata-action/git/refs/tags/v6.0.0`,
+      # which also matches the v6 floating tag's current target). Pinned
+      # for the same reason as login-action: runs inside the credentialled
+      # publish job and constructs the tag list that build-push-action
+      # consumes — a retargeted tag could redirect pushes.
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: |
+            ghcr.io/rxbynerd/stirrup
+            ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}
+          # Semver tagging at release time:
+          #   - {{version}}        — full vX.Y.Z (and prereleases like vX.Y.Z-rc1)
+          #   - {{major}}.{{minor}} — sliding vX.Y pointer for non-prerelease tags
+          #   - latest             — only on non-prerelease tags (hyphen-free)
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(needs.validate-tag.outputs.tag, '-') }}
+
+      # SHA-pinned to v7.1.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/docker/build-push-action/git/refs/tags/v7.1.0`,
+      # which also matches the v7 floating tag's current target). This
+      # action performs the actual push using the live GHCR + GAR
+      # credentials; pinning to an immutable commit is non-negotiable
+      # here for the same reason as gcp-auth and login-action.
+      - name: Build and push container image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ env.TAG }}
+            COMMIT=${{ steps.sha.outputs.short }}
+
   release:
     name: Publish Release
-    needs: [validate-tag, verify, build-binaries, sbom, changelog]
+    needs: [validate-tag, verify, build-binaries, sbom, changelog, publish-container]
     runs-on: ubuntu-latest
     # Only the publish step needs write access to releases. Granting it at
     # the job level (rather than the workflow level) keeps the blast radius
@@ -309,9 +443,9 @@ jobs:
       #       cosign sign-blob --yes --output-signature "${f}.sig" "$f"
       #     done
 
-      # SHA-pinned to v2.6.2. SHA verified via the GitHub API on
-      # 2026-05-02 (`gh api repos/softprops/action-gh-release/git/refs/tags/v2.6.2`,
-      # which also matches the v2 floating tag's current target). This
+      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/softprops/action-gh-release/git/refs/tags/v3.0.0`,
+      # which also matches the v3 floating tag's current target). This
       # action runs with the job-scoped `contents: write` token, making
       # it the highest-trust step in the workflow — pinning to an
       # immutable commit is non-negotiable here.

@@ -1,0 +1,118 @@
+name: Smoke Test - GAR WIF Publish
+
+# Pre-merge / pre-release sanity check for the GCP Workload Identity
+# Federation + Google Artifact Registry plumbing. Exchanges the GitHub
+# Actions OIDC token via the configured WIF provider, confirms a Google
+# access token can be minted, and verifies the federated identity has
+# read access to the target Artifact Registry repository.
+#
+# This workflow does NOT push (or pull) any container image. The actual
+# dual-publish path lives in `ci.yml::publish-container` (on main pushes)
+# and `release.yml::publish-container` (on v* tag pushes). Use this
+# workflow to discover WIF / IAM / variable misconfigurations BEFORE the
+# first production push attempts to surface them.
+#
+# Run via `gh workflow run smoke-gar-publish.yml` or the Actions UI.
+# Expected runtime ~30 seconds. Refs the dual-publish bootstrap in
+# `docs/container-publishing.md`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run only (no push). v1 always runs dry; this input is reserved for future expansion."
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  smoke-gar-wif:
+    name: GAR WIF Smoke Test
+    runs-on: ubuntu-latest
+    # Belt-and-braces fork guard, mirroring `ci.yml::publish-container`
+    # and `release.yml::publish-container`. The WIF provider's
+    # attribute-condition already pins assertion.repository, but the
+    # explicit repository check makes a fork running this workflow skip
+    # the job cleanly instead of failing on a confusing auth error.
+    if: github.repository == 'rxbynerd/stirrup'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # SHA-pinned to v3.0.0. Same pin as `ci.yml::publish-container` and
+      # `release.yml::publish-container` — must move in lockstep with
+      # those workflows. SHA verified via the GitHub API on 2026-05-10
+      # (`gh api repos/google-github-actions/auth/git/refs/tags/v3.0.0`).
+      - name: Authenticate to Google Cloud (Direct WIF)
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          token_format: access_token
+
+      # SHA-pinned to v3.0.1. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/google-github-actions/setup-gcloud/git/refs/tags/v3.0.1`,
+      # which also matches the v3 floating tag's current target). Needed
+      # so the validation step below finds a `gcloud` CLI on PATH;
+      # google-github-actions/auth only writes credentials, it does not
+      # install gcloud.
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Verify WIF auth and GAR repository access
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+          GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+        run: |
+          set -euo pipefail
+
+          echo "--- Confirming federated identity can mint an access token ---"
+          gcloud auth print-access-token >/dev/null
+          echo "OK: WIF exchange succeeded; access token minted."
+
+          echo "--- Confirming the WIF identity can describe the GAR repository ---"
+          # artifactregistry.repositories.get is a subset of the
+          # roles/artifactregistry.writer permission set bound during
+          # bootstrap. A successful describe proves the identity has at
+          # least reader-level access on the target repo without ever
+          # attempting a write.
+          gcloud artifacts repositories describe "${GAR_REPOSITORY}" \
+            --location="${GAR_LOCATION}" \
+            --project="${GCP_PROJECT_ID}" \
+            --format='value(name)'
+          echo "OK: GAR repository describe succeeded."
+
+          echo ""
+          echo "Smoke test passed. No image was pushed or pulled."
+
+      - name: Write run summary
+        if: always()
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+          GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+        run: |
+          {
+            echo "## GAR WIF smoke test"
+            echo ""
+            echo "- Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "- Project: \`${GCP_PROJECT_ID}\`"
+            echo "- Location: \`${GAR_LOCATION}\`"
+            echo "- Repository: \`${GAR_REPOSITORY}\`"
+            echo ""
+            echo "Verified:"
+            echo ""
+            echo "- GitHub Actions OIDC → GCP access-token exchange via the configured WIF provider."
+            echo "- WIF identity has at least \`artifactregistry.repositories.get\` on the target repo (subset of \`roles/artifactregistry.writer\`)."
+            echo ""
+            echo "Deliberately NOT verified (covered by the real publish workflows):"
+            echo ""
+            echo "- Container image build, multi-arch QEMU, or push to GHCR / GAR."
+          } >> "$GITHUB_STEP_SUMMARY"
