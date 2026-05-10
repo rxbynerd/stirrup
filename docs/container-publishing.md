@@ -213,6 +213,26 @@ that depend on them will fail at run time with a clear "registry
 hostname empty" or "workload identity provider empty" error — there
 is no silent fallback to a different identity.
 
+### Why we mint the access token via `gcloud` rather than the `auth` action's output
+
+The publish workflows do **not** use `google-github-actions/auth`'s
+`token_format: access_token` output to feed
+`docker/login-action`. Direct WIF deliberately has no intermediate
+service account, and the `access_token` output path requires SA
+impersonation — the action exits with "the GitHub Action workflow
+must specify a service_account to use when generating an OAuth 2.0
+Access Token" if you try. The federated `external_account` credentials
+file the action *does* write is sufficient for Google client libraries
+that consume Application Default Credentials, but `docker login`
+needs a literal bearer token. The canonical Direct-WIF pattern is
+therefore: run `auth` without `token_format`, then
+`setup-gcloud`, then `gcloud auth print-access-token` to transparently
+perform the STS exchange and emit a usable bearer token. The minting
+step pipes `::add-mask::` before writing the token to
+`GITHUB_OUTPUT` so any accidental log echo downstream is redacted by
+the runner. Upstream reference:
+[`google-github-actions/auth` — Direct Workload Identity Federation](https://github.com/google-github-actions/auth#direct-workload-identity-federation).
+
 ## Verification
 
 After the first `main` push merges with the new workflow, confirm the
