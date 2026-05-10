@@ -16,9 +16,9 @@ single `RunConfig`.
   plane (or a developer) per task and exit on completion. No long-running
   state, no in-process session store, no cross-tenant memory.
 - **Pure-function core.** The agentic loop depends only on interfaces;
-  every concrete implementation is injected by `core.BuildLoop`. Replace
-  the provider, swap the executor, plug in a new edit strategy without
-  touching the loop.
+  every concrete implementation is injected by `core.BuildLoop`. The
+  provider, executor, or edit strategy can be swapped without touching
+  the loop.
 - **Use the LLM only when judgement is needed.** The loop is a state
   machine with LLM calls at decision points, not an LLM with code bolted
   on. Edits, file I/O, command dispatch, permission gates, git, and
@@ -98,7 +98,7 @@ single `RunConfig`.
 
 - Go **1.26.2+** (matches the Dockerfile build image).
 - An `ANTHROPIC_API_KEY` env var for the default Anthropic provider, or
-  any other provider's credentials (see [`docs/providers`](#providers)).
+  any other provider's credentials (see [`docs/providers.md`](docs/providers.md)).
 
 ### Build from source
 
@@ -109,7 +109,7 @@ go build -o stirrup ./harness/cmd/stirrup
 go build -o stirrup-eval ./eval/cmd/eval
 ```
 
-`just build` is the same thing without typing the paths.
+`just build` is equivalent.
 
 ### Run
 
@@ -273,11 +273,11 @@ metrics throughout.
 | 12 | `TraceEmitter` | `jsonl`, `otel` (OTLP/gRPC or OTLP/HTTP) |
 | 13 | `GuardRail` | `none`, `granite-guardian` (vLLM), `cloud-judge`, `composite` |
 
-Whichever edit strategy you pick, the factory wraps it with the
+Whichever edit strategy is selected, the factory wraps it with the
 post-edit code scanner — so a `block` finding rolls the write back
 without the inner strategy needing to know about it. The eval framework
-ships replay doubles for `ProviderAdapter` and `Executor` as well; those
-are only reachable via the eval CLI, not selectable through `RunConfig`.
+ships replay doubles for `ProviderAdapter` and `Executor` as well; these
+are reachable only via the eval CLI, not through `RunConfig`.
 
 The core loop is a pure function of these interfaces. All dependencies
 are injected via `core.BuildLoop` / `core.BuildLoopWithTransport`, which
@@ -287,17 +287,17 @@ construct concrete components from a `RunConfig`. See
 
 ## Safety rings
 
-Stirrup composes five deterministic, agent-uncircumventable controls:
+Stirrup composes five deterministic controls that the agent cannot circumvent:
 
-1. **Container runtime class** — opt into `runsc` (gVisor) or `kata*`
-   for kernel-level isolation when the host daemon supports it.
+1. **Container runtime class** — `runsc` (gVisor) or `kata*` provide
+   kernel-level isolation when the host daemon supports them.
 2. **Egress allowlist** — `network.mode: "allowlist"` starts an
    in-process forward proxy on the host network namespace; the container
    sees only `HTTP_PROXY` / `HTTPS_PROXY` and well-formed CONNECTs to
    approved FQDNs (with SNI verification) get through.
 3. **Cedar policy engine** — `.cedar` policy file evaluated per tool
    call, with a configurable non-policy-engine fallback for no-decision
-   cases. Starter policies in [`examples/policies/`](examples/policies/).
+   cases. Starter policies live in [`examples/policies/`](examples/policies/).
 4. **Rule of Two** — `ValidateRunConfig` rejects RunConfigs that hold
    untrusted input + sensitive data + external communication
    simultaneously unless explicitly overridden, in which case a

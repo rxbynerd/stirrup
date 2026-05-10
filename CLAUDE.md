@@ -115,7 +115,7 @@ Requires `ANTHROPIC_API_KEY` environment variable.
 | `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
 
 Precedence: `--config` file → explicit flags → defaults. Flags left at
-their default value do NOT override the file. The default edit strategy
+their default value do *not* override the file. The default edit strategy
 is `multi`; legacy tool names (`write_file`, `search_replace`,
 `apply_diff`) in `tools.builtIn` are aliased to the multi-strategy's
 `edit_file` tool by `core/factory.go::editToolEnabled`.
@@ -162,7 +162,7 @@ go build -o stirrup-eval ./eval/cmd/eval
 10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null for sub-agents)
 11. **GitStrategy** — manages branches/commits (none, deterministic)
 12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry)
-13. **GuardRail** — LLM-based safety classifier at three loop intervention points: pre-turn (untrusted content), pre-tool (proposed tool calls), post-turn (assistant text). Adapters: none, granite-guardian (vLLM), composite, cloud-judge. See `docs/guardrails.md`.
+13. **GuardRail** — LLM-based safety classifier at three loop intervention points: pre-turn (untrusted content), pre-tool (proposed tool calls), post-turn (assistant text). Adapters: none, granite-guardian (vLLM), cloud-judge, composite. See [`docs/guardrails.md`](docs/guardrails.md).
 
 The core loop is a pure function of its interfaces. All dependencies are injected via the factory (`core.BuildLoop` / `core.BuildLoopWithTransport`), which constructs components from a `RunConfig`.
 
@@ -194,7 +194,7 @@ The container executor (`executor/container.go`, `executor/container_api.go`) us
 
 Both Docker and Podman implement the same Engine API, so the executor works transparently with either runtime. Socket auto-detection order: `DOCKER_HOST` env var, `/var/run/docker.sock`, `$XDG_RUNTIME_DIR/podman/podman.sock`, `/var/run/podman/podman.sock`.
 
-Container lifecycle: created at executor init with `sleep infinity`, all operations go through exec or archive API, destroyed on `Close()`. Hardened with `CapDrop: ALL`, `no-new-privileges`, `NetworkMode: none` by default. API keys never enter the container.
+Container lifecycle: created at executor init with `sleep infinity`; operations go through the exec or archive API; destroyed on `Close()`. Hardened with `CapDrop: ALL`, `no-new-privileges`, `NetworkMode: none` by default. API keys never enter the container.
 
 ### MCP client
 
@@ -251,9 +251,9 @@ Generated code lives in `gen/` (a separate Go module in the workspace). Buf conf
 
 ### Eval framework
 
-Packages under `eval/`: `spec` (HCLv2 suite loader — `.hcl` only, JSON removed), `judge` (test-command / file-exists / file-contains / composite), `runner` (suite executor with bounded concurrency + replay evaluator), `reporter` (regression/improvement diffs), `lakehouse` (file-backed `TraceLakehouse`). CLI subcommands: `run`, `compare`, `baseline`, `mine-failures`, `drift`, `compare-to-production`, `convert` (JUnit XML).
+Packages under `eval/`: `spec` (HCLv2 suite loader — `.hcl` only, JSON removed), `judge` (test-command, file-exists, file-contains, composite), `runner` (suite executor with bounded concurrency + replay evaluator), `reporter` (regression/improvement diffs), `lakehouse` (file-backed `TraceLakehouse`). CLI subcommands: `run`, `compare`, `baseline`, `mine-failures`, `drift`, `compare-to-production`, `convert` (JUnit XML).
 
-Key invariants: `eval run --suite` requires a `.hcl` extension. `mine-failures` output is canonical HCL loadable without conversion. Drift exits 1 on pass-rate drops >5pp or turn increases >20%.
+Key invariants: `eval run --suite` requires a `.hcl` extension. `mine-failures` output is canonical HCL loadable without conversion. Drift exits 1 on pass-rate drops greater than 5 percentage points or turn increases greater than 20%.
 
 Full reference: [`docs/eval.md`](docs/eval.md).
 

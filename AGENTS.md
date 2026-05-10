@@ -86,68 +86,68 @@ Requires `ANTHROPIC_API_KEY` environment variable for the default Anthropic prov
 
 13 swappable components, all interface-based:
 
-1. **ProviderAdapter** - streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini via Vertex AI)
-2. **ModelRouter** - selects provider+model per turn (static, per-mode, dynamic)
-3. **PromptBuilder** - assembles system prompt (default per-mode templates, composed fragments, overrides)
-4. **ContextStrategy** - manages message history (sliding window, summarise, offload-to-file)
-5. **ToolRegistry** - resolves and dispatches tools (7 built-in runtime tools + MCP remote tools)
-6. **Executor** - sandboxed file I/O and command execution (local, container, API, replay)
-7. **EditStrategy** - how file changes are applied (whole-file, search-replace, udiff, multi-strategy)
-8. **Verifier** - validates run output (none, test-runner, composite, llm-judge)
-9. **PermissionPolicy** - gates side-effecting tools (allow-all, deny-side-effects, ask-upstream, policy-engine/Cedar)
-10. **Transport** - streams events to/from control plane (stdio, gRPC bidi streaming, null)
-11. **GitStrategy** - manages branches/commits (none, deterministic)
-12. **TraceEmitter** - records telemetry (JSONL, OpenTelemetry OTLP/gRPC or OTLP/HTTP)
-13. **GuardRail** - LLM-based content safety classifier at pre-turn, pre-tool, and post-turn hooks (none, granite-guardian, cloud-judge, composite)
+1. **ProviderAdapter** — streams completions from LLMs (Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini via Vertex AI)
+2. **ModelRouter** — selects provider+model per turn (static, per-mode, dynamic)
+3. **PromptBuilder** — assembles system prompt (default per-mode templates, composed fragments, overrides)
+4. **ContextStrategy** — manages message history (sliding window, summarise, offload-to-file)
+5. **ToolRegistry** — resolves and dispatches tools (7 built-in runtime tools + MCP remote tools)
+6. **Executor** — sandboxed file I/O and command execution (local, container, API, replay)
+7. **EditStrategy** — how file changes are applied (whole-file, search-replace, udiff, multi-strategy)
+8. **Verifier** — validates run output (none, test-runner, composite, llm-judge)
+9. **PermissionPolicy** — gates side-effecting tools (allow-all, deny-side-effects, ask-upstream, policy-engine/Cedar)
+10. **Transport** — streams events to/from control plane (stdio, gRPC bidi streaming, null)
+11. **GitStrategy** — manages branches/commits (none, deterministic)
+12. **TraceEmitter** — records telemetry (JSONL, OpenTelemetry OTLP/gRPC or OTLP/HTTP)
+13. **GuardRail** — LLM-based content safety classifier at pre-turn, pre-tool, and post-turn hooks (none, granite-guardian, cloud-judge, composite)
 
 The core loop is a pure function of its interfaces. All dependencies are injected via the factory (`core.BuildLoop` / `core.BuildLoopWithTransport`), which constructs components from a `RunConfig`.
 
-### Provider Adapters
+### Provider adapters
 
-- **Anthropic** (`provider/anthropic.go`) - SSE streaming via `net/http` + `bufio.Scanner`. Hand-rolled, no SDK dependency.
-- **Bedrock** (`provider/bedrock.go`) - AWS ConverseStream API via `aws-sdk-go-v2`. Auth is IAM, with optional credential federation.
-- **OpenAI-compatible** (`provider/openai.go`) - OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure OpenAI, vLLM, Ollama via configurable `baseURL`.
-- **OpenAI Responses** (`provider/openai_responses.go`) - OpenAI Responses API (`POST /v1/responses`) streaming. Distinct wire format from Chat Completions: top-level `instructions`, typed `input[]` items, flat tool schema, `max_output_tokens`, explicit `store: false`, and named SSE events. Selected explicitly via `provider.type: "openai-responses"` - no auto-detection between the two OpenAI adapters.
-- **Gemini via Vertex AI** (`provider/gemini.go`) - Vertex AI `:streamGenerateContent` with `?alt=sse`. SSE-framed, hand-rolled HTTP. Auth is GCP IAM via Application Default Credentials or a service account key. Synthesises tool-call IDs and remaps `finishReason: STOP` to `tool_use` when the stream emitted function calls.
+- **Anthropic** (`provider/anthropic.go`) — SSE streaming via `net/http` + `bufio.Scanner`. Hand-rolled, no SDK dependency.
+- **Bedrock** (`provider/bedrock.go`) — AWS ConverseStream API via `aws-sdk-go-v2`. Auth is IAM, with optional credential federation.
+- **OpenAI-compatible** (`provider/openai.go`) — OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure OpenAI, vLLM, Ollama via configurable `baseURL`.
+- **OpenAI Responses** (`provider/openai_responses.go`) — OpenAI Responses API (`POST /v1/responses`) streaming. Distinct wire format from Chat Completions: top-level `instructions`, typed `input[]` items, flat tool schema, `max_output_tokens`, explicit `store: false`, and named SSE events. Selected explicitly via `provider.type: "openai-responses"` — no auto-detection between the two OpenAI adapters.
+- **Gemini via Vertex AI** (`provider/gemini.go`) — Vertex AI `:streamGenerateContent` with `?alt=sse`. SSE-framed, hand-rolled HTTP. Auth is GCP IAM via Application Default Credentials or a service account key. Synthesises tool-call IDs and remaps `finishReason: STOP` to `tool_use` when the stream emitted function calls.
 
 See [`docs/providers.md`](docs/providers.md) for full per-adapter configuration details.
 
-### Container Executor
+### Container executor
 
-The container executor (`executor/container.go`, `executor/container_api.go`) uses the Docker Engine REST API directly over a Unix socket, with zero Docker SDK dependency. Docker and Podman are both supported through the Engine API.
+The container executor (`executor/container.go`, `executor/container_api.go`) uses the Docker Engine REST API directly over a Unix socket, with no Docker SDK dependency. Docker and Podman are both supported through the Engine API.
 
-Container lifecycle: created at executor init with `sleep infinity`, all operations go through exec or archive API, destroyed on `Close()`. Hardened with `CapDrop: ALL`, `no-new-privileges`, and `NetworkMode: none` by default. API keys never enter the container.
+Container lifecycle: created at executor init with `sleep infinity`; operations go through the exec or archive API; destroyed on `Close()`. Hardened with `CapDrop: ALL`, `no-new-privileges`, and `NetworkMode: none` by default. API keys never enter the container.
 
-### MCP Client
+### MCP client
 
 The MCP client (`mcp/client.go`) connects to remote MCP servers via Streamable HTTP transport (JSON-RPC 2.0 over HTTP POST). Remote-only by design. Tool names are prefixed as `mcp_{serverName}_{toolName}` to avoid collisions.
 
-### gRPC Transport
+### gRPC transport
 
 The gRPC transport (`transport/grpc.go`) implements the `Transport` interface as an outbound bidi streaming client. Proto definitions are in `proto/harness/v1/harness.proto`, generated with Buf (`buf generate`). The harness connects to the control plane, not the other way around.
 
-### API Executor
+### API executor
 
-The API executor (`executor/api.go`) implements the `Executor` interface for read-only modes backed by the GitHub REST API Contents endpoint. `ReadFile` and `ListDirectory` work; `WriteFile` and `Exec` return errors.
+The API executor (`executor/api.go`) implements the `Executor` interface for read-only modes, backed by the GitHub REST API Contents endpoint. `ReadFile` and `ListDirectory` work; `WriteFile` and `Exec` return errors.
 
-### K8s Job Entrypoint
+### K8s job entrypoint
 
 `stirrup job` dials the control plane at `CONTROL_PLANE_ADDR` via gRPC, emits a `ready` event, blocks until a `task_assignment` arrives, then runs the agentic loop over the pre-established transport using `BuildLoopWithTransport`.
 
-### Eval Framework
+### Eval framework
 
-- **Judge** (`eval/judge/`) - evaluates `EvalJudge` criteria against workspace state. Supports `test-command`, `file-exists`, `file-contains`, and `composite`.
-- **Runner** (`eval/runner/`) - loads `EvalSuite` HCL (`.hcl` only — JSON was removed), creates temp workspaces, optionally clones repos, invokes the harness binary, parses JSONL traces, and applies judges. Supports bounded concurrency.
-- **Replay evaluator** (`eval/runner/replay.go`) - re-evaluates recorded runs through judges without re-running the harness.
-- **Reporter** (`eval/reporter/`) - diffs two `SuiteResult` sets and formats human-readable reports.
-- **Lakehouse** (`eval/lakehouse/filestore.go`) - file-backed `TraceLakehouse` adapter for production trace metrics and recordings.
+- **Judge** (`eval/judge/`) — evaluates `EvalJudge` criteria against workspace state. Supports `test-command`, `file-exists`, `file-contains`, and `composite`.
+- **Runner** (`eval/runner/`) — loads `EvalSuite` HCL (`.hcl` only — JSON was removed), creates temp workspaces, optionally clones repos, invokes the harness binary, parses JSONL traces, and applies judges. Supports bounded concurrency.
+- **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness.
+- **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets and formats human-readable reports.
+- **Lakehouse** (`eval/lakehouse/filestore.go`) — file-backed `TraceLakehouse` adapter for production trace metrics and recordings.
 
-### Credential Federation
+### Credential federation
 
 The `credential` package (`credential/`) provides cross-cloud authentication through a two-tier abstraction:
 
-- **TokenSource** - fetches identity tokens from the runtime environment (GKE Workload Identity metadata server, k8s projected volumes, environment variable, AWS IRSA, Azure IMDS, GitHub Actions OIDC).
-- **credential.Source** - exchanges identity tokens (or resolves static secrets) into provider-specific credentials. Implementations include `StaticSource`, `WebIdentityAWSSource`, `AnthropicWIFSource`, `AzureWorkloadIdentitySource`, and GCP-native paths.
+- **TokenSource** — fetches identity tokens from the runtime environment (GKE Workload Identity metadata server, k8s projected volumes, environment variable, AWS IRSA, Azure IMDS, GitHub Actions OIDC).
+- **credential.Source** — exchanges identity tokens (or resolves static secrets) into provider-specific credentials. Implementations include `StaticSource`, `WebIdentityAWSSource`, `AnthropicWIFSource`, `AzureWorkloadIdentitySource`, and GCP-native paths.
 
 The `BearerToken` closure returned by `Resolved.BearerToken` is called on every provider request — tokens are refreshed without restarting the run. See [`docs/credential-federation.md`](docs/credential-federation.md), [`docs/anthropic-wif.md`](docs/anthropic-wif.md), and [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md).
 

@@ -93,7 +93,7 @@ Key implementation notes:
 
 - **ADC only in production.** Application Default Credentials are the
   default; user-mode `gcloud` credentials are explicitly rejected
-  (autonomy invariant — a personal gcloud login should not drive
+  (autonomy invariant — a personal `gcloud` login must not drive
   production workloads).
 - **Tool-call ID synthesis.** Vertex does not echo IDs through
   `functionResponse`, so the adapter synthesises them:
@@ -116,7 +116,7 @@ AI Studio direct support.
 
 | Field | Default | Notes |
 |---|---|---|
-| `provider.gcpProject` | (required) | GCP project hosting the Vertex AI usage. |
+| `provider.gcpProject` | (none) | GCP project hosting the Vertex AI usage. Required when `--provider=gemini`. |
 | `provider.gcpLocation` | `global` | Vertex AI location: `global` or a region like `us-central1`. |
 | `provider.gcpCredentialsFile` | (none) | Path to a service account JSON key. When set, implies `gcp-service-account`. Otherwise falls back to ADC. |
 | `provider.credential.type` | inferred | `gcp-default` (ADC), `gcp-service-account` (key file), or `gcp-workload-identity` (GKE/GCE metadata). |
@@ -124,7 +124,7 @@ AI Studio direct support.
 See `examples/runconfig/vertex-gemini.json` and
 `examples/runconfig/vertex-gemini-wif.json`.
 
-## Cross-cutting: credential federation
+## Credential federation
 
 All five providers consume credentials through `credential.Source.Resolve()`,
 which returns a `Resolved` value with either a static secret or a
