@@ -238,6 +238,21 @@ the runner. Upstream reference:
 After the first `main` push merges with the new workflow, confirm the
 dual-publish worked end to end.
 
+### 0. (Optional) Run the smoke workflow on `main`
+
+The smoke workflow at `.github/workflows/smoke-gar-publish.yml` mints
+a federated access token and runs `gcloud artifacts repositories
+describe` against the target repo without pushing or pulling any
+image. Dispatch with `gh workflow run smoke-gar-publish.yml --ref
+main`. It is the fastest way to confirm the WIF provider, IAM
+bindings, and access-token minting path are healthy after a provider
+rotation, IAM rebind, or after editing the `auth` / `setup-gcloud` /
+token-minting steps in `ci.yml` / `release.yml`. Note that it can
+only be dispatched from main or a v* tag (the same WIF
+`attributeCondition` that gates the real publish path also gates the
+smoke). This is intentional, and means pre-merge verification of
+auth-surface changes on a feature branch is infeasible by design.
+
 ### 1. Confirm the image landed in GAR
 
 ```sh

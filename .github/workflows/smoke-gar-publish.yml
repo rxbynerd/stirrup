@@ -15,6 +15,19 @@ name: Smoke Test - GAR WIF Publish
 # Run via `gh workflow run smoke-gar-publish.yml` or the Actions UI.
 # Expected runtime ~30 seconds. Refs the dual-publish bootstrap in
 # `docs/container-publishing.md`.
+#
+# The workflow can only be successfully dispatched from `main` (or a
+# `v*` tag); the WIF provider's `attributeCondition` restricts token
+# issuance to those refs and rejects dispatches from feature branches
+# with `unauthorized_client: The given credential is rejected by the
+# attribute condition.`. This is intentional — the same condition
+# stops an attacker who lands a malicious workflow on a feature branch
+# from minting a token. To verify a change that touches the WIF auth
+# path (the `auth` / `setup-gcloud` / token-minting steps here or in
+# `ci.yml`/`release.yml`), merge fix-forward to `main` (failure mode
+# is fail-closed: the existing GHCR publish is unaffected by a broken
+# GAR auth step) and run `gh workflow run smoke-gar-publish.yml
+# --ref main` immediately as the first verification.
 
 on:
   workflow_dispatch:
