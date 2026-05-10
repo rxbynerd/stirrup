@@ -443,9 +443,9 @@ jobs:
       #       cosign sign-blob --yes --output-signature "${f}.sig" "$f"
       #     done
 
-      # SHA-pinned to v2.6.2. SHA verified via the GitHub API on
-      # 2026-05-02 (`gh api repos/softprops/action-gh-release/git/refs/tags/v2.6.2`,
-      # which also matches the v2 floating tag's current target). This
+      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
+      # 2026-05-10 (`gh api repos/softprops/action-gh-release/git/refs/tags/v3.0.0`,
+      # which also matches the v3 floating tag's current target). This
       # action runs with the job-scoped `contents: write` token, making
       # it the highest-trust step in the workflow — pinning to an
       # immutable commit is non-negotiable here.
