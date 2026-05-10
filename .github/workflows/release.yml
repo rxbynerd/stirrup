@@ -383,7 +383,31 @@ jobs:
       # action performs the actual push using the live GHCR + GAR
       # credentials; pinning to an immutable commit is non-negotiable
       # here for the same reason as gcp-auth and login-action.
+      #
+      # `id: docker-push` exposes the pushed multi-arch manifest digest
+      # to downstream steps as `steps.docker-push.outputs.digest`. The
+      # Phase 2 `gcloud artifacts sbom load --uri` calls require the
+      # digest form of the image URI (tag form is rejected); the
+      # digest is the only stable handle that pins an SBOM to the
+      # exact manifest that was pushed.
+      #
+      # `sbom: true` instructs buildx to attach an SBOM as an OCI
+      # in-toto attestation alongside the image. This is NOT a
+      # substitute for the `gcloud artifacts sbom load` calls below —
+      # the two serve different consumers:
+      #
+      #   * OCI attestation (sbom: true) — read by cosign/syft
+      #     directly off the registry. Useful for ad-hoc image
+      #     inspection and downstream tools that follow the
+      #     SLSA / in-toto attestation chain.
+      #   * Container Analysis occurrence (`sbom load`) — queryable
+      #     via `gcloud artifacts sbom list` and consumed by Artifact
+      #     Analysis's vulnerability scanner. The format the GCP
+      #     console and Phase 3 vulnerability gate will read.
+      #
+      # Both ship; neither is redundant.
       - name: Build and push container image
+        id: docker-push
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
         with:
           context: .
@@ -392,6 +416,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
           build-args: |
             VERSION=${{ env.TAG }}
             COMMIT=${{ steps.sha.outputs.short }}
