@@ -433,9 +433,12 @@ gcloud artifacts sbom list \
 ```
 
 Expect two rows — one SPDX, one CycloneDX — both pointing at the
-same digest the release workflow pushed. A single row means one of
-the two upload steps failed silently and merits a re-dispatch of
-`release.yml` against the tag.
+same digest the release workflow pushed. A single row means one
+upload step errored: the `sbom load` script runs under
+`set -euo pipefail`, so a non-zero `gcloud` exit surfaces a workflow
+failure rather than failing silently. Check the `publish-container`
+job in the release run for the failed step, then re-dispatch
+`release.yml` against the tag once the cause is resolved.
 
 For cross-checking: `grype sbom:stirrup-vX.Y.Z.image.spdx.json`
 locally (against the file the workflow uploaded) produces the same
