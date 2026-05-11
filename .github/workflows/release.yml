@@ -706,11 +706,14 @@ jobs:
       # severity-bucket counts (total + fixable), persist the raw
       # JSON for downstream steps, and emit step outputs.
       #
-      # A zero-occurrence response from `gcloud` produces an empty
-      # stdout, which `jq` accepts when piped through `[inputs] |
-      # add // []`. The `|| echo "[]"` belt-and-braces handles the
-      # case where gcloud itself exits non-zero on a clean image
-      # (observed historically with some occurrence kinds).
+      # A zero-occurrence response from `gcloud` produces empty
+      # stdout; the redirect creates an empty file. The `! -s` check
+      # below writes `[]` so that the subsequent `jq` invocation
+      # always receives valid JSON rather than an empty file. The
+      # earlier `if [ "$RC" -ne 0 ]` branch handles the case where
+      # gcloud itself exits non-zero on a clean image (observed
+      # historically with some occurrence kinds) by writing `[]`
+      # before the size check runs.
       - name: Query vulnerability occurrences
         id: vulnerabilities
         run: |
