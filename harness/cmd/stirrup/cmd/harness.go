@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -50,12 +51,41 @@ func readPromptFile(path string) (string, error) {
 	if info.IsDir() {
 		return "", fmt.Errorf("reading --prompt-file %q: is a directory", path)
 	}
+	// Reject character devices, named pipes (FIFOs), Unix sockets, and
+	// every other non-regular file type. `os.Stat` reports Size()==0
+	// for FIFOs and char devices on both Linux and macOS, which would
+	// otherwise sail past the size cap below. The concrete failure
+	// modes that this guard closes are:
+	//   - /dev/zero or an unwritten FIFO: ReadAll blocks forever and
+	//     the harness hangs at startup.
+	//   - A FIFO pre-loaded with >10 MiB: all of it is read into memory
+	//     before the post-read cap check trips.
+	// The IsDir() guard above does not cover these; IsDir() is false
+	// for devices and FIFOs.
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("reading --prompt-file %q: not a regular file", path)
+	}
 	if info.Size() > maxPromptFileBytes {
 		return "", fmt.Errorf("reading --prompt-file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxPromptFileBytes)
 	}
-	data, err := os.ReadFile(clean)
+	// Bounded read via io.LimitReader. Belt-and-braces alongside the
+	// stat-time size check above: closes the TOCTOU window where the
+	// file grows between os.Stat and the open call, and provides a
+	// second line of defence if a future refactor accidentally drops
+	// the IsRegular() guard. The +1 byte over the cap lets us
+	// distinguish "exactly at the cap" from "larger than the cap" so
+	// the operator-facing error is accurate.
+	f, err := os.Open(clean)
 	if err != nil {
 		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxPromptFileBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
+	}
+	if int64(len(data)) > maxPromptFileBytes {
+		return "", fmt.Errorf("reading --prompt-file %q: exceeds %d byte cap", path, maxPromptFileBytes)
 	}
 	// Trim only trailing CR/LF so `echo "prompt" > file` and
 	// `printf 'prompt\n' > file` both produce the same string. Leading
