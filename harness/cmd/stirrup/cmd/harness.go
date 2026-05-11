@@ -932,7 +932,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if cfg.Prompt == "" {
-			return fmt.Errorf("prompt is required: set in --config file, pass as argument, --prompt flag, --prompt-file flag, or STIRRUP_PROMPT env var")
+			return fmt.Errorf("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
 		}
 		if err := types.ValidateRunConfig(cfg); err != nil {
 			return fmt.Errorf("invalid config from %q: %w", configPath, err)
@@ -966,7 +966,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if prompt == "" {
-		return fmt.Errorf("prompt is required: set in --config file, pass as argument, --prompt flag, --prompt-file flag, or STIRRUP_PROMPT env var")
+		return fmt.Errorf("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
 	}
 
 	mode, _ := f.GetString("mode")
