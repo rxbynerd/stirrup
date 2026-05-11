@@ -280,6 +280,18 @@ jobs:
       contents: read
       id-token: write
       packages: write
+    # The digest of the pushed multi-arch manifest is exposed as a
+    # job-level output so downstream jobs (vulnerability-gate) can
+    # construct the digest-form image URI. Container Analysis APIs
+    # (`gcloud artifacts docker images list --show-occurrences`,
+    # `gcloud artifacts sbom load --uri`) require digest form because
+    # vulnerability and SBOM occurrences must bind to a specific
+    # manifest — a tag can move, a digest cannot. The within-job
+    # `steps.docker-push.outputs.digest` consumer in this job
+    # (the `sbom load` calls below) is unchanged; the output is purely
+    # additive for cross-job consumption.
+    outputs:
+      digest: ${{ steps.docker-push.outputs.digest }}
     env:
       TAG: ${{ needs.validate-tag.outputs.tag }}
     steps:
