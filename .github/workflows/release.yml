@@ -5,14 +5,20 @@ name: Release
 # leaves the release incomplete and re-tagging would be heavy-handed).
 #
 # Pipeline (DAG via `needs:` — fan-out after verify):
-#   validate-tag      → resolves and validates the input/ref tag once
-#   verify            → reuses _verify.yml — the tagged SHA must pass tests
-#   build-binaries    → matrix of GOOS/GOARCH cells, archives + SHA-256  ┐ parallel
-#   sbom              → SPDX + CycloneDX from anchore/sbom-action         │ after
-#   changelog         → git log since the previous tag                    │ verify
-#   publish-container → multi-arch image pushed to GHCR + GAR             ┘
-#                       + image SBOM uploaded to Artifact Analysis
-#   release           → aggregates SHA256SUMS and creates the GitHub Release
+#   validate-tag        → resolves and validates the input/ref tag once
+#   verify              → reuses _verify.yml — the tagged SHA must pass tests
+#   build-binaries      → matrix of GOOS/GOARCH cells, archives + SHA-256  ┐ parallel
+#   sbom                → SPDX + CycloneDX from anchore/sbom-action         │ after
+#   changelog           → git log since the previous tag                    │ verify
+#   publish-container   → multi-arch image pushed to GHCR + GAR             ┘
+#                         + image SBOM uploaded to Artifact Analysis
+#   vulnerability-gate  → Phase 3: queries Artifact Analysis for vulns on
+#                         the pushed digest, emits a summary, and files a
+#                         tracking issue on CRITICAL+fixable findings.
+#                         Currently WARN-only (not in `release.needs`);
+#                         see docs/container-publishing.md for promotion
+#                         path.
+#   release             → aggregates SHA256SUMS and creates the GitHub Release
 
 on:
   push:
