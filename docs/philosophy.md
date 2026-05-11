@@ -1,4 +1,4 @@
-## Philisophy
+# Philosophy
 
 **A pure-function core.** The agentic loop depends only on
 interfaces. Thirteen components — provider, router, prompt, context

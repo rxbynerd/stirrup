@@ -8,16 +8,16 @@ excellent local experiences, providing trend-setting TUIs or
 comprehensive IDE integration. Any kind of API/RPC channel is an
 afterthought, often just to support a desktop client.
 
-Stirrup is intentionally designed and built from the ground up with the following tenants in mind:
+Stirrup is intentionally designed and built from the ground up with the following tenets in mind:
 
 - **Production-grade safety** provided by [a comprehensive set of rings](docs/safety-rings.md), designed to provide defence-in-depth security.
 - **Autonomous operation** via [a gRPC interface](proto/harness/v1/harness.proto), allowing remote control & management of the coding harness.
 - **Composability** via [a single declarative `RunConfig`](docs/configuration.md), allowing easy swapping of components without modifying the loop.
-- [**Evaluations**](docs/eval.md) as a first-class feature, supporting both Stirrup's development, and for Stirrup's use-cases.
+- [**Evaluations**](docs/eval.md) as a first-class feature, supporting both Stirrup's development and its use-cases.
 
 ## Quick start
 
-Stirrup has main modes of operation:
+Stirrup has two main modes of operation:
 
 - `stirrup harness` is for local/one-off tasks that do not require a control plane.
 - `stirrup job` connects to the control plane given at `CONTROL_PLANE_ADDR`, intended to be deployed as a Kubernetes `Job`.
@@ -53,7 +53,7 @@ OPENAI_KEY="$(op read "op://Private/qeu6gafabhkpsm6hhzattx6p4m/credential")" ./s
 
 ### In GitHub Actions
 
-See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.yml) for an example of using `stirrup harness` in a GitHub Actions workflow via [Anthropic Workflow Identity Federation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation).
+See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.yml) for an example of using `stirrup harness` in a GitHub Actions workflow via [Anthropic Workload Identity Federation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation).
 
 ## Documentation
 
