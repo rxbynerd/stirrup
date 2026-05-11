@@ -738,7 +738,19 @@ jobs:
           # `package_vulnerability_summary.vulnerabilities` map keyed
           # by severity. Some installs return a flat `vulnerability`
           # array instead — handle both shapes defensively.
-          jq '
+          #
+          # SF-1: wrap the jq normalisation in an error guard. If the
+          # raw JSON is malformed (partial gcloud response on a
+          # transient error), bailing mid-step under `set -euo pipefail`
+          # would skip the `$GITHUB_OUTPUT` writes — downstream `if:`
+          # conditions that compare against `''` would then evaluate
+          # `'' != '0'` as true and fire the issue-creation step with
+          # an empty table. Emit a warning, fall back to an empty
+          # normalised set, and surface `parse_error=true` so the
+          # summary step can render "parse_error" instead of a
+          # misleading zero table.
+          PARSE_ERROR=false
+          if ! jq '
             def normalise:
               if type == "array" then .
               elif type == "object" then [.]
@@ -755,7 +767,12 @@ jobs:
                  else [] end
                | .[])
             ]
-          ' vulnerabilities.json > vulnerabilities.normalised.json
+          ' vulnerabilities.json > vulnerabilities.normalised.json 2>/tmp/jq-stderr; then
+            echo "::warning::jq normalisation failed; defaulting all counts to -1 (data absent, not zero)"
+            cat /tmp/jq-stderr || true
+            PARSE_ERROR=true
+            echo "[]" > vulnerabilities.normalised.json
+          fi
 
           count_by_sev() {
             local sev="$1"
@@ -766,12 +783,25 @@ jobs:
             jq --arg sev "$sev" '[.[] | select(((.severity // .vulnerability.severity // "") | ascii_upcase) == $sev) | select((.fixAvailable // .vulnerability.fixAvailable // false) == true)] | length' vulnerabilities.normalised.json
           }
 
-          CRITICAL=$(count_by_sev CRITICAL)
-          CRITICAL_FIXABLE=$(count_fixable CRITICAL)
-          HIGH=$(count_by_sev HIGH)
-          HIGH_FIXABLE=$(count_fixable HIGH)
-          MEDIUM=$(count_by_sev MEDIUM)
-          LOW=$(count_by_sev LOW)
+          if [ "${PARSE_ERROR}" = "true" ]; then
+            # `-1` is structurally distinguishable from "0 findings on a
+            # clean image" downstream — the summary step renders
+            # `parse_error` and the issue-creation `if:` will still match
+            # `!= '0'`, but the body explicitly notes data is absent.
+            CRITICAL=-1
+            CRITICAL_FIXABLE=-1
+            HIGH=-1
+            HIGH_FIXABLE=-1
+            MEDIUM=-1
+            LOW=-1
+          else
+            CRITICAL=$(count_by_sev CRITICAL)
+            CRITICAL_FIXABLE=$(count_fixable CRITICAL)
+            HIGH=$(count_by_sev HIGH)
+            HIGH_FIXABLE=$(count_fixable HIGH)
+            MEDIUM=$(count_by_sev MEDIUM)
+            LOW=$(count_by_sev LOW)
+          fi
 
           {
             echo "critical_count=${CRITICAL}"
@@ -780,9 +810,10 @@ jobs:
             echo "high_fixable_count=${HIGH_FIXABLE}"
             echo "medium_count=${MEDIUM}"
             echo "low_count=${LOW}"
+            echo "parse_error=${PARSE_ERROR}"
           } >> "$GITHUB_OUTPUT"
 
-          echo "critical=${CRITICAL} (fixable=${CRITICAL_FIXABLE}) high=${HIGH} (fixable=${HIGH_FIXABLE}) medium=${MEDIUM} low=${LOW}"
+          echo "critical=${CRITICAL} (fixable=${CRITICAL_FIXABLE}) high=${HIGH} (fixable=${HIGH_FIXABLE}) medium=${MEDIUM} low=${LOW} parse_error=${PARSE_ERROR}"
 
       # Markdown summary runs unconditionally so the calibration data
       # is visible in the Actions UI even when the gate has nothing to
@@ -797,8 +828,28 @@ jobs:
           HIGH_FIXABLE: ${{ steps.vulnerabilities.outputs.high_fixable_count }}
           MEDIUM: ${{ steps.vulnerabilities.outputs.medium_count }}
           LOW: ${{ steps.vulnerabilities.outputs.low_count }}
+          PARSE_ERROR: ${{ steps.vulnerabilities.outputs.parse_error }}
         run: |
           set -euo pipefail
+          # SF-1: when jq normalisation failed, counts were defaulted to
+          # `-1` upstream so we can distinguish "data absent" from
+          # "clean image with zero findings." Render `parse_error` in
+          # the table cells rather than a misleading `-1`.
+          if [ "${PARSE_ERROR:-false}" = "true" ]; then
+            CRITICAL_CELL="parse_error"
+            CRITICAL_FIXABLE_CELL="parse_error"
+            HIGH_CELL="parse_error"
+            HIGH_FIXABLE_CELL="parse_error"
+            MEDIUM_CELL="parse_error"
+            LOW_CELL="parse_error"
+          else
+            CRITICAL_CELL="${CRITICAL:-?}"
+            CRITICAL_FIXABLE_CELL="${CRITICAL_FIXABLE:-?}"
+            HIGH_CELL="${HIGH:-?}"
+            HIGH_FIXABLE_CELL="${HIGH_FIXABLE:-?}"
+            MEDIUM_CELL="${MEDIUM:-?}"
+            LOW_CELL="${LOW:-?}"
+          fi
           {
             echo "## Vulnerability gate — ${TAG}"
             echo
@@ -806,12 +857,16 @@ jobs:
             echo
             echo "**Mode:** warn (Phase 3 calibration; gate never blocks the release)"
             echo
+            if [ "${PARSE_ERROR:-false}" = "true" ]; then
+              echo "**WARNING:** jq normalisation failed — vulnerability data is **absent**, not clean. See the \`Query vulnerability occurrences\` step logs and the manual reproducer below."
+              echo
+            fi
             echo "| Severity | Total | Fixable |"
             echo "|---|---|---|"
-            echo "| CRITICAL | ${CRITICAL:-?} | ${CRITICAL_FIXABLE:-?} |"
-            echo "| HIGH | ${HIGH:-?} | ${HIGH_FIXABLE:-?} |"
-            echo "| MEDIUM | ${MEDIUM:-?} | n/a |"
-            echo "| LOW | ${LOW:-?} | n/a |"
+            echo "| CRITICAL | ${CRITICAL_CELL} | ${CRITICAL_FIXABLE_CELL} |"
+            echo "| HIGH | ${HIGH_CELL} | ${HIGH_FIXABLE_CELL} |"
+            echo "| MEDIUM | ${MEDIUM_CELL} | n/a |"
+            echo "| LOW | ${LOW_CELL} | n/a |"
             echo
             echo "Reproduce locally:"
             echo
@@ -850,12 +905,49 @@ jobs:
               echo
               echo "**WARNING:** Vulnerability gate bypassed via \`vars.STIRRUP_RELEASE_VULN_OVERRIDE\` for tag \`${TAG}\`."
               echo
-              echo "The issue-creation step has been short-circuited. An operator MUST file a tracking issue documenting why this override was used."
+              echo "The issue-creation step has been short-circuited. A durable override-audit issue is being filed automatically — the operator MUST add a rationale comment on it."
               echo
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::warning::Vulnerability gate override active for ${TAG}"
           else
             echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # SF-3: when the override fires, the `::warning::` annotation and
+      # step summary block are both ephemeral (90-day GitHub retention).
+      # `vars.STIRRUP_RELEASE_VULN_OVERRIDE` is settable by any repo
+      # collaborator with write access and leaves no trace in git
+      # history. Auto-file a minimal tracking issue so there is a
+      # permanent record an operator can query after the run logs
+      # expire. The body is intentionally minimal — the rationale
+      # belongs in a comment from the operator who set the override.
+      - name: File override-audit tracking issue
+        if: steps.override.outputs.active == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="vuln gate override used: ${TAG}"
+          BODY_FILE=$(mktemp)
+          {
+            echo "Override active for \`${TAG}\`. The vulnerability-gate's tracking-issue step was short-circuited via \`vars.STIRRUP_RELEASE_VULN_OVERRIDE\`."
+            echo
+            echo "The operator who set the override MUST document the rationale as a comment on this issue. Without that comment there is no durable record of why the gate was bypassed."
+            echo
+            echo "**Workflow run:** ${RUN_URL}"
+          } > "${BODY_FILE}"
+
+          if ! gh issue create \
+            --title "${TITLE}" \
+            --body-file "${BODY_FILE}" \
+            --label security; then
+            echo "::warning::override-audit issue create with label failed; retrying without label"
+            if ! gh issue create \
+              --title "${TITLE}" \
+              --body-file "${BODY_FILE}"; then
+              echo "::warning::override-audit issue create WITHOUT label also failed — no durable record filed for ${TAG} override. Manual triage required."
+            fi
           fi
 
       # File a tracking issue when critical+fixable findings exist
@@ -933,15 +1025,24 @@ jobs:
           # Best-effort labels: if either label does not exist in the
           # repo, gh exits non-zero and we fall back to a label-less
           # create. The issue still gets filed — labels are sugar.
+          #
+          # SF-2: do NOT swallow the label-less retry with `|| true`.
+          # A genuine failure (network, auth, GitHub API 5xx) needs to
+          # surface as a `::warning::` annotation so the step doesn't
+          # look green when no issue was filed — that would defeat the
+          # audit-trail purpose of the tracking issue. Warn-mode
+          # invariant preserved: still exits 0 either way.
           if ! gh issue create \
             --title "${TITLE}" \
             --body-file "${BODY_FILE}" \
             --label security \
             --label vulnerability; then
             echo "::warning::issue create with labels failed; retrying without labels"
-            gh issue create \
+            if ! gh issue create \
               --title "${TITLE}" \
-              --body-file "${BODY_FILE}" || true
+              --body-file "${BODY_FILE}"; then
+              echo "::warning::issue create WITHOUT labels also failed — no tracking issue filed for ${TAG}. Manual triage required."
+            fi
           fi
 
       # Final calibration log line: always exits 0. Once the warn

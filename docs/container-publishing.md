@@ -530,12 +530,21 @@ remain intact. The match is also intentionally narrow (one literal
 tag, no globs, no env-var fallback) so a forgotten override cannot
 silently suppress future releases.
 
-**Operator responsibility:** every use of the override SHOULD be
-accompanied by a separately-filed tracking issue documenting why,
-even if `gh issue create` was bypassed. The override is for cases
-where the *automation* would have filed a redundant or noisy issue;
-the audit trail of "we knowingly shipped this" still belongs in the
-repo.
+**Operator responsibility:** every use of the override is paired
+with a durable override-audit issue that the gate auto-files when
+the bypass fires (title: `vuln gate override used: <tag>`, label:
+`security`). The operator who set the override MUST add a rationale
+comment on that auto-filed issue — that comment is the durable
+audit trail. The auto-filed issue body does not contain CVE detail;
+it exists only so the bypass leaves a record in the issue tracker
+after the workflow run's 90-day log retention expires.
+
+`vars.STIRRUP_RELEASE_VULN_OVERRIDE` is **settable by any repo
+collaborator with write access** and leaves no trace in git history.
+That surface is intentional (an emergency operator action must not
+require a PR round-trip), but it is also why the auto-filed
+override-audit issue and the rationale comment are non-negotiable:
+they are the only durable record an auditor can query.
 
 ### Permissions
 
