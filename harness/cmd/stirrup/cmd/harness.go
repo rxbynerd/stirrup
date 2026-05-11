@@ -447,7 +447,10 @@ var harnessCmd = &cobra.Command{
 	Use:   "harness [flags] [prompt]",
 	Short: "Run the coding agent harness",
 	Long: `Run the stirrup coding agent harness. The prompt can be provided as a
-positional argument or via the --prompt flag.
+positional argument, via the --prompt flag, via --prompt-file (read from
+CWD; trailing newlines trimmed; 10 MiB cap), or via the STIRRUP_PROMPT
+environment variable. Resolution order: --prompt > positional > --prompt-file
+> STIRRUP_PROMPT > prompt field in --config.
 
 Configuration precedence: a --config JSON file (if provided) populates the
 full RunConfig; explicitly-set flags then override individual fields; flags
