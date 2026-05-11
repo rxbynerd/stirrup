@@ -1,152 +1,59 @@
 # stirrup
 
-A **production-grade coding agent harness** built for **secure
-autonomous operation**. Designed to run as a short-lived job — the
-control plane starts it per task, it runs the agentic loop to
-completion, and exits. There is no in-process session store, no
-cross-tenant memory, and no inbound port to expose.
+A **production-grade coding harness** built for **safe
+autonomous operation**.
 
-> **Status:** pre-1.0. The public API is best-effort stable inside
-> `harnessapi/` and `types/`; the rest of `harness/internal/*` is not.
-> The release pipeline (tag-driven cross-platform binaries, SBOMs,
-> GHCR image) is wired but no `v*.*.*` tag has been cut yet.
+The majority of coding harnesses are single-player tools, focused on
+excellent local experiences, providing trend-setting TUIs or
+comprehensive IDE integration. Any kind of API/RPC channel is an
+afterthought, often just to support a desktop client.
 
-## Why stirrup
+Stirrup is intentionally designed and built from the ground up with the following tenants in mind:
 
-**A pure-function core.** The agentic loop depends only on
-interfaces. Thirteen components — provider, router, prompt, context
-strategy, tools, executor, edit strategy, verifier, permission
-policy, transport, git, tracing, guardrail — are composed via a
-single declarative `RunConfig`. Swap the provider or the executor
-without touching the loop.
+- **Production-grade safety** provided by [a comprehensive set of rings](docs/safety-rings.md), designed to provide defence-in-depth security.
+- **Autonomous operation** via [a gRPC interface](proto/harness/v1/harness.proto), allowing remote control & management of the coding harness.
+- **Composability** via [a single declarative `RunConfig`](docs/configuration.md), allowing easy swapping of components without modifying the loop.
+- [**Evaluations**](docs/eval.md) as a first-class feature, supporting both Stirrup's development, and for Stirrup's use-cases.
 
-**Five deterministic safety rings.** Stirrup runs LLM-produced code,
-so it composes five layered controls the agent cannot circumvent:
-kernel-isolation runtime classes, an in-process egress allowlist
-proxy, a Cedar-backed policy engine, the Rule-of-Two structural
-invariant, and a post-edit code scanner. Each ring catches a
-different class of attack at a different point in the run.
+## Quick start
 
-**Secrets never live in `RunConfig`.** API keys are `secret://`
-references resolved through env vars, files, or AWS SSM. The
-`slog.Handler` that writes logs runs every string through a
-seven-pattern scrubber before any handler sees it — secret leakage
-through logs is structurally impossible.
+Stirrup has main modes of operation:
 
-**Cross-cloud credential federation.** GKE Workload Identity, AWS
-IRSA, Azure IMDS, GitHub Actions OIDC, Anthropic WIF, and Azure
-Entra ID federation are first-class. No static API keys in CI/CD.
+- `stirrup harness` is for local/one-off tasks that do not require a control plane.
+- `stirrup job` connects to the control plane given at `CONTROL_PLANE_ADDR`, intended to be deployed as a Kubernetes `Job`.
 
-**Five providers, hand-rolled.** Anthropic SSE, AWS Bedrock
-Converse, OpenAI Chat Completions, OpenAI Responses, and Google
-Gemini via Vertex AI. Each adapter is a few hundred lines of stdlib
-HTTP — every line is auditable.
-
-**The eval framework is a peer, not an afterthought.** Deterministic
-replay providers and replay executors mean CI eval suites run
-without hitting a paid API. Live runs, replay evaluation, drift
-detection, failure mining, and lab-vs-production comparison ship in
-`stirrup-eval`.
-
-## Try it
-
-Build the binary (Go 1.26.1+):
+### On your machine
 
 ```sh
-go build -o stirrup ./harness/cmd/stirrup
-```
+just build # produces ./stirrup and ./stirrup-eval
 
-Run a one-off task against the default Anthropic provider:
-
-```sh
+# simplest example
 ANTHROPIC_API_KEY=... ./stirrup harness --prompt "Fix the failing test in main_test.go"
-```
 
-Or load a fully-populated `RunConfig` from a file:
-
-```sh
-./stirrup harness --config examples/runconfig/full.json \
-  --prompt "Fix the failing test in main_test.go"
-```
-
-## A tour: secure autonomous run
-
-The invocation below runs a task inside a gVisor-isolated container,
-evaluates every tool call through a Cedar policy, scans every
-successful edit, applies the Rule-of-Two structural invariant, and
-ships traces and metrics over OTLP — all from a single `RunConfig`
-file:
-
-```sh
+# using example full RunConfig, see examples/runconfig/README.md for further details
 ./stirrup harness \
   --config examples/runconfig/full.json \
-  --prompt "Refactor the cache layer to share a single connection pool"
+  --prompt "Fix the failing test in main_test.go"
+
+# using AWS Bedrock (AWS_PROFILE should be set)
+./stirrup harness \
+  --prompt "Give me a summary of the safety rings doc" \
+  --provider bedrock \
+  --model global.anthropic.claude-sonnet-4-6 \
+  --workspace .
+
+# using OpenAI Responses
+OPENAI_KEY="$(op read "op://Private/qeu6gafabhkpsm6hhzattx6p4m/credential")" ./stirrup harness \
+  --api-key-ref secret://OPENAI_KEY \
+  --provider openai-responses \
+  --model gpt-5.4-nano \
+  --prompt "Review the last commit for factual inaccuracies"
+
 ```
 
-The shipped [`full.json`](examples/runconfig/full.json) stitches
-together every safety ring:
+### In GitHub Actions
 
-```jsonc
-{
-  // Ring 1: kernel-isolation runtime class.
-  // runc (default) | runsc (gVisor) | kata, kata-qemu, kata-fc.
-  "executor": {
-    "type": "container",
-    "image": "ghcr.io/rxbynerd/stirrup:latest",
-    "runtime": "runsc",
-    "network": { "mode": "none" },          // or "allowlist" → Ring 2
-    "resources": { "cpus": 2.0, "memoryMb": 2048, "diskMb": 8192, "pids": 256 }
-  },
-
-  // Ring 3: Cedar policy engine evaluates each tool call as
-  //   (User::"<runId>", Action::"tool:<name>", Tool::"<name>", {input, workspace})
-  // No-decision falls through to the configured fallback.
-  "permissionPolicy": {
-    "type": "policy-engine",
-    "policyFile": "examples/policies/destructive-shell.cedar",
-    "fallback": "deny-side-effects"
-  },
-
-  // Ring 4: Rule-of-Two structural invariant.
-  // Rejects RunConfigs that hold untrusted input + sensitive data +
-  // external comms simultaneously, unless gated by ask-upstream.
-  "ruleOfTwo": { "enforce": true },
-
-  // Ring 5: post-edit static analysis. Block findings roll back the
-  // write; warn findings emit code_scan_warning and continue.
-  "codeScanner": { "type": "patterns" },
-
-  // Probabilistic guard layered on top of the deterministic rings.
-  // PreTurn / PreTool / PostTurn LLM classifier.
-  "guardRail": {
-    "type": "granite-guardian",
-    "phases": ["pre_turn", "pre_tool", "post_turn"]
-  },
-
-  // Multi-strategy edits: udiff → search-replace → whole-file fallback.
-  // The factory wraps the chosen strategy with the codeScanner above.
-  "editStrategy": { "type": "multi", "fuzzyThreshold": 0.85 },
-
-  // Deterministic git so reviews see reproducible commits.
-  "gitStrategy": { "type": "deterministic" },
-
-  // OpenTelemetry traces and metrics over OTLP/gRPC.
-  // (Use protocol: "http/protobuf" for managed gateways.)
-  "traceEmitter": { "type": "otel", "endpoint": "localhost:4317" },
-
-  // Anthropic provider with a secret reference — never a raw key.
-  "provider": {
-    "type": "anthropic",
-    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
-  }
-}
-```
-
-Threat model, posture trade-offs, and what each ring does *not*
-catch are documented in
-[`docs/safety-rings.md`](docs/safety-rings.md). The annotated
-walkthrough of `full.json` lives at
-[`examples/runconfig/README.md`](examples/runconfig/README.md).
+See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.yml) for an example of using `stirrup harness` in a GitHub Actions workflow via [Anthropic Workflow Identity Federation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation).
 
 ## Documentation
 
@@ -164,6 +71,7 @@ walkthrough of `full.json` lives at
 | Anthropic Workload Identity Federation | [`docs/anthropic-wif.md`](docs/anthropic-wif.md) |
 | Azure Workload Identity Federation | [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md) |
 | Cloud observability backends (Grafana, etc.) | [`docs/observability-cloud.md`](docs/observability-cloud.md) |
+| Project philosophy | [`docs/philosophy.md`](docs/philosophy.md) |
 | Per-package layout (orientation for AI agents) | [`AGENTS.md`](AGENTS.md) |
 | Build, test, lint, commit conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | Security disclosure policy | [`SECURITY.md`](SECURITY.md) |
