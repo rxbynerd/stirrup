@@ -660,13 +660,18 @@ jobs:
           STATE=""
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             set +e
+            # `--limit=1` caps the record count server-side so we can
+            # avoid piping to `head` — a pipeline would make `RC=$?`
+            # reflect `head`'s exit status, not `gcloud`'s, masking
+            # auth/IAM failures as benign empty results (see #170
+            # remediation MF-1).
             STATE=$(gcloud artifacts docker images list \
               "${IMAGE_URI%@*}" \
               --show-occurrences \
               --occurrence-filter='kind="DISCOVERY"' \
               --filter="uri=\"${IMAGE_URI}\"" \
-              --format='value(DISCOVERY.discovery.analysisStatus)' 2>/dev/null \
-              | head -n 1)
+              --limit=1 \
+              --format='value(DISCOVERY.discovery.analysisStatus)' 2>/dev/null)
             RC=$?
             set -e
             if [ "$RC" -eq 0 ] && [ "$STATE" = "FINISHED_SUCCESS" ]; then
