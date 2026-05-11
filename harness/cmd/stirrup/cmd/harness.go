@@ -79,7 +79,7 @@ func readPromptFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxPromptFileBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
