@@ -577,19 +577,30 @@ never fail. Reasoning:
   and the next manual re-query (or the next release of the same
   image base) catches it.
 
-Operators can re-run the query manually at any time:
+Operators can re-run the query manually at any time. For any past
+release tag, resolve the digest first and then query Container
+Analysis for vulnerability occurrences against that immutable
+digest:
 
 ```sh
+# 1. Resolve the digest for any released tag:
+DIGEST=$(gcloud artifacts docker images describe \
+  <GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup:vX.Y.Z \
+  --format='value(image_summary.digest)' \
+  --project=rubynerd-net)
+
+# 2. Query vulnerability occurrences against that digest:
 gcloud artifacts docker images list \
   <GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup \
   --show-occurrences \
   --occurrence-filter='kind="VULNERABILITY"' \
-  --filter='uri="<full-digest-uri>"' \
+  --filter="uri=\"<GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup@${DIGEST}\"" \
   --format=json
 ```
 
-The digest can be lifted from the workflow run's summary table or
-from `gcloud artifacts docker images describe <image>:<tag>`.
+The same digest is also surfaced in the workflow run's summary
+table, so for the most recent release a copy-paste from the Actions
+UI works without step 1.
 
 ### IAM observation
 
