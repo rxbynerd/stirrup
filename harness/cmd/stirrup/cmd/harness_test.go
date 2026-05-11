@@ -450,6 +450,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Int("followup-grace", 0, "")
 	f.String("log-level", "info", "")
 	f.String("prompt", "", "")
+	f.String("prompt-file", "", "")
 	f.String("name", "", "")
 	f.String("executor", "local", "")
 	f.String("edit-strategy", "multi", "")
@@ -3003,5 +3004,201 @@ func TestApplyOverrides_AzureWIFDefaultFlagsDoNotOverride(t *testing.T) {
 	}
 	if cfg.Provider.Credential.AzureScope != "https://existing.example.com/.default" {
 		t.Errorf("AzureScope overwritten by default: %q", cfg.Provider.Credential.AzureScope)
+	}
+}
+
+// writePromptResolutionConfig writes a JSON RunConfig that is valid in
+// every respect EXCEPT it carries an empty prompt and a deliberately
+// out-of-range MaxTurns. That shape lets the prompt-resolution tests
+// distinguish three outcomes from a single runHarness invocation:
+//
+//  1. Prompt did not resolve → "prompt is required" error.
+//  2. Prompt resolved → ValidateRunConfig fires next and rejects on
+//     "maxTurns exceeds maximum of 100" — a deterministic, prompt-
+//     independent signal that the resolution chain populated cfg.Prompt.
+//  3. File-read error from --prompt-file → the helper's error wins
+//     before the resolution chain reaches validation.
+//
+// Using a config-only invalidation point keeps the tests purely
+// in-process: no harness boot, no provider HTTP, no API key juggling.
+func writePromptResolutionConfig(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	timeout := 60
+	cfg := types.RunConfig{
+		RunID:            "x",
+		Mode:             "execution",
+		Prompt:           "", // deliberately empty — resolution chain must fill this
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://X"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 1000},
+		Executor:         types.ExecutorConfig{Type: "local"},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		Transport:        types.TransportConfig{Type: "stdio"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		MaxTurns:         9999, // out-of-range → predictable post-prompt validation failure
+		Timeout:          &timeout,
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
+
+// TestRunHarness_PromptFromEnvVar pins the STIRRUP_PROMPT fallback: when
+// no higher-priority source (flag, positional, --prompt-file, file
+// prompt) is set, the env var must populate cfg.Prompt. We assert by
+// invoking runHarness against a config that fails validation downstream
+// of prompt resolution — the validator's specific error tells us the
+// prompt was filled in, since the "prompt is required" path would have
+// short-circuited earlier.
+func TestRunHarness_PromptFromEnvVar(t *testing.T) {
+	path := writePromptResolutionConfig(t)
+	t.Setenv("STIRRUP_PROMPT", "hello from env")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", path); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected validation error after prompt resolution, got nil")
+	}
+	if strings.Contains(err.Error(), "prompt is required") {
+		t.Errorf("STIRRUP_PROMPT was not consulted; got prompt-required error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "maxTurns") {
+		t.Errorf("expected validator to reject maxTurns after prompt was resolved, got: %v", err)
+	}
+}
+
+// TestRunHarness_PromptFromPromptFile pins the --prompt-file source:
+// the file's contents become cfg.Prompt with trailing newlines trimmed.
+// Same downstream-validation trick as the env-var test — a maxTurns
+// rejection means we got past the prompt-required check, which means
+// the file was read and applied.
+func TestRunHarness_PromptFromPromptFile(t *testing.T) {
+	path := writePromptResolutionConfig(t)
+
+	promptDir := t.TempDir()
+	promptPath := filepath.Join(promptDir, "brief.txt")
+	// Embed a trailing \n to exercise the TrimRight contract — the
+	// trim must happen, otherwise downstream prompt comparisons would
+	// silently include a newline a `printf 'p\n'` author did not
+	// intend. (We cannot read cfg.Prompt back through runHarness, so
+	// the trim contract is asserted directly against readPromptFile
+	// below; this test only confirms the file reached the chain.)
+	if err := os.WriteFile(promptPath, []byte("hello from file\n"), 0o600); err != nil {
+		t.Fatalf("write prompt file: %v", err)
+	}
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", path); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+	if err := cmd.Flags().Set("prompt-file", promptPath); err != nil {
+		t.Fatalf("set prompt-file: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected validation error after prompt resolution, got nil")
+	}
+	if strings.Contains(err.Error(), "prompt is required") {
+		t.Errorf("--prompt-file was not consulted; got prompt-required error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "maxTurns") {
+		t.Errorf("expected validator to reject maxTurns after prompt was resolved, got: %v", err)
+	}
+
+	// Direct trim-contract assertion: readPromptFile must strip the
+	// trailing newline so downstream prompt-equality checks (in eval
+	// suites, recordings, etc.) are not silently off-by-one-byte.
+	got, err := readPromptFile(promptPath)
+	if err != nil {
+		t.Fatalf("readPromptFile: %v", err)
+	}
+	if got != "hello from file" {
+		t.Errorf("readPromptFile did not trim trailing newline, got %q", got)
+	}
+}
+
+// TestRunHarness_PromptFlagBeatsLowerPrecedence is the precedence
+// regression test: --prompt is rank 1, --prompt-file is rank 3,
+// STIRRUP_PROMPT is rank 4. When all three are set, --prompt must win
+// and runHarness must reach validation without ever reading the file
+// or consulting the env. We assert this by setting --prompt-file to a
+// path that DOES NOT EXIST: if the resolution chain ever fell through
+// to it, readPromptFile would error out before validation, and we'd
+// see "reading --prompt-file" rather than the maxTurns failure.
+func TestRunHarness_PromptFlagBeatsLowerPrecedence(t *testing.T) {
+	path := writePromptResolutionConfig(t)
+	t.Setenv("STIRRUP_PROMPT", "from env (should lose)")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", path); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+	if err := cmd.Flags().Set("prompt", "from flag (should win)"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	if err := cmd.Flags().Set("prompt-file", "/does/not/exist/brief.txt"); err != nil {
+		t.Fatalf("set prompt-file: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected validation error after prompt resolution, got nil")
+	}
+	if strings.Contains(err.Error(), "reading --prompt-file") {
+		t.Errorf("--prompt flag did not short-circuit --prompt-file; chain leaked: %v", err)
+	}
+	if strings.Contains(err.Error(), "prompt is required") {
+		t.Errorf("--prompt flag was ignored entirely; chain produced: %v", err)
+	}
+	if !strings.Contains(err.Error(), "maxTurns") {
+		t.Errorf("expected validator to reject maxTurns after --prompt resolved, got: %v", err)
+	}
+}
+
+// TestReadPromptFile_Nonexistent verifies the explicit error surface
+// for a missing file: the path name must appear in the message so the
+// operator can find the typo without re-running with --log-level=debug.
+func TestReadPromptFile_Nonexistent(t *testing.T) {
+	_, err := readPromptFile("/does/not/exist/brief.txt")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file, got nil")
+	}
+	if !strings.Contains(err.Error(), "/does/not/exist/brief.txt") {
+		t.Errorf("error should mention the path, got: %v", err)
+	}
+}
+
+// TestReadPromptFile_Empty verifies the zero-byte file is a hard error
+// rather than a silent "" that would later surface as the generic
+// "prompt is required" message — that would be deeply confusing
+// because the operator DID set --prompt-file.
+func TestReadPromptFile_Empty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := readPromptFile(path)
+	if err == nil {
+		t.Fatal("expected error for empty file, got nil")
+	}
+	if !strings.Contains(err.Error(), "is empty") {
+		t.Errorf("error should mention empty, got: %v", err)
 	}
 }
