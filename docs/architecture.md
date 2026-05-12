@@ -456,6 +456,7 @@ trees. The accepted exceptions and their justifications:
 | `github.com/spf13/cobra` | CLI framework |
 | `github.com/santhosh-tekuri/jsonschema/v6` | JSON Schema Draft 2020-12 validation for tool inputs |
 | `aws-sdk-go-v2` | Bedrock (SigV4), STS (`AssumeRoleWithWebIdentity`), SSM SecretStore |
+| `k8s.io/client-go` (with `k8s.io/api`, `k8s.io/apimachinery`, `k8s.io/utils`) | Kubernetes API server authentication (in-cluster service-account tokens, kubeconfig OIDC/exec credential plugins) and API discovery are materially harder to hand-roll than Docker's UNIX-socket REST. The client-go transport layer is also the only supported path for TLS client certificates issued by the cluster CA. Accepted trade-off: ~25 indirect transitive deps. |
 | `google.golang.org/grpc` + `google.golang.org/protobuf` | gRPC transport |
 | `go.opentelemetry.io/otel` + OTLP exporter | Traces and metrics (gRPC and HTTP/protobuf) |
 | `golang.org/x/oauth2` | GCP ADC, GCP service-account JWT flow, WIF token refresh |
