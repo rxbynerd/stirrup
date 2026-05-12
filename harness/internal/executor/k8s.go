@@ -147,7 +147,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 
 	if err := waitForPodReady(ctx, clientset, cfg.Namespace, created.Name); err != nil {
 		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
-		return nil, err
+		return nil, fmt.Errorf("pod %s/%s not ready after %s: %w", cfg.Namespace, created.Name, k8sReadyTimeout, err)
 	}
 
 	return &K8sExecutor{
