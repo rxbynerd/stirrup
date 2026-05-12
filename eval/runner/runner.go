@@ -238,6 +238,15 @@ func validatePathSegment(label, id string) error {
 	if strings.ContainsAny(id, "/\\") {
 		return fmt.Errorf("%s %q must not contain path separators", label, id)
 	}
+	if strings.ContainsRune(id, '\x00') {
+		// A NUL inside a filename is rejected by every supported
+		// filesystem, but the validator is the single place that
+		// documents what the runner will accept as a directory name;
+		// reject it here so the error surfaces against the operator's
+		// suite ID rather than later as an obscure filesystem syscall
+		// error. Cheap to check, hard to silently let through.
+		return fmt.Errorf("%s %q must not contain a null byte", label, id)
+	}
 	if id == "." || id == ".." {
 		return fmt.Errorf("%s %q is a reserved path segment", label, id)
 	}
@@ -283,23 +292,67 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 
 	configPath := ""
 	if merged != nil {
+		// Route the runner-managed trace path through the merged
+		// config so --trace never has to appear on the command line
+		// when --config is in use. The harness's applyOverrides
+		// coerces TraceEmitter.Type to "jsonl" whenever --trace is
+		// passed and --trace-emitter is not, which would silently
+		// reset a suite's intentional otel emitter to jsonl. Setting
+		// FilePath in the merged config lets the harness pick up the
+		// per-task trace path without that coercion side-effect.
+		merged.TraceEmitter.FilePath = traceFile
+
+		// Validate the merged config before spawning the harness so a
+		// structural error (e.g. a read-only mode paired with an
+		// allow-all permission policy, or a write-tool entry under
+		// planning mode) becomes a per-task "error" outcome instead
+		// of a wasted subprocess launch followed by a harness boot
+		// failure. dryRunTask already runs this check; keeping the
+		// live path in sync prevents the two from drifting.
+		if vErr := types.ValidateRunConfig(merged); vErr != nil {
+			return errorResult(task.ID, start, vErr)
+		}
+
 		configPath = filepath.Join(tmpDir, "runconfig.json")
 		if err := writeMergedConfig(configPath, merged); err != nil {
 			return errorResult(task.ID, start, err)
 		}
 	}
 
+	// --workspace is always needed: the runner manages the per-task
+	// tmpdir and the harness has no way to discover it otherwise.
+	// --trace is conditional: when a merged config is in use, the
+	// runner already injected the trace path into TraceEmitter.FilePath
+	// above, and passing --trace as well would trigger the harness's
+	// applyOverrides path that coerces TraceEmitter.Type to "jsonl"
+	// (silently clobbering a suite's intentional otel emitter).
+	// --prompt and --mode are passed only when the task supplies a
+	// non-zero value, so the merged config's prompt/mode is honoured
+	// when the task itself does not override. --timeout is never
+	// passed alongside --config — the merged config carries it.
 	args := []string{"harness"}
 	if configPath != "" {
 		args = append(args, "--config", configPath)
 	}
-	args = append(args,
-		"--prompt", task.Prompt,
-		"--mode", taskMode(task),
-		"--workspace", workspaceDir,
-		"--trace", traceFile,
-		"--timeout", "300",
-	)
+	args = append(args, "--workspace", workspaceDir)
+	if configPath == "" {
+		args = append(args, "--trace", traceFile)
+	}
+	if task.Prompt != "" {
+		args = append(args, "--prompt", task.Prompt)
+	}
+	if task.Mode != "" {
+		args = append(args, "--mode", task.Mode)
+	}
+	if configPath == "" {
+		// Legacy invocation has no in-config carrier for these two —
+		// fall back to the historic defaults so behaviour for suites
+		// that have not opted into the RunConfig surface is unchanged.
+		if task.Mode == "" {
+			args = append(args, "--mode", "execution")
+		}
+		args = append(args, "--timeout", "300")
+	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
 	cmd.Dir = workspaceDir
@@ -407,6 +460,13 @@ func parseTraceFile(path string) (*types.RunTrace, error) {
 
 	var lastLine string
 	scanner := bufio.NewScanner(f)
+	// bufio.Scanner's default 64 KiB line limit is too small for traces
+	// that carry a large tool output in a single JSONL record. A
+	// correct harness run with a multi-hundred-KiB grep result would
+	// otherwise surface as "bufio.Scanner: token too long" and the
+	// task would land as an "error" outcome rather than a real fail.
+	// 4 MiB matches the trace-emitter's own per-record cap.
+	scanner.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line != "" {
@@ -426,14 +486,6 @@ func parseTraceFile(path string) (*types.RunTrace, error) {
 	}
 
 	return &trace, nil
-}
-
-// taskMode returns the mode for a task, defaulting to "execution".
-func taskMode(task types.EvalTask) string {
-	if task.Mode != "" {
-		return task.Mode
-	}
-	return "execution"
 }
 
 // errorResult builds a TaskResult with outcome "error".
@@ -508,7 +560,12 @@ func retainRedactedConfig(suiteArtifactDir, taskID string, cfg *types.RunConfig)
 		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: mkdir: %v\n", taskID, err)
 		return
 	}
-	if err := os.WriteFile(filepath.Join(taskDir, "run_config.redacted.json"), data, 0o644); err != nil {
+	// 0o600 matches the on-disk live config: although Redact() strips
+	// secrets, the file still carries operational posture (provider
+	// type, model, network allowlists, permission policy). On shared
+	// CI runners the artifact tree may be inspectable by other jobs;
+	// 0o600 narrows that exposure.
+	if err := os.WriteFile(filepath.Join(taskDir, "run_config.redacted.json"), data, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: redacted config write: %v\n", taskID, err)
 	}
 }
