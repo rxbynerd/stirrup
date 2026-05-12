@@ -3934,3 +3934,253 @@ func TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently(t *te
 		t.Errorf("top-level provider Retry not defaulted independently; got %+v", c.Provider.Retry)
 	}
 }
+
+// --- traceEmitter type=gcs ---
+
+func TestValidateRunConfig_TraceEmitterGCS_Valid(t *testing.T) {
+	c := validConfig()
+	c.TraceEmitter = TraceEmitterConfig{
+		Type:         "gcs",
+		Bucket:       "stirrup-results",
+		ObjectPrefix: "traces/",
+		Credential:   &CredentialConfig{Type: "gcp-workload-identity"},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected valid gcs trace emitter, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_TraceEmitterGCS_BucketRequired(t *testing.T) {
+	c := validConfig()
+	c.TraceEmitter = TraceEmitterConfig{Type: "gcs"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for gcs trace emitter without bucket")
+	}
+	if !strings.Contains(err.Error(), "requires bucket") {
+		t.Errorf("expected error to mention bucket is required, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_TraceEmitterGCS_InvalidBucketName(t *testing.T) {
+	cases := []struct {
+		name   string
+		bucket string
+	}{
+		{"uppercase", "Stirrup-Results"},
+		{"slash", "stirrup/results"},
+		{"too short", "ab"},
+		{"contains space", "stirrup results"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.TraceEmitter = TraceEmitterConfig{Type: "gcs", Bucket: tc.bucket}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for invalid bucket %q", tc.bucket)
+			}
+			if !strings.Contains(err.Error(), "traceEmitter.bucket") {
+				t.Errorf("expected error to mention traceEmitter.bucket, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_TraceEmitterGCS_FieldsRejectedOnNonGCS(t *testing.T) {
+	t.Run("bucket on jsonl", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "jsonl", Bucket: "leftover"}
+		err := ValidateRunConfig(c)
+		if err == nil || !strings.Contains(err.Error(), "traceEmitter.bucket is only valid") {
+			t.Errorf("expected bucket-only-for-gcs error, got: %v", err)
+		}
+	})
+	t.Run("objectPrefix on otel", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{Type: "otel", ObjectPrefix: "traces/"}
+		err := ValidateRunConfig(c)
+		if err == nil || !strings.Contains(err.Error(), "traceEmitter.objectPrefix is only valid") {
+			t.Errorf("expected objectPrefix-only-for-gcs error, got: %v", err)
+		}
+	})
+	t.Run("credential on jsonl", func(t *testing.T) {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:       "jsonl",
+			Credential: &CredentialConfig{Type: "gcp-workload-identity"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil || !strings.Contains(err.Error(), "traceEmitter.credential is only valid") {
+			t.Errorf("expected credential-only-for-gcs error, got: %v", err)
+		}
+	})
+}
+
+// --- resultSink ---
+
+func TestValidateRunConfig_ResultSink_NoneAndStdoutJSON(t *testing.T) {
+	t.Run("none", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "none"}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected resultSink=none to pass, got: %v", err)
+		}
+	})
+	t.Run("stdout-json", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "stdout-json"}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected resultSink=stdout-json to pass, got: %v", err)
+		}
+	})
+	t.Run("nil sink ok", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = nil
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected nil resultSink to pass, got: %v", err)
+		}
+	})
+}
+
+func TestValidateRunConfig_ResultSink_PubsubReserved(t *testing.T) {
+	c := validConfig()
+	c.ResultSink = &ResultSinkConfig{Type: "pubsub", Topic: "stirrup-results"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for reserved resultSink type pubsub")
+	}
+	if !strings.Contains(err.Error(), "reserved but not yet implemented") {
+		t.Errorf("expected reserved-but-not-implemented error, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_ResultSink_GCSReserved(t *testing.T) {
+	c := validConfig()
+	c.ResultSink = &ResultSinkConfig{Type: "gcs"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for reserved resultSink type gcs")
+	}
+	if !strings.Contains(err.Error(), "reserved but not yet implemented") {
+		t.Errorf("expected reserved-but-not-implemented error, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_ResultSink_InvalidType(t *testing.T) {
+	c := validConfig()
+	c.ResultSink = &ResultSinkConfig{Type: "carrier-pigeon"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unknown resultSink type")
+	}
+	if !strings.Contains(err.Error(), "unsupported resultSink type") {
+		t.Errorf("expected unsupported-resultSink-type error, got: %v", err)
+	}
+}
+
+// --- executor.workspaceExportTo ---
+
+func TestValidateRunConfig_WorkspaceExportTo_ValidGS(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{
+		Type:              "local",
+		WorkspaceExportTo: "gs://stirrup-results/runs/run-1/workspace.tar.gz",
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected valid gs:// workspaceExportTo, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_WorkspaceExportTo_RejectsNonGSScheme(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{
+		Type:              "local",
+		WorkspaceExportTo: "https://example.com/results.tar.gz",
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for non-gs:// workspaceExportTo")
+	}
+	if !strings.Contains(err.Error(), "gs://") {
+		t.Errorf("expected error to mention gs:// scheme, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_WorkspaceExportTo_RejectsEmptyBucketPath(t *testing.T) {
+	cases := []string{"gs://", "gs:///object"}
+	for _, val := range cases {
+		t.Run(val, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: "local", WorkspaceExportTo: val}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for %q", val)
+			}
+			if !strings.Contains(err.Error(), "non-empty bucket path") {
+				t.Errorf("expected non-empty-bucket-path error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_WorkspaceExportTo_RejectsAPIExecutor(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{
+		Type:              "api",
+		WorkspaceExportTo: "gs://bucket/path",
+	}
+	// The api executor needs a VcsBackend to validate; supply one
+	// so the test isolates the workspaceExportTo failure.
+	c.Executor.VcsBackend = &VcsBackendConfig{Type: "github", Repo: "owner/repo", Ref: "main"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for workspaceExportTo with executor.type=api")
+	}
+	if !strings.Contains(err.Error(), "not valid for executor.type=\"api\"") {
+		t.Errorf("expected error to mention api executor, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_WorkspaceExportTo_RequiresExplicitExecutorType(t *testing.T) {
+	c := validConfig()
+	// validConfig sets no Executor; assign just WorkspaceExportTo.
+	c.Executor = ExecutorConfig{WorkspaceExportTo: "gs://bucket/path"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for workspaceExportTo with empty executor.type")
+	}
+	if !strings.Contains(err.Error(), "requires an explicit executor.type") {
+		t.Errorf("expected error to mention explicit executor.type, got: %v", err)
+	}
+}
+
+// --- Redact() coverage for resultSink.attributes ---
+
+func TestRedact_ResultSinkAttributes(t *testing.T) {
+	rc := RunConfig{
+		ResultSink: &ResultSinkConfig{
+			Type: "pubsub",
+			Attributes: map[string]string{
+				"auth-token":     "secret://PUBSUB_TOKEN",
+				"workload":       "classification",
+				"another-secret": "secret://ANOTHER",
+			},
+		},
+	}
+	redacted := rc.Redact()
+
+	if got := redacted.ResultSink.Attributes["auth-token"]; got != "secret://[REDACTED]" {
+		t.Errorf("auth-token attribute = %q, want secret://[REDACTED]", got)
+	}
+	if got := redacted.ResultSink.Attributes["another-secret"]; got != "secret://[REDACTED]" {
+		t.Errorf("another-secret attribute = %q, want secret://[REDACTED]", got)
+	}
+	if got := redacted.ResultSink.Attributes["workload"]; got != "classification" {
+		t.Errorf("plaintext attribute mutated: got %q", got)
+	}
+	// Original unchanged.
+	if rc.ResultSink.Attributes["auth-token"] != "secret://PUBSUB_TOKEN" {
+		t.Error("Redact mutated original ResultSink.Attributes")
+	}
+}
