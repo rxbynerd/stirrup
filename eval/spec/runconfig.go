@@ -15,7 +15,6 @@ import (
 //   - Providers map[string]ProviderConfig (named multi-provider lineup)
 //   - DynamicContext map[string]DynamicContextValue
 //   - GuardRailConfig.CustomCriteria map[string]string
-//   - TraceEmitterConfig.Headers map[string]string
 //   - TransportConfig (the eval runner is stdio-only)
 //   - ToolsConfig.MCPServers (slice of structs)
 //
@@ -55,8 +54,15 @@ type runConfigSpec struct {
 
 // runConfigOverridesSpec mirrors types.RunConfigOverrides. Every field
 // is a pointer / optional so a sparse overlay is the natural shape.
+//
+// Note: Mode is intentionally absent from the HCL surface. Per-task mode
+// is controlled by the task block's own `mode` attribute; the runner
+// always passes that on as the harness's --mode flag, which would
+// silently override anything written here. The Go type
+// RunConfigOverrides retains Mode for the experiment runner path,
+// which writes its own merged config and does not pass --mode on the
+// command line.
 type runConfigOverridesSpec struct {
-	Mode            string               `hcl:"mode,optional"`
 	MaxTurns        *int                 `hcl:"max_turns,optional"`
 	Provider        *providerSpec        `hcl:"provider,block"`
 	ModelRouter     *modelRouterSpec     `hcl:"model_router,block"`
@@ -196,11 +202,12 @@ type transportSpec struct {
 }
 
 type traceEmitterSpec struct {
-	Type            string `hcl:"type"`
-	FilePath        string `hcl:"file_path,optional"`
-	Endpoint        string `hcl:"endpoint,optional"`
-	MetricsEndpoint string `hcl:"metrics_endpoint,optional"`
-	Protocol        string `hcl:"protocol,optional"`
+	Type            string            `hcl:"type"`
+	FilePath        string            `hcl:"file_path,optional"`
+	Endpoint        string            `hcl:"endpoint,optional"`
+	MetricsEndpoint string            `hcl:"metrics_endpoint,optional"`
+	Protocol        string            `hcl:"protocol,optional"`
+	Headers         map[string]string `hcl:"headers,optional"`
 }
 
 type toolsSpec struct {
@@ -327,7 +334,6 @@ func runConfigOverridesSpecToType(s *runConfigOverridesSpec) *types.RunConfigOve
 		return nil
 	}
 	out := &types.RunConfigOverrides{
-		Mode:     s.Mode,
 		MaxTurns: s.MaxTurns,
 	}
 	if s.Provider != nil {
@@ -507,6 +513,7 @@ func traceEmitterSpecToType(s *traceEmitterSpec) types.TraceEmitterConfig {
 		Endpoint:        s.Endpoint,
 		MetricsEndpoint: s.MetricsEndpoint,
 		Protocol:        s.Protocol,
+		Headers:         s.Headers,
 	}
 }
 

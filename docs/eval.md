@@ -120,11 +120,19 @@ suite → task layering:
 | `run_config_overrides { ... }` | per task | Sparse overlay applied on top of the suite baseline. | n/a |
 
 Per-task `run_config_overrides` follows the existing
-`types.RunConfigOverrides` shape and currently surfaces `mode`,
-`provider`, `model_router`, `context_strategy`, `edit_strategy`,
-`verifier`, and `max_turns`. Only fields explicitly set on the
-overlay take effect; everything else passes the baseline through
-unchanged.
+`types.RunConfigOverrides` shape and currently surfaces `provider`,
+`model_router`, `context_strategy`, `edit_strategy`, `verifier`,
+and `max_turns`. Only fields explicitly set on the overlay take
+effect; everything else passes the baseline through unchanged.
+
+Per-task mode is set via the task block's `mode` attribute, not
+`run_config_overrides`. The runner always passes the task's mode
+as the harness's `--mode` flag, which would otherwise silently
+override anything written in the overlay; the HCL surface omits
+`mode` from `run_config_overrides` so the conflict cannot arise.
+A suite-level `run_config { mode = "..." }` is still effective —
+it rides in the merged config file and is honoured by the
+harness unless the task itself sets a `mode` attribute.
 
 ```hcl
 suite "openai-responses-empty-tool-output-regression" {
@@ -215,7 +223,6 @@ grows dedicated handling:
 - `providers` (named multi-provider lineup, `map[string]ProviderConfig`)
 - `dynamic_context` (`map[string]DynamicContextValue`)
 - `guard_rail.custom_criteria` (`map[string]string`)
-- `trace_emitter.headers` (`map[string]string`)
 - `tools.mcp_servers` (slice of structs)
 - `transport` (the eval runner is stdio-only)
 
