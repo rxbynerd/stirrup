@@ -780,3 +780,553 @@ func collectOutcomes(results []eval.TaskResult) []string {
 	}
 	return out
 }
+
+// configRecordingHarness writes a fake harness that records the
+// `--config` path it was invoked with into argsLog and copies the
+// config file's bytes into a parallel file at configLog so tests can
+// inspect what the runner handed the binary. The harness still writes
+// a minimal trace file so the judge has something to chew on.
+func configRecordingHarness(t *testing.T, argsLog, configLog string) string {
+	t.Helper()
+	script := fmt.Sprintf(`#!/bin/sh
+CONFIG=""
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --config) CONFIG="$2"; echo "config=$2" >> %q; shift 2 ;;
+    --trace)  TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$CONFIG" ] && [ -f "$CONFIG" ]; then
+  cat "$CONFIG" > %q
+fi
+[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+`, argsLog, configLog)
+	return writeFakeHarness(t, script)
+}
+
+func intPtr(v int) *int { return &v }
+
+// TestRunSuite_MergedConfigPassedToHarness verifies that a suite with an
+// inline RunConfig baseline plus a task override produces a per-task
+// JSON config file at a path the runner hands the harness via --config,
+// and that the file deserialises into the expected merged shape (task
+// override layered on top of the suite baseline).
+func TestRunSuite_MergedConfigPassedToHarness(t *testing.T) {
+	logDir := t.TempDir()
+	argsLog := filepath.Join(logDir, "args.log")
+	configLog := filepath.Join(logDir, "config.json")
+	harness := configRecordingHarness(t, argsLog, configLog)
+
+	suite := types.EvalSuite{
+		ID: "merged-config-suite",
+		RunConfig: &types.RunConfigSource{
+			Inline: &types.RunConfigOverrides{
+				Mode: "execution",
+				Provider: &types.ProviderConfig{
+					Type:      "openai-responses",
+					APIKeyRef: "secret://OPENAI_KEY",
+				},
+				MaxTurns: intPtr(8),
+			},
+		},
+		Tasks: []types.EvalTask{
+			{
+				ID:     "t1",
+				Prompt: "do thing",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+				RunConfigOverrides: &types.RunConfigOverrides{
+					MaxTurns: intPtr(4),
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	argsContent, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("reading args log: %v", err)
+	}
+	if !strings.Contains(string(argsContent), "config=") {
+		t.Fatalf("args log did not record --config invocation: %q", string(argsContent))
+	}
+
+	configContent, err := os.ReadFile(configLog)
+	if err != nil {
+		t.Fatalf("reading config log: %v", err)
+	}
+	var got types.RunConfig
+	if err := json.Unmarshal(configContent, &got); err != nil {
+		t.Fatalf("config JSON not deserialisable: %v\n%s", err, string(configContent))
+	}
+	if got.Mode != "execution" {
+		t.Errorf("Mode = %q, want %q", got.Mode, "execution")
+	}
+	if got.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want %q", got.Provider.Type, "openai-responses")
+	}
+	if got.Provider.APIKeyRef != "secret://OPENAI_KEY" {
+		t.Errorf("Provider.APIKeyRef = %q, want %q", got.Provider.APIKeyRef, "secret://OPENAI_KEY")
+	}
+	// Task override must win over the suite baseline (4 over 8).
+	if got.MaxTurns != 4 {
+		t.Errorf("MaxTurns = %d, want 4 (task override should win)", got.MaxTurns)
+	}
+}
+
+// TestRunSuite_FileBaselineLoaded verifies the suite.RunConfig.File
+// path is read by the runner, parsed as JSON, and used as the merged
+// config baseline. Without task overrides the merged config must equal
+// the file's contents verbatim.
+func TestRunSuite_FileBaselineLoaded(t *testing.T) {
+	logDir := t.TempDir()
+	argsLog := filepath.Join(logDir, "args.log")
+	configLog := filepath.Join(logDir, "config.json")
+	harness := configRecordingHarness(t, argsLog, configLog)
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "base.json")
+	timeout := 120
+	baseline := types.RunConfig{
+		Mode: "execution",
+		Provider: types.ProviderConfig{
+			Type:      "anthropic",
+			APIKeyRef: "secret://ANTHROPIC_KEY",
+		},
+		MaxTurns: 6,
+		Timeout:  &timeout,
+	}
+	data, err := json.Marshal(baseline)
+	if err != nil {
+		t.Fatalf("marshalling baseline: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatalf("writing baseline file: %v", err)
+	}
+
+	suite := types.EvalSuite{
+		ID:        "file-baseline-suite",
+		RunConfig: &types.RunConfigSource{File: cfgPath},
+		Tasks: []types.EvalTask{
+			{
+				ID:     "t1",
+				Prompt: "p",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+			},
+		},
+	}
+
+	_, err = RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	configContent, err := os.ReadFile(configLog)
+	if err != nil {
+		t.Fatalf("reading config log: %v", err)
+	}
+	var got types.RunConfig
+	if err := json.Unmarshal(configContent, &got); err != nil {
+		t.Fatalf("config JSON not deserialisable: %v", err)
+	}
+	if got.Mode != "execution" || got.Provider.Type != "anthropic" || got.MaxTurns != 6 {
+		t.Errorf("file-baseline merge did not survive round-trip: %#v", got)
+	}
+}
+
+// TestRunSuite_NoConfigSurfaceLegacyInvocation pins the backwards-compat
+// contract: a suite with no RunConfig and no per-task overrides must NOT
+// add --config to the args slice, and no run_config.redacted.json
+// artifact may appear under OutputDir.
+func TestRunSuite_NoConfigSurfaceLegacyInvocation(t *testing.T) {
+	logDir := t.TempDir()
+	argsLog := filepath.Join(logDir, "args.log")
+	// Capture ALL args, not just --config, so we can assert --config is absent.
+	script := fmt.Sprintf(`#!/bin/sh
+echo "args:" >> %q
+for a in "$@"; do echo "  $a" >> %q; done
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+`, argsLog, argsLog)
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "legacy-suite",
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	out := t.TempDir()
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harness,
+		OutputDir:   out,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logBytes, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("reading args log: %v", err)
+	}
+	if strings.Contains(string(logBytes), "--config") {
+		t.Errorf("args log contains --config for a no-config-surface suite: %q", string(logBytes))
+	}
+
+	// No artifact may exist on disk.
+	artifact := filepath.Join(out, "legacy-suite", "t1", "run_config.redacted.json")
+	if _, err := os.Stat(artifact); err == nil {
+		t.Errorf("run_config.redacted.json should not exist for a no-config-surface suite (found at %s)", artifact)
+	}
+}
+
+// TestRunSuite_RetainedArtifactRedacted pins the redaction guarantee:
+// the persisted run_config.redacted.json must NOT contain the literal
+// secret reference value and MUST contain the redaction sentinel.
+func TestRunSuite_RetainedArtifactRedacted(t *testing.T) {
+	logDir := t.TempDir()
+	argsLog := filepath.Join(logDir, "args.log")
+	configLog := filepath.Join(logDir, "config.json")
+	harness := configRecordingHarness(t, argsLog, configLog)
+
+	const realKeyRef = "secret://REAL_KEY_PLAINTEXT"
+	suite := types.EvalSuite{
+		ID: "redacted-suite",
+		RunConfig: &types.RunConfigSource{
+			Inline: &types.RunConfigOverrides{
+				Mode: "execution",
+				Provider: &types.ProviderConfig{
+					Type:      "openai-responses",
+					APIKeyRef: realKeyRef,
+				},
+			},
+		},
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	out := t.TempDir()
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harness,
+		OutputDir:   out,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	artifact := filepath.Join(out, "redacted-suite", "t1", "run_config.redacted.json")
+	content, err := os.ReadFile(artifact)
+	if err != nil {
+		t.Fatalf("reading redacted artifact: %v", err)
+	}
+	if strings.Contains(string(content), "REAL_KEY_PLAINTEXT") {
+		t.Errorf("redacted artifact leaked secret reference value:\n%s", string(content))
+	}
+	if !strings.Contains(string(content), "secret://[REDACTED]") {
+		t.Errorf("redacted artifact missing redaction sentinel:\n%s", string(content))
+	}
+}
+
+// TestRunSuite_DryRunValidatesMergedConfig asserts that --dry-run runs
+// ValidateRunConfig on the merged config and surfaces validator errors
+// per task. We use a read-only mode paired with an allow-all permission
+// policy, which ValidateRunConfig rejects.
+func TestRunSuite_DryRunValidatesMergedConfig(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "dry-run-invalid-suite",
+		RunConfig: &types.RunConfigSource{
+			Inline: &types.RunConfigOverrides{
+				Mode: "planning",
+				Provider: &types.ProviderConfig{
+					Type:      "anthropic",
+					APIKeyRef: "secret://K",
+				},
+			},
+		},
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	tr := result.Tasks[0]
+	if tr.Outcome == "pass" {
+		t.Errorf("task outcome = pass, want a non-pass for an invalid merged config")
+	}
+	if !strings.Contains(tr.JudgeVerdict.Reason, "RunConfig validation failed") {
+		t.Errorf("reason = %q, want it to mention RunConfig validation", tr.JudgeVerdict.Reason)
+	}
+}
+
+// TestRunSuite_DryRunNoConfigStillSkipsAsPass pins today's behaviour for
+// suites that have no run-config surface — dry-run must remain a vacuous
+// pass for every task so existing CI invocations keep their semantics.
+func TestRunSuite_DryRunNoConfigStillSkipsAsPass(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "dry-run-legacy",
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p"},
+			{ID: "t2", Prompt: "p"},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, tr := range result.Tasks {
+		if tr.Outcome != "pass" {
+			t.Errorf("task %s: outcome = %q, want pass (no-config-surface dry-run regression)", tr.TaskID, tr.Outcome)
+		}
+		if !strings.Contains(tr.JudgeVerdict.Reason, "skipped") {
+			t.Errorf("task %s: reason = %q, want it to mention skipped", tr.TaskID, tr.JudgeVerdict.Reason)
+		}
+	}
+	if result.PassRate != 1.0 {
+		t.Errorf("PassRate = %f, want 1.0", result.PassRate)
+	}
+}
+
+// TestMergeRunConfig_NoSurfaceReturnsNil pins the (nil, nil) contract:
+// the runner uses that signal to skip --config entirely and preserve
+// backwards compat with pre-#177 suites.
+func TestMergeRunConfig_NoSurfaceReturnsNil(t *testing.T) {
+	suite := types.EvalSuite{ID: "s", Tasks: []types.EvalTask{{ID: "t1"}}}
+	got, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("got %#v, want nil", got)
+	}
+}
+
+// TestMergeRunConfig_InlineBaseline asserts that the suite-level
+// inline overrides materialise into a non-nil merged config with all
+// sparse fields populated (provider, model router, context strategy,
+// edit strategy, verifier, mode, max-turns).
+func TestMergeRunConfig_InlineBaseline(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "s",
+		RunConfig: &types.RunConfigSource{
+			Inline: &types.RunConfigOverrides{
+				Mode:            "execution",
+				Provider:        &types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://K"},
+				ModelRouter:     &types.ModelRouterConfig{Type: "static", Model: "gpt-5.4-nano"},
+				ContextStrategy: &types.ContextStrategyConfig{Type: "full-history"},
+				EditStrategy:    &types.EditStrategyConfig{Type: "string-replace"},
+				Verifier:        &types.VerifierConfig{Type: "noop"},
+				MaxTurns:        intPtr(12),
+			},
+		},
+		Tasks: []types.EvalTask{{ID: "t1"}},
+	}
+	got, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil, want a populated merged config")
+	}
+	if got.Mode != "execution" {
+		t.Errorf("Mode = %q", got.Mode)
+	}
+	if got.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q", got.Provider.Type)
+	}
+	if got.ModelRouter.Model != "gpt-5.4-nano" {
+		t.Errorf("ModelRouter.Model = %q", got.ModelRouter.Model)
+	}
+	if got.ContextStrategy.Type != "full-history" {
+		t.Errorf("ContextStrategy.Type = %q", got.ContextStrategy.Type)
+	}
+	if got.EditStrategy.Type != "string-replace" {
+		t.Errorf("EditStrategy.Type = %q", got.EditStrategy.Type)
+	}
+	if got.Verifier.Type != "noop" {
+		t.Errorf("Verifier.Type = %q", got.Verifier.Type)
+	}
+	if got.MaxTurns != 12 {
+		t.Errorf("MaxTurns = %d, want 12", got.MaxTurns)
+	}
+}
+
+// TestMergeRunConfig_TaskOverridesPreserveBaseline asserts that a task
+// that sets only one field leaves the suite's other baseline fields
+// intact — sparse semantics, not whole-record replacement.
+func TestMergeRunConfig_TaskOverridesPreserveBaseline(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "s",
+		RunConfig: &types.RunConfigSource{
+			Inline: &types.RunConfigOverrides{
+				Mode:     "execution",
+				Provider: &types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://K"},
+				MaxTurns: intPtr(10),
+			},
+		},
+		Tasks: []types.EvalTask{
+			{
+				ID: "t1",
+				RunConfigOverrides: &types.RunConfigOverrides{
+					MaxTurns: intPtr(3),
+				},
+			},
+		},
+	}
+	got, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Mode != "execution" {
+		t.Errorf("Mode = %q, want baseline preserved", got.Mode)
+	}
+	if got.Provider.Type != "openai-responses" {
+		t.Errorf("Provider = %#v, want baseline preserved", got.Provider)
+	}
+	if got.MaxTurns != 3 {
+		t.Errorf("MaxTurns = %d, want task override 3", got.MaxTurns)
+	}
+}
+
+// TestMergeRunConfig_NilOverridesPreserveBaseline pins the sparse
+// semantics for nil-pointer fields: a task override with all-nil
+// pointer fields must not zero out the suite baseline.
+func TestMergeRunConfig_NilOverridesPreserveBaseline(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "s",
+		RunConfig: &types.RunConfigSource{
+			Inline: &types.RunConfigOverrides{
+				Mode:     "execution",
+				Provider: &types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
+				MaxTurns: intPtr(7),
+			},
+		},
+		Tasks: []types.EvalTask{
+			{ID: "t1", RunConfigOverrides: &types.RunConfigOverrides{}}, // empty; all nil
+		},
+	}
+	got, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Mode != "execution" || got.Provider.Type != "anthropic" || got.MaxTurns != 7 {
+		t.Errorf("baseline not preserved: %#v", got)
+	}
+}
+
+// TestMergeRunConfig_FileBaselineRoundTrip asserts that a JSON file
+// referenced by suite.RunConfig.File is read and parsed verbatim.
+func TestMergeRunConfig_FileBaselineRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "base.json")
+	timeout := 60
+	baseline := types.RunConfig{
+		Mode:     "execution",
+		Provider: types.ProviderConfig{Type: "gemini", APIKeyRef: "secret://G"},
+		MaxTurns: 5,
+		Timeout:  &timeout,
+	}
+	data, _ := json.Marshal(baseline)
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := types.EvalSuite{
+		ID:        "s",
+		RunConfig: &types.RunConfigSource{File: cfgPath},
+		Tasks:     []types.EvalTask{{ID: "t1"}},
+	}
+	got, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Mode != "execution" || got.Provider.Type != "gemini" || got.MaxTurns != 5 {
+		t.Errorf("file baseline not round-tripped: %#v", got)
+	}
+}
+
+// TestMergeRunConfig_FileBaselineMissingFile surfaces a clear error
+// when the file referenced by suite.RunConfig.File cannot be opened.
+func TestMergeRunConfig_FileBaselineMissingFile(t *testing.T) {
+	suite := types.EvalSuite{
+		ID:        "s",
+		RunConfig: &types.RunConfigSource{File: filepath.Join(t.TempDir(), "missing.json")},
+		Tasks:     []types.EvalTask{{ID: "t1"}},
+	}
+	_, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !strings.Contains(err.Error(), "loading suite run-config file") {
+		t.Errorf("error = %q, want it to mention loading", err.Error())
+	}
+}
+
+// TestMergeRunConfig_FileBaselineRejectsUnknownFields ensures we keep
+// the harness's strict-decoding contract: a typo in the config file
+// surfaces as an error rather than being silently dropped.
+func TestMergeRunConfig_FileBaselineRejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bogus.json")
+	// `runId` is a valid field, but `runIdTypo` is not.
+	if err := os.WriteFile(cfgPath, []byte(`{"mode":"execution","runIdTypo":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	suite := types.EvalSuite{
+		ID:        "s",
+		RunConfig: &types.RunConfigSource{File: cfgPath},
+		Tasks:     []types.EvalTask{{ID: "t1"}},
+	}
+	_, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err == nil {
+		t.Fatal("expected error for unknown field in config JSON")
+	}
+}
+
+// TestMergeRunConfig_TaskOverridesOnlyNoBaseline asserts that a task
+// with overrides but no suite-level baseline still produces a non-nil
+// merged config built from a zero-value RunConfig.
+func TestMergeRunConfig_TaskOverridesOnlyNoBaseline(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "s",
+		Tasks: []types.EvalTask{
+			{
+				ID: "t1",
+				RunConfigOverrides: &types.RunConfigOverrides{
+					Mode:     "execution",
+					Provider: &types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
+					MaxTurns: intPtr(2),
+				},
+			},
+		},
+	}
+	got, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil, want a populated merged config from task-only overrides")
+	}
+	if got.Mode != "execution" || got.Provider.Type != "anthropic" || got.MaxTurns != 2 {
+		t.Errorf("task-only overrides not materialised: %#v", got)
+	}
+}
