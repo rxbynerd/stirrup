@@ -106,6 +106,123 @@ generate suites from a higher-level tool and emit the static HCL.
 Suite definitions live in `eval/suites/`. CI baselines live in
 `eval/baselines/`.
 
+### Suite-level RunConfig surface
+
+A suite can pin the harness configuration it expects to run against,
+so the regression scenario it describes cannot be silently nullified
+by the operator's environment. Three authoring constructs cover the
+suite → task layering:
+
+| Construct | Scope | Shape | Mutual exclusion |
+|---|---|---|---|
+| `run_config_file = "path.json"` | suite | Path to a `RunConfig` JSON file matching what `stirrup harness --config` already consumes. | Cannot coexist with inline `run_config`. |
+| `run_config { ... }` | suite | Inline `RunConfig` baseline. | Cannot coexist with `run_config_file`. |
+| `run_config_overrides { ... }` | per task | Sparse overlay applied on top of the suite baseline. | n/a |
+
+Per-task `run_config_overrides` follows the existing
+`types.RunConfigOverrides` shape and currently surfaces `mode`,
+`provider`, `model_router`, `context_strategy`, `edit_strategy`,
+`verifier`, and `max_turns`. Only fields explicitly set on the
+overlay take effect; everything else passes the baseline through
+unchanged.
+
+```hcl
+suite "openai-responses-empty-tool-output-regression" {
+  description = "..."
+
+  run_config {
+    provider {
+      type        = "openai-responses"
+      api_key_ref = "secret://OPENAI_KEY"
+    }
+
+    model_router {
+      type     = "static"
+      provider = "openai-responses"
+      model    = "gpt-5.4-nano"
+    }
+  }
+
+  task "empty-stdout-run-command-completes" {
+    description = "..."
+    prompt      = "..."
+
+    # Optional sparse overlay (not used by this regression task).
+    # run_config_overrides {
+    #   max_turns = 4
+    # }
+
+    judge { ... }
+  }
+}
+```
+
+The live example is at
+[`eval/suites/openai-responses-empty-tool-output.hcl`](../eval/suites/openai-responses-empty-tool-output.hcl).
+
+**Precedence.** Explicit runner-managed flags
+(`--workspace`, `--trace`, `--timeout`, `--prompt`, `--mode`) always
+override the merged config. The runner sets them on every harness
+invocation because they are scoped to the per-task temp workspace
+and trace file the runner manages; the merged `--config` carries
+everything else (provider, model_router, executor, permission
+policy, guard rail, code scanner, observability, max_turns, …).
+This matches the precedence rule the harness's `--config` flag
+already documents.
+
+**Retention.** When `--output` is set, each retained task
+directory carries a `run_config.redacted.json` companion next to
+`trace.jsonl`, `harness.stdout.txt`, and `harness.stderr.txt`. The
+redaction guarantee matches `RunConfig.Redact()`: every
+`secret://` reference is rewritten to `secret://[REDACTED]`
+before the file lands on disk, so a retained artifact never
+carries a resolved secret out of the process. The reference
+itself never leaves the suite — only its redacted form is
+persisted.
+
+**Dry-run validation.** `stirrup-eval run --dry-run` builds the
+merged config for each task and feeds it to
+`types.ValidateRunConfig`. Validation errors are surfaced
+per task in the resulting `SuiteResult` (outcome `"error"`, the
+validator's message in `JudgeVerdict.Reason`) without aborting
+the suite; sibling tasks are still validated and reported. A
+suite with no `run_config_file` and no inline `run_config`
+preserves the legacy dry-run shape: every task is reported as a
+synthetic `"pass"` with reason `"dry run — skipped"`.
+
+**Replay-mode caveat.** `ReplayProvider` re-emits recorded
+`TurnRecord.ModelOutput` entries and never speaks HTTP. A suite
+that pins `provider` under a replay-mode invocation produces a
+configuration whose provider field has no effect: the replay
+provider is selected ahead of any wire-format adapter. The
+provider pin is still useful as documentation of the original
+recording's posture, but it does not gate the run.
+
+**Backwards compatibility.** A suite with no `run_config_file`,
+no inline `run_config`, and no per-task `run_config_overrides`
+behaves exactly as before — the runner falls back to the
+five-flag invocation (`--prompt`, `--mode`, `--workspace`,
+`--trace`, `--timeout`) and writes no `run_config.redacted.json`.
+The new fields are purely additive.
+
+**Currently unsupported.** The inline `run_config` block decodes
+most of `types.RunConfig` but defers a small number of fields
+whose HCL representation is awkward under gohcl's attribute
+model. These must be authored via `run_config_file` (which is
+parsed as JSON, where they are straightforward) until the parser
+grows dedicated handling:
+
+- `providers` (named multi-provider lineup, `map[string]ProviderConfig`)
+- `dynamic_context` (`map[string]DynamicContextValue`)
+- `guard_rail.custom_criteria` (`map[string]string`)
+- `trace_emitter.headers` (`map[string]string`)
+- `tools.mcp_servers` (slice of structs)
+- `transport` (the eval runner is stdio-only)
+
+Setting these via `run_config_file` is the recommended escape
+hatch; the suite still benefits from inline `run_config_overrides`
+for the supported subset.
+
 ### Judges
 
 A judge decides whether a task passed by inspecting the workspace
@@ -176,13 +293,21 @@ each task's judge to the workspace. Writes a `result.json`
 (`eval.SuiteResult`) into `--output`. Errors per-task are captured in
 `TaskResult.Error` without halting the suite.
 
+When the suite declares a baseline (`run_config_file` or inline
+`run_config`), the runner merges the per-task
+`run_config_overrides` overlay, writes the result to a per-task
+temp file, and invokes `stirrup harness --config <merged>.json`
+alongside the five workspace-scoped flags. The retained artifact
+tree gains a `run_config.redacted.json` per task. See
+[Suite-level RunConfig surface](#suite-level-runconfig-surface).
+
 | Flag             | Default          | Description                                                  |
 |------------------|------------------|--------------------------------------------------------------|
 | `--suite`        | required         | Path to `EvalSuite` HCL file (`.hcl`).                       |
 | `--output`       | current dir      | Directory for `result.json` and per-task artifacts.          |
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
 | `--concurrency`  | `1`              | Requested parallelism. Honoured as `1` until concurrency lands. |
-| `--dry-run`      | `false`          | Validate the suite and emit a synthetic all-pass result.     |
+| `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`) and emit a synthetic result. |
 
 Exit code is `0` regardless of pass rate — use `compare` to gate CI.
 
