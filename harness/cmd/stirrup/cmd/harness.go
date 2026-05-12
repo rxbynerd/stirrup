@@ -1449,6 +1449,12 @@ func runWithConfig(config *types.RunConfig) error {
 		return fmt.Errorf("running harness: %w", err)
 	}
 	printRunSummary(runTrace)
+	// resultSink emission is the last thing on stdout for the run, so
+	// a Cloud Logging grep / shell pipeline can extract the
+	// "STIRRUP_RESULT <json>" line deterministically. Failures are
+	// logged inside emitRunResult and never fatal — the trace and the
+	// stderr summary already reflect outcome.
+	emitRunResult(ctx, config, runTrace)
 
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
 		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace)

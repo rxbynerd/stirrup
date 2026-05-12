@@ -129,6 +129,11 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("running harness: %w", err)
 	}
 	printRunSummary(runTrace)
+	// resultSink emission mirrors the harness command path so a Cloud
+	// Run / Kubernetes job can be configured with
+	// resultSink.type=stdout-json and have its answer scraped from the
+	// pod's stdout regardless of which entrypoint launched it.
+	emitRunResult(ctx, config, runTrace)
 
 	// Honour follow-up grace from the RunConfig (set by the control plane) or
 	// fall back to the STIRRUP_FOLLOWUP_GRACE environment variable.
