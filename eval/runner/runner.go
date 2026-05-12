@@ -368,15 +368,52 @@ func retainArtifacts(suiteArtifactDir, taskID, traceFile string, stdout, stderr 
 		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: stderr: %v\n", taskID, err)
 	}
 	if mergedCfg != nil {
+		// Belt-and-braces: parse-time and validate-time both reject raw
+		// credentials in api_key_ref, but if a misconfiguration ever
+		// slipped through, Redact() would quietly rewrite it to the
+		// sentinel and the redacted artifact would hide the bad config
+		// from audit. Emit a warning to stderr before redacting so an
+		// operator inspecting the artifact tree sees the misconfiguration.
+		warnIfRawAPIKeyRef(taskID, mergedCfg)
 		redacted := mergedCfg.Redact()
 		data, err := json.MarshalIndent(redacted, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: run-config marshal: %v\n", taskID, err)
 			return
 		}
-		if err := os.WriteFile(filepath.Join(taskDir, "run_config.redacted.json"), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(taskDir, "run_config.redacted.json"), data, 0o640); err != nil {
 			fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: run-config: %v\n", taskID, err)
 		}
+	}
+}
+
+// warnIfRawAPIKeyRef emits a stderr warning when the merged config
+// carries an apiKeyRef that does not use the secret:// scheme. The
+// invariant is enforced at parse and validate time; this is a
+// last-line safeguard so that if a regression ever lets a raw value
+// through, an operator inspecting the audit artifact sees the
+// misconfiguration instead of a silently-redacted line.
+func warnIfRawAPIKeyRef(taskID string, cfg *types.RunConfig) {
+	if cfg == nil {
+		return
+	}
+	check := func(path, ref string) {
+		if ref == "" || strings.HasPrefix(ref, "secret://") {
+			return
+		}
+		fmt.Fprintf(os.Stderr,
+			"eval: task %q: %s is a raw value (not a secret:// reference); it should have been rejected at parse/validate time — redacting in artifact but the harness will refuse this configuration\n",
+			taskID, path)
+	}
+	check("provider.apiKeyRef", cfg.Provider.APIKeyRef)
+	for name, p := range cfg.Providers {
+		check(fmt.Sprintf("providers[%s].apiKeyRef", name), p.APIKeyRef)
+	}
+	if cfg.Executor.VcsBackend != nil {
+		check("executor.vcsBackend.apiKeyRef", cfg.Executor.VcsBackend.APIKeyRef)
+	}
+	for i, server := range cfg.Tools.MCPServers {
+		check(fmt.Sprintf("tools.mcpServers[%d].apiKeyRef", i), server.APIKeyRef)
 	}
 }
 

@@ -364,7 +364,10 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 	case s.RunConfigFile != nil:
 		runCfgSource = &types.RunConfigSource{File: *s.RunConfigFile}
 	case s.RunConfig != nil:
-		inline := convertRunConfigOverrides(s.RunConfig)
+		inline, err := convertRunConfigOverrides(s.RunConfig)
+		if err != nil {
+			return types.EvalSuite{}, fmt.Errorf("suite %q: %w", s.ID, err)
+		}
 		runCfgSource = &types.RunConfigSource{Inline: inline}
 	}
 
@@ -377,6 +380,10 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		if err != nil {
 			return types.EvalSuite{}, err
 		}
+		taskOverrides, err := convertRunConfigOverrides(t.RunConfigOverrides)
+		if err != nil {
+			return types.EvalSuite{}, fmt.Errorf("task %q: %w", t.ID, err)
+		}
 		tasks = append(tasks, types.EvalTask{
 			ID:                 t.ID,
 			Description:        t.Description,
@@ -385,7 +392,7 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 			Prompt:             t.Prompt,
 			Mode:               t.Mode,
 			Judge:              j,
-			RunConfigOverrides: convertRunConfigOverrides(t.RunConfigOverrides),
+			RunConfigOverrides: taskOverrides,
 		})
 	}
 
@@ -397,13 +404,43 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 	}, nil
 }
 
+// requireSecretSchemeIfSet returns an error when ref is non-empty and
+// does not start with "secret://". The eval HCL surface accepts only
+// references resolved by the harness SecretStore; a raw credential
+// authored inline would otherwise sit on disk in the merged run-config
+// (admittedly at 0600) and be silently hidden by Redact() when the
+// retained artifact is written, masking the misconfiguration from
+// audit. The check mirrors CLAUDE.md's "secrets never as raw values in
+// RunConfig" invariant at parse time so authors see a clear error
+// where they wrote the value, not deep inside the harness boot path.
+func requireSecretSchemeIfSet(field, ref string) error {
+	if ref == "" {
+		return nil
+	}
+	if !strings.HasPrefix(ref, "secret://") {
+		return fmt.Errorf(
+			"%s %q: raw credentials are not permitted; use a secret:// reference",
+			field, ref,
+		)
+	}
+	return nil
+}
+
 // convertRunConfigOverrides walks a parsed runConfigOverridesSpec into
 // a *types.RunConfigOverrides. Returns nil when src is nil so callers
 // can distinguish "no override block was authored" from "override
 // block was authored but every field happened to be a zero value".
-func convertRunConfigOverrides(src *runConfigOverridesSpec) *types.RunConfigOverrides {
+//
+// Returns an error when a surfaced api_key_ref does not use the
+// "secret://" scheme. Authoring a raw credential inline is rejected
+// at parse time so it never reaches the merged run_config.json the
+// runner hands the harness, where it would otherwise sit on disk
+// (admittedly with 0600 perms, but the redacted artifact would also
+// quietly hide the misconfiguration). Defense-in-depth is also
+// enforced by types.ValidateRunConfig.
+func convertRunConfigOverrides(src *runConfigOverridesSpec) (*types.RunConfigOverrides, error) {
 	if src == nil {
-		return nil
+		return nil, nil
 	}
 	// Mode is not surfaced in the HCL grammar (see runConfigOverridesSpec
 	// doc-comment); the runner reads task.Mode directly via the task-level
@@ -414,6 +451,9 @@ func convertRunConfigOverrides(src *runConfigOverridesSpec) *types.RunConfigOver
 		MaxTurns: src.MaxTurns,
 	}
 	if src.Provider != nil {
+		if err := requireSecretSchemeIfSet("provider.api_key_ref", src.Provider.APIKeyRef); err != nil {
+			return nil, err
+		}
 		out.Provider = &types.ProviderConfig{
 			Type:         src.Provider.Type,
 			APIKeyRef:    src.Provider.APIKeyRef,
@@ -459,7 +499,7 @@ func convertRunConfigOverrides(src *runConfigOverridesSpec) *types.RunConfigOver
 		}
 		out.Verifier = v
 	}
-	return out
+	return out, nil
 }
 
 // convertJudge recursively translates a judgeSpec into types.EvalJudge,

@@ -151,6 +151,81 @@ func validConfig() *RunConfig {
 	}
 }
 
+// TestValidateRunConfig_RawAPIKeyRefRejected pins the "no raw
+// credentials" invariant at the validator level so the same bad
+// config is rejected regardless of how it arrived (HCL, JSON file,
+// programmatic API). Without this, a raw key would silently flow to
+// disk in the eval runner's merged config artifact and be hidden by
+// Redact() in the audit copy.
+func TestValidateRunConfig_RawAPIKeyRefRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*RunConfig)
+		wantSub string
+	}{
+		{
+			name: "provider.apiKeyRef raw",
+			mutate: func(c *RunConfig) {
+				c.Provider.APIKeyRef = "sk-raw-bad"
+			},
+			wantSub: "provider.apiKeyRef",
+		},
+		{
+			name: "named provider.apiKeyRef raw",
+			mutate: func(c *RunConfig) {
+				c.Provider.Type = ""
+				c.Providers = map[string]ProviderConfig{
+					"primary": {Type: "anthropic", APIKeyRef: "literal-key"},
+				}
+			},
+			wantSub: "providers[primary].apiKeyRef",
+		},
+		{
+			name: "vcsBackend.apiKeyRef raw",
+			mutate: func(c *RunConfig) {
+				c.Executor.VcsBackend = &VcsBackendConfig{APIKeyRef: "ghp_raw_bad"}
+			},
+			wantSub: "executor.vcsBackend.apiKeyRef",
+		},
+		{
+			name: "mcpServers[].apiKeyRef raw",
+			mutate: func(c *RunConfig) {
+				c.Tools.MCPServers = []MCPServerConfig{{Name: "x", URI: "https://example", APIKeyRef: "raw-mcp-key"}}
+			},
+			wantSub: "tools.mcpServers[0].apiKeyRef",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(cfg)
+			err := ValidateRunConfig(cfg)
+			if err == nil {
+				t.Fatal("expected error for raw apiKeyRef")
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error = %q, want it to mention %q", err.Error(), tc.wantSub)
+			}
+			if !strings.Contains(err.Error(), "raw credentials are not permitted") {
+				t.Errorf("error = %q, want it to mention 'raw credentials are not permitted'", err.Error())
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_SecretSchemedAPIKeyRefAccepted is the
+// positive twin: secret:// references must pass validation in every
+// surface that carries an apiKeyRef.
+func TestValidateRunConfig_SecretSchemedAPIKeyRefAccepted(t *testing.T) {
+	cfg := validConfig()
+	cfg.Provider.APIKeyRef = "secret://ANTHROPIC_KEY"
+	cfg.Executor.VcsBackend = &VcsBackendConfig{APIKeyRef: "secret://GH_TOKEN"}
+	cfg.Tools.MCPServers = []MCPServerConfig{{Name: "x", URI: "https://example", APIKeyRef: "secret://MCP"}}
+	if err := ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("expected nil error for secret://-schemed refs, got: %v", err)
+	}
+}
+
 func TestValidateRunConfig_Valid(t *testing.T) {
 	if err := ValidateRunConfig(validConfig()); err != nil {
 		t.Fatalf("expected nil error for valid config, got: %v", err)

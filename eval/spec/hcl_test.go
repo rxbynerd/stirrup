@@ -806,6 +806,113 @@ suite "s" {
 	}
 }
 
+// TestLoadSuiteHCL_RawAPIKeyRefRejected pins the parse-time invariant
+// that provider.api_key_ref must use the secret:// scheme. A raw
+// credential authored inline would otherwise sit on disk in the
+// merged run-config the runner hands the harness (at 0600, but
+// silently) and Redact() would hide the misconfiguration from the
+// audit artifact. The check fires on both suite-level inline
+// run_config blocks and per-task run_config_overrides blocks.
+func TestLoadSuiteHCL_RawAPIKeyRefRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "suite-level inline run_config",
+			src: `
+suite "s" {
+  run_config {
+    provider {
+      type        = "anthropic"
+      api_key_ref = "sk-raw-bad-key"
+    }
+  }
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`,
+		},
+		{
+			name: "per-task run_config_overrides",
+			src: `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    run_config_overrides {
+      provider {
+        type        = "anthropic"
+        api_key_ref = "literal-key-value"
+      }
+    }
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTemp(t, "raw-key.hcl", tc.src)
+			_, err := LoadSuiteHCL(path)
+			if err == nil {
+				t.Fatal("expected error for raw api_key_ref")
+			}
+			for _, frag := range []string{"raw credentials", "secret://"} {
+				if !strings.Contains(err.Error(), frag) {
+					t.Errorf("error = %q, want it to contain %q", err.Error(), frag)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadSuiteHCL_SecretSchemedAPIKeyRefAccepted is the positive twin
+// of TestLoadSuiteHCL_RawAPIKeyRefRejected: a properly schemed
+// reference still parses.
+func TestLoadSuiteHCL_SecretSchemedAPIKeyRefAccepted(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+  }
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "schemed-key.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.RunConfig == nil || got.RunConfig.Inline == nil || got.RunConfig.Inline.Provider == nil {
+		t.Fatalf("expected populated provider, got %#v", got.RunConfig)
+	}
+	if got.RunConfig.Inline.Provider.APIKeyRef != "secret://ANTHROPIC_KEY" {
+		t.Errorf("APIKeyRef = %q, want %q",
+			got.RunConfig.Inline.Provider.APIKeyRef, "secret://ANTHROPIC_KEY")
+	}
+}
+
 // TestLoadSuiteHCL_BackwardsCompatNoRunConfig confirms that a suite
 // authored before this issue (no run_config_* fields anywhere) decodes
 // with RunConfig == nil at the suite level and on every task. This is

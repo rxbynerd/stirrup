@@ -1181,6 +1181,15 @@ func ValidateRunConfig(config *RunConfig) error {
 	for name, prov := range config.Providers {
 		validateCredentialConfig(prov.Credential, fmt.Sprintf("providers[%s].credential", name), &errs)
 	}
+	// MCP servers and the VCS backend each carry their own apiKeyRef
+	// that Redact() rewrites; reject raw values here to match the
+	// provider-level invariant.
+	if config.Executor.VcsBackend != nil {
+		validateAPIKeyRef("executor.vcsBackend.apiKeyRef", config.Executor.VcsBackend.APIKeyRef, &errs)
+	}
+	for i, server := range config.Tools.MCPServers {
+		validateAPIKeyRef(fmt.Sprintf("tools.mcpServers[%d].apiKeyRef", i), server.APIKeyRef, &errs)
+	}
 
 	// Read-only modes must use deny-side-effects or ask-upstream
 	if readOnlyModes[config.Mode] && config.PermissionPolicy.Type == "allow-all" {
@@ -1505,11 +1514,32 @@ func validateVerifierConfig(cfg VerifierConfig, path string, errs *[]string) {
 	}
 }
 
+// validateAPIKeyRef enforces the "no raw credentials" invariant: any
+// non-empty APIKeyRef must use the "secret://" scheme so the harness
+// SecretStore resolves it at runtime. A raw value would otherwise
+// flow into a persisted run-config (e.g. the eval runner's
+// run_config.json hand-off) and be silently hidden by Redact() in
+// the audit artifact. Mirrors CLAUDE.md's "secrets never as raw
+// values in RunConfig" invariant inside the validator so the same
+// bad config is rejected whether it arrives via HCL, JSON, or a
+// programmatic API.
+func validateAPIKeyRef(path, ref string, errs *[]string) {
+	if ref == "" {
+		return
+	}
+	if !strings.HasPrefix(ref, "secret://") {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s %q does not use the secret:// scheme; raw credentials are not permitted in RunConfig",
+			path, ref))
+	}
+}
+
 func validateProviderConfigs(config *RunConfig, errs *[]string) {
 	knownProviders := map[string]bool{}
 	if config.Provider.Type != "" {
 		knownProviders[config.Provider.Type] = true
 	}
+	validateAPIKeyRef("provider.apiKeyRef", config.Provider.APIKeyRef, errs)
 	validateOpenAIAuthFields("provider", config.Provider, errs)
 	validateGeminiProviderFields("provider", config.Provider, errs)
 	validateAnthropicProviderFields("provider", config.Provider, errs)
@@ -1526,6 +1556,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 		knownProviders[name] = true
 		path := fmt.Sprintf("providers[%s]", name)
 		validateRequiredType(path, provider.Type, validProviderTypes, errs)
+		validateAPIKeyRef(fmt.Sprintf("%s.apiKeyRef", path), provider.APIKeyRef, errs)
 		validateOpenAIAuthFields(path, provider, errs)
 		validateGeminiProviderFields(path, provider, errs)
 		validateAnthropicProviderFields(path, provider, errs)
