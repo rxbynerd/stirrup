@@ -70,17 +70,28 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	runID := fmt.Sprintf("eval-%d", time.Now().UnixMilli())
 	startedAt := time.Now()
 
+	// Load the suite-level RunConfig baseline once; per-task overlays are
+	// applied against a fresh clone inside runTask / dry-run validation.
+	// A nil baseline preserves the legacy five-flag invocation path.
+	baseline, baselineErr := resolveBaseline(suite)
+	if baselineErr != nil {
+		return eval.SuiteResult{}, baselineErr
+	}
+
 	if cfg.DryRun {
 		tasks := make([]eval.TaskResult, len(suite.Tasks))
 		for i, t := range suite.Tasks {
-			tasks[i] = eval.TaskResult{
-				TaskID:  t.ID,
-				Outcome: "pass",
-				JudgeVerdict: eval.JudgeVerdict{
-					Passed: true,
-					Reason: "dry run — skipped",
-				},
+			tasks[i] = dryRunTask(t, baseline)
+		}
+		passCount := 0
+		for _, tr := range tasks {
+			if tr.Outcome == "pass" {
+				passCount++
 			}
+		}
+		passRate := float64(0)
+		if len(tasks) > 0 {
+			passRate = float64(passCount) / float64(len(tasks))
 		}
 		return eval.SuiteResult{
 			SuiteID:     suite.ID,
@@ -88,11 +99,11 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 			StartedAt:   startedAt,
 			CompletedAt: time.Now(),
 			Tasks:       tasks,
-			PassRate:    1.0,
+			PassRate:    passRate,
 		}, nil
 	}
 
-	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir)
+	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir, baseline)
 
 	passCount := 0
 	for _, tr := range results {
@@ -121,7 +132,7 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 // len(tasks) so we never spawn idle workers; values <= 0 collapse to 1
 // (the historical sequential behaviour). Per-task errors do not abort
 // siblings — every task contributes a TaskResult.
-func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string) []eval.TaskResult {
+func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig) []eval.TaskResult {
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
 		concurrency = 1
@@ -144,7 +155,7 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir)
+				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir, baseline)
 			}
 		}()
 	}
@@ -239,8 +250,11 @@ func validatePathSegment(label, id string) error {
 // runTask executes a single eval task and returns the result. If
 // suiteArtifactDir is non-empty, the task's trace and harness output streams
 // are copied into <suiteArtifactDir>/<taskID>/ before the temp workspace is
-// removed.
-func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string) eval.TaskResult {
+// removed. When baseline is non-nil, the runner merges the task's
+// RunConfigOverrides on top, writes the result to a per-task temp file,
+// invokes the harness with --config, and retains a redacted copy under
+// <suiteArtifactDir>/<taskID>/run_config.redacted.json.
+func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig) eval.TaskResult {
 	start := time.Now()
 
 	tmpDir, err := os.MkdirTemp("", "eval-task-"+task.ID+"-")
@@ -258,14 +272,34 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 
 	traceFile := filepath.Join(tmpDir, "trace.jsonl")
 
-	args := []string{
-		"harness",
+	// Merge baseline + per-task overrides into a fresh RunConfig and
+	// write it next to the workspace. A nil baseline (suite declared no
+	// run_config_file / run_config block) preserves the legacy
+	// five-flag invocation: no --config arg, no redacted artifact.
+	merged, mergeErr := buildMergedConfig(baseline, task.RunConfigOverrides)
+	if mergeErr != nil {
+		return errorResult(task.ID, start, mergeErr)
+	}
+
+	configPath := ""
+	if merged != nil {
+		configPath = filepath.Join(tmpDir, "runconfig.json")
+		if err := writeMergedConfig(configPath, merged); err != nil {
+			return errorResult(task.ID, start, err)
+		}
+	}
+
+	args := []string{"harness"}
+	if configPath != "" {
+		args = append(args, "--config", configPath)
+	}
+	args = append(args,
 		"--prompt", task.Prompt,
 		"--mode", taskMode(task),
 		"--workspace", workspaceDir,
 		"--trace", traceFile,
 		"--timeout", "300",
-	}
+	)
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
 	cmd.Dir = workspaceDir
@@ -281,6 +315,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// retention failures must not mask the harness/judge result.
 	if suiteArtifactDir != "" {
 		retainArtifacts(suiteArtifactDir, task.ID, traceFile, stdoutBuf.Bytes(), stderrBuf.Bytes())
+		if merged != nil {
+			retainRedactedConfig(suiteArtifactDir, task.ID, merged)
+		}
 	}
 
 	if cmdErr != nil {
@@ -410,6 +447,112 @@ func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 			Reason: err.Error(),
 		},
 		DurationMs: time.Since(start).Milliseconds(),
+	}
+}
+
+// buildMergedConfig produces a per-task RunConfig from the suite baseline
+// and per-task overlay. A nil baseline returns (nil, nil): the suite has
+// not opted into the RunConfig surface, so the legacy invocation path
+// stays in effect. The baseline argument is cloned before the overlay is
+// applied so callers can reuse it across tasks.
+func buildMergedConfig(baseline *types.RunConfig, overlay *types.RunConfigOverrides) (*types.RunConfig, error) {
+	if baseline == nil {
+		return nil, nil
+	}
+	// JSON round-trip clones every field, including pointer-typed
+	// sub-structs. Cheap enough for RunConfig-sized blobs and avoids
+	// hand-maintaining a deep copier that would silently miss new fields.
+	data, err := json.Marshal(baseline)
+	if err != nil {
+		return nil, fmt.Errorf("cloning suite baseline RunConfig: %w", err)
+	}
+	clone := &types.RunConfig{}
+	if err := json.Unmarshal(data, clone); err != nil {
+		return nil, fmt.Errorf("cloning suite baseline RunConfig: %w", err)
+	}
+	return mergeOverrides(clone, overlay), nil
+}
+
+// writeMergedConfig marshals the merged RunConfig to path. The file is
+// created inside the per-task tmpdir and is removed with the rest of the
+// workspace via the caller's defer os.RemoveAll. Permissions are 0o600 —
+// although secret values are not present (only secret:// references), the
+// file still carries the operator's chosen run posture and should not be
+// world-readable on shared CI runners.
+func writeMergedConfig(path string, cfg *types.RunConfig) error {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshalling merged RunConfig: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("writing merged RunConfig: %w", err)
+	}
+	return nil
+}
+
+// retainRedactedConfig writes the redacted form of the merged RunConfig
+// alongside the trace and harness output streams. Redact() rewrites every
+// secret:// reference to "secret://[REDACTED]" before the file lands on
+// disk so a retained artifact never carries a resolved secret out of the
+// process. Retention errors are reported on stderr to match retainArtifacts
+// but never mask the TaskResult.
+func retainRedactedConfig(suiteArtifactDir, taskID string, cfg *types.RunConfig) {
+	redacted := cfg.Redact()
+	data, err := json.MarshalIndent(redacted, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: redacted config marshal: %v\n", taskID, err)
+		return
+	}
+	taskDir := filepath.Join(suiteArtifactDir, taskID)
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: mkdir: %v\n", taskID, err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, "run_config.redacted.json"), data, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: redacted config write: %v\n", taskID, err)
+	}
+}
+
+// dryRunTask produces a TaskResult for a single task during a --dry-run
+// invocation. With a nil baseline the task behaves as it does today
+// (pass, "dry run — skipped"). With a baseline, the runner builds the
+// merged RunConfig and calls ValidateRunConfig; a validation failure
+// flips the outcome to "error" and surfaces the validator's message.
+// Other tasks in the same dry-run pass are unaffected (each task is
+// validated independently).
+func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult {
+	merged, err := buildMergedConfig(baseline, task.RunConfigOverrides)
+	if err != nil {
+		return eval.TaskResult{
+			TaskID:  task.ID,
+			Outcome: "error",
+			Error:   err.Error(),
+			JudgeVerdict: eval.JudgeVerdict{
+				Passed: false,
+				Reason: err.Error(),
+			},
+		}
+	}
+	if merged != nil {
+		if vErr := types.ValidateRunConfig(merged); vErr != nil {
+			return eval.TaskResult{
+				TaskID:  task.ID,
+				Outcome: "error",
+				Error:   vErr.Error(),
+				JudgeVerdict: eval.JudgeVerdict{
+					Passed: false,
+					Reason: vErr.Error(),
+				},
+			}
+		}
+	}
+	return eval.TaskResult{
+		TaskID:  task.ID,
+		Outcome: "pass",
+		JudgeVerdict: eval.JudgeVerdict{
+			Passed: true,
+			Reason: "dry run — skipped",
+		},
 	}
 }
 
