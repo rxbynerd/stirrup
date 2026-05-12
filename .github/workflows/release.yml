@@ -296,7 +296,7 @@ jobs:
       # 2026-05-10 (`gh api repos/docker/setup-qemu-action/git/refs/tags/v3.7.0`,
       # which also matches the v3 floating tag's current target).
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
 
       # SHA-pinned to v4.0.0. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/docker/setup-buildx-action/git/refs/tags/v4.0.0`,
