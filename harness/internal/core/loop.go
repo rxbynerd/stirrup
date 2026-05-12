@@ -1022,6 +1022,14 @@ func (l *AgenticLoop) startHeartbeat(ctx context.Context, interval time.Duration
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
+			// Non-blocking pre-check biases the select toward cancellation:
+			// if ctx is already done, exit before racing the ticker. Narrows
+			// the common post-cancel-tick window described in issue #128.
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			select {
 			case <-ctx.Done():
 				return
