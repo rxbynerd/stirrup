@@ -70,12 +70,15 @@ func TestStartHeartbeat_StopsOnCancel(t *testing.T) {
 
 	countAtStop := rec.heartbeatCount()
 
-	// Wait a bit more and verify no additional heartbeats arrived.
+	// Wait a bit more and verify no additional heartbeats arrived. The
+	// production guarantee is "stops eventually": a ticker tick that has
+	// already been selected before ctx.Done is observed may still fire once
+	// after stop(). Tolerate at most one extra heartbeat post-cancel.
 	time.Sleep(30 * time.Millisecond)
 	countAfter := rec.heartbeatCount()
 
-	if countAfter != countAtStop {
-		t.Errorf("heartbeat continued after cancel: %d at stop, %d after", countAtStop, countAfter)
+	if countAfter-countAtStop > 1 {
+		t.Errorf("heartbeat continued after cancel beyond tolerance: %d at stop, %d after (max +1 allowed)", countAtStop, countAfter)
 	}
 }
 
@@ -93,10 +96,14 @@ func TestStartHeartbeat_RespectsContextCancellation(t *testing.T) {
 
 	countAtCancel := rec.heartbeatCount()
 
+	// Wait a bit more and verify no additional heartbeats arrived beyond
+	// tolerance. The production guarantee is "stops eventually": a ticker
+	// tick that has already been selected before ctx.Done is observed may
+	// still fire once after cancel(). Tolerate at most one extra heartbeat.
 	time.Sleep(30 * time.Millisecond)
 	countAfter := rec.heartbeatCount()
 
-	if countAfter != countAtCancel {
-		t.Errorf("heartbeat continued after context cancel: %d at cancel, %d after", countAtCancel, countAfter)
+	if countAfter-countAtCancel > 1 {
+		t.Errorf("heartbeat continued after context cancel beyond tolerance: %d at cancel, %d after (max +1 allowed)", countAtCancel, countAfter)
 	}
 }
