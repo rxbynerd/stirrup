@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -853,6 +854,15 @@ func TestTranslateMessagesResponses(t *testing.T) {
 	if result[3].Type != "function_call_output" || result[3].CallID != "call_1" || result[3].Output != "package main" {
 		t.Errorf("result[3] = %+v, want function_call_output(call_1,package main)", result[3])
 	}
+	// Marshal-roundtrip check: a future omitempty regression on the Output
+	// field would be invisible to the struct comparison above. See #172.
+	raw, err := json.Marshal(result[3])
+	if err != nil {
+		t.Fatalf("marshal result[3]: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"output":"package main"`)) {
+		t.Errorf("marshalled result[3] missing populated output key: %s", raw)
+	}
 }
 
 func TestTranslateMessagesResponses_ErrorToolResult(t *testing.T) {
@@ -874,6 +884,50 @@ func TestTranslateMessagesResponses_ErrorToolResult(t *testing.T) {
 	}
 	if !strings.HasPrefix(result[0].Output, "Error: ") {
 		t.Errorf("expected error-prefixed output, got %q", result[0].Output)
+	}
+	// Marshal-roundtrip check: an omitempty regression on Output would not
+	// trip the struct assertions above for non-empty payloads, but the wire
+	// shape is what the API actually validates. See #172.
+	raw, err := json.Marshal(result[0])
+	if err != nil {
+		t.Fatalf("marshal result[0]: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"output":"Error: file not found"`)) {
+		t.Errorf("marshalled result[0] missing error-prefixed output: %s", raw)
+	}
+}
+
+func TestTranslateMessagesResponses_EmptyToolResultContent(t *testing.T) {
+	// Reproduces the wire-level failure where an empty tool_result content
+	// caused the openai-responses adapter to drop the required "output"
+	// field, yielding HTTP 400 from the Responses API. See #172.
+	messages := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{
+			{Type: "tool_result", ToolUseID: "call_1", Content: ""},
+		}},
+	}
+	result := translateMessagesResponses(messages)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].Type != "function_call_output" {
+		t.Errorf("Type = %q, want function_call_output", result[0].Type)
+	}
+	if result[0].CallID != "call_1" {
+		t.Errorf("CallID = %q, want call_1", result[0].CallID)
+	}
+	if result[0].Output != "" {
+		t.Errorf("Output = %q, want empty string", result[0].Output)
+	}
+	// The assertion that actually catches the bug: the marshalled JSON
+	// MUST include the "output" key even when its value is empty, because
+	// the Responses API rejects requests where the key is missing.
+	raw, err := json.Marshal(result[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"output":""`)) {
+		t.Errorf("marshalled JSON missing empty 'output' key: %s", raw)
 	}
 }
 
