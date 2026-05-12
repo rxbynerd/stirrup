@@ -658,6 +658,55 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesAdapter_RequestBody_EmptyToolResult(t *testing.T) {
+	// End-to-end pin for #172: drives Stream() with an empty tool_result
+	// block and asserts on the raw HTTP body the adapter actually sends.
+	// Catches any future regression where intermediate processing between
+	// translateMessagesResponses and json.Marshal silently elides the
+	// "output" key — a gap that unit tests on translateMessagesResponses
+	// alone would not surface.
+	var rawBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 1<<20)
+		n, _ := r.Body.Read(buf)
+		rawBody = buf[:n]
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`))
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model: "gpt-4.1",
+		Messages: []types.Message{
+			{
+				Role: "assistant",
+				Content: []types.ContentBlock{
+					{Type: "tool_use", ID: "call_1", Name: "noop", Input: json.RawMessage(`{}`)},
+				},
+			},
+			{
+				Role: "user",
+				Content: []types.ContentBlock{
+					{Type: "tool_result", ToolUseID: "call_1", Content: ""},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for range ch {
+	}
+
+	if !bytes.Contains(rawBody, []byte(`"output":""`)) {
+		t.Errorf("request body missing empty 'output' key (the #172 wire-level pin): %s", rawBody)
+	}
+}
+
 func TestOpenAIResponsesAdapter_ContextCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -928,6 +977,77 @@ func TestTranslateMessagesResponses_EmptyToolResultContent(t *testing.T) {
 	}
 	if !bytes.Contains(raw, []byte(`"output":""`)) {
 		t.Errorf("marshalled JSON missing empty 'output' key: %s", raw)
+	}
+}
+
+func TestTranslateMessagesResponses_EmptyErrorToolResultContent(t *testing.T) {
+	// Pins the IsError + empty Content path: the "Error: " prefix produces
+	// a non-empty Output, so an omitempty regression on the Output field
+	// would NOT trip the marshal assertion in
+	// TestTranslateMessagesResponses_EmptyToolResultContent through this
+	// branch. The empty-Content error case is the structurally riskiest
+	// surface: a future contributor changing the prefix logic could land
+	// us back in the same HTTP 400 territory. See #172.
+	messages := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{
+			{Type: "tool_result", ToolUseID: "call_1", Content: "", IsError: true},
+		}},
+	}
+	result := translateMessagesResponses(messages)
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if result[0].Type != "function_call_output" {
+		t.Errorf("Type = %q, want function_call_output", result[0].Type)
+	}
+	if result[0].Output != "Error: " {
+		t.Errorf("Output = %q, want %q", result[0].Output, "Error: ")
+	}
+	raw, err := json.Marshal(result[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"output":"Error: "`)) {
+		t.Errorf("marshalled JSON missing 'output':'Error: ' key/value: %s", raw)
+	}
+}
+
+func TestTranslateMessagesResponses_MultipleEmptyToolResultContents(t *testing.T) {
+	// Reproduces the realistic production scenario for #172: a single user
+	// message carrying multiple tool_result blocks where one or more have
+	// empty Content. The original HTTP 400 occurred during multi-tool turns
+	// — TestTranslateMessagesResponses_EmptyToolResultContent covers the
+	// single-block case, this covers the multi-block case where any one
+	// block silently dropping its "output" key would still trigger the bug.
+	messages := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{
+			{Type: "tool_result", ToolUseID: "call_1", Content: ""},
+			{Type: "tool_result", ToolUseID: "call_2", Content: ""},
+		}},
+	}
+	result := translateMessagesResponses(messages)
+	if len(result) != 2 {
+		t.Fatalf("len(result) = %d, want 2", len(result))
+	}
+
+	wantIDs := []string{"call_1", "call_2"}
+	for i, item := range result {
+		if item.Type != "function_call_output" {
+			t.Errorf("result[%d].Type = %q, want function_call_output", i, item.Type)
+		}
+		if item.CallID != wantIDs[i] {
+			t.Errorf("result[%d].CallID = %q, want %q", i, item.CallID, wantIDs[i])
+		}
+		if item.Output != "" {
+			t.Errorf("result[%d].Output = %q, want empty string", i, item.Output)
+		}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("marshal result[%d]: %v", i, err)
+		}
+		if !bytes.Contains(raw, []byte(`"output":""`)) {
+			t.Errorf("marshalled result[%d] missing empty 'output' key: %s", i, raw)
+		}
 	}
 }
 
