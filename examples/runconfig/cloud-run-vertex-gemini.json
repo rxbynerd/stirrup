@@ -34,7 +34,7 @@
     "type": "none"
   },
   "permissionPolicy": {
-    "type": "allow-all"
+    "type": "deny-side-effects"
   },
   "gitStrategy": {
     "type": "none"
@@ -58,6 +58,9 @@
       "edit_file",
       "run_command"
     ]
+  },
+  "codeScanner": {
+    "type": "patterns"
   },
   "maxTurns": 20,
   "timeout": 600,

@@ -197,10 +197,21 @@ The relevant fields:
     "bucket": "stirrup-results-<project-id>",
     "objectPrefix": "traces/"
   },
-  "resultSink": { "type": "stdout-json" }
+  "resultSink": { "type": "stdout-json" },
+  "permissionPolicy": { "type": "deny-side-effects" },
+  "codeScanner": { "type": "patterns" }
   // …
 }
 ```
+
+The fixture ships with `permissionPolicy.type: deny-side-effects` and
+`codeScanner.type: patterns`, matching the recommended baseline in
+[`docs/safety-rings.md`](safety-rings.md#defaults--the-recommended-baseline).
+Cloud Run containers run with open egress by default — loosening
+`permissionPolicy` to `allow-all` without first restricting egress
+(VPC-SC, a network policy, or a Cedar fallback of `deny-side-effects`)
+turns `run_command` into a remote-code-execution primitive for any
+prompt-injected task.
 
 ```sh
 gcloud secrets create stirrup-runconfig \
