@@ -107,3 +107,30 @@ func TestStartHeartbeat_RespectsContextCancellation(t *testing.T) {
 		t.Errorf("heartbeat continued after context cancel beyond tolerance: %d at cancel, %d after (max +1 allowed)", countAtCancel, countAfter)
 	}
 }
+
+func TestStartHeartbeat_CancelBeforeFirstTick(t *testing.T) {
+	rec := &recordingTransport{}
+	loop := &AgenticLoop{
+		Transport: rec,
+	}
+
+	// Cancel the context before startHeartbeat is invoked so the goroutine's
+	// first action is to observe an already-Done context. This exercises the
+	// cold path of the non-blocking pre-check added in ca80ca7: the outer
+	// select's `ctx.Done` arm should fire on the very first iteration, before
+	// any ticker tick is consumed.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = loop.startHeartbeat(ctx, 10*time.Millisecond)
+
+	// Sleep three ticker intervals: ample time for the goroutine to have
+	// either taken the pre-check exit or, in the worst case, entered the
+	// blocking select before noticing cancellation.
+	time.Sleep(30 * time.Millisecond)
+
+	count := rec.heartbeatCount()
+	if count > 1 {
+		t.Errorf("expected at most 1 heartbeat on cold-path cancel-before-first-tick (pre-check should usually catch ctx.Done with count=0; tolerate 1 to avoid flakiness when the goroutine entered the blocking select before observing cancellation), got %d", count)
+	}
+}
