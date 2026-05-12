@@ -287,15 +287,18 @@ suite "s" {
 	}
 }
 
-// TestLoadSuiteHCL_ExistingSuitesParse asserts that the live
-// guardrail.hcl and openai-responses-empty-tool-output.hcl files in
-// eval/suites/ continue to parse with the new code path and produce
-// zero-valued RunConfig fields (no new fields populated). This is the
-// backwards-compat contract from the issue.
+// TestLoadSuiteHCL_ExistingSuitesParse asserts that a suite which
+// never declared any of the chunk-2 RunConfig fields continues to
+// parse with the new code path and produce zero-valued RunConfig
+// fields. This is the backwards-compat contract from the issue.
+//
+// `openai-responses-empty-tool-output.hcl` was updated in chunk 4
+// to demonstrate the new authoring surface (it now sets a
+// suite-level `run_config` block); its parse is covered by
+// TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig below.
 func TestLoadSuiteHCL_ExistingSuitesParse(t *testing.T) {
 	cases := []string{
 		"../suites/guardrail.hcl",
-		"../suites/openai-responses-empty-tool-output.hcl",
 	}
 	for _, path := range cases {
 		t.Run(path, func(t *testing.T) {
@@ -318,6 +321,39 @@ func TestLoadSuiteHCL_ExistingSuitesParse(t *testing.T) {
 				t.Errorf("expected at least one task")
 			}
 		})
+	}
+}
+
+// TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig pins the
+// openai-responses regression suite's chunk-4 update: the suite now
+// authors a suite-level inline `run_config` block that nails the
+// provider type and model_router so the regression scenario cannot
+// be silently nullified by an operator's environment. The check is
+// deliberately shallow (presence + provider type + model) — the
+// full decoding surface is exhaustively tested elsewhere in this
+// file; here we only care that the live suite uses the new flow.
+func TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig(t *testing.T) {
+	got, err := LoadSuiteHCL("../suites/openai-responses-empty-tool-output.hcl")
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfigFile != "" {
+		t.Errorf("RunConfigFile should be empty (suite uses inline block), got %q", got.RunConfigFile)
+	}
+	if got.RunConfig == nil {
+		t.Fatal("RunConfig should be non-nil: the suite declares an inline run_config block")
+	}
+	if got.RunConfig.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want %q", got.RunConfig.Provider.Type, "openai-responses")
+	}
+	if got.RunConfig.Provider.APIKeyRef != "secret://OPENAI_KEY" {
+		t.Errorf("Provider.APIKeyRef = %q, want %q", got.RunConfig.Provider.APIKeyRef, "secret://OPENAI_KEY")
+	}
+	if got.RunConfig.ModelRouter.Model == "" {
+		t.Errorf("ModelRouter.Model should be non-empty")
+	}
+	if len(got.Tasks) == 0 {
+		t.Errorf("expected at least one task")
 	}
 }
 
