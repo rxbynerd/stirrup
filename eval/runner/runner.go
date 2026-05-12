@@ -81,25 +81,7 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	startedAt := time.Now()
 
 	if cfg.DryRun {
-		tasks := make([]eval.TaskResult, len(suite.Tasks))
-		for i, t := range suite.Tasks {
-			tasks[i] = eval.TaskResult{
-				TaskID:  t.ID,
-				Outcome: "pass",
-				JudgeVerdict: eval.JudgeVerdict{
-					Passed: true,
-					Reason: "dry run — skipped",
-				},
-			}
-		}
-		return eval.SuiteResult{
-			SuiteID:     suite.ID,
-			RunID:       runID,
-			StartedAt:   startedAt,
-			CompletedAt: time.Now(),
-			Tasks:       tasks,
-			PassRate:    1.0,
-		}, nil
+		return dryRunSuite(suite, runID, startedAt), nil
 	}
 
 	results := runTasksConcurrently(ctx, suite, cfg, suiteArtifactDir)
@@ -460,6 +442,103 @@ func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 			Reason: err.Error(),
 		},
 		DurationMs: time.Since(start).Milliseconds(),
+	}
+}
+
+// dryRunSuite materialises the dry-run SuiteResult: for suites with no
+// run-config surface every task is recorded as a vacuous pass (today's
+// behaviour); for suites that supply a baseline or per-task overrides
+// the merged RunConfig for each task is run through ValidateRunConfig
+// and any validation error is surfaced per-task. The dry-run path
+// never invokes the harness binary.
+func dryRunSuite(suite types.EvalSuite, runID string, startedAt time.Time) eval.SuiteResult {
+	hasConfigSurface := suite.RunConfig != nil
+	if !hasConfigSurface {
+		for _, t := range suite.Tasks {
+			if t.RunConfigOverrides != nil {
+				hasConfigSurface = true
+				break
+			}
+		}
+	}
+
+	tasks := make([]eval.TaskResult, len(suite.Tasks))
+	passCount := 0
+	for i, t := range suite.Tasks {
+		if !hasConfigSurface {
+			tasks[i] = eval.TaskResult{
+				TaskID:  t.ID,
+				Outcome: "pass",
+				JudgeVerdict: eval.JudgeVerdict{
+					Passed: true,
+					Reason: "dry run — skipped",
+				},
+			}
+			passCount++
+			continue
+		}
+
+		merged, mergeErr := mergeRunConfig(suite, t)
+		if mergeErr != nil {
+			tasks[i] = eval.TaskResult{
+				TaskID:  t.ID,
+				Outcome: "error",
+				Error:   mergeErr.Error(),
+				JudgeVerdict: eval.JudgeVerdict{
+					Passed: false,
+					Reason: fmt.Sprintf("dry run — merging run-config: %v", mergeErr),
+				},
+			}
+			continue
+		}
+		if merged == nil {
+			// hasConfigSurface implies at least one task had overrides; tasks
+			// without their own overrides + no suite baseline still take this
+			// branch. Treat them as vacuous-pass: there's nothing to validate.
+			tasks[i] = eval.TaskResult{
+				TaskID:  t.ID,
+				Outcome: "pass",
+				JudgeVerdict: eval.JudgeVerdict{
+					Passed: true,
+					Reason: "dry run — skipped (no merged config)",
+				},
+			}
+			passCount++
+			continue
+		}
+		if err := types.ValidateRunConfig(merged); err != nil {
+			tasks[i] = eval.TaskResult{
+				TaskID:  t.ID,
+				Outcome: "fail",
+				JudgeVerdict: eval.JudgeVerdict{
+					Passed: false,
+					Reason: fmt.Sprintf("dry run — RunConfig validation failed: %v", err),
+				},
+			}
+			continue
+		}
+		tasks[i] = eval.TaskResult{
+			TaskID:  t.ID,
+			Outcome: "pass",
+			JudgeVerdict: eval.JudgeVerdict{
+				Passed: true,
+				Reason: "dry run — RunConfig validated",
+			},
+		}
+		passCount++
+	}
+
+	passRate := float64(0)
+	if len(tasks) > 0 {
+		passRate = float64(passCount) / float64(len(tasks))
+	}
+	return eval.SuiteResult{
+		SuiteID:     suite.ID,
+		RunID:       runID,
+		StartedAt:   startedAt,
+		CompletedAt: time.Now(),
+		Tasks:       tasks,
+		PassRate:    passRate,
 	}
 }
 
