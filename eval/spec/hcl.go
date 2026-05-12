@@ -119,19 +119,22 @@ type rootSpec struct {
 }
 
 type suiteSpec struct {
-	ID          string     `hcl:"id,label"`
-	Description string     `hcl:"description,optional"`
-	Tasks       []taskSpec `hcl:"task,block"`
+	ID            string         `hcl:"id,label"`
+	Description   string         `hcl:"description,optional"`
+	RunConfigFile string         `hcl:"run_config_file,optional"`
+	RunConfig     *runConfigSpec `hcl:"run_config,block"`
+	Tasks         []taskSpec     `hcl:"task,block"`
 }
 
 type taskSpec struct {
-	ID          string    `hcl:"id,label"`
-	Description string    `hcl:"description,optional"`
-	Repo        string    `hcl:"repo,optional"`
-	Ref         string    `hcl:"ref,optional"`
-	Mode        string    `hcl:"mode,optional"`
-	Prompt      string    `hcl:"prompt,optional"`
-	Judge       judgeSpec `hcl:"judge,block"`
+	ID                 string                  `hcl:"id,label"`
+	Description        string                  `hcl:"description,optional"`
+	Repo               string                  `hcl:"repo,optional"`
+	Ref                string                  `hcl:"ref,optional"`
+	Mode               string                  `hcl:"mode,optional"`
+	Prompt             string                  `hcl:"prompt,optional"`
+	RunConfigOverrides *runConfigOverridesSpec `hcl:"run_config_overrides,block"`
+	Judge              judgeSpec               `hcl:"judge,block"`
 }
 
 type judgeSpec struct {
@@ -254,6 +257,12 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 	if len(s.Tasks) == 0 {
 		return types.EvalSuite{}, fmt.Errorf("suite %q must contain at least one task", s.ID)
 	}
+	if s.RunConfigFile != "" && s.RunConfig != nil {
+		return types.EvalSuite{}, fmt.Errorf(
+			"suite %q sets both `run_config_file` and `run_config` block; these are mutually exclusive — pick one",
+			s.ID,
+		)
+	}
 
 	tasks := make([]types.EvalTask, 0, len(s.Tasks))
 	for i, t := range s.Tasks {
@@ -265,20 +274,23 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 			return types.EvalSuite{}, err
 		}
 		tasks = append(tasks, types.EvalTask{
-			ID:          t.ID,
-			Description: t.Description,
-			Repo:        t.Repo,
-			Ref:         t.Ref,
-			Prompt:      t.Prompt,
-			Mode:        t.Mode,
-			Judge:       j,
+			ID:                 t.ID,
+			Description:        t.Description,
+			Repo:               t.Repo,
+			Ref:                t.Ref,
+			Prompt:             t.Prompt,
+			Mode:               t.Mode,
+			Judge:              j,
+			RunConfigOverrides: runConfigOverridesSpecToType(t.RunConfigOverrides),
 		})
 	}
 
 	return types.EvalSuite{
-		ID:          s.ID,
-		Description: s.Description,
-		Tasks:       tasks,
+		ID:            s.ID,
+		Description:   s.Description,
+		Tasks:         tasks,
+		RunConfigFile: s.RunConfigFile,
+		RunConfig:     runConfigSpecToType(s.RunConfig),
 	}, nil
 }
 
