@@ -725,10 +725,31 @@ type TransportConfig struct {
 
 // TraceEmitterConfig selects the trace emitter implementation.
 type TraceEmitterConfig struct {
-	Type            string `json:"type"`                      // "jsonl" | "otel"
+	Type            string `json:"type"`                      // "jsonl" | "otel" | "gcs"
 	FilePath        string `json:"filePath,omitempty"`        // for jsonl
 	Endpoint        string `json:"endpoint,omitempty"`        // for otel tracing (default: localhost:4317 for grpc; full URL for http/protobuf)
 	MetricsEndpoint string `json:"metricsEndpoint,omitempty"` // for otel metrics (defaults to Endpoint if unset)
+
+	// Bucket is the GCS bucket the "gcs" emitter writes the run's JSONL
+	// trace to. Required when Type == "gcs"; rejected for every other
+	// emitter type so a stale config does not silently keep a bucket
+	// reference alive across a type change. Validated against the GCS
+	// bucket naming rules (lowercase, no slashes, 3-63 chars).
+	Bucket string `json:"bucket,omitempty"`
+
+	// ObjectPrefix is joined with the run ID at write time to form the
+	// final GCS object name (e.g. "traces/" + RunID + ".jsonl"). Empty
+	// is allowed; trailing slash is treated as implicit. Only consulted
+	// by the "gcs" emitter.
+	ObjectPrefix string `json:"objectPrefix,omitempty"`
+
+	// Credential, when set, overrides the default credential resolution
+	// for the "gcs" emitter (which defaults to gcp-workload-identity
+	// against the runtime's metadata server). The field has no meaning
+	// for jsonl or otel and is rejected on those types. Secret-bearing
+	// sub-fields are scrubbed by RunConfig.Redact() the same way as
+	// Provider.Credential.
+	Credential *CredentialConfig `json:"credential,omitempty"`
 
 	// Protocol selects the OTLP wire protocol for the otel emitter.
 	// Closed set: "" (defaults to "grpc"), "grpc", "http/protobuf".
@@ -936,7 +957,19 @@ var validTransportTypes = map[string]bool{
 var validTraceEmitterTypes = map[string]bool{
 	"jsonl": true,
 	"otel":  true,
+	"gcs":   true,
 }
+
+// gcsBucketNamePattern is a minimal shape check for a GCS bucket name.
+// The full GCS bucket-name rules (no leading "goog" prefix, no
+// "google" substring in obfuscated forms, dotted forms requiring DNS
+// labels, etc.) are operator-facing and produce precise errors at
+// `gcloud storage buckets create` time; validating shape here is
+// purely so an obvious typo (slashes, uppercase, CRLF) fails at boot
+// rather than as a 400 from the GCS REST API. Range 3-63 chars
+// matches the documented bucket-name length limit for the simple
+// (non-dotted) form.
+var gcsBucketNamePattern = regexp.MustCompile(`^[a-z0-9._-]{3,63}$`)
 
 // validTraceEmitterProtocols is the closed set of OTLP wire protocols
 // accepted on TraceEmitterConfig.Protocol. Empty string is the unset
@@ -2592,6 +2625,10 @@ func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
 // on the jsonl emitter makes the wire schema unambiguous and prevents a
 // future migration from silently keeping a stale config working in a
 // way that hides the operator's intent.
+//
+// gcs-specific fields (Bucket, ObjectPrefix, Credential) are validated
+// here too: Bucket is required when Type=="gcs" and rejected on every
+// other type, ObjectPrefix is optional, Credential is gcs-only.
 func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]string) {
 	if !validTraceEmitterProtocols[cfg.Protocol] {
 		*errs = append(*errs, fmt.Sprintf(
@@ -2599,10 +2636,10 @@ func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]stri
 			cfg.Protocol,
 		))
 	}
-	// Protocol/Headers are otel-only. The jsonl emitter does not
-	// negotiate a wire protocol or send HTTP headers; carrying these
-	// fields on a jsonl run is almost certainly a leftover from a
-	// migration and should fail loudly.
+	// Protocol/Headers are otel-only. The jsonl and gcs emitters do
+	// not negotiate a wire protocol or send HTTP headers; carrying
+	// these fields on a non-otel run is almost certainly a leftover
+	// from a migration and should fail loudly.
 	if cfg.Type != "otel" && cfg.Type != "" {
 		if cfg.Protocol != "" {
 			*errs = append(*errs, fmt.Sprintf(
@@ -2613,6 +2650,42 @@ func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]stri
 		if len(cfg.Headers) > 0 {
 			*errs = append(*errs, fmt.Sprintf(
 				"traceEmitter.headers is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+	}
+	// gcs-specific field validation. Bucket is required for gcs and
+	// rejected on every other type so a stale value cannot silently
+	// keep a bucket reference alive across a type change.
+	switch cfg.Type {
+	case "gcs":
+		if cfg.Bucket == "" {
+			*errs = append(*errs, "traceEmitter type \"gcs\" requires bucket")
+		} else if !gcsBucketNamePattern.MatchString(cfg.Bucket) {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.bucket %q must match %s (lowercase letters/digits/._-, 3-63 chars; no slashes)",
+				cfg.Bucket, gcsBucketNamePattern.String(),
+			))
+		}
+		if cfg.Credential != nil {
+			validateCredentialConfig(cfg.Credential, "traceEmitter.credential", errs)
+		}
+	default:
+		if cfg.Bucket != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.bucket is only valid when traceEmitter.type is \"gcs\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if cfg.ObjectPrefix != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.objectPrefix is only valid when traceEmitter.type is \"gcs\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if cfg.Credential != nil {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.credential is only valid when traceEmitter.type is \"gcs\" (got type %q)",
 				cfg.Type,
 			))
 		}
