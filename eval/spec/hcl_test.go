@@ -723,6 +723,181 @@ suite "s" {
 	}
 }
 
+// TestLoadSuiteHCL_RunConfigInlineBlock_AllSubFields exercises every
+// HCL-surfaced field on the runConfigOverridesSpec and its three
+// sub-block types (ContextStrategy, EditStrategy, Verifier) plus the
+// less-frequently-set provider sub-fields (api_key_header,
+// query_params, region, gcp_project, gcp_location) and the
+// model_router fields (provider, mode_models). A typo in any HCL
+// tag or a wrong pointer dereference in convertRunConfigOverrides
+// would surface here.
+func TestLoadSuiteHCL_RunConfigInlineBlock_AllSubFields(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    max_turns = 12
+
+    context_strategy {
+      type       = "full-history"
+      max_tokens = 4096
+    }
+
+    edit_strategy {
+      type            = "search-replace"
+      fuzzy_threshold = 0.8
+    }
+
+    verifier {
+      type     = "test-command"
+      command  = "make test"
+      timeout  = 60
+      criteria = "exit-zero"
+      model    = "gpt-4o-mini"
+    }
+
+    provider {
+      type           = "openai-responses"
+      api_key_ref    = "secret://OPENAI_KEY"
+      api_key_header = "Authorization"
+      region         = "us-east-1"
+      profile        = "dev"
+      base_url       = "https://example.com/v1"
+      gcp_project    = "my-gcp-project"
+      gcp_location   = "us-central1"
+      query_params   = { "api-version" = "2025-01" }
+    }
+
+    model_router {
+      type     = "static"
+      model    = "gpt-4o"
+      provider = "openai-responses"
+      mode_models = {
+        "planning"  = "gpt-4o-mini"
+        "execution" = "gpt-4o"
+      }
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "run-config-all-subfields.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil || got.RunConfig.Inline == nil {
+		t.Fatalf("expected inline RunConfig, got %#v", got.RunConfig)
+	}
+	in := got.RunConfig.Inline
+
+	// Top-level
+	if in.MaxTurns == nil || *in.MaxTurns != 12 {
+		t.Errorf("MaxTurns = %v, want *12", in.MaxTurns)
+	}
+
+	// ContextStrategy
+	if in.ContextStrategy == nil {
+		t.Fatal("ContextStrategy = nil, want populated")
+	}
+	if in.ContextStrategy.Type != "full-history" {
+		t.Errorf("ContextStrategy.Type = %q, want %q", in.ContextStrategy.Type, "full-history")
+	}
+	if in.ContextStrategy.MaxTokens != 4096 {
+		t.Errorf("ContextStrategy.MaxTokens = %d, want 4096", in.ContextStrategy.MaxTokens)
+	}
+
+	// EditStrategy
+	if in.EditStrategy == nil {
+		t.Fatal("EditStrategy = nil, want populated")
+	}
+	if in.EditStrategy.Type != "search-replace" {
+		t.Errorf("EditStrategy.Type = %q, want %q", in.EditStrategy.Type, "search-replace")
+	}
+	if in.EditStrategy.FuzzyThreshold == nil || *in.EditStrategy.FuzzyThreshold != 0.8 {
+		t.Errorf("EditStrategy.FuzzyThreshold = %v, want *0.8", in.EditStrategy.FuzzyThreshold)
+	}
+
+	// Verifier
+	if in.Verifier == nil {
+		t.Fatal("Verifier = nil, want populated")
+	}
+	if in.Verifier.Type != "test-command" {
+		t.Errorf("Verifier.Type = %q, want %q", in.Verifier.Type, "test-command")
+	}
+	if in.Verifier.Command != "make test" {
+		t.Errorf("Verifier.Command = %q, want %q", in.Verifier.Command, "make test")
+	}
+	if in.Verifier.Timeout != 60 {
+		t.Errorf("Verifier.Timeout = %d, want 60", in.Verifier.Timeout)
+	}
+	if in.Verifier.Criteria != "exit-zero" {
+		t.Errorf("Verifier.Criteria = %q, want %q", in.Verifier.Criteria, "exit-zero")
+	}
+	if in.Verifier.Model != "gpt-4o-mini" {
+		t.Errorf("Verifier.Model = %q, want %q", in.Verifier.Model, "gpt-4o-mini")
+	}
+
+	// Provider — every surfaced sub-field.
+	if in.Provider == nil {
+		t.Fatal("Provider = nil, want populated")
+	}
+	if in.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want %q", in.Provider.Type, "openai-responses")
+	}
+	if in.Provider.APIKeyRef != "secret://OPENAI_KEY" {
+		t.Errorf("Provider.APIKeyRef = %q, want %q", in.Provider.APIKeyRef, "secret://OPENAI_KEY")
+	}
+	if in.Provider.APIKeyHeader != "Authorization" {
+		t.Errorf("Provider.APIKeyHeader = %q, want %q", in.Provider.APIKeyHeader, "Authorization")
+	}
+	if in.Provider.Region != "us-east-1" {
+		t.Errorf("Provider.Region = %q, want %q", in.Provider.Region, "us-east-1")
+	}
+	if in.Provider.Profile != "dev" {
+		t.Errorf("Provider.Profile = %q, want %q", in.Provider.Profile, "dev")
+	}
+	if in.Provider.BaseURL != "https://example.com/v1" {
+		t.Errorf("Provider.BaseURL = %q, want %q", in.Provider.BaseURL, "https://example.com/v1")
+	}
+	if in.Provider.GCPProject != "my-gcp-project" {
+		t.Errorf("Provider.GCPProject = %q, want %q", in.Provider.GCPProject, "my-gcp-project")
+	}
+	if in.Provider.GCPLocation != "us-central1" {
+		t.Errorf("Provider.GCPLocation = %q, want %q", in.Provider.GCPLocation, "us-central1")
+	}
+	if got, want := in.Provider.QueryParams["api-version"], "2025-01"; got != want {
+		t.Errorf("Provider.QueryParams[api-version] = %q, want %q", got, want)
+	}
+
+	// ModelRouter — every surfaced sub-field.
+	if in.ModelRouter == nil {
+		t.Fatal("ModelRouter = nil, want populated")
+	}
+	if in.ModelRouter.Type != "static" {
+		t.Errorf("ModelRouter.Type = %q, want %q", in.ModelRouter.Type, "static")
+	}
+	if in.ModelRouter.Model != "gpt-4o" {
+		t.Errorf("ModelRouter.Model = %q, want %q", in.ModelRouter.Model, "gpt-4o")
+	}
+	if in.ModelRouter.Provider != "openai-responses" {
+		t.Errorf("ModelRouter.Provider = %q, want %q", in.ModelRouter.Provider, "openai-responses")
+	}
+	if got, want := in.ModelRouter.ModeModels["planning"], "gpt-4o-mini"; got != want {
+		t.Errorf("ModelRouter.ModeModels[planning] = %q, want %q", got, want)
+	}
+	if got, want := in.ModelRouter.ModeModels["execution"], "gpt-4o"; got != want {
+		t.Errorf("ModelRouter.ModeModels[execution] = %q, want %q", got, want)
+	}
+}
+
 // TestLoadSuiteHCL_RunConfigOverridesPerTask asserts the per-task
 // override block decodes into EvalTask.RunConfigOverrides with the
 // fields the author set, and is independent of the suite-level
