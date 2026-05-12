@@ -64,7 +64,15 @@ func printRunSummary(runTrace *types.RunTrace) {
 // VerifierResult pointer to disambiguate.
 func buildRunResult(rt *types.RunTrace) types.RunResult {
 	if rt == nil {
-		return types.RunResult{SchemaVersion: 1}
+		// A nil RunTrace means the loop produced no trace at all —
+		// every other code path returns a structurally valid one,
+		// even on cancellation. Returning RunResult{SchemaVersion: 1}
+		// would surface an empty Outcome/RunID/Turns combination that
+		// a downstream consumer cannot distinguish from a real run
+		// that completed with an empty outcome. The "internal-error"
+		// sentinel is documented on RunResult.Outcome and lets
+		// consumers detect the no-trace case explicitly.
+		return types.RunResult{SchemaVersion: 1, Outcome: "internal-error"}
 	}
 	res := types.RunResult{
 		SchemaVersion: 1,
@@ -101,6 +109,22 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 	}
 }
 
+// newWorkspaceExporter is the seam tests use to inject a stub
+// Exporter. Production code keeps the default factory; tests overwrite
+// the variable for the duration of a test and restore it on cleanup.
+// Returning an Exporter (not *GCSExporter) keeps the type usable by
+// future S3 / Azure implementations without further indirection.
+var newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
+	return workspaceexport.NewGCSExporter(workspaceexport.GCSExporterOptions{
+		// Default credential source: gcp-workload-identity against
+		// the runtime metadata server (the Cloud Run / GKE shape
+		// this targets). Future work: thread an explicit
+		// CredentialConfig through ExecutorConfig if non-GCP
+		// runtimes need to export.
+		CredentialSource: credential.NewGoogleWorkloadIdentitySource(),
+	})
+}
+
 // exportWorkspace tars + gzips the executor's workspace dir and
 // uploads it to config.Executor.WorkspaceExportTo via the workspace
 // exporter. No-op when the export field is empty.
@@ -123,14 +147,7 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exportRequired b
 	// v1 supports only the GCS exporter; the field is validated at
 	// config load to be a gs:// URI, so reaching this code path with
 	// any other scheme indicates a logic regression in the validator.
-	exp, err := workspaceexport.NewGCSExporter(workspaceexport.GCSExporterOptions{
-		// Default credential source: gcp-workload-identity against
-		// the runtime metadata server (the Cloud Run / GKE shape
-		// this targets). Future work: thread an explicit
-		// CredentialConfig through ExecutorConfig if non-GCP
-		// runtimes need to export.
-		CredentialSource: credential.NewGoogleWorkloadIdentitySource(),
-	})
+	exp, err := newWorkspaceExporter()
 	if err != nil {
 		if exportRequired {
 			return fmt.Errorf("build workspace exporter: %w", err)

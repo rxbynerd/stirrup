@@ -33,7 +33,11 @@ type RunResult struct {
 	// Outcome mirrors RunTrace.Outcome — e.g. "success", "error",
 	// "stalled", "tool_failures", "timeout", "max_turns",
 	// "verification_failed", "verification_error", "budget_exceeded",
-	// "cancelled", "max_tokens".
+	// "cancelled", "max_tokens". The sentinel "internal-error" is
+	// reserved for the case where the loop produced no RunTrace at all
+	// (e.g. a panic before the first turn); consumers should treat it
+	// as distinguishable from any RunTrace.Outcome value because no
+	// trace exists to inspect.
 	Outcome string `json:"outcome"`
 
 	// Turns is the number of agentic loop iterations that ran before
