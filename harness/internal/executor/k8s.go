@@ -231,10 +231,10 @@ func (e *K8sExecutor) Exec(ctx context.Context, command string, timeout time.Dur
 	return nil, errors.New("not implemented")
 }
 
-// TODO(#NN): CanNetwork's accuracy depends on a NetworkPolicy
+// TODO(#178): CanNetwork's accuracy depends on a NetworkPolicy
 // being enforced for the Pod. Until that wiring lands, a Pod with
 // cfg.Network == nil reports CanNetwork=false but has cluster-default
-// egress in reality. Filed as the network-policy follow-up.
+// egress in reality. Tracked in #178.
 //
 // Capabilities advertises the scaffold's intended capabilities. CanNetwork
 // is derived from the held NetworkConfig so callers can branch on the
