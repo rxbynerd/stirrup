@@ -133,11 +133,23 @@ Quick map for "I need to change X" lookups:
 | Container runtime / network mode wiring | `harness/internal/executor/container*.go` |
 | Egress proxy | `harness/internal/executor/egressproxy/` |
 | Code scanner | `harness/internal/security/codescanner/` |
+| Result sink (RunResult payload) | `harness/internal/resultsink/` |
+| Workspace GCS export | `harness/internal/workspaceexport/` |
 | `RunConfig` validation | `types/runconfig.go` |
 | CLI flag definitions | `harness/cmd/stirrup/cmd/harness.go` |
 | gRPC schema | `proto/harness/v1/harness.proto` (then `buf generate`) |
 | Eval suite parser | `eval/spec/` |
 | Eval CLI subcommands | `eval/cmd/eval/main.go` |
+
+Stirrup runs unmodified as a Google Cloud Run job — the container
+contract (no port, exit-on-completion, SIGTERM-then-SIGKILL) matches
+the existing harness binary's shape and the
+`gcp-workload-identity` credential source talks to Cloud Run's GCE
+metadata server transparently. The result sink (`resultSink.type`)
+and the GCS trace emitter / workspace exporter are the
+result-collection surfaces designed for serverless targets where
+there is no native output channel. Operator walkthrough at
+[`docs/cloud-run-jobs.md`](docs/cloud-run-jobs.md).
 
 ## Things not to do
 
