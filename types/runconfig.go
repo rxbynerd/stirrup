@@ -672,6 +672,14 @@ type ExecutorConfig struct {
 	//   "kata-qemu"  — Kata Containers backed by QEMU
 	//   "kata-fc"    — Kata Containers backed by Firecracker
 	Runtime string `json:"runtime,omitempty"`
+
+	// WorkspaceExportTo, when set, instructs the harness to tarball the
+	// executor's workspace at end-of-run and upload it to the named URI.
+	// Currently only "gs://bucket/path" is accepted. The "api" executor
+	// (read-only) and any run with an empty workspace skip the upload
+	// silently. Future S3 / Azure Blob support will broaden the scheme
+	// set.
+	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
 }
 
 // VcsBackendConfig selects the VCS backend for the API executor.
@@ -1357,6 +1365,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
 	validateTraceEmitterProtocolAndHeaders(config.TraceEmitter, &errs)
 	validateResultSinkConfig(config.ResultSink, &errs)
+	validateExecutorWorkspaceExportTo(config.Executor, &errs)
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
 	validateProviderConfigs(config, retryDefaulted, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
@@ -2824,6 +2833,47 @@ func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
 		*errs = append(*errs, fmt.Sprintf(
 			"resultSink type %q is reserved but not yet implemented in this release",
 			cfg.Type,
+		))
+	}
+}
+
+// validateExecutorWorkspaceExportTo enforces the URI shape on the
+// optional Executor.WorkspaceExportTo field and the cross-field
+// constraint that the api executor (read-only, no workspace) cannot
+// produce a workspace tarball.
+func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
+	if cfg.WorkspaceExportTo == "" {
+		return
+	}
+	// The api executor has no workspace to export. Rejecting here
+	// catches a config-typo before the run no-ops at end-of-run with
+	// a silent skip.
+	if cfg.Type == "api" {
+		*errs = append(*errs, "executor.workspaceExportTo is not valid for executor.type=\"api\" (api executor has no workspace)")
+		return
+	}
+	if cfg.Type == "" {
+		*errs = append(*errs, "executor.workspaceExportTo requires an explicit executor.type other than 'api'")
+		return
+	}
+	// Only gs:// is accepted today. Future S3 / Azure Blob support
+	// will broaden the scheme set; for now keep the surface narrow so
+	// a typo (http://, gs:/, gcs://) fails at config load instead of
+	// during the post-run upload.
+	if !strings.HasPrefix(cfg.WorkspaceExportTo, "gs://") {
+		*errs = append(*errs, fmt.Sprintf(
+			"executor.workspaceExportTo %q must use the gs:// scheme",
+			cfg.WorkspaceExportTo,
+		))
+		return
+	}
+	// "gs://" alone, or "gs:///" (empty bucket), are operator errors.
+	// Strip the scheme and require a non-empty bucket-path component.
+	rest := strings.TrimPrefix(cfg.WorkspaceExportTo, "gs://")
+	if rest == "" || strings.HasPrefix(rest, "/") {
+		*errs = append(*errs, fmt.Sprintf(
+			"executor.workspaceExportTo %q must contain a non-empty bucket path after gs://",
+			cfg.WorkspaceExportTo,
 		))
 	}
 }
