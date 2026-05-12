@@ -1208,6 +1208,36 @@ func TestRunSuite_RetainedArtifactRedacted(t *testing.T) {
 	if !strings.Contains(string(content), "secret://[REDACTED]") {
 		t.Errorf("redacted artifact missing redaction sentinel:\n%s", string(content))
 	}
+
+	// Belt-and-braces: the artifact is redacted, but the file the
+	// harness actually received via --config must still carry the
+	// original reference. A regression that fed the redacted form to
+	// the harness would break startup at the SecretStore (the
+	// SECRET://[REDACTED] env var would fail to resolve). The
+	// configRecordingHarness copies the --config file's bytes into
+	// configLog while the runner's tmpDir is still alive.
+	handed, err := os.ReadFile(configLog)
+	if err != nil {
+		t.Fatalf("reading config handed to harness: %v", err)
+	}
+	var handedCfg types.RunConfig
+	if err := json.Unmarshal(handed, &handedCfg); err != nil {
+		t.Fatalf("config handed to harness is not valid JSON: %v\n%s", err, string(handed))
+	}
+	if handedCfg.Provider.APIKeyRef != realKeyRef {
+		t.Errorf("harness --config Provider.APIKeyRef = %q, want %q (un-redacted reference)",
+			handedCfg.Provider.APIKeyRef, realKeyRef)
+	}
+
+	// Also pin the audit artifact's permission bits (B-4): owner rw,
+	// group r, world none.
+	info, err := os.Stat(artifact)
+	if err != nil {
+		t.Fatalf("stat redacted artifact: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o640); got != want {
+		t.Errorf("redacted artifact mode = %#o, want %#o", got, want)
+	}
 }
 
 // TestRunSuite_DryRunValidatesMergedConfig asserts that --dry-run runs
@@ -1239,11 +1269,15 @@ func TestRunSuite_DryRunValidatesMergedConfig(t *testing.T) {
 		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
 	}
 	tr := result.Tasks[0]
-	if tr.Outcome == "pass" {
-		t.Errorf("task outcome = pass, want a non-pass for an invalid merged config")
+	// Pin the exact outcome: "fail" is the validation-failure branch
+	// (versus "error" for a merge failure). A regression that
+	// conflated the two would silently break operator-facing
+	// reporting; `!= "pass"` is too permissive to catch that.
+	if tr.Outcome != "fail" {
+		t.Errorf("Outcome = %q, want %q", tr.Outcome, "fail")
 	}
 	if !strings.Contains(tr.JudgeVerdict.Reason, "RunConfig validation failed") {
-		t.Errorf("reason = %q, want it to mention RunConfig validation", tr.JudgeVerdict.Reason)
+		t.Errorf("reason = %q, want it to mention RunConfig validation failed", tr.JudgeVerdict.Reason)
 	}
 }
 
