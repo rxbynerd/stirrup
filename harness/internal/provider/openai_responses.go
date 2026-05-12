@@ -112,18 +112,34 @@ type responsesRequest struct {
 // field selects which other fields are populated; this matches the
 // discriminated-union shape OpenAI publishes for typed input items.
 type responsesInput struct {
-	Type      string                  `json:"type"`                // "message" | "function_call" | "function_call_output"
-	Role      string                  `json:"role,omitempty"`      // for "message"
-	Content   []responsesContentBlock `json:"content,omitempty"`   // for "message"
-	Name      string                  `json:"name,omitempty"`      // for "function_call"
-	CallID    string                  `json:"call_id,omitempty"`   // for "function_call" / "function_call_output"
-	Arguments string                  `json:"arguments,omitempty"` // for "function_call" — JSON string
-	Output    string                  `json:"output,omitempty"`    // for "function_call_output"
+	Type    string                  `json:"type"`              // "message" | "function_call" | "function_call_output"
+	Role    string                  `json:"role,omitempty"`    // for "message"
+	Content []responsesContentBlock `json:"content,omitempty"` // for "message"
+	Name    string                  `json:"name,omitempty"`    // for "function_call"
+	// CallID retains omitempty because the harness's construction path
+	// guarantees a non-empty ToolUseID on every tool_result block (so the
+	// key is always populated in practice). The Responses API treats
+	// call_id as required on function_call_output items, structurally
+	// parallel to the output field below — a future contributor relaxing
+	// the construction-side invariant would resurface #172 through this
+	// field. Splitting responsesInput into per-type structs is the long-term
+	// remedy; for now, the construction-path invariant carries it.
+	CallID    string `json:"call_id,omitempty"`   // for "function_call" / "function_call_output"
+	Arguments string `json:"arguments,omitempty"` // for "function_call" — JSON string
+	// Output has no omitempty: the Responses API rejects function_call_output
+	// items missing the "output" key with HTTP 400 (Missing required parameter:
+	// 'input[N].output'), even when the value is the empty string. See #172.
+	Output string `json:"output"` // for "function_call_output" — required even when empty
 }
 
 // responsesContentBlock is one part inside a message item.
 // OpenAI uses "input_text" for user/system messages and "output_text" for
 // assistant messages — the asymmetry is part of their wire format.
+//
+// Text deliberately lacks omitempty: the Responses API requires the "text"
+// key on input_text / output_text content parts, even when the value is the
+// empty string. Structurally parallel to responsesInput.Output — see #172
+// for the analogous HTTP 400 that the missing-key surface produces.
 type responsesContentBlock struct {
 	Type string `json:"type"` // "input_text" | "output_text"
 	Text string `json:"text"`
