@@ -1117,6 +1117,46 @@ func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleCloudRunVertexGeminiJSONLoadsAndValidates pins the shipped
+// Cloud Run fixture: the file must round-trip through loadRunConfigFile,
+// pass ValidateRunConfig, and exercise the three new surface areas that
+// Chunks A and B introduced — resultSink.type=stdout-json,
+// traceEmitter.type=gcs, and executor.workspaceExportTo on a gs:// URI.
+//
+// Drift in any of the three fields fails this test before an operator
+// hits the same error on a Cloud Run dispatch.
+func TestExampleCloudRunVertexGeminiJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "cloud-run-vertex-gemini.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/cloud-run-vertex-gemini.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/cloud-run-vertex-gemini.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "gemini" {
+		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
+	}
+	if cfg.Provider.Credential == nil || cfg.Provider.Credential.Type != "gcp-workload-identity" {
+		t.Errorf("Provider.Credential = %+v, want type=gcp-workload-identity", cfg.Provider.Credential)
+	}
+	if cfg.ResultSink == nil || cfg.ResultSink.Type != "stdout-json" {
+		t.Errorf("ResultSink = %+v, want type=stdout-json", cfg.ResultSink)
+	}
+	if cfg.TraceEmitter.Type != "gcs" {
+		t.Errorf("TraceEmitter.Type = %q, want gcs", cfg.TraceEmitter.Type)
+	}
+	if cfg.TraceEmitter.Bucket == "" {
+		t.Error("TraceEmitter.Bucket must be set when TraceEmitter.Type is \"gcs\"")
+	}
+	if cfg.Executor.WorkspaceExportTo == "" {
+		t.Error("Executor.WorkspaceExportTo must be set in the Cloud Run fixture")
+	}
+}
+
 // TestBuildHarnessRunConfig_SafetyRingFlags verifies that the three new
 // safety-ring flags (issue #42) propagate to the matching RunConfig
 // fields. Each is independently exercised so a future refactor that

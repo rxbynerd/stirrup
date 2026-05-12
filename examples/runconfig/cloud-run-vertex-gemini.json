@@ -1,0 +1,65 @@
+{
+  "runId": "cloud-run-vertex-gemini-example",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "gemini",
+    "gcpProject": "my-project-id",
+    "gcpLocation": "global",
+    "credential": {
+      "type": "gcp-workload-identity"
+    }
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "gemini",
+    "model": "gemini-2.5-flash"
+  },
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 200000
+  },
+  "executor": {
+    "type": "local",
+    "workspace": "/tmp/stirrup-workspace",
+    "workspaceExportTo": "gs://stirrup-results-my-project-id/cloud-run-vertex-gemini-example/workspace.tar.gz"
+  },
+  "editStrategy": {
+    "type": "multi"
+  },
+  "verifier": {
+    "type": "none"
+  },
+  "permissionPolicy": {
+    "type": "allow-all"
+  },
+  "gitStrategy": {
+    "type": "none"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "traceEmitter": {
+    "type": "gcs",
+    "bucket": "stirrup-results-my-project-id",
+    "objectPrefix": "traces/"
+  },
+  "resultSink": {
+    "type": "stdout-json"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory",
+      "search_files",
+      "edit_file",
+      "run_command"
+    ]
+  },
+  "maxTurns": 20,
+  "timeout": 600,
+  "logLevel": "info"
+}
