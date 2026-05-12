@@ -7,22 +7,28 @@
 # This suite is opt-in. It exercises a real round-trip against the
 # OpenAI Responses API and therefore requires:
 #
-#   - A real OpenAI API key set in the environment.
-#   - The harness binary configured with
-#     `--provider openai-responses --model <model>`.
+#   - A real OpenAI API key resolvable through the harness's
+#     SecretStore at the reference `secret://OPENAI_KEY` (mirrors
+#     the convention used for `secret://ANTHROPIC_API_KEY`).
+#
+# The suite pins its own provider posture via the inline
+# `run_config` block below: callers no longer need to remember to
+# pass `--provider openai-responses --model <model>` on the
+# command line, the suite carries that information itself
+# (issue #177).
 #
 # The unit-level marshal tests in
 # harness/internal/provider/openai_responses_test.go (covering
 # empty Content, error+empty content, and multiple empty results
-# in a row) are the per-PR gate for the fix. They cannot, however,
-# observe whether the OpenAI Responses API accepts the resulting
-# JSON — the harness's ReplayProvider sidesteps HTTP marshalling
-# entirely, and even a contract test against a recorded fixture
-# pins our serialisation, not OpenAI's parser. This suite is the
-# end-to-end pin: under the buggy adapter the run dies on turn 2
-# before the sentinel write happens, so the sentinel file is
-# absent and the task fails. Under the fix the run completes and
-# the sentinel is present.
+# in a row) remain the per-PR gate for the fix. They cannot,
+# however, observe whether the OpenAI Responses API accepts the
+# resulting JSON — the harness's ReplayProvider sidesteps HTTP
+# marshalling entirely, and even a contract test against a
+# recorded fixture pins our serialisation, not OpenAI's parser.
+# This suite is the end-to-end pin: under the buggy adapter the
+# run dies on turn 2 before the sentinel write happens, so the
+# sentinel file is absent and the task fails. Under the fix the
+# run completes and the sentinel is present.
 #
 # Not part of default CI: live provider calls are slow, flaky, and
 # spend real credits, and the per-PR signal is already provided by
@@ -34,7 +40,25 @@
 #       --output results/
 
 suite "openai-responses-empty-tool-output-regression" {
-  description = "Live-API regression for issue #172: the openai-responses adapter dropped the required `output` key from function_call_output items when a tool produced empty stdout, causing the next turn to be rejected with HTTP 400. Opt-in — requires a real OpenAI API key and the harness configured for --provider openai-responses; the unit tests in openai_responses_test.go are the per-PR gate, this suite is the end-to-end pin against the real Responses API."
+  description = "Live-API regression for issue #172: the openai-responses adapter dropped the required `output` key from function_call_output items when a tool produced empty stdout, causing the next turn to be rejected with HTTP 400. Opt-in — requires a real OpenAI API key resolvable as `secret://OPENAI_KEY`; the suite pins its own provider posture so no `--provider` / `--model` flags are needed. The unit tests in openai_responses_test.go are the per-PR gate; this suite is the end-to-end pin against the real Responses API."
+
+  # The provider posture this regression depends on is encoded in
+  # the suite itself rather than left to the caller's command line.
+  # Operators only need the OPENAI_KEY secret in the environment.
+  # max_turns is capped tight: each task expects a short, scripted
+  # tool sequence, so a high cap would only hide failures behind
+  # unrelated wandering.
+  run_config {
+    max_turns = 6
+    provider {
+      type        = "openai-responses"
+      api_key_ref = "secret://OPENAI_KEY"
+    }
+    model_router {
+      type  = "static"
+      model = "gpt-4o-mini"
+    }
+  }
 
   task "empty-stdout-run-command-completes" {
     description = "Drives the agent through at least one run_command whose stdout is empty (`true`), then a write_file that drops a sentinel. Under the buggy adapter, turn 2's request is rejected with HTTP 400 and `completed.txt` is never written. Under the fix, the sentinel is present with the literal text `ok`."

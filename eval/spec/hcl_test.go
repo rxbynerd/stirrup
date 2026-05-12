@@ -826,28 +826,55 @@ func TestLoadSuiteHCL_BackwardsCompatNoRunConfig(t *testing.T) {
 
 // TestLoadSuiteHCL_ExistingSuitesStillParse exercises the production
 // suites checked in under eval/suites/ to confirm the grammar
-// extension hasn't regressed their loadability. Neither suite uses
-// the new run-config surface yet, so this is a pure backwards-compat
-// pin.
+// extension hasn't regressed their loadability. The openai-responses
+// regression suite pins its own provider posture inline (issue #177),
+// so its RunConfig is expected to be populated; guardrail.hcl remains
+// on the legacy path.
 func TestLoadSuiteHCL_ExistingSuitesStillParse(t *testing.T) {
-	cases := []string{
-		"../suites/guardrail.hcl",
-		"../suites/openai-responses-empty-tool-output.hcl",
+	cases := []struct {
+		path           string
+		wantRunConfig  bool
+		wantProvider   string
+		wantModel      string
+	}{
+		{
+			path:          "../suites/guardrail.hcl",
+			wantRunConfig: false,
+		},
+		{
+			path:          "../suites/openai-responses-empty-tool-output.hcl",
+			wantRunConfig: true,
+			wantProvider:  "openai-responses",
+			wantModel:     "gpt-4o-mini",
+		},
 	}
-	for _, p := range cases {
-		t.Run(p, func(t *testing.T) {
-			if _, err := os.Stat(p); err != nil {
-				t.Skipf("suite %s not present: %v", p, err)
+	for _, c := range cases {
+		t.Run(c.path, func(t *testing.T) {
+			if _, err := os.Stat(c.path); err != nil {
+				t.Skipf("suite %s not present: %v", c.path, err)
 			}
-			suite, err := LoadSuiteHCL(p)
+			suite, err := LoadSuiteHCL(c.path)
 			if err != nil {
-				t.Fatalf("LoadSuiteHCL(%s): %v", p, err)
+				t.Fatalf("LoadSuiteHCL(%s): %v", c.path, err)
 			}
 			if suite.ID == "" {
-				t.Fatalf("LoadSuiteHCL(%s) returned suite with empty ID", p)
+				t.Fatalf("LoadSuiteHCL(%s) returned suite with empty ID", c.path)
 			}
-			if suite.RunConfig != nil {
-				t.Errorf("suite %s RunConfig = %#v, want nil (legacy)", p, suite.RunConfig)
+			switch {
+			case !c.wantRunConfig && suite.RunConfig != nil:
+				t.Errorf("suite %s RunConfig = %#v, want nil (legacy)", c.path, suite.RunConfig)
+			case c.wantRunConfig && suite.RunConfig == nil:
+				t.Fatalf("suite %s RunConfig = nil, want pinned baseline", c.path)
+			case c.wantRunConfig:
+				if suite.RunConfig.Inline == nil {
+					t.Fatalf("suite %s RunConfig.Inline = nil, want inline baseline", c.path)
+				}
+				if got := suite.RunConfig.Inline.Provider; got == nil || got.Type != c.wantProvider {
+					t.Errorf("suite %s provider = %#v, want type %q", c.path, got, c.wantProvider)
+				}
+				if got := suite.RunConfig.Inline.ModelRouter; got == nil || got.Model != c.wantModel {
+					t.Errorf("suite %s model = %#v, want model %q", c.path, got, c.wantModel)
+				}
 			}
 		})
 	}
