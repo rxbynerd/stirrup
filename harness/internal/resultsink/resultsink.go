@@ -32,6 +32,19 @@ import (
 // colon) are part of the wire contract: the smoke workflow greps for
 // it verbatim. Changing the literal would silently break operator
 // pipelines that already depend on it.
+//
+// Last-line-wins semantics: the harness always emits the sentinel as
+// the last line written to stdout before process exit, via the
+// emitRunResult call at the end of every run path in
+// cmd/stirrup/cmd/root.go. Consumers relying on log-based extraction
+// (Cloud Logging --limit=1 sorted descending; `grep STIRRUP_RESULT |
+// tail -n1` from a shell pipeline) should treat the last matching
+// line as authoritative. A model that happens to echo the sentinel
+// prefix earlier in the run produces an earlier, superseded log
+// entry; the structural ordering guarantee on the harness side is
+// what makes the extraction unambiguous. Any future code path that
+// writes the sentinel from a non-final position would silently break
+// this contract and the Cloud Run smoke workflow's correctness.
 const StdoutResultSentinel = "STIRRUP_RESULT "
 
 // ResultSink emits a RunResult at end-of-run. Implementations are

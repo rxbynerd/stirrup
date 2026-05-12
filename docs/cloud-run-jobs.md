@@ -304,7 +304,21 @@ STIRRUP_RESULT {"schemaVersion":1,"runId":"…","outcome":"success","turns":4,"t
 Cloud Run pipes stdout to Cloud Logging without re-serialisation, so
 the line surfaces verbatim in the execution's logs. The sentinel
 distinguishes the structured-result line from incidental tool-call
-output. Extraction:
+output.
+
+**Last-line-wins semantics.** The harness always emits the sentinel
+as the last line written to stdout before process exit. If the model
+happens to echo the literal `STIRRUP_RESULT ` prefix earlier in the
+run (e.g. inside a transcribed file), that earlier line is
+superseded by the harness-emitted line that follows it. Cloud
+Logging extraction therefore uses `--limit=1` with the default
+descending sort, returning the *last* matching entry; the shell
+pipeline equivalent is `grep STIRRUP_RESULT … | tail -n1`. The
+ordering guarantee is the defence against a hostile prompt that
+tries to inject a fake result line — overriding it would require the
+model to emit *after* the harness, which it cannot.
+
+Extraction:
 
 ```sh
 EXEC=$(gcloud run jobs executions list \
