@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -15,6 +18,85 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// maxPromptFileBytes caps the size of a --prompt-file we will read into
+// memory. Matches the 10 MiB cap on file reads in
+// harness/internal/executor/local.go (maxFileSize): a prompt is a short
+// brief, anything in this range is almost certainly a mistake (a symlink
+// to /dev/zero, a binary pasted as the path, etc.). The cap prevents OOM
+// on a malformed input. Duplicated rather than imported because the
+// executor constant is package-private and the coupling is one-shot.
+const maxPromptFileBytes int64 = 10 * 1024 * 1024 // matches local.go maxFileSize
+
+// readPromptFile loads a --prompt-file from disk with size + empty
+// guards and trailing-newline trimming. Extracted as a tiny helper
+// (rather than a full resolvePrompt extraction) because the file I/O
+// concerns — size cap, empty check, path sanitisation, error wrapping
+// — are non-trivial enough that duplicating them at both runHarness
+// call sites would invite drift. The resolution chain that decides
+// which source wins stays inlined per issue #165's "minimal-diff,
+// house style" direction.
+//
+// Path is cleaned with filepath.Clean before stat; relative paths are
+// resolved by the OS against the CWD (parallel to --config, NOT
+// --workspace), so an operator running `stirrup harness
+// --prompt-file ./brief.txt` from their checkout gets the file next
+// to them, not next to a possibly-remote workspace.
+func readPromptFile(path string) (string, error) {
+	clean := filepath.Clean(path)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("reading --prompt-file %q: is a directory", path)
+	}
+	// Reject character devices, named pipes (FIFOs), Unix sockets, and
+	// every other non-regular file type. `os.Stat` reports Size()==0
+	// for FIFOs and char devices on both Linux and macOS, which would
+	// otherwise sail past the size cap below. The concrete failure
+	// modes that this guard closes are:
+	//   - /dev/zero or an unwritten FIFO: ReadAll blocks forever and
+	//     the harness hangs at startup.
+	//   - A FIFO pre-loaded with >10 MiB: all of it is read into memory
+	//     before the post-read cap check trips.
+	// The IsDir() guard above does not cover these; IsDir() is false
+	// for devices and FIFOs.
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("reading --prompt-file %q: not a regular file", path)
+	}
+	if info.Size() > maxPromptFileBytes {
+		return "", fmt.Errorf("reading --prompt-file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxPromptFileBytes)
+	}
+	// Bounded read via io.LimitReader. Belt-and-braces alongside the
+	// stat-time size check above: closes the TOCTOU window where the
+	// file grows between os.Stat and the open call, and provides a
+	// second line of defence if a future refactor accidentally drops
+	// the IsRegular() guard. The +1 byte over the cap lets us
+	// distinguish "exactly at the cap" from "larger than the cap" so
+	// the operator-facing error is accurate.
+	f, err := os.Open(clean)
+	if err != nil {
+		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxPromptFileBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
+	}
+	if int64(len(data)) > maxPromptFileBytes {
+		return "", fmt.Errorf("reading --prompt-file %q: exceeds %d byte cap", path, maxPromptFileBytes)
+	}
+	// Trim only trailing CR/LF so `echo "prompt" > file` and
+	// `printf 'prompt\n' > file` both produce the same string. Leading
+	// whitespace is preserved — a prompt that intentionally opens with
+	// indentation (e.g. a code block) should round-trip unchanged.
+	trimmed := strings.TrimRight(string(data), "\r\n")
+	if trimmed == "" {
+		return "", fmt.Errorf("--prompt-file %q is empty", path)
+	}
+	return trimmed, nil
+}
 
 // harnessCLIOptions captures every CLI-surfaced setting that influences the
 // RunConfig built by buildHarnessRunConfig. Extracted so the construction
@@ -395,7 +477,10 @@ var harnessCmd = &cobra.Command{
 	Use:   "harness [flags] [prompt]",
 	Short: "Run the coding agent harness",
 	Long: `Run the stirrup coding agent harness. The prompt can be provided as a
-positional argument or via the --prompt flag.
+positional argument, via the --prompt flag, via --prompt-file (read from
+CWD; trailing newlines trimmed; 10 MiB cap), or via the STIRRUP_PROMPT
+environment variable. Resolution order: --prompt > positional > --prompt-file
+> STIRRUP_PROMPT > prompt field in --config.
 
 Configuration precedence: a --config JSON file (if provided) populates the
 full RunConfig; explicitly-set flags then override individual fields; flags
@@ -444,7 +529,8 @@ func init() {
 	f.String("transport-addr", "", "gRPC target address (required when transport is grpc)")
 	f.Int("followup-grace", 0, "Seconds to keep gRPC transport open for follow-up requests (0 = disabled; env: STIRRUP_FOLLOWUP_GRACE)")
 	f.String("log-level", "info", "Log level: debug, info, warn, error")
-	f.String("prompt", "", "User prompt (can also be passed as a positional argument)")
+	f.String("prompt", "", "User prompt (can also be passed as a positional argument; falls back to --prompt-file then STIRRUP_PROMPT env var, then a prompt field in --config)")
+	f.String("prompt-file", "", "Path to a file whose contents become the prompt. Read from CWD when relative. Trailing newlines are trimmed; the file is capped at 10 MiB and must be non-empty. Lower precedence than --prompt and the positional argument; higher than STIRRUP_PROMPT.")
 	f.String("name", "", "Human-readable session label (metadata only, not injected into prompt)")
 
 	// Component-selection flags. Escape hatches for callers who don't want
@@ -824,8 +910,29 @@ func runHarness(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
+		// --prompt-file and STIRRUP_PROMPT fall in below --prompt /
+		// positional / file-prompt (applyOverrides has already resolved
+		// those three by this point). Inlined rather than extracted into
+		// a resolvePrompt helper per the house-style preference for
+		// minimal-diff changes — the two call sites read the same five
+		// sources in the same order, and a tiny duplication keeps the
+		// resolution chain visible at both decision points.
 		if cfg.Prompt == "" {
-			return fmt.Errorf("prompt is required: set in --config file, pass as argument, or use --prompt flag")
+			if promptFile, _ := f.GetString("prompt-file"); promptFile != "" {
+				p, err := readPromptFile(promptFile)
+				if err != nil {
+					return err
+				}
+				cfg.Prompt = p
+			}
+		}
+		if cfg.Prompt == "" {
+			if v := os.Getenv("STIRRUP_PROMPT"); v != "" {
+				cfg.Prompt = v
+			}
+		}
+		if cfg.Prompt == "" {
+			return fmt.Errorf("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
 		}
 		if err := types.ValidateRunConfig(cfg); err != nil {
 			return fmt.Errorf("invalid config from %q: %w", configPath, err)
@@ -838,8 +945,28 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	if prompt == "" && len(args) > 0 {
 		prompt = args[0]
 	}
+	// --prompt-file and STIRRUP_PROMPT fall in below --prompt and the
+	// positional argument. Inlined rather than extracted into a
+	// resolvePrompt helper per the house-style preference for
+	// minimal-diff changes; the chain is short and reads top-to-bottom
+	// in precedence order, which is easier to audit than a separate
+	// function with its own ordering.
 	if prompt == "" {
-		return fmt.Errorf("prompt is required: pass as argument or use --prompt flag")
+		if promptFile, _ := f.GetString("prompt-file"); promptFile != "" {
+			p, err := readPromptFile(promptFile)
+			if err != nil {
+				return err
+			}
+			prompt = p
+		}
+	}
+	if prompt == "" {
+		if v := os.Getenv("STIRRUP_PROMPT"); v != "" {
+			prompt = v
+		}
+	}
+	if prompt == "" {
+		return fmt.Errorf("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
 	}
 
 	mode, _ := f.GetString("mode")
