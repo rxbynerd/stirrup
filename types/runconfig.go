@@ -73,6 +73,7 @@ type RunConfig struct {
 	GitStrategy      GitStrategyConfig         `json:"gitStrategy"`
 	Transport        TransportConfig           `json:"transport"`
 	TraceEmitter     TraceEmitterConfig        `json:"traceEmitter"`
+	ResultSink       *ResultSinkConfig         `json:"resultSink,omitempty"`
 	Tools            ToolsConfig               `json:"tools"`
 
 	// Limits
@@ -397,6 +398,23 @@ func (rc RunConfig) Redact() RunConfig {
 			}
 		}
 		redacted.TraceEmitter.Headers = headers
+	}
+	// ResultSink.Attributes (reserved for the future pubsub adapter)
+	// may carry "secret://" references the same way trace-emitter
+	// headers do. Mirror the same rewrite so a recorded RunConfig
+	// never persists the reference into a trace or recording.
+	if redacted.ResultSink != nil && len(redacted.ResultSink.Attributes) > 0 {
+		sink := *redacted.ResultSink
+		attrs := make(map[string]string, len(sink.Attributes))
+		for k, v := range sink.Attributes {
+			if strings.HasPrefix(v, "secret://") {
+				attrs[k] = "secret://[REDACTED]"
+			} else {
+				attrs[k] = v
+			}
+		}
+		sink.Attributes = attrs
+		redacted.ResultSink = &sink
 	}
 	return redacted
 }
@@ -772,6 +790,45 @@ type TraceEmitterConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// ResultSinkConfig selects the result sink implementation. The
+// discriminator values are a closed set so AWS / Azure adapters can land
+// without breaking changes. Only "none" and "stdout-json" are
+// implemented in this issue; "pubsub" and "gcs" are reserved values
+// that fail validation with a "not yet implemented" error until their
+// adapters land.
+//
+// The result sink carries the run's *answer* (a small RunResult JSON
+// payload) — distinct from the trace emitter, which carries the run's
+// *evidence* (full JSONL trace + spans). A run can configure both
+// independently.
+type ResultSinkConfig struct {
+	// Type selects the adapter. Closed set:
+	//   "none"        — disabled (the default when ResultSink is nil).
+	//   "stdout-json" — write a single "STIRRUP_RESULT <json>" line to
+	//                   stdout at end-of-run. Reads cleanly from Cloud
+	//                   Logging / CloudWatch / journald.
+	//   "pubsub"      — RESERVED. Will publish RunResult to a GCP
+	//                   Pub/Sub topic; rejected with a "not yet
+	//                   implemented" error today.
+	//   "gcs"         — RESERVED. Will write RunResult as a JSON
+	//                   object to GCS; rejected with a "not yet
+	//                   implemented" error today.
+	Type string `json:"type"`
+
+	// Topic is the Pub/Sub topic name for the future "pubsub" adapter.
+	// Parsed but currently unused — the validator rejects pubsub with
+	// "not yet implemented" before this field is consulted.
+	Topic string `json:"topic,omitempty"`
+
+	// Attributes are extra message attributes attached to the future
+	// "pubsub" adapter's published message. Values may carry
+	// "secret://" references which RunConfig.Redact() rewrites to
+	// "secret://[REDACTED]" before any trace or recording is
+	// persisted. Parsed but currently unused — the validator rejects
+	// pubsub with "not yet implemented" before this field is consulted.
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
 // ToolsConfig holds the tool configuration.
 type ToolsConfig struct {
 	BuiltIn    []string          `json:"builtIn,omitempty"`    // which built-in tools to enable
@@ -982,6 +1039,27 @@ var validTraceEmitterProtocols = map[string]bool{
 	"":              true,
 	"grpc":          true,
 	"http/protobuf": true,
+}
+
+// validResultSinkTypes is the closed set of ResultSinkConfig.Type
+// values. Only the entries in implementedResultSinkTypes are wired in
+// this release; the remainder are reserved so AWS / Azure / pubsub
+// adapters can ship without breaking the config wire schema.
+var validResultSinkTypes = map[string]bool{
+	"none":        true,
+	"stdout-json": true,
+	"pubsub":      true,
+	"gcs":         true,
+}
+
+// implementedResultSinkTypes is the subset of validResultSinkTypes for
+// which an adapter is wired today. ValidateRunConfig rejects every
+// other entry in validResultSinkTypes with a "not yet implemented"
+// error so an operator sees a clear message instead of a surprising
+// nil-component crash at boot.
+var implementedResultSinkTypes = map[string]bool{
+	"none":        true,
+	"stdout-json": true,
 }
 
 var validCredentialTypes = map[string]bool{
@@ -1278,6 +1356,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("transport", config.Transport.Type, validTransportTypes, &errs)
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
 	validateTraceEmitterProtocolAndHeaders(config.TraceEmitter, &errs)
+	validateResultSinkConfig(config.ResultSink, &errs)
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
 	validateProviderConfigs(config, retryDefaulted, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
@@ -2720,5 +2799,31 @@ func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]stri
 				k,
 			))
 		}
+	}
+}
+
+// validateResultSinkConfig enforces the closed set of resultSink types
+// and rejects reserved-but-not-implemented variants with a clear
+// "not yet implemented" message so an operator sees actionable text
+// instead of a nil-component crash at boot.
+//
+// A nil ResultSink is equivalent to type=="none" (sink disabled).
+func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if cfg.Type == "" {
+		*errs = append(*errs, "resultSink type is required")
+		return
+	}
+	if !validResultSinkTypes[cfg.Type] {
+		*errs = append(*errs, fmt.Sprintf("unsupported resultSink type %q", cfg.Type))
+		return
+	}
+	if !implementedResultSinkTypes[cfg.Type] {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink type %q is reserved but not yet implemented in this release",
+			cfg.Type,
+		))
 	}
 }
