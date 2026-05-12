@@ -119,11 +119,11 @@ type rootSpec struct {
 }
 
 type suiteSpec struct {
-	ID             string                    `hcl:"id,label"`
-	Description    string                    `hcl:"description,optional"`
-	RunConfigFile  *string                   `hcl:"run_config_file,optional"`
-	RunConfig      *runConfigOverridesSpec   `hcl:"run_config,block"`
-	Tasks          []taskSpec                `hcl:"task,block"`
+	ID            string                  `hcl:"id,label"`
+	Description   string                  `hcl:"description,optional"`
+	RunConfigFile *string                 `hcl:"run_config_file,optional"`
+	RunConfig     *runConfigOverridesSpec `hcl:"run_config,block"`
+	Tasks         []taskSpec              `hcl:"task,block"`
 }
 
 type taskSpec struct {
@@ -165,13 +165,13 @@ type judgeSpec struct {
 // settings, dynamic-router thresholds, composite verifier children)
 // can be added in follow-ups without changing the carrier shape.
 type runConfigOverridesSpec struct {
-	Mode            string                   `hcl:"mode,optional"`
-	MaxTurns        *int                     `hcl:"max_turns,optional"`
-	Provider        *providerConfigSpec      `hcl:"provider,block"`
-	ModelRouter     *modelRouterConfigSpec   `hcl:"model_router,block"`
+	Mode            string                     `hcl:"mode,optional"`
+	MaxTurns        *int                       `hcl:"max_turns,optional"`
+	Provider        *providerConfigSpec        `hcl:"provider,block"`
+	ModelRouter     *modelRouterConfigSpec     `hcl:"model_router,block"`
 	ContextStrategy *contextStrategyConfigSpec `hcl:"context_strategy,block"`
-	EditStrategy    *editStrategyConfigSpec  `hcl:"edit_strategy,block"`
-	Verifier        *verifierConfigSpec      `hcl:"verifier,block"`
+	EditStrategy    *editStrategyConfigSpec    `hcl:"edit_strategy,block"`
+	Verifier        *verifierConfigSpec        `hcl:"verifier,block"`
 }
 
 // providerConfigSpec covers the most-common ProviderConfig fields.
