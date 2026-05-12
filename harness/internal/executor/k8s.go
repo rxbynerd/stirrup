@@ -30,7 +30,12 @@ const (
 	k8sReadyTimeout     = 60 * time.Second
 	k8sReadyPollPeriod  = 1 * time.Second
 	k8sCloseTimeout     = 30 * time.Second
+	k8sAPITimeout       = 30 * time.Second
 	k8sPodNameRandBytes = 6
+	// k8sRunAsUserUID is the non-root UID enforced for the agent container.
+	// 65532 matches the distroless "nonroot" convention and lets RunAsNonRoot
+	// be enforced without requiring the image to declare its own USER.
+	k8sRunAsUserUID int64 = 65532
 )
 
 // K8sExecutorConfig configures a K8sExecutor. The container runtime,
@@ -118,6 +123,18 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 					Image:      cfg.Image,
 					Command:    []string{"/bin/sh", "-c", "sleep infinity"},
 					WorkingDir: k8sWorkspace,
+					SecurityContext: &corev1.SecurityContext{
+						AllowPrivilegeEscalation: ptr.To(false),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: ptr.To(true),
+						// An explicit non-root UID lets RunAsNonRoot be enforced
+						// without requiring the image to declare its own non-root
+						// USER. 65532 matches the distroless convention.
+						RunAsUser:      ptr.To(k8sRunAsUserUID),
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
 				},
 			},
 		},
@@ -216,18 +233,36 @@ func (e *K8sExecutor) Capabilities() ExecutorCapabilities {
 
 // buildRESTConfig resolves an in-cluster config when possible, falling back
 // to the kubeconfig file at cfg.Kubeconfig (or $KUBECONFIG if unset).
+// The returned *rest.Config always carries an explicit HTTP timeout so the
+// underlying client never inherits an unbounded timeout — the project bans
+// HTTP clients without a declared timeout.
 func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig != "" {
-		return clientcmd.BuildConfigFromFlags("", kubeconfig)
+		cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Timeout = k8sAPITimeout
+		return cfg, nil
 	}
 	cfg, err := rest.InClusterConfig()
 	if err == nil {
+		cfg.Timeout = k8sAPITimeout
 		return cfg, nil
 	}
 	if !errors.Is(err, rest.ErrNotInCluster) {
 		return nil, err
 	}
-	return clientcmd.BuildConfigFromFlags("", os.Getenv("KUBECONFIG"))
+	kube := os.Getenv("KUBECONFIG")
+	if kube == "" {
+		return nil, fmt.Errorf("k8s executor: not in cluster and KUBECONFIG is unset")
+	}
+	cfg, err = clientcmd.BuildConfigFromFlags("", kube)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Timeout = k8sAPITimeout
+	return cfg, nil
 }
 
 // generatePodName returns "stirrup-<12-hex-chars>". 6 random bytes give 48
