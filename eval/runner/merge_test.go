@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -625,30 +626,36 @@ done
 
 // TestRunSuite_WithBaselineWritesConfigAndRedactedArtifact covers the
 // new invocation path: when the suite declares a baseline, the runner
-// must (a) invoke the harness with --config <path>, (b) write the
-// merged config to that path, and (c) retain a run_config.redacted.json
-// alongside the trace artifacts. The redacted artifact must contain the
-// secret:// reference unchanged — the reference is not a resolved
-// value, so Redact() does not rewrite plain secret:// references on
-// fields like Provider.APIKeyRef (which it does redact to
-// "secret://[REDACTED]" — the test checks for the redaction marker).
+// must (a) invoke the harness with --config <path> and no shadowing
+// flags (no --mode, no --timeout, no --trace — those land in the
+// merged config or in the per-task tmpdir), (b) write the merged
+// config to that path with TraceEmitter.FilePath set to the runner's
+// trace path, and (c) retain a run_config.redacted.json alongside
+// the trace artifacts.
 func TestRunSuite_WithBaselineWritesConfigAndRedactedArtifact(t *testing.T) {
 	logDir := t.TempDir()
 	argLog := filepath.Join(logDir, "args.log")
 	configCapture := filepath.Join(logDir, "config-capture.json")
+	// The fake harness no longer receives --trace on the merged-config
+	// path. Read the trace path out of the merged config instead, so a
+	// successful trace artifact is still produced for parseTraceFile to
+	// consume in runTask.
 	script := fmt.Sprintf(`#!/bin/sh
-TRACE=""
 CONFIG=""
 echo "$@" >> %q
 while [ $# -gt 0 ]; do
   case "$1" in
-    --trace)  TRACE="$2";  shift 2 ;;
     --config) CONFIG="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
-[ -n "$CONFIG" ] && cp "$CONFIG" %q
-[ -n "$TRACE" ]  && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+if [ -n "$CONFIG" ]; then
+  cp "$CONFIG" %q
+  # Extract trace_emitter.file_path with a sed grep (the merged
+  # config is single-line JSON). Tolerant of leading/trailing whitespace.
+  TRACE=$(sed -n 's/.*"filePath":"\([^"]*\)".*/\1/p' "$CONFIG")
+  [ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+fi
 `, argLog, configCapture)
 	harness := writeFakeHarness(t, script)
 
@@ -676,16 +683,23 @@ done
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// (a) --config was passed.
+	// (a) --config was passed, and the shadowing flags were not.
 	logData, err := os.ReadFile(argLog)
 	if err != nil {
 		t.Fatalf("reading arg log: %v", err)
 	}
-	if !strings.Contains(string(logData), "--config") {
-		t.Errorf("expected --config in harness args; got %q", string(logData))
+	logStr := string(logData)
+	if !strings.Contains(logStr, "--config") {
+		t.Errorf("expected --config in harness args; got %q", logStr)
+	}
+	for _, banned := range []string{"--timeout", "--mode", "--trace"} {
+		if strings.Contains(logStr, banned) {
+			t.Errorf("merged-config invocation must not pass %s; got args: %q", banned, logStr)
+		}
 	}
 
-	// (b) Captured config decodes back to the same RunConfig shape.
+	// (b) Captured config decodes back to the same RunConfig shape,
+	// with TraceEmitter.FilePath populated by the runner.
 	captured, err := os.ReadFile(configCapture)
 	if err != nil {
 		t.Fatalf("reading captured config: %v", err)
@@ -699,6 +713,12 @@ done
 	}
 	if got.Provider.APIKeyRef != "secret://OPENAI_KEY" {
 		t.Errorf("captured config APIKeyRef = %q, want %q (must be the unredacted reference — the harness needs it to resolve)", got.Provider.APIKeyRef, "secret://OPENAI_KEY")
+	}
+	if got.TraceEmitter.FilePath == "" {
+		t.Errorf("captured config TraceEmitter.FilePath is empty; runner must inject the per-task trace path")
+	}
+	if !strings.HasSuffix(got.TraceEmitter.FilePath, "trace.jsonl") {
+		t.Errorf("captured config TraceEmitter.FilePath = %q, want a path ending in trace.jsonl", got.TraceEmitter.FilePath)
 	}
 
 	// (c) Redacted artifact exists and has the reference scrubbed.
@@ -720,6 +740,270 @@ done
 	if !strings.Contains(string(redactedData), "secret://[REDACTED]") {
 		t.Errorf("redacted artifact missing redaction marker; data: %q", string(redactedData))
 	}
+
+	// (d) S1: retained redacted config must be mode 0o600 — it carries
+	// operator posture (provider type/model/network allowlists) and
+	// must not be world-readable on shared CI runners.
+	info, err := os.Stat(redactedPath)
+	if err != nil {
+		t.Fatalf("stat redacted artifact: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("redacted artifact perm = %o, want 0600", perm)
+	}
+}
+
+// TestRunSuite_HarnessFailWithTracePreservesVerdict covers the
+// runTask branch where the harness exits non-zero but still leaves a
+// usable trace behind. The runner must consult the judge and return
+// a real outcome (pass/fail) rather than discarding the trace and
+// reporting "error".
+func TestRunSuite_HarnessFailWithTracePreservesVerdict(t *testing.T) {
+	script := `#!/bin/sh
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+# Harness reports a non-zero exit despite emitting a trace — e.g. a
+# tool exited 1 but the agent loop closed cleanly. The runner should
+# still consult the judge.
+exit 1
+`
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "harness-fail-with-trace",
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"definitely-not-created.txt"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	// Judge looks for a missing file → fail, not error. The trace
+	// was preserved so the outcome reflects the judge's verdict.
+	if result.Tasks[0].Outcome != "fail" {
+		t.Errorf("outcome = %q, want fail (judge rejected, trace consumed)", result.Tasks[0].Outcome)
+	}
+}
+
+// TestRunSuite_CloneRepoFailureSurfacedAsError exercises the
+// runTask repo-clone error path. A nonexistent remote URL makes
+// `git clone` fail quickly and the runner must report the task as
+// "error" without spawning the harness.
+func TestRunSuite_CloneRepoFailureSurfacedAsError(t *testing.T) {
+	// git may not be installed in some sandboxed CI environments. If
+	// the binary is missing the test skips — cloneRepo's error path
+	// is still exercised below via the unreachable-remote URL on
+	// systems that do have git.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available on PATH")
+	}
+	script := `#!/bin/sh
+echo "should not be invoked" >&2
+exit 99
+`
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "clone-fail",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "t1",
+				Prompt: "p",
+				Repo:   "https://invalid.localhost.invalid/does-not-exist.git",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+			},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if result.Tasks[0].Outcome != "error" {
+		t.Errorf("outcome = %q, want error", result.Tasks[0].Outcome)
+	}
+	if !strings.Contains(result.Tasks[0].Error, "cloning repo") {
+		t.Errorf("error = %q, want it to mention cloning repo", result.Tasks[0].Error)
+	}
+}
+
+// TestRunSuite_HarnessFailWithoutTraceErrors covers the runTask
+// branch where the harness exits non-zero AND fails to leave a
+// usable trace. The outcome must be "error" and the surfaced error
+// must include the harness's stderr so the operator can diagnose.
+func TestRunSuite_HarnessFailWithoutTraceErrors(t *testing.T) {
+	script := `#!/bin/sh
+echo "harness boot failure" >&2
+exit 2
+`
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "harness-fail-no-trace",
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if result.Tasks[0].Outcome != "error" {
+		t.Errorf("outcome = %q, want error", result.Tasks[0].Outcome)
+	}
+	if !strings.Contains(result.Tasks[0].Error, "harness boot failure") {
+		t.Errorf("error = %q, want it to include harness stderr", result.Tasks[0].Error)
+	}
+}
+
+// TestRunSuite_HarnessSuccessWithoutTraceErrors covers the
+// parse-trace error path after a clean harness exit. Without this,
+// a harness that exits 0 but emits no trace would silently produce
+// an undefined outcome.
+func TestRunSuite_HarnessSuccessWithoutTraceErrors(t *testing.T) {
+	script := `#!/bin/sh
+exit 0
+`
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "harness-noop",
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if result.Tasks[0].Outcome != "error" {
+		t.Errorf("outcome = %q, want error", result.Tasks[0].Outcome)
+	}
+	if !strings.Contains(result.Tasks[0].Error, "parsing trace") {
+		t.Errorf("error = %q, want it to mention parsing trace", result.Tasks[0].Error)
+	}
+}
+
+// TestBuildMergedConfig_NilBaseline pins the legacy-invocation
+// contract on the merge helper: a nil baseline returns (nil, nil)
+// so runTask falls through to the legacy flag-only path.
+func TestBuildMergedConfig_NilBaseline(t *testing.T) {
+	four := 4
+	merged, err := buildMergedConfig(nil, &types.RunConfigOverrides{MaxTurns: &four})
+	if err != nil {
+		t.Fatalf("buildMergedConfig: %v", err)
+	}
+	if merged != nil {
+		t.Errorf("expected nil merged config for nil baseline, got %#v", merged)
+	}
+}
+
+// TestRunSuite_FailOutcomeOnJudgeReject covers the buildResult
+// fail-outcome branch: the harness succeeds and writes a trace, but
+// the judge's verdict is Passed=false. The outcome must be "fail",
+// not "error" — the harness ran cleanly; the run simply did not
+// meet the suite's criteria.
+func TestRunSuite_FailOutcomeOnJudgeReject(t *testing.T) {
+	script := `#!/bin/sh
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+`
+	harness := writeFakeHarness(t, script)
+
+	// file-exists judge with a path that the harness will never
+	// create — the harness ran but the judge rejects.
+	suite := types.EvalSuite{
+		ID: "legacy-fail",
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"definitely-not-created.txt"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	if result.Tasks[0].Outcome != "fail" {
+		t.Errorf("outcome = %q, want fail", result.Tasks[0].Outcome)
+	}
+}
+
+// TestRunTask_RejectsInvalidMergedConfigBeforeSubprocess covers B6:
+// when the merged RunConfig fails ValidateRunConfig the runner must
+// surface a per-task "error" outcome without launching the harness.
+// The fake harness records every invocation in argLog; the test
+// asserts that file stays empty.
+func TestRunTask_RejectsInvalidMergedConfigBeforeSubprocess(t *testing.T) {
+	logDir := t.TempDir()
+	argLog := filepath.Join(logDir, "args.log")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %q
+`, argLog)
+	harness := writeFakeHarness(t, script)
+
+	timeout := 300
+	// Review mode requires a restrictive permission policy; allow-all
+	// trips the read-only-mode invariant in ValidateRunConfig before
+	// any tools.builtIn check kicks in. The baseline is otherwise
+	// well-formed.
+	bad := &types.RunConfig{
+		Mode:             "review",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_KEY"},
+		MaxTurns:         10,
+		Timeout:          &timeout,
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+	}
+	suite := types.EvalSuite{
+		ID:        "ro-suite",
+		RunConfig: bad,
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harness,
+	})
+	if err != nil {
+		t.Fatalf("RunSuite error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	if result.Tasks[0].Outcome != "error" {
+		t.Errorf("outcome = %q, want error", result.Tasks[0].Outcome)
+	}
+	if !strings.Contains(result.Tasks[0].Error, "review") {
+		t.Errorf("error = %q, want it to name the offending mode", result.Tasks[0].Error)
+	}
+
+	// Subprocess must not have launched.
+	if _, err := os.Stat(argLog); err == nil {
+		t.Errorf("harness was invoked despite validation failure; arg log %s exists", argLog)
+	}
 }
 
 // TestRunSuite_WithBaselineRetainedArtifactOmitsResolvedSecrets is the
@@ -730,15 +1014,21 @@ done
 // path, this test should catch it via a substring check for plausible
 // secret-shaped values that should not appear in a redacted file.
 func TestRunSuite_WithBaselineRetainedArtifactOmitsResolvedSecrets(t *testing.T) {
+	// The runner no longer passes --trace when --config is in use; the
+	// trace path rides in TraceEmitter.FilePath inside the merged
+	// config. Extract it from the JSON to produce a valid trace.
 	script := `#!/bin/sh
-TRACE=""
+CONFIG=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --trace) TRACE="$2"; shift 2 ;;
+    --config) CONFIG="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
-[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+if [ -n "$CONFIG" ]; then
+  TRACE=$(sed -n 's/.*"filePath":"\([^"]*\)".*/\1/p' "$CONFIG")
+  [ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+fi
 `
 	harness := writeFakeHarness(t, script)
 
