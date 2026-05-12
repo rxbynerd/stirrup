@@ -106,6 +106,133 @@ generate suites from a higher-level tool and emit the static HCL.
 Suite definitions live in `eval/suites/`. CI baselines live in
 `eval/baselines/`.
 
+### Pinning the harness configuration per suite
+
+Some regression suites are only meaningful against a specific harness
+configuration — a particular provider adapter, a specific credential
+federation mode, an executor with a particular network posture, a
+non-default verifier. Encoding that posture in the suite itself,
+rather than in operator memory or a wrapper script, keeps the suite
+self-describing and prevents silent skew between "what the author
+intended" and "what the runner actually passed on the command line".
+This is the surface introduced by issue #177.
+
+A suite can declare a `RunConfig` baseline in one of two
+mutually-exclusive forms, and each task can carry sparse overrides on
+top:
+
+```hcl
+suite "fix-nil-check-regressions" {
+  description = "..."
+
+  # Form A — external file. Path is resolved relative to the suite
+  # file's directory at load time, so authors can use intuitive
+  # relative paths (e.g. "configs/base.json" next to the suite).
+  run_config_file = "configs/openai-responses-base.json"
+
+  # Form B — inline. Mutually exclusive with run_config_file.
+  # run_config {
+  #   mode      = "execution"
+  #   max_turns = 10
+  #   provider {
+  #     type        = "openai-responses"
+  #     api_key_ref = "secret://OPENAI_KEY"
+  #   }
+  #   model_router {
+  #     type  = "static"
+  #     model = "gpt-4o-mini"
+  #   }
+  # }
+
+  task "task-001" {
+    description = "..."
+    mode        = "execution"
+    prompt      = "..."
+
+    # Per-task overrides apply on top of the suite baseline. Only set
+    # the fields that should differ for this task; nil/empty fields
+    # leave the baseline untouched.
+    run_config_overrides {
+      max_turns = 4
+      provider {
+        type        = "anthropic"
+        api_key_ref = "secret://ANTHROPIC_API_KEY"
+      }
+    }
+
+    judge { type = "file-exists" paths = ["done.txt"] }
+  }
+}
+```
+
+The carrier types are `EvalSuite.RunConfig` (`*RunConfigSource`) and
+`EvalTask.RunConfigOverrides` (`*RunConfigOverrides`) in
+[`types/eval.go`](../types/eval.go). The HCL grammar for both blocks
+lives in [`eval/spec/hcl.go`](../eval/spec/hcl.go); the runner merge
+and harness invocation live in
+[`eval/runner/runner.go`](../eval/runner/runner.go).
+
+**Precedence.** The runner merges in three layers, lowest to highest:
+
+1. The suite baseline (from `run_config_file` if set, else from the
+   inline `run_config { ... }` block).
+2. The per-task `run_config_overrides` block, applied as a sparse
+   patch on top of the baseline.
+3. The runner-supplied harness flags — `--prompt`, `--mode`,
+   `--workspace`, `--trace`, `--timeout` — passed explicitly when the
+   runner shells out to `stirrup harness`. These win over any value
+   carried by the merged RunConfig, matching the harness's documented
+   `--config` precedence (see the `--config` flag docstring in
+   [`harness/cmd/stirrup/cmd/harness.go`](../harness/cmd/stirrup/cmd/harness.go)).
+
+The merged config is written to `<task tmpDir>/run_config.json` and
+passed as `--config <path>` to the harness. Suites with neither
+`run_config_file` nor an inline `run_config` block, and tasks with no
+`run_config_overrides`, fall through to the legacy invocation — no
+`--config` flag, no merged artifact.
+
+**Path resolution.** `run_config_file` is resolved relative to the
+suite file's directory at load time; absolute paths are preserved
+verbatim. This keeps the runner pure: it never needs to know where the
+suite file was loaded from.
+
+**Mutual exclusion.** A suite that sets both `run_config_file` and an
+inline `run_config { ... }` block is rejected at load time. The merge
+order would otherwise be ambiguous.
+
+**Surfaced fields.** The HCL grammar currently surfaces the fields
+listed below. Operators who need a less-common field (Gemini safety
+settings, full credential federation blocks, dynamic-router cheap/
+expensive overrides, composite verifiers) should keep the baseline in
+a JSON file and reference it via `run_config_file` — the JSON loader
+accepts the full `types.RunConfig` shape:
+
+| Block               | Fields                                                                                                  |
+|---------------------|---------------------------------------------------------------------------------------------------------|
+| (top-level)         | `mode`, `max_turns`                                                                                     |
+| `provider`          | `type`, `api_key_ref`, `region`, `profile`, `base_url`, `api_key_header`, `query_params`, `gcp_project`, `gcp_location` |
+| `model_router`      | `type`, `provider`, `model`, `mode_models`                                                              |
+| `context_strategy`  | `type`, `max_tokens`                                                                                    |
+| `edit_strategy`     | `type`, `fuzzy_threshold`                                                                               |
+| `verifier`          | `type`, `command`, `timeout`, `criteria`, `model`                                                       |
+
+**Redaction.** When `--output` is set, the runner writes the redacted
+form of the merged config to `<output>/<suite>/<task>/run_config.redacted.json`
+alongside the trace. `secret://...` references are rewritten to
+`secret://[REDACTED]` by `RunConfig.Redact()`. This matches the
+project-wide invariant in [`CLAUDE.md`](../CLAUDE.md) that secrets
+never appear in `RunConfig` artifacts persisted alongside traces or
+recordings. Operators may safely audit, attach, and commit the
+redacted artifact.
+
+**Dry-run.** `eval run --dry-run` runs `types.ValidateRunConfig` on
+the merged config for every task. A task whose merged config fails
+validation surfaces as a failed `TaskResult` with the validation error
+in `Reason`; tasks whose merged config validates produce the synthetic
+all-pass `TaskResult` the dry-run path always emits. Suites without
+any RunConfig surface skip the validation step entirely and produce
+the same synthetic pass result as before.
+
 ### Judges
 
 A judge decides whether a task passed by inspecting the workspace
