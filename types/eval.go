@@ -6,6 +6,14 @@ type EvalSuite struct {
 	ID          string     `json:"id"`
 	Description string     `json:"description"`
 	Tasks       []EvalTask `json:"tasks"`
+
+	// RunConfig carries an optional suite-level RunConfig baseline that
+	// every task inherits. The runner merges per-task RunConfigOverrides
+	// on top of it before invoking `stirrup harness --config`. Nil means
+	// "no suite-level baseline configured", which preserves the legacy
+	// runner behaviour of relying entirely on the harness binary's own
+	// defaults / flags.
+	RunConfig *RunConfigSource `json:"runConfig,omitempty"`
 }
 
 // EvalTask describes a single evaluation task.
@@ -17,6 +25,30 @@ type EvalTask struct {
 	Prompt      string    `json:"prompt"`
 	Mode        string    `json:"mode"`
 	Judge       EvalJudge `json:"judge"`
+
+	// RunConfigOverrides carries optional sparse RunConfig overrides
+	// applied on top of the suite-level baseline (if any) when the
+	// runner materialises the per-task RunConfig. Nil means "no per-task
+	// overrides", in which case the suite-level baseline (if any) is
+	// used as-is.
+	RunConfigOverrides *RunConfigOverrides `json:"runConfigOverrides,omitempty"`
+}
+
+// RunConfigSource describes where a suite's RunConfig baseline comes
+// from. Exactly one of File or Inline is expected to be set; the spec
+// loader enforces mutual exclusion at parse time. The carrier itself
+// keeps both fields so downstream consumers can branch on whichever is
+// populated without a second tagged enum.
+type RunConfigSource struct {
+	// File is a filesystem path to a RunConfig JSON document of the same
+	// shape consumed by `stirrup harness --config`. Resolved relative to
+	// the suite file's directory by the loader.
+	File string `json:"file,omitempty"`
+
+	// Inline is a sparse, parsed RunConfig baseline expressed inline in
+	// the suite definition. Same shape as a per-task RunConfigOverrides
+	// — only the fields the suite cares about need to be set.
+	Inline *RunConfigOverrides `json:"inline,omitempty"`
 }
 
 // EvalJudge describes how to judge a run's outcome.
