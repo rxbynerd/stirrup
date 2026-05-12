@@ -119,19 +119,22 @@ type rootSpec struct {
 }
 
 type suiteSpec struct {
-	ID          string     `hcl:"id,label"`
-	Description string     `hcl:"description,optional"`
-	Tasks       []taskSpec `hcl:"task,block"`
+	ID             string                    `hcl:"id,label"`
+	Description    string                    `hcl:"description,optional"`
+	RunConfigFile  *string                   `hcl:"run_config_file,optional"`
+	RunConfig      *runConfigOverridesSpec   `hcl:"run_config,block"`
+	Tasks          []taskSpec                `hcl:"task,block"`
 }
 
 type taskSpec struct {
-	ID          string    `hcl:"id,label"`
-	Description string    `hcl:"description,optional"`
-	Repo        string    `hcl:"repo,optional"`
-	Ref         string    `hcl:"ref,optional"`
-	Mode        string    `hcl:"mode,optional"`
-	Prompt      string    `hcl:"prompt,optional"`
-	Judge       judgeSpec `hcl:"judge,block"`
+	ID                 string                  `hcl:"id,label"`
+	Description        string                  `hcl:"description,optional"`
+	Repo               string                  `hcl:"repo,optional"`
+	Ref                string                  `hcl:"ref,optional"`
+	Mode               string                  `hcl:"mode,optional"`
+	Prompt             string                  `hcl:"prompt,optional"`
+	RunConfigOverrides *runConfigOverridesSpec `hcl:"run_config_overrides,block"`
+	Judge              judgeSpec               `hcl:"judge,block"`
 }
 
 type judgeSpec struct {
@@ -143,6 +146,74 @@ type judgeSpec struct {
 	Criteria string      `hcl:"criteria,optional"`
 	Require  string      `hcl:"require,optional"`
 	Judges   []judgeSpec `hcl:"judge,block"`
+}
+
+// runConfigOverridesSpec is the HCL shape of types.RunConfigOverrides.
+// Used for both the suite-level inline `run_config` block and the
+// per-task `run_config_overrides` block — both produce a
+// *types.RunConfigOverrides.
+//
+// The HCL field naming is snake_case throughout to match the rest of
+// the suite grammar (`paths`, `pattern`, `command`); each block maps to
+// the corresponding JSON field on types.RunConfigOverrides and its
+// nested structs in types/runconfig.go.
+//
+// Surfaced fields (chunk A): every field on types.RunConfigOverrides
+// (Mode, Provider, ModelRouter, ContextStrategy, EditStrategy,
+// Verifier, MaxTurns) plus the commonly-set sub-fields of their
+// nested configs. Less-common sub-fields (e.g. Gemini safety
+// settings, dynamic-router thresholds, composite verifier children)
+// can be added in follow-ups without changing the carrier shape.
+type runConfigOverridesSpec struct {
+	Mode            string                   `hcl:"mode,optional"`
+	MaxTurns        *int                     `hcl:"max_turns,optional"`
+	Provider        *providerConfigSpec      `hcl:"provider,block"`
+	ModelRouter     *modelRouterConfigSpec   `hcl:"model_router,block"`
+	ContextStrategy *contextStrategyConfigSpec `hcl:"context_strategy,block"`
+	EditStrategy    *editStrategyConfigSpec  `hcl:"edit_strategy,block"`
+	Verifier        *verifierConfigSpec      `hcl:"verifier,block"`
+}
+
+// providerConfigSpec covers the most-common ProviderConfig fields.
+// Credential federation, Gemini safety settings, and per-vendor
+// extensions can be added in follow-ups; this set is enough to
+// distinguish provider type + auth + endpoint, which is what eval
+// suites today need to enforce.
+type providerConfigSpec struct {
+	Type         string            `hcl:"type"`
+	APIKeyRef    string            `hcl:"api_key_ref,optional"`
+	Region       string            `hcl:"region,optional"`
+	Profile      string            `hcl:"profile,optional"`
+	BaseURL      string            `hcl:"base_url,optional"`
+	APIKeyHeader string            `hcl:"api_key_header,optional"`
+	QueryParams  map[string]string `hcl:"query_params,optional"`
+	GCPProject   string            `hcl:"gcp_project,optional"`
+	GCPLocation  string            `hcl:"gcp_location,optional"`
+}
+
+type modelRouterConfigSpec struct {
+	Type       string            `hcl:"type"`
+	Provider   string            `hcl:"provider,optional"`
+	Model      string            `hcl:"model,optional"`
+	ModeModels map[string]string `hcl:"mode_models,optional"`
+}
+
+type contextStrategyConfigSpec struct {
+	Type      string `hcl:"type"`
+	MaxTokens *int   `hcl:"max_tokens,optional"`
+}
+
+type editStrategyConfigSpec struct {
+	Type           string   `hcl:"type"`
+	FuzzyThreshold *float64 `hcl:"fuzzy_threshold,optional"`
+}
+
+type verifierConfigSpec struct {
+	Type     string `hcl:"type"`
+	Command  string `hcl:"command,optional"`
+	Timeout  *int   `hcl:"timeout,optional"`
+	Criteria string `hcl:"criteria,optional"`
+	Model    string `hcl:"model,optional"`
 }
 
 // rejectUnsupportedTopLevel inspects the file body and returns a clear
@@ -255,6 +326,25 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		return types.EvalSuite{}, fmt.Errorf("suite %q must contain at least one task", s.ID)
 	}
 
+	// Suite-level run-config baseline: file path and inline block are
+	// mutually exclusive — a suite that sets both leaves the merge order
+	// genuinely ambiguous, so reject loudly rather than silently picking
+	// a winner.
+	var runCfgSource *types.RunConfigSource
+	if s.RunConfigFile != nil && s.RunConfig != nil {
+		return types.EvalSuite{}, fmt.Errorf(
+			"suite %q: run_config_file and run_config block are mutually exclusive — set only one",
+			s.ID,
+		)
+	}
+	switch {
+	case s.RunConfigFile != nil:
+		runCfgSource = &types.RunConfigSource{File: *s.RunConfigFile}
+	case s.RunConfig != nil:
+		inline := convertRunConfigOverrides(s.RunConfig)
+		runCfgSource = &types.RunConfigSource{Inline: inline}
+	}
+
 	tasks := make([]types.EvalTask, 0, len(s.Tasks))
 	for i, t := range s.Tasks {
 		if t.ID == "" {
@@ -265,13 +355,14 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 			return types.EvalSuite{}, err
 		}
 		tasks = append(tasks, types.EvalTask{
-			ID:          t.ID,
-			Description: t.Description,
-			Repo:        t.Repo,
-			Ref:         t.Ref,
-			Prompt:      t.Prompt,
-			Mode:        t.Mode,
-			Judge:       j,
+			ID:                 t.ID,
+			Description:        t.Description,
+			Repo:               t.Repo,
+			Ref:                t.Ref,
+			Prompt:             t.Prompt,
+			Mode:               t.Mode,
+			Judge:              j,
+			RunConfigOverrides: convertRunConfigOverrides(t.RunConfigOverrides),
 		})
 	}
 
@@ -279,7 +370,69 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		ID:          s.ID,
 		Description: s.Description,
 		Tasks:       tasks,
+		RunConfig:   runCfgSource,
 	}, nil
+}
+
+// convertRunConfigOverrides walks a parsed runConfigOverridesSpec into
+// a *types.RunConfigOverrides. Returns nil when src is nil so callers
+// can distinguish "no override block was authored" from "override
+// block was authored but every field happened to be a zero value".
+func convertRunConfigOverrides(src *runConfigOverridesSpec) *types.RunConfigOverrides {
+	if src == nil {
+		return nil
+	}
+	out := &types.RunConfigOverrides{
+		Mode:     src.Mode,
+		MaxTurns: src.MaxTurns,
+	}
+	if src.Provider != nil {
+		out.Provider = &types.ProviderConfig{
+			Type:         src.Provider.Type,
+			APIKeyRef:    src.Provider.APIKeyRef,
+			Region:       src.Provider.Region,
+			Profile:      src.Provider.Profile,
+			BaseURL:      src.Provider.BaseURL,
+			APIKeyHeader: src.Provider.APIKeyHeader,
+			QueryParams:  src.Provider.QueryParams,
+			GCPProject:   src.Provider.GCPProject,
+			GCPLocation:  src.Provider.GCPLocation,
+		}
+	}
+	if src.ModelRouter != nil {
+		out.ModelRouter = &types.ModelRouterConfig{
+			Type:       src.ModelRouter.Type,
+			Provider:   src.ModelRouter.Provider,
+			Model:      src.ModelRouter.Model,
+			ModeModels: src.ModelRouter.ModeModels,
+		}
+	}
+	if src.ContextStrategy != nil {
+		cs := &types.ContextStrategyConfig{Type: src.ContextStrategy.Type}
+		if src.ContextStrategy.MaxTokens != nil {
+			cs.MaxTokens = *src.ContextStrategy.MaxTokens
+		}
+		out.ContextStrategy = cs
+	}
+	if src.EditStrategy != nil {
+		out.EditStrategy = &types.EditStrategyConfig{
+			Type:           src.EditStrategy.Type,
+			FuzzyThreshold: src.EditStrategy.FuzzyThreshold,
+		}
+	}
+	if src.Verifier != nil {
+		v := &types.VerifierConfig{
+			Type:     src.Verifier.Type,
+			Command:  src.Verifier.Command,
+			Criteria: src.Verifier.Criteria,
+			Model:    src.Verifier.Model,
+		}
+		if src.Verifier.Timeout != nil {
+			v.Timeout = *src.Verifier.Timeout
+		}
+		out.Verifier = v
+	}
+	return out
 }
 
 // convertJudge recursively translates a judgeSpec into types.EvalJudge,
