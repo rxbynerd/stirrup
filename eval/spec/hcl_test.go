@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -604,14 +605,46 @@ suite "s" {
 	if got.RunConfig == nil {
 		t.Fatal("expected suite RunConfig to be populated")
 	}
-	if got.RunConfig.File != "configs/base.json" {
-		t.Errorf("RunConfig.File = %q, want %q", got.RunConfig.File, "configs/base.json")
+	// The loader resolves a relative `run_config_file` against the suite
+	// file's directory so the runner can open it without further plumbing.
+	wantFile := filepath.Join(filepath.Dir(path), "configs/base.json")
+	if got.RunConfig.File != wantFile {
+		t.Errorf("RunConfig.File = %q, want %q", got.RunConfig.File, wantFile)
 	}
 	if got.RunConfig.Inline != nil {
 		t.Errorf("RunConfig.Inline = %#v, want nil", got.RunConfig.Inline)
 	}
 	if got.Tasks[0].RunConfigOverrides != nil {
 		t.Errorf("Tasks[0].RunConfigOverrides = %#v, want nil", got.Tasks[0].RunConfigOverrides)
+	}
+}
+
+// TestLoadSuiteHCL_RunConfigFileAbsolutePreserved asserts that an
+// absolute path in `run_config_file` is preserved verbatim by the
+// loader rather than being re-rooted under the suite's directory.
+func TestLoadSuiteHCL_RunConfigFileAbsolutePreserved(t *testing.T) {
+	absPath := "/absolute/path/to/configs/base.json"
+	src := fmt.Sprintf(`
+suite "s" {
+  run_config_file = %q
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`, absPath)
+	path := writeTemp(t, "run-config-file-abs.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil || got.RunConfig.File != absPath {
+		t.Errorf("RunConfig.File = %q, want absolute path %q (unchanged)",
+			got.RunConfig.File, absPath)
 	}
 }
 
