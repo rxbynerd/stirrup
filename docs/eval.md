@@ -209,12 +209,20 @@ accepts the full `types.RunConfig` shape:
 
 | Block               | Fields                                                                                                  |
 |---------------------|---------------------------------------------------------------------------------------------------------|
-| (top-level)         | `mode`, `max_turns`                                                                                     |
-| `provider`          | `type`, `api_key_ref`, `region`, `profile`, `base_url`, `api_key_header`, `query_params`, `gcp_project`, `gcp_location` |
+| (top-level)         | `max_turns`                                                                                             |
+| `provider`          | `type`, `api_key_ref`, `region`, `profile`, `base_url`, `api_key_header`, `query_params`, `gcp_project`, `gcp_location` (`gcp_credentials_file` is intentionally absent — file paths inline need file-relative resolution semantics; use `run_config_file` with a full JSON config when this field is needed) |
 | `model_router`      | `type`, `provider`, `model`, `mode_models`                                                              |
 | `context_strategy`  | `type`, `max_tokens`                                                                                    |
 | `edit_strategy`     | `type`, `fuzzy_threshold`                                                                               |
 | `verifier`          | `type`, `command`, `timeout`, `criteria`, `model`                                                       |
+
+Mode is controlled by the task-level `mode = "..."` attribute (or the
+suite-level `mode` baked into a `run_config_file`), not by a
+`mode = "..."` setting inside a `run_config { ... }` or
+`run_config_overrides { ... }` block. The runner forwards the task's
+`mode` to the harness via the `--mode` flag, which always wins over
+the merged `--config` payload, so surfacing `mode` inside the inline
+block would be an authoring trap.
 
 **Redaction.** When `--output` is set, the runner writes the redacted
 form of the merged config to `<output>/<suite>/<task>/run_config.redacted.json`

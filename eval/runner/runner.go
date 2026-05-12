@@ -254,10 +254,17 @@ func runTask(ctx context.Context, suite types.EvalSuite, task types.EvalTask, cf
 	args := []string{
 		"harness",
 		"--prompt", task.Prompt,
-		"--mode", taskMode(task),
 		"--workspace", workspaceDir,
 		"--trace", traceFile,
 		"--timeout", "300",
+	}
+	// Only forward --mode when the task explicitly pins one at the task
+	// level. Suite-level baseline mode (or any merged-config mode) comes
+	// through --config; the harness's applyOverrides treats every flag
+	// present on the command line as authoritative, so passing a default
+	// here would silently shadow a suite-level run_config { mode = "..." }.
+	if task.Mode != "" {
+		args = append(args, "--mode", task.Mode)
 	}
 
 	// Materialise the merged RunConfig (suite baseline + task overrides)
@@ -421,14 +428,6 @@ func parseTraceFile(path string) (*types.RunTrace, error) {
 	}
 
 	return &trace, nil
-}
-
-// taskMode returns the mode for a task, defaulting to "execution".
-func taskMode(task types.EvalTask) string {
-	if task.Mode != "" {
-		return task.Mode
-	}
-	return "execution"
 }
 
 // errorResult builds a TaskResult with outcome "error".

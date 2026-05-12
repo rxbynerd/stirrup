@@ -879,6 +879,176 @@ func TestRunSuite_MergedConfigPassedToHarness(t *testing.T) {
 	}
 }
 
+// TestRunSuite_SuiteLevelModePinned pins the precedence contract for
+// mode: a suite that bakes mode into a file-based RunConfig baseline
+// must not have it silently shadowed by a default --mode flag injected
+// by the runner. The harness's applyOverrides treats any flag set on
+// the command line as authoritative, so passing --mode unconditionally
+// would defeat the suite-level baseline. The fix is to only forward
+// --mode when the task pins its own Mode.
+func TestRunSuite_SuiteLevelModePinned(t *testing.T) {
+	logDir := t.TempDir()
+	argsLog := filepath.Join(logDir, "args.log")
+	configLog := filepath.Join(logDir, "config.json")
+	harness := configRecordingHarness(t, argsLog, configLog)
+
+	// Use a file-based baseline so the merged config carries Mode =
+	// "planning" before validation. Inline run_config { mode = ... } is
+	// no longer surfaced in the HCL grammar (B-1 fix).
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "base.json")
+	timeout := 120
+	baseline := types.RunConfig{
+		Mode: "planning",
+		Provider: types.ProviderConfig{
+			Type:      "anthropic",
+			APIKeyRef: "secret://K",
+		},
+		MaxTurns: 4,
+		Timeout:  &timeout,
+	}
+	data, err := json.Marshal(baseline)
+	if err != nil {
+		t.Fatalf("marshalling baseline: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatalf("writing baseline file: %v", err)
+	}
+
+	suite := types.EvalSuite{
+		ID:        "mode-pinned-suite",
+		RunConfig: &types.RunConfigSource{File: cfgPath},
+		Tasks: []types.EvalTask{
+			// Task has NO Mode set; the suite-level baseline must win.
+			{
+				ID:     "t1",
+				Prompt: "p",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+			},
+		},
+	}
+
+	_, err = RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The fake harness in configRecordingHarness only records --config.
+	// To verify --mode is absent we re-run the assertion with a wider
+	// recorder. Instead, read the config the runner wrote: it should
+	// carry Mode = "planning". And separately, assert by reading the
+	// args log that we *do* see --config (so the path was set) without
+	// any --mode pair.
+	argsContent, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("reading args log: %v", err)
+	}
+	if !strings.Contains(string(argsContent), "config=") {
+		t.Fatalf("args log did not record --config invocation: %q", string(argsContent))
+	}
+
+	configContent, err := os.ReadFile(configLog)
+	if err != nil {
+		t.Fatalf("reading config log: %v", err)
+	}
+	var got types.RunConfig
+	if err := json.Unmarshal(configContent, &got); err != nil {
+		t.Fatalf("config JSON not deserialisable: %v\n%s", err, string(configContent))
+	}
+	if got.Mode != "planning" {
+		t.Errorf("Mode = %q, want %q (suite baseline must reach harness)", got.Mode, "planning")
+	}
+
+	// Verify --mode is absent from the args. Use a wider-recording
+	// harness this time that captures every arg.
+	wideArgs := filepath.Join(logDir, "wide-args.log")
+	wideScript := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do echo "$a" >> %q; done
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+`, wideArgs)
+	wideHarness := writeFakeHarness(t, wideScript)
+	_, err = RunSuite(context.Background(), suite, RunConfig{HarnessPath: wideHarness})
+	if err != nil {
+		t.Fatalf("unexpected error (wide harness): %v", err)
+	}
+	wideContent, err := os.ReadFile(wideArgs)
+	if err != nil {
+		t.Fatalf("reading wide args log: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(wideContent)), "\n") {
+		if strings.TrimSpace(line) == "--mode" {
+			t.Errorf("--mode flag must not appear when task has no explicit Mode; full args:\n%s", string(wideContent))
+		}
+	}
+}
+
+// TestRunSuite_TaskLevelModeForwarded asserts the inverse of
+// TestRunSuite_SuiteLevelModePinned: a task with an explicit Mode
+// still has --mode forwarded so per-task overrides keep working.
+func TestRunSuite_TaskLevelModeForwarded(t *testing.T) {
+	logDir := t.TempDir()
+	argsLog := filepath.Join(logDir, "args.log")
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do echo "$a" >> %q; done
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$TRACE" ] && echo '{"id":"t","turns":1,"outcome":"success"}' > "$TRACE"
+`, argsLog)
+	harness := writeFakeHarness(t, script)
+
+	suite := types.EvalSuite{
+		ID: "task-mode-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "t1",
+				Mode:   "review",
+				Prompt: "p",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+			},
+		},
+	}
+	_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harness})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	content, err := os.ReadFile(argsLog)
+	if err != nil {
+		t.Fatalf("reading args log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	sawMode := false
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "--mode" {
+			sawMode = true
+			if i+1 >= len(lines) || strings.TrimSpace(lines[i+1]) != "review" {
+				t.Errorf("--mode value = %q, want %q; full args:\n%s",
+					func() string {
+						if i+1 < len(lines) {
+							return lines[i+1]
+						}
+						return "<missing>"
+					}(),
+					"review", string(content))
+			}
+		}
+	}
+	if !sawMode {
+		t.Errorf("--mode flag must appear when task pins Mode; full args:\n%s", string(content))
+	}
+}
+
 // TestRunSuite_FileBaselineLoaded verifies the suite.RunConfig.File
 // path is read by the runner, parsed as JSON, and used as the merged
 // config baseline. Without task overrides the merged config must equal

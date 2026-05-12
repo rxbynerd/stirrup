@@ -173,13 +173,22 @@ type judgeSpec struct {
 // nested structs in types/runconfig.go.
 //
 // Surfaced fields (chunk A): every field on types.RunConfigOverrides
-// (Mode, Provider, ModelRouter, ContextStrategy, EditStrategy,
-// Verifier, MaxTurns) plus the commonly-set sub-fields of their
-// nested configs. Less-common sub-fields (e.g. Gemini safety
-// settings, dynamic-router thresholds, composite verifier children)
-// can be added in follow-ups without changing the carrier shape.
+// (Provider, ModelRouter, ContextStrategy, EditStrategy, Verifier,
+// MaxTurns) plus the commonly-set sub-fields of their nested configs.
+// Less-common sub-fields (e.g. Gemini safety settings, dynamic-router
+// thresholds, composite verifier children) can be added in follow-ups
+// without changing the carrier shape.
+//
+// Mode is intentionally absent from the HCL grammar even though the
+// Go type types.RunConfigOverrides.Mode exists. The runner forwards
+// task.Mode through the harness's --mode flag, which always wins over
+// the --config payload; exposing `mode = "..."` inside a run_config
+// block would be an authoring trap (parsed and either silently
+// ignored at the task level, or only effective at the suite level
+// when no task pins its own Mode). Authors set mode at the task or
+// suite level via the existing `mode = "..."` attribute. Experiments
+// that consume RunConfigOverrides directly still use the Go field.
 type runConfigOverridesSpec struct {
-	Mode            string                     `hcl:"mode,optional"`
 	MaxTurns        *int                       `hcl:"max_turns,optional"`
 	Provider        *providerConfigSpec        `hcl:"provider,block"`
 	ModelRouter     *modelRouterConfigSpec     `hcl:"model_router,block"`
@@ -396,8 +405,12 @@ func convertRunConfigOverrides(src *runConfigOverridesSpec) *types.RunConfigOver
 	if src == nil {
 		return nil
 	}
+	// Mode is not surfaced in the HCL grammar (see runConfigOverridesSpec
+	// doc-comment); the runner reads task.Mode directly via the task-level
+	// `mode = "..."` attribute. Leaving Mode at its zero value here keeps
+	// the merged RunConfig the runner builds free of a phantom mode that
+	// would silently shadow the task-level value.
 	out := &types.RunConfigOverrides{
-		Mode:     src.Mode,
 		MaxTurns: src.MaxTurns,
 	}
 	if src.Provider != nil {

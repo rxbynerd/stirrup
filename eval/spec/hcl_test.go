@@ -657,7 +657,6 @@ func TestLoadSuiteHCL_RunConfigInlineBlock(t *testing.T) {
 	src := `
 suite "s" {
   run_config {
-    mode      = "execution"
     max_turns = 10
 
     provider {
@@ -695,8 +694,11 @@ suite "s" {
 		t.Errorf("RunConfig.File = %q, want empty", got.RunConfig.File)
 	}
 	in := got.RunConfig.Inline
-	if in.Mode != "execution" {
-		t.Errorf("Mode = %q, want %q", in.Mode, "execution")
+	// Mode is not surfaced in the HCL run_config grammar; the runner
+	// reads mode from the task-level attribute. The inline carrier's
+	// Mode field stays at its zero value regardless of authoring.
+	if in.Mode != "" {
+		t.Errorf("Mode = %q, want empty (mode not surfaced in run_config block)", in.Mode)
 	}
 	if in.MaxTurns == nil || *in.MaxTurns != 10 {
 		t.Errorf("MaxTurns = %v, want *10", in.MaxTurns)
@@ -780,7 +782,7 @@ func TestLoadSuiteHCL_RunConfigSourcesMutuallyExclusive(t *testing.T) {
 suite "s" {
   run_config_file = "configs/base.json"
   run_config {
-    mode = "execution"
+    max_turns = 5
   }
   task "t1" {
     mode   = "execution"
