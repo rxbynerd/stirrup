@@ -102,7 +102,7 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		}, nil
 	}
 
-	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir)
+	results := runTasksConcurrently(ctx, suite, cfg, suiteArtifactDir)
 
 	passCount := 0
 	for _, tr := range results {
@@ -131,7 +131,8 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 // len(tasks) so we never spawn idle workers; values <= 0 collapse to 1
 // (the historical sequential behaviour). Per-task errors do not abort
 // siblings — every task contributes a TaskResult.
-func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string) []eval.TaskResult {
+func runTasksConcurrently(ctx context.Context, suite types.EvalSuite, cfg RunConfig, suiteArtifactDir string) []eval.TaskResult {
+	tasks := suite.Tasks
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
 		concurrency = 1
@@ -154,7 +155,7 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir)
+				results[j.idx] = runTask(ctx, suite, j.task, cfg, suiteArtifactDir)
 			}
 		}()
 	}
@@ -250,7 +251,7 @@ func validatePathSegment(label, id string) error {
 // suiteArtifactDir is non-empty, the task's trace and harness output streams
 // are copied into <suiteArtifactDir>/<taskID>/ before the temp workspace is
 // removed.
-func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string) eval.TaskResult {
+func runTask(ctx context.Context, suite types.EvalSuite, task types.EvalTask, cfg RunConfig, suiteArtifactDir string) eval.TaskResult {
 	start := time.Now()
 
 	tmpDir, err := os.MkdirTemp("", "eval-task-"+task.ID+"-")
@@ -277,6 +278,28 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		"--timeout", "300",
 	}
 
+	// Materialise the merged RunConfig (suite baseline + task overrides)
+	// into the task's tmpDir and hand it to the harness via --config. The
+	// harness's documented precedence rule keeps the runner's explicit
+	// flags (--prompt, --mode, --workspace, --trace, --timeout)
+	// authoritative even when --config is set. Cleanup rides on the
+	// existing tmpDir os.RemoveAll defer.
+	mergedCfg, mergeErr := mergeRunConfig(suite, task)
+	if mergeErr != nil {
+		return errorResult(task.ID, start, fmt.Errorf("merging run-config: %w", mergeErr))
+	}
+	if mergedCfg != nil {
+		cfgPath := filepath.Join(tmpDir, "run_config.json")
+		data, err := json.Marshal(mergedCfg)
+		if err != nil {
+			return errorResult(task.ID, start, fmt.Errorf("marshalling merged run-config: %w", err))
+		}
+		if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+			return errorResult(task.ID, start, fmt.Errorf("writing merged run-config: %w", err))
+		}
+		args = append(args, "--config", cfgPath)
+	}
+
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
 	cmd.Dir = workspaceDir
 
@@ -290,7 +313,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// when the harness exits non-zero. retainArtifacts is best-effort:
 	// retention failures must not mask the harness/judge result.
 	if suiteArtifactDir != "" {
-		retainArtifacts(suiteArtifactDir, task.ID, traceFile, stdoutBuf.Bytes(), stderrBuf.Bytes())
+		retainArtifacts(suiteArtifactDir, task.ID, traceFile, stdoutBuf.Bytes(), stderrBuf.Bytes(), mergedCfg)
 	}
 
 	if cmdErr != nil {
@@ -330,7 +353,13 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 // single-segment path. Retention errors are intentionally swallowed — they
 // must not mask the underlying TaskResult — but failures are still reported
 // via stderr so an operator can see when the artifact tree is incomplete.
-func retainArtifacts(suiteArtifactDir, taskID, traceFile string, stdout, stderr []byte) {
+//
+// When mergedCfg is non-nil the redacted form of the merged RunConfig is
+// also written as run_config.redacted.json so an operator can audit the
+// exact (post-`secret://` redaction) configuration the harness was
+// handed. Redact() is invariant in the codebase — chunk B re-uses it
+// rather than open-coding the secret-stripping rules.
+func retainArtifacts(suiteArtifactDir, taskID, traceFile string, stdout, stderr []byte, mergedCfg *types.RunConfig) {
 	taskDir := filepath.Join(suiteArtifactDir, taskID)
 	if err := os.MkdirAll(taskDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: mkdir: %v\n", taskID, err)
@@ -348,6 +377,17 @@ func retainArtifacts(suiteArtifactDir, taskID, traceFile string, stdout, stderr 
 	}
 	if err := os.WriteFile(filepath.Join(taskDir, "harness.stderr.txt"), stderr, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: stderr: %v\n", taskID, err)
+	}
+	if mergedCfg != nil {
+		redacted := mergedCfg.Redact()
+		data, err := json.MarshalIndent(redacted, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: run-config marshal: %v\n", taskID, err)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(taskDir, "run_config.redacted.json"), data, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: run-config: %v\n", taskID, err)
+		}
 	}
 }
 
