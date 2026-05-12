@@ -20,6 +20,16 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// maxRunConfigFileBytes mirrors the harness's loadRunConfigFile cap
+// (harness/cmd/stirrup/cmd/harness.go ~ maxConfigFileBytes). A RunConfig
+// is at most a few KB; anything in the MB range is almost certainly a
+// mistake (a symlink to /dev/zero, a binary pasted into the path, etc.).
+// Kept in sync with the harness rather than factored out because
+// harness/cmd/... is internal to the stirrup binary and the helper has
+// no other consumers — duplicating ~25 lines keeps the cross-module
+// surface area smaller than exporting it would.
+const maxRunConfigFileBytes int64 = 1 << 20 // 1 MiB
+
 // RunConfig configures how the runner executes tasks.
 type RunConfig struct {
 	// HarnessPath is the path to the harness binary for live runs.
@@ -411,6 +421,111 @@ func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 		},
 		DurationMs: time.Since(start).Milliseconds(),
 	}
+}
+
+// mergeRunConfig resolves the *types.RunConfig the runner should hand
+// the harness for a given task by layering:
+//
+//  1. the suite-level baseline (loaded from `suite.RunConfig.File` if
+//     set, otherwise materialised from `suite.RunConfig.Inline`),
+//  2. any sparse `task.RunConfigOverrides` on top.
+//
+// It returns (nil, nil) when neither the suite nor the task supplies
+// any run-config surface — that case maps to the legacy invocation
+// path where the runner omits `--config` entirely. Returning a
+// pointer (rather than a value) lets the caller distinguish "no
+// merged config" from "merged config with all zero-value fields".
+func mergeRunConfig(suite types.EvalSuite, task types.EvalTask) (*types.RunConfig, error) {
+	if suite.RunConfig == nil && task.RunConfigOverrides == nil {
+		return nil, nil
+	}
+
+	var cfg types.RunConfig
+	if suite.RunConfig != nil {
+		switch {
+		case suite.RunConfig.File != "":
+			loaded, err := loadRunConfigFile(suite.RunConfig.File)
+			if err != nil {
+				return nil, fmt.Errorf("loading suite run-config file: %w", err)
+			}
+			cfg = *loaded
+		case suite.RunConfig.Inline != nil:
+			applyOverrides(&cfg, suite.RunConfig.Inline)
+		}
+	}
+
+	if task.RunConfigOverrides != nil {
+		applyOverrides(&cfg, task.RunConfigOverrides)
+	}
+
+	return &cfg, nil
+}
+
+// applyOverrides applies a sparse RunConfigOverrides on top of an
+// existing RunConfig. A nil pointer override means "do not touch this
+// field"; a non-nil pointer (or non-empty string) replaces the
+// baseline value. The semantics match the existing
+// types.RunConfigOverrides precedent used by experiments.
+func applyOverrides(cfg *types.RunConfig, ov *types.RunConfigOverrides) {
+	if ov == nil {
+		return
+	}
+	if ov.Mode != "" {
+		cfg.Mode = ov.Mode
+	}
+	if ov.Provider != nil {
+		cfg.Provider = *ov.Provider
+	}
+	if ov.ModelRouter != nil {
+		cfg.ModelRouter = *ov.ModelRouter
+	}
+	if ov.ContextStrategy != nil {
+		cfg.ContextStrategy = *ov.ContextStrategy
+	}
+	if ov.EditStrategy != nil {
+		cfg.EditStrategy = *ov.EditStrategy
+	}
+	if ov.Verifier != nil {
+		cfg.Verifier = *ov.Verifier
+	}
+	if ov.MaxTurns != nil {
+		cfg.MaxTurns = *ov.MaxTurns
+	}
+}
+
+// loadRunConfigFile reads a JSON RunConfig file at path with the same
+// guard rails as the harness's own loader: size capped at
+// maxRunConfigFileBytes, unknown fields rejected so config typos
+// surface immediately. Kept in sync by hand with
+// harness/cmd/stirrup/cmd/harness.go#loadRunConfigFile (the canonical
+// implementation); if that helper changes its cap or strictness, mirror
+// it here.
+func loadRunConfigFile(path string) (*types.RunConfig, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("reading config file %q: is a directory", path)
+	}
+	if info.Size() > maxRunConfigFileBytes {
+		return nil, fmt.Errorf("reading config file %q: %d bytes exceeds %d byte cap",
+			path, info.Size(), maxRunConfigFileBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("parsing config file %q: file is empty", path)
+	}
+	var cfg types.RunConfig
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("parsing config file %q: %w", path, err)
+	}
+	return &cfg, nil
 }
 
 // buildResult constructs a TaskResult from a trace and verdict.
