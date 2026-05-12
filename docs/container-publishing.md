@@ -460,17 +460,163 @@ manifest itself; it's structurally close to the image SBOM but
 formatted for SLSA / cosign consumers rather than for Container
 Analysis ingestion.
 
-### Phase 3 (out of scope for this PR)
+## Phase 3 — Vulnerability gating on releases
 
-The discovery occurrence Artifact Analysis emits on push — the one
-that powers `gcloud artifacts docker images list --show-occurrences`
-— comes from the continuous-scanning service that
-`containerscanning.googleapis.com` activates, *not* from `sbom
-load`. As soon as Phase 2 ships, `--show-occurrences` returns
-populated results without any further wiring; the Phase 3 work is
-to wait for the discovery state to reach `FINISHED_SUCCESS`, query
-vulnerability occurrences, and gate the release on severity + fix
-availability. That work belongs in a follow-up PR.
+The `release.yml::vulnerability-gate` job runs after
+`publish-container` on every tag push. It queries Container Analysis
+for vulnerability occurrences on the just-pushed image and reports
+findings. **The current mode is "warn + file follow-up issue", not
+block.** Promotion to a blocking gate is intentionally a separate,
+small follow-up PR so that the calibration window can produce real
+data about scanner timing and false-positive rates against actual
+release images.
+
+### What the gate does
+
+1. Re-authenticates to GCP via WIF + SA impersonation (per-job OIDC
+   tokens mean `publish-container`'s access token is not reusable —
+   the gate has to mint its own). The impersonated SA is still
+   `vars.GAR_PUBLISHER_SA`; no new bindings are required (see
+   "IAM observation" below).
+2. Polls `gcloud artifacts docker images list --show-occurrences
+   --occurrence-filter='kind="DISCOVERY"' ...` every 15s for up to
+   10 minutes, waiting for the discovery analysis to reach
+   `FINISHED_SUCCESS` or `FINISHED_FAILED`. Timeout is **warn, not
+   fail** (see the scan-latency note below).
+3. Queries `kind="VULNERABILITY"` occurrences for the same digest,
+   parses them with `jq`, and emits step outputs for CRITICAL /
+   HIGH / MEDIUM / LOW totals plus CRITICAL / HIGH fixable counts.
+4. Writes a Markdown summary table to `$GITHUB_STEP_SUMMARY`,
+   including the `gcloud` invocation an operator can run locally to
+   reproduce the query.
+5. Files a tracking issue via `gh issue create` if any
+   CRITICAL **and** fixable vulnerability exists (the warn-mode
+   threshold). HIGH-fixable findings appear in the summary but are
+   not auto-filed — the noise/signal balance during calibration
+   leans toward fewer auto-issues.
+6. Emits a single-line "would block with N" / "would pass cleanly"
+   calibration log so a later promote-to-block change has data to
+   reason against.
+
+### Warn-vs-block calibration
+
+The job is deliberately **not** in `release.needs`, so the warn
+posture is structural rather than just behavioural — even an
+accidental `exit 1` from a step would not block the release. When
+the calibration window closes, the promote-to-block change is two
+edits:
+
+1. Flip the final calibration-log step to `exit 1` on the
+   `would block` branch.
+2. Add `vulnerability-gate` to `release.needs`.
+
+Until then, the release pipeline ships regardless of what the gate
+finds. The tracking issue is the audit trail.
+
+### Override variable
+
+`vars.STIRRUP_RELEASE_VULN_OVERRIDE` short-circuits the
+issue-creation step for one specific tag. Set it to the literal tag
+string (e.g. `v1.2.3`) when:
+
+- A release is already cut, the finding is known and triaged, and
+  rolling back the tag is high-cost.
+- A noisy scanner false-positive on a specific image is producing
+  duplicate tracking issues you don't want to keep closing.
+
+**The override does not skip the query or the summary** — they
+still run so the calibration data and operator-facing summary
+remain intact. The match is also intentionally narrow (one literal
+tag, no globs, no env-var fallback) so a forgotten override cannot
+silently suppress future releases.
+
+**Operator responsibility:** every use of the override is paired
+with a durable override-audit issue that the gate auto-files when
+the bypass fires (title: `vuln gate override used: <tag>`, label:
+`security`). The operator who set the override MUST add a rationale
+comment on that auto-filed issue — that comment is the durable
+audit trail. The auto-filed issue body does not contain CVE detail;
+it exists only so the bypass leaves a record in the issue tracker
+after the workflow run's 90-day log retention expires.
+
+`vars.STIRRUP_RELEASE_VULN_OVERRIDE` is **settable by any repo
+collaborator with write access** and leaves no trace in git history.
+That surface is intentional (an emergency operator action must not
+require a PR round-trip), but it is also why the auto-filed
+override-audit issue and the rationale comment are non-negotiable:
+they are the only durable record an auditor can query.
+
+### Permissions
+
+`vulnerability-gate` holds a minimal set:
+
+| Permission | Why |
+|---|---|
+| `contents: read` | Default; kept explicit to fence future edits. |
+| `id-token: write` | Per-job OIDC; required for re-auth via WIF. |
+| `issues: write` | `gh issue create` for the tracking issue. **New capability vs `publish-container`.** |
+
+`packages: write` is **deliberately omitted** — the gate never
+pushes anything to GHCR. The split keeps the principle that any job
+holding `packages: write` is the only thing that ever does, and the
+introspection job is read-only on registries.
+
+### Scan-wait timeout policy
+
+The 10-minute discovery wait treats timeout as warn-and-continue,
+never fail. Reasoning:
+
+- Container Analysis scan latency is variable. Internal Google
+  outages of the scanner have historically taken hours, not minutes.
+- The release is already cut by the time the gate runs — failing on
+  scanner latency would block the GitHub Release publish for an
+  outage the project has no leverage over.
+- During the warn calibration window we are explicitly tolerating
+  early false negatives. If the gate misses a vulnerability because
+  discovery hadn't finished, the next periodic re-scan picks it up
+  and the next manual re-query (or the next release of the same
+  image base) catches it.
+
+Operators can re-run the query manually at any time. For any past
+release tag, resolve the digest first and then query Container
+Analysis for vulnerability occurrences against that immutable
+digest:
+
+```sh
+# 1. Resolve the digest for any released tag:
+DIGEST=$(gcloud artifacts docker images describe \
+  <GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup:vX.Y.Z \
+  --format='value(image_summary.digest)' \
+  --project=rubynerd-net)
+
+# 2. Query vulnerability occurrences against that digest:
+gcloud artifacts docker images list \
+  <GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup \
+  --show-occurrences \
+  --occurrence-filter='kind="VULNERABILITY"' \
+  --filter="uri=\"<GAR_LOCATION>-docker.pkg.dev/rubynerd-net/stirrup/stirrup@${DIGEST}\"" \
+  --format=json
+```
+
+The same digest is also surfaced in the workflow run's summary
+table, so for the most recent release a copy-paste from the Actions
+UI works without step 1.
+
+### IAM observation
+
+No new IAM bindings are required for Phase 3. The Phase 1 bootstrap
+already grants `containeranalysis.occurrences.editor` to
+`vars.GAR_PUBLISHER_SA` (so `gcloud artifacts sbom load` can write
+occurrences during `publish-container`). That role is a superset
+of the `occurrences.get` / `occurrences.list` permissions the gate
+needs, so the same impersonated identity reads back what the
+earlier job wrote — and what Container Analysis itself emitted as
+discovery occurrences. Verified during the Phase 1 bootstrap; the
+existing `gcloud projects get-iam-policy ...` audit command in this
+doc surfaces it.
+
+`issues: write` is GitHub-side, not GCP-side; the existing PAT-free
+posture is unchanged.
 
 ## Rolling the WIF provider
 
@@ -522,3 +668,22 @@ ship.
    and add egress cost. The bootstrap should be re-run in the new
    region (or the existing repo recreated) before the cluster
    migration cuts over.
+4. **Container Analysis scan latency is variable.** Phase 3's
+   `vulnerability-gate` polls for the discovery occurrence to reach
+   `FINISHED_SUCCESS` for up to 10 minutes and then warns-and-
+   continues. The 10-minute floor is a known unknown — internal
+   Google scanner backlogs can exceed it, in which case the gate
+   reports incomplete data and the release ships. The timeout is
+   deliberately tuned for "scanner outage must not wedge releases";
+   re-evaluate once the calibration window has produced enough runs
+   to characterise actual scan-completion times for stirrup images.
+5. **Warn calibration tolerates false negatives early.** During the
+   Phase 3 warn window, the gate explicitly accepts that a
+   vulnerability may slip past — discovery may not have finished, a
+   gcloud response shape may not match the jq normalisation, or
+   `containeranalysis.googleapis.com` may be having a bad day. The
+   release ships anyway and a tracking issue is filed retroactively
+   when the same image base re-runs through the gate on the next
+   tag. The block-mode promotion (separate follow-up PR) is what
+   tightens this; until then, treat the gate as defence in depth,
+   not as the primary vulnerability control.
