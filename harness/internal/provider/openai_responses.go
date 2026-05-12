@@ -118,7 +118,10 @@ type responsesInput struct {
 	Name      string                  `json:"name,omitempty"`      // for "function_call"
 	CallID    string                  `json:"call_id,omitempty"`   // for "function_call" / "function_call_output"
 	Arguments string                  `json:"arguments,omitempty"` // for "function_call" — JSON string
-	Output    string                  `json:"output,omitempty"`    // for "function_call_output"
+	// Output has no omitempty: the Responses API rejects function_call_output
+	// items missing the "output" key with HTTP 400 (Missing required parameter:
+	// 'input[N].output'), even when the value is the empty string. See #172.
+	Output string `json:"output"` // for "function_call_output" — required even when empty
 }
 
 // responsesContentBlock is one part inside a message item.
