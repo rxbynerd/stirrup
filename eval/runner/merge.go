@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"syscall"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -19,23 +21,54 @@ const maxRunConfigFileBytes int64 = 1 << 20 // 1 MiB
 // RunConfig. Unknown fields are rejected so typos in a suite's baseline
 // config fail loudly rather than being silently dropped.
 //
+// The file must be a regular file: FIFOs, sockets, and device files are
+// rejected before the read. Without that guard a worker pool entering
+// loadRunConfigFile on a path like `/tmp/evil-fifo` would block
+// indefinitely on os.ReadFile, deadlocking RunSuite for the duration
+// of the worker pool's lifetime. The size cap and io.LimitReader give a
+// second layer of defence in case a regular file's reported size is
+// raced after the fstat (small TOCTOU window — the loader is still
+// authoritative on the bytes it actually consumed).
+//
 // This is intentionally a copy of the harness's loader rather than a shared
 // helper: keeping it inside the runner package preserves the eval module's
-// existing dependency direction (eval → types, never eval → harness).
+// existing dependency direction (eval → types, never eval → harness). The
+// harness copy still uses the two-syscall Stat+ReadFile shape; tracked as
+// a separate hardening pass under issue #177 follow-ups.
 func loadRunConfigFile(path string) (*types.RunConfig, error) {
-	info, err := os.Stat(path)
+	// O_NONBLOCK is the load-bearing flag: on POSIX, opening a FIFO
+	// for read without a connected writer blocks indefinitely. With
+	// O_NONBLOCK the open returns immediately for any path type, so
+	// the worker pool cannot be parked by a hostile or accidental
+	// FIFO at the configured run_config_file path. Regular files
+	// ignore O_NONBLOCK.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("reading run_config_file %q: %w", path, err)
 	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("reading run_config_file %q: is a directory", path)
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("reading run_config_file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("reading run_config_file %q: not a regular file (mode %s)", path, info.Mode())
 	}
 	if info.Size() > maxRunConfigFileBytes {
 		return nil, fmt.Errorf("reading run_config_file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxRunConfigFileBytes)
 	}
-	data, err := os.ReadFile(path)
+
+	// io.LimitReader bounds the read regardless of what fstat reported —
+	// a file that grew between stat and read still cannot smuggle a
+	// multi-MiB blob through this loader. Read one byte past the cap so
+	// we can distinguish "exactly cap bytes" from "exceeded cap".
+	data, err := io.ReadAll(io.LimitReader(f, maxRunConfigFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading run_config_file %q: %w", path, err)
+	}
+	if int64(len(data)) > maxRunConfigFileBytes {
+		return nil, fmt.Errorf("reading run_config_file %q: exceeds %d byte cap", path, maxRunConfigFileBytes)
 	}
 	if len(data) == 0 {
 		return nil, fmt.Errorf("parsing run_config_file %q: file is empty", path)
@@ -53,7 +86,16 @@ func loadRunConfigFile(path string) (*types.RunConfig, error) {
 // or nil if the suite declares neither a file nor inline block (i.e. the
 // legacy five-flag invocation path). The returned config is always a fresh
 // allocation safe for the caller to mutate.
+//
+// Mutual exclusion is enforced at HCL parse time, but a Go caller
+// constructing EvalSuite directly (integration tests, the experiment
+// runner, future callers) can still set both fields. resolveBaseline
+// surfaces that as an error so the inline block is never silently
+// discarded in favour of the file.
 func resolveBaseline(suite types.EvalSuite) (*types.RunConfig, error) {
+	if suite.RunConfigFile != "" && suite.RunConfig != nil {
+		return nil, fmt.Errorf("suite %q: run_config_file and run_config are mutually exclusive", suite.ID)
+	}
 	switch {
 	case suite.RunConfigFile != "":
 		return loadRunConfigFile(suite.RunConfigFile)
@@ -82,9 +124,11 @@ func resolveBaseline(suite types.EvalSuite) (*types.RunConfig, error) {
 //
 // The baseline pointer is mutated in place and also returned for chaining.
 // A nil overlay is a no-op (the baseline is returned unchanged). A nil
-// baseline is an error: an overlay with nothing to apply against is a
-// programming bug, surfaced loudly rather than silently producing a
-// half-formed config.
+// baseline returns nil: the legacy invocation path (no suite-level
+// baseline) has nothing for the overlay to land on, and the caller is
+// expected to treat (nil, _) as "no merged config — fall back to the
+// five-flag harness invocation". The runner already enforces that
+// contract in buildMergedConfig.
 //
 // Pointer-typed override fields (Provider, ModelRouter, ContextStrategy,
 // EditStrategy, Verifier, MaxTurns) are treated as "set if non-nil".

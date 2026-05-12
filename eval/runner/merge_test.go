@@ -1,12 +1,15 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -211,7 +214,10 @@ func TestResolveBaseline_FileErrors(t *testing.T) {
 				}
 				return p
 			},
-			want: "is a directory",
+			// After the open-then-fstat rewrite, the directory case
+			// surfaces via the "not a regular file" guard, which is
+			// the same path that catches FIFOs and device files.
+			want: "not a regular file",
 		},
 		{
 			name: "empty file",
@@ -235,6 +241,22 @@ func TestResolveBaseline_FileErrors(t *testing.T) {
 			},
 			want: "parsing run_config_file",
 		},
+		{
+			// Guards against a regression where a future change could
+			// drop the size cap. The file is one byte over the cap.
+			name: "oversize",
+			setup: func(t *testing.T) string {
+				p := filepath.Join(dir, "oversize.json")
+				// JSON parseability is irrelevant: the size guard fires
+				// before json.Decode runs.
+				big := bytes.Repeat([]byte("x"), int(maxRunConfigFileBytes)+1)
+				if err := os.WriteFile(p, big, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return p
+			},
+			want: "exceeds",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,6 +270,188 @@ func TestResolveBaseline_FileErrors(t *testing.T) {
 				t.Errorf("error = %q, want substring %q", err.Error(), tc.want)
 			}
 		})
+	}
+}
+
+// TestResolveBaseline_RejectsFIFO is the regression guard for the
+// worker-pool DoS vector: a named pipe at run_config_file would block
+// os.ReadFile indefinitely under the old two-syscall Stat+ReadFile
+// shape, deadlocking every worker that hit the path. The
+// IsRegular() check in loadRunConfigFile rejects it before the read
+// blocks.
+//
+// FIFOs are a POSIX construct; the test skips on non-unix platforms
+// (Windows has no equivalent in syscall.Mkfifo).
+func TestResolveBaseline_RejectsFIFO(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("FIFOs unsupported on Windows")
+	}
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "evil-fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo unsupported on this platform: %v", err)
+	}
+
+	suite := types.EvalSuite{ID: "s", Tasks: []types.EvalTask{{ID: "t1"}}, RunConfigFile: fifo}
+	_, err := resolveBaseline(suite)
+	if err == nil {
+		t.Fatal("expected error opening a FIFO, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "not a regular file")
+	}
+}
+
+// TestResolveBaseline_RejectsBothFileAndInlineBlock pins the
+// mutual-exclusion guard for Go callers. The HCL parser already
+// rejects suites that set both fields, but integration tests and
+// the experiment runner construct EvalSuite directly. The runner
+// must surface a clear error rather than silently preferring the
+// file and discarding the inline block.
+func TestResolveBaseline_RejectsBothFileAndInlineBlock(t *testing.T) {
+	suite := types.EvalSuite{
+		ID:            "dual",
+		Tasks:         []types.EvalTask{{ID: "t1"}},
+		RunConfigFile: "/tmp/whatever.json",
+		RunConfig:     baselineRunConfig(),
+	}
+	_, err := resolveBaseline(suite)
+	if err == nil {
+		t.Fatal("expected error when both run_config_file and run_config are set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error = %q, want substring %q", err.Error(), "mutually exclusive")
+	}
+	if !strings.Contains(err.Error(), "dual") {
+		t.Errorf("error = %q, want it to name the suite ID", err.Error())
+	}
+}
+
+// TestMergeOverrides_AllOverlayFields fans the merge contract over
+// every pointer-typed overlay field. Without this, a regression that
+// drops one of ModelRouter / ContextStrategy / EditStrategy / Verifier
+// / MaxTurns from mergeOverrides would not be caught by the existing
+// "Mode + Provider" coverage.
+func TestMergeOverrides_AllOverlayFields(t *testing.T) {
+	t.Run("ModelRouter", func(t *testing.T) {
+		baseline := baselineRunConfig()
+		overlay := &types.RunConfigOverrides{
+			ModelRouter: &types.ModelRouterConfig{Type: "static", Model: "claude-haiku-4-5"},
+		}
+		got := mergeOverrides(baseline, overlay)
+		if got.ModelRouter.Type != "static" || got.ModelRouter.Model != "claude-haiku-4-5" {
+			t.Errorf("ModelRouter = %#v, want {Type:static Model:claude-haiku-4-5}", got.ModelRouter)
+		}
+	})
+
+	t.Run("ContextStrategy", func(t *testing.T) {
+		baseline := baselineRunConfig()
+		overlay := &types.RunConfigOverrides{
+			ContextStrategy: &types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 12000},
+		}
+		got := mergeOverrides(baseline, overlay)
+		if got.ContextStrategy.Type != "sliding-window" || got.ContextStrategy.MaxTokens != 12000 {
+			t.Errorf("ContextStrategy = %#v, want {Type:sliding-window MaxTokens:12000}", got.ContextStrategy)
+		}
+	})
+
+	t.Run("EditStrategy", func(t *testing.T) {
+		baseline := baselineRunConfig()
+		threshold := 0.7
+		overlay := &types.RunConfigOverrides{
+			EditStrategy: &types.EditStrategyConfig{Type: "multi", FuzzyThreshold: &threshold},
+		}
+		got := mergeOverrides(baseline, overlay)
+		if got.EditStrategy.Type != "multi" {
+			t.Errorf("EditStrategy.Type = %q, want multi", got.EditStrategy.Type)
+		}
+		if got.EditStrategy.FuzzyThreshold == nil || *got.EditStrategy.FuzzyThreshold != 0.7 {
+			t.Errorf("EditStrategy.FuzzyThreshold = %v, want pointer to 0.7", got.EditStrategy.FuzzyThreshold)
+		}
+	})
+
+	t.Run("Verifier", func(t *testing.T) {
+		baseline := baselineRunConfig()
+		overlay := &types.RunConfigOverrides{
+			Verifier: &types.VerifierConfig{Type: "test-runner", Command: "go test ./..."},
+		}
+		got := mergeOverrides(baseline, overlay)
+		if got.Verifier.Type != "test-runner" || got.Verifier.Command != "go test ./..." {
+			t.Errorf("Verifier = %#v, want {Type:test-runner Command:go test ./...}", got.Verifier)
+		}
+	})
+
+	t.Run("MaxTurns", func(t *testing.T) {
+		baseline := baselineRunConfig()
+		six := 6
+		overlay := &types.RunConfigOverrides{MaxTurns: &six}
+		got := mergeOverrides(baseline, overlay)
+		if got.MaxTurns != 6 {
+			t.Errorf("MaxTurns = %d, want 6", got.MaxTurns)
+		}
+	})
+}
+
+// TestMergeOverrides_ZeroModeDoesNotOverwrite confirms the Mode
+// sentinel contract: the empty string on the overlay means "unset"
+// and must not clobber a baseline that already carries a concrete
+// mode. Without this, an overlay constructed with only pointer-typed
+// fields would zero the baseline's Mode.
+func TestMergeOverrides_ZeroModeDoesNotOverwrite(t *testing.T) {
+	baseline := baselineRunConfig() // Mode = "execution"
+	four := 4
+	overlay := &types.RunConfigOverrides{MaxTurns: &four}
+
+	got := mergeOverrides(baseline, overlay)
+	if got.Mode != "execution" {
+		t.Errorf("Mode = %q, want execution (unchanged by zero-value overlay)", got.Mode)
+	}
+}
+
+// TestBuildMergedConfig_FileBaselineWithTaskOverride covers the
+// combined path: the suite carries a file-based baseline AND the
+// task carries a sparse overlay. The merged config must reflect
+// both — the baseline's provider/timeout and the overlay's
+// MaxTurns. Without this, the file path could drift apart from the
+// inline path silently.
+func TestBuildMergedConfig_FileBaselineWithTaskOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "baseline.json")
+	data, err := json.Marshal(baselineRunConfig())
+	if err != nil {
+		t.Fatalf("marshal baseline: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write baseline: %v", err)
+	}
+
+	suite := types.EvalSuite{
+		ID:            "s",
+		Tasks:         []types.EvalTask{{ID: "t1"}},
+		RunConfigFile: path,
+	}
+	baseline, err := resolveBaseline(suite)
+	if err != nil {
+		t.Fatalf("resolveBaseline: %v", err)
+	}
+
+	six := 6
+	overlay := &types.RunConfigOverrides{
+		MaxTurns: &six,
+		Provider: &types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://OPENAI_KEY"},
+	}
+	merged, err := buildMergedConfig(baseline, overlay)
+	if err != nil {
+		t.Fatalf("buildMergedConfig: %v", err)
+	}
+	if merged.MaxTurns != 6 {
+		t.Errorf("MaxTurns = %d, want 6 (overlay)", merged.MaxTurns)
+	}
+	if merged.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want openai-responses (overlay)", merged.Provider.Type)
+	}
+	if merged.Timeout == nil || *merged.Timeout != 300 {
+		t.Errorf("Timeout = %v, want pointer to 300 (baseline)", merged.Timeout)
 	}
 }
 
