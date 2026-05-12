@@ -42,6 +42,12 @@ const (
 // resources, and network policy fields are accepted but not yet enforced
 // in this scaffold — the full mapping arrives in follow-up issues. The
 // scaffold's job is the create/wait/delete lifecycle only.
+//
+// This type is intentionally not wired into ExecutorConfig.Type or the
+// executor factory yet; that wiring lands in the follow-up factory issue.
+// When it does, ValidateRunConfig must grow a "k8s" arm that validates
+// the required Image and Namespace fields (mirroring the "container" arm),
+// and the factory must add a corresponding "k8s" Type case.
 type K8sExecutorConfig struct {
 	Image              string
 	Namespace          string
@@ -198,28 +204,48 @@ func (e *K8sExecutor) ResolvePath(relativePath string) (string, error) {
 }
 
 // ReadFile is not yet implemented — see #77 follow-up issues.
+// TODO: flip Capabilities().CanRead to false (and back to true here when
+// implemented) once the file-I/O follow-up lands.
 func (e *K8sExecutor) ReadFile(ctx context.Context, filePath string) (string, error) {
 	return "", errors.New("not implemented")
 }
 
 // WriteFile is not yet implemented — see #77 follow-up issues.
+// TODO: flip Capabilities().CanWrite to false (and back to true here when
+// implemented) once the file-I/O follow-up lands.
 func (e *K8sExecutor) WriteFile(ctx context.Context, filePath string, content string) error {
 	return errors.New("not implemented")
 }
 
 // ListDirectory is not yet implemented — see #77 follow-up issues.
+// TODO: flip Capabilities().CanRead to false (and back to true here when
+// implemented) once the file-I/O follow-up lands.
 func (e *K8sExecutor) ListDirectory(ctx context.Context, dirPath string) ([]string, error) {
 	return nil, errors.New("not implemented")
 }
 
 // Exec is not yet implemented — see #77 follow-up issues.
+// TODO: flip Capabilities().CanExec to false (and back to true here when
+// implemented) once the exec-subresource follow-up lands.
 func (e *K8sExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error) {
 	return nil, errors.New("not implemented")
 }
 
+// TODO(#NN): CanNetwork's accuracy depends on a NetworkPolicy
+// being enforced for the Pod. Until that wiring lands, a Pod with
+// cfg.Network == nil reports CanNetwork=false but has cluster-default
+// egress in reality. Filed as the network-policy follow-up.
+//
 // Capabilities advertises the scaffold's intended capabilities. CanNetwork
 // is derived from the held NetworkConfig so callers can branch on the
 // declared policy even while egress enforcement is deferred.
+//
+// MaxTimeout deliberately mirrors container.go and local.go (maxTimeout =
+// 5 min) instead of the value of 0 in the original scaffold spec. Returning
+// 0 would silently disable timeout clamping in callers that compare against
+// MaxTimeout — a footgun once Exec lands. The cap is identical across
+// executors so a caller written against the Executor interface clamps
+// uniformly regardless of which implementation is active.
 func (e *K8sExecutor) Capabilities() ExecutorCapabilities {
 	canNetwork := e.network != nil && e.network.Mode != "none"
 	return ExecutorCapabilities{
@@ -227,7 +253,7 @@ func (e *K8sExecutor) Capabilities() ExecutorCapabilities {
 		CanWrite:   true,
 		CanExec:    true,
 		CanNetwork: canNetwork,
-		MaxTimeout: 0,
+		MaxTimeout: maxTimeout,
 	}
 }
 
