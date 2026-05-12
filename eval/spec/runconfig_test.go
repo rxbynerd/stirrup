@@ -224,6 +224,179 @@ suite "s" {
 	}
 }
 
+// TestLoadSuiteHCL_TaskRunConfigOverridesAllPointerBlocks pins the
+// pointer-typed overlay branches in runConfigOverridesSpecToType:
+// model_router, context_strategy, edit_strategy, and verifier. Each
+// must round-trip into a non-nil pointer on the resulting
+// *types.RunConfigOverrides with the named fields preserved.
+//
+// The sub-blocks exist on the runConfigOverridesSpec for parity with
+// the suite-level runConfigSpec; without this test, a typo in any of
+// the four converter branches (e.g. assigning to the wrong target
+// field) would silently drop the overlay.
+func TestLoadSuiteHCL_TaskRunConfigOverridesAllPointerBlocks(t *testing.T) {
+	src := `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+
+    run_config_overrides {
+      model_router {
+        type     = "static"
+        provider = "anthropic"
+        model    = "claude-sonnet-4-6"
+      }
+
+      context_strategy {
+        type       = "truncate"
+        max_tokens = 8000
+      }
+
+      edit_strategy {
+        type            = "fuzzy"
+        fuzzy_threshold = 0.85
+      }
+
+      verifier {
+        type    = "test-command"
+        command = "true"
+      }
+    }
+
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "task-overrides-all-blocks.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if len(got.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(got.Tasks))
+	}
+	ov := got.Tasks[0].RunConfigOverrides
+	if ov == nil {
+		t.Fatalf("RunConfigOverrides should be non-nil")
+	}
+	if ov.ModelRouter == nil || ov.ModelRouter.Type != "static" || ov.ModelRouter.Model != "claude-sonnet-4-6" {
+		t.Errorf("ModelRouter overlay = %#v, want {Type:static Model:claude-sonnet-4-6}", ov.ModelRouter)
+	}
+	if ov.ContextStrategy == nil || ov.ContextStrategy.Type != "truncate" || ov.ContextStrategy.MaxTokens != 8000 {
+		t.Errorf("ContextStrategy overlay = %#v, want {Type:truncate MaxTokens:8000}", ov.ContextStrategy)
+	}
+	if ov.EditStrategy == nil || ov.EditStrategy.Type != "fuzzy" {
+		t.Errorf("EditStrategy overlay = %#v, want Type:fuzzy", ov.EditStrategy)
+	}
+	if ov.EditStrategy != nil && (ov.EditStrategy.FuzzyThreshold == nil || *ov.EditStrategy.FuzzyThreshold != 0.85) {
+		t.Errorf("EditStrategy.FuzzyThreshold = %v, want pointer to 0.85", ov.EditStrategy.FuzzyThreshold)
+	}
+	if ov.Verifier == nil || ov.Verifier.Type != "test-command" || ov.Verifier.Command != "true" {
+		t.Errorf("Verifier overlay = %#v, want {Type:test-command Command:true}", ov.Verifier)
+	}
+}
+
+// TestLoadSuiteHCL_RunConfigOverridesRejectsMode pins the post-B2
+// invariant: run_config_overrides { mode = "..." } must be a parse
+// error. Accepting the field opens a silent-conflict footgun where
+// the overlay's mode is overwritten by the runner's --mode flag.
+// The check is structural — the HCL surface omits mode entirely, so
+// gohcl rejects it with an "unknown attribute" diagnostic.
+func TestLoadSuiteHCL_RunConfigOverridesRejectsMode(t *testing.T) {
+	src := `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+
+    run_config_overrides {
+      mode = "planning"
+    }
+
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "task-overrides-mode.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatal("expected error for mode attribute inside run_config_overrides")
+	}
+	if !strings.Contains(err.Error(), "mode") {
+		t.Errorf("error = %q, want it to name the rejected attribute", err.Error())
+	}
+}
+
+// TestLoadSuiteHCL_ProviderWithCredential closes the
+// credentialSpecToType coverage gap. The credential block is a
+// security-critical path: a field-name typo silently drops an auth
+// parameter and the live run picks up a misconfigured credential at
+// runtime rather than at parse time.
+func TestLoadSuiteHCL_ProviderWithCredential(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    provider {
+      type = "bedrock"
+
+      credential {
+        type     = "web-identity"
+        role_arn = "arn:aws:iam::123456789012:role/eval"
+
+        token_source {
+          type    = "env_var"
+          env_var = "AWS_WEB_IDENTITY_TOKEN"
+        }
+      }
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "runcfg-credential.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil {
+		t.Fatal("RunConfig should be non-nil")
+	}
+	cred := got.RunConfig.Provider.Credential
+	if cred == nil {
+		t.Fatal("Provider.Credential should be non-nil")
+	}
+	if cred.Type != "web-identity" {
+		t.Errorf("Credential.Type = %q, want web-identity", cred.Type)
+	}
+	if cred.RoleARN != "arn:aws:iam::123456789012:role/eval" {
+		t.Errorf("Credential.RoleARN = %q, want canonical ARN", cred.RoleARN)
+	}
+	if cred.TokenSource == nil {
+		t.Fatal("Credential.TokenSource should be non-nil")
+	}
+	if cred.TokenSource.Type != "env_var" {
+		t.Errorf("Credential.TokenSource.Type = %q, want env_var", cred.TokenSource.Type)
+	}
+	if cred.TokenSource.EnvVar != "AWS_WEB_IDENTITY_TOKEN" {
+		t.Errorf("Credential.TokenSource.EnvVar = %q, want AWS_WEB_IDENTITY_TOKEN", cred.TokenSource.EnvVar)
+	}
+}
+
 // TestLoadSuiteHCL_RunConfigUnknownAttribute pins the "unknown
 // attributes are errors" contract on the inline `run_config` block.
 // Silently dropping a typo (e.g. `max_turn` instead of `max_turns`)
@@ -359,15 +532,41 @@ func TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig(t *testing.T) {
 
 // TestLoadSuiteHCL_RunConfigDeepBlocks exercises a richer inline
 // run_config — nested blocks (executor, network, resources,
-// permission_policy, code_scanner, guard_rail with stages) — to pin
-// that the recursive spec → types conversion preserves the full
-// shape. The intent is to catch field-mapping mistakes in
-// runConfigSpecToType without listing every leaf field in every test.
+// permission_policy, code_scanner, guard_rail with stages,
+// prompt_builder, context_strategy, edit_strategy, verifier with
+// recursive child, trace_emitter with headers) — to pin that the
+// recursive spec → types conversion preserves the full shape. The
+// intent is to catch field-mapping mistakes in runConfigSpecToType
+// without listing every leaf field in every test.
 func TestLoadSuiteHCL_RunConfigDeepBlocks(t *testing.T) {
 	src := `
 suite "s" {
   run_config {
     mode = "execution"
+
+    prompt_builder {
+      type     = "template"
+      template = "hello"
+    }
+
+    context_strategy {
+      type       = "truncate"
+      max_tokens = 8000
+    }
+
+    edit_strategy {
+      type            = "fuzzy"
+      fuzzy_threshold = 0.85
+    }
+
+    verifier {
+      type = "composite"
+
+      verifier {
+        type    = "test-command"
+        command = "true"
+      }
+    }
 
     executor {
       type      = "container"
@@ -408,6 +607,15 @@ suite "s" {
       }
     }
 
+    trace_emitter {
+      type     = "otel"
+      endpoint = "http://collector:4317"
+      protocol = "grpc"
+      headers = {
+        "Authorization" = "secret://GRAFANA_CLOUD_AUTH"
+      }
+    }
+
     observability {
       environment       = "staging"
       service_namespace = "stirrup-eval"
@@ -433,6 +641,24 @@ suite "s" {
 	if rc == nil {
 		t.Fatal("RunConfig should be non-nil")
 	}
+	if rc.PromptBuilder.Type != "template" || rc.PromptBuilder.Template != "hello" {
+		t.Errorf("PromptBuilder = %#v, want {Type:template Template:hello}", rc.PromptBuilder)
+	}
+	if rc.ContextStrategy.Type != "truncate" || rc.ContextStrategy.MaxTokens != 8000 {
+		t.Errorf("ContextStrategy = %#v, want {Type:truncate MaxTokens:8000}", rc.ContextStrategy)
+	}
+	if rc.EditStrategy.Type != "fuzzy" {
+		t.Errorf("EditStrategy.Type = %q, want fuzzy", rc.EditStrategy.Type)
+	}
+	if rc.EditStrategy.FuzzyThreshold == nil || *rc.EditStrategy.FuzzyThreshold != 0.85 {
+		t.Errorf("EditStrategy.FuzzyThreshold = %v, want pointer to 0.85", rc.EditStrategy.FuzzyThreshold)
+	}
+	if rc.Verifier.Type != "composite" {
+		t.Errorf("Verifier.Type = %q, want composite", rc.Verifier.Type)
+	}
+	if len(rc.Verifier.Verifiers) != 1 || rc.Verifier.Verifiers[0].Type != "test-command" || rc.Verifier.Verifiers[0].Command != "true" {
+		t.Errorf("Verifier.Verifiers = %#v, want one test-command child", rc.Verifier.Verifiers)
+	}
 	if rc.Executor.Type != "container" {
 		t.Errorf("Executor.Type = %q, want %q", rc.Executor.Type, "container")
 	}
@@ -453,6 +679,12 @@ suite "s" {
 	}
 	if rc.GuardRail == nil || len(rc.GuardRail.Stages) != 1 || rc.GuardRail.Stages[0].Type != "granite-guardian" {
 		t.Errorf("GuardRail.Stages = %#v, want one granite-guardian stage", rc.GuardRail.Stages)
+	}
+	if rc.TraceEmitter.Type != "otel" || rc.TraceEmitter.Endpoint != "http://collector:4317" || rc.TraceEmitter.Protocol != "grpc" {
+		t.Errorf("TraceEmitter = %#v, want otel/grpc/collector", rc.TraceEmitter)
+	}
+	if rc.TraceEmitter.Headers["Authorization"] != "secret://GRAFANA_CLOUD_AUTH" {
+		t.Errorf("TraceEmitter.Headers[Authorization] = %q, want secret://GRAFANA_CLOUD_AUTH", rc.TraceEmitter.Headers["Authorization"])
 	}
 	if rc.Observability.Environment != "staging" {
 		t.Errorf("Observability.Environment = %q, want staging", rc.Observability.Environment)
