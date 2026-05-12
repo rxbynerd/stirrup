@@ -3987,6 +3987,74 @@ func TestValidateRunConfig_TraceEmitterGCS_InvalidBucketName(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_TraceEmitter_ObjectPrefixDotDotRejected pins the
+// M3 fix: traceEmitter.objectPrefix must reject ".." segments so an
+// operator-supplied prefix cannot rewrite the produced GCS object path.
+func TestValidateRunConfig_TraceEmitter_ObjectPrefixDotDotRejected(t *testing.T) {
+	cases := []string{
+		"../escape/",
+		"traces/../escape/",
+		"../../prod-traces/",
+		"..",
+	}
+	for _, prefix := range cases {
+		t.Run(prefix, func(t *testing.T) {
+			c := validConfig()
+			c.TraceEmitter = TraceEmitterConfig{
+				Type:         "gcs",
+				Bucket:       "stirrup-results",
+				ObjectPrefix: prefix,
+			}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for objectPrefix %q", prefix)
+			}
+			if !strings.Contains(err.Error(), `must not contain ".." path segments`) {
+				t.Errorf("expected dot-dot rejection error, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_RunID_PatternEnforced pins the M3 fix: RunID is
+// interpolated verbatim into the gcs trace emitter object name, so any
+// slash, control byte, or path-traversal segment must be rejected at
+// config-load time rather than reaching the GCS REST API.
+func TestValidateRunConfig_RunID_PatternEnforced(t *testing.T) {
+	t.Run("slash rejected", func(t *testing.T) {
+		c := validConfig()
+		c.RunID = "tenant-a/run-1"
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for runId containing a slash")
+		}
+		if !strings.Contains(err.Error(), "runId") {
+			t.Errorf("expected error to mention runId, got: %v", err)
+		}
+	})
+	t.Run("dotdot rejected", func(t *testing.T) {
+		c := validConfig()
+		c.RunID = ".."
+		if err := ValidateRunConfig(c); err == nil {
+			t.Fatal("expected error for runId \"..\"")
+		}
+	})
+	t.Run("empty allowed", func(t *testing.T) {
+		c := validConfig()
+		c.RunID = ""
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected empty runId to pass, got: %v", err)
+		}
+	})
+	t.Run("uuid accepted", func(t *testing.T) {
+		c := validConfig()
+		c.RunID = "0ff0-4d1b-9c4e-1234567890ab"
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected uuid-like runId to pass, got: %v", err)
+		}
+	})
+}
+
 func TestValidateRunConfig_TraceEmitterGCS_FieldsRejectedOnNonGCS(t *testing.T) {
 	t.Run("bucket on jsonl", func(t *testing.T) {
 		c := validConfig()

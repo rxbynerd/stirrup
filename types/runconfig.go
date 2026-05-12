@@ -1025,6 +1025,18 @@ var validTraceEmitterTypes = map[string]bool{
 	"gcs":   true,
 }
 
+// runIDPattern bounds the characters allowed in RunConfig.RunID. RunID
+// is a defence-in-depth value: it is interpolated into the GCS object
+// name produced by the "gcs" trace emitter (and the future S3/Azure
+// equivalents) and into Cloud Logging labels. urlPathEscape passes "/"
+// through unchanged, so an unfiltered slash in RunID would silently
+// alter the object path. The closed set [a-zA-Z0-9_-] with a leading
+// alphanumeric and a 128-char ceiling is wide enough for the common
+// IDs operators paste in (UUIDs, Cloud Run execution names, integer
+// counters) and narrow enough to reject path traversal, control bytes,
+// and CRLF.
+var runIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,127}$`)
+
 // gcsBucketNamePattern is a minimal shape check for a GCS bucket name.
 // The full GCS bucket-name rules (no leading "goog" prefix, no
 // "google" substring in obfuscated forms, dotted forms requiring DNS
@@ -1341,6 +1353,14 @@ func ValidateRunConfig(config *RunConfig) error {
 	var errs []string
 
 	validateSessionName(config.SessionName, &errs)
+	// RunID is optional at this layer (the CLI / control plane assigns
+	// one before construction), but when set it is interpolated verbatim
+	// into the GCS object name produced by the gcs trace emitter. The
+	// pattern rejects path separators, ".." segments, control bytes, and
+	// CRLF so a hostile or typo'd RunID cannot rewrite the object path.
+	if config.RunID != "" && !runIDPattern.MatchString(config.RunID) {
+		errs = append(errs, fmt.Sprintf("runId %q must match %s", config.RunID, runIDPattern.String()))
+	}
 	validateRequiredType("mode", config.Mode, validRunModes, &errs)
 	validateRequiredType("provider", config.Provider.Type, validProviderTypes, &errs)
 	validateOptionalType("modelRouter", config.ModelRouter.Type, validModelRouterTypes, &errs)
@@ -2754,6 +2774,21 @@ func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]stri
 				"traceEmitter.bucket %q must match %s (lowercase letters/digits/._-, 3-63 chars; no slashes)",
 				cfg.Bucket, gcsBucketNamePattern.String(),
 			))
+		}
+		// Reject ".." path segments in objectPrefix. urlPathEscape
+		// intentionally passes "/" and "." through unchanged so a prefix
+		// like "../../prod-traces/" would otherwise produce an object
+		// name that GCS stores verbatim under a different logical prefix
+		// — a quiet collision risk if a single bucket holds traces from
+		// multiple runs. The check runs before the trailing-slash
+		// normalisation below so a stray ".." in any segment is caught.
+		if cfg.ObjectPrefix != "" {
+			for _, seg := range strings.Split(strings.Trim(cfg.ObjectPrefix, "/"), "/") {
+				if seg == ".." {
+					*errs = append(*errs, `traceEmitter.objectPrefix must not contain ".." path segments`)
+					break
+				}
+			}
 		}
 		if cfg.Credential != nil {
 			validateCredentialConfig(cfg.Credential, "traceEmitter.credential", errs)
