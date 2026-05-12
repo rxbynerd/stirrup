@@ -11,7 +11,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
+	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
 )
@@ -97,6 +99,62 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 	if err := sink.Emit(ctx, buildRunResult(rt)); err != nil {
 		slog.Warn("emit resultSink", "err", err)
 	}
+}
+
+// exportWorkspace tars + gzips the executor's workspace dir and
+// uploads it to config.Executor.WorkspaceExportTo via the workspace
+// exporter. No-op when the export field is empty.
+//
+// exportRequired controls error semantics: when true, the caller
+// surfaces the export failure (a deployment that demands the artifact
+// for downstream automation should exit non-zero so the operator
+// notices); when false, the failure is logged with slog and the
+// caller's exit code is unchanged (the trace and stderr summary still
+// reflect the run's actual outcome).
+//
+// Returns nil when the workspace dir is missing or empty — the
+// exporter treats those as silent skips, and that semantic is
+// inherited here so a no-op executor (e.g. an api executor that
+// reports nothing on disk) doesn't fail a run that opted into export.
+func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exportRequired bool) error {
+	if cfg.Executor.WorkspaceExportTo == "" {
+		return nil
+	}
+	// v1 supports only the GCS exporter; the field is validated at
+	// config load to be a gs:// URI, so reaching this code path with
+	// any other scheme indicates a logic regression in the validator.
+	exp, err := workspaceexport.NewGCSExporter(workspaceexport.GCSExporterOptions{
+		// Default credential source: gcp-workload-identity against
+		// the runtime metadata server (the Cloud Run / GKE shape
+		// this targets). Future work: thread an explicit
+		// CredentialConfig through ExecutorConfig if non-GCP
+		// runtimes need to export.
+		CredentialSource: credential.NewGoogleWorkloadIdentitySource(),
+	})
+	if err != nil {
+		if exportRequired {
+			return fmt.Errorf("build workspace exporter: %w", err)
+		}
+		slog.Warn("build workspace exporter", "err", err)
+		return nil
+	}
+
+	workspaceDir := cfg.Executor.Workspace
+	if workspaceDir == "" {
+		// An unset Workspace field means "current working directory" —
+		// mirrors the local executor's defaulting in factory.go.
+		wd, _ := os.Getwd()
+		workspaceDir = wd
+	}
+
+	if err := exp.Export(ctx, workspaceDir, cfg.Executor.WorkspaceExportTo); err != nil {
+		if exportRequired {
+			return fmt.Errorf("export workspace to %s: %w", cfg.Executor.WorkspaceExportTo, err)
+		}
+		slog.Warn("export workspace failed", "dest", cfg.Executor.WorkspaceExportTo, "err", err)
+		return nil
+	}
+	return nil
 }
 
 // setupSignalHandler installs SIGINT/SIGTERM handlers that cancel the given context.
