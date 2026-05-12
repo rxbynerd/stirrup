@@ -164,34 +164,47 @@ func (e *GCSTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 // A run with zero turns still produces a single valid JSON line —
 // keeping the contract identical to JSONLTraceEmitter so downstream
 // consumers can ingest both emitters' output with one parser.
+//
+// Concurrency: the mutex is held only long enough to snapshot the
+// mutable fields. The HTTP upload (up to gcsUploadTimeout = 60s) runs
+// lock-free, so a concurrent RecordTurn/RecordToolCall from a still-
+// draining loop does not block waiting for the upload to complete and
+// a second Finish call cannot deadlock against the first. This is the
+// behaviour difference from JSONLTraceEmitter, where the equivalent
+// work is an in-process append and a millisecond mutex hold is fine.
 func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.RunTrace, error) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	runID := e.runID
+	cfg := e.config
+	startedAt := e.startedAt
+	turns := append([]types.TurnTrace(nil), e.turns...)
+	toolCalls := append([]types.ToolCallTrace(nil), e.toolCalls...)
+	e.mu.Unlock()
 
 	now := time.Now()
 
 	var totalTokens types.TokenUsage
-	for _, turn := range e.turns {
+	for _, turn := range turns {
 		totalTokens.Input += turn.Tokens.Input
 		totalTokens.Output += turn.Tokens.Output
 	}
 
-	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
-	for i, tc := range e.toolCalls {
+	summaries := make([]types.ToolCallSummary, len(toolCalls))
+	for i, tc := range toolCalls {
 		summaries[i] = types.ToolCallSummary(tc)
 	}
 
 	var redactedConfig types.RunConfig
-	if e.config != nil {
-		redactedConfig = e.config.Redact()
+	if cfg != nil {
+		redactedConfig = cfg.Redact()
 	}
 
 	trace := &types.RunTrace{
-		ID:          e.runID,
+		ID:          runID,
 		Config:      redactedConfig,
-		StartedAt:   e.startedAt,
+		StartedAt:   startedAt,
 		CompletedAt: now,
-		Turns:       len(e.turns),
+		Turns:       len(turns),
 		TokenUsage:  totalTokens,
 		ToolCalls:   summaries,
 		Outcome:     outcome,
@@ -203,7 +216,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	}
 	data = append(data, '\n')
 
-	object := gcsObjectName(e.objectPrefix, e.runID)
+	object := gcsObjectName(e.objectPrefix, runID)
 	if err := gcs.UploadObject(ctx, e.httpClient, gcs.UploadOptions{
 		Bucket:          e.bucket,
 		Object:          object,
