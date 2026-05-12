@@ -18,7 +18,7 @@ fails fast with a clear error rather than being silently dropped.
 
 | File | What it demonstrates |
 |---|---|
-| [`full.json`](full.json) | Container executor, multi edit strategy, OTel trace emitter, deterministic git, dynamic model router, allow-all permission policy, and one MCP server. Passes `types.ValidateRunConfig` end-to-end. |
+| [`full.json`](full.json) | All-rings-active showcase: gVisor-isolated container, Cedar policy engine with `deny-side-effects` fallback, Rule of Two enforced, post-edit code scanner, Granite Guardian guardrail across all three phases, multi edit strategy, OTel traces and metrics, dynamic model router, deterministic git, and one MCP server. Passes `types.ValidateRunConfig` end-to-end. |
 | [`openai_responses.json`](openai_responses.json) | OpenAI Responses API provider (`POST /v1/responses`), local executor, multi edit strategy, JSONL trace emitter, static router on `gpt-4.1`. Use this template when you want the Responses wire format (top-level `instructions`, typed `input[]` items, `max_output_tokens`) rather than Chat Completions. |
 | [`azure-openai.json`](azure-openai.json) | Azure OpenAI Foundry's Responses endpoint via the same `openai-responses` provider type, with `apiKeyHeader: "api-key"` for key-based auth and `queryParams: {"api-version": "preview"}` for the api-version pin. Switch the `apiKeyHeader` to an empty string to use Entra ID bearer tokens (the default behaviour) instead. |
 | [`vertex-gemini.json`](vertex-gemini.json) | Vertex AI Gemini provider on `gemini-2.5-pro`. Auth is GCP IAM (not an AI Studio API key): the credential layer defaults to Application Default Credentials, so `GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json` or running on a workload-identity-enabled GKE/GCE instance is sufficient. User-mode `gcloud auth application-default login` credentials are explicitly rejected for autonomy reasons; configure a service account or workload identity instead. Override the project, location, or service-account file via `--gcp-project`, `--gcp-location`, or `--gcp-credentials-file`. |
@@ -38,8 +38,8 @@ order of precedence is:
 2. **Explicit flags** — flags whose `cmd.Flags().Changed(...)` bit is
    set replace the corresponding file-provided field.
 3. **Defaults** — flags left at their default value do **not**
-   override the file. This is what makes `--config` ergonomic: you do
-   not have to clear every default to keep the file's intent.
+   override the file. This is what makes `--config` ergonomic:
+   defaults can stay defaults while the file's intent is preserved.
 
 The positional `prompt` argument is a fallback only. It fills the
 prompt slot when the file omits it and `--prompt` is not set, but
@@ -48,8 +48,10 @@ by a positional.
 
 ## Annotated example walkthrough
 
-The shipped `full.json` exercises every component selection that is
-not reachable through the historical CLI flag set:
+The shipped `full.json` exercises every component selection and is
+the most comprehensive example. It is also the showcase referenced
+from the project [README](../../README.md): every safety ring is
+active and Rule of Two is enforced.
 
 ```jsonc
 {
@@ -60,6 +62,15 @@ not reachable through the historical CLI flag set:
   // "research"/"toil" enforce the read-only invariant.
   "mode": "execution",
   "prompt": "Replace this prompt with the task you want the harness to run.",
+
+  // Untrusted context. The control plane populates these from issue
+  // bodies, PR comments, etc. Each entry is wrapped in
+  // <untrusted_context> tags before being shown to the model.
+  "dynamicContext": {
+    "issue_body": {
+      "value": "External issue body or PR comment text. Treated as data, not instructions."
+    }
+  },
 
   // Provider + credentials. apiKeyRef is a secret:// reference, never
   // a raw key.
@@ -86,12 +97,15 @@ not reachable through the historical CLI flag set:
   "promptBuilder": { "type": "default" },
   "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
 
-  // Container executor: docker/podman socket is auto-detected.
-  // network: none, capDrop: ALL, no-new-privileges all applied
-  // by the executor regardless of what the file says.
+  // Ring 1: kernel-isolation runtime class. runc is the engine
+  // default; runsc is gVisor; kata variants are kernel-VM isolation.
+  // The runtime must be registered with the host Docker/Podman
+  // daemon. capDrop: ALL, no-new-privileges, network: none are
+  // applied regardless of what the file says.
   "executor": {
     "type": "container",
     "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "runtime": "runsc",
     "network": { "mode": "none" },
     "resources": { "cpus": 2.0, "memoryMb": 2048, "diskMb": 8192, "pids": 256 }
   },
@@ -110,23 +124,24 @@ not reachable through the historical CLI flag set:
     "timeout": 300
   },
 
-  // Permission policy. "allow-all" is the default for execution mode.
-  // "deny-side-effects" blocks side-effecting tools outright and is the
-  // default for read-only modes. "ask-upstream" prompts the control
-  // plane before any side-effecting tool call — only useful with the
-  // grpc transport, since stdio has no upstream to ask and would hang
-  // on the first side-effecting tool call.
-  "permissionPolicy": { "type": "allow-all" },
+  // Ring 3: Cedar policy engine evaluates each tool call. fallback is
+  // consulted when no policy matches; chained policy engines are
+  // rejected to avoid no-decision loops.
+  "permissionPolicy": {
+    "type": "policy-engine",
+    "policyFile": "examples/policies/destructive-shell.cedar",
+    "fallback": "deny-side-effects"
+  },
 
   // Deterministic git: writes commits with stable author/date so
   // diffs are reproducible.
   "gitStrategy": { "type": "deterministic" },
 
   // Transport. "stdio" emits to the local process; "grpc" needs an
-  // address.
+  // address and is what production K8s deployments use.
   "transport": { "type": "stdio" },
 
-  // OpenTelemetry trace emitter (OTLP/gRPC).
+  // OpenTelemetry trace emitter (OTLP/gRPC by default).
   "traceEmitter": {
     "type": "otel",
     "endpoint": "localhost:4317",
@@ -135,8 +150,7 @@ not reachable through the historical CLI flag set:
 
   // Tools. builtIn[] selects which built-in tools are exposed; the
   // multi-strategy edit_file tool is registered when "edit_file" is
-  // present (or any of the legacy aliases write_file/search_replace/
-  // apply_diff). mcpServers[] connects to remote MCP endpoints; tool
+  // present. mcpServers[] connects to remote MCP endpoints; tool
   // names are namespaced as mcp_{name}_{toolName}.
   "tools": {
     "builtIn": [
@@ -155,6 +169,36 @@ not reachable through the historical CLI flag set:
         "apiKeyRef": "secret://EXAMPLE_MCP_KEY"
       }
     ]
+  },
+
+  // Ring 4: Rule of Two structural invariant. With dynamicContext +
+  // web_fetch + MCP, two of the three flags hold (untrusted input
+  // and external comms). Sensitive data is not asserted here, so
+  // enforcement passes; the loop emits rule_of_two_warning so the
+  // operator can see two of three holding.
+  "ruleOfTwo": { "enforce": true },
+
+  // Ring 5: post-edit static analysis. Default is "patterns" for
+  // execution mode (mode-aware). blockOnWarn promotes warn findings
+  // to block; useful for production pinning.
+  "codeScanner": { "type": "patterns", "blockOnWarn": false },
+
+  // Probabilistic guardrail layered over the deterministic rings.
+  // PreTurn / PreTool / PostTurn LLM classifier.
+  "guardRail": {
+    "type": "granite-guardian",
+    "endpoint": "http://127.0.0.1:1234",
+    "model": "ibm-granite/granite-guardian-4.1-8b",
+    "phases": ["pre_turn", "pre_tool", "post_turn"],
+    "timeoutMs": 1500,
+    "minChunkChars": 256,
+    "failOpen": false
+  },
+
+  // OTel resource attributes shared by traces and metrics.
+  "observability": {
+    "environment": "production",
+    "serviceNamespace": "stirrup-eval"
   },
 
   // Limits. ValidateRunConfig caps maxTurns at 100, timeout at 3600s,
@@ -179,7 +223,7 @@ To override the prompt without editing the file:
   --prompt "Add a new test for the foo package"
 ```
 
-Any flag listed in the
-[CLI table](../../README.md#cli-flags-stirrup-harness) is honoured
+Any flag listed in
+[`docs/configuration.md`](../../docs/configuration.md) is honoured
 as an override when explicitly set. Flags left at their default
 value do not override the file.

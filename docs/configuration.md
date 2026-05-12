@@ -1,0 +1,239 @@
+# Configuration
+
+The harness reads its configuration from a single `RunConfig` — a
+declarative document that names a concrete implementation for each of
+the [thirteen components](architecture.md#the-thirteen-components).
+Two equivalent surfaces are supported:
+
+- A JSON file passed via `--config <path>`. The schema mirrors
+  [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto)
+  exactly; the Go types in
+  [`types/runconfig.go`](../types/runconfig.go) are what the loader
+  unmarshals into.
+- Individual CLI flags. Each flag corresponds to one field in the
+  `RunConfig`; together the flags cover the most common compositions
+  without writing a config file.
+
+The proto definition is the source of truth; the JSON encoding uses
+the proto field names verbatim. The CLI loader uses
+`encoding/json.DisallowUnknownFields`, so a typo in a field name
+fails fast with a clear error rather than being silently dropped.
+
+## Precedence
+
+When both `--config` and explicit flags are passed, the order of
+precedence is:
+
+1. **File** — `--config` populates the full `RunConfig`.
+2. **Explicit flags** — flags whose `cmd.Flags().Changed(...)` bit is
+   set replace the corresponding file-provided field.
+3. **Defaults** — flags left at their default value do **not**
+   override the file. This is what makes `--config` ergonomic: you
+   do not have to clear every default to keep the file's intent.
+
+The positional `prompt` argument is a fallback only. It fills the
+prompt slot when the file omits it and `--prompt` is not set, but
+neither the file's `prompt` nor an explicit `--prompt` is overridden
+by a positional.
+
+## CLI flags
+
+`stirrup harness --help` is authoritative. The table below documents
+the same flags grouped by concern.
+
+### Required
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--prompt`, positional arg | (required) | User prompt. |
+
+### Run identity and shape
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--config <path>` | (none) | JSON `RunConfig`. |
+| `--mode`, `-m` | `execution` | One of `execution`, `planning`, `review`, `research`, `toil`. |
+| `--name` | (none) | Human-readable session label, attached to logs/traces. Metadata only — not injected into the prompt. |
+| `--workspace`, `-w` | cwd | Workspace directory. |
+| `--max-turns` | `20` | Hard-capped at 100. |
+| `--timeout` | `600` | Wall-clock seconds; capped at 3600. |
+| `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
+
+### Provider
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`. |
+| `--model` | `claude-sonnet-4-6` | Model id for the static / per-mode router. |
+| `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | A `secret://` reference. API keys never live in `RunConfig`. Ignored when `--provider=gemini` (Vertex uses GCP IAM). |
+| `--base-url` | (none) | Provider base URL. Required for Azure / gateway scenarios. |
+| `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
+| `--query-param key=value` | (none) | Repeatable. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
+
+For the full per-adapter wire-format reference, including Azure
+Foundry notes and intentional exclusions, see
+[`providers.md`](providers.md).
+
+### Vertex AI / Gemini
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--gcp-project` | (none) | GCP project ID. Required when `--provider=gemini`. |
+| `--gcp-location` | `global` | Vertex AI location: `global` or a region like `us-central1`. |
+| `--gcp-credentials-file` | (none) | Path to a Google service account JSON key file. When set, implies `credential.type=gcp-service-account`; otherwise the credential layer falls back to Application Default Credentials. |
+
+### Anthropic Workload Identity Federation
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--anthropic-federation-rule-id` | (none) | Federation rule ID (`fdrl_...`). Implies `credential.type=anthropic-wif`. Env fallback: `ANTHROPIC_FEDERATION_RULE_ID`. |
+| `--anthropic-organization-id` | (none) | Anthropic organization UUID. Required with WIF. Env fallback: `ANTHROPIC_ORGANIZATION_ID`. |
+| `--anthropic-service-account-id` | (none) | Service account ID (`svac_...`). Required with WIF. Env fallback: `ANTHROPIC_SERVICE_ACCOUNT_ID`. |
+| `--anthropic-workspace-id` | (none) | Workspace ID (`wrkspc_...`) or `default`. Conditional. Env fallback: `ANTHROPIC_WORKSPACE_ID`. |
+| `--anthropic-from-github-actions` | `false` | Enable GitHub Actions OIDC token source. Reads `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. Implicit selection from env presence is rejected — explicit opt-in is required. The `ANTHROPIC_IDENTITY_TOKEN_FILE` and `ANTHROPIC_IDENTITY_TOKEN` env vars also infer the file / env token sources respectively when unset by `--config`. |
+
+Walkthrough: [`anthropic-wif.md`](anthropic-wif.md).
+
+### Azure Workload Identity Federation
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--azure-tenant-id` | (none) | Azure AD tenant UUID. Implies `credential.type=azure-workload-identity`. Use with `--provider=openai-compatible` or `openai-responses` against Azure OpenAI / Foundry. The `TokenSource` (file / github-actions-oidc / aws-irsa / azure-imds) must come from `--config`. |
+| `--azure-client-id` | (none) | App Registration / federated identity credential client ID (UUID). Required with `--azure-tenant-id`. |
+| `--azure-scope` | `https://cognitiveservices.azure.com/.default` | OAuth2 scope for the Entra access token. Override only for non-default Azure audiences. |
+
+Walkthrough: [`azure-workload-identity.md`](azure-workload-identity.md).
+
+### Components
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--executor` | `local` | One of `local`, `container`, `api`. |
+| `--container-runtime` | (none) | OCI runtime: `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. |
+| `--edit-strategy` | `multi` | One of `whole-file`, `search-replace`, `udiff`, `multi`. `composite` is reachable only via `--config`. |
+| `--verifier` | `none` | One of `none`, `test-runner`, `llm-judge`. `composite` is reachable only via `--config`. |
+| `--git-strategy` | `none` | One of `none`, `deterministic`. |
+| `--permission-policy-file` | (none) | Path to a Cedar policy file. When set and the policy type is unset elsewhere, implies `permissionPolicy.type=policy-engine`. Starters live under [`examples/policies/`](../examples/policies/). |
+| `--code-scanner` | (none) | One of `none`, `patterns`, `semgrep`. `composite` is accepted only via `--config` (it requires `codeScanner.scanners`). Empty defers to the mode-aware default (`patterns` for execution, `none` for read-only modes). |
+
+### Transport
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--transport` | `stdio` | One of `stdio`, `grpc`. |
+| `--transport-addr` | (none) | gRPC target address; required when `--transport=grpc`. |
+| `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups. Env fallback: `STIRRUP_FOLLOWUP_GRACE`. |
+
+### Tracing
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--trace <path>` | (none) | JSONL trace path. Implies `--trace-emitter=jsonl` unless overridden. |
+| `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`. |
+| `--otel-endpoint` | (none) | OTLP endpoint. Defaults to `localhost:4317` for `--otel-protocol=grpc`; for `http/protobuf` use the gateway base path (e.g. `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`). |
+| `--otel-protocol` | (none) | OTLP wire protocol: `""` (defaults to grpc), `grpc`, `http/protobuf`. HTTP/JSON is intentionally not supported. See [`observability-cloud.md`](observability-cloud.md). |
+| `--deployment-environment` | (none) | OTel `deployment.environment` resource attribute (e.g. `production`, `staging`). Empty falls through to env `OTEL_DEPLOYMENT_ENVIRONMENT`, then to `local`. |
+| `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
+
+## Component-selection limits
+
+The CLI deliberately exposes only a subset of each component's
+configuration space — the common cases. Anything below requires
+`--config`:
+
+| Component | What needs `--config` |
+|---|---|
+| `editStrategy` | `composite` (chains other strategies). |
+| `verifier` | `composite` (chains other verifiers). |
+| `permissionPolicy` | `policy-engine` requires `policyFile`; the optional `fallback` field defaults to `deny-side-effects` when unset. Chained policy engines are rejected. |
+| `codeScanner` | `composite` requires `codeScanner.scanners` (each entry from the non-composite set). |
+| `traceEmitter` | `headers` (for OTLP/HTTP auth). |
+| `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
+| `tools.mcpServers` | Remote MCP server registration. |
+
+The CLI flags for each of these set the *type* selection only.
+
+## Read-only modes
+
+`planning`, `review`, `research`, and `toil` enforce a structural
+invariant via `ValidateRunConfig`: the tool list must exclude
+`write_file`, `run_command`, and `edit_file`, and the permission
+policy must not be `allow-all`. The validator rejects any
+`RunConfig` that violates this before any component is constructed.
+
+## Limits and budgets
+
+`ValidateRunConfig` enforces hard caps on values that could otherwise
+be unbounded:
+
+| Field | Cap |
+|---|---|
+| `maxTurns` | 100 |
+| `timeout` | 3600 s |
+| `followUpGrace` | 3600 s |
+| `maxTokenBudget` | 50 M |
+| `maxCostBudget` | $100 |
+
+Read-only modes additionally require the tool list to be set.
+
+## RunConfig examples
+
+The shipped example files cover the common deployment shapes. Each
+passes `ValidateRunConfig` end-to-end.
+
+| File | What it demonstrates |
+|---|---|
+| [`examples/runconfig/full.json`](../examples/runconfig/full.json) | Container executor with `runsc` runtime, multi edit strategy, OTel trace emitter, deterministic git, dynamic model router, Cedar policy engine with `deny-side-effects` fallback, Granite Guardian guardrail, and one MCP server. The most comprehensive example. |
+| [`examples/runconfig/openai_responses.json`](../examples/runconfig/openai_responses.json) | OpenAI Responses API provider, local executor, multi edit strategy, JSONL trace emitter, static router on `gpt-4.1`. |
+| [`examples/runconfig/azure-openai.json`](../examples/runconfig/azure-openai.json) | Azure OpenAI Foundry's Responses endpoint via the `openai-responses` provider, with `apiKeyHeader: "api-key"` and `queryParams: {"api-version": "preview"}`. Switch the header to an empty string to use Entra ID bearer tokens. |
+| [`examples/runconfig/vertex-gemini.json`](../examples/runconfig/vertex-gemini.json) | Vertex AI Gemini on `gemini-2.5-pro`. Auth is GCP IAM via Application Default Credentials by default. |
+| [`examples/runconfig/vertex-gemini-wif.json`](../examples/runconfig/vertex-gemini-wif.json) | Vertex AI Gemini reached from a non-GCP runtime via Workload Identity Federation. Surfaces an EKS-style `aws-irsa` token source. |
+| [`examples/runconfig/anthropic-wif-github-actions.json`](../examples/runconfig/anthropic-wif-github-actions.json) | Anthropic Messages API authenticated via WIF from a GitHub Actions runner. |
+| [`examples/runconfig/anthropic-wif-eks-irsa.json`](../examples/runconfig/anthropic-wif-eks-irsa.json) | Anthropic Messages API authenticated via WIF from an EKS pod with IRSA. |
+| [`examples/runconfig/azure-openai-wif-aks.json`](../examples/runconfig/azure-openai-wif-aks.json) | Azure OpenAI from AKS via Entra ID Workload Identity Federation. |
+| [`examples/runconfig/azure-openai-wif-github-actions.json`](../examples/runconfig/azure-openai-wif-github-actions.json) | Azure OpenAI from GitHub Actions via Entra ID Workload Identity Federation. |
+| [`examples/runconfig/grafana-cloud.json`](../examples/runconfig/grafana-cloud.json) | Native OTLP/HTTP export to Grafana Cloud's managed gateway. No Alloy/OTel-Collector sidecar needed. |
+
+For an annotated walkthrough of `full.json` see
+[`examples/runconfig/README.md`](../examples/runconfig/README.md).
+
+## Eval CLI
+
+```sh
+go build -o stirrup-eval ./eval/cmd/eval
+
+# Run an eval suite
+./stirrup-eval run --suite path/to/suite.hcl --output results/ \
+  [--harness path/to/harness] [--dry-run]
+
+# Compare two eval results
+./stirrup-eval compare --current results/result.json \
+  --baseline baseline/result.json
+
+# Pull production metrics as a baseline
+./stirrup-eval baseline --lakehouse path/to/lakehouse \
+  [--after 2026-03-01] [--mode execution] [--output metrics.json]
+
+# Mine failures into eval tasks
+./stirrup-eval mine-failures --lakehouse path/to/lakehouse \
+  [--after 2026-03-01] [--limit 20] [--output suite.hcl]
+
+# Detect metric drift between time windows
+./stirrup-eval drift --lakehouse path/to/lakehouse \
+  --window 7d [--compare-window 7d] [--mode execution]
+
+# Compare eval results against production metrics
+./stirrup-eval compare-to-production --results results/result.json \
+  --lakehouse path/to/lakehouse \
+  [--after 2026-03-01] [--experiment-id exp1]
+
+# Convert an eval result to JUnit XML
+./stirrup-eval convert --results results/result.json --format junit
+```
+
+Eval suites are HCLv2; `eval run --suite` requires a `.hcl`
+extension. `mine-failures` output is canonical HCL loadable without
+conversion. `drift` exits 1 on pass-rate drops greater than 5
+percentage points or turn increases greater than 20%.
+
+Full reference: [`eval.md`](eval.md).

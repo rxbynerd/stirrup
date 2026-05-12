@@ -3,12 +3,14 @@
 Thanks for taking an interest. This document covers what you need to
 build, test, and submit changes. For project orientation start with the
 [README](README.md); for architectural depth see
-[`VERSION1.md`](VERSION1.md) and [`AGENTS.md`](AGENTS.md).
+[`docs/architecture.md`](docs/architecture.md) and per-package detail
+in [`AGENTS.md`](AGENTS.md).
 
 ## Environment
 
-- **Go 1.26.2+.** The Dockerfile builds against `golang:1.26.2-alpine`,
-  so anything older may produce binaries that diverge from CI.
+- **Go 1.26.1+.** Workspace minimum is `1.26.1` (`go.work`); the
+  Dockerfile pins `golang:1.26.3-alpine` for reproducible CI builds.
+  Anything older than 1.26.1 will fail to compile.
 - **[just](https://github.com/casey/just)** for the convenience targets
   in the [`Justfile`](Justfile). Optional but used throughout this doc.
 - **[Buf](https://buf.build)** if you touch any `.proto` files.

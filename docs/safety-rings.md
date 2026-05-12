@@ -59,13 +59,12 @@ those are themselves susceptible to the same coercion the model is.
 LLM guards are useful as defence-in-depth on top of the rings; they
 do not substitute for them.
 
-The rings are numbered for stable reference — the numbering matches
-issue #42's sub-task labels B1–B5 and the comments in the source. The
-numbering is *not* an ordering; rings can be enabled independently.
-The sections below appear in the order they catch an attack during a
-run: pre-flight first (Ring 4), then per-call authorization (Ring 3),
-then runtime isolation inside the sandbox (Rings 1 and 2), then
-post-edit checks (Ring 5).
+The rings are numbered for stable reference — the numbering is *not*
+an ordering; rings can be enabled independently. The sections below
+appear in the order they catch an attack during a run: pre-flight
+first (Ring 4), then per-call authorization (Ring 3), then runtime
+isolation inside the sandbox (Rings 1 and 2), then post-edit checks
+(Ring 5).
 
 ## The five rings at a glance
 
@@ -223,13 +222,13 @@ Either signal, on its own, sets `holdsSensitiveData = true`.
 
 The deterministic Rule of Two checks structural intent at config
 time. It cannot see content the agent actually receives during a
-run. That's the **GuardRail** component (issue #43, PR #72): an
-LLM-based PreTurn classifier that can detect sensitive data entering
-the conversation through tool outputs and dynamic context. The two
-controls are complementary — Rule of Two for the structural axis,
-GuardRail for the runtime axis — and a future iteration may have
-GuardRail dynamically lift `holdsSensitiveData` to `true` when it
-spots sensitive content, tightening the rule mid-run.
+run. That is the **GuardRail** component: an LLM-based PreTurn
+classifier that can detect sensitive data entering the conversation
+through tool outputs and dynamic context. The two controls are
+complementary — Rule of Two for the structural axis, GuardRail for
+the runtime axis — and a future iteration may have GuardRail
+dynamically lift `holdsSensitiveData` to `true` when it spots
+sensitive content, tightening the rule mid-run.
 
 ### Why `ask-upstream` is the documented exception
 
@@ -504,17 +503,18 @@ The proxy intercepts well-behaved HTTP/HTTPS clients that honour
 stdlib HTTP client. The container is wired with
 `NO_PROXY=localhost,127.0.0.1,::1` so loopback is unaffected.
 
-> **In v1 the iptables drop is deferred.** Fail-closed depends on the
-> in-container client honouring the proxy env vars. A misbehaving
-> client (raw TCP, custom DNS resolver, env-stripped subprocess)
-> inside the container can still dial the bridge gateway directly,
-> because the bridge network has unrestricted egress.
+> **The current implementation enforces fail-closed via the proxy
+> env vars only.** A misbehaving in-container client (raw TCP, custom
+> DNS resolver, env-stripped subprocess) can still dial the bridge
+> gateway directly, because the bridge network has unrestricted
+> egress.
 >
 > The full fail-closed posture requires an iptables/nftables drop on
 > the host that whitelists only the proxy's listen address. That drop
 > is privilege-sensitive and not portable to macOS Docker Desktop, so
-> it ships as a follow-up. See `harness/internal/executor/container.go`
-> (search for "iptables / nftables drop").
+> it is tracked as a follow-up. See
+> `harness/internal/executor/container.go` (search for "iptables /
+> nftables drop").
 
 The cooperative model still defeats the agent's *intended* tools —
 `web_fetch`, `run_command` calling `curl`, `git fetch` — because those

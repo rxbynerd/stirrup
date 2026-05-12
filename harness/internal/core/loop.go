@@ -59,7 +59,7 @@ const (
 	toolDefinitionOverheadTokens = 10
 )
 
-// Run executes the agentic loop as described in VERSION1.md:
+// Run executes the agentic loop:
 //
 //	repeat {
 //	  run agentic loop until model says "done"
