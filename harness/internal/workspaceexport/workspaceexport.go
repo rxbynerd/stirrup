@@ -263,12 +263,23 @@ func writeTarGz(rootDir string, w io.Writer, maxBytes int64) (int, error) {
 		// resolved root. This catches the case where a symlinked
 		// parent directory exists inside the workspace but points at
 		// a sibling outside it.
+		//
+		// A dangling symlink (target does not exist) trips
+		// EvalSymlinks with an error. The previous behaviour skipped
+		// the containment check on error, so a dangling symlink
+		// pointing to an absolute path outside the workspace was
+		// silently included in the tarball; downstream `tar -xzf`
+		// without --no-dereference on Linux can be exploited via a
+		// symlink-then-overwrite pattern. Refuse such paths
+		// explicitly. The smoke workflow's tar invocation does not
+		// pass --no-dereference, so defending here is the only layer.
 		resolvedPath, evErr := filepath.EvalSymlinks(path)
-		if evErr == nil {
-			rel2, relErr := filepath.Rel(absRootResolved, resolvedPath)
-			if relErr == nil && (rel2 == ".." || strings.HasPrefix(rel2, ".."+string(filepath.Separator))) {
-				return fmt.Errorf("refusing path %q: resolves outside workspace root", path)
-			}
+		if evErr != nil {
+			return fmt.Errorf("refusing path %q: cannot resolve symlink target: %w", path, evErr)
+		}
+		rel2, relErr := filepath.Rel(absRootResolved, resolvedPath)
+		if relErr == nil && (rel2 == ".." || strings.HasPrefix(rel2, ".."+string(filepath.Separator))) {
+			return fmt.Errorf("refusing path %q: resolves outside workspace root", path)
 		}
 
 		info, err := d.Info()

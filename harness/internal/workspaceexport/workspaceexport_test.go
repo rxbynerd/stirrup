@@ -292,6 +292,46 @@ func TestGCSExporter_InternalSymlinkOK(t *testing.T) {
 	}
 }
 
+// TestGCSExporter_RefusesDanglingSymlink pins S6: a symlink whose
+// target does not exist (a "dangling" link) must be refused at
+// archive time. filepath.EvalSymlinks returns an error for dangling
+// links; the previous behaviour skipped the containment check on
+// that error and silently included the symlink. Downstream tar
+// extraction without --no-dereference can then be exploited via a
+// symlink-then-overwrite pattern targeting an absolute path outside
+// the workspace.
+func TestGCSExporter_RefusesDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "innocent.txt"), "ok")
+	// Target intentionally points at a non-existent path. The target
+	// is absolute so a permissive walk would happily include the link
+	// even though its dereferenced destination is unreachable.
+	target := filepath.Join(dir, "definitely-does-not-exist", "secret")
+	if err := os.Symlink(target, filepath.Join(dir, "dangling")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	srv := &captureUploadServer{}
+	httpSrv := httptest.NewServer(srv.handler())
+	defer httpSrv.Close()
+
+	exp, _ := NewGCSExporter(GCSExporterOptions{
+		CredentialSource: &staticBearerSource{token: "tok"},
+		EndpointBaseURL:  httpSrv.URL,
+	})
+
+	err := exp.Export(context.Background(), dir, "gs://b/o.tar.gz")
+	if err == nil {
+		t.Fatal("Export should refuse a dangling symlink, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot resolve symlink target") {
+		t.Errorf("error should mention symlink resolution failure, got %v", err)
+	}
+	if len(srv.requests) != 0 {
+		t.Errorf("refused export should produce no upload, got %d requests", len(srv.requests))
+	}
+}
+
 func TestGCSExporter_RefusesNonGCSURI(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "f.txt"), "x")
