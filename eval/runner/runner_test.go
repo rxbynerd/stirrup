@@ -1247,6 +1247,53 @@ func TestRunSuite_DryRunValidatesMergedConfig(t *testing.T) {
 	}
 }
 
+// TestRunSuite_DryRunInlineConfigWithNoTimeout pins the contract that
+// an inline run_config block — which cannot carry a timeout (the field
+// is intentionally not surfaced in the HCL grammar) — validates
+// successfully under --dry-run. The runner injects its own default
+// timeout before validation so suites that don't express a timeout
+// (i.e. every inline-block suite) don't falsely fail dry-run.
+func TestRunSuite_DryRunInlineConfigWithNoTimeout(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "dry-run-no-timeout-suite",
+		RunConfig: &types.RunConfigSource{
+			Inline: &types.RunConfigOverrides{
+				// Mode is set via the carrier here for the programmatic
+				// test; the HCL grammar no longer surfaces it (B-1).
+				Mode: "execution",
+				Provider: &types.ProviderConfig{
+					Type:      "anthropic",
+					APIKeyRef: "secret://K",
+				},
+				MaxTurns: intPtr(4),
+			},
+		},
+		Tasks: []types.EvalTask{
+			{
+				ID:     "t1",
+				Mode:   "execution",
+				Prompt: "p",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+			},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	tr := result.Tasks[0]
+	if tr.Outcome != "pass" {
+		t.Errorf("Outcome = %q, want %q (dry-run must inject default timeout)", tr.Outcome, "pass")
+	}
+	if !strings.Contains(tr.JudgeVerdict.Reason, "RunConfig validated") {
+		t.Errorf("Reason = %q, want it to mention RunConfig validated", tr.JudgeVerdict.Reason)
+	}
+}
+
 // TestRunSuite_DryRunNoConfigStillSkipsAsPass pins today's behaviour for
 // suites that have no run-config surface — dry-run must remain a vacuous
 // pass for every task so existing CI invocations keep their semantics.

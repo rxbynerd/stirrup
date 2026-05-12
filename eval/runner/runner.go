@@ -505,6 +505,17 @@ func dryRunSuite(suite types.EvalSuite, runID string, startedAt time.Time) eval.
 			passCount++
 			continue
 		}
+		// ValidateRunConfig requires Timeout to be set. The runner always
+		// passes --timeout 300 to the harness, and `timeout` is not
+		// surfaced in the HCL grammar (it is runner-owned), so the merged
+		// config built from an inline run_config block never carries one.
+		// Inject the runner's default before validating so dry-run does
+		// not falsely fail every suite that uses an inline block. A
+		// non-zero timeout already present in a JSON baseline survives.
+		if merged.Timeout == nil {
+			defaultTimeout := 300
+			merged.Timeout = &defaultTimeout
+		}
 		if err := types.ValidateRunConfig(merged); err != nil {
 			tasks[i] = eval.TaskResult{
 				TaskID:  t.ID,
