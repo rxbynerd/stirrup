@@ -4016,6 +4016,40 @@ func TestValidateRunConfig_TraceEmitter_ObjectPrefixDotDotRejected(t *testing.T)
 	}
 }
 
+// TestValidateRunConfig_TraceEmitter_ObjectPrefixTrailingSlashNormalised
+// pins S3 option A: a missing trailing slash on objectPrefix is
+// normalised in place by the validator so gcsObjectName produces a
+// well-formed object path. Rejecting would be more pedantic but the
+// api-design reviewer recommended ergonomics here.
+func TestValidateRunConfig_TraceEmitter_ObjectPrefixTrailingSlashNormalised(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"missing slash", "traces", "traces/"},
+		{"already slash", "traces/", "traces/"},
+		{"nested missing", "tenant-a/traces", "tenant-a/traces/"},
+		{"empty stays empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.TraceEmitter = TraceEmitterConfig{
+				Type:         "gcs",
+				Bucket:       "stirrup-results",
+				ObjectPrefix: tc.in,
+			}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected valid config, got: %v", err)
+			}
+			if got := c.TraceEmitter.ObjectPrefix; got != tc.want {
+				t.Errorf("ObjectPrefix = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidateRunConfig_RunID_PatternEnforced pins the M3 fix: RunID is
 // interpolated verbatim into the gcs trace emitter object name, so any
 // slash, control byte, or path-traversal segment must be rejected at
@@ -4111,16 +4145,60 @@ func TestValidateRunConfig_ResultSink_NoneAndStdoutJSON(t *testing.T) {
 	})
 }
 
-func TestValidateRunConfig_ResultSink_PubsubReserved(t *testing.T) {
+func TestValidateRunConfig_ResultSink_GCPPubsubReserved(t *testing.T) {
 	c := validConfig()
-	c.ResultSink = &ResultSinkConfig{Type: "pubsub", Topic: "stirrup-results"}
+	c.ResultSink = &ResultSinkConfig{Type: "gcp-pubsub", Topic: "stirrup-results"}
 	err := ValidateRunConfig(c)
 	if err == nil {
-		t.Fatal("expected error for reserved resultSink type pubsub")
+		t.Fatal("expected error for reserved resultSink type gcp-pubsub")
 	}
 	if !strings.Contains(err.Error(), "reserved but not yet implemented") {
 		t.Errorf("expected reserved-but-not-implemented error, got: %v", err)
 	}
+}
+
+// TestValidateRunConfig_ResultSink_BarePubsubRejected pins S1's
+// discriminator rename: the bare "pubsub" string is no longer in
+// validResultSinkTypes, so an operator who somehow ships it gets the
+// unsupported-type error rather than the reserved-but-unimplemented
+// path. No deprecation cycle is needed because "pubsub" has never
+// shipped in a released binary.
+func TestValidateRunConfig_ResultSink_BarePubsubRejected(t *testing.T) {
+	c := validConfig()
+	c.ResultSink = &ResultSinkConfig{Type: "pubsub"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unrecognised resultSink type pubsub")
+	}
+	if !strings.Contains(err.Error(), "unsupported resultSink type") {
+		t.Errorf("expected unsupported-resultSink-type error, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_ResultSink_TopicRejectedForNonPubSub pins S2:
+// resultSink.topic is meaningful only for the gcp-pubsub adapter, so
+// carrying it on a stdout-json sink fails loudly rather than being
+// silently ignored.
+func TestValidateRunConfig_ResultSink_TopicRejectedForNonPubSub(t *testing.T) {
+	t.Run("topic on stdout-json", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "stdout-json", Topic: "leftover"}
+		err := ValidateRunConfig(c)
+		if err == nil || !strings.Contains(err.Error(), "resultSink.topic is only valid") {
+			t.Errorf("expected topic-only-for-gcp-pubsub error, got: %v", err)
+		}
+	})
+	t.Run("attributes on stdout-json", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{
+			Type:       "stdout-json",
+			Attributes: map[string]string{"env": "prod"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil || !strings.Contains(err.Error(), "resultSink.attributes is only valid") {
+			t.Errorf("expected attributes-only-for-gcp-pubsub error, got: %v", err)
+		}
+	})
 }
 
 func TestValidateRunConfig_ResultSink_GCSReserved(t *testing.T) {
@@ -4228,7 +4306,7 @@ func TestValidateRunConfig_WorkspaceExportTo_RequiresExplicitExecutorType(t *tes
 func TestRedact_ResultSinkAttributes(t *testing.T) {
 	rc := RunConfig{
 		ResultSink: &ResultSinkConfig{
-			Type: "pubsub",
+			Type: "gcp-pubsub",
 			Attributes: map[string]string{
 				"auth-token":     "secret://PUBSUB_TOKEN",
 				"workload":       "classification",

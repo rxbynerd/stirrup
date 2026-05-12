@@ -98,7 +98,7 @@ func TestNewResultSink_Defaults(t *testing.T) {
 }
 
 func TestNewResultSink_ReservedTypesRejected(t *testing.T) {
-	for _, typ := range []string{"pubsub", "gcs"} {
+	for _, typ := range []string{"gcp-pubsub", "gcs"} {
 		t.Run(typ, func(t *testing.T) {
 			_, err := NewResultSink(&types.ResultSinkConfig{Type: typ})
 			if err == nil {

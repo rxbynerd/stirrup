@@ -18,7 +18,7 @@ package types
 // of a run. Constructed from the existing RunTrace at end-of-run.
 //
 // The schema is the contract across resultSink adapters (stdout-json,
-// pubsub, gcs, and the AWS / Azure follow-ups reserved in
+// gcp-pubsub, gcs, and the AWS / Azure follow-ups reserved in
 // validResultSinkTypes). Keep it small and stable; large artefacts
 // (full traces, workspace tarballs) flow through trace emitters and the
 // workspace exporter instead.

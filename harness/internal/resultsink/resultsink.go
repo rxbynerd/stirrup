@@ -2,7 +2,7 @@
 // end-of-run. The sink is selected by RunConfig.ResultSink.Type; the
 // closed set is documented in types.ResultSinkConfig and validated by
 // types.ValidateRunConfig. Only "none" and "stdout-json" are
-// implemented today — "pubsub" and "gcs" are reserved values that
+// implemented today — "gcp-pubsub" and "gcs" are reserved values that
 // validation rejects before reaching this factory.
 //
 // The result sink is distinct from the trace emitter (which carries
@@ -112,7 +112,7 @@ func (s *StdoutJSONSink) Emit(_ context.Context, result types.RunResult) error {
 }
 
 // NewResultSink returns the ResultSink selected by cfg. Defence-in-depth
-// for reserved values: validation already rejects pubsub and gcs at
+// for reserved values: validation already rejects gcp-pubsub and gcs at
 // config-load, but a programmatic caller that bypasses
 // types.ValidateRunConfig (e.g. a test or a future embedding API path)
 // would otherwise reach a nil-component crash here.
@@ -125,7 +125,7 @@ func NewResultSink(cfg *types.ResultSinkConfig) (ResultSink, error) {
 		return NoneSink{}, nil
 	case "stdout-json":
 		return NewStdoutJSONSink(), nil
-	case "pubsub", "gcs":
+	case "gcp-pubsub", "gcs":
 		return nil, fmt.Errorf("resultSink.type=%q is reserved but not yet implemented", cfg.Type)
 	default:
 		return nil, fmt.Errorf("unsupported resultSink.type: %q", cfg.Type)

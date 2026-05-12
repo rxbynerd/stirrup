@@ -399,7 +399,7 @@ func (rc RunConfig) Redact() RunConfig {
 		}
 		redacted.TraceEmitter.Headers = headers
 	}
-	// ResultSink.Attributes (reserved for the future pubsub adapter)
+	// ResultSink.Attributes (reserved for the future gcp-pubsub adapter)
 	// may carry "secret://" references the same way trace-emitter
 	// headers do. Mirror the same rewrite so a recorded RunConfig
 	// never persists the reference into a trace or recording.
@@ -801,9 +801,12 @@ type TraceEmitterConfig struct {
 // ResultSinkConfig selects the result sink implementation. The
 // discriminator values are a closed set so AWS / Azure adapters can land
 // without breaking changes. Only "none" and "stdout-json" are
-// implemented in this issue; "pubsub" and "gcs" are reserved values
+// implemented in this issue; "gcp-pubsub" and "gcs" are reserved values
 // that fail validation with a "not yet implemented" error until their
-// adapters land.
+// adapters land. The "gcp-" prefix on the cloud-provider discriminator
+// mirrors the credential type prefix ("gcp-workload-identity") and
+// reserves sibling slots for "aws-sns" / "azure-eventgrid" without
+// requiring a deprecation cycle on the bare "pubsub" name.
 //
 // The result sink carries the run's *answer* (a small RunResult JSON
 // payload) — distinct from the trace emitter, which carries the run's
@@ -815,7 +818,7 @@ type ResultSinkConfig struct {
 	//   "stdout-json" — write a single "STIRRUP_RESULT <json>" line to
 	//                   stdout at end-of-run. Reads cleanly from Cloud
 	//                   Logging / CloudWatch / journald.
-	//   "pubsub"      — RESERVED. Will publish RunResult to a GCP
+	//   "gcp-pubsub"  — RESERVED. Will publish RunResult to a GCP
 	//                   Pub/Sub topic; rejected with a "not yet
 	//                   implemented" error today.
 	//   "gcs"         — RESERVED. Will write RunResult as a JSON
@@ -823,17 +826,22 @@ type ResultSinkConfig struct {
 	//                   implemented" error today.
 	Type string `json:"type"`
 
-	// Topic is the Pub/Sub topic name for the future "pubsub" adapter.
-	// Parsed but currently unused — the validator rejects pubsub with
-	// "not yet implemented" before this field is consulted.
+	// Topic is the Pub/Sub topic name for the future "gcp-pubsub"
+	// adapter. Parsed but currently unused — the validator rejects
+	// gcp-pubsub with "not yet implemented" before this field is
+	// consulted. Carrying topic on a non-"gcp-pubsub" type is rejected
+	// to avoid silent drop when an operator copies a Pub/Sub block into
+	// a different sink config.
 	Topic string `json:"topic,omitempty"`
 
 	// Attributes are extra message attributes attached to the future
-	// "pubsub" adapter's published message. Values may carry
+	// "gcp-pubsub" adapter's published message. Values may carry
 	// "secret://" references which RunConfig.Redact() rewrites to
 	// "secret://[REDACTED]" before any trace or recording is
 	// persisted. Parsed but currently unused — the validator rejects
-	// pubsub with "not yet implemented" before this field is consulted.
+	// gcp-pubsub with "not yet implemented" before this field is
+	// consulted. Carrying attributes on a non-"gcp-pubsub" type is
+	// rejected for the same reason as Topic.
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
@@ -1063,12 +1071,16 @@ var validTraceEmitterProtocols = map[string]bool{
 
 // validResultSinkTypes is the closed set of ResultSinkConfig.Type
 // values. Only the entries in implementedResultSinkTypes are wired in
-// this release; the remainder are reserved so AWS / Azure / pubsub
-// adapters can ship without breaking the config wire schema.
+// this release; the remainder are reserved so AWS / Azure / gcp-pubsub
+// adapters can ship without breaking the config wire schema. The
+// cloud-provider entries carry an explicit "gcp-" prefix to match the
+// credential discriminators ("gcp-workload-identity") and to reserve
+// sibling slots for "aws-sns" and "azure-eventgrid" without a
+// deprecation cycle.
 var validResultSinkTypes = map[string]bool{
 	"none":        true,
 	"stdout-json": true,
-	"pubsub":      true,
+	"gcp-pubsub":  true,
 	"gcs":         true,
 }
 
@@ -1383,7 +1395,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
 	validateOptionalType("transport", config.Transport.Type, validTransportTypes, &errs)
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
-	validateTraceEmitterProtocolAndHeaders(config.TraceEmitter, &errs)
+	validateTraceEmitterProtocolAndHeaders(&config.TraceEmitter, &errs)
 	validateResultSinkConfig(config.ResultSink, &errs)
 	validateExecutorWorkspaceExportTo(config.Executor, &errs)
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
@@ -2737,7 +2749,12 @@ func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
 // gcs-specific fields (Bucket, ObjectPrefix, Credential) are validated
 // here too: Bucket is required when Type=="gcs" and rejected on every
 // other type, ObjectPrefix is optional, Credential is gcs-only.
-func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]string) {
+//
+// cfg is passed by pointer so the validator can normalise ObjectPrefix
+// in place (trailing slash). gcsObjectName in harness/internal/trace/gcs.go
+// concatenates prefix and run-id without inserting a separator, so a
+// missing trailing slash would silently produce a malformed object name.
+func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]string) {
 	if !validTraceEmitterProtocols[cfg.Protocol] {
 		*errs = append(*errs, fmt.Sprintf(
 			"unsupported traceEmitter.protocol %q (allowed: \"\", grpc, http/protobuf)",
@@ -2789,6 +2806,16 @@ func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]stri
 					break
 				}
 			}
+		}
+		// Normalise the prefix to ensure a trailing slash.
+		// gcsObjectName in harness/internal/trace/gcs.go relies on this:
+		// it concatenates prefix and run-id directly, so a prefix
+		// supplied as "traces" instead of "traces/" would produce
+		// "tracesRUNID.jsonl" — silently malformed. Normalising here is
+		// more ergonomic than rejecting; operators rarely think of the
+		// slash as load-bearing.
+		if cfg.ObjectPrefix != "" && !strings.HasSuffix(cfg.ObjectPrefix, "/") {
+			cfg.ObjectPrefix += "/"
 		}
 		if cfg.Credential != nil {
 			validateCredentialConfig(cfg.Credential, "traceEmitter.credential", errs)
@@ -2867,6 +2894,23 @@ func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
 	if !implementedResultSinkTypes[cfg.Type] {
 		*errs = append(*errs, fmt.Sprintf(
 			"resultSink type %q is reserved but not yet implemented in this release",
+			cfg.Type,
+		))
+	}
+	// Topic and Attributes belong only to the gcp-pubsub adapter.
+	// Rejecting them on every other type mirrors the
+	// bucket/objectPrefix/credential rejection on TraceEmitterConfig
+	// and prevents the silent "where did my topic go" confusion when
+	// an operator copies a Pub/Sub block into a stdout-json config.
+	if cfg.Topic != "" && cfg.Type != "gcp-pubsub" {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.topic is only valid when type is \"gcp-pubsub\" (got type %q)",
+			cfg.Type,
+		))
+	}
+	if len(cfg.Attributes) > 0 && cfg.Type != "gcp-pubsub" {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.attributes is only valid when type is \"gcp-pubsub\" (got type %q)",
 			cfg.Type,
 		))
 	}

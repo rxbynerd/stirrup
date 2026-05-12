@@ -322,7 +322,7 @@ Cloud Logging retention costs apply
 (see [Cloud Logging pricing](https://cloud.google.com/stackdriver/pricing#logging-costs);
 ≈ $0.50/GiB at time of writing). For low-volume classification
 workloads, the cost is negligible; higher-volume callers should
-prefer the reserved `pubsub` result sink (interface reserved, adapter
+prefer the reserved `gcp-pubsub` result sink (interface reserved, adapter
 deferred — see *Out of scope* below).
 
 ### Shape B: workspace tarball from GCS
