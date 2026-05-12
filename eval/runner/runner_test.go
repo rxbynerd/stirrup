@@ -1688,6 +1688,140 @@ func TestMergeRunConfig_FileBaselineRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+// TestMergeRunConfig_FileBaselineWithTaskOverrides exercises the
+// "load from file + apply task overrides" combination, which neither
+// the file-only round-trip nor the inline-baseline override tests
+// reach by themselves. A regression in either applyOverrides or the
+// loadRunConfigFile baseline path would surface here.
+func TestMergeRunConfig_FileBaselineWithTaskOverrides(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "base.json")
+	timeout := 90
+	baseline := types.RunConfig{
+		Mode:     "execution",
+		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
+		MaxTurns: 10,
+		Timeout:  &timeout,
+	}
+	data, _ := json.Marshal(baseline)
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := types.EvalSuite{
+		ID:        "s",
+		RunConfig: &types.RunConfigSource{File: cfgPath},
+		Tasks: []types.EvalTask{
+			{
+				ID: "t1",
+				// Task only tweaks MaxTurns; the rest of the file baseline
+				// must survive untouched.
+				RunConfigOverrides: &types.RunConfigOverrides{
+					MaxTurns: intPtr(3),
+				},
+			},
+		},
+	}
+	got, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("got nil, want populated merged config")
+	}
+	if got.Mode != "execution" {
+		t.Errorf("Mode = %q, want execution (file baseline)", got.Mode)
+	}
+	if got.Provider.Type != "anthropic" || got.Provider.APIKeyRef != "secret://K" {
+		t.Errorf("Provider = %#v, want anthropic baseline preserved", got.Provider)
+	}
+	if got.MaxTurns != 3 {
+		t.Errorf("MaxTurns = %d, want 3 (task override wins over file's 10)", got.MaxTurns)
+	}
+	if got.Timeout == nil || *got.Timeout != 90 {
+		t.Errorf("Timeout = %v, want *90 (file baseline timeout preserved)", got.Timeout)
+	}
+}
+
+// TestMergeRunConfig_FileBaselineIsDirectory pins the documented
+// safety rail: loadRunConfigFile rejects a directory path with a
+// clear "is a directory" error rather than failing later inside the
+// JSON decoder.
+func TestMergeRunConfig_FileBaselineIsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	suite := types.EvalSuite{
+		ID:        "s",
+		RunConfig: &types.RunConfigSource{File: dir},
+		Tasks:     []types.EvalTask{{ID: "t1"}},
+	}
+	_, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err == nil {
+		t.Fatal("expected error for directory path")
+	}
+	if !strings.Contains(err.Error(), "is a directory") {
+		t.Errorf("error = %q, want it to mention 'is a directory'", err.Error())
+	}
+}
+
+// TestMergeRunConfig_FileBaselineExceedsSizeCap pins the
+// maxRunConfigFileBytes guard. A multi-MB config file is almost
+// always a misconfiguration (symlink to /dev/zero, binary pasted
+// into the path) and the runner must reject it before the
+// JSON decoder allocates a huge buffer.
+func TestMergeRunConfig_FileBaselineExceedsSizeCap(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "huge.json")
+	// One byte past the cap is enough to trip the guard.
+	huge := make([]byte, maxRunConfigFileBytes+1)
+	// Make the payload valid-ish JSON so a regression that skipped the
+	// size check would still need to fail on something else; we want a
+	// clean signal that the cap is what fires.
+	huge[0] = '{'
+	for i := 1; i < len(huge)-1; i++ {
+		huge[i] = ' '
+	}
+	huge[len(huge)-1] = '}'
+	if err := os.WriteFile(cfgPath, huge, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	suite := types.EvalSuite{
+		ID:        "s",
+		RunConfig: &types.RunConfigSource{File: cfgPath},
+		Tasks:     []types.EvalTask{{ID: "t1"}},
+	}
+	_, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err == nil {
+		t.Fatal("expected error for oversized config file")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %q, want it to mention 'exceeds'", err.Error())
+	}
+}
+
+// TestMergeRunConfig_FileBaselineEmptyFile pins the explicit empty-
+// file check: a zero-byte JSON file would decode to a zero-value
+// RunConfig (legal Go but a silently-broken config), so the loader
+// rejects it loudly instead.
+func TestMergeRunConfig_FileBaselineEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "empty.json")
+	if err := os.WriteFile(cfgPath, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	suite := types.EvalSuite{
+		ID:        "s",
+		RunConfig: &types.RunConfigSource{File: cfgPath},
+		Tasks:     []types.EvalTask{{ID: "t1"}},
+	}
+	_, err := mergeRunConfig(suite, suite.Tasks[0])
+	if err == nil {
+		t.Fatal("expected error for empty config file")
+	}
+	if !strings.Contains(err.Error(), "file is empty") {
+		t.Errorf("error = %q, want it to mention 'file is empty'", err.Error())
+	}
+}
+
 // TestMergeRunConfig_TaskOverridesOnlyNoBaseline asserts that a task
 // with overrides but no suite-level baseline still produces a non-nil
 // merged config built from a zero-value RunConfig.

@@ -633,6 +633,13 @@ func mergeRunConfig(suite types.EvalSuite, task types.EvalTask) (*types.RunConfi
 // baseline value. The semantics match the existing
 // types.RunConfigOverrides precedent used by experiments.
 func applyOverrides(cfg *types.RunConfig, ov *types.RunConfigOverrides) {
+	// Defensive nil guard: every current call site in mergeRunConfig
+	// already nil-checks ov, so this branch is unreachable today and
+	// shows up as the only uncovered line in this function. Kept on
+	// purpose — if a future call site forgets the check, applyOverrides
+	// would nil-deref on `ov.Mode`, and the failure mode would be
+	// nondeterministic rather than a clean no-op. Removing it would
+	// flip a clear contract ("safe to call with nil") into a sharp edge.
 	if ov == nil {
 		return
 	}

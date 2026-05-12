@@ -212,6 +212,13 @@ type providerConfigSpec struct {
 	QueryParams  map[string]string `hcl:"query_params,optional"`
 	GCPProject   string            `hcl:"gcp_project,optional"`
 	GCPLocation  string            `hcl:"gcp_location,optional"`
+	// GCPCredentialsFile is intentionally absent: a file path inline
+	// requires the same relative-path resolution treatment as
+	// run_config_file itself (resolve against the suite file's
+	// directory, validate the file exists, enforce a size cap). The
+	// equivalent surface for authors who need GCP service-account
+	// auth is to keep the full RunConfig in JSON and reference it via
+	// run_config_file. See docs/eval.md for the rationale.
 }
 
 type modelRouterConfigSpec struct {
