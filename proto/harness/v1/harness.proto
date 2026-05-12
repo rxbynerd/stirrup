@@ -1208,6 +1208,26 @@ message TraceEmitterConfig {
   // Used to authenticate to managed gateways like Grafana Cloud
   // (e.g. {"Authorization": "secret://GRAFANA_CLOUD_AUTH"}).
   map<string, string> headers = 6;
+
+  // For "gcs": destination bucket for the run's JSONL trace. Required
+  // when type == "gcs"; rejected by validation for every other type so
+  // a stale value cannot silently keep a bucket reference alive across
+  // a type change. Validated against the GCS bucket naming rules.
+  string bucket = 7;
+
+  // For "gcs": joined with the run ID at write time to form the final
+  // GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
+  // allowed; trailing slash is normalised by validation. Only consulted
+  // by the "gcs" emitter.
+  string object_prefix = 8;
+
+  // Credential override for the "gcs" emitter is intentionally NOT
+  // surfaced on the wire today. The runtime resolves credentials via
+  // workload-identity against the host's metadata server, which is
+  // appropriate for Cloud Run / GKE. Adding a wire-level credential
+  // override requires a follow-up CredentialConfig sub-message and
+  // matching translation; tracked alongside the broader
+  // ResultSinkConfig wiring work.
 }
 
 // ---------------------------------------------------------------------------

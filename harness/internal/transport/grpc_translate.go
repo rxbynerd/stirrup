@@ -169,6 +169,15 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		rc.GitStrategy = types.GitStrategyConfig{Type: pc.GitStrategy.Type}
 	}
 	if pc.TraceEmitter != nil {
+		// Bucket and ObjectPrefix carry the GCS trace-emitter routing
+		// data. Dropping them here would silently fall back to the
+		// jsonl emitter (when Type=="" after the zero-value copy) or
+		// produce a "bucket is required" construction error at the
+		// factory — both invisible to a control plane that just sent
+		// a Type=="gcs" config. Credential is intentionally not on the
+		// proto yet (see harness.proto TraceEmitterConfig comment); a
+		// proto field and matching translation will land alongside
+		// the broader ResultSinkConfig wiring follow-up.
 		rc.TraceEmitter = types.TraceEmitterConfig{
 			Type:            pc.TraceEmitter.Type,
 			FilePath:        pc.TraceEmitter.FilePath,
@@ -176,6 +185,8 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			MetricsEndpoint: pc.TraceEmitter.MetricsEndpoint,
 			Protocol:        pc.TraceEmitter.Protocol,
 			Headers:         pc.TraceEmitter.Headers,
+			Bucket:          pc.TraceEmitter.Bucket,
+			ObjectPrefix:    pc.TraceEmitter.ObjectPrefix,
 		}
 	}
 	if pc.Tools != nil {

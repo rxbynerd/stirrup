@@ -3057,7 +3057,17 @@ type TraceEmitterConfig struct {
 	// are scrubbed from logs and stripped from RunConfig.Redact() output.
 	// Used to authenticate to managed gateways like Grafana Cloud
 	// (e.g. {"Authorization": "secret://GRAFANA_CLOUD_AUTH"}).
-	Headers       map[string]string `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Headers map[string]string `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// For "gcs": destination bucket for the run's JSONL trace. Required
+	// when type == "gcs"; rejected by validation for every other type so
+	// a stale value cannot silently keep a bucket reference alive across
+	// a type change. Validated against the GCS bucket naming rules.
+	Bucket string `protobuf:"bytes,7,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	// For "gcs": joined with the run ID at write time to form the final
+	// GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
+	// allowed; trailing slash is normalised by validation. Only consulted
+	// by the "gcs" emitter.
+	ObjectPrefix  string `protobuf:"bytes,8,opt,name=object_prefix,json=objectPrefix,proto3" json:"object_prefix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3132,6 +3142,20 @@ func (x *TraceEmitterConfig) GetHeaders() map[string]string {
 		return x.Headers
 	}
 	return nil
+}
+
+func (x *TraceEmitterConfig) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *TraceEmitterConfig) GetObjectPrefix() string {
+	if x != nil {
+		return x.ObjectPrefix
+	}
+	return ""
 }
 
 // ToolsConfig selects which tools are available to the model during the run.
@@ -3517,14 +3541,16 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"policyFile\x12\x1a\n" +
 	"\bfallback\x18\x04 \x01(\tR\bfallback\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\xb3\x02\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\xf0\x02\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
 	"\bendpoint\x18\x03 \x01(\tR\bendpoint\x12)\n" +
 	"\x10metrics_endpoint\x18\x04 \x01(\tR\x0fmetricsEndpoint\x12\x1a\n" +
 	"\bprotocol\x18\x05 \x01(\tR\bprotocol\x12M\n" +
-	"\aheaders\x18\x06 \x03(\v23.stirrup.harness.v1.TraceEmitterConfig.HeadersEntryR\aheaders\x1a:\n" +
+	"\aheaders\x18\x06 \x03(\v23.stirrup.harness.v1.TraceEmitterConfig.HeadersEntryR\aheaders\x12\x16\n" +
+	"\x06bucket\x18\a \x01(\tR\x06bucket\x12#\n" +
+	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"n\n" +
