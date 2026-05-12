@@ -168,15 +168,36 @@ suite "openai-responses-empty-tool-output-regression" {
 The live example is at
 [`eval/suites/openai-responses-empty-tool-output.hcl`](../eval/suites/openai-responses-empty-tool-output.hcl).
 
-**Precedence.** Explicit runner-managed flags
-(`--workspace`, `--trace`, `--timeout`, `--prompt`, `--mode`) always
-override the merged config. The runner sets them on every harness
-invocation because they are scoped to the per-task temp workspace
-and trace file the runner manages; the merged `--config` carries
-everything else (provider, model_router, executor, permission
-policy, guard rail, code scanner, observability, max_turns, …).
-This matches the precedence rule the harness's `--config` flag
-already documents.
+**Precedence.** When a merged config is in use the runner passes
+only the flags it actually needs to manage:
+
+- `--workspace` — always passed (the per-task tmpdir has no
+  in-config equivalent the suite could supply).
+- `--trace` — not passed; the trace path is injected into the
+  merged config's `trace_emitter.file_path` so the harness picks
+  it up without triggering the flag's emitter-type coercion.
+- `--prompt` — passed only when the task has a non-empty `prompt`
+  attribute.
+- `--mode` — passed only when the task has a non-empty `mode`
+  attribute. A suite-level `run_config { mode = "..." }` rides in
+  the merged config and is honoured when the task itself does not
+  override.
+- `--timeout` — not passed; the merged config carries it.
+
+The legacy invocation path (a suite with no `run_config_file` and
+no inline `run_config`) keeps passing the historic five flags
+verbatim, so existing suites are unchanged.
+
+**`run_config_file` path resolution.** The path stored in
+`run_config_file` is used verbatim by the runner; relative paths
+resolve against the working directory of the `stirrup-eval`
+invocation, not the directory containing the suite file. For a
+suite checked into a repository, the recommendation is to use an
+absolute path or to invoke the runner from a stable working
+directory. Authors who want a suite-relative path can compose one
+explicitly in their CI script (e.g.
+`stirrup-eval run --suite "$REPO/eval/suites/foo.hcl"` after `cd`
+into the repo root).
 
 **Retention.** When `--output` is set, each retained task
 directory carries a `run_config.redacted.json` companion next to
@@ -208,10 +229,10 @@ recording's posture, but it does not gate the run.
 
 **Backwards compatibility.** A suite with no `run_config_file`,
 no inline `run_config`, and no per-task `run_config_overrides`
-behaves exactly as before — the runner falls back to the
-five-flag invocation (`--prompt`, `--mode`, `--workspace`,
-`--trace`, `--timeout`) and writes no `run_config.redacted.json`.
-The new fields are purely additive.
+behaves exactly as before — the runner falls back to the legacy
+invocation (`--prompt`, `--mode`, `--workspace`, `--trace`,
+`--timeout`) and writes no `run_config.redacted.json`. The new
+fields are purely additive.
 
 **Currently unsupported.** The inline `run_config` block decodes
 most of `types.RunConfig` but defers a small number of fields
