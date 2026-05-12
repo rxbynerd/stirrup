@@ -1247,6 +1247,141 @@ func TestRunSuite_DryRunValidatesMergedConfig(t *testing.T) {
 	}
 }
 
+// TestRunSuite_DryRunValidatesAndPasses pins the dry-run success
+// outcome: a suite whose merged config validates cleanly produces a
+// "pass" outcome with the dry-run reason. This is the most common
+// production case for --dry-run; the existing dry-run tests only
+// covered the no-config-surface and validation-failure paths.
+func TestRunSuite_DryRunValidatesAndPasses(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "dry-run-valid-suite",
+		RunConfig: &types.RunConfigSource{
+			Inline: &types.RunConfigOverrides{
+				Mode: "execution",
+				Provider: &types.ProviderConfig{
+					Type:      "openai-responses",
+					APIKeyRef: "secret://OPENAI_KEY",
+				},
+				MaxTurns: intPtr(6),
+			},
+		},
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	tr := result.Tasks[0]
+	if tr.Outcome != "pass" {
+		t.Errorf("Outcome = %q, want %q", tr.Outcome, "pass")
+	}
+	if !strings.Contains(tr.JudgeVerdict.Reason, "RunConfig validated") {
+		t.Errorf("Reason = %q, want it to mention RunConfig validated", tr.JudgeVerdict.Reason)
+	}
+	if result.PassRate != 1.0 {
+		t.Errorf("PassRate = %f, want 1.0", result.PassRate)
+	}
+}
+
+// TestRunSuite_DryRunMergeErrorSurfacedPerTask pins the dry-run
+// "merge failed" branch: when mergeRunConfig itself returns an error
+// (e.g. RunConfigSource.File points at a nonexistent file), the task
+// outcome must be "error" with the merge failure surfaced as the
+// judge reason. The branch was reachable but had no test.
+func TestRunSuite_DryRunMergeErrorSurfacedPerTask(t *testing.T) {
+	suite := types.EvalSuite{
+		ID:        "dry-run-merge-err-suite",
+		RunConfig: &types.RunConfigSource{File: filepath.Join(t.TempDir(), "does-not-exist.json")},
+		Tasks: []types.EvalTask{
+			{ID: "t1", Prompt: "p", Judge: types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}}},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	tr := result.Tasks[0]
+	if tr.Outcome != "error" {
+		t.Errorf("Outcome = %q, want %q", tr.Outcome, "error")
+	}
+	if !strings.Contains(tr.JudgeVerdict.Reason, "merging run-config") {
+		t.Errorf("Reason = %q, want it to mention merging run-config", tr.JudgeVerdict.Reason)
+	}
+}
+
+// TestRunSuite_DryRunMixedTaskConfigSurface pins the "merged == nil"
+// vacuous-pass branch: when the suite has no suite-level RunConfig,
+// task-1 has RunConfigOverrides, and task-2 has none, task-2's
+// merge returns (nil, nil) and the dry-run path emits a vacuous
+// pass with the "skipped (no merged config)" reason. The branch was
+// reachable but untested.
+func TestRunSuite_DryRunMixedTaskConfigSurface(t *testing.T) {
+	suite := types.EvalSuite{
+		ID: "dry-run-mixed-suite",
+		// No suite-level RunConfig — hasConfigSurface is driven by task-1.
+		Tasks: []types.EvalTask{
+			{
+				ID:     "t1",
+				Prompt: "p",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+				RunConfigOverrides: &types.RunConfigOverrides{
+					Mode:     "execution",
+					Provider: &types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
+					MaxTurns: intPtr(4),
+				},
+			},
+			{
+				ID:     "t2",
+				Prompt: "p",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"placeholder"}},
+				// No RunConfigOverrides; merged will be (nil, nil).
+			},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2", len(result.Tasks))
+	}
+
+	// task-1: merged config validates, outcome pass with "RunConfig validated".
+	t1 := result.Tasks[0]
+	if t1.TaskID != "t1" {
+		t.Fatalf("Tasks[0].TaskID = %q, want t1", t1.TaskID)
+	}
+	if t1.Outcome != "pass" {
+		t.Errorf("t1.Outcome = %q, want pass", t1.Outcome)
+	}
+	if !strings.Contains(t1.JudgeVerdict.Reason, "RunConfig validated") {
+		t.Errorf("t1.Reason = %q, want it to mention RunConfig validated", t1.JudgeVerdict.Reason)
+	}
+
+	// task-2: no overrides, merged nil, vacuous pass with "skipped".
+	t2 := result.Tasks[1]
+	if t2.TaskID != "t2" {
+		t.Fatalf("Tasks[1].TaskID = %q, want t2", t2.TaskID)
+	}
+	if t2.Outcome != "pass" {
+		t.Errorf("t2.Outcome = %q, want pass", t2.Outcome)
+	}
+	if !strings.Contains(t2.JudgeVerdict.Reason, "skipped") {
+		t.Errorf("t2.Reason = %q, want it to mention skipped", t2.JudgeVerdict.Reason)
+	}
+}
+
 // TestRunSuite_DryRunInlineConfigWithNoTimeout pins the contract that
 // an inline run_config block — which cannot carry a timeout (the field
 // is intentionally not surfaced in the HCL grammar) — validates
