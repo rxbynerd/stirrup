@@ -577,6 +577,249 @@ func TestLoadSuiteHCL_SuiteBlockMissingLabel(t *testing.T) {
 	}
 }
 
+// TestLoadSuiteHCL_RunConfigFile asserts that a suite-level
+// `run_config_file` attribute populates EvalSuite.RunConfig with the
+// path as the File field, and leaves Inline nil. The runner (chunk B)
+// is responsible for resolving the path; the loader stays purely
+// syntactic.
+func TestLoadSuiteHCL_RunConfigFile(t *testing.T) {
+	src := `
+suite "s" {
+  run_config_file = "configs/base.json"
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "run-config-file.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil {
+		t.Fatal("expected suite RunConfig to be populated")
+	}
+	if got.RunConfig.File != "configs/base.json" {
+		t.Errorf("RunConfig.File = %q, want %q", got.RunConfig.File, "configs/base.json")
+	}
+	if got.RunConfig.Inline != nil {
+		t.Errorf("RunConfig.Inline = %#v, want nil", got.RunConfig.Inline)
+	}
+	if got.Tasks[0].RunConfigOverrides != nil {
+		t.Errorf("Tasks[0].RunConfigOverrides = %#v, want nil", got.Tasks[0].RunConfigOverrides)
+	}
+}
+
+// TestLoadSuiteHCL_RunConfigInlineBlock asserts that an inline
+// suite-level `run_config { ... }` block decodes into
+// EvalSuite.RunConfig.Inline with the field set the author specified.
+// File is left empty because the inline path is the one that was
+// taken.
+func TestLoadSuiteHCL_RunConfigInlineBlock(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    mode      = "execution"
+    max_turns = 10
+
+    provider {
+      type        = "openai-responses"
+      api_key_ref = "secret://OPENAI_KEY"
+      base_url    = "https://example/v1"
+    }
+
+    model_router {
+      type     = "static"
+      provider = "openai-responses"
+      model    = "gpt-5.4-nano"
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "run-config-inline.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil || got.RunConfig.Inline == nil {
+		t.Fatalf("expected inline run-config, got %#v", got.RunConfig)
+	}
+	if got.RunConfig.File != "" {
+		t.Errorf("RunConfig.File = %q, want empty", got.RunConfig.File)
+	}
+	in := got.RunConfig.Inline
+	if in.Mode != "execution" {
+		t.Errorf("Mode = %q, want %q", in.Mode, "execution")
+	}
+	if in.MaxTurns == nil || *in.MaxTurns != 10 {
+		t.Errorf("MaxTurns = %v, want *10", in.MaxTurns)
+	}
+	if in.Provider == nil {
+		t.Fatal("expected Provider to be set")
+	}
+	if in.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want %q", in.Provider.Type, "openai-responses")
+	}
+	if in.Provider.APIKeyRef != "secret://OPENAI_KEY" {
+		t.Errorf("Provider.APIKeyRef = %q, want %q", in.Provider.APIKeyRef, "secret://OPENAI_KEY")
+	}
+	if in.Provider.BaseURL != "https://example/v1" {
+		t.Errorf("Provider.BaseURL = %q, want %q", in.Provider.BaseURL, "https://example/v1")
+	}
+	if in.ModelRouter == nil {
+		t.Fatal("expected ModelRouter to be set")
+	}
+	if in.ModelRouter.Type != "static" || in.ModelRouter.Model != "gpt-5.4-nano" {
+		t.Errorf("ModelRouter = %#v, want type=static model=gpt-5.4-nano", in.ModelRouter)
+	}
+}
+
+// TestLoadSuiteHCL_RunConfigOverridesPerTask asserts the per-task
+// override block decodes into EvalTask.RunConfigOverrides with the
+// fields the author set, and is independent of the suite-level
+// baseline (the merging is the runner's responsibility in chunk B).
+func TestLoadSuiteHCL_RunConfigOverridesPerTask(t *testing.T) {
+	src := `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    run_config_overrides {
+      max_turns = 4
+      provider {
+        type        = "anthropic"
+        api_key_ref = "secret://ANTHROPIC_KEY"
+      }
+    }
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "task-overrides.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig != nil {
+		t.Errorf("suite RunConfig = %#v, want nil", got.RunConfig)
+	}
+	tov := got.Tasks[0].RunConfigOverrides
+	if tov == nil {
+		t.Fatal("expected per-task RunConfigOverrides to be set")
+	}
+	if tov.MaxTurns == nil || *tov.MaxTurns != 4 {
+		t.Errorf("MaxTurns = %v, want *4", tov.MaxTurns)
+	}
+	if tov.Provider == nil {
+		t.Fatal("expected Provider override")
+	}
+	if tov.Provider.Type != "anthropic" {
+		t.Errorf("Provider.Type = %q, want %q", tov.Provider.Type, "anthropic")
+	}
+	if tov.Provider.APIKeyRef != "secret://ANTHROPIC_KEY" {
+		t.Errorf("Provider.APIKeyRef = %q, want %q", tov.Provider.APIKeyRef, "secret://ANTHROPIC_KEY")
+	}
+}
+
+// TestLoadSuiteHCL_RunConfigSourcesMutuallyExclusive pins the contract
+// that a suite cannot set both `run_config_file` and a `run_config {}`
+// block. The error must name both sources so authors can find the
+// conflict without re-reading the docs.
+func TestLoadSuiteHCL_RunConfigSourcesMutuallyExclusive(t *testing.T) {
+	src := `
+suite "s" {
+  run_config_file = "configs/base.json"
+  run_config {
+    mode = "execution"
+  }
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "both-sources.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatal("expected error for mutually exclusive run-config sources")
+	}
+	for _, frag := range []string{"run_config_file", "run_config block", "mutually exclusive"} {
+		if !strings.Contains(err.Error(), frag) {
+			t.Fatalf("error = %q, want it to mention %q", err.Error(), frag)
+		}
+	}
+}
+
+// TestLoadSuiteHCL_BackwardsCompatNoRunConfig confirms that a suite
+// authored before this issue (no run_config_* fields anywhere) decodes
+// with RunConfig == nil at the suite level and on every task. This is
+// the contract that lets existing suites continue to work unchanged.
+func TestLoadSuiteHCL_BackwardsCompatNoRunConfig(t *testing.T) {
+	hclPath := filepath.Join("testdata", "sample.hcl")
+	got, err := LoadSuiteHCL(hclPath)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig != nil {
+		t.Errorf("RunConfig = %#v, want nil for legacy suite", got.RunConfig)
+	}
+	for _, task := range got.Tasks {
+		if task.RunConfigOverrides != nil {
+			t.Errorf("task %q RunConfigOverrides = %#v, want nil", task.ID, task.RunConfigOverrides)
+		}
+	}
+}
+
+// TestLoadSuiteHCL_ExistingSuitesStillParse exercises the production
+// suites checked in under eval/suites/ to confirm the grammar
+// extension hasn't regressed their loadability. Neither suite uses
+// the new run-config surface yet, so this is a pure backwards-compat
+// pin.
+func TestLoadSuiteHCL_ExistingSuitesStillParse(t *testing.T) {
+	cases := []string{
+		"../suites/guardrail.hcl",
+		"../suites/openai-responses-empty-tool-output.hcl",
+	}
+	for _, p := range cases {
+		t.Run(p, func(t *testing.T) {
+			if _, err := os.Stat(p); err != nil {
+				t.Skipf("suite %s not present: %v", p, err)
+			}
+			suite, err := LoadSuiteHCL(p)
+			if err != nil {
+				t.Fatalf("LoadSuiteHCL(%s): %v", p, err)
+			}
+			if suite.ID == "" {
+				t.Fatalf("LoadSuiteHCL(%s) returned suite with empty ID", p)
+			}
+			if suite.RunConfig != nil {
+				t.Errorf("suite %s RunConfig = %#v, want nil (legacy)", p, suite.RunConfig)
+			}
+		})
+	}
+}
+
 func writeTemp(t *testing.T, name, content string) string {
 	t.Helper()
 	dir := t.TempDir()
