@@ -220,6 +220,12 @@ type harnessCLIOptions struct {
 	// script that knows whether the artifact is load-bearing.
 	WorkspaceExportTo       string
 	WorkspaceExportRequired bool
+
+	// SubAgentMaxParallel sets the parallel-dispatch fan-out (issue #184).
+	// Zero defers to the library default (DefaultSubAgentMaxParallel) by
+	// leaving config.SubAgent nil so the loop reads the effective value
+	// via EffectiveSubAgentMaxParallel.
+	SubAgentMaxParallel int
 }
 
 // buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
@@ -428,6 +434,14 @@ func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 	// matching the partial-override pattern used by GuardRail above.
 	if err := applyProviderRetryOverrides(&config.Provider, opts); err != nil {
 		return nil, err
+	}
+
+	// Parallel-dispatch knob (issue #184). Only construct the sub-config
+	// when the operator opted in; leaving it nil lets the loop reach for
+	// types.DefaultSubAgentMaxParallel via EffectiveSubAgentMaxParallel
+	// without persisting an opinion that the operator did not voice.
+	if opts.SubAgentMaxParallel > 0 {
+		config.SubAgent = &types.SubAgentConfig{MaxParallel: opts.SubAgentMaxParallel}
 	}
 
 	applyModeDefaults(config)
@@ -707,6 +721,12 @@ func init() {
 	// types.ValidateRunConfig which already accepts only gs:// URIs.
 	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at end-of-run (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
 	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
+
+	// Parallel sub-agent dispatch (issue #184). Default 0 means "use the
+	// library default" so a flag-only run without --sub-agent-max-parallel
+	// leaves config.SubAgent nil and the loop reads
+	// types.DefaultSubAgentMaxParallel via EffectiveSubAgentMaxParallel.
+	f.Int("sub-agent-max-parallel", 0, "Maximum number of async tool calls dispatched concurrently in a single turn. Range: 1-16. 0 uses the library default (4).")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -1023,6 +1043,22 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		cfg.Executor.WorkspaceExportTo, _ = f.GetString("export-workspace-to")
 	}
 
+	// Parallel sub-agent dispatch (issue #184). Explicit zero clears
+	// the field so the loop falls back to DefaultSubAgentMaxParallel;
+	// any positive value pins MaxParallel on cfg.SubAgent without
+	// disturbing other fields a future revision might introduce.
+	if changed("sub-agent-max-parallel") {
+		mp, _ := f.GetInt("sub-agent-max-parallel")
+		if mp > 0 {
+			if cfg.SubAgent == nil {
+				cfg.SubAgent = &types.SubAgentConfig{}
+			}
+			cfg.SubAgent.MaxParallel = mp
+		} else {
+			cfg.SubAgent = nil
+		}
+	}
+
 	// Provider retry policy (issue #197). Each flag overrides its slot
 	// on cfg.Provider.Retry independently so an operator can pin a
 	// single value (e.g. just --provider-retry-max-attempts=5) without
@@ -1230,6 +1266,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	providerRetryWallClockBudget, _ := f.GetDuration("provider-retry-wall-clock")
 	workspaceExportTo, _ := f.GetString("export-workspace-to")
 	workspaceExportRequired, _ := f.GetBool("export-workspace-required")
+	subAgentMaxParallel, _ := f.GetInt("sub-agent-max-parallel")
 
 	var queryParams map[string]string
 	for _, entry := range queryParamRaw {
@@ -1304,6 +1341,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
 		WorkspaceExportTo:            workspaceExportTo,
 		WorkspaceExportRequired:      workspaceExportRequired,
+		SubAgentMaxParallel:          subAgentMaxParallel,
 	})
 	if err != nil {
 		return err

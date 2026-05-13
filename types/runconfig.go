@@ -45,6 +45,17 @@ const (
 	maxProviderRetryMaxAttempts       = 5
 	maxProviderRetryMaxDelayMs        = 60000
 	maxProviderRetryWallClockBudgetMs = 300000
+
+	// DefaultSubAgentMaxParallel is the fan-out applied when SubAgentConfig
+	// is omitted or MaxParallel is zero. Chosen as a balance between latency
+	// and over-subscription on the deep-research multi-step-synthesis tier.
+	DefaultSubAgentMaxParallel = 4
+
+	// MaxSubAgentMaxParallel is the hard ceiling on SubAgentConfig.MaxParallel
+	// enforced by ValidateRunConfig. Caps runaway concurrency so a misconfigured
+	// run cannot saturate the provider/transport beyond what the rest of the
+	// harness is sized for.
+	MaxSubAgentMaxParallel = 16
 )
 
 // RunConfig fully describes a single harness run. It is the composition root:
@@ -144,6 +155,16 @@ type RunConfig struct {
 	// explode. When unset the resource builder falls back to environment
 	// variables and finally to safe defaults ("local" / "stirrup").
 	Observability ObservabilityConfig `json:"observability,omitempty"`
+
+	// SubAgent tunes the async-tool dispatch loop. Nil (or a zero
+	// MaxParallel) selects DefaultSubAgentMaxParallel; see
+	// EffectiveSubAgentMaxParallel for the resolution helper used by the
+	// loop. The field is a pointer so an absent value on the wire is
+	// distinguishable from an explicit zero — both are legal and resolve
+	// to the default, but keeping the distinction lets future fields
+	// (per-tool overrides, semaphore strategy) land without a breaking
+	// change.
+	SubAgent *SubAgentConfig `json:"subAgent,omitempty"`
 }
 
 // ObservabilityConfig carries operator-supplied labels that are promoted to
@@ -208,6 +229,17 @@ func (rc *RunConfig) DynamicContextValues() map[string]string {
 		out[k] = e.Value
 	}
 	return out
+}
+
+// EffectiveSubAgentMaxParallel returns the fan-out the async-tool dispatch
+// loop should apply. Returns DefaultSubAgentMaxParallel when SubAgent is
+// nil or MaxParallel is zero; otherwise returns MaxParallel verbatim
+// (ValidateRunConfig has already bounded it to [1, MaxSubAgentMaxParallel]).
+func (rc *RunConfig) EffectiveSubAgentMaxParallel() int {
+	if rc == nil || rc.SubAgent == nil || rc.SubAgent.MaxParallel == 0 {
+		return DefaultSubAgentMaxParallel
+	}
+	return rc.SubAgent.MaxParallel
 }
 
 // RuleOfTwoConfig configures the Rule-of-Two structural invariant. The
@@ -702,6 +734,16 @@ type ResourceLimits struct {
 	MemoryMB int     `json:"memoryMb"`
 	DiskMB   int     `json:"diskMb"`
 	PIDs     int     `json:"pids"`
+}
+
+// SubAgentConfig tunes the parallel-dispatch sub-agent loop. The loop fans
+// out async tool calls emitted within a single assistant turn under a
+// semaphore so a multi-worker deep-research query does not serialise on
+// the slowest worker. MaxParallel == 0 (or a nil SubAgent) resolves to
+// DefaultSubAgentMaxParallel via EffectiveSubAgentMaxParallel; values
+// outside [1, MaxSubAgentMaxParallel] are rejected by ValidateRunConfig.
+type SubAgentConfig struct {
+	MaxParallel int `json:"maxParallel,omitempty"`
 }
 
 // EditStrategyConfig selects the edit strategy implementation.
@@ -1462,6 +1504,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateCodeScannerConfig(config.CodeScanner, &errs)
 	validateGuardRailConfig(config.GuardRail, "guardRail", false, &errs)
 	validateObservabilityConfig(config.Observability, &errs)
+	validateSubAgentConfig(config.SubAgent, &errs)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
@@ -1786,6 +1829,21 @@ func validateCodeScannerConfig(cfg *CodeScannerConfig, errs *[]string) {
 				*errs = append(*errs, fmt.Sprintf("codeScanner.scanners[%d] %q is not a valid scanner type", i, name))
 			}
 		}
+	}
+}
+
+// validateSubAgentConfig bounds SubAgent.MaxParallel to the hard ceiling
+// MaxSubAgentMaxParallel. A nil SubAgent is legal — the loop reads the
+// effective value via EffectiveSubAgentMaxParallel and falls back to
+// DefaultSubAgentMaxParallel. An explicit zero is also legal and resolves
+// to the default, so unmarshalled wire payloads with an empty SubAgent
+// sub-message survive validation.
+func validateSubAgentConfig(cfg *SubAgentConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if cfg.MaxParallel < 0 || cfg.MaxParallel > MaxSubAgentMaxParallel {
+		*errs = append(*errs, fmt.Sprintf("subAgent.maxParallel must be between 1 and %d", MaxSubAgentMaxParallel))
 	}
 }
 
