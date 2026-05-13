@@ -693,6 +693,82 @@ func spanNames(spans []tracetest.SpanStub) []string {
 	return names
 }
 
+// TestParallelDispatch_StallTrips_ClosesRemainingSpans pins the Phase-3
+// stall-tail span-close loop in planAndDispatch: when stall trips at
+// index i mid-iteration, every plan[j].span for j > i must have End()
+// called so OTel spans for already-dispatched async calls beyond the
+// stall point do not leak.
+//
+// The stall threshold is 3 identical calls. To exercise the cleanup
+// branch we need stall to trip at index i < len(plan)-1; with four
+// identical inputs and MaxParallel=4, Phase 2 opens spans for all four
+// and stall trips at i=2, leaving j=3's span open without the close
+// loop. The test asserts all four exporter spans have a non-zero
+// EndTime.
+func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	tr := newAsyncTestTransport()
+	loop := buildParallelDispatchLoop(t, tr, asyncEchoTool())
+	loop.Tracer = tp.Tracer("test")
+	config := configWithMaxParallel(4)
+
+	// Four identical name+input async calls so stall trips at index 2
+	// (the third identical call), leaving index 3's span as a
+	// "remaining" span the cleanup branch must close.
+	const n = 4
+	sameInput := json.RawMessage(`{"k":"v"}`)
+	calls := make([]types.ToolCall, n)
+	for i := 0; i < n; i++ {
+		calls[i] = types.ToolCall{
+			ID:    fmt.Sprintf("tc_stall_%d", i),
+			Name:  "async_echo",
+			Input: sameInput,
+		}
+	}
+	// Fire responses for every call so Phase 2 completes — only then
+	// does Phase 3 iterate, observe the stall outcome at i=2, and run
+	// the cleanup loop over j=3.
+	for i := 0; i < n; i++ {
+		i := i
+		go fireResponseWhenEmitted(t, tr, calls[i].ID, 20*time.Millisecond,
+			fmt.Sprintf("result-%d", i))
+	}
+
+	results, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
+	if outcome != "stalled" {
+		t.Fatalf("expected outcome 'stalled', got %q", outcome)
+	}
+	// Phase 3 returns toolResults[:i+1] on stall; only the first three
+	// indices were observed by the trace/transport/stall pipeline.
+	if len(results) != 3 {
+		t.Fatalf("expected 3 truncated results, got %d", len(results))
+	}
+
+	spans := exporter.GetSpans()
+	var toolSpans []tracetest.SpanStub
+	for _, s := range spans {
+		if s.Name == "tool.async_echo" {
+			toolSpans = append(toolSpans, s)
+		}
+	}
+	if len(toolSpans) != n {
+		t.Fatalf("expected %d tool.async_echo spans (one per dispatched call), got %d (names=%v)",
+			n, len(toolSpans), spanNames(spans))
+	}
+	// Every span must be closed: tracetest.SpanStub only appears in
+	// GetSpans() after End() has fired, but defensively assert
+	// EndTime is set to catch any future regression where exporter
+	// semantics shift.
+	for i, s := range toolSpans {
+		if s.EndTime.IsZero() {
+			t.Errorf("tool span %d has zero EndTime — stall-tail cleanup did not close it", i)
+		}
+	}
+}
+
 // TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace pins the R-5
 // invariant: the PhasePreTool guard's adversary-influenceable Reason
 // string is scrubbed by security.Scrub before it lands on the trace

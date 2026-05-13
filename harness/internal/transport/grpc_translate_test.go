@@ -625,3 +625,25 @@ func TestRunConfigFromProto_ProviderRetryConfigPreserved(t *testing.T) {
 		}
 	})
 }
+
+// TestRunConfigFromProto_ToolDispatchMaxParallelPreserved guards the
+// translate hop that copies tool_dispatch.max_parallel from the wire
+// format into types.RunConfig.ToolDispatch.MaxParallel (issue #184).
+// The miss-pattern flagged by issues #117 and #118 is "new
+// grpc_translate.go field added without a round-trip test then later
+// drops on the floor"; this test pins the field so a future field
+// reshuffle cannot silently regress the dispatch knob.
+func TestRunConfigFromProto_ToolDispatchMaxParallelPreserved(t *testing.T) {
+	pc := &pb.RunConfig{
+		ToolDispatch: &pb.ToolDispatchConfig{MaxParallel: 8},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.ToolDispatch == nil {
+		t.Fatal("ToolDispatch sub-config dropped: got nil, want populated")
+	}
+	if rc.ToolDispatch.MaxParallel != 8 {
+		t.Errorf("ToolDispatch.MaxParallel: got %d, want 8", rc.ToolDispatch.MaxParallel)
+	}
+}

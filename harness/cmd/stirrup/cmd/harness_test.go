@@ -636,6 +636,10 @@ func newTestHarnessCommand() *cobra.Command {
 	// --export-workspace-to.
 	f.String("export-workspace-to", "", "")
 	f.Bool("export-workspace-required", false, "")
+	// Parallel async-tool dispatch flag (issue #184). Registered here so
+	// TestApplyOverrides_MaxToolParallel* tests can exercise the override
+	// path.
+	f.Int("max-tool-parallel", 0, "")
 	return cmd
 }
 
@@ -3910,5 +3914,50 @@ func TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough(t *testing.T) {
 	}
 	if cfg.Executor.WorkspaceExportTo != "gs://my-bucket/runs/abc/workspace.tar.gz" {
 		t.Errorf("WorkspaceExportTo did not flow through to Executor: got %q", cfg.Executor.WorkspaceExportTo)
+	}
+}
+
+// TestApplyOverrides_ToolDispatchMaxParallelSetsField pins that
+// --max-tool-parallel=N (with N > 0) populates cfg.ToolDispatch to
+// {MaxParallel: N}. Mirrors the "explicit flag wins" half of the
+// override precedence pattern used elsewhere in this file (issue #184).
+func TestApplyOverrides_ToolDispatchMaxParallelSetsField(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	if err := cmd.Flags().Set("max-tool-parallel", "8"); err != nil {
+		t.Fatalf("set max-tool-parallel: %v", err)
+	}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.ToolDispatch == nil {
+		t.Fatal("--max-tool-parallel=8 should populate cfg.ToolDispatch, got nil")
+	}
+	if cfg.ToolDispatch.MaxParallel != 8 {
+		t.Errorf("cfg.ToolDispatch.MaxParallel = %d, want 8", cfg.ToolDispatch.MaxParallel)
+	}
+}
+
+// TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride pins the
+// "default flag does not clobber file value" half of the precedence
+// pattern: a config-file ToolDispatch value must survive when the user
+// has not passed --max-tool-parallel (issue #184).
+func TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: 8}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.ToolDispatch == nil {
+		t.Fatal("ToolDispatch from file should survive default flag, got nil")
+	}
+	if cfg.ToolDispatch.MaxParallel != 8 {
+		t.Errorf("file ToolDispatch.MaxParallel should survive default flag, got %d, want 8",
+			cfg.ToolDispatch.MaxParallel)
 	}
 }
