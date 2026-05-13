@@ -385,10 +385,17 @@ message RunConfig {
   // model) stay span/instrument-level so metric series do not explode.
   ObservabilityConfig observability = 29;
 
-  // Optional. Tunes the async-tool dispatch loop (parallel sub-agent
-  // fan-out). When unset, the harness uses the library default of 4
-  // concurrent calls per turn. See SubAgentConfig.max_parallel.
-  SubAgentConfig sub_agent = 30;
+  // Optional. Tunes the async-tool dispatch loop: how many AsyncHandler
+  // tool calls the harness fans out concurrently within a single
+  // assistant turn. The knob governs ALL async-capable tools (today
+  // spawn_agent; future MCP/web-fetch additions inherit it), not just
+  // the spawn_agent sub-agent path the feature originally targeted.
+  //
+  // Zero max_parallel — or an absent sub-message — resolves to the
+  // library default (currently 4 concurrent calls per turn). Neither
+  // means "disable concurrency". The hard ceiling is 16; values
+  // outside [0, 16] are rejected by ValidateRunConfig.
+  ToolDispatchConfig tool_dispatch = 30;
 
 }
 
@@ -416,11 +423,12 @@ message DynamicContextValue {
   bool sensitive = 2;
 }
 
-// SubAgentConfig tunes the parallel-dispatch sub-agent loop. The loop
-// fans out async tool calls emitted within a single assistant turn
-// under a semaphore so a multi-worker query does not serialise on the
-// slowest worker.
-message SubAgentConfig {
+// ToolDispatchConfig tunes the parallel async-tool dispatch loop. The
+// loop fans out async tool calls (any AsyncHandler-backed tool: today
+// spawn_agent, in future MCP / web-fetch / etc.) emitted within a
+// single assistant turn under a semaphore so a multi-worker query does
+// not serialise on the slowest worker.
+message ToolDispatchConfig {
   // Optional. Maximum number of async tool calls dispatched concurrently
   // in a single turn. Range: 1-16. Default: 4. Zero (or an absent
   // sub-message) resolves to the default at the harness; values outside

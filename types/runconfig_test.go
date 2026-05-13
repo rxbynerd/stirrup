@@ -4528,17 +4528,17 @@ func TestValidateRunConfig_APIKeyRefMustBeSecretReference(t *testing.T) {
 	})
 }
 
-func TestValidateRunConfig_SubAgentRejectsOutOfRange(t *testing.T) {
-	for _, n := range []int{-1, MaxSubAgentMaxParallel + 1, 17_000} {
+func TestValidateRunConfig_ToolDispatchRejectsOutOfRange(t *testing.T) {
+	for _, n := range []int{-1, MaxToolDispatchMaxParallel + 1, 17_000} {
 		t.Run(fmt.Sprintf("max_parallel=%d", n), func(t *testing.T) {
 			c := validConfig()
-			c.SubAgent = &SubAgentConfig{MaxParallel: n}
+			c.ToolDispatch = &ToolDispatchConfig{MaxParallel: n}
 			err := ValidateRunConfig(c)
 			if err == nil {
-				t.Fatalf("expected error for subAgent.maxParallel=%d", n)
+				t.Fatalf("expected error for toolDispatch.maxParallel=%d", n)
 			}
-			if !strings.Contains(err.Error(), "subAgent.maxParallel must be between 1 and") {
-				t.Errorf("expected error to mention subAgent.maxParallel range, got: %v", err)
+			if !strings.Contains(err.Error(), "toolDispatch.maxParallel must be between 1 and") {
+				t.Errorf("expected error to mention toolDispatch.maxParallel range, got: %v", err)
 			}
 		})
 	}

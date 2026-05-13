@@ -578,10 +578,17 @@ type RunConfig struct {
 	// belong here — high-cardinality identifiers (run_id, provider,
 	// model) stay span/instrument-level so metric series do not explode.
 	Observability *ObservabilityConfig `protobuf:"bytes,29,opt,name=observability,proto3" json:"observability,omitempty"`
-	// Optional. Tunes the async-tool dispatch loop (parallel sub-agent
-	// fan-out). When unset, the harness uses the library default of 4
-	// concurrent calls per turn. See SubAgentConfig.max_parallel.
-	SubAgent      *SubAgentConfig `protobuf:"bytes,30,opt,name=sub_agent,json=subAgent,proto3" json:"sub_agent,omitempty"`
+	// Optional. Tunes the async-tool dispatch loop: how many AsyncHandler
+	// tool calls the harness fans out concurrently within a single
+	// assistant turn. The knob governs ALL async-capable tools (today
+	// spawn_agent; future MCP/web-fetch additions inherit it), not just
+	// the spawn_agent sub-agent path the feature originally targeted.
+	//
+	// Zero max_parallel — or an absent sub-message — resolves to the
+	// library default (currently 4 concurrent calls per turn). Neither
+	// means "disable concurrency". The hard ceiling is 16; values
+	// outside [0, 16] are rejected by ValidateRunConfig.
+	ToolDispatch  *ToolDispatchConfig `protobuf:"bytes,30,opt,name=tool_dispatch,json=toolDispatch,proto3" json:"tool_dispatch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -819,9 +826,9 @@ func (x *RunConfig) GetObservability() *ObservabilityConfig {
 	return nil
 }
 
-func (x *RunConfig) GetSubAgent() *SubAgentConfig {
+func (x *RunConfig) GetToolDispatch() *ToolDispatchConfig {
 	if x != nil {
-		return x.SubAgent
+		return x.ToolDispatch
 	}
 	return nil
 }
@@ -896,11 +903,12 @@ func (x *DynamicContextValue) GetSensitive() bool {
 	return false
 }
 
-// SubAgentConfig tunes the parallel-dispatch sub-agent loop. The loop
-// fans out async tool calls emitted within a single assistant turn
-// under a semaphore so a multi-worker query does not serialise on the
-// slowest worker.
-type SubAgentConfig struct {
+// ToolDispatchConfig tunes the parallel async-tool dispatch loop. The
+// loop fans out async tool calls (any AsyncHandler-backed tool: today
+// spawn_agent, in future MCP / web-fetch / etc.) emitted within a
+// single assistant turn under a semaphore so a multi-worker query does
+// not serialise on the slowest worker.
+type ToolDispatchConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional. Maximum number of async tool calls dispatched concurrently
 	// in a single turn. Range: 1-16. Default: 4. Zero (or an absent
@@ -911,20 +919,20 @@ type SubAgentConfig struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *SubAgentConfig) Reset() {
-	*x = SubAgentConfig{}
+func (x *ToolDispatchConfig) Reset() {
+	*x = ToolDispatchConfig{}
 	mi := &file_harness_v1_harness_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *SubAgentConfig) String() string {
+func (x *ToolDispatchConfig) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*SubAgentConfig) ProtoMessage() {}
+func (*ToolDispatchConfig) ProtoMessage() {}
 
-func (x *SubAgentConfig) ProtoReflect() protoreflect.Message {
+func (x *ToolDispatchConfig) ProtoReflect() protoreflect.Message {
 	mi := &file_harness_v1_harness_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -936,12 +944,12 @@ func (x *SubAgentConfig) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use SubAgentConfig.ProtoReflect.Descriptor instead.
-func (*SubAgentConfig) Descriptor() ([]byte, []int) {
+// Deprecated: Use ToolDispatchConfig.ProtoReflect.Descriptor instead.
+func (*ToolDispatchConfig) Descriptor() ([]byte, []int) {
 	return file_harness_v1_harness_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *SubAgentConfig) GetMaxParallel() int32 {
+func (x *ToolDispatchConfig) GetMaxParallel() int32 {
 	if x != nil {
 		return x.MaxParallel
 	}
@@ -3393,7 +3401,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\acontent\x18\a \x01(\tR\acontent\x12;\n" +
 	"\bis_error\x18\b \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aisError\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xa4\x10\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xb0\x10\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -3425,8 +3433,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0esensitive_data\x18\x1b \x01(\bH\x05R\rsensitiveData\x88\x01\x01\x12B\n" +
 	"\n" +
 	"guard_rail\x18\x1c \x01(\v2#.stirrup.harness.v1.GuardRailConfigR\tguardRail\x12M\n" +
-	"\robservability\x18\x1d \x01(\v2'.stirrup.harness.v1.ObservabilityConfigR\robservability\x12?\n" +
-	"\tsub_agent\x18\x1e \x01(\v2\".stirrup.harness.v1.SubAgentConfigR\bsubAgent\x1aj\n" +
+	"\robservability\x18\x1d \x01(\v2'.stirrup.harness.v1.ObservabilityConfigR\robservability\x12K\n" +
+	"\rtool_dispatch\x18\x1e \x01(\v2&.stirrup.harness.v1.ToolDispatchConfigR\ftoolDispatch\x1aj\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12=\n" +
 	"\x05value\x18\x02 \x01(\v2'.stirrup.harness.v1.DynamicContextValueR\x05value:\x028\x01\x1a`\n" +
@@ -3442,8 +3450,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0f_sensitive_data\"I\n" +
 	"\x13DynamicContextValue\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12\x1c\n" +
-	"\tsensitive\x18\x02 \x01(\bR\tsensitive\"3\n" +
-	"\x0eSubAgentConfig\x12!\n" +
+	"\tsensitive\x18\x02 \x01(\bR\tsensitive\"7\n" +
+	"\x12ToolDispatchConfig\x12!\n" +
 	"\fmax_parallel\x18\x01 \x01(\x05R\vmaxParallel\"<\n" +
 	"\x0fRuleOfTwoConfig\x12\x1d\n" +
 	"\aenforce\x18\x01 \x01(\bH\x00R\aenforce\x88\x01\x01B\n" +
@@ -3651,7 +3659,7 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	(*OptionalBool)(nil),           // 2: stirrup.harness.v1.OptionalBool
 	(*RunConfig)(nil),              // 3: stirrup.harness.v1.RunConfig
 	(*DynamicContextValue)(nil),    // 4: stirrup.harness.v1.DynamicContextValue
-	(*SubAgentConfig)(nil),         // 5: stirrup.harness.v1.SubAgentConfig
+	(*ToolDispatchConfig)(nil),     // 5: stirrup.harness.v1.ToolDispatchConfig
 	(*RuleOfTwoConfig)(nil),        // 6: stirrup.harness.v1.RuleOfTwoConfig
 	(*CodeScannerConfig)(nil),      // 7: stirrup.harness.v1.CodeScannerConfig
 	(*GuardRailConfig)(nil),        // 8: stirrup.harness.v1.GuardRailConfig
@@ -3705,7 +3713,7 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	7,  // 18: stirrup.harness.v1.RunConfig.code_scanner:type_name -> stirrup.harness.v1.CodeScannerConfig
 	8,  // 19: stirrup.harness.v1.RunConfig.guard_rail:type_name -> stirrup.harness.v1.GuardRailConfig
 	9,  // 20: stirrup.harness.v1.RunConfig.observability:type_name -> stirrup.harness.v1.ObservabilityConfig
-	5,  // 21: stirrup.harness.v1.RunConfig.sub_agent:type_name -> stirrup.harness.v1.SubAgentConfig
+	5,  // 21: stirrup.harness.v1.RunConfig.tool_dispatch:type_name -> stirrup.harness.v1.ToolDispatchConfig
 	8,  // 22: stirrup.harness.v1.GuardRailConfig.stages:type_name -> stirrup.harness.v1.GuardRailConfig
 	32, // 23: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
 	12, // 24: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig

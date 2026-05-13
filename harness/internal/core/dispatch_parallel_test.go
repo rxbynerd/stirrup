@@ -58,14 +58,15 @@ func buildParallelDispatchLoop(t *testing.T, tr transport.Transport, tools ...*t
 	}
 }
 
-// configWithMaxParallel returns a minimal RunConfig with the SubAgent
-// MaxParallel knob set. Validation is not invoked here — these are unit
-// tests of planAndDispatch — so the helper sets the field directly.
+// configWithMaxParallel returns a minimal RunConfig with the
+// ToolDispatch MaxParallel knob set. Validation is not invoked here —
+// these are unit tests of planAndDispatch — so the helper sets the
+// field directly.
 func configWithMaxParallel(n int) *types.RunConfig {
 	return &types.RunConfig{
-		RunID:    "test-dispatch",
-		Mode:     "execution",
-		SubAgent: &types.SubAgentConfig{MaxParallel: n},
+		RunID:        "test-dispatch",
+		Mode:         "execution",
+		ToolDispatch: &types.ToolDispatchConfig{MaxParallel: n},
 	}
 }
 

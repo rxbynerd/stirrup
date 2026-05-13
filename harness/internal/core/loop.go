@@ -750,7 +750,7 @@ func (l *AgenticLoop) runInnerLoop(
 		// Dispatch tool calls. Sync calls run inline in assistant-message
 		// order; async calls (those with an AsyncHandler, e.g. deep-research
 		// spawn_agent invocations) fan out under a semaphore sized to
-		// config.EffectiveSubAgentMaxParallel(). planAndDispatch preserves
+		// config.EffectiveToolDispatchMaxParallel(). planAndDispatch preserves
 		// result order, stall-detector ordering, per-call timeouts, and ctx
 		// cancellation propagation; see harness/internal/core/dispatch.go.
 		toolResults, stallOutcome := l.planAndDispatch(ctx, config, toolCalls, stall)

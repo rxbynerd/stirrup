@@ -36,7 +36,7 @@ type pendingCall struct {
 // planAndDispatch executes the tool calls produced by one assistant turn,
 // preserving the side-effect ordering of the sequential implementation.
 // Sync calls run inline in assistant-message order; async calls fan out
-// under a bounded semaphore sized to cfg.EffectiveSubAgentMaxParallel().
+// under a bounded semaphore sized to cfg.EffectiveToolDispatchMaxParallel().
 //
 // Returned values:
 //   - toolResults: results indexed by original call order (always len(toolCalls))
@@ -138,7 +138,7 @@ func (l *AgenticLoop) planAndDispatch(
 	// be >0 and <=16), but defend against zero/negative here as well —
 	// a misconstructed RunConfig in tests would otherwise deadlock.
 	if len(asyncIndices) > 0 {
-		maxParallel := config.EffectiveSubAgentMaxParallel()
+		maxParallel := config.EffectiveToolDispatchMaxParallel()
 		if maxParallel < 1 {
 			maxParallel = 1
 		}

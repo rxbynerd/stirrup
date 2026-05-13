@@ -209,15 +209,15 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			ServiceNamespace: pc.Observability.GetServiceNamespace(),
 		}
 	}
-	if pc.SubAgent != nil {
+	if pc.ToolDispatch != nil {
 		// Preserve the unset/zero distinction the validator depends on:
 		// an empty proto sub-message carries MaxParallel == 0, which is
-		// legal and resolves to DefaultSubAgentMaxParallel via
-		// EffectiveSubAgentMaxParallel. Constructing the internal struct
-		// only when the proto sub-message is present keeps a nil
-		// types.RunConfig.SubAgent wire-distinguishable from an explicit
-		// SubAgentConfig{}.
-		rc.SubAgent = &types.SubAgentConfig{MaxParallel: int(pc.SubAgent.GetMaxParallel())}
+		// legal and resolves to DefaultToolDispatchMaxParallel via
+		// EffectiveToolDispatchMaxParallel. Constructing the internal
+		// struct only when the proto sub-message is present keeps a nil
+		// types.RunConfig.ToolDispatch wire-distinguishable from an
+		// explicit ToolDispatchConfig{}.
+		rc.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: int(pc.ToolDispatch.GetMaxParallel())}
 	}
 
 	rc.LogLevel = pc.LogLevel
