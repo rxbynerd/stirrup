@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.50.6
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.68.6
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1
-	github.com/cedar-policy/cedar-go v1.6.0
+	github.com/cedar-policy/cedar-go v1.6.1
 	github.com/rxbynerd/stirrup/gen v0.0.0
 	github.com/rxbynerd/stirrup/types v0.0.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
