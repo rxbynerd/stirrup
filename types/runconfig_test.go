@@ -4537,8 +4537,14 @@ func TestValidateRunConfig_ToolDispatchRejectsOutOfRange(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error for toolDispatch.maxParallel=%d", n)
 			}
-			if !strings.Contains(err.Error(), "toolDispatch.maxParallel must be between 1 and") {
-				t.Errorf("expected error to mention toolDispatch.maxParallel range, got: %v", err)
+			if !strings.Contains(err.Error(), "toolDispatch.maxParallel") {
+				t.Errorf("expected error to mention toolDispatch.maxParallel, got: %v", err)
+			}
+			// The "0 (use default)" sentinel must appear in the
+			// message so an operator knows zero is a legal value
+			// rather than another rejected boundary.
+			if !strings.Contains(err.Error(), "0 (use default)") {
+				t.Errorf("expected error to call out the accepted zero sentinel '0 (use default)', got: %v", err)
 			}
 		})
 	}

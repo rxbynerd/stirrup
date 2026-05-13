@@ -1850,7 +1850,11 @@ func validateToolDispatchConfig(cfg *ToolDispatchConfig, errs *[]string) {
 		return
 	}
 	if cfg.MaxParallel < 0 || cfg.MaxParallel > MaxToolDispatchMaxParallel {
-		*errs = append(*errs, fmt.Sprintf("toolDispatch.maxParallel must be between 1 and %d", MaxToolDispatchMaxParallel))
+		// The accepted-zero sentinel is called out in the message so an
+		// operator who hits this validation error for, say, -1 does not
+		// have to infer from "between 1 and 16" whether 0 is also
+		// rejected. Zero IS legal and resolves to the library default.
+		*errs = append(*errs, fmt.Sprintf("toolDispatch.maxParallel must be 0 (use default) or between 1 and %d", MaxToolDispatchMaxParallel))
 	}
 }
 
