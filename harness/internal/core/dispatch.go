@@ -29,7 +29,7 @@ type pendingCall struct {
 	startedAt   time.Time
 	output      string
 	success     bool
-	errorReason string // guard-deny reason for trace; never surfaced to the model
+	errorReason string // guard-deny reason; written to trace (apply security.Scrub before setting)
 	denied      bool   // PhasePreTool deny path; takes priority over (output, success)
 }
 
@@ -104,11 +104,13 @@ func (l *AgenticLoop) planAndDispatch(
 			// The user-visible tool error MUST be a fixed string:
 			// preToolDecision.Reason is adversary-influenceable
 			// (classifier-model output). The structured reason is
-			// captured separately for trace/log fields.
+			// captured separately for trace/log fields and scrubbed
+			// before it reaches them, matching the upstream_error path
+			// in types.go and the non-denial trace branch below.
 			const blockedToolMessage = "guardrail blocked tool call"
 			reason := blockedToolMessage
 			if preToolDecision != nil && preToolDecision.Reason != "" {
-				reason = blockedToolMessage + ": " + preToolDecision.Reason
+				reason = blockedToolMessage + ": " + security.Scrub(preToolDecision.Reason)
 			}
 			plan[i].denied = true
 			plan[i].output = blockedToolMessage
@@ -157,7 +159,13 @@ func (l *AgenticLoop) planAndDispatch(
 						// other in-flight goroutines are unaffected.
 						// Stable error string lets callers (and any
 						// future regression test) match on the prefix.
-						msg := fmt.Sprintf("async tool %s panic: %v", plan[idx].call.Name, r)
+						// The recovered value is scrubbed before it
+						// flows into the tool result (which reaches the
+						// model context and the transport tool_result
+						// emit) so a panic whose %v rendering captures
+						// secret-shaped fragments cannot leak.
+						msg := fmt.Sprintf("async tool %s panic: %v", plan[idx].call.Name,
+							security.Scrub(fmt.Sprintf("%v", r)))
 						plan[idx].output = msg
 						plan[idx].success = false
 						l.Logger.Error(

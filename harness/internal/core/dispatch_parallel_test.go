@@ -17,6 +17,7 @@ import (
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -27,6 +28,22 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// stubDenyGuardRail is a GuardRail that returns VerdictDeny with a
+// caller-supplied Reason for every Check. Used to drive the
+// PhasePreTool deny branch in planAndDispatch without standing up a
+// real guard adapter.
+type stubDenyGuardRail struct {
+	reason string
+}
+
+func (g *stubDenyGuardRail) Check(_ context.Context, _ guard.Input) (*guard.Decision, error) {
+	return &guard.Decision{
+		Verdict: guard.VerdictDeny,
+		Reason:  g.reason,
+		GuardID: "stub-deny",
+	}, nil
+}
 
 // buildParallelDispatchLoop is a small adjacent helper that constructs a loop
 // with multiple pre-built tools registered. buildAsyncTestLoop in
@@ -674,4 +691,55 @@ func spanNames(spans []tracetest.SpanStub) []string {
 		names[i] = s.Name
 	}
 	return names
+}
+
+// TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace pins the R-5
+// invariant: the PhasePreTool guard's adversary-influenceable Reason
+// string is scrubbed by security.Scrub before it lands on the trace
+// emitter's ToolCallTrace.ErrorReason field. Without the scrub, a
+// classifier model that echoes secret-shaped fragments from an attacker's
+// tool input back as its denial reason would leak those fragments into
+// JSONL trace files on disk and any OTLP sink.
+func TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace(t *testing.T) {
+	// sk-ant-FAKE_SECRET_SENTINEL matches the anthropic_api_key pattern
+	// (security/logscrubber.go) so Scrub will redact it. The literal
+	// "FAKE_SECRET_SENTINEL" survives only if Scrub was NOT applied —
+	// hence the assertion below.
+	const sentinel = "sk-ant-FAKE_SECRET_SENTINEL"
+
+	tr := newAsyncTestTransport()
+	loop := buildParallelDispatchLoop(t, tr, asyncEchoTool())
+	loop.GuardRail = &stubDenyGuardRail{reason: "blocked because of " + sentinel}
+	rec := &recordingTraceEmitter{}
+	loop.Trace = rec
+
+	calls := []types.ToolCall{
+		{ID: "tc_deny", Name: "async_echo", Input: json.RawMessage(`{}`)},
+	}
+
+	results, outcome := loop.planAndDispatch(context.Background(),
+		configWithMaxParallel(1), calls, &stallDetector{})
+	if outcome != "" {
+		t.Fatalf("unexpected stall outcome: %q", outcome)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Errorf("expected guard-deny to produce IsError, got success; content=%q", results[0].Content)
+	}
+
+	_, recordedCalls := rec.snapshot()
+	if len(recordedCalls) != 1 {
+		t.Fatalf("expected 1 recorded tool call, got %d", len(recordedCalls))
+	}
+	if recordedCalls[0].ErrorReason == "" {
+		t.Fatal("expected ErrorReason to be populated on guard deny")
+	}
+	if strings.Contains(recordedCalls[0].ErrorReason, "FAKE_SECRET_SENTINEL") {
+		t.Errorf("ErrorReason leaked secret-shaped fragment: %q", recordedCalls[0].ErrorReason)
+	}
+	if !strings.Contains(recordedCalls[0].ErrorReason, "[REDACTED]") {
+		t.Errorf("ErrorReason did not show evidence of scrubbing (expected [REDACTED]): %q", recordedCalls[0].ErrorReason)
+	}
 }
