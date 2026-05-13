@@ -385,6 +385,11 @@ message RunConfig {
   // model) stay span/instrument-level so metric series do not explode.
   ObservabilityConfig observability = 29;
 
+  // Optional. Tunes the async-tool dispatch loop (parallel sub-agent
+  // fan-out). When unset, the harness uses the library default of 4
+  // concurrent calls per turn. See SubAgentConfig.max_parallel.
+  SubAgentConfig sub_agent = 30;
+
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -409,6 +414,18 @@ message DynamicContextValue {
   // non-sensitive context (a public README) with sensitive context (a
   // customer record) in a single run.
   bool sensitive = 2;
+}
+
+// SubAgentConfig tunes the parallel-dispatch sub-agent loop. The loop
+// fans out async tool calls emitted within a single assistant turn
+// under a semaphore so a multi-worker query does not serialise on the
+// slowest worker.
+message SubAgentConfig {
+  // Optional. Maximum number of async tool calls dispatched concurrently
+  // in a single turn. Range: 1-16. Default: 4. Zero (or an absent
+  // sub-message) resolves to the default at the harness; values outside
+  // [1, 16] are rejected by ValidateRunConfig.
+  int32 max_parallel = 1;
 }
 
 // RuleOfTwoConfig carries the operator override for the Rule-of-Two
