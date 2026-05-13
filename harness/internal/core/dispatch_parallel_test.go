@@ -292,16 +292,26 @@ func TestParallelDispatch_MaxParallelOne_Serialises(t *testing.T) {
 // cancelled, with every in-flight call marked as an error. The wall-time
 // bound is well under DefaultAsyncToolTimeout (60s) so a hang here is
 // instantly obvious.
+//
+// Wired with an in-memory OTel exporter so this exercises the same OTel
+// configuration as TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn —
+// previous iterations of this test cleared TraceContext to dodge a real
+// bug (the trace-emitter root ctx severed run-level cancellation); that
+// fix landed in dispatch.go so the goroutine span ctx is now always
+// rooted in the cancellable run ctx.
 func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
 	tr := newAsyncTestTransport()
 	loop := buildParallelDispatchLoop(t, tr, asyncEchoTool())
-	// Clear the pre-baked TraceContext so traceCtx() falls back to the
-	// per-call ctx, matching the JSONL-trace production path. Without
-	// this, planAndDispatch derives tool spans from a background ctx and
-	// the run-ctx cancel never reaches the dispatch goroutines — the
-	// real loop wires TraceContext from the cancellable runCtx, so the
-	// test must mirror that wiring rather than the helper's default.
-	loop.TraceContext = nil
+	loop.Tracer = tp.Tracer("test")
+	// Mirror the real loop: TraceContext is the OTel emitter's root,
+	// which derives from context.Background() and is therefore NOT
+	// cancelled by the run ctx. The fix in dispatch.go separates span
+	// parentage from goroutine ctx, so cancel must still drain.
+	loop.TraceContext = context.Background()
 	config := configWithMaxParallel(3)
 
 	const n = 3

@@ -66,12 +66,20 @@ func (l *AgenticLoop) planAndDispatch(
 	for i, call := range toolCalls {
 		l.Logger.Info("tool dispatched", "tool", call.Name)
 		callStart := time.Now()
-		toolSpanCtx, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
+		// Span is parented under l.traceCtx(ctx) (the trace-emitter's root
+		// when OTel is wired) so it nests correctly in the trace backend,
+		// but the propagated span ctx is rooted in the cancellable `ctx`.
+		// Without this split, l.TraceContext = otelEmitter.RootContext()
+		// would derive from context.Background() and the dispatch
+		// goroutines below would not observe a run-level cancellation
+		// until the per-call DefaultAsyncToolTimeout (60s) expired.
+		_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
 			oteltrace.WithAttributes(
 				attribute.String("tool.name", call.Name),
 				attribute.Int("tool.input_size", len(call.Input)),
 			),
 		)
+		toolSpanCtx := oteltrace.ContextWithSpan(ctx, toolSpan)
 		plan[i] = pendingCall{
 			call:      call,
 			span:      toolSpan,
