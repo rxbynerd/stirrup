@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -110,7 +111,20 @@ func LoadSuiteHCL(path string) (types.EvalSuite, error) {
 		return types.EvalSuite{}, fmt.Errorf("expected exactly one suite block, found %d", len(root.Suites))
 	}
 
-	return convertSuite(root.Suites[0])
+	suite, err := convertSuite(root.Suites[0])
+	if err != nil {
+		return types.EvalSuite{}, err
+	}
+	// Resolve a suite-level run_config_file relative to the suite file's
+	// directory so authors can write intuitive relative paths
+	// (`configs/base.json` next to the suite) without depending on the
+	// caller's working directory. Absolute paths pass through unchanged.
+	// Done here rather than in the runner so the runner stays pure with
+	// respect to filesystem layout.
+	if suite.RunConfigFile != "" && !filepath.IsAbs(suite.RunConfigFile) {
+		suite.RunConfigFile = filepath.Join(filepath.Dir(path), suite.RunConfigFile)
+	}
+	return suite, nil
 }
 
 // rootSpec is the top level of the HCL grammar.

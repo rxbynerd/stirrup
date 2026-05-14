@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,7 +13,8 @@ import (
 // a suite-level `run_config_file = "..."` attribute populates the
 // corresponding EvalSuite field and leaves EvalSuite.RunConfig nil.
 // Tasks without per-task overrides must still have a nil
-// RunConfigOverrides.
+// RunConfigOverrides. The relative path is resolved against the suite
+// file's directory so authors can write intuitive relative paths.
 func TestLoadSuiteHCL_RunConfigFileOnly(t *testing.T) {
 	src := `
 suite "s" {
@@ -34,8 +36,9 @@ suite "s" {
 	if err != nil {
 		t.Fatalf("LoadSuiteHCL: %v", err)
 	}
-	if got.RunConfigFile != "configs/openai-base.json" {
-		t.Errorf("RunConfigFile = %q, want %q", got.RunConfigFile, "configs/openai-base.json")
+	want := filepath.Join(filepath.Dir(path), "configs/openai-base.json")
+	if got.RunConfigFile != want {
+		t.Errorf("RunConfigFile = %q, want %q", got.RunConfigFile, want)
 	}
 	if got.RunConfig != nil {
 		t.Errorf("RunConfig should be nil when only run_config_file set, got %#v", got.RunConfig)
@@ -45,6 +48,34 @@ suite "s" {
 	}
 	if got.Tasks[0].RunConfigOverrides != nil {
 		t.Errorf("task RunConfigOverrides should be nil, got %#v", got.Tasks[0].RunConfigOverrides)
+	}
+}
+
+// TestLoadSuiteHCL_RunConfigFileAbsolutePath confirms that absolute paths
+// in `run_config_file` are preserved verbatim — the relative-resolution
+// pass must only join paths that are not already absolute.
+func TestLoadSuiteHCL_RunConfigFileAbsolutePath(t *testing.T) {
+	abs := "/etc/stirrup/baseline.json"
+	src := `
+suite "s" {
+  run_config_file = "` + abs + `"
+
+  task "t1" {
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "runcfg-abs.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfigFile != abs {
+		t.Errorf("RunConfigFile = %q, want %q (absolute path should pass through)", got.RunConfigFile, abs)
 	}
 }
 
