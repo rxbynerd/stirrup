@@ -456,6 +456,89 @@ func TestBuildMergedConfig_FileBaselineWithTaskOverride(t *testing.T) {
 	}
 }
 
+// TestBuildMergedConfig_InjectsDefaultTimeoutWhenAbsent pins the
+// timeout-injection contract introduced for the suite-level inline
+// run_config flow. The HCL grammar does not surface `timeout` (it is
+// runner-owned), so a merged config originating from an inline block
+// arrives with Timeout == nil. ValidateRunConfig requires a positive
+// timeout, so without the injection both dry-run and live-run would
+// false-fail every suite using the inline shape.
+func TestBuildMergedConfig_InjectsDefaultTimeoutWhenAbsent(t *testing.T) {
+	baseline := &types.RunConfig{
+		Mode:     "execution",
+		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns: 10,
+		// Timeout intentionally left nil — emulates an inline run_config
+		// block where the HCL grammar does not expose `timeout`.
+	}
+	merged, err := buildMergedConfig(baseline, nil)
+	if err != nil {
+		t.Fatalf("buildMergedConfig: %v", err)
+	}
+	if merged == nil {
+		t.Fatal("expected non-nil merged config")
+	}
+	if merged.Timeout == nil {
+		t.Fatal("expected default Timeout to be injected, got nil")
+	}
+	if *merged.Timeout != defaultTaskTimeoutSeconds {
+		t.Errorf("Timeout = %d, want %d (default)", *merged.Timeout, defaultTaskTimeoutSeconds)
+	}
+}
+
+// TestBuildMergedConfig_PreservesExplicitTimeout confirms that a
+// Timeout already pinned by the baseline (e.g. a JSON config loaded
+// via run_config_file) survives the merge unchanged. Injecting the
+// default unconditionally would silently override a JSON baseline's
+// explicit longer timeout — exactly the kind of authoring trap the
+// new RunConfig surface is meant to close.
+func TestBuildMergedConfig_PreservesExplicitTimeout(t *testing.T) {
+	explicit := 900
+	baseline := &types.RunConfig{
+		Mode:     "execution",
+		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns: 10,
+		Timeout:  &explicit,
+	}
+	merged, err := buildMergedConfig(baseline, nil)
+	if err != nil {
+		t.Fatalf("buildMergedConfig: %v", err)
+	}
+	if merged.Timeout == nil || *merged.Timeout != 900 {
+		t.Errorf("Timeout = %v, want pointer to 900 (baseline value preserved)", merged.Timeout)
+	}
+}
+
+// TestDryRun_InlineConfigWithoutTimeoutPasses guards against the false-
+// failure regression: a suite with an inline run_config block that
+// does not set `timeout` must still pass dry-run validation. Before
+// the timeout-injection fix, ValidateRunConfig would reject every such
+// suite with "timeout is required" — the most common authoring shape
+// failing dry-run.
+func TestDryRun_InlineConfigWithoutTimeoutPasses(t *testing.T) {
+	baseline := &types.RunConfig{
+		Mode:     "execution",
+		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_API_KEY"},
+		MaxTurns: 10,
+	}
+	suite := types.EvalSuite{
+		ID:        "inline-no-timeout",
+		Tasks:     []types.EvalTask{{ID: "t1", Prompt: "p"}},
+		RunConfig: baseline,
+	}
+	result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	if result.Tasks[0].Outcome != "pass" {
+		t.Errorf("outcome = %q (error %q), want pass — inline configs without timeout should pass dry-run after injection",
+			result.Tasks[0].Outcome, result.Tasks[0].Error)
+	}
+}
+
 // TestDryRun_NoBaselineIsNoOp pins the backwards-compat contract: a
 // suite with no run_config block must still dry-run as "pass" for every
 // task, exactly as it did before this chunk.

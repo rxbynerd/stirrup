@@ -20,6 +20,13 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// defaultTaskTimeoutSeconds is the per-task timeout the runner falls back
+// to when the merged RunConfig does not pin one and on the legacy
+// invocation path. It matches the historic `--timeout 300` value the
+// runner has always supplied so suites that opt into the RunConfig
+// surface without setting `timeout = ...` keep behaving the same.
+const defaultTaskTimeoutSeconds = 300
+
 // RunConfig configures how the runner executes tasks.
 type RunConfig struct {
 	// HarnessPath is the path to the harness binary for live runs.
@@ -351,7 +358,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		if task.Mode == "" {
 			args = append(args, "--mode", "execution")
 		}
-		args = append(args, "--timeout", "300")
+		args = append(args, "--timeout", fmt.Sprintf("%d", defaultTaskTimeoutSeconds))
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
@@ -507,6 +514,16 @@ func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 // not opted into the RunConfig surface, so the legacy invocation path
 // stays in effect. The baseline argument is cloned before the overlay is
 // applied so callers can reuse it across tasks.
+//
+// types.ValidateRunConfig requires Timeout to be set and positive, but
+// `timeout` is not surfaced in the HCL grammar (it is runner-owned at
+// the eval layer). Without an injection here, every suite whose merged
+// config originates from an inline run_config block — the common case
+// — would false-fail both dry-run validation and the live-run pre-
+// flight check with a misleading "timeout is required" error. Inject
+// the runner's default Timeout when the merged config does not already
+// pin one; a value already present in a JSON baseline (loaded via
+// run_config_file) or set by an overlay survives unchanged.
 func buildMergedConfig(baseline *types.RunConfig, overlay *types.RunConfigOverrides) (*types.RunConfig, error) {
 	if baseline == nil {
 		return nil, nil
@@ -522,7 +539,12 @@ func buildMergedConfig(baseline *types.RunConfig, overlay *types.RunConfigOverri
 	if err := json.Unmarshal(data, clone); err != nil {
 		return nil, fmt.Errorf("cloning suite baseline RunConfig: %w", err)
 	}
-	return mergeOverrides(clone, overlay), nil
+	merged := mergeOverrides(clone, overlay)
+	if merged != nil && merged.Timeout == nil {
+		t := defaultTaskTimeoutSeconds
+		merged.Timeout = &t
+	}
+	return merged, nil
 }
 
 // writeMergedConfig marshals the merged RunConfig to path. The file is
