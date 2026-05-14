@@ -278,6 +278,11 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		)
 	}
 
+	suiteRunConfig := runConfigSpecToType(s.RunConfig)
+	if err := validateInlineAPIKeyRefs(suiteRunConfig, nil); err != nil {
+		return types.EvalSuite{}, fmt.Errorf("suite %q: %w", s.ID, err)
+	}
+
 	tasks := make([]types.EvalTask, 0, len(s.Tasks))
 	for i, t := range s.Tasks {
 		if t.ID == "" {
@@ -287,6 +292,10 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		if err != nil {
 			return types.EvalSuite{}, err
 		}
+		taskOverrides := runConfigOverridesSpecToType(t.RunConfigOverrides)
+		if err := validateInlineAPIKeyRefs(nil, taskOverrides); err != nil {
+			return types.EvalSuite{}, fmt.Errorf("task %q: %w", t.ID, err)
+		}
 		tasks = append(tasks, types.EvalTask{
 			ID:                 t.ID,
 			Description:        t.Description,
@@ -295,7 +304,7 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 			Prompt:             t.Prompt,
 			Mode:               t.Mode,
 			Judge:              j,
-			RunConfigOverrides: runConfigOverridesSpecToType(t.RunConfigOverrides),
+			RunConfigOverrides: taskOverrides,
 		})
 	}
 
@@ -304,7 +313,7 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		Description:   s.Description,
 		Tasks:         tasks,
 		RunConfigFile: s.RunConfigFile,
-		RunConfig:     runConfigSpecToType(s.RunConfig),
+		RunConfig:     suiteRunConfig,
 	}, nil
 }
 

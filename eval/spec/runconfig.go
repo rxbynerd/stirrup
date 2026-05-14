@@ -1,6 +1,9 @@
 package spec
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -242,6 +245,55 @@ type guardRailSpec struct {
 type observabilitySpec struct {
 	Environment      string `hcl:"environment,optional"`
 	ServiceNamespace string `hcl:"service_namespace,optional"`
+}
+
+// validateInlineAPIKeyRefs rejects any inline api_key_ref value that
+// is not a secret:// reference. The check duplicates the rule already
+// enforced by types.ValidateRunConfig so authors see the diagnostic
+// at HCL parse time — with the field path named — rather than as a
+// downstream validation error after the runner has already merged the
+// config. Without this layer the parse path silently accepts a
+// pasted-in literal API key; the merged run_config.json the harness
+// receives would carry the raw value (and the redacted artifact would
+// hide the misconfiguration from audit by rewriting it to
+// "secret://[REDACTED]"). Apply to every secret-bearing field
+// surfaced by the HCL grammar today: Provider.APIKeyRef on both the
+// inline run_config and per-task run_config_overrides, and
+// Executor.VcsBackend.APIKeyRef on the inline run_config.
+//
+// The set of fields here must stay in lockstep with the surface the
+// HCL grammar accepts. Adding a new secret-bearing field to
+// providerSpec / runConfigOverridesSpec / executorSpec without
+// extending this validator would create a parse-time hole.
+func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOverrides) error {
+	checkRef := func(path, ref string) error {
+		if ref == "" {
+			return nil
+		}
+		if !strings.HasPrefix(ref, "secret://") {
+			return fmt.Errorf(
+				"%s %q: raw credentials are not permitted; use a secret:// reference",
+				path, ref,
+			)
+		}
+		return nil
+	}
+	if cfg != nil {
+		if err := checkRef("provider.api_key_ref", cfg.Provider.APIKeyRef); err != nil {
+			return err
+		}
+		if cfg.Executor.VcsBackend != nil {
+			if err := checkRef("executor.vcs_backend.api_key_ref", cfg.Executor.VcsBackend.APIKeyRef); err != nil {
+				return err
+			}
+		}
+	}
+	if overrides != nil && overrides.Provider != nil {
+		if err := checkRef("run_config_overrides.provider.api_key_ref", overrides.Provider.APIKeyRef); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runConfigSpecToType materialises a parsed runConfigSpec into a

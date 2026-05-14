@@ -721,3 +721,117 @@ suite "s" {
 		t.Errorf("Observability.Environment = %q, want staging", rc.Observability.Environment)
 	}
 }
+
+// TestLoadSuiteHCL_RejectsRawProviderAPIKey pins the parse-time
+// secret:// scheme guard on the inline run_config provider block.
+// Without this check a pasted-in literal API key would survive parse,
+// land in the merged run_config.json the harness receives, and the
+// retained redacted artifact would quietly rewrite it to "[REDACTED]"
+// — masking the misconfiguration from audit. ValidateRunConfig
+// catches the same shape at the types layer, but the parse-time
+// error names the offending field so authors see the diagnostic where
+// they wrote the value.
+func TestLoadSuiteHCL_RejectsRawProviderAPIKey(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    provider {
+      type        = "openai-responses"
+      api_key_ref = "sk-live-abc123"
+    }
+  }
+
+  task "t1" {
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "raw-provider-key.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatalf("LoadSuiteHCL: expected error for raw provider api_key_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "secret://") {
+		t.Errorf("error message %q does not mention secret:// scheme", err.Error())
+	}
+	if !strings.Contains(err.Error(), "provider.api_key_ref") {
+		t.Errorf("error message %q does not name the offending field", err.Error())
+	}
+}
+
+// TestLoadSuiteHCL_RejectsRawVcsBackendAPIKey extends the parse-time
+// guard to the executor.vcs_backend nested block — same invariant,
+// different field, same reasoning.
+func TestLoadSuiteHCL_RejectsRawVcsBackendAPIKey(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    executor {
+      type = "container"
+      vcs_backend {
+        type        = "github"
+        api_key_ref = "ghp_literaltokenvalue"
+      }
+    }
+  }
+
+  task "t1" {
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "raw-vcs-key.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatalf("LoadSuiteHCL: expected error for raw vcs_backend api_key_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "secret://") {
+		t.Errorf("error message %q does not mention secret:// scheme", err.Error())
+	}
+	if !strings.Contains(err.Error(), "executor.vcs_backend.api_key_ref") {
+		t.Errorf("error message %q does not name the offending field", err.Error())
+	}
+}
+
+// TestLoadSuiteHCL_RejectsRawAPIKeyInTaskOverrides pins the parse-time
+// guard on per-task run_config_overrides. The task-level overrides
+// produce a *types.RunConfigOverrides rather than a *types.RunConfig,
+// so the validator must walk both shapes.
+func TestLoadSuiteHCL_RejectsRawAPIKeyInTaskOverrides(t *testing.T) {
+	src := `
+suite "s" {
+  task "t1" {
+    prompt = "p"
+    run_config_overrides {
+      provider {
+        type        = "anthropic"
+        api_key_ref = "sk-ant-rawvalue"
+      }
+    }
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "raw-override-key.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	if err == nil {
+		t.Fatalf("LoadSuiteHCL: expected error for raw task-overrides api_key_ref, got nil")
+	}
+	if !strings.Contains(err.Error(), "secret://") {
+		t.Errorf("error message %q does not mention secret:// scheme", err.Error())
+	}
+	if !strings.Contains(err.Error(), "run_config_overrides.provider.api_key_ref") {
+		t.Errorf("error message %q does not name the offending field", err.Error())
+	}
+}
