@@ -570,7 +570,17 @@ func writeMergedConfig(path string, cfg *types.RunConfig) error {
 // disk so a retained artifact never carries a resolved secret out of the
 // process. Retention errors are reported on stderr to match retainArtifacts
 // but never mask the TaskResult.
+//
+// A stderr warning fires for any apiKeyRef that does not use the
+// secret:// scheme. The invariant is already enforced at HCL parse time
+// (eval/spec.validateInlineAPIKeyRefs) and again by
+// types.ValidateRunConfig before the harness is spawned, but the warning
+// here is the third defensive layer: if a regression ever lets a raw
+// value through both prior gates, Redact() will quietly rewrite it to
+// the sentinel — masking the misconfiguration from anyone inspecting the
+// artifact tree. The warning makes the bypass visible.
 func retainRedactedConfig(suiteArtifactDir, taskID string, cfg *types.RunConfig) {
+	warnIfRawAPIKeyRef(taskID, cfg)
 	redacted := cfg.Redact()
 	data, err := json.MarshalIndent(redacted, "", "  ")
 	if err != nil {
@@ -589,6 +599,44 @@ func retainRedactedConfig(suiteArtifactDir, taskID string, cfg *types.RunConfig)
 	// 0o600 narrows that exposure.
 	if err := os.WriteFile(filepath.Join(taskDir, "run_config.redacted.json"), data, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: redacted config write: %v\n", taskID, err)
+	}
+}
+
+// warnIfRawAPIKeyRef emits a stderr warning for any apiKeyRef field in
+// the merged config that does not use the secret:// scheme. The
+// invariant is enforced at HCL parse time and again by
+// types.ValidateRunConfig before the harness is spawned, so reaching
+// this code with a raw value means both prior gates were bypassed —
+// likely a regression in either layer. Without this warning, Redact()
+// would silently rewrite the raw value to "[REDACTED]" in the audit
+// artifact and an operator inspecting the artifact tree would have no
+// signal that the configuration was rejected for that reason.
+//
+// The field list here must stay in lockstep with the redactor in
+// types.RunConfig.Redact() and with eval/spec.validateInlineAPIKeyRefs.
+// A new secret-bearing field added to RunConfig without extending this
+// helper would create a defense-in-depth hole.
+func warnIfRawAPIKeyRef(taskID string, cfg *types.RunConfig) {
+	if cfg == nil {
+		return
+	}
+	check := func(path, ref string) {
+		if ref == "" || strings.HasPrefix(ref, "secret://") {
+			return
+		}
+		fmt.Fprintf(os.Stderr,
+			"eval: task %q: %s is a raw value (not a secret:// reference); it should have been rejected at parse/validate time — redacting in artifact but the harness will refuse this configuration\n",
+			taskID, path)
+	}
+	check("provider.apiKeyRef", cfg.Provider.APIKeyRef)
+	for name, p := range cfg.Providers {
+		check(fmt.Sprintf("providers[%s].apiKeyRef", name), p.APIKeyRef)
+	}
+	if cfg.Executor.VcsBackend != nil {
+		check("executor.vcsBackend.apiKeyRef", cfg.Executor.VcsBackend.APIKeyRef)
+	}
+	for i, server := range cfg.Tools.MCPServers {
+		check(fmt.Sprintf("tools.mcpServers[%d].apiKeyRef", i), server.APIKeyRef)
 	}
 }
 

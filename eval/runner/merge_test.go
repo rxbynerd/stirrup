@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1153,4 +1154,86 @@ fi
 	if !strings.Contains(body, "secret://[REDACTED]") {
 		t.Errorf("redacted artifact missing redaction marker; data: %q", body)
 	}
+}
+
+// TestWarnIfRawAPIKeyRef pins the defense-in-depth warning: if a raw
+// api_key_ref ever reaches the retain-artifact path (meaning both the
+// parse-time and validate-time gates were bypassed), the warning must
+// fire for every secret-bearing field on the merged config so an
+// operator inspecting the artifact tree sees the bypass. Without this
+// signal, Redact() would quietly rewrite the raw value to the
+// sentinel and the misconfiguration would be invisible.
+func TestWarnIfRawAPIKeyRef(t *testing.T) {
+	cfg := &types.RunConfig{
+		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "sk-ant-raw"},
+		Executor: types.ExecutorConfig{
+			VcsBackend: &types.VcsBackendConfig{Type: "github", APIKeyRef: "ghp_rawvalue"},
+		},
+		Providers: map[string]types.ProviderConfig{
+			"backup": {Type: "openai", APIKeyRef: "sk-openai-raw"},
+		},
+		Tools: types.ToolsConfig{
+			MCPServers: []types.MCPServerConfig{
+				{Name: "test", URI: "stdio:///test", APIKeyRef: "raw-mcp-key"},
+			},
+		},
+	}
+
+	stderr := captureStderr(t, func() { warnIfRawAPIKeyRef("t1", cfg) })
+
+	for _, want := range []string{
+		"provider.apiKeyRef",
+		"executor.vcsBackend.apiKeyRef",
+		"providers[backup].apiKeyRef",
+		"tools.mcpServers[0].apiKeyRef",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr %q does not warn about %s", stderr, want)
+		}
+	}
+}
+
+// TestWarnIfRawAPIKeyRef_AllSecretRefsStaysSilent confirms the warning
+// only fires for raw values. A merged config where every apiKeyRef
+// uses the secret:// scheme must produce no stderr output — the warn
+// path is a regression alarm, not a chatty diagnostic.
+func TestWarnIfRawAPIKeyRef_AllSecretRefsStaysSilent(t *testing.T) {
+	cfg := &types.RunConfig{
+		Provider: types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_KEY"},
+		Executor: types.ExecutorConfig{
+			VcsBackend: &types.VcsBackendConfig{Type: "github", APIKeyRef: "secret://GITHUB_TOKEN"},
+		},
+	}
+	stderr := captureStderr(t, func() { warnIfRawAPIKeyRef("t1", cfg) })
+	if stderr != "" {
+		t.Errorf("expected no warnings for all-secret refs; got %q", stderr)
+	}
+}
+
+// captureStderr replaces os.Stderr with a pipe for the duration of fn
+// and returns whatever fn wrote. Closes over the pipe so each invocation
+// is self-contained — concurrent tests must not run this helper in
+// parallel since os.Stderr is process-global.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+	done := make(chan struct{})
+	var buf bytes.Buffer
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(done)
+	}()
+
+	fn()
+
+	_ = w.Close()
+	os.Stderr = origStderr
+	<-done
+	_ = r.Close()
+	return buf.String()
 }
