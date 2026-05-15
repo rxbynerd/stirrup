@@ -109,13 +109,16 @@ func (a *AnthropicAdapter) AuthMode() AuthMode {
 // the upstream StreamParams.Temperature pointer type so the
 // unset-vs-explicit-zero distinction survives marshalling.
 //
-// Messages is intentionally typed as []anthropicMessage rather than
-// []types.Message: ContentBlock carries a Gemini-private
-// `thought_signature` field (#194) that must never appear in a body
-// destined for Anthropic's API. Multi-provider runs (e.g. the model
-// router falling back from Gemini to Anthropic) would otherwise leak
-// Vertex's encrypted chain-of-thought blob into Anthropic infrastructure.
-// The local wire type below mirrors only the fields Anthropic accepts.
+// Messages is typed as []anthropicMessage, not []types.Message, to
+// enforce a cross-provider confidentiality invariant: each adapter owns
+// its egress wire type, so no field that another provider populates on
+// types.ContentBlock can be transmitted to Anthropic by accident.
+// types.ContentBlock is a shared carrier — fields accumulate on it as
+// providers need round-trip state — which means the egress shape must
+// be enforced at the adapter, not the carrier. #194 (Vertex's
+// thought_signature leaking via the model router) was the motivating
+// incident; the pattern generalises to any provider-private state added
+// later, and matches what every other adapter already does.
 type anthropicRequest struct {
 	Model       string                 `json:"model"`
 	System      string                 `json:"system,omitempty"`
@@ -127,18 +130,24 @@ type anthropicRequest struct {
 }
 
 // anthropicMessage is the Anthropic-side wire shape for a single message.
-// Locally defined so that provider-private fields on types.ContentBlock
-// (notably ThoughtSignature) cannot leak into the request body.
+// Locally defined so that the set of fields reaching api.anthropic.com is
+// an explicit allowlist, not whatever types.ContentBlock happens to carry
+// for some other provider's benefit. Adding a field here is an active
+// decision that Anthropic's Messages API accepts it on the wire.
 type anthropicMessage struct {
 	Role    string                  `json:"role"`
 	Content []anthropicContentBlock `json:"content"`
 }
 
-// anthropicContentBlock mirrors the fields Anthropic's Messages API
-// accepts on a content block. ThoughtSignature is intentionally absent —
-// it is a Vertex-private artefact (#194) and must not be transmitted to
-// Anthropic. Any future provider-private field added to
-// types.ContentBlock should likewise be omitted here.
+// anthropicContentBlock is the allowlist of content-block fields the
+// Anthropic Messages API accepts. types.ContentBlock is the shared carrier
+// across providers and may grow new fields over time to hold opaque
+// per-provider state (e.g. ThoughtSignature, added for Vertex in #194);
+// any such field stays absent here by construction. The rule for
+// extending this struct is: add a field only if Anthropic's API
+// documents support for it. Provider-private state added to
+// types.ContentBlock by some other adapter is, by default, dropped on
+// egress to Anthropic.
 type anthropicContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -151,10 +160,14 @@ type anthropicContentBlock struct {
 }
 
 // translateMessagesAnthropic copies a slice of types.Message into the
-// adapter-local anthropicMessage shape, dropping any provider-private
-// fields (currently just ThoughtSignature) so they cannot reach
-// Anthropic's API. This is the structural guard against the
-// cross-provider leakage class identified in issue #194.
+// adapter-local anthropicMessage shape. It is the structural guard that
+// enforces the cross-provider confidentiality invariant: any field on
+// types.ContentBlock that is not mirrored onto anthropicContentBlock is
+// dropped here, rather than relying on call sites to scrub egress.
+// #194 was the motivating incident (Vertex's thought_signature would
+// otherwise have been forwarded to api.anthropic.com via the model
+// router); the same mechanism covers any provider-private field added
+// to the shared carrier in the future.
 func translateMessagesAnthropic(messages []types.Message) []anthropicMessage {
 	out := make([]anthropicMessage, len(messages))
 	for i, msg := range messages {
