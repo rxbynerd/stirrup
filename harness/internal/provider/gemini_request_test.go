@@ -29,6 +29,7 @@ type decodedPart struct {
 	Text             string               `json:"text,omitempty"`
 	FunctionCall     *decodedFunctionCall `json:"functionCall,omitempty"`
 	FunctionResponse *decodedFuncResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string               `json:"thoughtSignature,omitempty"`
 }
 
 type decodedFunctionCall struct {
@@ -632,5 +633,179 @@ func TestBuildGenerateContentRequest_UserTextAndToolResultOrdering(t *testing.T)
 	}
 	if dr.Contents[2].Role != "user" || dr.Contents[2].Parts[0].Text != "follow-up note" {
 		t.Errorf("contents[2] mismatch: %+v", dr.Contents[2])
+	}
+}
+
+// TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip pins the
+// send side of the issue #194 fix: when an assistant `tool_use` block
+// carries a ThoughtSignature, the marshalled request must emit the
+// `thoughtSignature` field on the corresponding part. Without this the
+// Gemini 3.x model cannot resume its prior reasoning across turns.
+func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
+	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
+	body, _, err := BuildGenerateContentRequest(types.StreamParams{
+		Model: "gemini-3.1-pro-preview",
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Read main.go"}}},
+			{Role: "assistant", Content: []types.ContentBlock{
+				{
+					Type:             "tool_use",
+					ID:               "call_1",
+					Name:             "read_file",
+					Input:            json.RawMessage(`{"path":"main.go"}`),
+					ThoughtSignature: sig,
+				},
+			}},
+			{Role: "user", Content: []types.ContentBlock{
+				{Type: "tool_result", ToolUseID: "call_1", Content: "package main"},
+			}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	dr := decodeGeminiRequest(t, body)
+	// Find the model-role content; assert the functionCall part carries
+	// the signature back to Vertex unchanged.
+	var modelContent *decodedContent
+	for i := range dr.Contents {
+		if dr.Contents[i].Role == "model" {
+			modelContent = &dr.Contents[i]
+			break
+		}
+	}
+	if modelContent == nil {
+		t.Fatal("expected a model-role content in the request body")
+	}
+	if len(modelContent.Parts) != 1 {
+		t.Fatalf("expected 1 part on the model content, got %d", len(modelContent.Parts))
+	}
+	if modelContent.Parts[0].FunctionCall == nil {
+		t.Fatal("expected functionCall on the model part")
+	}
+	if modelContent.Parts[0].ThoughtSignature != sig {
+		t.Errorf("model.parts[0].thoughtSignature = %q, want %q", modelContent.Parts[0].ThoughtSignature, sig)
+	}
+}
+
+// TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText pins
+// the text-part round-trip path: assistant `text` blocks that carry a
+// ThoughtSignature must also re-emit it on the part. The Gemini 3.x
+// receive-side capture of signatures on text parts is deferred (see
+// TODO(#194) in the SSE consumer), but the send-side path supports the
+// field today, so a future caller constructing a Message history with
+// text-block signatures (e.g. trace replay) continues to round-trip
+// correctly.
+func TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText(t *testing.T) {
+	const sig = "TEXTPARTSIGNATURE=="
+	body, _, err := BuildGenerateContentRequest(types.StreamParams{
+		Model: "gemini-3.1-pro-preview",
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+			{Role: "assistant", Content: []types.ContentBlock{
+				{Type: "text", Text: "hello!", ThoughtSignature: sig},
+			}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	dr := decodeGeminiRequest(t, body)
+	var modelContent *decodedContent
+	for i := range dr.Contents {
+		if dr.Contents[i].Role == "model" {
+			modelContent = &dr.Contents[i]
+			break
+		}
+	}
+	if modelContent == nil || len(modelContent.Parts) != 1 {
+		t.Fatalf("expected one model part, got %+v", modelContent)
+	}
+	if modelContent.Parts[0].Text != "hello!" {
+		t.Errorf("model.parts[0].text = %q, want hello!", modelContent.Parts[0].Text)
+	}
+	if modelContent.Parts[0].ThoughtSignature != sig {
+		t.Errorf("model.parts[0].thoughtSignature = %q, want %q", modelContent.Parts[0].ThoughtSignature, sig)
+	}
+}
+
+// TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent
+// confirms that assistant blocks without a ThoughtSignature do NOT
+// emit the field on the wire. This protects 2.x compatibility:
+// Vertex 2.x ignores unknown fields, but emitting an empty string on
+// every part still flunks visual diffing against captured fixtures.
+// `omitempty` on both the wire type and ContentBlock is the only safe
+// way to keep parity with the pre-#194 request shape when no signature
+// is present.
+func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) {
+	body, _, err := BuildGenerateContentRequest(types.StreamParams{
+		Model: "gemini-2.5-pro",
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+			{Role: "assistant", Content: []types.ContentBlock{
+				{Type: "tool_use", ID: "c1", Name: "read_file", Input: json.RawMessage(`{"path":"x"}`)},
+			}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(string(body), "thoughtSignature") {
+		t.Errorf("request body must not contain thoughtSignature when no signature was set; body=%s", body)
+	}
+}
+
+// TestGeminiThoughtSignatureFullRoundTrip combines the receive- and
+// send-side paths: parse a Gemini 3.x SSE response containing a
+// functionCall with a thoughtSignature, persist the signature onto the
+// ContentBlock the harness would build (mirroring what
+// streamEventsToResult does), and assert the next request body emits
+// the same signature back to Vertex. This is the end-to-end contract
+// for issue #194.
+func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
+	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
+
+	// Parse the response chunk via the same decoder the adapter uses.
+	chunkJSON := `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`
+	var chunk generateContentChunk
+	if err := json.Unmarshal([]byte(chunkJSON), &chunk); err != nil {
+		t.Fatalf("decode chunk: %v", err)
+	}
+	if len(chunk.Candidates) == 0 || chunk.Candidates[0].Content == nil || len(chunk.Candidates[0].Content.Parts) == 0 {
+		t.Fatal("decoded chunk has no parts")
+	}
+	gotSig := chunk.Candidates[0].Content.Parts[0].ThoughtSignature
+	if gotSig != sig {
+		t.Fatalf("decoded thoughtSignature = %q, want %q", gotSig, sig)
+	}
+
+	// Simulate what the agentic loop persists: a tool_use ContentBlock
+	// carrying the signature captured from the StreamEvent.
+	messages := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Read it"}}},
+		{Role: "assistant", Content: []types.ContentBlock{
+			{
+				Type:             "tool_use",
+				ID:               "call_1",
+				Name:             "read_file",
+				Input:            json.RawMessage(`{"path":"docs/safety-rings.md"}`),
+				ThoughtSignature: gotSig,
+			},
+		}},
+		{Role: "user", Content: []types.ContentBlock{
+			{Type: "tool_result", ToolUseID: "call_1", Content: "..."},
+		}},
+	}
+
+	// Render the next request and assert the blob made it back.
+	body, _, err := BuildGenerateContentRequest(types.StreamParams{
+		Model:    "gemini-3.1-pro-preview",
+		Messages: messages,
+	}, nil)
+	if err != nil {
+		t.Fatalf("BuildGenerateContentRequest: %v", err)
+	}
+	if !strings.Contains(string(body), `"thoughtSignature":"`+sig+`"`) {
+		t.Errorf("round-tripped request body missing thoughtSignature=%q\nbody=%s", sig, body)
 	}
 }

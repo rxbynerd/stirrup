@@ -985,3 +985,85 @@ func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
 		t.Errorf("stop_reason = %q, want tool_use", stop.StopReason)
 	}
 }
+
+// TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall pins the receive
+// side of the issue #194 fix: when Vertex emits a functionCall part with a
+// `thoughtSignature` blob attached, the adapter must surface that blob on
+// the emitted tool_call StreamEvent so the agentic loop can persist it
+// onto the ContentBlock for next-turn round-trip. The fixture is the
+// 3.x non-streamed shape captured from Vertex against
+// `gemini-3.1-pro-preview`.
+func TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall(t *testing.T) {
+	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+
+	var toolCall *types.StreamEvent
+	for i := range events {
+		if events[i].Type == "tool_call" {
+			toolCall = &events[i]
+		}
+		if events[i].Type == "error" {
+			t.Fatalf("unexpected error event: %v", events[i].Error)
+		}
+	}
+	if toolCall == nil {
+		t.Fatal("expected a tool_call event")
+	}
+	if toolCall.ThoughtSignature != sig {
+		t.Errorf("tool_call.ThoughtSignature = %q, want %q", toolCall.ThoughtSignature, sig)
+	}
+}
+
+// TestGeminiAdapter_ThoughtSignatureMissingIsEmpty confirms that a
+// pre-3.x response (no `thoughtSignature` on the part) leaves the
+// StreamEvent's ThoughtSignature empty. This is the negative case that
+// protects the `omitempty` invariant on the send side: an empty
+// signature must round-trip to a request body that does NOT include
+// the field.
+func TestGeminiAdapter_ThoughtSignatureMissingIsEmpty(t *testing.T) {
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"x"}}}]},"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+	var toolCall *types.StreamEvent
+	for i := range events {
+		if events[i].Type == "tool_call" {
+			toolCall = &events[i]
+		}
+	}
+	if toolCall == nil {
+		t.Fatal("expected a tool_call event")
+	}
+	if toolCall.ThoughtSignature != "" {
+		t.Errorf("tool_call.ThoughtSignature = %q, want empty", toolCall.ThoughtSignature)
+	}
+}
