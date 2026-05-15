@@ -326,7 +326,14 @@ func TestBuildGenerateContentRequest_CustomSafetySettings(t *testing.T) {
 	}
 }
 
-func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsTrueWhenToolsPresent(t *testing.T) {
+// TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPresent
+// pins the request shape: when tools are declared the adapter sets
+// functionCallingConfig.mode="AUTO" and streamFunctionCallArguments=false.
+// The flag stays off because Gemini 3.x's streamed-args wire format
+// (JSON-path deltas with name only on the first chunk) would otherwise
+// break the parser — see geminiToolConfig in gemini_types.go for the full
+// rationale.
+func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPresent(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
 		Messages: []types.Message{
@@ -350,8 +357,8 @@ func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsTrueWhenToolsPre
 	if dr.ToolConfig.FunctionCallingConfig.Mode != "AUTO" {
 		t.Errorf("mode = %q, want AUTO", dr.ToolConfig.FunctionCallingConfig.Mode)
 	}
-	if !dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments {
-		t.Errorf("streamFunctionCallArguments should be true")
+	if dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments {
+		t.Errorf("streamFunctionCallArguments should be false")
 	}
 	if len(dr.Tools) != 1 || len(dr.Tools[0].FunctionDeclarations) != 1 {
 		t.Fatalf("tool declarations not as expected: %+v", dr.Tools)
