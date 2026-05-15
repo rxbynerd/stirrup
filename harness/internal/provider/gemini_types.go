@@ -52,7 +52,10 @@ type geminiPart struct {
 // Args is the argument object the model produced. PartialArgs and
 // WillContinue are deserialise-only fields that appear on streamed chunks
 // when streamFunctionCallArguments is enabled — the request marshaller
-// never emits them.
+// never emits them. The adapter currently leaves streamFunctionCallArguments
+// off (see geminiToolConfig), so these fields are not exercised by the
+// happy path; they are retained so the parser remains tolerant of a future
+// wire-format reversion or an operator who flips the flag back on.
 type geminiFunctionCall struct {
 	Name         string          `json:"name"`
 	Args         json.RawMessage `json:"args,omitempty"`
@@ -90,10 +93,18 @@ type geminiFunctionDeclaration struct {
 }
 
 // geminiToolConfig pins tool-calling behaviour for the request.
-// streamFunctionCallArguments is always true for this adapter: it lets us
-// surface partial argument JSON to the trace, which is helpful for
-// debugging long tool inputs that would otherwise arrive as a single
-// blob at the end of the response.
+// streamFunctionCallArguments is deliberately left off for this adapter.
+// When the flag is true, Gemini 3.x streams a function call across
+// multiple SSE chunks where only the first carries `name` and subsequent
+// chunks deliver `partialArgs` as an array of JSON-path delta records
+// ({jsonPath, stringValue, willContinue}) rather than the cumulative
+// JSON-object snapshots emitted by the 2.x format. Supporting that shape
+// would require index-keyed slot correlation plus JSON-path synthesis on
+// the receive side, with no upside for this harness — the trace is
+// emitted post-turn, not mid-stream, so per-chunk argument visibility is
+// not load-bearing. With the flag off, both 2.5 and 3.x emit a single
+// functionCall part with `name` and `args` populated in one chunk, which
+// the parser already handles uniformly.
 type geminiToolConfig struct {
 	FunctionCallingConfig geminiFunctionCallingConfig `json:"functionCallingConfig"`
 }
@@ -104,7 +115,7 @@ type geminiToolConfig struct {
 // expose them.
 type geminiFunctionCallingConfig struct {
 	Mode                        string `json:"mode"`
-	StreamFunctionCallArguments bool   `json:"streamFunctionCallArguments"`
+	StreamFunctionCallArguments bool   `json:"streamFunctionCallArguments,omitempty"`
 }
 
 // geminiSafetySetting is the wire-format struct (HARM_CATEGORY_*,

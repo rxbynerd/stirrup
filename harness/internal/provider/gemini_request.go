@@ -87,7 +87,7 @@ func BuildGenerateContentRequest(
 		req.ToolConfig = &geminiToolConfig{
 			FunctionCallingConfig: geminiFunctionCallingConfig{
 				Mode:                        "AUTO",
-				StreamFunctionCallArguments: true,
+				StreamFunctionCallArguments: false,
 			},
 		}
 	}

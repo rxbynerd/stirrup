@@ -922,3 +922,66 @@ func TestGeminiAdapter_HasTimeout(t *testing.T) {
 		t.Error("ResponseHeaderTimeout should be non-zero")
 	}
 }
+
+// TestGeminiAdapter_NonStreamedFunctionCall3xShape pins the parser against
+// the wire format Gemini 3.x emits when streamFunctionCallArguments is
+// false: one SSE chunk carrying a functionCall part with both `name` and
+// `args` populated, alongside finishReason="STOP" on the same candidate.
+// This is the shape both 2.5-pro and 3.x converge on with the flag off,
+// and is the shape the adapter must continue to handle after the
+// streamed-args feature was disabled (see gemini_request.go) to dodge
+// 3.x's new JSON-path delta format. The shape is derived from a real
+// captured Vertex AI response against gemini-3.1-pro-preview.
+func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}}}]},"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+
+	var toolCalls []types.StreamEvent
+	var stop *types.StreamEvent
+	for i := range events {
+		switch events[i].Type {
+		case "tool_call":
+			toolCalls = append(toolCalls, events[i])
+		case "message_complete":
+			stop = &events[i]
+		case "error":
+			t.Fatalf("unexpected error event: %v", events[i].Error)
+		}
+	}
+
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected 1 tool_call event, got %d: %+v", len(toolCalls), toolCalls)
+	}
+	tc := toolCalls[0]
+	if tc.Name != "read_file" {
+		t.Errorf("tool_call.Name = %q, want read_file", tc.Name)
+	}
+	if tc.Input["path"] != "docs/safety-rings.md" {
+		t.Errorf("tool_call.Input[path] = %v, want docs/safety-rings.md", tc.Input["path"])
+	}
+
+	if stop == nil {
+		t.Fatal("expected message_complete event")
+	}
+	// STOP must be promoted to tool_use because a functionCall was emitted
+	// during the stream — otherwise the agentic loop would terminate
+	// without dispatching the tool.
+	if stop.StopReason != "tool_use" {
+		t.Errorf("stop_reason = %q, want tool_use", stop.StopReason)
+	}
+}
