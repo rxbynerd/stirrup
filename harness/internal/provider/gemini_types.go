@@ -51,6 +51,12 @@ type geminiContent struct {
 // history is rendered so the model can resume its prior reasoning. We do
 // not introspect, log, or mutate the value — it is provider-private state
 // that just happens to be threaded through the message history.
+//
+// The `thoughtSignature` JSON tag matches the Vertex AI wire format
+// directly (camelCase); this differs from the snake_case convention on
+// types.ContentBlock and types.StreamEvent (`thought_signature`). Do not
+// "fix" this tag to snake_case — Vertex will not recognise it and the
+// round-trip will silently break for Gemini 3.x model turns.
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`

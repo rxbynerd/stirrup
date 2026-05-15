@@ -46,6 +46,13 @@ type StreamEvent struct {
 	// this onto the persisted assistant ContentBlock so that the next
 	// request reproduces it verbatim. `omitempty` keeps it off the wire
 	// for adapters that do not emit it.
+	//
+	// ProviderAdapter implementations that do not support per-turn
+	// reasoning state MUST leave this field at its zero value. Adapter-
+	// side wire types are expected to drop the field (see
+	// anthropicContentBlock for the established pattern) so a populated
+	// value on a ContentBlock cannot accidentally cross provider
+	// boundaries.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 

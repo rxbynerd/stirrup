@@ -24,6 +24,16 @@ type Message struct {
 // log it verbatim, or mutate it. A future generalisation (e.g. renaming
 // to ProviderState or moving to a metadata map) is intentionally a non-goal
 // for the current change.
+//
+// Rename-decision (recorded for the next maintainer who needs this):
+// the name `ThoughtSignature` is Gemini-specific. When a second provider
+// requires analogous opaque round-trip state, rename this field to
+// `ProviderState` (JSON: `provider_state`) and update the RunRecording
+// schema at the same time — do NOT add a second provider-specific field
+// alongside this one. Adapter-private wire types (see
+// anthropicContentBlock for the established pattern) must continue to
+// omit any provider-state field they do not own, so the rename does
+// not relax the cross-provider leakage guard introduced for #194.
 type ContentBlock struct {
 	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result"
 	Text             string          `json:"text,omitempty"`

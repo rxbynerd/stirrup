@@ -755,13 +755,18 @@ func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) 
 	}
 }
 
-// TestGeminiThoughtSignatureFullRoundTrip combines the receive- and
-// send-side paths: parse a Gemini 3.x SSE response containing a
-// functionCall with a thoughtSignature, persist the signature onto the
-// ContentBlock the harness would build (mirroring what
-// streamEventsToResult does), and assert the next request body emits
-// the same signature back to Vertex. This is the end-to-end contract
-// for issue #194.
+// TestGeminiThoughtSignatureFullRoundTrip confirms JSON decode of the
+// Vertex wire type and serialisation by BuildGenerateContentRequest:
+// parse a Gemini 3.x response chunk containing a functionCall with a
+// thoughtSignature, hand-build the ContentBlock the harness would
+// persist, and assert the next request body emits the same signature
+// back to Vertex. This is the end-to-end JSON-shape contract for
+// issue #194.
+//
+// The SSE receive path and loop plumbing are covered separately by
+// TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall and
+// TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock; this
+// test does NOT drive consumeSSE or streamEventsToResult directly.
 func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
 	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
 

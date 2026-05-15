@@ -502,7 +502,14 @@ func (g *GeminiAdapter) consumeSSE(
 							buf.thoughtSignature = part.ThoughtSignature
 						}
 
-						// Unreachable when streamFunctionCallArguments=false (current default); retained for correctness if the flag is re-enabled.
+						// With streamFunctionCallArguments=false (the
+						// current default) WillContinue is never set,
+						// so every functionCall part falls directly
+						// into this branch — this is the only path
+						// through which production tool calls are
+						// emitted. The willContinue=true accumulation
+						// path above is retained defensively for
+						// compatibility if the flag is re-enabled.
 						if !fc.WillContinue {
 							// Final chunk for this call: emit, then
 							// advance the sequence counter used for ID
