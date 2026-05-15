@@ -69,11 +69,19 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 				}
 				// Estimate tokens from the JSON input size.
 				estimatedTokens += len(block.Input) / 4
+				// ThoughtSignature is intentionally forwarded here so
+				// live-continuation paths seeded from this recording
+				// (e.g. mineFailureTasks) carry the model's prior
+				// reasoning state into the next Vertex request (#194).
+				// Pure eval replay (no live API calls) is unaffected:
+				// the blob is never re-submitted to any provider in
+				// that scenario, so forwarding adds no leakage surface.
 				ch <- types.StreamEvent{
-					Type:  "tool_call",
-					ID:    block.ID,
-					Name:  block.Name,
-					Input: inputMap,
+					Type:             "tool_call",
+					ID:               block.ID,
+					Name:             block.Name,
+					Input:            inputMap,
+					ThoughtSignature: block.ThoughtSignature,
 				}
 			}
 		}
