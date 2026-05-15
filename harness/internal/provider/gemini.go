@@ -288,7 +288,9 @@ type toolCallBuf struct {
 //   - FunctionCall parts arrive in two patterns:
 //     1) Streamed: one or more chunks with WillContinue=true and
 //     PartialArgs, then a final chunk with WillContinue=false and either
-//     Args or PartialArgs populated.
+//     Args or PartialArgs populated. Pattern 1 is handled defensively;
+//     with streamFunctionCallArguments=false the production path is
+//     always pattern 2.
 //     2) Single: one chunk with neither WillContinue nor partial markers,
 //     just Args.
 //   - finishReason on Candidates[0] terminates the turn — emit
@@ -463,6 +465,7 @@ func (g *GeminiAdapter) consumeSSE(
 							buf.args = snapshot
 						}
 
+						// Unreachable when streamFunctionCallArguments=false (current default); retained for correctness if the flag is re-enabled.
 						if !fc.WillContinue {
 							// Final chunk for this call: emit, then
 							// advance the sequence counter used for ID

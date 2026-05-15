@@ -115,7 +115,7 @@ type geminiToolConfig struct {
 // expose them.
 type geminiFunctionCallingConfig struct {
 	Mode                        string `json:"mode"`
-	StreamFunctionCallArguments bool   `json:"streamFunctionCallArguments"`
+	StreamFunctionCallArguments bool   `json:"streamFunctionCallArguments,omitempty"`
 }
 
 // geminiSafetySetting is the wire-format struct (HARM_CATEGORY_*,
