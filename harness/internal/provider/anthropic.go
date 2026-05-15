@@ -108,14 +108,75 @@ func (a *AnthropicAdapter) AuthMode() AuthMode {
 // verbatim, including an explicit 0.0 for greedy decoding. This mirrors
 // the upstream StreamParams.Temperature pointer type so the
 // unset-vs-explicit-zero distinction survives marshalling.
+//
+// Messages is intentionally typed as []anthropicMessage rather than
+// []types.Message: ContentBlock carries a Gemini-private
+// `thought_signature` field (#194) that must never appear in a body
+// destined for Anthropic's API. Multi-provider runs (e.g. the model
+// router falling back from Gemini to Anthropic) would otherwise leak
+// Vertex's encrypted chain-of-thought blob into Anthropic infrastructure.
+// The local wire type below mirrors only the fields Anthropic accepts.
 type anthropicRequest struct {
 	Model       string                 `json:"model"`
 	System      string                 `json:"system,omitempty"`
-	Messages    []types.Message        `json:"messages"`
+	Messages    []anthropicMessage     `json:"messages"`
 	Tools       []types.ToolDefinition `json:"tools,omitempty"`
 	MaxTokens   int                    `json:"max_tokens"`
 	Temperature *float64               `json:"temperature,omitempty"`
 	Stream      bool                   `json:"stream"`
+}
+
+// anthropicMessage is the Anthropic-side wire shape for a single message.
+// Locally defined so that provider-private fields on types.ContentBlock
+// (notably ThoughtSignature) cannot leak into the request body.
+type anthropicMessage struct {
+	Role    string                  `json:"role"`
+	Content []anthropicContentBlock `json:"content"`
+}
+
+// anthropicContentBlock mirrors the fields Anthropic's Messages API
+// accepts on a content block. ThoughtSignature is intentionally absent —
+// it is a Vertex-private artefact (#194) and must not be transmitted to
+// Anthropic. Any future provider-private field added to
+// types.ContentBlock should likewise be omitted here.
+type anthropicContentBlock struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+}
+
+// translateMessagesAnthropic copies a slice of types.Message into the
+// adapter-local anthropicMessage shape, dropping any provider-private
+// fields (currently just ThoughtSignature) so they cannot reach
+// Anthropic's API. This is the structural guard against the
+// cross-provider leakage class identified in issue #194.
+func translateMessagesAnthropic(messages []types.Message) []anthropicMessage {
+	out := make([]anthropicMessage, len(messages))
+	for i, msg := range messages {
+		blocks := make([]anthropicContentBlock, len(msg.Content))
+		for j, b := range msg.Content {
+			blocks[j] = anthropicContentBlock{
+				Type:      b.Type,
+				Text:      b.Text,
+				ID:        b.ID,
+				Name:      b.Name,
+				Input:     b.Input,
+				ToolUseID: b.ToolUseID,
+				Content:   b.Content,
+				IsError:   b.IsError,
+			}
+		}
+		out[i] = anthropicMessage{
+			Role:    msg.Role,
+			Content: blocks,
+		}
+	}
+	return out
 }
 
 // SSE event types from the Anthropic API.
@@ -165,7 +226,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	reqBody := anthropicRequest{
 		Model:       params.Model,
 		System:      params.System,
-		Messages:    params.Messages,
+		Messages:    translateMessagesAnthropic(params.Messages),
 		Tools:       params.Tools,
 		MaxTokens:   params.MaxTokens,
 		Temperature: params.Temperature,
