@@ -272,9 +272,17 @@ func mapGeminiFinishReason(in string) string {
 //
 // The retained blob is bounded at maxToolInputSize (10 MB) to mirror the
 // Anthropic adapter's safety cap.
+//
+// thoughtSignature holds the latest non-empty `thoughtSignature` observed
+// on the part across the buffer's chunks. Vertex emits the signature on
+// the same part as the functionCall (it is a property of the part, not
+// the call), so the most recently received non-empty value is the one
+// associated with the call's final shape. Only the assistant's terminal
+// signature for the part is meaningful for round-trip.
 type toolCallBuf struct {
-	name string
-	args []byte
+	name             string
+	args             []byte
+	thoughtSignature string
 }
 
 // consumeSSE reads SSE events from the response body and emits StreamEvents
@@ -352,7 +360,13 @@ func (g *GeminiAdapter) consumeSSE(
 	// follow-up chunk with the same name does not double-emit. The ID
 	// is synthesised from streamN and the monotonic nextPartIdx counter
 	// (incremented by the caller after a successful emit).
-	emitToolCall := func(name string, fullArgs []byte, idForSeq int) bool {
+	//
+	// thoughtSignature is the part-level Gemini 3.x reasoning blob. It is
+	// propagated onto the StreamEvent so the agentic loop can copy it
+	// onto the persisted assistant ContentBlock and the next request
+	// can round-trip it back to Vertex (issue #194). Empty for 2.x
+	// responses, where Vertex does not emit the field.
+	emitToolCall := func(name string, fullArgs []byte, idForSeq int, thoughtSignature string) bool {
 		var input map[string]any
 		argsBytes := fullArgs
 		if len(argsBytes) == 0 {
@@ -363,10 +377,11 @@ func (g *GeminiAdapter) consumeSSE(
 			return false
 		}
 		emitEvent(types.StreamEvent{
-			Type:  "tool_call",
-			ID:    fmt.Sprintf("gemini-%d-%d", streamN, idForSeq),
-			Name:  name,
-			Input: input,
+			Type:             "tool_call",
+			ID:               fmt.Sprintf("gemini-%d-%d", streamN, idForSeq),
+			Name:             name,
+			Input:            input,
+			ThoughtSignature: thoughtSignature,
 		})
 		delete(toolBufs, name)
 		return true
@@ -419,6 +434,18 @@ func (g *GeminiAdapter) consumeSSE(
 				for _, part := range cand.Content.Parts {
 					switch {
 					case part.Text != "":
+						// TODO(#194): Gemini 3.x can also attach a
+						// thoughtSignature to text parts. Threading the
+						// signature onto the assembled text ContentBlock
+						// would require additional plumbing through
+						// streamEventsToResult (which currently
+						// concatenates text deltas into a single block
+						// at message_complete time). The tool_use case
+						// is the load-bearing one for multi-turn agentic
+						// loops, so the text-side signature is deferred.
+						// When a text-part signature does arrive, it
+						// will be silently dropped here — same behaviour
+						// as before this change for that specific case.
 						emitEvent(types.StreamEvent{
 							Type: "text_delta",
 							Text: part.Text,
@@ -465,6 +492,16 @@ func (g *GeminiAdapter) consumeSSE(
 							buf.args = snapshot
 						}
 
+						// Gemini 3.x emits `thoughtSignature` alongside
+						// the functionCall part. The signature is a
+						// property of the part, not the call itself —
+						// retain the most recent non-empty value so we
+						// associate the buffer with the assistant's
+						// terminal reasoning blob for the part (#194).
+						if part.ThoughtSignature != "" {
+							buf.thoughtSignature = part.ThoughtSignature
+						}
+
 						// Unreachable when streamFunctionCallArguments=false (current default); retained for correctness if the flag is re-enabled.
 						if !fc.WillContinue {
 							// Final chunk for this call: emit, then
@@ -472,7 +509,7 @@ func (g *GeminiAdapter) consumeSSE(
 							// synthesis. nextPartIdx is no longer the
 							// slot key — emitting deletes the named
 							// slot directly.
-							if !emitToolCall(buf.name, buf.args, nextPartIdx) {
+							if !emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature) {
 								return
 							}
 							nextPartIdx++
@@ -490,7 +527,7 @@ func (g *GeminiAdapter) consumeSSE(
 				// represents a distinct tool name — order between
 				// drained calls is not load-bearing.
 				for _, buf := range toolBufs {
-					if !emitToolCall(buf.name, buf.args, nextPartIdx) {
+					if !emitToolCall(buf.name, buf.args, nextPartIdx, buf.thoughtSignature) {
 						return
 					}
 					nextPartIdx++

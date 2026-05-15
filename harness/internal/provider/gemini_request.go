@@ -171,14 +171,28 @@ func translateMessagesGemini(system string, messages []types.Message) ([]geminiC
 					if block.Text == "" {
 						continue
 					}
-					parts = append(parts, geminiPart{Text: block.Text})
+					// ThoughtSignature is round-tripped on assistant text
+					// parts when the previous turn captured one (#194).
+					// Vertex 2.x never emits the field, so it stays empty
+					// in that case and `omitempty` drops it from the
+					// serialised request.
+					parts = append(parts, geminiPart{
+						Text:             block.Text,
+						ThoughtSignature: block.ThoughtSignature,
+					})
 				case "tool_use":
 					args := normaliseToolArgs(block.Input)
+					// ThoughtSignature is round-tripped on the part
+					// carrying the functionCall — the load-bearing case
+					// for multi-turn tool exchanges on Gemini 3.x where
+					// dropping the blob breaks the model's chain-of-
+					// thought continuity (#194).
 					parts = append(parts, geminiPart{
 						FunctionCall: &geminiFunctionCall{
 							Name: block.Name,
 							Args: args,
 						},
+						ThoughtSignature: block.ThoughtSignature,
 					})
 					if block.ID != "" {
 						toolNameByID[block.ID] = block.Name
