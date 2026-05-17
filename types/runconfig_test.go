@@ -138,6 +138,55 @@ func TestRedact_TraceEmitterHeaders(t *testing.T) {
 	}
 }
 
+// TestRedact_ProviderRetryNotAliased pins that Redact() deep-copies
+// ProviderConfig.Retry on both the top-level Provider and every entry
+// in Providers. The shallow copy `redacted := rc` aliases the Retry
+// pointer; without an explicit deep-copy, a downstream consumer
+// mutating the redacted config's Retry struct would reach back into
+// the live RunConfig. No code mutates Retry today, but every other
+// pointer field touched by Redact() is deep-copied — matching the
+// established pattern closes the aliasing window before Wave 2 lands
+// retry-helper code that could exercise it.
+func TestRedact_ProviderRetryNotAliased(t *testing.T) {
+	rc := RunConfig{
+		Provider: ProviderConfig{
+			Type:  "openai-compatible",
+			Retry: &ProviderRetryConfig{MaxAttempts: 3, InitialDelayMs: 500},
+		},
+		Providers: map[string]ProviderConfig{
+			"secondary": {
+				Type:  "openai-compatible",
+				Retry: &ProviderRetryConfig{MaxAttempts: 4, InitialDelayMs: 250},
+			},
+		},
+	}
+	redacted := rc.Redact()
+
+	if redacted.Provider.Retry == nil {
+		t.Fatal("top-level Retry dropped by Redact")
+	}
+	if redacted.Provider.Retry == rc.Provider.Retry {
+		t.Fatal("top-level Retry pointer aliased — Redact must deep-copy")
+	}
+	redacted.Provider.Retry.MaxAttempts = 99
+	if rc.Provider.Retry.MaxAttempts != 3 {
+		t.Errorf("mutating redacted Provider.Retry leaked to original: got %d, want 3", rc.Provider.Retry.MaxAttempts)
+	}
+
+	redactedSecondary := redacted.Providers["secondary"]
+	originalSecondary := rc.Providers["secondary"]
+	if redactedSecondary.Retry == nil {
+		t.Fatal("named-provider Retry dropped by Redact")
+	}
+	if redactedSecondary.Retry == originalSecondary.Retry {
+		t.Fatal("named-provider Retry pointer aliased — Redact must deep-copy")
+	}
+	redactedSecondary.Retry.MaxAttempts = 88
+	if rc.Providers["secondary"].Retry.MaxAttempts != 4 {
+		t.Errorf("mutating redacted named-provider Retry leaked to original: got %d, want 4", rc.Providers["secondary"].Retry.MaxAttempts)
+	}
+}
+
 // --- ValidateRunConfig tests ---
 
 func validConfig() *RunConfig {

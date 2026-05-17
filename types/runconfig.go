@@ -337,11 +337,26 @@ func (rc RunConfig) Redact() RunConfig {
 	if redacted.Provider.APIKeyRef != "" {
 		redacted.Provider.APIKeyRef = "secret://[REDACTED]"
 	}
+	// Deep-copy Provider.Retry so a downstream consumer holding the
+	// redacted config cannot reach back into the live RunConfig via the
+	// shared pointer. Redact() does not mutate Retry today, but every
+	// other pointer field it touches is deep-copied; matching the
+	// established pattern closes the aliasing window before a Wave 2
+	// retry-helper that mutates Retry could silently corrupt the live
+	// config it was handed a "safe copy" of.
+	if redacted.Provider.Retry != nil {
+		retry := *redacted.Provider.Retry
+		redacted.Provider.Retry = &retry
+	}
 	if len(redacted.Providers) > 0 {
 		providers := make(map[string]ProviderConfig, len(redacted.Providers))
 		for name, provider := range redacted.Providers {
 			if provider.APIKeyRef != "" {
 				provider.APIKeyRef = "secret://[REDACTED]"
+			}
+			if provider.Retry != nil {
+				retry := *provider.Retry
+				provider.Retry = &retry
 			}
 			providers[name] = provider
 		}
