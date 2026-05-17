@@ -3734,6 +3734,176 @@ func TestValidateRunConfig_ProviderRetryWallClockBudgetBelowMaxDelay(t *testing.
 	}
 }
 
+// TestValidateRunConfig_ProviderRetryNegativeMaxAttempts pins that a
+// negative MaxAttempts (e.g. {"maxAttempts": -1} in JSON) is rejected.
+// The defaulter only fills on `== 0`, so a negative value reaches the
+// validator unchanged. Without this test, a future inversion of the
+// `< 0` guard on InitialDelayMs to `<= 0`, or a parallel guard added
+// to the range check below, could pass undetected — and once Wave 2
+// casts these fields to time.Duration, a negative value would silently
+// flip retry semantics.
+func TestValidateRunConfig_ProviderRetryNegativeMaxAttempts(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: -1}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for negative MaxAttempts")
+	}
+	if !strings.Contains(err.Error(), "maxAttempts") {
+		t.Errorf("expected error to mention maxAttempts, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_ProviderRetryNegativeInitialDelay pins the
+// `cfg.InitialDelayMs < 0` branch. The defaulter only fills the field
+// when it is exactly zero, so an explicit `-1` passes through to
+// validation. See the docstring on the MaxAttempts test above for the
+// Wave-2 regression class this prevents.
+func TestValidateRunConfig_ProviderRetryNegativeInitialDelay(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{InitialDelayMs: -1}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for negative InitialDelayMs")
+	}
+	if !strings.Contains(err.Error(), "initialDelayMs") {
+		t.Errorf("expected error to mention initialDelayMs, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_ProviderRetryNegativeMaxDelay pins the range
+// check `cfg.MaxDelayMs <= 0` against negative input. See the docstring
+// on the MaxAttempts test above for context.
+func TestValidateRunConfig_ProviderRetryNegativeMaxDelay(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{MaxDelayMs: -1}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for negative MaxDelayMs")
+	}
+	if !strings.Contains(err.Error(), "maxDelayMs") {
+		t.Errorf("expected error to mention maxDelayMs, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_ProviderRetryNegativeWallClockBudget pins the
+// range check `cfg.WallClockBudgetMs <= 0` against negative input. See
+// the docstring on the MaxAttempts test above for context.
+func TestValidateRunConfig_ProviderRetryNegativeWallClockBudget(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{WallClockBudgetMs: -1}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for negative WallClockBudgetMs")
+	}
+	if !strings.Contains(err.Error(), "wallClockBudgetMs") {
+		t.Errorf("expected error to mention wallClockBudgetMs, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay pins
+// the strict-less-than boundary of the cross-field invariant. Equality
+// is intentionally valid — a single attempt is allowed to consume the
+// entire wall-clock budget on its backoff — and tightening the check to
+// `<=` would reject a valid operator config at runtime. Pin equality as
+// a passing case so the regression is caught at unit-test time.
+func TestValidateRunConfig_ProviderRetryWallClockBudgetEqualsMaxDelay(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{
+		MaxDelayMs:        16000,
+		WallClockBudgetMs: 16000,
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected WallClockBudgetMs == MaxDelayMs to be accepted, got: %v", err)
+	}
+}
+
+// TestValidateProviderRetryConfig_NilIsNoop exercises the `cfg == nil`
+// guard at the top of validateProviderRetryConfig directly. The public
+// ValidateRunConfig path always runs applyProviderRetryDefaults first,
+// which allocates a non-nil ProviderRetryConfig before validation, so
+// the nil guard is structurally unreachable through the public API.
+// Without this direct call, the branch shows statement count=0 in the
+// coverage profile and a future refactor that bypasses the defaulter
+// would lose the safety net silently. Brings validateProviderRetryConfig
+// to 100% coverage.
+func TestValidateProviderRetryConfig_NilIsNoop(t *testing.T) {
+	var errs []string
+	validateProviderRetryConfig("provider.retry", nil, providerRetryDefaulted{}, &errs)
+	if len(errs) != 0 {
+		t.Errorf("expected nil ProviderRetryConfig to be a no-op, got errors: %v", errs)
+	}
+}
+
+// TestValidateRunConfig_ProviderRetryNamedProviderRejected pins the
+// "providers[<name>].retry" path string used in error messages for the
+// named-provider rejection branch. The happy path is covered by
+// TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently;
+// without this negative-path test, a refactor of the
+// fmt.Sprintf("providers[%s]", name) format string (or a typo in the
+// ".retry" suffix) would silently regress the operator-facing
+// diagnostics.
+func TestValidateRunConfig_ProviderRetryNamedProviderRejected(t *testing.T) {
+	c := validConfig()
+	c.Providers = map[string]ProviderConfig{
+		"secondary": {
+			Type:      "openai-compatible",
+			BaseURL:   "https://example.test/v1",
+			APIKeyRef: "secret://SECONDARY_KEY",
+			Retry:     &ProviderRetryConfig{MaxAttempts: 99},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for named-provider MaxAttempts above ceiling")
+	}
+	if !strings.Contains(err.Error(), "providers[secondary].retry") {
+		t.Errorf("expected error to mention providers[secondary].retry path, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "maxAttempts") {
+		t.Errorf("expected error to mention maxAttempts, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_ProviderRetryNamedProviderNilRetryBlock pins
+// the nil-allocation branch of defaultProviderRetry for an entry in
+// the Providers map. The existing
+// TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently
+// supplies a partial (non-nil) ProviderRetryConfig, exercising only
+// the "fill missing fields" branches. A refactor that split the
+// nil-allocation path by call site (top-level vs map entry) would not
+// be caught without this test.
+func TestValidateRunConfig_ProviderRetryNamedProviderNilRetryBlock(t *testing.T) {
+	c := validConfig()
+	c.Providers = map[string]ProviderConfig{
+		"secondary": {
+			Type:      "openai-compatible",
+			BaseURL:   "https://example.test/v1",
+			APIKeyRef: "secret://SECONDARY_KEY",
+			Retry:     nil,
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	got := c.Providers["secondary"].Retry
+	if got == nil {
+		t.Fatal("expected named-provider Retry to be allocated from nil")
+	}
+	if got.MaxAttempts != defaultProviderRetryMaxAttempts {
+		t.Errorf("named-provider MaxAttempts = %d, want %d (default)", got.MaxAttempts, defaultProviderRetryMaxAttempts)
+	}
+	if got.InitialDelayMs != defaultProviderRetryInitialDelayMs {
+		t.Errorf("named-provider InitialDelayMs = %d, want %d (default)", got.InitialDelayMs, defaultProviderRetryInitialDelayMs)
+	}
+	if got.MaxDelayMs != defaultProviderRetryMaxDelayMs {
+		t.Errorf("named-provider MaxDelayMs = %d, want %d (default)", got.MaxDelayMs, defaultProviderRetryMaxDelayMs)
+	}
+	if got.WallClockBudgetMs != defaultProviderRetryWallClockBudgetMs {
+		t.Errorf("named-provider WallClockBudgetMs = %d, want %d (default)", got.WallClockBudgetMs, defaultProviderRetryWallClockBudgetMs)
+	}
+}
+
 func TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently(t *testing.T) {
 	c := validConfig()
 	c.Providers = map[string]ProviderConfig{
