@@ -3680,6 +3680,43 @@ func TestValidateRunConfig_ProviderRetryInitialDelayExceedsMaxDelay(t *testing.T
 	}
 }
 
+// TestValidateRunConfig_ProviderRetryDefaultedInitialDelayAnnotated pins
+// the UX behaviour for the asymmetric case where the caller supplies
+// maxDelayMs but leaves initialDelayMs at the JSON-omitempty zero.
+// Defaulting fills initialDelayMs with 500 before the cross-field
+// invariant runs, and historically the resulting error read
+// "initialDelayMs (500) must be <= maxDelayMs (100)" — naming a value
+// the caller never wrote. The "(default)" annotation makes it clear
+// where the offending value came from so the operator can either
+// raise maxDelayMs or pin a smaller initialDelayMs explicitly.
+func TestValidateRunConfig_ProviderRetryDefaultedInitialDelayAnnotated(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{
+		MaxDelayMs: 100,
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error: defaulted initialDelayMs (500) exceeds caller-supplied maxDelayMs (100)")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "initialDelayMs") {
+		t.Errorf("expected error to mention initialDelayMs, got: %v", err)
+	}
+	if !strings.Contains(msg, "default") {
+		t.Errorf("expected error to annotate the defaulted initialDelayMs value with 'default'; got: %v", err)
+	}
+	if !strings.Contains(msg, "500") {
+		t.Errorf("expected error to show the defaulted value 500; got: %v", err)
+	}
+	// The caller-supplied maxDelayMs should NOT be annotated as a default.
+	// Match the exact substring the error renderer produces for a
+	// caller-supplied value so a regression that flips the flag (and
+	// labels maxDelayMs as a default) is caught.
+	if !strings.Contains(msg, "maxDelayMs (100)") {
+		t.Errorf("expected error to show caller-supplied maxDelayMs without 'default' annotation; got: %v", err)
+	}
+}
+
 func TestValidateRunConfig_ProviderRetryWallClockBudgetBelowMaxDelay(t *testing.T) {
 	c := validConfig()
 	// WallClockBudget below MaxDelay would not give a single attempt

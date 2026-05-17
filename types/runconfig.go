@@ -1206,7 +1206,7 @@ type ModePreset struct {
 // happen anyway).
 func ValidateRunConfig(config *RunConfig) error {
 	applyCodeScannerDefault(config)
-	applyProviderRetryDefaults(config)
+	retryDefaulted := applyProviderRetryDefaults(config)
 
 	var errs []string
 
@@ -1235,7 +1235,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
 	validateTraceEmitterProtocolAndHeaders(config.TraceEmitter, &errs)
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
-	validateProviderConfigs(config, &errs)
+	validateProviderConfigs(config, retryDefaulted, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	for name, prov := range config.Providers {
@@ -1515,38 +1515,67 @@ func isToolEnabled(enabled []string, name string) bool {
 	return false
 }
 
+// providerRetryDefaulted records which ProviderRetryConfig fields were
+// filled in by applyProviderRetryDefaults rather than supplied by the
+// caller. Used by validateProviderRetryConfig to annotate cross-field
+// error messages so an operator sees which value was inherited from the
+// default and which they supplied. Without this distinction, a config
+// that omits initialDelayMs while pinning maxDelayMs=100 produces the
+// confusing error "initialDelayMs (500) must be <= maxDelayMs (100)"
+// where 500 is a value the caller never wrote.
+type providerRetryDefaulted struct {
+	maxAttempts       bool
+	initialDelayMs    bool
+	maxDelayMs        bool
+	wallClockBudgetMs bool
+}
+
 // applyProviderRetryDefaults populates ProviderConfig.Retry with the
 // documented defaults so downstream consumers can dereference the
 // pointer without a nil check. Operates on the top-level Provider and
 // every entry in Providers. Each field is treated independently: a
 // caller may pin one knob and inherit defaults for the rest.
-func applyProviderRetryDefaults(config *RunConfig) {
-	defaultProviderRetry(&config.Provider)
+//
+// Returns a map keyed by the validation path (e.g. "provider.retry",
+// "providers[secondary].retry") so validateProviderRetryConfig can
+// annotate cross-field errors when a defaulted value appears next to a
+// caller-supplied one.
+func applyProviderRetryDefaults(config *RunConfig) map[string]providerRetryDefaulted {
+	defaulted := map[string]providerRetryDefaulted{}
+	defaulted["provider.retry"] = defaultProviderRetry(&config.Provider)
 	if len(config.Providers) == 0 {
-		return
+		return defaulted
 	}
 	for name, provider := range config.Providers {
-		defaultProviderRetry(&provider)
+		d := defaultProviderRetry(&provider)
 		config.Providers[name] = provider
+		defaulted[fmt.Sprintf("providers[%s].retry", name)] = d
 	}
+	return defaulted
 }
 
-func defaultProviderRetry(provider *ProviderConfig) {
+func defaultProviderRetry(provider *ProviderConfig) providerRetryDefaulted {
+	var d providerRetryDefaulted
 	if provider.Retry == nil {
 		provider.Retry = &ProviderRetryConfig{}
 	}
 	if provider.Retry.MaxAttempts == 0 {
 		provider.Retry.MaxAttempts = defaultProviderRetryMaxAttempts
+		d.maxAttempts = true
 	}
 	if provider.Retry.InitialDelayMs == 0 {
 		provider.Retry.InitialDelayMs = defaultProviderRetryInitialDelayMs
+		d.initialDelayMs = true
 	}
 	if provider.Retry.MaxDelayMs == 0 {
 		provider.Retry.MaxDelayMs = defaultProviderRetryMaxDelayMs
+		d.maxDelayMs = true
 	}
 	if provider.Retry.WallClockBudgetMs == 0 {
 		provider.Retry.WallClockBudgetMs = defaultProviderRetryWallClockBudgetMs
+		d.wallClockBudgetMs = true
 	}
+	return d
 }
 
 // applyCodeScannerDefault fills CodeScanner with a sensible default
@@ -1600,11 +1629,13 @@ func validateVerifierConfig(cfg VerifierConfig, path string, errs *[]string) {
 }
 
 // validateProviderRetryConfig enforces the hard ceilings and field
-// relationships on a ProviderRetryConfig. Defaulting runs at the top of
-// ValidateRunConfig, so every field is non-zero by the time this check
-// runs; the bounds below are the operator-facing limits, not the
-// software-engineering ones.
-func validateProviderRetryConfig(path string, cfg *ProviderRetryConfig, errs *[]string) {
+// relationships on a ProviderRetryConfig. All fields except
+// InitialDelayMs are guaranteed non-zero after defaulting; the `< 0`
+// check below handles the case where a caller bypasses the defaulter
+// with a negative value. The `defaulted` record annotates cross-field
+// error messages so a caller who omitted a field sees "(default)"
+// rather than a value they never wrote.
+func validateProviderRetryConfig(path string, cfg *ProviderRetryConfig, defaulted providerRetryDefaulted, errs *[]string) {
 	if cfg == nil {
 		return
 	}
@@ -1628,8 +1659,10 @@ func validateProviderRetryConfig(path string, cfg *ProviderRetryConfig, errs *[]
 	}
 	if cfg.MaxDelayMs > 0 && cfg.InitialDelayMs > cfg.MaxDelayMs {
 		*errs = append(*errs, fmt.Sprintf(
-			"%s.initialDelayMs (%d) must be <= maxDelayMs (%d)",
-			path, cfg.InitialDelayMs, cfg.MaxDelayMs,
+			"%s.initialDelayMs (%s) must be <= maxDelayMs (%s)",
+			path,
+			fmtProviderRetryValue(cfg.InitialDelayMs, defaulted.initialDelayMs),
+			fmtProviderRetryValue(cfg.MaxDelayMs, defaulted.maxDelayMs),
 		))
 	}
 	if cfg.WallClockBudgetMs <= 0 || cfg.WallClockBudgetMs > maxProviderRetryWallClockBudgetMs {
@@ -1640,13 +1673,26 @@ func validateProviderRetryConfig(path string, cfg *ProviderRetryConfig, errs *[]
 	}
 	if cfg.MaxDelayMs > 0 && cfg.WallClockBudgetMs > 0 && cfg.WallClockBudgetMs < cfg.MaxDelayMs {
 		*errs = append(*errs, fmt.Sprintf(
-			"%s.wallClockBudgetMs (%d) must be >= maxDelayMs (%d)",
-			path, cfg.WallClockBudgetMs, cfg.MaxDelayMs,
+			"%s.wallClockBudgetMs (%s) must be >= maxDelayMs (%s)",
+			path,
+			fmtProviderRetryValue(cfg.WallClockBudgetMs, defaulted.wallClockBudgetMs),
+			fmtProviderRetryValue(cfg.MaxDelayMs, defaulted.maxDelayMs),
 		))
 	}
 }
 
-func validateProviderConfigs(config *RunConfig, errs *[]string) {
+// fmtProviderRetryValue renders a ProviderRetryConfig value for use in
+// cross-field error messages, appending " (default)" when the value
+// was filled in by applyProviderRetryDefaults rather than supplied by
+// the caller.
+func fmtProviderRetryValue(value int, isDefault bool) string {
+	if isDefault {
+		return fmt.Sprintf("%d, default", value)
+	}
+	return fmt.Sprintf("%d", value)
+}
+
+func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]providerRetryDefaulted, errs *[]string) {
 	knownProviders := map[string]bool{}
 	if config.Provider.Type != "" {
 		knownProviders[config.Provider.Type] = true
@@ -1655,7 +1701,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 	validateGeminiProviderFields("provider", config.Provider, errs)
 	validateAnthropicProviderFields("provider", config.Provider, errs)
 	validateAzureWIFCrossField("provider", config.Provider, errs)
-	validateProviderRetryConfig("provider.retry", config.Provider.Retry, errs)
+	validateProviderRetryConfig("provider.retry", config.Provider.Retry, retryDefaulted["provider.retry"], errs)
 	for name, provider := range config.Providers {
 		if name == "" {
 			*errs = append(*errs, "providers map contains an empty provider name")
@@ -1672,7 +1718,8 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 		validateGeminiProviderFields(path, provider, errs)
 		validateAnthropicProviderFields(path, provider, errs)
 		validateAzureWIFCrossField(path, provider, errs)
-		validateProviderRetryConfig(fmt.Sprintf("%s.retry", path), provider.Retry, errs)
+		retryPath := fmt.Sprintf("%s.retry", path)
+		validateProviderRetryConfig(retryPath, provider.Retry, retryDefaulted[retryPath], errs)
 	}
 
 	// Per-provider model-name validation for Vertex AI Gemini. The
