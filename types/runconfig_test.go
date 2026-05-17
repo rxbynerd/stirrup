@@ -3575,17 +3575,17 @@ func TestValidateRunConfig_ProviderRetryDefaultsWhenNil(t *testing.T) {
 		t.Fatal("expected Provider.Retry to be populated after validation")
 	}
 	got := c.Provider.Retry
-	if got.MaxAttempts != 3 {
-		t.Errorf("MaxAttempts = %d, want 3", got.MaxAttempts)
+	if got.MaxAttempts != defaultProviderRetryMaxAttempts {
+		t.Errorf("MaxAttempts = %d, want %d", got.MaxAttempts, defaultProviderRetryMaxAttempts)
 	}
-	if got.InitialDelayMs != 500 {
-		t.Errorf("InitialDelayMs = %d, want 500", got.InitialDelayMs)
+	if got.InitialDelayMs != defaultProviderRetryInitialDelayMs {
+		t.Errorf("InitialDelayMs = %d, want %d", got.InitialDelayMs, defaultProviderRetryInitialDelayMs)
 	}
-	if got.MaxDelayMs != 16000 {
-		t.Errorf("MaxDelayMs = %d, want 16000", got.MaxDelayMs)
+	if got.MaxDelayMs != defaultProviderRetryMaxDelayMs {
+		t.Errorf("MaxDelayMs = %d, want %d", got.MaxDelayMs, defaultProviderRetryMaxDelayMs)
 	}
-	if got.WallClockBudgetMs != 90000 {
-		t.Errorf("WallClockBudgetMs = %d, want 90000", got.WallClockBudgetMs)
+	if got.WallClockBudgetMs != defaultProviderRetryWallClockBudgetMs {
+		t.Errorf("WallClockBudgetMs = %d, want %d", got.WallClockBudgetMs, defaultProviderRetryWallClockBudgetMs)
 	}
 }
 
@@ -3599,14 +3599,14 @@ func TestValidateRunConfig_ProviderRetryPartialDefaulting(t *testing.T) {
 	if got.MaxAttempts != 2 {
 		t.Errorf("MaxAttempts = %d, want 2 (caller-supplied)", got.MaxAttempts)
 	}
-	if got.InitialDelayMs != 500 {
-		t.Errorf("InitialDelayMs = %d, want 500 (default)", got.InitialDelayMs)
+	if got.InitialDelayMs != defaultProviderRetryInitialDelayMs {
+		t.Errorf("InitialDelayMs = %d, want %d (default)", got.InitialDelayMs, defaultProviderRetryInitialDelayMs)
 	}
-	if got.MaxDelayMs != 16000 {
-		t.Errorf("MaxDelayMs = %d, want 16000 (default)", got.MaxDelayMs)
+	if got.MaxDelayMs != defaultProviderRetryMaxDelayMs {
+		t.Errorf("MaxDelayMs = %d, want %d (default)", got.MaxDelayMs, defaultProviderRetryMaxDelayMs)
 	}
-	if got.WallClockBudgetMs != 90000 {
-		t.Errorf("WallClockBudgetMs = %d, want 90000 (default)", got.WallClockBudgetMs)
+	if got.WallClockBudgetMs != defaultProviderRetryWallClockBudgetMs {
+		t.Errorf("WallClockBudgetMs = %d, want %d (default)", got.WallClockBudgetMs, defaultProviderRetryWallClockBudgetMs)
 	}
 }
 
@@ -3619,14 +3619,14 @@ func TestValidateRunConfig_ProviderRetryZeroMaxAttemptsTreatedAsUnset(t *testing
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("expected zero MaxAttempts to be defaulted, got: %v", err)
 	}
-	if c.Provider.Retry.MaxAttempts != 3 {
-		t.Errorf("MaxAttempts = %d, want 3 (default after zero)", c.Provider.Retry.MaxAttempts)
+	if c.Provider.Retry.MaxAttempts != defaultProviderRetryMaxAttempts {
+		t.Errorf("MaxAttempts = %d, want %d (default after zero)", c.Provider.Retry.MaxAttempts, defaultProviderRetryMaxAttempts)
 	}
 }
 
 func TestValidateRunConfig_ProviderRetryMaxAttemptsTooHigh(t *testing.T) {
 	c := validConfig()
-	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: 6}
+	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: maxProviderRetryMaxAttempts + 1}
 	err := ValidateRunConfig(c)
 	if err == nil {
 		t.Fatal("expected error for MaxAttempts above ceiling")
@@ -3641,7 +3641,7 @@ func TestValidateRunConfig_ProviderRetryMaxAttemptsTooHigh(t *testing.T) {
 
 func TestValidateRunConfig_ProviderRetryMaxDelayTooHigh(t *testing.T) {
 	c := validConfig()
-	c.Provider.Retry = &ProviderRetryConfig{MaxDelayMs: 70000}
+	c.Provider.Retry = &ProviderRetryConfig{MaxDelayMs: maxProviderRetryMaxDelayMs + 1}
 	err := ValidateRunConfig(c)
 	if err == nil {
 		t.Fatal("expected error for MaxDelayMs above ceiling")
@@ -3653,7 +3653,7 @@ func TestValidateRunConfig_ProviderRetryMaxDelayTooHigh(t *testing.T) {
 
 func TestValidateRunConfig_ProviderRetryWallClockBudgetTooHigh(t *testing.T) {
 	c := validConfig()
-	c.Provider.Retry = &ProviderRetryConfig{WallClockBudgetMs: 350000}
+	c.Provider.Retry = &ProviderRetryConfig{WallClockBudgetMs: maxProviderRetryWallClockBudgetMs + 1}
 	err := ValidateRunConfig(c)
 	if err == nil {
 		t.Fatal("expected error for WallClockBudgetMs above ceiling")
@@ -3924,11 +3924,13 @@ func TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently(t *te
 	if got.MaxAttempts != 4 {
 		t.Errorf("secondary MaxAttempts = %d, want 4 (caller-supplied)", got.MaxAttempts)
 	}
-	if got.InitialDelayMs != 500 || got.MaxDelayMs != 16000 || got.WallClockBudgetMs != 90000 {
+	if got.InitialDelayMs != defaultProviderRetryInitialDelayMs ||
+		got.MaxDelayMs != defaultProviderRetryMaxDelayMs ||
+		got.WallClockBudgetMs != defaultProviderRetryWallClockBudgetMs {
 		t.Errorf("secondary provider should inherit defaults for unset fields; got %+v", got)
 	}
 	// Top-level provider continues to default independently.
-	if c.Provider.Retry == nil || c.Provider.Retry.MaxAttempts != 3 {
+	if c.Provider.Retry == nil || c.Provider.Retry.MaxAttempts != defaultProviderRetryMaxAttempts {
 		t.Errorf("top-level provider Retry not defaulted independently; got %+v", c.Provider.Retry)
 	}
 }

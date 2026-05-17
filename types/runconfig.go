@@ -39,7 +39,9 @@ const (
 
 	// Provider retry hard ceilings. Enforced by
 	// validateProviderRetryConfig regardless of whether the value came
-	// from the caller or a default.
+	// from the caller or a default. InitialDelayMs has no independent
+	// ceiling; it is transitively bounded by maxProviderRetryMaxDelayMs
+	// via the cross-field invariant (initialDelayMs <= maxDelayMs).
 	maxProviderRetryMaxAttempts       = 5
 	maxProviderRetryMaxDelayMs        = 60000
 	maxProviderRetryWallClockBudgetMs = 300000
@@ -452,9 +454,9 @@ type ProviderConfig struct {
 	GeminiSafetySettings []GeminiSafetySetting `json:"geminiSafetySettings,omitempty"`
 
 	// Retry overrides the per-call retry policy applied by adapters that
-	// honour it (currently openai-compatible). Nil = use defaults. Defaults
-	// are filled in by ValidateRunConfig so downstream consumers always see
-	// a populated value.
+	// honour it. Nil = use defaults. Defaults are filled in by
+	// ValidateRunConfig so downstream consumers always see a populated
+	// value.
 	Retry *ProviderRetryConfig `json:"retry,omitempty"`
 }
 
@@ -467,7 +469,14 @@ type ProviderRetryConfig struct {
 	MaxAttempts int `json:"maxAttempts,omitempty"`
 
 	// InitialDelayMs is the base delay for exponential backoff before
-	// jitter, in milliseconds. Default: 500.
+	// jitter, in milliseconds. Default: 500. A value of 0 (the JSON
+	// omitempty zero) is treated as unset and inherits the default. To
+	// request near-zero initial delay, use 1; zero cannot be expressed
+	// as an explicit policy in the current wire contract. Defaulting
+	// runs before cross-field validation, so when this field is unset
+	// and maxDelayMs is pinned below 500, the resulting error message
+	// annotates the 500 ms value as "(default)" to make the source of
+	// the constraint clear.
 	InitialDelayMs int `json:"initialDelayMs,omitempty"`
 
 	// MaxDelayMs caps the per-attempt backoff and also caps any
@@ -1203,7 +1212,9 @@ type ModePreset struct {
 // CodeScannerConfig when the caller has left it nil, so downstream
 // consumers always see a populated value: "patterns" for execution
 // mode (active scanning) and "none" for read-only modes (no edits
-// happen anyway).
+// happen anyway). Also applies ProviderRetryConfig defaults to
+// Provider.Retry and each entry in Providers so adapters never have
+// to nil-check the per-call retry policy.
 func ValidateRunConfig(config *RunConfig) error {
 	applyCodeScannerDefault(config)
 	retryDefaulted := applyProviderRetryDefaults(config)
