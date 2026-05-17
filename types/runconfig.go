@@ -28,6 +28,21 @@ const (
 	// SessionName. Capped to keep log lines, OTel attribute values, and
 	// trace JSON predictable; well above any genuine human-readable label.
 	maxSessionNameLength = 255
+
+	// Provider retry defaults. Filled in by applyProviderRetryDefaults
+	// when the caller leaves a field zero so downstream consumers always
+	// see a populated ProviderRetryConfig.
+	defaultProviderRetryMaxAttempts       = 3
+	defaultProviderRetryInitialDelayMs    = 500
+	defaultProviderRetryMaxDelayMs        = 16000
+	defaultProviderRetryWallClockBudgetMs = 90000
+
+	// Provider retry hard ceilings. Enforced by
+	// validateProviderRetryConfig regardless of whether the value came
+	// from the caller or a default.
+	maxProviderRetryMaxAttempts       = 5
+	maxProviderRetryMaxDelayMs        = 60000
+	maxProviderRetryWallClockBudgetMs = 300000
 )
 
 // RunConfig fully describes a single harness run. It is the composition root:
@@ -420,6 +435,35 @@ type ProviderConfig struct {
 	// tooling, where false positives on code samples are operationally
 	// unacceptable.
 	GeminiSafetySettings []GeminiSafetySetting `json:"geminiSafetySettings,omitempty"`
+
+	// Retry overrides the per-call retry policy applied by adapters that
+	// honour it (currently openai-compatible). Nil = use defaults. Defaults
+	// are filled in by ValidateRunConfig so downstream consumers always see
+	// a populated value.
+	Retry *ProviderRetryConfig `json:"retry,omitempty"`
+}
+
+// ProviderRetryConfig bounds the retry behaviour an adapter applies to a
+// single provider call. Defaults are filled in at validation time so a
+// nil pointer never reaches a consumer.
+type ProviderRetryConfig struct {
+	// MaxAttempts is the total number of HTTP attempts (including the
+	// first). A value of 1 disables retry. Default: 3. Hard ceiling: 5.
+	MaxAttempts int `json:"maxAttempts,omitempty"`
+
+	// InitialDelayMs is the base delay for exponential backoff before
+	// jitter, in milliseconds. Default: 500.
+	InitialDelayMs int `json:"initialDelayMs,omitempty"`
+
+	// MaxDelayMs caps the per-attempt backoff and also caps any
+	// server-supplied Retry-After hint (defence against pathological
+	// values), in milliseconds. Default: 16000. Hard ceiling: 60000.
+	MaxDelayMs int `json:"maxDelayMs,omitempty"`
+
+	// WallClockBudgetMs bounds total time spent across all attempts
+	// (including the first request), in milliseconds. Default: 90000.
+	// Hard ceiling: 300000. Must be >= MaxDelayMs.
+	WallClockBudgetMs int `json:"wallClockBudgetMs,omitempty"`
 }
 
 // GeminiSafetySetting overrides the threshold for one Gemini safety
@@ -1147,6 +1191,7 @@ type ModePreset struct {
 // happen anyway).
 func ValidateRunConfig(config *RunConfig) error {
 	applyCodeScannerDefault(config)
+	applyProviderRetryDefaults(config)
 
 	var errs []string
 
@@ -1455,6 +1500,40 @@ func isToolEnabled(enabled []string, name string) bool {
 	return false
 }
 
+// applyProviderRetryDefaults populates ProviderConfig.Retry with the
+// documented defaults so downstream consumers can dereference the
+// pointer without a nil check. Operates on the top-level Provider and
+// every entry in Providers. Each field is treated independently: a
+// caller may pin one knob and inherit defaults for the rest.
+func applyProviderRetryDefaults(config *RunConfig) {
+	defaultProviderRetry(&config.Provider)
+	if len(config.Providers) == 0 {
+		return
+	}
+	for name, provider := range config.Providers {
+		defaultProviderRetry(&provider)
+		config.Providers[name] = provider
+	}
+}
+
+func defaultProviderRetry(provider *ProviderConfig) {
+	if provider.Retry == nil {
+		provider.Retry = &ProviderRetryConfig{}
+	}
+	if provider.Retry.MaxAttempts == 0 {
+		provider.Retry.MaxAttempts = defaultProviderRetryMaxAttempts
+	}
+	if provider.Retry.InitialDelayMs == 0 {
+		provider.Retry.InitialDelayMs = defaultProviderRetryInitialDelayMs
+	}
+	if provider.Retry.MaxDelayMs == 0 {
+		provider.Retry.MaxDelayMs = defaultProviderRetryMaxDelayMs
+	}
+	if provider.Retry.WallClockBudgetMs == 0 {
+		provider.Retry.WallClockBudgetMs = defaultProviderRetryWallClockBudgetMs
+	}
+}
+
 // applyCodeScannerDefault fills CodeScanner with a sensible default
 // when the caller has not set one. The default is "patterns" for
 // execution mode (active scanning on every successful edit) and
@@ -1505,6 +1584,53 @@ func validateVerifierConfig(cfg VerifierConfig, path string, errs *[]string) {
 	}
 }
 
+// validateProviderRetryConfig enforces the hard ceilings and field
+// relationships on a ProviderRetryConfig. Defaulting runs at the top of
+// ValidateRunConfig, so every field is non-zero by the time this check
+// runs; the bounds below are the operator-facing limits, not the
+// software-engineering ones.
+func validateProviderRetryConfig(path string, cfg *ProviderRetryConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if cfg.MaxAttempts < 1 || cfg.MaxAttempts > maxProviderRetryMaxAttempts {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.maxAttempts must be in [1, %d] (got %d)",
+			path, maxProviderRetryMaxAttempts, cfg.MaxAttempts,
+		))
+	}
+	if cfg.MaxDelayMs <= 0 || cfg.MaxDelayMs > maxProviderRetryMaxDelayMs {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.maxDelayMs must be in (0, %d] (got %d)",
+			path, maxProviderRetryMaxDelayMs, cfg.MaxDelayMs,
+		))
+	}
+	if cfg.InitialDelayMs < 0 {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.initialDelayMs must be >= 0 (got %d)",
+			path, cfg.InitialDelayMs,
+		))
+	}
+	if cfg.MaxDelayMs > 0 && cfg.InitialDelayMs > cfg.MaxDelayMs {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.initialDelayMs (%d) must be <= maxDelayMs (%d)",
+			path, cfg.InitialDelayMs, cfg.MaxDelayMs,
+		))
+	}
+	if cfg.WallClockBudgetMs <= 0 || cfg.WallClockBudgetMs > maxProviderRetryWallClockBudgetMs {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.wallClockBudgetMs must be in (0, %d] (got %d)",
+			path, maxProviderRetryWallClockBudgetMs, cfg.WallClockBudgetMs,
+		))
+	}
+	if cfg.MaxDelayMs > 0 && cfg.WallClockBudgetMs > 0 && cfg.WallClockBudgetMs < cfg.MaxDelayMs {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.wallClockBudgetMs (%d) must be >= maxDelayMs (%d)",
+			path, cfg.WallClockBudgetMs, cfg.MaxDelayMs,
+		))
+	}
+}
+
 func validateProviderConfigs(config *RunConfig, errs *[]string) {
 	knownProviders := map[string]bool{}
 	if config.Provider.Type != "" {
@@ -1514,6 +1640,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 	validateGeminiProviderFields("provider", config.Provider, errs)
 	validateAnthropicProviderFields("provider", config.Provider, errs)
 	validateAzureWIFCrossField("provider", config.Provider, errs)
+	validateProviderRetryConfig("provider.retry", config.Provider.Retry, errs)
 	for name, provider := range config.Providers {
 		if name == "" {
 			*errs = append(*errs, "providers map contains an empty provider name")
@@ -1530,6 +1657,7 @@ func validateProviderConfigs(config *RunConfig, errs *[]string) {
 		validateGeminiProviderFields(path, provider, errs)
 		validateAnthropicProviderFields(path, provider, errs)
 		validateAzureWIFCrossField(path, provider, errs)
+		validateProviderRetryConfig(fmt.Sprintf("%s.retry", path), provider.Retry, errs)
 	}
 
 	// Per-provider model-name validation for Vertex AI Gemini. The

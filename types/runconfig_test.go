@@ -3513,3 +3513,166 @@ func TestValidateRunConfig_TraceEmitterHeaders_CRLFRejected(t *testing.T) {
 		}
 	})
 }
+
+// --- ProviderRetryConfig tests ---
+
+func TestValidateRunConfig_ProviderRetryDefaultsWhenNil(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = nil
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if c.Provider.Retry == nil {
+		t.Fatal("expected Provider.Retry to be populated after validation")
+	}
+	got := c.Provider.Retry
+	if got.MaxAttempts != 3 {
+		t.Errorf("MaxAttempts = %d, want 3", got.MaxAttempts)
+	}
+	if got.InitialDelayMs != 500 {
+		t.Errorf("InitialDelayMs = %d, want 500", got.InitialDelayMs)
+	}
+	if got.MaxDelayMs != 16000 {
+		t.Errorf("MaxDelayMs = %d, want 16000", got.MaxDelayMs)
+	}
+	if got.WallClockBudgetMs != 90000 {
+		t.Errorf("WallClockBudgetMs = %d, want 90000", got.WallClockBudgetMs)
+	}
+}
+
+func TestValidateRunConfig_ProviderRetryPartialDefaulting(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: 2}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	got := c.Provider.Retry
+	if got.MaxAttempts != 2 {
+		t.Errorf("MaxAttempts = %d, want 2 (caller-supplied)", got.MaxAttempts)
+	}
+	if got.InitialDelayMs != 500 {
+		t.Errorf("InitialDelayMs = %d, want 500 (default)", got.InitialDelayMs)
+	}
+	if got.MaxDelayMs != 16000 {
+		t.Errorf("MaxDelayMs = %d, want 16000 (default)", got.MaxDelayMs)
+	}
+	if got.WallClockBudgetMs != 90000 {
+		t.Errorf("WallClockBudgetMs = %d, want 90000 (default)", got.WallClockBudgetMs)
+	}
+}
+
+// TestValidateRunConfig_ProviderRetryZeroMaxAttemptsTreatedAsUnset pins
+// that callers who leave MaxAttempts zero (the JSON-omitempty default)
+// receive the documented default, not a validation error.
+func TestValidateRunConfig_ProviderRetryZeroMaxAttemptsTreatedAsUnset(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: 0}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected zero MaxAttempts to be defaulted, got: %v", err)
+	}
+	if c.Provider.Retry.MaxAttempts != 3 {
+		t.Errorf("MaxAttempts = %d, want 3 (default after zero)", c.Provider.Retry.MaxAttempts)
+	}
+}
+
+func TestValidateRunConfig_ProviderRetryMaxAttemptsTooHigh(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{MaxAttempts: 6}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for MaxAttempts above ceiling")
+	}
+	if !strings.Contains(err.Error(), "provider.retry") {
+		t.Errorf("expected error to mention provider.retry path, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "maxAttempts") {
+		t.Errorf("expected error to mention maxAttempts, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_ProviderRetryMaxDelayTooHigh(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{MaxDelayMs: 70000}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for MaxDelayMs above ceiling")
+	}
+	if !strings.Contains(err.Error(), "maxDelayMs") {
+		t.Errorf("expected error to mention maxDelayMs, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_ProviderRetryWallClockBudgetTooHigh(t *testing.T) {
+	c := validConfig()
+	c.Provider.Retry = &ProviderRetryConfig{WallClockBudgetMs: 350000}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for WallClockBudgetMs above ceiling")
+	}
+	if !strings.Contains(err.Error(), "wallClockBudgetMs") {
+		t.Errorf("expected error to mention wallClockBudgetMs, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_ProviderRetryInitialDelayExceedsMaxDelay(t *testing.T) {
+	c := validConfig()
+	// Caller pins InitialDelay > MaxDelay (both inside individual
+	// ceilings). The cross-field check is what should reject this.
+	c.Provider.Retry = &ProviderRetryConfig{
+		InitialDelayMs: 5000,
+		MaxDelayMs:     1000,
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for InitialDelayMs > MaxDelayMs")
+	}
+	if !strings.Contains(err.Error(), "initialDelayMs") {
+		t.Errorf("expected error to mention initialDelayMs, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_ProviderRetryWallClockBudgetBelowMaxDelay(t *testing.T) {
+	c := validConfig()
+	// WallClockBudget below MaxDelay would not give a single attempt
+	// room to consume its backoff; reject at validation time.
+	c.Provider.Retry = &ProviderRetryConfig{
+		MaxDelayMs:        20000,
+		WallClockBudgetMs: 10000,
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for WallClockBudgetMs < MaxDelayMs")
+	}
+	if !strings.Contains(err.Error(), "wallClockBudgetMs") {
+		t.Errorf("expected error to mention wallClockBudgetMs, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently(t *testing.T) {
+	c := validConfig()
+	c.Providers = map[string]ProviderConfig{
+		"secondary": {
+			Type:      "openai-compatible",
+			BaseURL:   "https://example.test/v1",
+			APIKeyRef: "secret://SECONDARY_KEY",
+			Retry:     &ProviderRetryConfig{MaxAttempts: 4},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	got := c.Providers["secondary"].Retry
+	if got == nil {
+		t.Fatal("expected secondary provider Retry to be populated")
+	}
+	if got.MaxAttempts != 4 {
+		t.Errorf("secondary MaxAttempts = %d, want 4 (caller-supplied)", got.MaxAttempts)
+	}
+	if got.InitialDelayMs != 500 || got.MaxDelayMs != 16000 || got.WallClockBudgetMs != 90000 {
+		t.Errorf("secondary provider should inherit defaults for unset fields; got %+v", got)
+	}
+	// Top-level provider continues to default independently.
+	if c.Provider.Retry == nil || c.Provider.Retry.MaxAttempts != 3 {
+		t.Errorf("top-level provider Retry not defaulted independently; got %+v", c.Provider.Retry)
+	}
+}
