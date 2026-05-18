@@ -500,11 +500,18 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 				currentText = ""
 			}
 			inputBytes, _ := json.Marshal(event.Input)
+			// ThoughtSignature is provider-opaque state that the harness
+			// must echo back unchanged on the next request so the model
+			// can resume its prior reasoning. Currently populated only by
+			// the Gemini 3.x adapter (#194). Adapters that do not emit
+			// the field leave it empty, and `omitempty` keeps it off the
+			// wire for downstream consumers (request marshallers, traces).
 			result.Blocks = append(result.Blocks, types.ContentBlock{
-				Type:  "tool_use",
-				ID:    event.ID,
-				Name:  event.Name,
-				Input: json.RawMessage(inputBytes),
+				Type:             "tool_use",
+				ID:               event.ID,
+				Name:             event.Name,
+				Input:            json.RawMessage(inputBytes),
+				ThoughtSignature: event.ThoughtSignature,
 			})
 
 		case "message_complete":

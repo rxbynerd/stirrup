@@ -803,3 +803,76 @@ func TestAnthropicAdapter_WIFModeUsesAuthorizationBearer(t *testing.T) {
 	for range ch {
 	}
 }
+
+// TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI is a regression
+// guard for issue #194 cross-provider data leakage: ContentBlock now
+// carries a Gemini-private `thought_signature` field, and a multi-provider
+// run (model router) can route history blocks produced by the Gemini
+// adapter into an Anthropic request. The adapter must serialise messages
+// through a local wire type that omits ThoughtSignature so Vertex's
+// encrypted chain-of-thought blob never reaches Anthropic infrastructure.
+//
+// The assertion is structural: the marshalled request body must not
+// contain the substring "thought_signature" anywhere, even when an input
+// ContentBlock carries a populated value.
+func TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+
+	// Construct a message history that mirrors what the harness builds
+	// after a Gemini 3.x turn that emitted a thoughtSignature: an
+	// assistant message with a tool_use ContentBlock carrying the blob.
+	const sig = "AY89SIGBLOB=="
+	messages := []types.Message{
+		{
+			Role: "user",
+			Content: []types.ContentBlock{
+				{Type: "text", Text: "read it"},
+			},
+		},
+		{
+			Role: "assistant",
+			Content: []types.ContentBlock{
+				{
+					Type:             "tool_use",
+					ID:               "toolu_1",
+					Name:             "read_file",
+					Input:            json.RawMessage(`{"path":"main.go"}`),
+					ThoughtSignature: sig,
+				},
+			},
+		},
+	}
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		Messages:  messages,
+		MaxTokens: 16,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	if len(capturedBody) == 0 {
+		t.Fatal("expected the Anthropic server to receive a request body")
+	}
+	bodyStr := string(capturedBody)
+	if strings.Contains(bodyStr, "thought_signature") {
+		t.Errorf("Anthropic request body contains \"thought_signature\" — Gemini-private state leaked to Anthropic API.\nbody = %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, sig) {
+		t.Errorf("Anthropic request body contains the signature value %q.\nbody = %s", sig, bodyStr)
+	}
+}

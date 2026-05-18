@@ -42,10 +42,26 @@ type geminiContent struct {
 // FunctionResponse should be populated per part. (InlineData /
 // fileData / videoMetadata exist in the spec but are intentionally not
 // supported by this adapter — the harness is text-and-tools only.)
+//
+// ThoughtSignature is the one non-discriminator field on this struct: it is
+// an opaque blob Vertex emits alongside `text` or `functionCall` parts on
+// Gemini 3.x responses (the model's encrypted chain-of-thought for
+// cross-turn reasoning continuity). The harness echoes it back unchanged on
+// the corresponding part of the assistant's content the next time the same
+// history is rendered so the model can resume its prior reasoning. We do
+// not introspect, log, or mutate the value — it is provider-private state
+// that just happens to be threaded through the message history.
+//
+// The `thoughtSignature` JSON tag matches the Vertex AI wire format
+// directly (camelCase); this differs from the snake_case convention on
+// types.ContentBlock and types.StreamEvent (`thought_signature`). Do not
+// "fix" this tag to snake_case — Vertex will not recognise it and the
+// round-trip will silently break for Gemini 3.x model turns.
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
 }
 
 // geminiFunctionCall is a model-emitted call to one of the declared tools.

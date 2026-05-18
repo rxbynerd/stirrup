@@ -210,3 +210,50 @@ func TestReplayProvider_EmptyModelOutput(t *testing.T) {
 		t.Errorf("StopReason = %q, want end_turn", events[0].StopReason)
 	}
 }
+
+// TestReplayProvider_ForwardsThoughtSignature pins the issue #194
+// follow-on behaviour: a tool_use ContentBlock in a TurnRecord that
+// carries a ThoughtSignature must surface that value on the emitted
+// tool_call StreamEvent. The load-bearing path is live-continuation
+// (mineFailureTasks) where ReplayProvider seeds the history of a run
+// that subsequently calls a real Vertex provider — dropping the
+// signature there would silently degrade cross-turn reasoning
+// continuity for exactly the multi-turn agentic sequences likely to
+// appear in a failure recording.
+func TestReplayProvider_ForwardsThoughtSignature(t *testing.T) {
+	const sig = "REPLAYED-SIG=="
+	turns := []types.TurnRecord{
+		{
+			Turn: 1,
+			ModelOutput: []types.ContentBlock{
+				{
+					Type:             "tool_use",
+					ID:               "toolu_abc",
+					Name:             "read_file",
+					Input:            json.RawMessage(`{"path":"main.go"}`),
+					ThoughtSignature: sig,
+				},
+			},
+		},
+	}
+
+	rp := NewReplayProvider(turns)
+	ch, err := rp.Stream(context.Background(), types.StreamParams{})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+	var toolCall *types.StreamEvent
+	for i := range events {
+		if events[i].Type == "tool_call" {
+			toolCall = &events[i]
+		}
+	}
+	if toolCall == nil {
+		t.Fatal("expected a tool_call event")
+	}
+	if toolCall.ThoughtSignature != sig {
+		t.Errorf("tool_call.ThoughtSignature = %q, want %q", toolCall.ThoughtSignature, sig)
+	}
+}

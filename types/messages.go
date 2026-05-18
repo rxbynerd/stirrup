@@ -12,15 +12,38 @@ type Message struct {
 
 // ContentBlock is a single block of content within a message.
 // Use the Type field to determine which variant fields are populated.
+//
+// ThoughtSignature is a provider-opaque blob attached to an assistant block
+// so the harness can round-trip it back to the provider on the next turn.
+// Currently it is only populated by the Gemini adapter, which threads the
+// `thoughtSignature` field that Vertex AI emits on parts of 3.x model
+// responses (Gemini's encrypted chain-of-thought for cross-turn reasoning
+// continuity, see https://cloud.google.com/vertex-ai/generative-ai/docs/thinking).
+// The field is `omitempty` so other adapters never see it on the wire.
+// Treat the value as fully opaque — the harness must not introspect it,
+// log it verbatim, or mutate it. A future generalisation (e.g. renaming
+// to ProviderState or moving to a metadata map) is intentionally a non-goal
+// for the current change.
+//
+// Rename-decision (recorded for the next maintainer who needs this):
+// the name `ThoughtSignature` is Gemini-specific. When a second provider
+// requires analogous opaque round-trip state, rename this field to
+// `ProviderState` (JSON: `provider_state`) and update the RunRecording
+// schema at the same time — do NOT add a second provider-specific field
+// alongside this one. Adapter-private wire types (see
+// anthropicContentBlock for the established pattern) must continue to
+// omit any provider-state field they do not own, so the rename does
+// not relax the cross-provider leakage guard introduced for #194.
 type ContentBlock struct {
-	Type      string          `json:"type"` // "text" | "tool_use" | "tool_result"
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result"
+	Text             string          `json:"text,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Input            json.RawMessage `json:"input,omitempty"`
+	ToolUseID        string          `json:"tool_use_id,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	IsError          bool            `json:"is_error,omitempty"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
 }
 
 // ToolDefinition describes a tool available to the model.

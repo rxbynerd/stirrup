@@ -985,3 +985,211 @@ func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
 		t.Errorf("stop_reason = %q, want tool_use", stop.StopReason)
 	}
 }
+
+// TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall pins the receive
+// side of the issue #194 fix: when Vertex emits a functionCall part with a
+// `thoughtSignature` blob attached, the adapter must surface that blob on
+// the emitted tool_call StreamEvent so the agentic loop can persist it
+// onto the ContentBlock for next-turn round-trip. The fixture is the
+// 3.x non-streamed shape captured from Vertex against
+// `gemini-3.1-pro-preview`.
+func TestGeminiAdapter_ThoughtSignatureCapturedOnToolCall(t *testing.T) {
+	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rOPAQUE=="
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+
+	var toolCall *types.StreamEvent
+	for i := range events {
+		if events[i].Type == "tool_call" {
+			toolCall = &events[i]
+		}
+		if events[i].Type == "error" {
+			t.Fatalf("unexpected error event: %v", events[i].Error)
+		}
+	}
+	if toolCall == nil {
+		t.Fatal("expected a tool_call event")
+	}
+	if toolCall.ThoughtSignature != sig {
+		t.Errorf("tool_call.ThoughtSignature = %q, want %q", toolCall.ThoughtSignature, sig)
+	}
+}
+
+// TestGeminiAdapter_ThoughtSignatureMissingIsEmpty confirms that a
+// pre-3.x response (no `thoughtSignature` on the part) leaves the
+// StreamEvent's ThoughtSignature empty. This is the negative case that
+// protects the `omitempty` invariant on the send side: an empty
+// signature must round-trip to a request body that does NOT include
+// the field.
+func TestGeminiAdapter_ThoughtSignatureMissingIsEmpty(t *testing.T) {
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"x"}}}]},"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+	var toolCall *types.StreamEvent
+	for i := range events {
+		if events[i].Type == "tool_call" {
+			toolCall = &events[i]
+		}
+	}
+	if toolCall == nil {
+		t.Fatal("expected a tool_call event")
+	}
+	if toolCall.ThoughtSignature != "" {
+		t.Errorf("tool_call.ThoughtSignature = %q, want empty", toolCall.ThoughtSignature)
+	}
+}
+
+// TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath pins the drain
+// branch of the SSE consumer (gemini.go around the finishReason-triggered
+// drain): a tool call left open with willContinue=true is flushed when
+// finishReason arrives, and the buffered thoughtSignature must travel
+// with it onto the emitted StreamEvent. The existing drain test
+// (TestGeminiAdapter_ToolCallBufferDrainOnFinishReason) does not set a
+// signature on the willContinue chunk, so a regression that dropped
+// buf.thoughtSignature from the drain emit call would not be caught
+// there. (#194; synthesis B3 / test-coverage Gap 2.)
+func TestGeminiAdapter_ThoughtSignatureCapturedViaDrainPath(t *testing.T) {
+	const sig = "DRAINABLE=="
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"x.go"},"willContinue":true},"thoughtSignature":"`+sig+`"}]}}]}`) +
+		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+	if err != nil {
+		t.Fatalf("Stream(): %v", err)
+	}
+
+	events := collectEvents(t, ch)
+	var calls []types.StreamEvent
+	for _, ev := range events {
+		if ev.Type == "tool_call" {
+			calls = append(calls, ev)
+		}
+		if ev.Type == "error" {
+			t.Fatalf("unexpected error event: %v", ev.Error)
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 tool_call from the drain path, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].ThoughtSignature != sig {
+		t.Errorf("drained tool_call.ThoughtSignature = %q, want %q", calls[0].ThoughtSignature, sig)
+	}
+}
+
+// TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins documents and pins
+// the deliberate multi-chunk accumulation policy: across willContinue=true
+// chunks the buffer retains the most recent NON-EMPTY thoughtSignature
+// value. The `if part.ThoughtSignature != ""` guard in gemini.go encodes
+// the "absent field on a continuation chunk does not clobber a prior
+// signature" semantic; removing that guard would break sub-case B.
+// (#194; synthesis B4 / test-coverage Gap 3.)
+func TestGeminiAdapter_ThoughtSignatureLastNonEmptyWins(t *testing.T) {
+	t.Run("later_non_empty_supersedes_earlier", func(t *testing.T) {
+		body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"a"},"willContinue":true},"thoughtSignature":"FIRST=="}]}}]}`) +
+			makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"ab"},"willContinue":true}}]}}]}`) +
+			makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"abc"}},"thoughtSignature":"LAST=="}]},"finishReason":"STOP"}]}`)
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, body)
+		}))
+		defer srv.Close()
+
+		adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+		ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+		if err != nil {
+			t.Fatalf("Stream(): %v", err)
+		}
+
+		events := collectEvents(t, ch)
+		var toolCall *types.StreamEvent
+		for i := range events {
+			if events[i].Type == "tool_call" {
+				toolCall = &events[i]
+			}
+			if events[i].Type == "error" {
+				t.Fatalf("unexpected error event: %v", events[i].Error)
+			}
+		}
+		if toolCall == nil {
+			t.Fatal("expected a tool_call event")
+		}
+		if toolCall.ThoughtSignature != "LAST==" {
+			t.Errorf("tool_call.ThoughtSignature = %q, want %q", toolCall.ThoughtSignature, "LAST==")
+		}
+	})
+
+	t.Run("absent_field_on_later_chunks_does_not_clobber", func(t *testing.T) {
+		body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"a"},"willContinue":true},"thoughtSignature":"ONLY=="}]}}]}`) +
+			makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","partialArgs":{"path":"ab"},"willContinue":true}}]}}]}`) +
+			makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"abc"}}}]},"finishReason":"STOP"}]}`)
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, body)
+		}))
+		defer srv.Close()
+
+		adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+		ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+		if err != nil {
+			t.Fatalf("Stream(): %v", err)
+		}
+
+		events := collectEvents(t, ch)
+		var toolCall *types.StreamEvent
+		for i := range events {
+			if events[i].Type == "tool_call" {
+				toolCall = &events[i]
+			}
+			if events[i].Type == "error" {
+				t.Fatalf("unexpected error event: %v", events[i].Error)
+			}
+		}
+		if toolCall == nil {
+			t.Fatal("expected a tool_call event")
+		}
+		if toolCall.ThoughtSignature != "ONLY==" {
+			t.Errorf("tool_call.ThoughtSignature = %q, want %q (later chunks without the field must not clobber the earlier value)", toolCall.ThoughtSignature, "ONLY==")
+		}
+	})
+}

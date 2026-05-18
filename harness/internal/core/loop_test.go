@@ -943,6 +943,66 @@ func TestBuildLoop_InvalidConfig(t *testing.T) {
 	}
 }
 
+// TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock pins the
+// in-loop hop that carries the Gemini 3.x thoughtSignature from the
+// StreamEvent channel onto the persisted assistant ContentBlock
+// (#194). The assignment lives at a single point in streamEventsToResult
+// — without this regression test, deleting that one line is invisible
+// to the entire suite and silently drops cross-turn reasoning state.
+func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+
+	t.Run("non_empty_signature_survives", func(t *testing.T) {
+		ch := make(chan types.StreamEvent, 2)
+		ch <- types.StreamEvent{
+			Type:             "tool_call",
+			ID:               "c1",
+			Name:             "fn",
+			Input:            map[string]any{},
+			ThoughtSignature: "AY89==",
+		}
+		ch <- types.StreamEvent{Type: "message_complete"}
+		close(ch)
+
+		result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+		if err != nil {
+			t.Fatalf("streamEventsToResult() error: %v", err)
+		}
+		if len(result.Blocks) != 1 {
+			t.Fatalf("expected 1 block, got %d: %+v", len(result.Blocks), result.Blocks)
+		}
+		if result.Blocks[0].Type != "tool_use" {
+			t.Errorf("Blocks[0].Type = %q, want tool_use", result.Blocks[0].Type)
+		}
+		if result.Blocks[0].ThoughtSignature != "AY89==" {
+			t.Errorf("Blocks[0].ThoughtSignature = %q, want %q", result.Blocks[0].ThoughtSignature, "AY89==")
+		}
+	})
+
+	t.Run("empty_signature_stays_empty", func(t *testing.T) {
+		ch := make(chan types.StreamEvent, 2)
+		ch <- types.StreamEvent{
+			Type:  "tool_call",
+			ID:    "c2",
+			Name:  "fn",
+			Input: map[string]any{},
+		}
+		ch <- types.StreamEvent{Type: "message_complete"}
+		close(ch)
+
+		result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+		if err != nil {
+			t.Fatalf("streamEventsToResult() error: %v", err)
+		}
+		if len(result.Blocks) != 1 {
+			t.Fatalf("expected 1 block, got %d: %+v", len(result.Blocks), result.Blocks)
+		}
+		if result.Blocks[0].ThoughtSignature != "" {
+			t.Errorf("Blocks[0].ThoughtSignature = %q, want empty (zero value must not be mutated)", result.Blocks[0].ThoughtSignature)
+		}
+	})
+}
+
 func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
 	ch := make(chan types.StreamEvent, 3)
 	ch <- types.StreamEvent{Type: "text_delta", Text: "Hello"}

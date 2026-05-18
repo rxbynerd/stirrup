@@ -38,6 +38,22 @@ type StreamEvent struct {
 	OutputTokens int            `json:"outputTokens,omitempty"`
 	Content      []ContentBlock `json:"content,omitempty"`
 	Error        error          `json:"-"`
+
+	// ThoughtSignature is the opaque provider-private blob captured for
+	// round-trip on the next turn. Currently only populated by the Gemini
+	// adapter on "tool_call" events (and, in the future, "text_delta"
+	// events when the text-part case is wired). The agentic loop copies
+	// this onto the persisted assistant ContentBlock so that the next
+	// request reproduces it verbatim. `omitempty` keeps it off the wire
+	// for adapters that do not emit it.
+	//
+	// ProviderAdapter implementations that do not support per-turn
+	// reasoning state MUST leave this field at its zero value. Adapter-
+	// side wire types are expected to drop the field (see
+	// anthropicContentBlock for the established pattern) so a populated
+	// value on a ContentBlock cannot accidentally cross provider
+	// boundaries.
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 // StreamParams holds the parameters for a model streaming request.
