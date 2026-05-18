@@ -9,9 +9,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -974,5 +978,164 @@ func TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed(t *testing.T) {
 	// canonical signal that a pattern fired.
 	if !strings.Contains(scrubbed, "[REDACTED]") {
 		t.Errorf("scrubbed error missing [REDACTED] marker: %s", scrubbed)
+	}
+}
+
+// testRetryPolicy returns a RetryPolicy tuned for unit tests: small
+// delays keep the test wall-clock short while still exercising the
+// helper's sleep + budget paths.
+func testRetryPolicy() RetryPolicy {
+	return RetryPolicy{
+		MaxAttempts:     2,
+		InitialDelay:    time.Millisecond,
+		MaxDelay:        5 * time.Millisecond,
+		WallClockBudget: 200 * time.Millisecond,
+	}
+}
+
+// TestOpenAIAdapter_RetriesOnce429ThenSucceeds verifies the end-to-end
+// retry path on the openai-compatible adapter: a single 429 from the
+// upstream is retried once, the second attempt's SSE stream succeeds,
+// and the events delivered to the caller match the no-retry baseline.
+// The provider_retry_attempt span event fires exactly once on the
+// intermediate 429; rate_limited does NOT fire on terminal success
+// because the final response was a 200.
+func TestOpenAIAdapter_RetriesOnce429ThenSucceeds(t *testing.T) {
+	body := strings.Join([]string{
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`),
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`),
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+		"data: [DONE]\n\n",
+	}, "")
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"slow down"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, testRetryPolicy())
+	adapter.Tracer = tracer
+
+	ctx, span := tracer.Start(context.Background(), "test")
+
+	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := collectEvents(t, ch)
+	span.End()
+
+	if got, want := calls.Load(), int32(2); got != want {
+		t.Errorf("server received %d requests, want %d", got, want)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 stream events (text_delta, message_complete), got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "text_delta" || events[0].Text != "Hi" {
+		t.Errorf("event[0] = %+v, want text_delta/Hi", events[0])
+	}
+	if events[1].Type != "message_complete" || events[1].StopReason != "end_turn" {
+		t.Errorf("event[1] = %+v, want message_complete/end_turn", events[1])
+	}
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var retryAttempts, rateLimited int
+	for _, s := range stubs {
+		for _, ev := range s.Events {
+			switch ev.Name {
+			case "provider_retry_attempt":
+				retryAttempts++
+			case "rate_limited":
+				rateLimited++
+			}
+		}
+	}
+	if retryAttempts != 1 {
+		t.Errorf("provider_retry_attempt events = %d, want 1", retryAttempts)
+	}
+	if rateLimited != 0 {
+		t.Errorf("rate_limited events = %d, want 0 on terminal success", rateLimited)
+	}
+}
+
+// TestOpenAIAdapter_429ExhaustedSurfacesTerminalError verifies that when
+// the upstream returns 429 on every attempt, the adapter exhausts its
+// retries and surfaces the boundary error format unchanged. The
+// rate_limited span event fires exactly once on the terminal attempt
+// — this is the dashboard-facing signal that an operator-visible
+// failure occurred (intermediate retries are kept off the
+// rate_limited event to avoid double-counting against alerts that key
+// off it).
+func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"still rate limited"}}`)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, testRetryPolicy())
+	adapter.Tracer = tracer
+
+	ctx, span := tracer.Start(context.Background(), "test")
+
+	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	span.End()
+	if err == nil {
+		t.Fatal("expected terminal error after retry exhaustion, got nil")
+	}
+	wantMsg := "openai API returned status 429: still rate limited"
+	if !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("error = %q, want substring %q", err.Error(), wantMsg)
+	}
+	if got, want := calls.Load(), int32(2); got != want {
+		t.Errorf("server received %d requests, want %d (MaxAttempts=2)", got, want)
+	}
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var retryAttempts, rateLimited int
+	for _, s := range stubs {
+		for _, ev := range s.Events {
+			switch ev.Name {
+			case "provider_retry_attempt":
+				retryAttempts++
+			case "rate_limited":
+				rateLimited++
+			}
+		}
+	}
+	// One intermediate retry event (attempt 1 → 2) and one terminal
+	// rate_limited event on the final 429.
+	if retryAttempts != 1 {
+		t.Errorf("provider_retry_attempt events = %d, want 1", retryAttempts)
+	}
+	if rateLimited != 1 {
+		t.Errorf("rate_limited events = %d, want 1 on terminal 429", rateLimited)
 	}
 }
