@@ -226,6 +226,22 @@ type sseMessageDelta struct {
 	} `json:"usage,omitempty"`
 }
 
+// buildAnthropicRequest projects a StreamParams into the Anthropic Messages
+// wire body. The stream argument toggles the "stream" field so a future
+// non-streaming caller (batch submission, phase 2 of issue #133) can reuse
+// the same projection without duplicating field-by-field copying.
+func buildAnthropicRequest(params types.StreamParams, stream bool) anthropicRequest {
+	return anthropicRequest{
+		Model:       params.Model,
+		System:      params.System,
+		Messages:    translateMessagesAnthropic(params.Messages),
+		Tools:       params.Tools,
+		MaxTokens:   params.MaxTokens,
+		Temperature: params.Temperature,
+		Stream:      stream,
+	}
+}
+
 // Stream sends a streaming request to the Anthropic Messages API and returns
 // a channel of StreamEvents. The channel is closed when the stream ends or
 // an error occurs. Cancelling the context terminates the stream.
@@ -236,15 +252,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		attribute.String("provider.model", params.Model),
 	)
 
-	reqBody := anthropicRequest{
-		Model:       params.Model,
-		System:      params.System,
-		Messages:    translateMessagesAnthropic(params.Messages),
-		Tools:       params.Tools,
-		MaxTokens:   params.MaxTokens,
-		Temperature: params.Temperature,
-		Stream:      true,
-	}
+	reqBody := buildAnthropicRequest(params, true)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

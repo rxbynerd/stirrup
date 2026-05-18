@@ -446,6 +446,23 @@ func translateToolsResponses(tools []types.ToolDefinition) []responsesTool {
 	return out
 }
 
+// buildResponsesRequest projects a StreamParams into the Responses API wire
+// body, with Stream left at its zero value. Stream is set by the caller
+// (the streaming Stream method pins it true; a future batch caller leaves
+// it false). Phase-0 refactor for issue #133 — see commit message for why
+// the helper signature deviates from the sibling builders.
+func buildResponsesRequest(params types.StreamParams) responsesRequest {
+	return responsesRequest{
+		Model:           params.Model,
+		Instructions:    params.System,
+		Input:           translateMessagesResponses(params.Messages),
+		Tools:           translateToolsResponses(params.Tools),
+		MaxOutputTokens: params.MaxTokens,
+		Temperature:     params.Temperature,
+		Store:           false,
+	}
+}
+
 // Stream sends a streaming request to the OpenAI Responses API and returns
 // a channel of StreamEvents. The channel is closed when the stream ends or
 // an error occurs. Cancelling the context terminates the stream.
@@ -456,16 +473,8 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		attribute.String("provider.model", params.Model),
 	)
 
-	reqBody := responsesRequest{
-		Model:           params.Model,
-		Instructions:    params.System,
-		Input:           translateMessagesResponses(params.Messages),
-		Tools:           translateToolsResponses(params.Tools),
-		MaxOutputTokens: params.MaxTokens,
-		Temperature:     params.Temperature,
-		Stream:          true,
-		Store:           false,
-	}
+	reqBody := buildResponsesRequest(params)
+	reqBody.Stream = true
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

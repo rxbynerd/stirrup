@@ -336,6 +336,21 @@ func mapFinishReason(reason string) string {
 	}
 }
 
+// buildOpenAIRequest projects a StreamParams into the Chat Completions wire
+// body. The stream argument toggles the "stream" field so a future
+// non-streaming caller (batch submission, phase 2 of issue #133) can reuse
+// the same projection without duplicating field-by-field copying.
+func buildOpenAIRequest(params types.StreamParams, stream bool) openaiRequest {
+	return openaiRequest{
+		Model:               params.Model,
+		Messages:            translateMessages(params.System, params.Messages),
+		Tools:               translateTools(params.Tools),
+		MaxCompletionTokens: params.MaxTokens,
+		Temperature:         params.Temperature,
+		Stream:              stream,
+	}
+}
+
 // Stream sends a streaming request to the OpenAI Chat Completions API and
 // returns a channel of StreamEvents. The channel is closed when the stream
 // ends or an error occurs. Cancelling the context terminates the stream.
@@ -346,14 +361,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		attribute.String("provider.model", params.Model),
 	)
 
-	reqBody := openaiRequest{
-		Model:               params.Model,
-		Messages:            translateMessages(params.System, params.Messages),
-		Tools:               translateTools(params.Tools),
-		MaxCompletionTokens: params.MaxTokens,
-		Temperature:         params.Temperature,
-		Stream:              true,
-	}
+	reqBody := buildOpenAIRequest(params, true)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
