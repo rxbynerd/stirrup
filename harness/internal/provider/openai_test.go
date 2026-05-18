@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -303,8 +304,8 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 	if received.Model != "gpt-4o" {
 		t.Errorf("model = %q, want gpt-4o", received.Model)
 	}
-	if received.MaxTokens != 4096 {
-		t.Errorf("max_tokens = %d, want 4096", received.MaxTokens)
+	if received.MaxCompletionTokens != 4096 {
+		t.Errorf("max_completion_tokens = %d, want 4096", received.MaxCompletionTokens)
 	}
 	if received.Temperature != 0.5 {
 		t.Errorf("temperature = %v, want 0.5", received.Temperature)
@@ -330,6 +331,86 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 	}
 	if received.Tools[0].Function.Name != "read_file" {
 		t.Errorf("tools[0].Function.Name = %q, want read_file", received.Tools[0].Function.Name)
+	}
+}
+
+// TestOpenAIAdapter_RawBodyShape captures the raw JSON request body and
+// asserts on the exact key set seen by the upstream API. It exists as a
+// regression guard against silently reviving the legacy "max_tokens" field
+// (rejected by reasoning models — gpt-5.x / o-series — with HTTP 400) or
+// dropping the omitempty on "temperature" (also rejected by reasoning
+// models when transmitted). See issue #200.
+func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
+	cases := []struct {
+		name              string
+		temperature       float64
+		wantTemperature   bool
+		wantTempSubstring string
+	}{
+		{
+			name:            "zero temperature omitted",
+			temperature:     0,
+			wantTemperature: false,
+		},
+		{
+			name:              "non-zero temperature serialised",
+			temperature:       0.7,
+			wantTemperature:   true,
+			wantTempSubstring: `"temperature":0.7`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rawBody []byte
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body: %v", err)
+				}
+				rawBody = b
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer srv.Close()
+
+			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{
+				Model:       "gpt-5.4",
+				MaxTokens:   4096,
+				Temperature: tc.temperature,
+			})
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			for range ch {
+			}
+
+			body := string(rawBody)
+
+			if !strings.Contains(body, `"max_completion_tokens"`) {
+				t.Errorf("request body missing 'max_completion_tokens': %s", body)
+			}
+			// Match the bare legacy key, not the new field which contains it
+			// as a substring.
+			if strings.Contains(body, `"max_tokens"`) {
+				t.Errorf("request body contains legacy 'max_tokens' (reasoning models reject it): %s", body)
+			}
+
+			hasTemperatureKey := strings.Contains(body, `"temperature"`)
+			if tc.wantTemperature && !hasTemperatureKey {
+				t.Errorf("request body missing 'temperature' for non-zero value: %s", body)
+			}
+			if !tc.wantTemperature && hasTemperatureKey {
+				t.Errorf("request body contains 'temperature' for zero value (omitempty broken): %s", body)
+			}
+			if tc.wantTempSubstring != "" && !strings.Contains(body, tc.wantTempSubstring) {
+				t.Errorf("request body missing %q: %s", tc.wantTempSubstring, body)
+			}
+		})
 	}
 }
 

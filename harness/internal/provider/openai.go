@@ -99,13 +99,25 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 // --- OpenAI wire format types ---
 
 // openaiRequest is the JSON body sent to the Chat Completions API.
+//
+// The token-limit field is serialised as "max_completion_tokens" rather than
+// the legacy "max_tokens" because reasoning models (o1/o3/o4-mini and the
+// gpt-5.x family) reject "max_tokens" with HTTP 400 on both OpenAI and
+// Azure OpenAI Chat Completions endpoints; "max_completion_tokens" is
+// required there and accepted by every non-reasoning model, so the rename
+// is strictly safer than feature-detecting per model. Temperature carries
+// omitempty for the same reason — reasoning models reject "temperature"
+// outright, so a zero-value temperature must not be transmitted. The
+// trade-off is that temperature=0 is now indistinguishable from "unset";
+// recovering that distinction needs a *float64 migration, tracked
+// separately.
 type openaiRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openaiMessage `json:"messages"`
-	Tools       []openaiTool    `json:"tools,omitempty"`
-	MaxTokens   int             `json:"max_tokens"`
-	Temperature float64         `json:"temperature"`
-	Stream      bool            `json:"stream"`
+	Model               string          `json:"model"`
+	Messages            []openaiMessage `json:"messages"`
+	Tools               []openaiTool    `json:"tools,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens"`
+	Temperature         float64         `json:"temperature,omitempty"`
+	Stream              bool            `json:"stream"`
 }
 
 // openaiMessage is a single message in OpenAI's Chat Completions format.
@@ -327,12 +339,12 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	)
 
 	reqBody := openaiRequest{
-		Model:       params.Model,
-		Messages:    translateMessages(params.System, params.Messages),
-		Tools:       translateTools(params.Tools),
-		MaxTokens:   params.MaxTokens,
-		Temperature: params.Temperature,
-		Stream:      true,
+		Model:               params.Model,
+		Messages:            translateMessages(params.System, params.Messages),
+		Tools:               translateTools(params.Tools),
+		MaxCompletionTokens: params.MaxTokens,
+		Temperature:         params.Temperature,
+		Stream:              true,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
