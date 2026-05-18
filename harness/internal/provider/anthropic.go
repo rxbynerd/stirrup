@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -232,10 +233,17 @@ type sseMessageDelta struct {
 // the same projection without duplicating field-by-field copying.
 func buildAnthropicRequest(params types.StreamParams, stream bool) anthropicRequest {
 	return anthropicRequest{
-		Model:       params.Model,
-		System:      params.System,
-		Messages:    translateMessagesAnthropic(params.Messages),
-		Tools:       params.Tools,
+		Model:    params.Model,
+		System:   params.System,
+		Messages: translateMessagesAnthropic(params.Messages),
+		// slices.Clone avoids aliasing params.Tools into the returned
+		// struct. translateMessagesAnthropic / translateTools(Responses)
+		// allocate fresh output slices for messages and tools on the
+		// sibling adapters; the Anthropic path was the only builder
+		// passing the input slice through by reference. Once the phase-2
+		// batch caller retains the returned struct across a retry or
+		// concurrent send, a caller mutating params.Tools would race.
+		Tools:       slices.Clone(params.Tools),
 		MaxTokens:   params.MaxTokens,
 		Temperature: params.Temperature,
 		Stream:      stream,
