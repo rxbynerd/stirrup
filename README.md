@@ -22,12 +22,6 @@ Stirrup has two main modes of operation:
 - `stirrup harness` is for local/one-off tasks that do not require a control plane.
 - `stirrup job` connects to the control plane given at `CONTROL_PLANE_ADDR`, intended to be deployed as a Kubernetes `Job`.
 
-Deployment targets:
-
-- Kubernetes `Job` (the canonical production target) — see [`docs/deployment.md`](docs/deployment.md).
-- Google Cloud Run job (one-shot batch, exit-on-completion) — see [`docs/cloud-run-jobs.md`](docs/cloud-run-jobs.md).
-- Embedded library via [`harness/harnessapi`](harness/harnessapi) — when the agentic loop runs inside a larger Go process.
-
 ### On your machine
 
 ```sh
