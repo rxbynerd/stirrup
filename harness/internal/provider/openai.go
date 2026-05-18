@@ -340,6 +340,11 @@ func mapFinishReason(reason string) string {
 // body. The stream argument toggles the "stream" field so a future
 // non-streaming caller (batch submission, phase 2 of issue #133) can reuse
 // the same projection without duplicating field-by-field copying.
+//
+// TODO(batch): if the batch endpoint rejects fields the streaming endpoint
+// accepts (e.g. top_p on Responses, equivalent constraints on Chat
+// Completions), change the return type to (json.RawMessage, error) and
+// apply a batch-specific projection here.
 func buildOpenAIRequest(params types.StreamParams, stream bool) openaiRequest {
 	return openaiRequest{
 		Model:               params.Model,
