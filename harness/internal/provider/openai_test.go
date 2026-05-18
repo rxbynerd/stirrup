@@ -404,7 +404,7 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{
 				Model:       "gpt-5.4",
@@ -1279,15 +1279,17 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 
 // TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError covers the
 // `retryOutcomeBudgetExhausted` branch in DoWithRetry. The previous
-// test exhausts via MaxAttempts; this one exhausts via WallClockBudget
-// — the WallClockBudget=5ms is smaller than the first retry's InitialDelay,
-// so the budget check fires before the second attempt is even made. The
-// rate_limited span event still fires on the resulting terminal 429.
+// test exhausts via MaxAttempts; this one exhausts via WallClockBudget.
+// The server returns a deterministic Retry-After-Ms hint that exceeds
+// the budget — using the hint path (rather than backoff) avoids the
+// full-jitter randomness in backoffDelay, which can produce a delay
+// smaller than the budget and skip the budget check. The rate_limited
+// span event still fires on the resulting terminal 429.
 func TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
-		w.Header().Set("Retry-After", "0")
+		w.Header().Set("Retry-After-Ms", "100")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"budget should run out"}}`)
 	}))
@@ -1298,8 +1300,9 @@ func TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError(t *testing.T) {
 	tracer := tp.Tracer("test")
 
 	// Allow up to 10 attempts but cap the wall-clock at 5ms so the budget
-	// is the binding constraint. InitialDelay=50ms guarantees the first
-	// retry's sleep would already exceed the budget.
+	// is the binding constraint. The server's 100ms Retry-After-Ms hint
+	// (capped at MaxDelay=100ms) guarantees the first retry's sleep would
+	// exceed the budget.
 	budgetPolicy := RetryPolicy{
 		MaxAttempts:     10,
 		InitialDelay:    50 * time.Millisecond,
