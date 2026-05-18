@@ -30,6 +30,11 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	m.ToolErrors.Add(ctx, 1)
 	m.ProviderRequests.Add(ctx, 3)
 	m.ProviderErrors.Add(ctx, 0)
+	m.ProviderRetries.Add(ctx, 2, metric.WithAttributes(
+		attribute.String("provider.type", "openai"),
+		attribute.String("provider.model", "gpt-4o-mini"),
+		attribute.String("provider.retry.outcome", "succeeded"),
+	))
 	m.VerificationAttempts.Add(ctx, 2)
 	m.Stalls.Add(ctx, 1)
 	m.ContextCompactions.Add(ctx, 2)
@@ -110,6 +115,7 @@ func TestMetricsRecording_Counters(t *testing.T) {
 	assertInt64Sum(t, sums, "stirrup.harness.tool_errors", 1)
 	assertInt64Sum(t, sums, "stirrup.harness.provider_requests", 3)
 	assertInt64Sum(t, sums, "stirrup.harness.provider_errors", 0)
+	assertInt64Sum(t, sums, "stirrup.harness.provider_retries", 2)
 	assertInt64Sum(t, sums, "stirrup.harness.verification_attempts", 2)
 	assertInt64Sum(t, sums, "stirrup.harness.stalls", 1)
 	assertInt64Sum(t, sums, "stirrup.harness.context_compactions", 2)
@@ -321,6 +327,7 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	m.ToolErrors.Add(ctx, 1)
 	m.ProviderRequests.Add(ctx, 2)
 	m.ProviderErrors.Add(ctx, 1)
+	m.ProviderRetries.Add(ctx, 1)
 	m.ContextCompactions.Add(ctx, 1)
 	m.SecurityEvents.Add(ctx, 1)
 	m.VerificationAttempts.Add(ctx, 1)
