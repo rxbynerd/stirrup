@@ -32,24 +32,28 @@ func TestParseRetryAfter(t *testing.T) {
 	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
-		name    string
-		headers http.Header
-		want    time.Duration
+		name       string
+		headers    http.Header
+		want       time.Duration
+		wantSource string
 	}{
 		{
-			name:    "retry-after-ms integer",
-			headers: http.Header{"Retry-After-Ms": []string{"1500"}},
-			want:    1500 * time.Millisecond,
+			name:       "retry-after-ms integer",
+			headers:    http.Header{"Retry-After-Ms": []string{"1500"}},
+			want:       1500 * time.Millisecond,
+			wantSource: delaySourceRetryAfterMs,
 		},
 		{
-			name:    "retry-after integer seconds",
-			headers: http.Header{"Retry-After": []string{"2"}},
-			want:    2 * time.Second,
+			name:       "retry-after integer seconds",
+			headers:    http.Header{"Retry-After": []string{"2"}},
+			want:       2 * time.Second,
+			wantSource: delaySourceRetryAfter,
 		},
 		{
-			name:    "retry-after http-date",
-			headers: http.Header{"Retry-After": []string{now.Add(5 * time.Second).Format(http.TimeFormat)}},
-			want:    5 * time.Second,
+			name:       "retry-after http-date",
+			headers:    http.Header{"Retry-After": []string{now.Add(5 * time.Second).Format(http.TimeFormat)}},
+			want:       5 * time.Second,
+			wantSource: delaySourceRetryAfter,
 		},
 		{
 			name: "retry-after-ms wins over retry-after",
@@ -57,35 +61,65 @@ func TestParseRetryAfter(t *testing.T) {
 				"Retry-After-Ms": []string{"500"},
 				"Retry-After":    []string{"10"},
 			},
-			want: 500 * time.Millisecond,
+			want:       500 * time.Millisecond,
+			wantSource: delaySourceRetryAfterMs,
 		},
 		{
-			name:    "negative retry-after returns zero",
-			headers: http.Header{"Retry-After": []string{"-1"}},
-			want:    0,
+			name:       "negative retry-after returns zero",
+			headers:    http.Header{"Retry-After": []string{"-1"}},
+			want:       0,
+			wantSource: "",
 		},
 		{
-			name:    "garbage retry-after returns zero",
-			headers: http.Header{"Retry-After": []string{"not-a-number"}},
-			want:    0,
+			name:       "garbage retry-after returns zero",
+			headers:    http.Header{"Retry-After": []string{"not-a-number"}},
+			want:       0,
+			wantSource: "",
 		},
 		{
-			name:    "negative retry-after-ms returns zero",
-			headers: http.Header{"Retry-After-Ms": []string{"-100"}},
-			want:    0,
+			name:       "negative retry-after-ms returns zero",
+			headers:    http.Header{"Retry-After-Ms": []string{"-100"}},
+			want:       0,
+			wantSource: "",
 		},
 		{
-			name:    "no headers returns zero",
-			headers: http.Header{},
-			want:    0,
+			name:       "no headers returns zero",
+			headers:    http.Header{},
+			want:       0,
+			wantSource: "",
+		},
+		{
+			// Per parseRetryAfter contract: Retry-After-Ms: 0 is
+			// treated as "ignore this hint and fall through" rather
+			// than "retry immediately", so the source is the
+			// downstream Retry-After header.
+			name: "zero retry-after-ms falls through to retry-after",
+			headers: http.Header{
+				"Retry-After-Ms": []string{"0"},
+				"Retry-After":    []string{"5"},
+			},
+			want:       5 * time.Second,
+			wantSource: delaySourceRetryAfter,
+		},
+		{
+			name: "negative retry-after-ms falls through to retry-after",
+			headers: http.Header{
+				"Retry-After-Ms": []string{"-1"},
+				"Retry-After":    []string{"5"},
+			},
+			want:       5 * time.Second,
+			wantSource: delaySourceRetryAfter,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseRetryAfter(tt.headers, now)
+			got, source := parseRetryAfter(tt.headers, now)
 			if got != tt.want {
-				t.Errorf("parseRetryAfter() = %v, want %v", got, tt.want)
+				t.Errorf("parseRetryAfter() duration = %v, want %v", got, tt.want)
+			}
+			if source != tt.wantSource {
+				t.Errorf("parseRetryAfter() source = %q, want %q", source, tt.wantSource)
 			}
 		})
 	}

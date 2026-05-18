@@ -75,30 +75,38 @@ func transientErr(err error, attempt int) bool {
 	return false
 }
 
-// parseRetryAfter returns a delay derived from response headers, or
-// zero if no usable hint. Order: retry-after-ms (Azure ext, integer
-// ms), retry-after (RFC 9110 delta-seconds), retry-after (HTTP-date
-// against now). Zero on parse failure — caller caps at policy.MaxDelay.
-func parseRetryAfter(h http.Header, now time.Time) time.Duration {
+// parseRetryAfter returns a delay derived from response headers and
+// the source it was derived from (one of the delaySource* constants,
+// or "" when no usable hint was present). Order: retry-after-ms
+// (Azure ext, integer ms), retry-after (RFC 9110 delta-seconds),
+// retry-after (HTTP-date against now). The caller caps at
+// policy.MaxDelay.
+//
+// A malformed or non-positive Retry-After-Ms (zero, negative, or
+// non-numeric) is treated as "ignore this hint and fall through to
+// Retry-After" rather than "retry immediately" — interpreting a
+// zero/garbage ms value as a zero-delay retry signal would risk tight
+// loops against misbehaving upstreams.
+func parseRetryAfter(h http.Header, now time.Time) (time.Duration, string) {
 	if v := h.Get("Retry-After-Ms"); v != "" {
 		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
-			return time.Duration(ms) * time.Millisecond
+			return time.Duration(ms) * time.Millisecond, delaySourceRetryAfterMs
 		}
 	}
 	v := h.Get("Retry-After")
 	if v == "" {
-		return 0
+		return 0, ""
 	}
 	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-		return time.Duration(secs) * time.Second
+		return time.Duration(secs) * time.Second, delaySourceRetryAfter
 	}
 	if t, err := http.ParseTime(v); err == nil {
 		d := t.Sub(now)
 		if d > 0 {
-			return d
+			return d, delaySourceRetryAfter
 		}
 	}
-	return 0
+	return 0, ""
 }
 
 // backoffDelay returns the algorithmic backoff for attempt n (zero-based).
@@ -224,21 +232,14 @@ func DoWithRetry(
 			lastErr = nil
 			retryable = true
 			now := time.Now()
-			hint := parseRetryAfter(resp.Header, now)
-			switch {
-			case hint > 0 && resp.Header.Get("Retry-After-Ms") != "":
+			hint, source := parseRetryAfter(resp.Header, now)
+			if hint > 0 {
 				if hint > policy.MaxDelay {
 					hint = policy.MaxDelay
 				}
 				delay = hint
-				delaySource = delaySourceRetryAfterMs
-			case hint > 0:
-				if hint > policy.MaxDelay {
-					hint = policy.MaxDelay
-				}
-				delay = hint
-				delaySource = delaySourceRetryAfter
-			default:
+				delaySource = source
+			} else {
 				delay = backoffDelay(attempt, policy, prng)
 				delaySource = delaySourceBackoff
 			}
