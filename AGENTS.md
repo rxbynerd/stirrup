@@ -69,7 +69,7 @@ Requires `ANTHROPIC_API_KEY` environment variable for the default Anthropic prov
 | Flag | Default | Description |
 |---|---|---|
 | `--prompt` | (required) | User prompt, also accepted as a positional argument |
-| `--mode`, `-m` | `execution` | Run mode: execution, planning, review, research, toil |
+| `--mode`, `-m` | `planning` | Run mode: planning (default, read-only), execution, review, research, toil |
 | `--model` | `claude-sonnet-4-6` | Model to use |
 | `--provider` | `anthropic` | Provider type: anthropic, bedrock, openai-compatible (Chat Completions), openai-responses (Responses API), gemini (Vertex AI) |
 | `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | Secret reference for API key |

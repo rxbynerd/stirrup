@@ -466,8 +466,8 @@ type RunConfig struct {
 	// constraints.
 	// Valid values:
 	//
-	//	"execution" — full read/write agent mode (default for CLI).
-	//	"planning"  — read-only; produces a plan without making changes.
+	//	"execution" — full read/write agent mode; opt in via --mode execution.
+	//	"planning"  — CLI default (read-only; safe first-touch posture).
 	//	"review"    — read-only; reviews code and provides feedback.
 	//	"research"  — read-only; investigates questions without side effects.
 	//	"toil"      — read-only; automates repetitive read tasks.
