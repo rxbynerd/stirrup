@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -140,5 +141,49 @@ func TestBuildAnthropicRequest_StreamFlag(t *testing.T) {
 	}
 	if got := buildAnthropicRequest(params, false).Stream; got != false {
 		t.Errorf("stream=false argument: got Stream=%v, want false", got)
+	}
+}
+
+// TestBuildAnthropicRequest_ThoughtSignatureDropped pins the cross-provider
+// leakage invariant from issue #194 at the builder level. The Stream-path
+// equivalent (TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI in
+// anthropic_test.go) covers translateMessagesAnthropic transitively through
+// Stream; the phase-2 batch caller will invoke buildAnthropicRequest
+// directly, bypassing Stream entirely. If translateMessagesAnthropic were
+// accidentally refactored to embed types.ContentBlock instead of the
+// local anthropicContentBlock wire type, the Stream-level test would still
+// pass while the batch path silently forwarded Vertex's encrypted
+// chain-of-thought blob to Anthropic. Asserting the builder output here
+// closes that structural gap.
+func TestBuildAnthropicRequest_ThoughtSignatureDropped(t *testing.T) {
+	const sig = "AY89SIGBLOB=="
+	params := types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 16,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "read it"}}},
+			{
+				Role: "assistant",
+				Content: []types.ContentBlock{
+					{
+						Type:             "tool_use",
+						ID:               "toolu_1",
+						Name:             "read_file",
+						Input:            json.RawMessage(`{"path":"main.go"}`),
+						ThoughtSignature: sig,
+					},
+				},
+			},
+		},
+	}
+	body, err := json.Marshal(buildAnthropicRequest(params, false))
+	if err != nil {
+		t.Fatalf("marshal builder output: %v", err)
+	}
+	if strings.Contains(string(body), "thought_signature") {
+		t.Errorf("builder output contains \"thought_signature\" — Gemini-private state leaked to Anthropic batch path.\nbody = %s", body)
+	}
+	if strings.Contains(string(body), sig) {
+		t.Errorf("builder output contains the signature value %q.\nbody = %s", sig, body)
 	}
 }
