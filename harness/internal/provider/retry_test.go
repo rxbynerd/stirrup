@@ -110,6 +110,53 @@ func TestParseRetryAfter(t *testing.T) {
 			want:       5 * time.Second,
 			wantSource: delaySourceRetryAfter,
 		},
+		{
+			// At ceiling: 60000 ms == maxRetryAfterHint exactly.
+			name:       "retry-after-ms at ceiling returns 60s",
+			headers:    http.Header{"Retry-After-Ms": []string{"60000"}},
+			want:       60 * time.Second,
+			wantSource: delaySourceRetryAfterMs,
+		},
+		{
+			// Just above ceiling: falls through to Retry-After
+			// (which is empty here, so returns zero).
+			name:       "retry-after-ms above ceiling falls through",
+			headers:    http.Header{"Retry-After-Ms": []string{"60001"}},
+			want:       0,
+			wantSource: "",
+		},
+		{
+			// Just above ceiling with Retry-After fallback present.
+			name: "retry-after-ms above ceiling falls through to retry-after",
+			headers: http.Header{
+				"Retry-After-Ms": []string{"60001"},
+				"Retry-After":    []string{"5"},
+			},
+			want:       5 * time.Second,
+			wantSource: delaySourceRetryAfter,
+		},
+		{
+			// Near-overflow: 9223372036954776 ms * 1e6 (ns/ms)
+			// would wrap int64. Cap rejects the value first; no
+			// wrap occurs.
+			name:       "retry-after-ms near int64 overflow returns zero",
+			headers:    http.Header{"Retry-After-Ms": []string{"9223372036954776"}},
+			want:       0,
+			wantSource: "",
+		},
+		{
+			// Retry-After seconds above ceiling: rejected.
+			name:       "retry-after seconds above ceiling returns zero",
+			headers:    http.Header{"Retry-After": []string{"3600"}},
+			want:       0,
+			wantSource: "",
+		},
+		{
+			name:       "retry-after seconds at ceiling returns 60s",
+			headers:    http.Header{"Retry-After": []string{"60"}},
+			want:       60 * time.Second,
+			wantSource: delaySourceRetryAfter,
+		},
 	}
 
 	for _, tt := range tests {

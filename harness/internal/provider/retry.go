@@ -75,6 +75,23 @@ func transientErr(err error, attempt int) bool {
 	return false
 }
 
+// maxRetryAfterHint is an absolute ceiling applied to Retry-After
+// and Retry-After-Ms values before they are converted to a
+// time.Duration. It defends against two failure modes:
+//
+//   - Integer overflow: strconv.Atoi returns int (64-bit on 64-bit
+//     hosts). Multiplying by time.Millisecond (1e6) or time.Second
+//     (1e9) wraps int64 for very large inputs and the wrapped value
+//     could satisfy (0, MaxDelay) and silently bypass the cap.
+//   - Defence-in-depth against a hostile upstream advertising an
+//     absurd value to monopolise client time; the cap forces all
+//     hints into a bounded range before MaxDelay clamping runs.
+//
+// The caller still clamps against policy.MaxDelay; this is the
+// upper-bound on what parseRetryAfter is willing to consider in
+// the first place.
+const maxRetryAfterHint = 60 * time.Second
+
 // parseRetryAfter returns a delay derived from response headers and
 // the source it was derived from (one of the delaySource* constants,
 // or "" when no usable hint was present). Order: retry-after-ms
@@ -86,11 +103,15 @@ func transientErr(err error, attempt int) bool {
 // non-numeric) is treated as "ignore this hint and fall through to
 // Retry-After" rather than "retry immediately" — interpreting a
 // zero/garbage ms value as a zero-delay retry signal would risk tight
-// loops against misbehaving upstreams.
+// loops against misbehaving upstreams. Values above maxRetryAfterHint
+// fall through to the next header for the same reason.
 func parseRetryAfter(h http.Header, now time.Time) (time.Duration, string) {
 	if v := h.Get("Retry-After-Ms"); v != "" {
 		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
-			return time.Duration(ms) * time.Millisecond, delaySourceRetryAfterMs
+			d := time.Duration(ms) * time.Millisecond
+			if d <= maxRetryAfterHint {
+				return d, delaySourceRetryAfterMs
+			}
 		}
 	}
 	v := h.Get("Retry-After")
@@ -98,11 +119,14 @@ func parseRetryAfter(h http.Header, now time.Time) (time.Duration, string) {
 		return 0, ""
 	}
 	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-		return time.Duration(secs) * time.Second, delaySourceRetryAfter
+		d := time.Duration(secs) * time.Second
+		if d <= maxRetryAfterHint {
+			return d, delaySourceRetryAfter
+		}
 	}
 	if t, err := http.ParseTime(v); err == nil {
 		d := t.Sub(now)
-		if d > 0 {
+		if d > 0 && d <= maxRetryAfterHint {
 			return d, delaySourceRetryAfter
 		}
 	}
