@@ -2424,11 +2424,6 @@ func validateGeminiModelName(config *RunConfig, errs *[]string) {
 // a bedrock-typed provider that structurally cannot resolve at AWS
 // Bedrock — specifically, the Anthropic-API aliases (e.g.
 // "claude-sonnet-4-6") that the harness's default `--model` flag emits.
-// Bedrock requires either a model id prefixed with a vendor segment
-// (e.g. "anthropic.claude-sonnet-4-5-20250929-v1:0"), an inference
-// profile id of the form "<region>.<vendor>.<model>" (e.g.
-// "eu.anthropic.claude-sonnet-4-6"), or a full ARN
-// ("arn:aws:bedrock:...:inference-profile/...").
 //
 // Without this check Bedrock fails the request server-side with a
 // generic `ValidationException: The provided model identifier is
@@ -2437,9 +2432,12 @@ func validateGeminiModelName(config *RunConfig, errs *[]string) {
 // the inference-profile path in the error so the next attempt is
 // actionable.
 //
-// The check applies whenever a bedrock-typed provider would actually
-// service the configured ModelRouter — the same surface area as
-// validateGeminiModelName above. Mirrors the gemini-specific check.
+// The check is a shape gate, not a syntactic validator: any model id
+// containing a `.` or starting with `arn:` passes. Pathological inputs
+// (e.g. "anthropic.") will still reach Bedrock and produce the same
+// generic ValidationException; this is intentional, since the goal is
+// only to catch the bare-CLI-default-alias case, not to mirror AWS's
+// full grammar.
 func validateBedrockModelShape(config *RunConfig, errs *[]string) {
 	providerIsBedrock := func(name string) bool {
 		if name == "" {
@@ -2458,11 +2456,6 @@ func validateBedrockModelShape(config *RunConfig, errs *[]string) {
 		if model == "" {
 			return
 		}
-		// A full ARN is always accepted — the literal "arn:" prefix is
-		// the documented Bedrock identifier shape for inference profiles
-		// and provisioned-throughput models. Anything else must contain
-		// a "." separator: Bedrock model ids partition on
-		// "<region-or-vendor>.<...>".
 		if strings.HasPrefix(model, "arn:") {
 			return
 		}
@@ -2471,16 +2464,29 @@ func validateBedrockModelShape(config *RunConfig, errs *[]string) {
 		}
 		*errs = append(*errs, fmt.Sprintf(
 			"%s %q is invalid for provider type %q: Bedrock requires a vendor-prefixed model id "+
-				"(e.g. %q), an inference profile id (e.g. %q), or a full ARN. "+
+				"(e.g. %q), a cross-region inference profile id (e.g. %q), or a full ARN. "+
 				"Use \"aws bedrock list-inference-profiles\" to enumerate profiles available in your region.",
 			label, model, "bedrock",
 			"anthropic.claude-sonnet-4-5-20250929-v1:0",
-			"eu.anthropic.claude-sonnet-4-6",
+			"eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		))
 	}
 
 	if providerIsBedrock(config.ModelRouter.Provider) {
 		checkModel("modelRouter.model", config.ModelRouter.Model)
+	}
+
+	// Dynamic-router cheap/expensive lanes (issue #65 review remediation).
+	// Unlike the gemini shape check, bedrock is a plausible target for
+	// `dynamic` routing today, so a cheap/expensive lane configured
+	// against a bedrock-typed provider with an anthropic-alias model
+	// would reintroduce the exact failure mode this validator exists to
+	// prevent.
+	if providerIsBedrock(config.ModelRouter.CheapProvider) {
+		checkModel("modelRouter.cheapModel", config.ModelRouter.CheapModel)
+	}
+	if providerIsBedrock(config.ModelRouter.ExpensiveProvider) {
+		checkModel("modelRouter.expensiveModel", config.ModelRouter.ExpensiveModel)
 	}
 
 	for mode, spec := range config.ModelRouter.ModeModels {

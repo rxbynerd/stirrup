@@ -4085,3 +4085,87 @@ func TestValidateRunConfig_BedrockModelShape_NamedProvider(t *testing.T) {
 		t.Errorf("error should name modelRouter.model, got: %v", err)
 	}
 }
+
+// TestValidateRunConfig_BedrockModelShape_DynamicRouter exercises the
+// dynamic-router branch. A dynamic router with bedrock cheap/expensive
+// lanes was reachable today but skipped by the initial implementation —
+// the gap reintroduces the exact failure mode #65 was meant to prevent.
+func TestValidateRunConfig_BedrockModelShape_DynamicRouter(t *testing.T) {
+	cases := []struct {
+		name              string
+		cheapProvider     string
+		cheapModel        string
+		expensiveProvider string
+		expensiveModel    string
+		wantErrSubstring  string
+	}{
+		{
+			name:             "cheap_lane_invalid",
+			cheapProvider:    "bedrock",
+			cheapModel:       "claude-sonnet-4-6",
+			wantErrSubstring: "modelRouter.cheapModel",
+		},
+		{
+			name:             "cheap_lane_named_provider_invalid",
+			cheapProvider:    "aws-cheap",
+			cheapModel:       "claude-opus-4",
+			wantErrSubstring: "modelRouter.cheapModel",
+		},
+		{
+			name:              "expensive_lane_invalid",
+			expensiveProvider: "bedrock",
+			expensiveModel:    "claude-opus-4",
+			wantErrSubstring:  "modelRouter.expensiveModel",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "bedrock", Region: "eu-west-1"}
+			// A valid default model so the static path does not trigger.
+			c.ModelRouter = ModelRouterConfig{
+				Type:                   "dynamic",
+				Model:                  "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+				CheapProvider:          tc.cheapProvider,
+				CheapModel:             tc.cheapModel,
+				ExpensiveProvider:      tc.expensiveProvider,
+				ExpensiveModel:         tc.expensiveModel,
+				ExpensiveTurnThreshold: 5,
+			}
+			if tc.cheapProvider == "aws-cheap" || tc.expensiveProvider == "aws-cheap" {
+				c.Providers = map[string]ProviderConfig{
+					"aws-cheap": {Type: "bedrock", Region: "eu-west-1"},
+				}
+			}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for %s, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrSubstring) {
+				t.Errorf("error should name %q, got: %v", tc.wantErrSubstring, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_BedrockModelShape_DynamicRouterValid is the
+// positive companion to the dynamic-router check: well-shaped cheap /
+// expensive model ids on bedrock-typed lanes must validate cleanly so
+// operators with a working dynamic-router config are unimpeded.
+func TestValidateRunConfig_BedrockModelShape_DynamicRouterValid(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{Type: "bedrock", Region: "eu-west-1"}
+	c.ModelRouter = ModelRouterConfig{
+		Type:                   "dynamic",
+		Model:                  "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		CheapProvider:          "bedrock",
+		CheapModel:             "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+		ExpensiveProvider:      "bedrock",
+		ExpensiveModel:         "arn:aws:bedrock:eu-west-1:123456789012:inference-profile/eu.anthropic.claude-opus-4-v1:0",
+		ExpensiveTurnThreshold: 5,
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("dynamic router with valid bedrock lanes must validate, got: %v", err)
+	}
+}
