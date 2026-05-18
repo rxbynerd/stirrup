@@ -112,8 +112,16 @@ type responsesRequest struct {
 	// pointer type so the unset-vs-explicit-zero distinction survives
 	// marshalling.
 	Temperature *float64 `json:"temperature,omitempty"`
-	Stream      bool     `json:"stream"`
-	Store       bool     `json:"store"`
+	// Stream carries omitempty so that buildResponsesRequest, which leaves
+	// the field at its zero value, produces a wire body with no "stream"
+	// key at all. The streaming caller sets reqBody.Stream = true after
+	// the builder returns, which serialises "stream":true. A future batch
+	// caller can marshal the helper output directly and be sure the field
+	// is absent — the Anthropic Messages Batches API explicitly rejects
+	// the field; the Responses batch endpoint's contract is unverified
+	// but omission is the safer default until that verification lands.
+	Stream bool `json:"stream,omitempty"`
+	Store  bool `json:"store"`
 }
 
 // responsesInput is one item in the Responses API input array. The Type
@@ -447,10 +455,13 @@ func translateToolsResponses(tools []types.ToolDefinition) []responsesTool {
 }
 
 // buildResponsesRequest projects a StreamParams into the Responses API wire
-// body, with Stream left at its zero value. Stream is set by the caller
-// (the streaming Stream method pins it true; a future batch caller leaves
-// it false). Phase-0 refactor for issue #133 — see commit message for why
-// the helper signature deviates from the sibling builders.
+// body. The Stream field is set by the streaming caller after this returns;
+// the builder leaves it false so batch callers get an omitted field (relies
+// on omitempty on the responsesRequest.Stream struct tag). Phase-0 refactor
+// for issue #133.
+//
+// TODO(batch): consider returning json.RawMessage if endpoint-contract drift
+// becomes a maintenance burden.
 func buildResponsesRequest(params types.StreamParams) responsesRequest {
 	return responsesRequest{
 		Model:           params.Model,

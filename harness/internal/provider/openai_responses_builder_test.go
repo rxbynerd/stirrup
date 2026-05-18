@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -130,8 +131,12 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 }
 
 // TestBuildResponsesRequest_StreamDefaultFalse verifies the helper
-// leaves Stream at its zero value — the batch path relies on this so
-// a non-streaming submission does not need to clear a hard-coded true.
+// leaves Stream at its zero value AND that the marshalled wire body
+// omits the "stream" key entirely (via omitempty on the struct tag).
+// The batch path relies on this so a non-streaming submission does
+// not send "stream":false — the Anthropic Messages Batches API
+// rejects the field outright; the Responses batch endpoint contract
+// is unverified, and omission is the safer default.
 func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 	params := types.StreamParams{
 		Model:     "gpt-4o",
@@ -144,5 +149,12 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 	}
 	if got.Store != false {
 		t.Errorf("builder default: Store = %v, want false", got.Store)
+	}
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal builder output: %v", err)
+	}
+	if strings.Contains(string(body), `"stream"`) {
+		t.Errorf(`expected "stream" key to be omitted from builder output: %s`, body)
 	}
 }
