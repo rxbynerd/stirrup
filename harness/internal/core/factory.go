@@ -166,12 +166,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
-	// 7. Verifier. Constructed without metrics here; the metrics
-	// instance is built later (step 13). After metrics is available we
-	// rebuild the verifier so each Verify call records
-	// stirrup.verifier.runs / stirrup.verifier.duration_ms with the
-	// appropriate type label, including for composite sub-verifiers.
-	v := buildVerifier(config.Verifier, prov, nil)
+	// 7. Verifier. Declared here so step 8+ can reference it, but actual
+	// construction is deferred to step 13 (line ~296) once the run's
+	// metrics instance exists. buildVerifier wraps its result in a
+	// metric-recorder when metrics is non-nil, so calling it twice (once
+	// without metrics here, once with) would discard the first build —
+	// hence the deferred single construction.
+	var v verifier.Verifier
 
 	// 8. GuardRail. Constructed AFTER providers are built so cloud-judge
 	// can reuse the default ProviderAdapter. Returns guard.NewNoop() when
@@ -288,11 +289,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// outer wrapper first, then unwrap to reach an inner *MultiStrategy.
 	wireEditMetrics(es, metrics)
 
-	// Rebuild the verifier now that metrics is available so each Verify
+	// Build the verifier now that metrics is available so each Verify
 	// call records stirrup.verifier.runs / stirrup.verifier.duration_ms
-	// with the appropriate type label. The first pass at step 7 was
-	// metrics-less; this re-construction is cheap (no I/O) and keeps the
-	// metric-recorder wrapping centralised in buildVerifier.
+	// with the appropriate type label. Construction is deferred to here
+	// (rather than step 7) so the metric-recorder wrapping centralised
+	// in buildVerifier sees a non-nil metrics on the only call site.
 	v = buildVerifier(config.Verifier, prov, metrics)
 
 	// Wrap the previously-built permission policy with metrics so
