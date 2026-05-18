@@ -62,6 +62,7 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 | Component model, agentic loop, deep dives | [`docs/architecture.md`](docs/architecture.md) |
 | CLI flags, `RunConfig` precedence, examples | [`docs/configuration.md`](docs/configuration.md) |
 | Production deployment via `stirrup job` (K8s, gRPC) | [`docs/deployment.md`](docs/deployment.md) |
+| Running stirrup as a Google Cloud Run job | [`docs/cloud-run-jobs.md`](docs/cloud-run-jobs.md) |
 | Five safety rings (operator guide) | [`docs/safety-rings.md`](docs/safety-rings.md) |
 | In-harness security foundations | [`docs/security.md`](docs/security.md) |
 | LLM-based safety classifier (`GuardRail`) | [`docs/guardrails.md`](docs/guardrails.md) |

@@ -153,6 +153,33 @@ func TestRunConfigFromProto_TranslatesNewSafetyFields(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved pins the M1 fix:
+// the gRPC RunConfig path used by `stirrup job` must carry the gcs
+// trace emitter's Bucket and ObjectPrefix into the internal RunConfig.
+// Without these fields the runtime either falls through to the jsonl
+// fallback (Type=="" after copy) or hits a "bucket is required"
+// construction error at the factory — both silently wrong on the
+// Cloud Run dispatch path.
+func TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved(t *testing.T) {
+	pc := &pb.RunConfig{
+		TraceEmitter: &pb.TraceEmitterConfig{
+			Type:         "gcs",
+			Bucket:       "stirrup-results",
+			ObjectPrefix: "traces/",
+		},
+	}
+	rc := runConfigFromProto(pc)
+	if rc.TraceEmitter.Type != "gcs" {
+		t.Errorf("TraceEmitter.Type: got %q, want gcs", rc.TraceEmitter.Type)
+	}
+	if rc.TraceEmitter.Bucket != "stirrup-results" {
+		t.Errorf("TraceEmitter.Bucket: got %q, want stirrup-results", rc.TraceEmitter.Bucket)
+	}
+	if rc.TraceEmitter.ObjectPrefix != "traces/" {
+		t.Errorf("TraceEmitter.ObjectPrefix: got %q, want traces/", rc.TraceEmitter.ObjectPrefix)
+	}
+}
+
 // TestRunConfigFromProto_SessionNameAbsentWhenNil documents the safe default:
 // when the proto omits SessionName (the field is a proto3 optional, so the
 // zero value is a nil pointer), the internal RunConfig must surface the empty

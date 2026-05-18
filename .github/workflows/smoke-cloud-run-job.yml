@@ -1,0 +1,196 @@
+name: Smoke Test - Cloud Run Job
+
+# End-to-end smoke test for stirrup running as a Cloud Run job.
+# Manually dispatched. Authenticates to GCP via Direct WIF (the same
+# pool established in #163 for GAR push, but a separate provider —
+# `stirrup-gha-smoke` — bound to a separate deployer service account
+# so the higher-blast-radius Cloud Run deploy + Vertex invocation
+# bindings can be revoked in isolation). Deploys a Cloud Run job
+# pointing at the freshly-published dual-publish container, executes
+# it against Vertex Gemini, downloads the workspace tarball from
+# GCS, and verifies both the structured-result line in Cloud Logging
+# (Shape A) and the workspace contents (Shape B).
+#
+# Operator-side prerequisites — all out-of-band of this workflow:
+#
+#   - service account `stirrup-gha-smoke-deployer@<project>.iam.gserviceaccount.com`
+#     bound to a new WIF provider `stirrup-gha-smoke` in the existing
+#     `stirrup-gha` pool. The provider's attributeCondition pins
+#     `assertion.repository == 'rxbynerd/stirrup'` and
+#     `assertion.workflow_ref.endsWith('/.github/workflows/smoke-cloud-run-job.yml')`
+#     so only this workflow can mint a token.
+#   - the deployer SA holds: roles/run.developer on the project,
+#     roles/iam.serviceAccountUser on `stirrup-job@…` (required to
+#     attach the runtime SA to a Cloud Run job),
+#     roles/run.invoker on the deployed job (added at deploy time),
+#     roles/secretmanager.secretAccessor on the SM secret
+#     `stirrup-smoke-runconfig`, roles/logging.viewer on the project
+#     (to read the STIRRUP_RESULT line), and
+#     roles/storage.objectViewer on the results bucket.
+#   - runtime SA `stirrup-job@…` holds roles/aiplatform.user on the
+#     project and roles/storage.objectCreator on the results bucket.
+#   - SM secret `stirrup-smoke-runconfig:latest` holds the JSON
+#     RunConfig (a copy of examples/runconfig/cloud-run-vertex-gemini.json
+#     with the project ID and bucket names swapped in for the
+#     placeholders).
+#   - Repo variables: GCP_WORKLOAD_IDENTITY_PROVIDER_SMOKE,
+#     GCP_PROJECT_ID, GAR_LOCATION, GAR_REPOSITORY, GAR_IMAGE,
+#     GCP_RESULTS_BUCKET.
+#
+# Refs #164.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-cloud-run-job:
+    name: Cloud Run Job Smoke Test
+    runs-on: ubuntu-latest
+    # Belt-and-braces fork guard mirroring smoke-gar-publish.yml. The
+    # WIF provider's attributeCondition already pins
+    # assertion.repository, but the explicit repository check makes a
+    # fork running this workflow skip the job cleanly instead of
+    # failing on a confusing auth error.
+    if: github.repository == 'rxbynerd/stirrup'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # SHA-pinned to v3.0.0 — same pin as smoke-gar-publish.yml,
+      # ci.yml::publish-container, and release.yml::publish-container.
+      # Must move in lockstep with those workflows.
+      - name: Authenticate to Google Cloud (WIF + SA impersonation)
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER_SMOKE }}
+          service_account: stirrup-gha-smoke-deployer@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+
+      # SHA-pinned to v3.0.1 — same pin as smoke-gar-publish.yml.
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Deploy Cloud Run job
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+          GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+          GAR_IMAGE: ${{ vars.GAR_IMAGE }}
+        run: |
+          set -euo pipefail
+          gcloud run jobs deploy smoke-stirrup-cloud-run \
+            --image="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/${GAR_IMAGE}:latest" \
+            --region="${GAR_LOCATION}" \
+            --service-account="stirrup-job@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+            --task-timeout=300 \
+            --max-retries=0 \
+            --memory=2Gi \
+            --cpu=1 \
+            --set-secrets=/etc/stirrup/runconfig.json=stirrup-smoke-runconfig:latest \
+            --command=/usr/local/bin/stirrup \
+            --args=harness,--config,/etc/stirrup/runconfig.json,--prompt,"Write the string 'smoke test passed' to a file called hello.txt" \
+            --project="${GCP_PROJECT_ID}"
+
+      - name: Execute Cloud Run job
+        id: exec
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute smoke-stirrup-cloud-run \
+            --region="${GAR_LOCATION}" \
+            --wait \
+            --project="${GCP_PROJECT_ID}"
+          EXEC=$(gcloud run jobs executions list \
+            --job=smoke-stirrup-cloud-run \
+            --region="${GAR_LOCATION}" \
+            --limit=1 \
+            --format='value(name)' \
+            --project="${GCP_PROJECT_ID}")
+          if [ -z "$EXEC" ]; then
+            echo "no execution returned by 'gcloud run jobs executions list'" >&2
+            exit 1
+          fi
+          echo "exec=$EXEC" >> "$GITHUB_OUTPUT"
+
+      # Shape B (workspace artifact via GCS) and Shape A (structured
+      # result via Cloud Logging) are split into separate `name:`
+      # blocks so a partial failure is diagnosable in the Actions UI:
+      # a Shape B regression does not hide a Shape A regression and
+      # vice versa.
+      - name: Verify workspace artifact (Shape B)
+        shell: bash
+        env:
+          GCP_RESULTS_BUCKET: ${{ vars.GCP_RESULTS_BUCKET }}
+        run: |
+          set -euo pipefail
+          gcloud storage cp \
+            "gs://${GCP_RESULTS_BUCKET}/smoke-stirrup-cloud-run/workspace.tar.gz" \
+            workspace.tar.gz
+          mkdir -p workspace
+          tar -xzf workspace.tar.gz -C workspace
+          test -f workspace/hello.txt || { echo "hello.txt was not created in the workspace tarball" >&2; exit 1; }
+          grep -qF 'smoke test passed' workspace/hello.txt \
+            || { echo "hello.txt does not contain expected string" >&2; cat workspace/hello.txt >&2; exit 1; }
+
+      - name: Verify structured result (Shape A)
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          EXEC: ${{ steps.exec.outputs.exec }}
+        run: |
+          set -euo pipefail
+          gcloud logging read \
+            "resource.type=cloud_run_job AND labels.\"run.googleapis.com/execution_name\"=$EXEC AND textPayload:\"STIRRUP_RESULT \"" \
+            --limit=1 \
+            --format='value(textPayload)' \
+            --project="${GCP_PROJECT_ID}" \
+            | sed 's/^STIRRUP_RESULT //' \
+            | jq -e '.outcome == "success" and .schemaVersion == 1'
+
+      - name: Capture job logs
+        if: always()
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          gcloud logging read \
+            "resource.type=cloud_run_job AND resource.labels.job_name=smoke-stirrup-cloud-run" \
+            --limit=200 \
+            --format=json \
+            --project="${GCP_PROJECT_ID}" > job-logs.json || true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-cloud-run-job-artifacts
+          path: |
+            job-logs.json
+            workspace.tar.gz
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Always-run cleanup: a partially-failed deploy still leaves a
+      # Cloud Run job resource behind, and old job revisions
+      # accumulate quota. `|| true` keeps the workflow green even
+      # when the job was never deployed (i.e. an earlier step
+      # failed before the deploy step ran).
+      - name: Delete Cloud Run job
+        if: always()
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+        run: |
+          gcloud run jobs delete smoke-stirrup-cloud-run \
+            --region="${GAR_LOCATION}" \
+            --quiet \
+            --project="${GCP_PROJECT_ID}" || true

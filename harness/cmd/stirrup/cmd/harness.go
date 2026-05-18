@@ -208,6 +208,18 @@ type harnessCLIOptions struct {
 	ProviderRetryInitialDelay    time.Duration
 	ProviderRetryMaxDelay        time.Duration
 	ProviderRetryWallClockBudget time.Duration
+
+	// Workspace export (issue #164). WorkspaceExportTo is a gs:// URI
+	// stored on RunConfig.Executor.WorkspaceExportTo so the export
+	// fires from runWithConfig regardless of which code path built
+	// the config. WorkspaceExportRequired is *not* persisted on
+	// RunConfig — it is a CLI-only behaviour flag that controls
+	// whether export failure terminates the run non-zero. The two
+	// are decoupled so a config-file-only operator can set the URI
+	// once and pass --export-workspace-required from the wrapper
+	// script that knows whether the artifact is load-bearing.
+	WorkspaceExportTo       string
+	WorkspaceExportRequired bool
 }
 
 // buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
@@ -297,15 +309,20 @@ func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 		},
 		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
 		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
-		Executor:        types.ExecutorConfig{Type: executorType, Workspace: opts.Workspace, Runtime: opts.ContainerRuntime},
-		EditStrategy:    types.EditStrategyConfig{Type: editStrategyType},
-		Verifier:        types.VerifierConfig{Type: verifierType},
-		GitStrategy:     types.GitStrategyConfig{Type: gitStrategyType},
-		Transport:       types.TransportConfig{Type: opts.TransportType, Address: opts.TransportAddr},
-		TraceEmitter:    traceEmitter,
-		MaxTurns:        opts.MaxTurns,
-		Timeout:         &timeout,
-		LogLevel:        opts.LogLevel,
+		Executor: types.ExecutorConfig{
+			Type:              executorType,
+			Workspace:         opts.Workspace,
+			Runtime:           opts.ContainerRuntime,
+			WorkspaceExportTo: opts.WorkspaceExportTo,
+		},
+		EditStrategy: types.EditStrategyConfig{Type: editStrategyType},
+		Verifier:     types.VerifierConfig{Type: verifierType},
+		GitStrategy:  types.GitStrategyConfig{Type: gitStrategyType},
+		Transport:    types.TransportConfig{Type: opts.TransportType, Address: opts.TransportAddr},
+		TraceEmitter: traceEmitter,
+		MaxTurns:     opts.MaxTurns,
+		Timeout:      &timeout,
+		LogLevel:     opts.LogLevel,
 	}
 	if opts.FollowUpGrace > 0 {
 		grace := opts.FollowUpGrace
@@ -574,7 +591,15 @@ environment variable. Resolution order: --prompt > positional > --prompt-file
 Configuration precedence: a --config JSON file (if provided) populates the
 full RunConfig; explicitly-set flags then override individual fields; flags
 left at their default value do NOT override the file. When --config is not
-provided, flags + defaults build the RunConfig directly.`,
+provided, flags + defaults build the RunConfig directly.
+
+Workspace export (--export-workspace-to gs://...): at end-of-run the
+executor's workspace is tarred, gzipped, and uploaded to the named GCS
+URI. The flag overrides executor.workspaceExportTo from --config when
+explicitly set. Default error semantics: upload failures are logged and
+the run's exit code is unchanged. Pass --export-workspace-required to
+flip that — a failed upload then exits the run non-zero, suitable for
+Cloud Run jobs whose downstream automation depends on the artifact.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runHarness,
 }
@@ -629,7 +654,7 @@ func init() {
 	f.String("edit-strategy", "multi", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config)")
 	f.String("verifier", "none", "Verifier: none, test-runner, llm-judge (composite available only via --config)")
 	f.String("git-strategy", "none", "Git strategy: none, deterministic")
-	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel")
+	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel, gcs")
 	f.String("otel-endpoint", "", "OTLP endpoint for the otel trace emitter (default: localhost:4317 for grpc; full URL ending in the gateway base path for http/protobuf, e.g. https://otlp-gateway-prod-us-east-0.grafana.net/otlp)")
 	f.String("otel-protocol", "", "OTLP wire protocol for the otel trace emitter: \"\" (default — grpc), grpc, http/protobuf. HTTP/JSON is not supported; managed gateways like Grafana Cloud use http/protobuf. See docs/observability-cloud.md.")
 
@@ -667,6 +692,15 @@ func init() {
 	f.Duration("provider-retry-initial-delay", 0, "Base delay for exponential backoff before jitter, applied between retries on the default provider. Accepts Go duration syntax (e.g. 500ms, 1s). Default (when unset): 500ms.")
 	f.Duration("provider-retry-max-delay", 0, "Per-attempt sleep ceiling for the default provider (also caps Retry-After hints). Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 60s. Default (when unset): 16s.")
 	f.Duration("provider-retry-wall-clock", 0, "Wall-clock budget for the entire retry sequence on the default provider. Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 300s. Default (when unset): 90s.")
+
+	// Workspace export flags (issue #164). --export-workspace-to mirrors
+	// executor.workspaceExportTo in the RunConfig; an explicit flag
+	// overrides whatever the --config file set. --export-workspace-required
+	// controls error semantics on upload failure (default: log and
+	// continue; required: fail the run). Validation is delegated to
+	// types.ValidateRunConfig which already accepts only gs:// URIs.
+	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at end-of-run (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
+	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -973,6 +1007,16 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("service-namespace") {
 		cfg.Observability.ServiceNamespace, _ = f.GetString("service-namespace")
 	}
+
+	// Workspace export (issue #164). The flag explicitly overrides
+	// whatever the file set so a deployment can flip the destination
+	// URI without re-templating the JSON. An empty flag value with
+	// "changed" status clears the field entirely — the mirror of
+	// "set to empty to clear" applied elsewhere in this file.
+	if changed("export-workspace-to") {
+		cfg.Executor.WorkspaceExportTo, _ = f.GetString("export-workspace-to")
+	}
+
 	// Provider retry policy (issue #197). Each flag overrides its slot
 	// on cfg.Provider.Retry independently so an operator can pin a
 	// single value (e.g. just --provider-retry-max-attempts=5) without
@@ -1098,7 +1142,8 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		if err := types.ValidateRunConfig(cfg); err != nil {
 			return fmt.Errorf("invalid config from %q: %w", configPath, err)
 		}
-		return runWithConfig(cfg)
+		exportRequired, _ := f.GetBool("export-workspace-required")
+		return runWithConfig(cfg, runOptions{exportWorkspaceRequired: exportRequired})
 	}
 
 	// Path 2: no --config file. Build the RunConfig from flags + defaults.
@@ -1177,6 +1222,8 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	providerRetryInitialDelay, _ := f.GetDuration("provider-retry-initial-delay")
 	providerRetryMaxDelay, _ := f.GetDuration("provider-retry-max-delay")
 	providerRetryWallClockBudget, _ := f.GetDuration("provider-retry-wall-clock")
+	workspaceExportTo, _ := f.GetString("export-workspace-to")
+	workspaceExportRequired, _ := f.GetBool("export-workspace-required")
 
 	var queryParams map[string]string
 	for _, entry := range queryParamRaw {
@@ -1249,6 +1296,8 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		ProviderRetryInitialDelay:    providerRetryInitialDelay,
 		ProviderRetryMaxDelay:        providerRetryMaxDelay,
 		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
+		WorkspaceExportTo:            workspaceExportTo,
+		WorkspaceExportRequired:      workspaceExportRequired,
 	})
 	if err != nil {
 		return err
@@ -1266,7 +1315,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	if err := types.ValidateRunConfig(config); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
-	return runWithConfig(config)
+	return runWithConfig(config, runOptions{exportWorkspaceRequired: workspaceExportRequired})
 }
 
 // applyAnthropicWIFOverrides folds the Anthropic-WIF flag surface and
@@ -1429,11 +1478,20 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 	return nil
 }
 
+// runOptions carries CLI-only behaviour that doesn't fit on RunConfig.
+// Today this is just exportWorkspaceRequired — a flag that controls
+// whether a failed workspace export propagates a non-zero exit code.
+// Threading it through here (rather than embedding it on RunConfig)
+// keeps the wire schema free of CLI-shaped knobs.
+type runOptions struct {
+	exportWorkspaceRequired bool
+}
+
 // runWithConfig is the shared run path for both --config and flag-only
 // invocations. Both code paths converge here once they have a validated
 // RunConfig — ValidateRunConfig rejects nil Timeout, so the dereference
 // below is safe.
-func runWithConfig(config *types.RunConfig) error {
+func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*config.Timeout)*time.Second)
 	defer cancel()
 	setupSignalHandler(cancel)
@@ -1449,6 +1507,21 @@ func runWithConfig(config *types.RunConfig) error {
 		return fmt.Errorf("running harness: %w", err)
 	}
 	printRunSummary(runTrace)
+	// resultSink emission is the last thing on stdout for the run, so
+	// a Cloud Logging grep / shell pipeline can extract the
+	// "STIRRUP_RESULT <json>" line deterministically. Failures are
+	// logged inside emitRunResult and never fatal — the trace and the
+	// stderr summary already reflect outcome.
+	emitRunResult(ctx, config, runTrace)
+
+	// Workspace export (issue #164). Called after the trace and
+	// resultSink so a failed upload's slog warning lands after the
+	// run's structured outcome — easier to correlate during
+	// post-mortem. When required, the error here propagates and
+	// becomes the process exit status.
+	if err := exportWorkspace(ctx, config, opts.exportWorkspaceRequired); err != nil {
+		return err
+	}
 
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
 		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace)

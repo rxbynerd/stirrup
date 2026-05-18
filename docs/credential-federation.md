@@ -262,6 +262,12 @@ WIF — they avoid the STS round-trip entirely:
   metadata server reachable, so a misconfigured pod does not silently
   fall through to environment-variable credentials.
 
+`gcp-workload-identity` also works unchanged inside Cloud Run jobs:
+the same metadata server is exposed at `metadata.google.internal` with
+the same paths, and the attached service account flows transparently.
+See [`docs/cloud-run-jobs.md`](cloud-run-jobs.md) for the
+Cloud-Run-side IAM walkthrough.
+
 ## See also
 
 - [`anthropic-wif.md`](anthropic-wif.md) — the operator walkthrough

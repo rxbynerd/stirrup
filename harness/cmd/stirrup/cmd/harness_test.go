@@ -495,6 +495,11 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Duration("provider-retry-initial-delay", 0, "")
 	f.Duration("provider-retry-max-delay", 0, "")
 	f.Duration("provider-retry-wall-clock", 0, "")
+	// Workspace export flags (issue #164). Registered here so the
+	// override tests can exercise the applyOverrides path that handles
+	// --export-workspace-to.
+	f.String("export-workspace-to", "", "")
+	f.Bool("export-workspace-required", false, "")
 	return cmd
 }
 
@@ -1109,6 +1114,46 @@ func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
 	}
 	if cfg.Provider.Credential.TokenSource.Audience != "api://AzureADTokenExchange" {
 		t.Errorf("audience = %q, want api://AzureADTokenExchange", cfg.Provider.Credential.TokenSource.Audience)
+	}
+}
+
+// TestExampleCloudRunVertexGeminiJSONLoadsAndValidates pins the shipped
+// Cloud Run fixture: the file must round-trip through loadRunConfigFile,
+// pass ValidateRunConfig, and exercise the three new surface areas that
+// Chunks A and B introduced — resultSink.type=stdout-json,
+// traceEmitter.type=gcs, and executor.workspaceExportTo on a gs:// URI.
+//
+// Drift in any of the three fields fails this test before an operator
+// hits the same error on a Cloud Run dispatch.
+func TestExampleCloudRunVertexGeminiJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "cloud-run-vertex-gemini.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/cloud-run-vertex-gemini.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/cloud-run-vertex-gemini.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "gemini" {
+		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
+	}
+	if cfg.Provider.Credential == nil || cfg.Provider.Credential.Type != "gcp-workload-identity" {
+		t.Errorf("Provider.Credential = %+v, want type=gcp-workload-identity", cfg.Provider.Credential)
+	}
+	if cfg.ResultSink == nil || cfg.ResultSink.Type != "stdout-json" {
+		t.Errorf("ResultSink = %+v, want type=stdout-json", cfg.ResultSink)
+	}
+	if cfg.TraceEmitter.Type != "gcs" {
+		t.Errorf("TraceEmitter.Type = %q, want gcs", cfg.TraceEmitter.Type)
+	}
+	if cfg.TraceEmitter.Bucket == "" {
+		t.Error("TraceEmitter.Bucket must be set when TraceEmitter.Type is \"gcs\"")
+	}
+	if cfg.Executor.WorkspaceExportTo == "" {
+		t.Error("Executor.WorkspaceExportTo must be set in the Cloud Run fixture")
 	}
 }
 
@@ -3654,5 +3699,70 @@ func TestApplyOverrides_ProviderRetryNoFlagsChangedDoesNotClobberFile(t *testing
 	}
 	if *cfg.Provider.Retry != want {
 		t.Errorf("Retry mutated: got %+v, want %+v", *cfg.Provider.Retry, want)
+	}
+}
+
+// TestApplyOverrides_WorkspaceExportToFlowsThrough pins that
+// --export-workspace-to lands on ExecutorConfig.WorkspaceExportTo so
+// the end-of-run exporter wiring in runWithConfig sees it. End-to-end
+// (actual GCS upload) is covered by the Chunk C smoke workflow; this
+// test just confirms the flag-to-field path is wired.
+func TestApplyOverrides_WorkspaceExportToFlowsThrough(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Executor.WorkspaceExportTo = "gs://from-file/runs/old.tar.gz"
+
+	if err := cmd.Flags().Set("export-workspace-to", "gs://from-flag/runs/new.tar.gz"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.Executor.WorkspaceExportTo != "gs://from-flag/runs/new.tar.gz" {
+		t.Errorf("flag should override file: got %q", cfg.Executor.WorkspaceExportTo)
+	}
+}
+
+// TestApplyOverrides_WorkspaceExportToDefaultPreservesFile mirrors the
+// rest of the override surface: an unset flag must not clobber the
+// file's value (the central precedence rule that the rest of
+// applyOverrides tests pin).
+func TestApplyOverrides_WorkspaceExportToDefaultPreservesFile(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Executor.WorkspaceExportTo = "gs://from-file/runs/keep.tar.gz"
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.Executor.WorkspaceExportTo != "gs://from-file/runs/keep.tar.gz" {
+		t.Errorf("unset flag should preserve file value, got %q", cfg.Executor.WorkspaceExportTo)
+	}
+}
+
+// TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough pins the
+// flag-only Path 2 wiring — buildHarnessRunConfig must thread
+// WorkspaceExportTo onto ExecutorConfig so the end-of-run hook fires
+// when --config is absent and the operator passed
+// --export-workspace-to alone.
+func TestBuildHarnessRunConfig_WorkspaceExportToFlowsThrough(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:             "test-run",
+		Mode:              "execution",
+		Prompt:            "test",
+		ProviderType:      "anthropic",
+		APIKeyRef:         "secret://ANTHROPIC_API_KEY",
+		Model:             "claude-sonnet-4-6",
+		MaxTurns:          20,
+		Timeout:           600,
+		TransportType:     "stdio",
+		LogLevel:          "info",
+		WorkspaceExportTo: "gs://my-bucket/runs/abc/workspace.tar.gz",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if cfg.Executor.WorkspaceExportTo != "gs://my-bucket/runs/abc/workspace.tar.gz" {
+		t.Errorf("WorkspaceExportTo did not flow through to Executor: got %q", cfg.Executor.WorkspaceExportTo)
 	}
 }

@@ -1209,6 +1209,21 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 			endpoint = "localhost:4317"
 		}
 		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts)
+	case "gcs":
+		// CredentialConfig is optional — the documented default is
+		// gcp-workload-identity against the runtime's metadata server,
+		// which is the canonical Cloud Run / GKE Workload Identity
+		// shape. An explicit Credential block overrides this (e.g. for
+		// a service-account JSON key file on a non-GCP host).
+		credSrc, err := buildGCSTraceCredentialSource(cfg.Credential)
+		if err != nil {
+			return nil, fmt.Errorf("gcs trace emitter credential: %w", err)
+		}
+		return trace.NewGCSTraceEmitter(ctx, trace.GCSTraceEmitterOptions{
+			Bucket:           cfg.Bucket,
+			ObjectPrefix:     cfg.ObjectPrefix,
+			CredentialSource: credSrc,
+		})
 	case "jsonl", "":
 		var w io.Writer
 		if cfg.FilePath != "" {
@@ -1223,7 +1238,51 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 		}
 		return trace.NewJSONLTraceEmitter(w), nil
 	default:
-		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel)", cfg.Type)
+		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel, gcs)", cfg.Type)
+	}
+}
+
+// buildGCSTraceCredentialSource resolves the credential.Source for the
+// gcs trace emitter. The default — used when TraceEmitterConfig.Credential
+// is nil — is gcp-workload-identity, which matches the Cloud Run / GKE
+// runtime contract this emitter targets. An explicit Credential block
+// supports the broader cross-cloud federation surface (e.g.
+// gcp-service-account from a mounted key file).
+//
+// The accepted credential types are intentionally narrower than the
+// general provider.credential set: only GCP-shaped sources make sense
+// here because the target is GCS. AWS / Azure / Anthropic-WIF flavours
+// are rejected with a clear error rather than reaching a 401 from the
+// GCS API at run-end.
+func buildGCSTraceCredentialSource(cfg *types.CredentialConfig) (credential.Source, error) {
+	if cfg == nil {
+		return credential.NewGoogleWorkloadIdentitySource(), nil
+	}
+	switch cfg.Type {
+	case "", "gcp-workload-identity":
+		return credential.NewGoogleWorkloadIdentitySource(), nil
+	case "gcp-default":
+		// GCP Application Default Credentials. Useful for local dev
+		// where GOOGLE_APPLICATION_CREDENTIALS points at a service
+		// account JSON key.
+		return &credential.GoogleADCSource{}, nil
+	case "gcp-service-account":
+		// The provider-side validation enforces that a service-account
+		// path is set on Provider.GCPCredentialsFile. The trace emitter
+		// has no equivalent field today, so the operator must fall
+		// through to ADC (via GOOGLE_APPLICATION_CREDENTIALS) or use
+		// workload-identity. Surface the gap explicitly rather than
+		// silently no-opping.
+		return nil, fmt.Errorf(
+			"credential.type=%q is not supported for the gcs trace emitter today; "+
+				"use \"gcp-workload-identity\" on GCP runtimes or \"gcp-default\" with "+
+				"GOOGLE_APPLICATION_CREDENTIALS set to a service-account JSON key",
+			cfg.Type)
+	default:
+		return nil, fmt.Errorf(
+			"credential.type=%q is not supported for the gcs trace emitter; "+
+				"expected \"gcp-workload-identity\" or \"gcp-default\"",
+			cfg.Type)
 	}
 }
 

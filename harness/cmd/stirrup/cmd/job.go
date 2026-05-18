@@ -129,6 +129,26 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("running harness: %w", err)
 	}
 	printRunSummary(runTrace)
+	// resultSink emission mirrors the harness command path so a Cloud
+	// Run / Kubernetes job can be configured with
+	// resultSink.type=stdout-json and have its answer scraped from the
+	// pod's stdout regardless of which entrypoint launched it.
+	emitRunResult(ctx, config, runTrace)
+
+	// Workspace export. The job entrypoint has no equivalent of the
+	// CLI's --export-workspace-required, so the control plane decides
+	// the URI via RunConfig.Executor.WorkspaceExportTo and we treat
+	// upload failures as non-fatal: an exit-failing job would lose
+	// the run's trace and resultSink before the operator could
+	// correlate it. Operators who need a hard requirement should
+	// guard the URI on the control-plane side.
+	if err := exportWorkspace(ctx, config, false); err != nil {
+		// exportWorkspace returns nil in the non-required path, so
+		// reaching here is impossible given the false above. The
+		// guard keeps the signature compatible if the contract ever
+		// changes.
+		return err
+	}
 
 	// Honour follow-up grace from the RunConfig (set by the control plane) or
 	// fall back to the STIRRUP_FOLLOWUP_GRACE environment variable.

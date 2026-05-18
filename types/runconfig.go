@@ -73,6 +73,7 @@ type RunConfig struct {
 	GitStrategy      GitStrategyConfig         `json:"gitStrategy"`
 	Transport        TransportConfig           `json:"transport"`
 	TraceEmitter     TraceEmitterConfig        `json:"traceEmitter"`
+	ResultSink       *ResultSinkConfig         `json:"resultSink,omitempty"`
 	Tools            ToolsConfig               `json:"tools"`
 
 	// Limits
@@ -398,6 +399,23 @@ func (rc RunConfig) Redact() RunConfig {
 		}
 		redacted.TraceEmitter.Headers = headers
 	}
+	// ResultSink.Attributes (reserved for the future gcp-pubsub adapter)
+	// may carry "secret://" references the same way trace-emitter
+	// headers do. Mirror the same rewrite so a recorded RunConfig
+	// never persists the reference into a trace or recording.
+	if redacted.ResultSink != nil && len(redacted.ResultSink.Attributes) > 0 {
+		sink := *redacted.ResultSink
+		attrs := make(map[string]string, len(sink.Attributes))
+		for k, v := range sink.Attributes {
+			if strings.HasPrefix(v, "secret://") {
+				attrs[k] = "secret://[REDACTED]"
+			} else {
+				attrs[k] = v
+			}
+		}
+		sink.Attributes = attrs
+		redacted.ResultSink = &sink
+	}
 	return redacted
 }
 
@@ -654,6 +672,14 @@ type ExecutorConfig struct {
 	//   "kata-qemu"  — Kata Containers backed by QEMU
 	//   "kata-fc"    — Kata Containers backed by Firecracker
 	Runtime string `json:"runtime,omitempty"`
+
+	// WorkspaceExportTo, when set, instructs the harness to tarball the
+	// executor's workspace at end-of-run and upload it to the named URI.
+	// Currently only "gs://bucket/path" is accepted. The "api" executor
+	// (read-only) and any run with an empty workspace skip the upload
+	// silently. Future S3 / Azure Blob support will broaden the scheme
+	// set.
+	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
 }
 
 // VcsBackendConfig selects the VCS backend for the API executor.
@@ -725,10 +751,31 @@ type TransportConfig struct {
 
 // TraceEmitterConfig selects the trace emitter implementation.
 type TraceEmitterConfig struct {
-	Type            string `json:"type"`                      // "jsonl" | "otel"
+	Type            string `json:"type"`                      // "jsonl" | "otel" | "gcs"
 	FilePath        string `json:"filePath,omitempty"`        // for jsonl
 	Endpoint        string `json:"endpoint,omitempty"`        // for otel tracing (default: localhost:4317 for grpc; full URL for http/protobuf)
 	MetricsEndpoint string `json:"metricsEndpoint,omitempty"` // for otel metrics (defaults to Endpoint if unset)
+
+	// Bucket is the GCS bucket the "gcs" emitter writes the run's JSONL
+	// trace to. Required when Type == "gcs"; rejected for every other
+	// emitter type so a stale config does not silently keep a bucket
+	// reference alive across a type change. Validated against the GCS
+	// bucket naming rules (lowercase, no slashes, 3-63 chars).
+	Bucket string `json:"bucket,omitempty"`
+
+	// ObjectPrefix is joined with the run ID at write time to form the
+	// final GCS object name (e.g. "traces/" + RunID + ".jsonl"). Empty
+	// is allowed; trailing slash is treated as implicit. Only consulted
+	// by the "gcs" emitter.
+	ObjectPrefix string `json:"objectPrefix,omitempty"`
+
+	// Credential, when set, overrides the default credential resolution
+	// for the "gcs" emitter (which defaults to gcp-workload-identity
+	// against the runtime's metadata server). The field has no meaning
+	// for jsonl or otel and is rejected on those types. Secret-bearing
+	// sub-fields are scrubbed by RunConfig.Redact() the same way as
+	// Provider.Credential.
+	Credential *CredentialConfig `json:"credential,omitempty"`
 
 	// Protocol selects the OTLP wire protocol for the otel emitter.
 	// Closed set: "" (defaults to "grpc"), "grpc", "http/protobuf".
@@ -749,6 +796,53 @@ type TraceEmitterConfig struct {
 	// these as gRPC metadata; for "http/protobuf" they are attached as
 	// HTTP request headers.
 	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// ResultSinkConfig selects the result sink implementation. The
+// discriminator values are a closed set so AWS / Azure adapters can land
+// without breaking changes. Only "none" and "stdout-json" are
+// implemented in this issue; "gcp-pubsub" and "gcs" are reserved values
+// that fail validation with a "not yet implemented" error until their
+// adapters land. The "gcp-" prefix on the cloud-provider discriminator
+// mirrors the credential type prefix ("gcp-workload-identity") and
+// reserves sibling slots for "aws-sns" / "azure-eventgrid" without
+// requiring a deprecation cycle on the bare "pubsub" name.
+//
+// The result sink carries the run's *answer* (a small RunResult JSON
+// payload) — distinct from the trace emitter, which carries the run's
+// *evidence* (full JSONL trace + spans). A run can configure both
+// independently.
+type ResultSinkConfig struct {
+	// Type selects the adapter. Closed set:
+	//   "none"        — disabled (the default when ResultSink is nil).
+	//   "stdout-json" — write a single "STIRRUP_RESULT <json>" line to
+	//                   stdout at end-of-run. Reads cleanly from Cloud
+	//                   Logging / CloudWatch / journald.
+	//   "gcp-pubsub"  — RESERVED. Will publish RunResult to a GCP
+	//                   Pub/Sub topic; rejected with a "not yet
+	//                   implemented" error today.
+	//   "gcs"         — RESERVED. Will write RunResult as a JSON
+	//                   object to GCS; rejected with a "not yet
+	//                   implemented" error today.
+	Type string `json:"type"`
+
+	// Topic is the Pub/Sub topic name for the future "gcp-pubsub"
+	// adapter. Parsed but currently unused — the validator rejects
+	// gcp-pubsub with "not yet implemented" before this field is
+	// consulted. Carrying topic on a non-"gcp-pubsub" type is rejected
+	// to avoid silent drop when an operator copies a Pub/Sub block into
+	// a different sink config.
+	Topic string `json:"topic,omitempty"`
+
+	// Attributes are extra message attributes attached to the future
+	// "gcp-pubsub" adapter's published message. Values may carry
+	// "secret://" references which RunConfig.Redact() rewrites to
+	// "secret://[REDACTED]" before any trace or recording is
+	// persisted. Parsed but currently unused — the validator rejects
+	// gcp-pubsub with "not yet implemented" before this field is
+	// consulted. Carrying attributes on a non-"gcp-pubsub" type is
+	// rejected for the same reason as Topic.
+	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
 // ToolsConfig holds the tool configuration.
@@ -936,7 +1030,31 @@ var validTransportTypes = map[string]bool{
 var validTraceEmitterTypes = map[string]bool{
 	"jsonl": true,
 	"otel":  true,
+	"gcs":   true,
 }
+
+// runIDPattern bounds the characters allowed in RunConfig.RunID. RunID
+// is a defence-in-depth value: it is interpolated into the GCS object
+// name produced by the "gcs" trace emitter (and the future S3/Azure
+// equivalents) and into Cloud Logging labels. urlPathEscape passes "/"
+// through unchanged, so an unfiltered slash in RunID would silently
+// alter the object path. The closed set [a-zA-Z0-9_-] with a leading
+// alphanumeric and a 128-char ceiling is wide enough for the common
+// IDs operators paste in (UUIDs, Cloud Run execution names, integer
+// counters) and narrow enough to reject path traversal, control bytes,
+// and CRLF.
+var runIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_\-]{0,127}$`)
+
+// gcsBucketNamePattern is a minimal shape check for a GCS bucket name.
+// The full GCS bucket-name rules (no leading "goog" prefix, no
+// "google" substring in obfuscated forms, dotted forms requiring DNS
+// labels, etc.) are operator-facing and produce precise errors at
+// `gcloud storage buckets create` time; validating shape here is
+// purely so an obvious typo (slashes, uppercase, CRLF) fails at boot
+// rather than as a 400 from the GCS REST API. Range 3-63 chars
+// matches the documented bucket-name length limit for the simple
+// (non-dotted) form.
+var gcsBucketNamePattern = regexp.MustCompile(`^[a-z0-9._-]{3,63}$`)
 
 // validTraceEmitterProtocols is the closed set of OTLP wire protocols
 // accepted on TraceEmitterConfig.Protocol. Empty string is the unset
@@ -949,6 +1067,31 @@ var validTraceEmitterProtocols = map[string]bool{
 	"":              true,
 	"grpc":          true,
 	"http/protobuf": true,
+}
+
+// validResultSinkTypes is the closed set of ResultSinkConfig.Type
+// values. Only the entries in implementedResultSinkTypes are wired in
+// this release; the remainder are reserved so AWS / Azure / gcp-pubsub
+// adapters can ship without breaking the config wire schema. The
+// cloud-provider entries carry an explicit "gcp-" prefix to match the
+// credential discriminators ("gcp-workload-identity") and to reserve
+// sibling slots for "aws-sns" and "azure-eventgrid" without a
+// deprecation cycle.
+var validResultSinkTypes = map[string]bool{
+	"none":        true,
+	"stdout-json": true,
+	"gcp-pubsub":  true,
+	"gcs":         true,
+}
+
+// implementedResultSinkTypes is the subset of validResultSinkTypes for
+// which an adapter is wired today. ValidateRunConfig rejects every
+// other entry in validResultSinkTypes with a "not yet implemented"
+// error so an operator sees a clear message instead of a surprising
+// nil-component crash at boot.
+var implementedResultSinkTypes = map[string]bool{
+	"none":        true,
+	"stdout-json": true,
 }
 
 var validCredentialTypes = map[string]bool{
@@ -1222,6 +1365,14 @@ func ValidateRunConfig(config *RunConfig) error {
 	var errs []string
 
 	validateSessionName(config.SessionName, &errs)
+	// RunID is optional at this layer (the CLI / control plane assigns
+	// one before construction), but when set it is interpolated verbatim
+	// into the GCS object name produced by the gcs trace emitter. The
+	// pattern rejects path separators, ".." segments, control bytes, and
+	// CRLF so a hostile or typo'd RunID cannot rewrite the object path.
+	if config.RunID != "" && !runIDPattern.MatchString(config.RunID) {
+		errs = append(errs, fmt.Sprintf("runId %q must match %s", config.RunID, runIDPattern.String()))
+	}
 	validateRequiredType("mode", config.Mode, validRunModes, &errs)
 	validateRequiredType("provider", config.Provider.Type, validProviderTypes, &errs)
 	validateOptionalType("modelRouter", config.ModelRouter.Type, validModelRouterTypes, &errs)
@@ -1244,7 +1395,9 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
 	validateOptionalType("transport", config.Transport.Type, validTransportTypes, &errs)
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
-	validateTraceEmitterProtocolAndHeaders(config.TraceEmitter, &errs)
+	validateTraceEmitterProtocolAndHeaders(&config.TraceEmitter, &errs)
+	validateResultSinkConfig(config.ResultSink, &errs)
+	validateExecutorWorkspaceExportTo(config.Executor, &errs)
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
 	validateProviderConfigs(config, retryDefaulted, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
@@ -2592,17 +2745,26 @@ func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
 // on the jsonl emitter makes the wire schema unambiguous and prevents a
 // future migration from silently keeping a stale config working in a
 // way that hides the operator's intent.
-func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]string) {
+//
+// gcs-specific fields (Bucket, ObjectPrefix, Credential) are validated
+// here too: Bucket is required when Type=="gcs" and rejected on every
+// other type, ObjectPrefix is optional, Credential is gcs-only.
+//
+// cfg is passed by pointer so the validator can normalise ObjectPrefix
+// in place (trailing slash). gcsObjectName in harness/internal/trace/gcs.go
+// concatenates prefix and run-id without inserting a separator, so a
+// missing trailing slash would silently produce a malformed object name.
+func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]string) {
 	if !validTraceEmitterProtocols[cfg.Protocol] {
 		*errs = append(*errs, fmt.Sprintf(
 			"unsupported traceEmitter.protocol %q (allowed: \"\", grpc, http/protobuf)",
 			cfg.Protocol,
 		))
 	}
-	// Protocol/Headers are otel-only. The jsonl emitter does not
-	// negotiate a wire protocol or send HTTP headers; carrying these
-	// fields on a jsonl run is almost certainly a leftover from a
-	// migration and should fail loudly.
+	// Protocol/Headers are otel-only. The jsonl and gcs emitters do
+	// not negotiate a wire protocol or send HTTP headers; carrying
+	// these fields on a non-otel run is almost certainly a leftover
+	// from a migration and should fail loudly.
 	if cfg.Type != "otel" && cfg.Type != "" {
 		if cfg.Protocol != "" {
 			*errs = append(*errs, fmt.Sprintf(
@@ -2613,6 +2775,67 @@ func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]stri
 		if len(cfg.Headers) > 0 {
 			*errs = append(*errs, fmt.Sprintf(
 				"traceEmitter.headers is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+	}
+	// gcs-specific field validation. Bucket is required for gcs and
+	// rejected on every other type so a stale value cannot silently
+	// keep a bucket reference alive across a type change.
+	switch cfg.Type {
+	case "gcs":
+		if cfg.Bucket == "" {
+			*errs = append(*errs, "traceEmitter type \"gcs\" requires bucket")
+		} else if !gcsBucketNamePattern.MatchString(cfg.Bucket) {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.bucket %q must match %s (lowercase letters/digits/._-, 3-63 chars; no slashes)",
+				cfg.Bucket, gcsBucketNamePattern.String(),
+			))
+		}
+		// Reject ".." path segments in objectPrefix. urlPathEscape
+		// intentionally passes "/" and "." through unchanged so a prefix
+		// like "../../prod-traces/" would otherwise produce an object
+		// name that GCS stores verbatim under a different logical prefix
+		// — a quiet collision risk if a single bucket holds traces from
+		// multiple runs. The check runs before the trailing-slash
+		// normalisation below so a stray ".." in any segment is caught.
+		if cfg.ObjectPrefix != "" {
+			for _, seg := range strings.Split(strings.Trim(cfg.ObjectPrefix, "/"), "/") {
+				if seg == ".." {
+					*errs = append(*errs, `traceEmitter.objectPrefix must not contain ".." path segments`)
+					break
+				}
+			}
+		}
+		// Normalise the prefix to ensure a trailing slash.
+		// gcsObjectName in harness/internal/trace/gcs.go relies on this:
+		// it concatenates prefix and run-id directly, so a prefix
+		// supplied as "traces" instead of "traces/" would produce
+		// "tracesRUNID.jsonl" — silently malformed. Normalising here is
+		// more ergonomic than rejecting; operators rarely think of the
+		// slash as load-bearing.
+		if cfg.ObjectPrefix != "" && !strings.HasSuffix(cfg.ObjectPrefix, "/") {
+			cfg.ObjectPrefix += "/"
+		}
+		if cfg.Credential != nil {
+			validateCredentialConfig(cfg.Credential, "traceEmitter.credential", errs)
+		}
+	default:
+		if cfg.Bucket != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.bucket is only valid when traceEmitter.type is \"gcs\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if cfg.ObjectPrefix != "" {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.objectPrefix is only valid when traceEmitter.type is \"gcs\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if cfg.Credential != nil {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.credential is only valid when traceEmitter.type is \"gcs\" (got type %q)",
 				cfg.Type,
 			))
 		}
@@ -2647,5 +2870,89 @@ func validateTraceEmitterProtocolAndHeaders(cfg TraceEmitterConfig, errs *[]stri
 				k,
 			))
 		}
+	}
+}
+
+// validateResultSinkConfig enforces the closed set of resultSink types
+// and rejects reserved-but-not-implemented variants with a clear
+// "not yet implemented" message so an operator sees actionable text
+// instead of a nil-component crash at boot.
+//
+// A nil ResultSink is equivalent to type=="none" (sink disabled).
+func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if cfg.Type == "" {
+		*errs = append(*errs, "resultSink type is required")
+		return
+	}
+	if !validResultSinkTypes[cfg.Type] {
+		*errs = append(*errs, fmt.Sprintf("unsupported resultSink type %q", cfg.Type))
+		return
+	}
+	if !implementedResultSinkTypes[cfg.Type] {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink type %q is reserved but not yet implemented in this release",
+			cfg.Type,
+		))
+	}
+	// Topic and Attributes belong only to the gcp-pubsub adapter.
+	// Rejecting them on every other type mirrors the
+	// bucket/objectPrefix/credential rejection on TraceEmitterConfig
+	// and prevents the silent "where did my topic go" confusion when
+	// an operator copies a Pub/Sub block into a stdout-json config.
+	if cfg.Topic != "" && cfg.Type != "gcp-pubsub" {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.topic is only valid when type is \"gcp-pubsub\" (got type %q)",
+			cfg.Type,
+		))
+	}
+	if len(cfg.Attributes) > 0 && cfg.Type != "gcp-pubsub" {
+		*errs = append(*errs, fmt.Sprintf(
+			"resultSink.attributes is only valid when type is \"gcp-pubsub\" (got type %q)",
+			cfg.Type,
+		))
+	}
+}
+
+// validateExecutorWorkspaceExportTo enforces the URI shape on the
+// optional Executor.WorkspaceExportTo field and the cross-field
+// constraint that the api executor (read-only, no workspace) cannot
+// produce a workspace tarball.
+func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
+	if cfg.WorkspaceExportTo == "" {
+		return
+	}
+	// The api executor has no workspace to export. Rejecting here
+	// catches a config-typo before the run no-ops at end-of-run with
+	// a silent skip.
+	if cfg.Type == "api" {
+		*errs = append(*errs, "executor.workspaceExportTo is not valid for executor.type=\"api\" (api executor has no workspace)")
+		return
+	}
+	if cfg.Type == "" {
+		*errs = append(*errs, "executor.workspaceExportTo requires an explicit executor.type other than 'api'")
+		return
+	}
+	// Only gs:// is accepted today. Future S3 / Azure Blob support
+	// will broaden the scheme set; for now keep the surface narrow so
+	// a typo (http://, gs:/, gcs://) fails at config load instead of
+	// during the post-run upload.
+	if !strings.HasPrefix(cfg.WorkspaceExportTo, "gs://") {
+		*errs = append(*errs, fmt.Sprintf(
+			"executor.workspaceExportTo %q must use the gs:// scheme",
+			cfg.WorkspaceExportTo,
+		))
+		return
+	}
+	// "gs://" alone, or "gs:///" (empty bucket), are operator errors.
+	// Strip the scheme and require a non-empty bucket-path component.
+	rest := strings.TrimPrefix(cfg.WorkspaceExportTo, "gs://")
+	if rest == "" || strings.HasPrefix(rest, "/") {
+		*errs = append(*errs, fmt.Sprintf(
+			"executor.workspaceExportTo %q must contain a non-empty bucket path after gs://",
+			cfg.WorkspaceExportTo,
+		))
 	}
 }
