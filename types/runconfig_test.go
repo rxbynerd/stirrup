@@ -4345,8 +4345,8 @@ func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 			"global.anthropic.claude-sonnet-4-6",
 			"anthropic.claude-sonnet-4-5-20250929-v1:0",
 			"arn:aws:bedrock:eu-west-1:123456789012:inference-profile/eu.anthropic.claude-sonnet-4-6",
-			"arn:",                          // bare arn: prefix — deliberately permissive; Bedrock will reject at API layer
-			"meta.llama3-8b-instruct-v1:0",  // non-Anthropic vendor — dot rule is vendor-agnostic
+			"arn:",                         // bare arn: prefix — deliberately permissive; Bedrock will reject at API layer
+			"meta.llama3-8b-instruct-v1:0", // non-Anthropic vendor — dot rule is vendor-agnostic
 		}
 		for _, model := range cases {
 			t.Run(model, func(t *testing.T) {
