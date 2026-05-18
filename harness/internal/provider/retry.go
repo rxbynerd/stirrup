@@ -42,13 +42,32 @@ func RetryPolicyFromConfig(cfg *types.ProviderRetryConfig) RetryPolicy {
 	if cfg == nil {
 		return RetryPolicy{}
 	}
+	initialDelay := time.Duration(cfg.InitialDelayMs) * time.Millisecond
+	if cfg.InitialDelayMs == 0 {
+		// Defence-in-depth: a zero InitialDelay would cause
+		// backoffDelay to return zero on every attempt, producing a
+		// tight retry loop bounded only by MaxAttempts.
+		// ValidateRunConfig normally substitutes the canonical 500ms
+		// default for a zero input, but RetryPolicyFromConfig may be
+		// called by direct embedders that bypass validation — keep
+		// the safe behaviour reachable in either path.
+		initialDelay = defaultInitialDelayFallback
+	}
 	return RetryPolicy{
 		MaxAttempts:     cfg.MaxAttempts,
-		InitialDelay:    time.Duration(cfg.InitialDelayMs) * time.Millisecond,
+		InitialDelay:    initialDelay,
 		MaxDelay:        time.Duration(cfg.MaxDelayMs) * time.Millisecond,
 		WallClockBudget: time.Duration(cfg.WallClockBudgetMs) * time.Millisecond,
 	}
 }
+
+// defaultInitialDelayFallback mirrors types.defaultProviderRetryInitialDelayMs
+// (500ms). Duplicated as a private constant rather than imported because
+// types/runconfig.go keeps the millisecond defaults unexported, and the
+// invariant we are protecting — "a zero InitialDelay produces a tight retry
+// loop" — is local to this package. If the types package ever exports the
+// constants this should switch to importing them.
+const defaultInitialDelayFallback = 500 * time.Millisecond
 
 // retryableStatus reports whether status code s warrants a retry.
 // List is the cross-SDK consensus: 408, 409, 429, 500, 502, 503, 504.

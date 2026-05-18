@@ -90,9 +90,10 @@ are honoured when present and bounded by the configured max delay.
 
 `maxAttempts` is the total number of HTTP attempts including the
 first, so the default value of `3` permits two retries. A value of
-`1` disables retries. Setting `initialDelayMs` to `0` is rejected by
-the validator (it would imply an unbounded immediate-retry loop);
-use `1` to request near-zero initial delay.
+`1` disables retries. `initialDelayMs: 0` is treated as unset and
+the defaulter substitutes 500ms. To request a 1ms initial delay
+(the minimum resolvable value), set `1`. Negative values are
+rejected.
 
 `ValidateRunConfig` fills the documented defaults when a field is
 left at its zero value, so leaving every flag unset behaves

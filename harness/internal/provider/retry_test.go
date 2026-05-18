@@ -864,6 +864,34 @@ func TestRetryPolicyFromConfig(t *testing.T) {
 	})
 }
 
+// TestRetryPolicyFromConfig_ZeroInitialDelay asserts that a caller who
+// constructs a ProviderRetryConfig with InitialDelayMs=0 and bypasses
+// ValidateRunConfig still gets the safe canonical default rather than a
+// zero InitialDelay (which would produce a tight retry loop when
+// backoffDelay returns zero on every attempt).
+func TestRetryPolicyFromConfig_ZeroInitialDelay(t *testing.T) {
+	cfg := &types.ProviderRetryConfig{
+		MaxAttempts:       3,
+		InitialDelayMs:    0,
+		MaxDelayMs:        5000,
+		WallClockBudgetMs: 30000,
+	}
+	got := RetryPolicyFromConfig(cfg)
+	if got.InitialDelay != 500*time.Millisecond {
+		t.Errorf("RetryPolicyFromConfig with zero InitialDelayMs: InitialDelay = %v, want 500ms (defence-in-depth fallback)", got.InitialDelay)
+	}
+	// Other fields should still convert normally.
+	if got.MaxAttempts != 3 {
+		t.Errorf("MaxAttempts = %d, want 3", got.MaxAttempts)
+	}
+	if got.MaxDelay != 5*time.Second {
+		t.Errorf("MaxDelay = %v, want 5s", got.MaxDelay)
+	}
+	if got.WallClockBudget != 30*time.Second {
+		t.Errorf("WallClockBudget = %v, want 30s", got.WallClockBudget)
+	}
+}
+
 // --- M4: backoffDelay zero-guard paths ---
 
 func TestBackoffDelay_ZeroInitialDelay(t *testing.T) {
