@@ -62,7 +62,7 @@ func NewMetricRecorder(inner PermissionPolicy, metrics *observability.Metrics, p
 func (r *metricRecorder) Check(ctx context.Context, tool types.ToolDefinition, input json.RawMessage) (*PermissionResult, error) {
 	result, err := r.inner.Check(ctx, tool, input)
 
-	decision := "error"
+	var decision string
 	switch {
 	case err != nil:
 		decision = "error"

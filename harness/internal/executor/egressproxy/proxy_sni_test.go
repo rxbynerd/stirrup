@@ -185,9 +185,9 @@ func TestParseSNIFromHandshake_MalformedInputs(t *testing.T) {
 			name: "session_id length present, bytes overrun",
 			body: func() []byte {
 				b := []byte{0x01, 0x00, 0x00, 0x00}
-				b = append(b, []byte{0x03, 0x03}...)        // version
-				b = append(b, make([]byte, 32)...)          // random
-				b = append(b, 0xff /* sid len 255 */)       // truncated sid
+				b = append(b, []byte{0x03, 0x03}...)  // version
+				b = append(b, make([]byte, 32)...)    // random
+				b = append(b, 0xff /* sid len 255 */) // truncated sid
 				return b
 			}(),
 		},
@@ -368,4 +368,3 @@ func readAllUntilEOF(t *testing.T, conn net.Conn) []byte {
 	}
 	return out.Bytes()
 }
-

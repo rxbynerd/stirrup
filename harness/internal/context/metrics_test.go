@@ -68,7 +68,7 @@ func TestMetricRecorder_RecordsCompaction(t *testing.T) {
 	msgs := make([]types.Message, 5)
 	for i := range msgs {
 		msgs[i] = types.Message{
-			Role: "user",
+			Role:    "user",
 			Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 400)}},
 		}
 	}
@@ -105,7 +105,7 @@ func TestMetricRecorder_LastCompactionPassthrough(t *testing.T) {
 	msgs := make([]types.Message, 5)
 	for i := range msgs {
 		msgs[i] = types.Message{
-			Role: "user",
+			Role:    "user",
 			Content: []types.ContentBlock{{Type: "text", Text: strings.Repeat("x", 400)}},
 		}
 	}
