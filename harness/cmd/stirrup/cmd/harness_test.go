@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -54,7 +55,10 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			opts := baseOpts
 			opts.Mode = mode
-			cfg := buildHarnessRunConfig(opts)
+			cfg, err := buildHarnessRunConfig(opts)
+			if err != nil {
+				t.Fatalf("buildHarnessRunConfig: %v", err)
+			}
 
 			if err := types.ValidateRunConfig(cfg); err != nil {
 				t.Fatalf("buildHarnessRunConfig produced an invalid RunConfig for --mode %q: %v", mode, err)
@@ -80,7 +84,7 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 // RunConfig path and ValidateRunConfig. Before this case existed, picking
 // --provider openai-responses would crash at validation.
 func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -92,6 +96,9 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Provider.Type != "openai-responses" {
 		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
@@ -108,7 +115,7 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 // when no explicit Tools.BuiltIn list is supplied, read-only modes get
 // the documented default list rather than passing validation by accident.
 func TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "research",
 		Prompt:        "test",
@@ -120,6 +127,9 @@ func TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	// The default path should populate exactly the documented
 	// read-only tool list.
@@ -164,7 +174,7 @@ func TestApplyModeDefaults_RespectsExplicitPolicy(t *testing.T) {
 // TestBuildHarnessRunConfig_ComponentSelections verifies that the new
 // component-selection escape-hatch fields propagate correctly.
 func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:            "test-run",
 		Mode:             "execution",
 		Prompt:           "test",
@@ -189,6 +199,9 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 		// --otel-protocol on the CLI.
 		OTelProtocol: "http/protobuf",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Executor.Type != "container" {
 		t.Errorf("expected executor type 'container', got %q", cfg.Executor.Type)
@@ -222,7 +235,7 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 // shipped CLI behaviour; tests pin them explicitly so a refactor that
 // changes them by accident fails loudly.
 func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -235,6 +248,9 @@ func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 		LogLevel:      "info",
 		// All component-selection fields deliberately left empty.
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 	if cfg.Executor.Type != "local" {
 		t.Errorf("default executor should be 'local', got %q", cfg.Executor.Type)
 	}
@@ -266,7 +282,7 @@ func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
 	t.Setenv("OTEL_DEPLOYMENT_ENVIRONMENT", "production-eu")
 	t.Setenv("OTEL_SERVICE_NAMESPACE", "")
 
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -280,6 +296,9 @@ func TestBuildHarnessRunConfig_ObservabilityFallsBackToEnv(t *testing.T) {
 		// Observability flags deliberately empty: this is the K8s pod-spec
 		// path where the operator only sets OTEL_DEPLOYMENT_ENVIRONMENT.
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	// The flag-only path leaves Observability at its zero value when both
 	// flags are empty (REC-2 guard). The env-var fallback is delegated
@@ -468,6 +487,14 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("guardrail-fail-open", false, "")
 	f.String("deployment-environment", "", "")
 	f.String("service-namespace", "", "")
+	// Provider retry policy flags (issue #197). Registered here so
+	// f.Changed("...") can fire in TestApplyOverrides_ProviderRetry*
+	// tests — without these registrations applyProviderRetryFlagOverrides
+	// hits its early-return guard unconditionally.
+	f.Int("provider-retry-max-attempts", 0, "")
+	f.Duration("provider-retry-initial-delay", 0, "")
+	f.Duration("provider-retry-max-delay", 0, "")
+	f.Duration("provider-retry-wall-clock", 0, "")
 	return cmd
 }
 
@@ -712,7 +739,7 @@ func TestApplyOverrides_SessionNameFilePreserved(t *testing.T) {
 // build path: a SessionName provided in harnessCLIOptions must end up on
 // the constructed RunConfig.
 func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		SessionName:   "nightly-eval",
@@ -725,6 +752,9 @@ func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.SessionName != "nightly-eval" {
 		t.Errorf("SessionName: got %q, want %q", cfg.SessionName, "nightly-eval")
@@ -742,7 +772,7 @@ func TestBuildHarnessRunConfig_SessionNamePropagates(t *testing.T) {
 // break operator dashboards (Grafana group-by-environment would fall
 // back to the default "local" tile).
 func TestBuildHarnessRunConfig_ObservabilityPropagates(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:                 "test-run",
 		Mode:                  "execution",
 		Prompt:                "test",
@@ -756,6 +786,9 @@ func TestBuildHarnessRunConfig_ObservabilityPropagates(t *testing.T) {
 		DeploymentEnvironment: "production",
 		ServiceNamespace:      "stirrup-eval",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Observability.Environment != "production" {
 		t.Errorf("Observability.Environment: got %q, want %q", cfg.Observability.Environment, "production")
@@ -1084,7 +1117,7 @@ func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
 // fields. Each is independently exercised so a future refactor that
 // drops one wiring without dropping the others is caught.
 func TestBuildHarnessRunConfig_SafetyRingFlags(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:                "test-run",
 		Mode:                 "execution",
 		Prompt:               "test",
@@ -1099,6 +1132,9 @@ func TestBuildHarnessRunConfig_SafetyRingFlags(t *testing.T) {
 		PermissionPolicyFile: "/tmp/policy.cedar",
 		CodeScannerType:      "patterns",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Executor.Runtime != "runsc" {
 		t.Errorf("Executor.Runtime = %q, want runsc", cfg.Executor.Runtime)
@@ -1628,7 +1664,7 @@ func TestParseQueryParam_ValidAndInvalid(t *testing.T) {
 // CLI options propagate from harnessCLIOptions into the generated
 // ProviderConfig.
 func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -1643,6 +1679,9 @@ func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
 		TransportType: "stdio",
 		LogLevel:      "info",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if got, want := cfg.Provider.BaseURL, "https://example.openai.azure.com/openai/v1"; got != want {
 		t.Errorf("Provider.BaseURL = %q, want %q", got, want)
@@ -1664,7 +1703,7 @@ func TestBuildHarnessRunConfig_AzureProviderFields(t *testing.T) {
 // least one of the flags is non-zero so the flag-only build path
 // matches the documented "default == nil == no guardrails" behaviour.
 func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:             "test-run",
 		Mode:              "execution",
 		Prompt:            "test",
@@ -1678,6 +1717,9 @@ func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
 		GuardRailType:     "granite-guardian",
 		GuardRailEndpoint: "http://localhost:8000",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.GuardRail == nil {
 		t.Fatalf("expected non-nil GuardRail config, got nil")
@@ -1698,7 +1740,7 @@ func TestBuildHarnessRunConfig_GuardRailFlags(t *testing.T) {
 // path leaves config.GuardRail as nil so the factory installs the
 // no-op "none" guard with zero behaviour change vs the pre-#43 path.
 func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -1711,6 +1753,9 @@ func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
 		LogLevel:      "info",
 		// All GuardRail fields deliberately left at their zero values.
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 	if cfg.GuardRail != nil {
 		t.Errorf("expected GuardRail to be nil when no flags are set, got %+v", cfg.GuardRail)
 	}
@@ -1721,7 +1766,7 @@ func TestBuildHarnessRunConfig_GuardRailDefaultNil(t *testing.T) {
 // enough to materialise a GuardRail config (with the default empty
 // type) so an operator can flip the posture without restating the rest.
 func TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:             "test-run",
 		Mode:              "execution",
 		Prompt:            "test",
@@ -1734,6 +1779,9 @@ func TestBuildHarnessRunConfig_GuardRailFailOpenFlipsBoolean(t *testing.T) {
 		LogLevel:          "info",
 		GuardRailFailOpen: true,
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 	if cfg.GuardRail == nil {
 		t.Fatalf("expected non-nil GuardRail when fail-open flag is set")
 	}
@@ -1921,7 +1969,7 @@ func TestApplyOverrides_GuardRailEmptyTypeClears(t *testing.T) {
 // and GCPLocation flow into ProviderConfig, the resulting RunConfig
 // validates, and ModelRouter.Provider is wired to "gemini".
 func TestBuildHarnessRunConfig_GeminiProvider(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -1934,6 +1982,9 @@ func TestBuildHarnessRunConfig_GeminiProvider(t *testing.T) {
 		GCPProject:    "my-project",
 		GCPLocation:   "us-central1",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Provider.Type != "gemini" {
 		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
@@ -1958,7 +2009,7 @@ func TestBuildHarnessRunConfig_GeminiProvider(t *testing.T) {
 // switching only --provider would otherwise carry that ref through and
 // trip the validator (which forbids apiKeyRef on gemini runs).
 func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -1972,6 +2023,9 @@ func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
 		GCPProject:    "my-project",
 		GCPLocation:   "global",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Provider.APIKeyRef != "" {
 		t.Errorf("APIKeyRef should be cleared for gemini, got %q", cfg.Provider.APIKeyRef)
@@ -1987,7 +2041,7 @@ func TestBuildHarnessRunConfig_GeminiSuppressesAPIKeyRef(t *testing.T) {
 // type=policy-engine. This is the convenience shortcut documented on
 // the flag's help string.
 func TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:              "test-run",
 		Mode:               "execution",
 		Prompt:             "test",
@@ -2001,6 +2055,9 @@ func TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType(t *testing.T) {
 		GCPLocation:        "global",
 		GCPCredentialsFile: "/tmp/sa.json",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Provider.GCPCredentialsFile != "/tmp/sa.json" {
 		t.Errorf("GCPCredentialsFile = %q, want /tmp/sa.json", cfg.Provider.GCPCredentialsFile)
@@ -2019,7 +2076,7 @@ func TestBuildHarnessRunConfig_GeminiCredentialsFileImpliesType(t *testing.T) {
 // them anyway, but we want clean configs to keep --provider switching
 // ergonomic).
 func TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -2036,6 +2093,9 @@ func TestBuildHarnessRunConfig_GeminiFieldsScopedToProviderType(t *testing.T) {
 		GCPProject:  "leaked-project",
 		GCPLocation: "global",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Provider.GCPProject != "" {
 		t.Errorf("GCPProject leaked onto anthropic provider: %q", cfg.Provider.GCPProject)
@@ -2669,7 +2729,7 @@ func TestApplyAnthropicWIF_ExistingTokenSourcePreserved(t *testing.T) {
 // type=azure-workload-identity. Mirrors the --gcp-credentials-file
 // shortcut: the flag is the discriminator.
 func TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -2685,6 +2745,9 @@ func TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential(t *testing.T) {
 		AzureClientID: "22222222-2222-2222-2222-222222222222",
 		AzureScope:    "https://cognitiveservices.azure.com/.default",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Provider.Credential == nil {
 		t.Fatal("expected Credential to be inferred from --azure-tenant-id")
@@ -2725,7 +2788,7 @@ func TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential(t *testing.T) {
 // apiKeyRef". The test pins that an Azure WIF flag-only run is valid
 // end-to-end so the regression cannot recur.
 func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -2741,6 +2804,9 @@ func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
 		AzureClientID: "22222222-2222-2222-2222-222222222222",
 		AzureScope:    "https://cognitiveservices.azure.com/.default",
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 	// buildHarnessRunConfig only assembles the flag-implied Credential
 	// shell — TokenSource still has to come from --config in the real
 	// CLI, but the validator needs one to accept the run. Wire a file
@@ -2765,7 +2831,7 @@ func TestBuildHarnessRunConfig_AzureWIFPassesValidation(t *testing.T) {
 // azureClientId" error — the flag mapping itself is mechanical and must
 // not silently drop a partial spec.
 func TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -2779,6 +2845,9 @@ func TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient(t *testing.T) {
 		AzureTenantID: "11111111-1111-1111-1111-111111111111",
 		// AzureClientID intentionally empty; validator's job to reject.
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Provider.Credential == nil {
 		t.Fatal("expected Credential to be inferred from --azure-tenant-id alone")
@@ -2805,7 +2874,7 @@ func TestBuildHarnessRunConfig_AzureWIFTenantWithoutClient(t *testing.T) {
 // itself constructs the config from scratch (no pre-existing
 // Credential to preserve).
 func TestBuildHarnessRunConfig_AzureWIFNotSetLeavesCredentialNil(t *testing.T) {
-	cfg := buildHarnessRunConfig(harnessCLIOptions{
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
 		Mode:          "execution",
 		Prompt:        "test",
@@ -2820,6 +2889,9 @@ func TestBuildHarnessRunConfig_AzureWIFNotSetLeavesCredentialNil(t *testing.T) {
 		// All AzureWIF fields empty — no Credential block should be
 		// constructed for a vanilla openai-compatible run.
 	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
 
 	if cfg.Provider.Credential != nil {
 		t.Errorf("Credential should remain nil when no Azure WIF flags are set, got %+v", cfg.Provider.Credential)
@@ -3347,5 +3419,240 @@ func TestRunHarness_Path2_AllSourcesEmpty(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error should mention %q, got: %v", want, err)
 		}
+	}
+}
+
+// --- B-2 / B-3 / B-4: provider-retry flag-to-config wiring (#197) ---
+
+// TestApplyProviderRetryOverrides_SubMillisecondRejected pins the helper's
+// refusal to silently truncate a sub-millisecond duration to zero. Without
+// this guard a `--provider-retry-initial-delay=500us` invocation would
+// satisfy `int(d / time.Millisecond) == 0` and fall through to the
+// zero-guard ("flag not set"), erasing the operator's intent.
+func TestApplyProviderRetryOverrides_SubMillisecondRejected(t *testing.T) {
+	cases := []struct {
+		name   string
+		opts   harnessCLIOptions
+		expect string
+	}{
+		{
+			name:   "initial-delay below 1ms",
+			opts:   harnessCLIOptions{ProviderRetryInitialDelay: 500 * time.Microsecond},
+			expect: "--provider-retry-initial-delay",
+		},
+		{
+			name:   "max-delay below 1ms",
+			opts:   harnessCLIOptions{ProviderRetryMaxDelay: 100 * time.Microsecond},
+			expect: "--provider-retry-max-delay",
+		},
+		{
+			name:   "wall-clock below 1ms",
+			opts:   harnessCLIOptions{ProviderRetryWallClockBudget: 250 * time.Microsecond},
+			expect: "--provider-retry-wall-clock",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := &types.ProviderConfig{}
+			err := applyProviderRetryOverrides(pc, tc.opts)
+			if err == nil {
+				t.Fatalf("expected sub-ms rejection error, got nil; pc.Retry=%+v", pc.Retry)
+			}
+			if !strings.Contains(err.Error(), tc.expect) {
+				t.Errorf("error should mention %q, got: %v", tc.expect, err)
+			}
+			if !strings.Contains(err.Error(), "minimum resolution is 1ms") {
+				t.Errorf("error should mention the resolution limit, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestApplyProviderRetryFlagOverrides_SubMillisecondRejected covers the
+// --config path's mirror of the same check.
+func TestApplyProviderRetryFlagOverrides_SubMillisecondRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		flag  string
+		value string
+	}{
+		{name: "initial-delay below 1ms", flag: "provider-retry-initial-delay", value: "500us"},
+		{name: "max-delay below 1ms", flag: "provider-retry-max-delay", value: "100us"},
+		{name: "wall-clock below 1ms", flag: "provider-retry-wall-clock", value: "250us"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newTestHarnessCommand()
+			if err := cmd.Flags().Set(tc.flag, tc.value); err != nil {
+				t.Fatalf("set %s=%s: %v", tc.flag, tc.value, err)
+			}
+			pc := &types.ProviderConfig{}
+			err := applyProviderRetryFlagOverrides(cmd, pc)
+			if err == nil {
+				t.Fatalf("expected sub-ms rejection error, got nil; pc.Retry=%+v", pc.Retry)
+			}
+			if !strings.Contains(err.Error(), "--"+tc.flag) {
+				t.Errorf("error should mention --%s, got: %v", tc.flag, err)
+			}
+			if !strings.Contains(err.Error(), "minimum resolution is 1ms") {
+				t.Errorf("error should mention the resolution limit, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestApplyProviderRetryOverrides_AllFlagsSet asserts each of the four
+// flags lands on its corresponding ProviderRetryConfig field with the
+// duration→ms conversion applied.
+func TestApplyProviderRetryOverrides_AllFlagsSet(t *testing.T) {
+	pc := &types.ProviderConfig{}
+	opts := harnessCLIOptions{
+		ProviderRetryMaxAttempts:     4,
+		ProviderRetryInitialDelay:    250 * time.Millisecond,
+		ProviderRetryMaxDelay:        10 * time.Second,
+		ProviderRetryWallClockBudget: 45 * time.Second,
+	}
+	if err := applyProviderRetryOverrides(pc, opts); err != nil {
+		t.Fatalf("applyProviderRetryOverrides: %v", err)
+	}
+	if pc.Retry == nil {
+		t.Fatal("Retry should have been allocated")
+	}
+	if got, want := pc.Retry.MaxAttempts, 4; got != want {
+		t.Errorf("MaxAttempts = %d, want %d", got, want)
+	}
+	if got, want := pc.Retry.InitialDelayMs, 250; got != want {
+		t.Errorf("InitialDelayMs = %d, want %d", got, want)
+	}
+	if got, want := pc.Retry.MaxDelayMs, 10000; got != want {
+		t.Errorf("MaxDelayMs = %d, want %d", got, want)
+	}
+	if got, want := pc.Retry.WallClockBudgetMs, 45000; got != want {
+		t.Errorf("WallClockBudgetMs = %d, want %d", got, want)
+	}
+}
+
+// TestApplyProviderRetryOverrides_SingleFlagPartialOverride asserts that
+// setting one flag does not implicitly zero the other slots — the
+// per-field defaulter in ValidateRunConfig still fills in the remaining
+// fields downstream.
+func TestApplyProviderRetryOverrides_SingleFlagPartialOverride(t *testing.T) {
+	pc := &types.ProviderConfig{}
+	opts := harnessCLIOptions{ProviderRetryMaxAttempts: 5}
+	if err := applyProviderRetryOverrides(pc, opts); err != nil {
+		t.Fatalf("applyProviderRetryOverrides: %v", err)
+	}
+	if pc.Retry == nil {
+		t.Fatal("Retry should have been allocated for the single-flag case")
+	}
+	if pc.Retry.MaxAttempts != 5 {
+		t.Errorf("MaxAttempts = %d, want 5", pc.Retry.MaxAttempts)
+	}
+	if pc.Retry.InitialDelayMs != 0 || pc.Retry.MaxDelayMs != 0 || pc.Retry.WallClockBudgetMs != 0 {
+		t.Errorf("unflagged slots should remain zero, got %+v", pc.Retry)
+	}
+}
+
+// TestApplyProviderRetryOverrides_AllZeroIsNoop asserts that an entirely-
+// untouched flag surface leaves pc.Retry nil, preserving the documented
+// "no override" path (ValidateRunConfig then fills in all defaults).
+func TestApplyProviderRetryOverrides_AllZeroIsNoop(t *testing.T) {
+	pc := &types.ProviderConfig{}
+	if err := applyProviderRetryOverrides(pc, harnessCLIOptions{}); err != nil {
+		t.Fatalf("applyProviderRetryOverrides: %v", err)
+	}
+	if pc.Retry != nil {
+		t.Errorf("Retry should remain nil for the all-zero case, got %+v", pc.Retry)
+	}
+}
+
+// TestApplyOverrides_ProviderRetryFlagOverridesFile asserts that a
+// single Changed() flag rewrites only the corresponding file slot,
+// leaving the other file-supplied retry values untouched. This is the
+// "operator pins one knob" contract for the --config + flag combo.
+func TestApplyOverrides_ProviderRetryFlagOverridesFile(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("provider-retry-wall-clock", "120s"); err != nil {
+		t.Fatalf("set provider-retry-wall-clock: %v", err)
+	}
+	cfg := baseFileConfig()
+	cfg.Provider.Retry = &types.ProviderRetryConfig{
+		MaxAttempts:       2,
+		InitialDelayMs:    750,
+		MaxDelayMs:        20000,
+		WallClockBudgetMs: 60000,
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.Provider.Retry == nil {
+		t.Fatal("Retry must not be cleared")
+	}
+	if cfg.Provider.Retry.MaxAttempts != 2 {
+		t.Errorf("MaxAttempts: file value should survive, got %d", cfg.Provider.Retry.MaxAttempts)
+	}
+	if cfg.Provider.Retry.InitialDelayMs != 750 {
+		t.Errorf("InitialDelayMs: file value should survive, got %d", cfg.Provider.Retry.InitialDelayMs)
+	}
+	if cfg.Provider.Retry.MaxDelayMs != 20000 {
+		t.Errorf("MaxDelayMs: file value should survive, got %d", cfg.Provider.Retry.MaxDelayMs)
+	}
+	if cfg.Provider.Retry.WallClockBudgetMs != 120000 {
+		t.Errorf("WallClockBudgetMs: flag should override file, got %d, want 120000", cfg.Provider.Retry.WallClockBudgetMs)
+	}
+}
+
+// TestApplyOverrides_ProviderRetryFlagAllocatesNilRetry asserts that
+// when the file omits the retry block entirely, a single Changed() flag
+// allocates the struct and writes the field; the rest of the slots stay
+// zero so ValidateRunConfig fills them with the documented defaults.
+func TestApplyOverrides_ProviderRetryFlagAllocatesNilRetry(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("provider-retry-max-attempts", "5"); err != nil {
+		t.Fatalf("set provider-retry-max-attempts: %v", err)
+	}
+	cfg := baseFileConfig()
+	cfg.Provider.Retry = nil
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.Provider.Retry == nil {
+		t.Fatal("Retry should have been allocated")
+	}
+	if cfg.Provider.Retry.MaxAttempts != 5 {
+		t.Errorf("MaxAttempts = %d, want 5", cfg.Provider.Retry.MaxAttempts)
+	}
+	if cfg.Provider.Retry.InitialDelayMs != 0 || cfg.Provider.Retry.MaxDelayMs != 0 || cfg.Provider.Retry.WallClockBudgetMs != 0 {
+		t.Errorf("unflagged slots should remain zero, got %+v", cfg.Provider.Retry)
+	}
+}
+
+// TestApplyOverrides_ProviderRetryNoFlagsChangedDoesNotClobberFile is
+// the symmetric "Changed-guards do their job" assertion: a
+// fully-populated file retry block must survive an applyOverrides call
+// where none of the four retry flags were touched.
+func TestApplyOverrides_ProviderRetryNoFlagsChangedDoesNotClobberFile(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider.Retry = &types.ProviderRetryConfig{
+		MaxAttempts:       2,
+		InitialDelayMs:    750,
+		MaxDelayMs:        20000,
+		WallClockBudgetMs: 60000,
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.Provider.Retry == nil {
+		t.Fatal("Retry should not have been cleared")
+	}
+	want := types.ProviderRetryConfig{
+		MaxAttempts:       2,
+		InitialDelayMs:    750,
+		MaxDelayMs:        20000,
+		WallClockBudgetMs: 60000,
+	}
+	if *cfg.Provider.Retry != want {
+		t.Errorf("Retry mutated: got %+v, want %+v", *cfg.Provider.Retry, want)
 	}
 }

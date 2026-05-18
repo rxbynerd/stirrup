@@ -215,7 +215,13 @@ type harnessCLIOptions struct {
 // permission policy and the fall-back built-in tool list required by
 // read-only modes. Kept pure so tests can exercise every --mode value
 // without invoking the agentic loop.
-func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
+//
+// Returns a non-nil error only when an operator-supplied flag fails an
+// up-front sanity check (e.g. a sub-millisecond retry duration that
+// would silently truncate to zero). Most validation still happens later
+// in `ValidateRunConfig`; the checks here exist where the truncation
+// would erase operator intent before the validator ever sees it.
+func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 	timeout := opts.Timeout
 
 	executorType := opts.ExecutorType
@@ -403,10 +409,12 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 	// otherwise leave it nil so ValidateRunConfig fills the documented
 	// defaults. Each non-zero field overrides its slot independently,
 	// matching the partial-override pattern used by GuardRail above.
-	applyProviderRetryOverrides(&config.Provider, opts)
+	if err := applyProviderRetryOverrides(&config.Provider, opts); err != nil {
+		return nil, err
+	}
 
 	applyModeDefaults(config)
-	return config
+	return config, nil
 }
 
 // applyProviderRetryOverrides mutates pc.Retry to reflect any of the
@@ -415,13 +423,28 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 // its slot zero so ValidateRunConfig's per-field defaulting fills it
 // in. Duration flags are converted to integer milliseconds because the
 // wire format (ProviderRetryConfig) stores millisecond magnitudes.
-func applyProviderRetryOverrides(pc *types.ProviderConfig, opts harnessCLIOptions) {
+//
+// Returns a non-nil error if any non-zero duration is below the
+// millisecond resolution boundary (e.g. 500µs). Without that guard a
+// `int(d / time.Millisecond)` conversion truncates to zero and the
+// zero-guard below treats the value as "flag not set", silently
+// erasing the operator's expressed intent.
+func applyProviderRetryOverrides(pc *types.ProviderConfig, opts harnessCLIOptions) error {
 	maxAttempts := opts.ProviderRetryMaxAttempts
-	initialMs := int(opts.ProviderRetryInitialDelay / time.Millisecond)
-	maxMs := int(opts.ProviderRetryMaxDelay / time.Millisecond)
-	wallMs := int(opts.ProviderRetryWallClockBudget / time.Millisecond)
+	initialMs, err := retryDurationToMs("--provider-retry-initial-delay", opts.ProviderRetryInitialDelay)
+	if err != nil {
+		return err
+	}
+	maxMs, err := retryDurationToMs("--provider-retry-max-delay", opts.ProviderRetryMaxDelay)
+	if err != nil {
+		return err
+	}
+	wallMs, err := retryDurationToMs("--provider-retry-wall-clock", opts.ProviderRetryWallClockBudget)
+	if err != nil {
+		return err
+	}
 	if maxAttempts == 0 && initialMs == 0 && maxMs == 0 && wallMs == 0 {
-		return
+		return nil
 	}
 	if pc.Retry == nil {
 		pc.Retry = &types.ProviderRetryConfig{}
@@ -438,6 +461,22 @@ func applyProviderRetryOverrides(pc *types.ProviderConfig, opts harnessCLIOption
 	if wallMs != 0 {
 		pc.Retry.WallClockBudgetMs = wallMs
 	}
+	return nil
+}
+
+// retryDurationToMs converts a positive Duration to whole milliseconds
+// for the provider-retry CLI flags, rejecting any non-zero value below
+// 1ms. A zero input (the flag's default sentinel) returns zero with no
+// error, preserving the "flag not set" path. Errors include the flag
+// name so the operator sees which value they need to raise.
+func retryDurationToMs(flagName string, d time.Duration) (int, error) {
+	if d == 0 {
+		return 0, nil
+	}
+	if d < time.Millisecond {
+		return 0, fmt.Errorf("%s: minimum resolution is 1ms, got %v", flagName, d)
+	}
+	return int(d / time.Millisecond), nil
 }
 
 // applyModeDefaults fills in PermissionPolicy and the read-only Tools.BuiltIn
@@ -941,7 +980,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	// at its zero default does NOT override the file, matching the
 	// general "explicit flag wins; defaults don't" rule documented in
 	// the precedence section of docs/configuration.md.
-	applyProviderRetryFlagOverrides(cmd, &cfg.Provider)
+	if err := applyProviderRetryFlagOverrides(cmd, &cfg.Provider); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -950,14 +991,17 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 // of an existing --config file. Mirrors applyProviderRetryOverrides for
 // the flag-only path but uses cmd.Flags().Changed() so a flag left at
 // its zero default does not clobber a file-supplied value.
-func applyProviderRetryFlagOverrides(cmd *cobra.Command, pc *types.ProviderConfig) {
+//
+// Returns a non-nil error if any operator-supplied duration is below
+// the 1ms resolution boundary (see retryDurationToMs).
+func applyProviderRetryFlagOverrides(cmd *cobra.Command, pc *types.ProviderConfig) error {
 	f := cmd.Flags()
 	changed := func(name string) bool { return f.Changed(name) }
 	if !changed("provider-retry-max-attempts") &&
 		!changed("provider-retry-initial-delay") &&
 		!changed("provider-retry-max-delay") &&
 		!changed("provider-retry-wall-clock") {
-		return
+		return nil
 	}
 	if pc.Retry == nil {
 		pc.Retry = &types.ProviderRetryConfig{}
@@ -968,16 +1012,29 @@ func applyProviderRetryFlagOverrides(cmd *cobra.Command, pc *types.ProviderConfi
 	}
 	if changed("provider-retry-initial-delay") {
 		d, _ := f.GetDuration("provider-retry-initial-delay")
-		pc.Retry.InitialDelayMs = int(d / time.Millisecond)
+		ms, err := retryDurationToMs("--provider-retry-initial-delay", d)
+		if err != nil {
+			return err
+		}
+		pc.Retry.InitialDelayMs = ms
 	}
 	if changed("provider-retry-max-delay") {
 		d, _ := f.GetDuration("provider-retry-max-delay")
-		pc.Retry.MaxDelayMs = int(d / time.Millisecond)
+		ms, err := retryDurationToMs("--provider-retry-max-delay", d)
+		if err != nil {
+			return err
+		}
+		pc.Retry.MaxDelayMs = ms
 	}
 	if changed("provider-retry-wall-clock") {
 		d, _ := f.GetDuration("provider-retry-wall-clock")
-		pc.Retry.WallClockBudgetMs = int(d / time.Millisecond)
+		ms, err := retryDurationToMs("--provider-retry-wall-clock", d)
+		if err != nil {
+			return err
+		}
+		pc.Retry.WallClockBudgetMs = ms
 	}
+	return nil
 }
 
 func runHarness(cmd *cobra.Command, args []string) error {
@@ -1142,7 +1199,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	config := buildHarnessRunConfig(harnessCLIOptions{
+	config, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:                        generateRunID(),
 		Mode:                         mode,
 		SessionName:                  sessionName,
@@ -1193,6 +1250,9 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		ProviderRetryMaxDelay:        providerRetryMaxDelay,
 		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
 	})
+	if err != nil {
+		return err
+	}
 
 	// Anthropic WIF env-var fallbacks and token-source inference run
 	// after buildHarnessRunConfig so the flag-only path mirrors the
