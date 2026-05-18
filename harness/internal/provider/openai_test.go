@@ -339,7 +339,8 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 // regression guard against silently reviving the legacy "max_tokens" field
 // (rejected by reasoning models — gpt-5.x / o-series — with HTTP 400) or
 // dropping the omitempty on "temperature" (also rejected by reasoning
-// models when transmitted). See issue #200.
+// models when transmitted), and pins the unset-vs-explicit-zero semantics
+// on Temperature introduced by the *float64 migration. See issue #200.
 func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 	cases := []struct {
 		name              string
@@ -353,6 +354,13 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 			maxTokens:       4096,
 			temperature:     nil,
 			wantTemperature: false,
+		},
+		{
+			name:              "explicit zero temperature serialised",
+			maxTokens:         4096,
+			temperature:       types.Float64Ptr(0.0),
+			wantTemperature:   true,
+			wantTempSubstring: `"temperature":0`,
 		},
 		{
 			name:              "non-zero temperature serialised",
@@ -409,8 +417,8 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 			}
 			// MaxCompletionTokens has no omitempty: a zero value must
 			// still appear on the wire. This pins the asymmetry with
-			// Temperature (which intentionally omits zero) and guards
-			// against a regression that would silently strip it.
+			// Temperature (which intentionally omits a nil pointer) and
+			// guards against a regression that would silently strip it.
 			if tc.maxTokens == 0 && !strings.Contains(body, `"max_completion_tokens":0`) {
 				t.Errorf("request body missing 'max_completion_tokens':0 for zero MaxTokens (omitempty regression?): %s", body)
 			}

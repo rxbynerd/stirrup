@@ -489,6 +489,53 @@ func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
 	}
 }
 
+// TestBuildGenerateContentRequest_TemperatureWireShape pins the unset-vs-
+// explicit-zero semantics for StreamParams.Temperature on the Gemini
+// adapter (issue #200). The adapter emits a generationConfig.temperature
+// only when the upstream pointer is non-nil; an explicit Float64Ptr(0.0)
+// transmits "temperature":0 (caller-requested greedy decoding).
+func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
+	messages := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+	}
+
+	cases := []struct {
+		name              string
+		temperature       *float64
+		wantTemperature   bool
+		wantTempSubstring string
+	}{
+		{name: "nil omitted", temperature: nil, wantTemperature: false},
+		{name: "explicit zero serialised", temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`},
+		{name: "non-zero serialised", temperature: types.Float64Ptr(0.5), wantTemperature: true, wantTempSubstring: `"temperature":0.5`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _, err := BuildGenerateContentRequest(types.StreamParams{
+				Model:       "gemini-2.5-pro",
+				MaxTokens:   1024,
+				Temperature: tc.temperature,
+				Messages:    messages,
+			}, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			bs := string(body)
+			hasKey := strings.Contains(bs, `"temperature"`)
+			if tc.wantTemperature && !hasKey {
+				t.Errorf("missing 'temperature' for non-nil pointer: %s", bs)
+			}
+			if !tc.wantTemperature && hasKey {
+				t.Errorf("contains 'temperature' for nil pointer (omitempty broken): %s", bs)
+			}
+			if tc.wantTempSubstring != "" && !strings.Contains(bs, tc.wantTempSubstring) {
+				t.Errorf("missing %q in body: %s", tc.wantTempSubstring, bs)
+			}
+		})
+	}
+}
+
 func TestBuildGenerateContentRequest_AssistantToolUseEmptyInputBecomesEmptyObject(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",

@@ -609,6 +609,54 @@ func TestBedrock_BuildConverseStreamInput(t *testing.T) {
 	}
 }
 
+// TestBedrock_TemperatureWireShape pins the unset-vs-explicit-zero
+// semantics for StreamParams.Temperature on the Bedrock adapter (issue
+// #200). A nil pointer leaves InferenceConfig.Temperature nil, which the
+// AWS SDK omits from the Converse request. A non-nil pointer (including
+// an explicit 0.0 for greedy decoding) flows through verbatim.
+func TestBedrock_TemperatureWireShape(t *testing.T) {
+	cases := []struct {
+		name        string
+		temperature *float64
+		wantSet     bool
+		wantValue   float32
+	}{
+		{name: "nil leaves temperature unset", temperature: nil, wantSet: false},
+		{name: "explicit zero forwarded", temperature: types.Float64Ptr(0.0), wantSet: true, wantValue: 0.0},
+		{name: "non-zero forwarded", temperature: types.Float64Ptr(0.5), wantSet: true, wantValue: 0.5},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input, err := buildConverseStreamInput(types.StreamParams{
+				Model:       "anthropic.claude-sonnet-4-6-v1",
+				MaxTokens:   1024,
+				Temperature: tc.temperature,
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("buildConverseStreamInput() error: %v", err)
+			}
+			if input.InferenceConfig == nil {
+				t.Fatal("InferenceConfig is nil")
+			}
+			got := input.InferenceConfig.Temperature
+			if tc.wantSet {
+				if got == nil {
+					t.Fatalf("Temperature unset, want *=%v", tc.wantValue)
+				}
+				if *got != tc.wantValue {
+					t.Errorf("Temperature = %v, want %v", *got, tc.wantValue)
+				}
+			} else if got != nil {
+				t.Errorf("Temperature = %v, want nil (unset)", *got)
+			}
+		})
+	}
+}
+
 func TestBedrock_BuildConverseStreamInput_NoSystem(t *testing.T) {
 	params := types.StreamParams{
 		Model:     "anthropic.claude-sonnet-4-6-v1",
