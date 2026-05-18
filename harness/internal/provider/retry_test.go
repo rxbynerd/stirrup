@@ -294,6 +294,18 @@ func defaultTestPolicy() RetryPolicy {
 	}
 }
 
+// testOpts builds a RetryOptions struct from the most common test
+// inputs. Keeps the per-test call sites short.
+func testOpts(policy RetryPolicy, m *observability.Metrics) RetryOptions {
+	return RetryOptions{
+		Policy:       policy,
+		Logger:       discardLogger(),
+		Metrics:      m,
+		ProviderType: "openai",
+		Model:        "gpt-test",
+	}
+}
+
 // withRecordingSpan returns a context carrying an OTel span backed by an
 // in-memory exporter so tests can assert on span events.
 func withRecordingSpan(t *testing.T) (context.Context, *tracetest.InMemoryExporter, oteltrace.Span) {
@@ -324,7 +336,7 @@ func TestDoWithRetry_429ThenSuccess(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{"x":1}`)
 	resp, err := DoWithRetry(ctx, &http.Client{Timeout: 5 * time.Second}, req,
-		defaultTestPolicy(), discardLogger(), m, "openai", "gpt-test")
+		testOpts(defaultTestPolicy(), m))
 	if err != nil {
 		t.Fatalf("DoWithRetry: %v", err)
 	}
@@ -370,7 +382,7 @@ func TestDoWithRetry_RetryAfterSecondsHonoured(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{}`)
 	start := time.Now()
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
-		policy, discardLogger(), m, "openai", "gpt-test")
+		testOpts(policy, m))
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("DoWithRetry: %v", err)
@@ -403,7 +415,7 @@ func TestDoWithRetry_RetryAfterMsHonoured(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{}`)
 	start := time.Now()
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
-		policy, discardLogger(), m, "openai", "gpt-test")
+		testOpts(policy, m))
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("DoWithRetry: %v", err)
@@ -434,7 +446,7 @@ func TestDoWithRetry_Exhausted(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
-		policy, discardLogger(), m, "openai", "gpt-test")
+		testOpts(policy, m))
 	if err != nil {
 		t.Fatalf("DoWithRetry: %v", err)
 	}
@@ -473,7 +485,7 @@ func TestDoWithRetry_BudgetExhausted(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
-		policy, discardLogger(), m, "openai", "gpt-test")
+		testOpts(policy, m))
 	if err != nil {
 		t.Fatalf("DoWithRetry: %v", err)
 	}
@@ -501,7 +513,7 @@ func TestDoWithRetry_NonRetryable(t *testing.T) {
 
 	req := newPostReq(t, srv.URL, `{}`)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
-		defaultTestPolicy(), discardLogger(), m, "openai", "gpt-test")
+		testOpts(defaultTestPolicy(), m))
 	if err != nil {
 		t.Fatalf("DoWithRetry: %v", err)
 	}
@@ -545,7 +557,7 @@ func TestDoWithRetry_ContextCancelDuringSleep(t *testing.T) {
 	req := newPostReq(t, srv.URL, `{}`)
 	start := time.Now()
 	resp, err := DoWithRetry(ctx, &http.Client{Timeout: 5 * time.Second}, req,
-		policy, discardLogger(), m, "openai", "gpt-test")
+		testOpts(policy, m))
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.Canceled) {
@@ -590,7 +602,7 @@ func TestDoWithRetry_BodyRewoundOnRetry(t *testing.T) {
 	bodyContent := `{"prompt":"hello world"}`
 	req := newPostReq(t, srv.URL, bodyContent)
 	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
-		defaultTestPolicy(), discardLogger(), m, "openai", "gpt-test")
+		testOpts(defaultTestPolicy(), m))
 	if err != nil {
 		t.Fatalf("DoWithRetry: %v", err)
 	}
@@ -627,7 +639,7 @@ func TestDoWithRetry_PanicsWhenGetBodyMissing(t *testing.T) {
 	req.GetBody = nil
 
 	_, _ = DoWithRetry(context.Background(), &http.Client{}, req,
-		defaultTestPolicy(), discardLogger(), nil, "openai", "gpt-test")
+		testOpts(defaultTestPolicy(), nil))
 }
 
 // collectSpanEvents extracts events with the given name across all spans

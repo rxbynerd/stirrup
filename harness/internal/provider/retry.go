@@ -24,6 +24,10 @@ import (
 // RetryPolicy is the resolved, validated retry configuration passed
 // into the helper. Constructed from types.ProviderRetryConfig by the
 // factory in Wave 3.
+//
+// A zero RetryPolicy makes exactly one attempt with no backoff and
+// no wall-clock budget — useful for tests and as a safe default
+// when retry configuration is unavailable.
 type RetryPolicy struct {
 	MaxAttempts     int
 	InitialDelay    time.Duration
@@ -182,29 +186,54 @@ const (
 	delaySourceBackoff      = "backoff"
 )
 
+// RetryOptions bundles the non-request configuration DoWithRetry
+// needs. The struct shape keeps the call site readable as more
+// adapters need optional knobs (e.g. Anthropic's x-should-retry
+// header support via ShouldRetry) without churning every caller.
+//
+// Fields:
+//   - Policy:       resolved retry configuration; a zero value
+//                   produces single-attempt behaviour.
+//   - Logger:       optional; nil falls back to slog.Default().
+//   - Metrics:      optional; nil disables outcome recording.
+//   - ProviderType: provider identity for log/metric/span attribution
+//                   (e.g. "openai", "anthropic"). Free-form string.
+//   - Model:        model identity for log/metric/span attribution.
+//   - ShouldRetry:  optional adapter-specific retry classifier. When
+//                   non-nil it is consulted before the default status
+//                   heuristic. It receives the response and returns
+//                   (retryable, consumed). If consumed=true, retryable
+//                   is the final answer for that response. If
+//                   consumed=false, the default retryableStatus
+//                   heuristic applies. Transport errors bypass this
+//                   classifier — they are routed through transientErr.
+type RetryOptions struct {
+	Policy       RetryPolicy
+	Logger       *slog.Logger
+	Metrics      *observability.Metrics
+	ProviderType string
+	Model        string
+	ShouldRetry  func(*http.Response) (retryable bool, consumed bool)
+}
+
 // DoWithRetry issues req using client, retrying on retryable statuses
-// and transient transport errors per policy. The caller MUST set
-// req.GetBody so the body is rewindable; the helper panics if GetBody
-// is nil (programmer error, 100% internal contract).
+// and transient transport errors per opts.Policy. The caller MUST
+// set req.GetBody so the body is rewindable; the helper panics if
+// GetBody is nil (programmer error, 100% internal contract).
 //
 // On terminal failure (non-retryable status, attempts exhausted,
-// budget exhausted, ctx cancelled), returns the last response or
-// error. Caller owns closing the returned response body on success.
+// budget exhausted, ctx cancelled, rewind failure), returns the
+// last response or error. Caller owns closing the returned response
+// body whenever resp != nil — including on terminal non-success
+// statuses (4xx, 5xx) returned without an error.
 //
-// The slog logger is required; pass slog.Default() if no specific
-// logger is available. The metrics value is optional — pass nil for
-// no instrumentation. The current OTel span is read from ctx via
-// oteltrace.SpanFromContext; intermediate-attempt events are added
-// to that span when present.
+// The current OTel span is read from ctx via oteltrace.SpanFromContext;
+// intermediate-attempt events are added to that span when present.
 func DoWithRetry(
 	ctx context.Context,
 	client *http.Client,
 	req *http.Request,
-	policy RetryPolicy,
-	logger *slog.Logger,
-	metrics *observability.Metrics,
-	providerType string,
-	model string,
+	opts RetryOptions,
 ) (*http.Response, error) {
 	if req.GetBody == nil && req.Body != nil {
 		// Internal contract: every caller is expected to set GetBody so
@@ -215,6 +244,16 @@ func DoWithRetry(
 		// the next.
 		panic("DoWithRetry: req.GetBody must be set (internal contract violation)")
 	}
+
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	policy := opts.Policy
+	metrics := opts.Metrics
+	providerType := opts.ProviderType
+	model := opts.Model
+	shouldRetry := opts.ShouldRetry
 
 	// Per-call PRNG. math/rand/v2 has no global lock, but a per-call
 	// source still avoids contention if a future change moves to a
@@ -283,7 +322,7 @@ func DoWithRetry(
 				delay = backoffDelay(attempt, policy, prng)
 				delaySource = delaySourceBackoff
 			}
-		case retryableStatus(resp.StatusCode):
+		case classifyRetryable(resp, shouldRetry):
 			lastResp = resp
 			lastErr = nil
 			retryable = true
@@ -403,10 +442,23 @@ func DoWithRetry(
 		}
 	}
 
-	// Unreachable: the loop returns on every path. Guarded for the
-	// compiler.
-	recordOutcome(ctx, metrics, providerType, model, retryOutcomeExhausted)
-	return lastResp, lastErr
+	// The for-loop returns on every iteration (success, non-retryable,
+	// exhausted, budget, context-done). Reaching here would mean
+	// maxAttempts was zero after the < 1 clamp, which is impossible.
+	panic("unreachable")
+}
+
+// classifyRetryable decides whether resp should be retried. The
+// optional shouldRetry callback gets first pass: when consumed=true
+// its retryable value is final; when consumed=false the call falls
+// through to the default retryableStatus heuristic.
+func classifyRetryable(resp *http.Response, shouldRetry func(*http.Response) (bool, bool)) bool {
+	if shouldRetry != nil {
+		if retryable, consumed := shouldRetry(resp); consumed {
+			return retryable
+		}
+	}
+	return retryableStatus(resp.StatusCode)
 }
 
 func recordOutcome(ctx context.Context, m *observability.Metrics, providerType, model, outcome string) {
