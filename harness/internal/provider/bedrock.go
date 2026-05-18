@@ -253,8 +253,13 @@ func buildConverseStreamInput(params types.StreamParams) (*bedrockruntime.Conver
 		mt := int32(params.MaxTokens)
 		input.InferenceConfig.MaxTokens = &mt
 	}
-	if params.Temperature > 0 {
-		temp := float32(params.Temperature)
+	// A non-nil StreamParams.Temperature is forwarded, narrowed to
+	// float32 for the AWS SDK, including an explicit 0.0 for greedy
+	// decoding. Bedrock's InferenceConfig accepts temperature=0; this is
+	// a behaviour change from the prior "> 0" guard, which silently
+	// dropped a caller-supplied zero.
+	if params.Temperature != nil {
+		temp := float32(*params.Temperature)
 		input.InferenceConfig.Temperature = &temp
 	}
 

@@ -42,12 +42,26 @@ type StreamEvent struct {
 
 // StreamParams holds the parameters for a model streaming request.
 type StreamParams struct {
-	Model       string           `json:"model"`
-	System      string           `json:"system"`
-	Messages    []Message        `json:"messages"`
-	Tools       []ToolDefinition `json:"tools"`
-	MaxTokens   int              `json:"maxTokens"`
-	Temperature float64          `json:"temperature"`
+	Model     string           `json:"model"`
+	System    string           `json:"system"`
+	Messages  []Message        `json:"messages"`
+	Tools     []ToolDefinition `json:"tools"`
+	MaxTokens int              `json:"maxTokens"`
+	// Temperature controls sampling randomness. A nil pointer means "use
+	// the provider's default" — adapters MUST NOT transmit a temperature
+	// field on the wire in that case (some endpoints, notably OpenAI's
+	// reasoning models on Chat Completions, reject any temperature value
+	// including zero). A non-nil pointer transmits the dereferenced value
+	// verbatim, including an explicit 0.0 to request greedy decoding.
+	// Use Float64Ptr to construct a pointer from a literal.
+	Temperature *float64 `json:"temperature,omitempty"`
+}
+
+// Float64Ptr returns a pointer to the given float64 value. It is a
+// readability helper for constructing StreamParams.Temperature literals
+// without a temporary variable.
+func Float64Ptr(v float64) *float64 {
+	return &v
 }
 
 // HarnessEvent is an event emitted by the harness to the control plane.

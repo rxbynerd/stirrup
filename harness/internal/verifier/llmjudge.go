@@ -21,7 +21,10 @@ Respond with ONLY a JSON object in this exact format:
 
 Do not include any text outside the JSON object.`
 
-	judgeMaxTokens   = 1024
+	judgeMaxTokens = 1024
+	// judgeTemperature is transmitted as an explicit 0.0 (greedy decoding)
+	// via StreamParams.Temperature's pointer type, which distinguishes
+	// "explicit zero" from "unset" on the wire.
 	judgeTemperature = 0.0
 )
 
@@ -54,7 +57,7 @@ func (v *LLMJudgeVerifier) Verify(ctx context.Context, vc VerifyContext) (*types
 		System:      judgeSystemPrompt,
 		Messages:    []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: userContent}}}},
 		MaxTokens:   judgeMaxTokens,
-		Temperature: judgeTemperature,
+		Temperature: types.Float64Ptr(judgeTemperature),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("llm-judge verifier: stream request failed: %w", err)

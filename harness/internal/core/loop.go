@@ -569,7 +569,7 @@ func (l *AgenticLoop) runInnerLoop(
 			Messages:    preparedMessages,
 			Tools:       l.Tools.List(),
 			MaxTokens:   defaultReserveForResponse,
-			Temperature: 0.1,
+			Temperature: types.Float64Ptr(0.1),
 		})
 		if err != nil {
 			// Scrub the status string before it lands on the OTel span.

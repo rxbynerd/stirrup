@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -547,7 +548,7 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 		Model:       "gpt-4.1",
 		System:      "You are helpful.",
 		MaxTokens:   4096,
-		Temperature: 0.5,
+		Temperature: types.Float64Ptr(0.5),
 		Tools:       tools,
 		Messages: []types.Message{
 			{
@@ -592,8 +593,8 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	if received.MaxOutputTokens != 4096 {
 		t.Errorf("max_output_tokens = %d, want 4096", received.MaxOutputTokens)
 	}
-	if received.Temperature != 0.5 {
-		t.Errorf("temperature = %v, want 0.5", received.Temperature)
+	if received.Temperature == nil || *received.Temperature != 0.5 {
+		t.Errorf("temperature = %v, want *=0.5", received.Temperature)
 	}
 
 	// Raw body must NOT contain a Chat Completions-style top-level "messages"
@@ -704,6 +705,62 @@ func TestOpenAIResponsesAdapter_RequestBody_EmptyToolResult(t *testing.T) {
 
 	if !bytes.Contains(rawBody, []byte(`"output":""`)) {
 		t.Errorf("request body missing empty 'output' key (the #172 wire-level pin): %s", rawBody)
+	}
+}
+
+// TestOpenAIResponsesAdapter_TemperatureWireShape pins the unset-vs-
+// explicit-zero semantics for StreamParams.Temperature (issue #200). The
+// Responses API rejects "temperature" outright on reasoning models, so a
+// nil pointer must omit the key; an explicit Float64Ptr(0.0) must transmit
+// "temperature":0 (preserving caller-requested greedy decoding).
+func TestOpenAIResponsesAdapter_TemperatureWireShape(t *testing.T) {
+	cases := []struct {
+		name              string
+		temperature       *float64
+		wantTemperature   bool
+		wantTempSubstring string
+	}{
+		{name: "nil omitted", temperature: nil, wantTemperature: false},
+		{name: "explicit zero serialised", temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`},
+		{name: "non-zero serialised", temperature: types.Float64Ptr(0.5), wantTemperature: true, wantTempSubstring: `"temperature":0.5`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var rawBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rawBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`))
+			}))
+			defer srv.Close()
+
+			adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{
+				Model:       "gpt-5.4",
+				MaxTokens:   1024,
+				Temperature: tc.temperature,
+			})
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			for range ch {
+			}
+
+			body := string(rawBody)
+			hasKey := strings.Contains(body, `"temperature"`)
+			if tc.wantTemperature && !hasKey {
+				t.Errorf("missing 'temperature' for non-nil pointer: %s", body)
+			}
+			if !tc.wantTemperature && hasKey {
+				t.Errorf("contains 'temperature' for nil pointer (omitempty broken): %s", body)
+			}
+			if tc.wantTempSubstring != "" && !strings.Contains(body, tc.wantTempSubstring) {
+				t.Errorf("missing %q in body: %s", tc.wantTempSubstring, body)
+			}
+		})
 	}
 }
 

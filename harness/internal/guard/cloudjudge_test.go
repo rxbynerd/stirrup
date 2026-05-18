@@ -143,8 +143,8 @@ func TestCloudJudgeStreamParamsAreClassifierShaped(t *testing.T) {
 	if _, err := cj.Check(context.Background(), Input{Phase: PhasePostTurn, Content: "x"}); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if fp.params.Temperature != 0.0 {
-		t.Fatalf("temperature = %v, want 0.0", fp.params.Temperature)
+	if fp.params.Temperature == nil || *fp.params.Temperature != 0.0 {
+		t.Fatalf("temperature = %v, want *=0.0", fp.params.Temperature)
 	}
 	if fp.params.MaxTokens != cloudJudgeMaxTokens {
 		t.Fatalf("max_tokens = %d, want %d", fp.params.MaxTokens, cloudJudgeMaxTokens)

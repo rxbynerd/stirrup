@@ -65,8 +65,8 @@ func TestLLMJudgeVerifier_Pass(t *testing.T) {
 	if prov.lastParams.MaxTokens != judgeMaxTokens {
 		t.Errorf("expected maxTokens %d, got %d", judgeMaxTokens, prov.lastParams.MaxTokens)
 	}
-	if prov.lastParams.Temperature != judgeTemperature {
-		t.Errorf("expected temperature %v, got %v", judgeTemperature, prov.lastParams.Temperature)
+	if prov.lastParams.Temperature == nil || *prov.lastParams.Temperature != judgeTemperature {
+		t.Errorf("expected temperature *=%v, got %v", judgeTemperature, prov.lastParams.Temperature)
 	}
 	if len(prov.lastParams.Tools) != 0 {
 		t.Errorf("expected no tools, got %d", len(prov.lastParams.Tools))

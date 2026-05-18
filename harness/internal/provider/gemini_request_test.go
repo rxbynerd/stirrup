@@ -469,7 +469,7 @@ func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:       "gemini-2.5-pro",
 		MaxTokens:   2048,
-		Temperature: 0.2,
+		Temperature: types.Float64Ptr(0.2),
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
@@ -486,6 +486,68 @@ func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
 	}
 	if dr.GenerationConfig.Temperature == nil || *dr.GenerationConfig.Temperature != 0.2 {
 		t.Errorf("temperature = %v, want 0.2", dr.GenerationConfig.Temperature)
+	}
+}
+
+// TestBuildGenerateContentRequest_TemperatureWireShape pins the unset-vs-
+// explicit-zero semantics for StreamParams.Temperature on the Gemini
+// adapter (issue #200). The adapter emits a generationConfig.temperature
+// only when the upstream pointer is non-nil; an explicit Float64Ptr(0.0)
+// transmits "temperature":0 (caller-requested greedy decoding).
+func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
+	messages := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+	}
+
+	cases := []struct {
+		name              string
+		maxTokens         int
+		temperature       *float64
+		wantTemperature   bool
+		wantTempSubstring string
+		wantMaxOutTokens  bool
+	}{
+		{name: "nil omitted", maxTokens: 1024, temperature: nil, wantTemperature: false, wantMaxOutTokens: true},
+		{name: "explicit zero serialised", maxTokens: 1024, temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`, wantMaxOutTokens: true},
+		{name: "non-zero serialised", maxTokens: 1024, temperature: types.Float64Ptr(0.5), wantTemperature: true, wantTempSubstring: `"temperature":0.5`, wantMaxOutTokens: true},
+		// Greedy decoding with no caller-supplied MaxTokens: the
+		// *float64 migration makes this combination newly reachable.
+		// maxOutputTokens must be omitted entirely — emitting
+		// "maxOutputTokens":0 produces a validation error or a hard
+		// zero-output cap on Vertex AI.
+		{name: "zero maxtokens omits maxOutputTokens", maxTokens: 0, temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`, wantMaxOutTokens: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _, err := BuildGenerateContentRequest(types.StreamParams{
+				Model:       "gemini-2.5-pro",
+				MaxTokens:   tc.maxTokens,
+				Temperature: tc.temperature,
+				Messages:    messages,
+			}, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			bs := string(body)
+			hasKey := strings.Contains(bs, `"temperature"`)
+			if tc.wantTemperature && !hasKey {
+				t.Errorf("missing 'temperature' for non-nil pointer: %s", bs)
+			}
+			if !tc.wantTemperature && hasKey {
+				t.Errorf("contains 'temperature' for nil pointer (omitempty broken): %s", bs)
+			}
+			if tc.wantTempSubstring != "" && !strings.Contains(bs, tc.wantTempSubstring) {
+				t.Errorf("missing %q in body: %s", tc.wantTempSubstring, bs)
+			}
+			hasMaxOut := strings.Contains(bs, `"maxOutputTokens"`)
+			if tc.wantMaxOutTokens && !hasMaxOut {
+				t.Errorf("missing 'maxOutputTokens' for non-zero MaxTokens: %s", bs)
+			}
+			if !tc.wantMaxOutTokens && hasMaxOut {
+				t.Errorf("contains 'maxOutputTokens' for zero MaxTokens (nil-guard broken): %s", bs)
+			}
+		})
 	}
 }
 

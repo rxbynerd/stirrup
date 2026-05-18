@@ -99,13 +99,22 @@ func (a *AnthropicAdapter) AuthMode() AuthMode {
 }
 
 // anthropicRequest is the JSON body sent to the Anthropic Messages API.
+//
+// Temperature is *float64 with omitempty: a nil pointer omits the key
+// entirely (Anthropic treats an explicit "temperature":0 as a request for
+// greedy decoding rather than "use the service default", so a caller who
+// never set a temperature must not be pinned to greedy decoding via the
+// wire shape). A non-nil pointer transmits the dereferenced value
+// verbatim, including an explicit 0.0 for greedy decoding. This mirrors
+// the upstream StreamParams.Temperature pointer type so the
+// unset-vs-explicit-zero distinction survives marshalling.
 type anthropicRequest struct {
 	Model       string                 `json:"model"`
 	System      string                 `json:"system,omitempty"`
 	Messages    []types.Message        `json:"messages"`
 	Tools       []types.ToolDefinition `json:"tools,omitempty"`
 	MaxTokens   int                    `json:"max_tokens"`
-	Temperature float64                `json:"temperature"`
+	Temperature *float64               `json:"temperature,omitempty"`
 	Stream      bool                   `json:"stream"`
 }
 

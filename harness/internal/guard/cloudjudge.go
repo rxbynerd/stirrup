@@ -164,11 +164,14 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 	defer cancel()
 
 	events, err := c.provider.Stream(streamCtx, types.StreamParams{
-		Model:       c.model,
-		System:      cloudJudgeSystem,
-		Messages:    []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
-		MaxTokens:   cloudJudgeMaxTokens,
-		Temperature: 0.0,
+		Model:     c.model,
+		System:    cloudJudgeSystem,
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
+		MaxTokens: cloudJudgeMaxTokens,
+		// Greedy decoding is transmitted as an explicit 0.0 via the
+		// pointer type, distinguishing "guard asked for greedy" from
+		// "unset" on the wire.
+		Temperature: types.Float64Ptr(0.0),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("cloud-judge: provider stream: %w", err)
