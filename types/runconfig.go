@@ -1332,8 +1332,11 @@ func DefaultReadOnlyBuiltInTools() []string {
 // list exists purely so RunConfig validation can reject impossible
 // combinations before the harness boots.
 var mutatingTools = map[string]bool{
-	"write_file":  true,
-	"run_command": true,
+	"write_file":     true,
+	"run_command":    true,
+	"edit_file":      true,
+	"search_replace": true,
+	"apply_diff":     true,
 }
 
 // ModePreset is a named set of RunConfig overrides.
@@ -1415,7 +1418,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	if readOnlyModes[config.Mode] {
 		if len(config.Tools.BuiltIn) == 0 {
 			errs = append(errs, fmt.Sprintf(
-				"read-only mode %q requires an explicit tools.builtIn list that excludes write tools (write_file, run_command)",
+				"read-only mode %q requires an explicit tools.builtIn list that excludes write tools (write_file, run_command, edit_file, search_replace, apply_diff)",
 				config.Mode))
 		} else {
 			for _, tool := range config.Tools.BuiltIn {

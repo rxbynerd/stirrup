@@ -375,7 +375,7 @@ func TestValidateRunConfig_MultipleErrors(t *testing.T) {
 }
 
 func TestValidateRunConfig_ReadOnlyModeWithWriteToolInList(t *testing.T) {
-	writeTools := []string{"write_file", "run_command"}
+	writeTools := []string{"write_file", "run_command", "edit_file", "search_replace", "apply_diff"}
 	for _, mode := range []string{"planning", "review", "research", "toil"} {
 		for _, tool := range writeTools {
 			t.Run(fmt.Sprintf("%s/%s", mode, tool), func(t *testing.T) {
