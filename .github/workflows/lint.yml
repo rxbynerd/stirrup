@@ -1,0 +1,68 @@
+name: Lint
+
+# Gates pull requests on `just lint` (golangci-lint v2). Runs on every
+# PR open / synchronize / reopen so a reviewer never has to point out
+# a lint regression by hand. Also runs on push to main as a
+# defence-in-depth check — a direct push or a merge-queue path that
+# somehow lands without PR review still trips the gate before
+# downstream consumers (eval-gate, publish-container) start.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Cancel an in-progress lint when a PR is force-pushed. Pushes to main
+# never cancel — concurrency is keyed off the full ref so the main
+# branch always serialises.
+concurrency:
+  group: lint-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: just lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            harness/go.mod
+            types/go.mod
+            eval/go.mod
+
+      - name: Install golangci-lint
+        env:
+          # Pinned to the version contributors run locally so the CI
+          # gate and `just lint` produce identical diagnostics. Bump
+          # this in lockstep with any local toolchain bump
+          # (CONTRIBUTING.md names golangci-lint v2 as the source of
+          # truth) so a local pass implies a CI pass.
+          GOLANGCI_LINT_VERSION: 2.12.2
+        run: |
+          set -euo pipefail
+          archive="golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz"
+          curl --fail --silent --show-error --location \
+            --output "/tmp/${archive}" \
+            "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/${archive}"
+          mkdir -p "${HOME}/.local/bin"
+          tar -xzf "/tmp/${archive}" \
+            -C "${HOME}/.local/bin" \
+            --strip-components=1 \
+            "golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Run golangci-lint
+        # Mirrors `just lint` (golangci-lint run ./harness/... ./types/...
+        # ./eval/...). The recipe is invoked directly rather than via
+        # `just` to match the existing `_verify.yml` convention of
+        # running go tooling without an extra wrapper install step.
+        run: golangci-lint run ./harness/... ./types/... ./eval/...
