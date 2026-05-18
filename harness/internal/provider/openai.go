@@ -69,7 +69,9 @@ type OpenAICompatibleAdapter struct {
 // (e.g. "https://api.openai.com/v1"); the /chat/completions path is appended
 // automatically. Pass an empty string for the default OpenAI URL. The auth
 // argument carries optional header-name and query-parameter overrides; pass
-// a zero value for OpenAI-default behaviour.
+// a zero value for OpenAI-default behaviour. The retry argument is the
+// resolved retry policy; pass a zero RetryPolicy to disable retries (one
+// attempt with no backoff).
 //
 // bearer is invoked on every Stream call to fetch the current API key. For
 // Azure Entra ID and other refresh-aware credentials this lets the
@@ -77,7 +79,7 @@ type OpenAICompatibleAdapter struct {
 // return a captured value with no IO. A nil bearer or one returning an
 // empty string is treated as "no auth header" (some local gateways accept
 // anonymous requests).
-func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL string, auth OpenAIAuthConfig) *OpenAICompatibleAdapter {
+func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL string, auth OpenAIAuthConfig, retry RetryPolicy) *OpenAICompatibleAdapter {
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
 	}
@@ -96,6 +98,7 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 		baseURL:      baseURL,
 		apiKeyHeader: auth.APIKeyHeader,
 		queryParams:  auth.QueryParams,
+		RetryPolicy:  retry,
 	}
 }
 

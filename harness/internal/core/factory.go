@@ -336,6 +336,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		case *provider.OpenAICompatibleAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
+			pa.Logger = logger
 		case *provider.OpenAIResponsesAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
@@ -456,7 +457,12 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			APIKeyHeader: cfg.APIKeyHeader,
 			QueryParams:  cfg.QueryParams,
 		}
-		return provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth), nil
+		// ValidateRunConfig guarantees cfg.Retry is populated with the
+		// defaulted ProviderRetryConfig — RetryPolicyFromConfig handles a
+		// nil pointer defensively in case a non-CLI caller bypasses the
+		// validator.
+		retry := provider.RetryPolicyFromConfig(cfg.Retry)
+		return provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry), nil
 	case "openai-responses":
 		if cred.BearerToken == nil {
 			return nil, fmt.Errorf("openai-responses provider requires a bearer credential but the credential source produced none")
