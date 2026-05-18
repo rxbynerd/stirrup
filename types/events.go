@@ -42,12 +42,16 @@ type StreamEvent struct {
 
 // StreamParams holds the parameters for a model streaming request.
 type StreamParams struct {
-	Model       string           `json:"model"`
-	System      string           `json:"system"`
-	Messages    []Message        `json:"messages"`
-	Tools       []ToolDefinition `json:"tools"`
-	MaxTokens   int              `json:"maxTokens"`
-	Temperature float64          `json:"temperature"`
+	Model     string           `json:"model"`
+	System    string           `json:"system"`
+	Messages  []Message        `json:"messages"`
+	Tools     []ToolDefinition `json:"tools"`
+	MaxTokens int              `json:"maxTokens"`
+	// Temperature controls sampling randomness. On the openai-compatible provider,
+	// a zero value is omitted from the wire request (omitempty); it is not
+	// transmitted as explicit greedy decoding. See issue #200 for the *float64
+	// migration that will fix this.
+	Temperature float64 `json:"temperature"`
 }
 
 // HarnessEvent is an event emitted by the harness to the control plane.
