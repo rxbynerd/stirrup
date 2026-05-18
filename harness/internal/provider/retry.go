@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -274,6 +276,18 @@ func DoWithRetry(
 		}
 
 		attemptNum := attempt + 1
+		// Transport errors from http.Client.Do are *url.Error values
+		// whose Error() string embeds the full request URL (including
+		// any sensitive query parameters). Unwrap before logging so
+		// the URL never reaches the slog handler or the OTel span.
+		var unwrappedErrStr string
+		if err != nil {
+			unwrappedErrStr = err.Error()
+			var ue *url.Error
+			if errors.As(err, &ue) {
+				unwrappedErrStr = ue.Err.Error()
+			}
+		}
 		logAttrs := []any{
 			"event", "provider_retry",
 			"provider", providerType,
@@ -283,7 +297,7 @@ func DoWithRetry(
 			"delay_source", delaySource,
 		}
 		if err != nil {
-			logAttrs = append(logAttrs, "error", err.Error())
+			logAttrs = append(logAttrs, "error", security.Scrub(unwrappedErrStr))
 		} else if lastResp != nil {
 			logAttrs = append(logAttrs, "status", lastResp.StatusCode)
 		}
@@ -298,7 +312,7 @@ func DoWithRetry(
 				attribute.String("delay_source", delaySource),
 			}
 			if err != nil {
-				spanAttrs = append(spanAttrs, attribute.String("error", err.Error()))
+				spanAttrs = append(spanAttrs, attribute.String("error", unwrappedErrStr))
 			} else if lastResp != nil {
 				spanAttrs = append(spanAttrs, attribute.Int("status", lastResp.StatusCode))
 			}
