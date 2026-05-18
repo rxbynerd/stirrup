@@ -501,20 +501,28 @@ func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
 
 	cases := []struct {
 		name              string
+		maxTokens         int
 		temperature       *float64
 		wantTemperature   bool
 		wantTempSubstring string
+		wantMaxOutTokens  bool
 	}{
-		{name: "nil omitted", temperature: nil, wantTemperature: false},
-		{name: "explicit zero serialised", temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`},
-		{name: "non-zero serialised", temperature: types.Float64Ptr(0.5), wantTemperature: true, wantTempSubstring: `"temperature":0.5`},
+		{name: "nil omitted", maxTokens: 1024, temperature: nil, wantTemperature: false, wantMaxOutTokens: true},
+		{name: "explicit zero serialised", maxTokens: 1024, temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`, wantMaxOutTokens: true},
+		{name: "non-zero serialised", maxTokens: 1024, temperature: types.Float64Ptr(0.5), wantTemperature: true, wantTempSubstring: `"temperature":0.5`, wantMaxOutTokens: true},
+		// Greedy decoding with no caller-supplied MaxTokens: the
+		// *float64 migration makes this combination newly reachable.
+		// maxOutputTokens must be omitted entirely — emitting
+		// "maxOutputTokens":0 produces a validation error or a hard
+		// zero-output cap on Vertex AI.
+		{name: "zero maxtokens omits maxOutputTokens", maxTokens: 0, temperature: types.Float64Ptr(0.0), wantTemperature: true, wantTempSubstring: `"temperature":0`, wantMaxOutTokens: false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			body, _, err := BuildGenerateContentRequest(types.StreamParams{
 				Model:       "gemini-2.5-pro",
-				MaxTokens:   1024,
+				MaxTokens:   tc.maxTokens,
 				Temperature: tc.temperature,
 				Messages:    messages,
 			}, nil)
@@ -531,6 +539,13 @@ func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
 			}
 			if tc.wantTempSubstring != "" && !strings.Contains(bs, tc.wantTempSubstring) {
 				t.Errorf("missing %q in body: %s", tc.wantTempSubstring, bs)
+			}
+			hasMaxOut := strings.Contains(bs, `"maxOutputTokens"`)
+			if tc.wantMaxOutTokens && !hasMaxOut {
+				t.Errorf("missing 'maxOutputTokens' for non-zero MaxTokens: %s", bs)
+			}
+			if !tc.wantMaxOutTokens && hasMaxOut {
+				t.Errorf("contains 'maxOutputTokens' for zero MaxTokens (nil-guard broken): %s", bs)
 			}
 		})
 	}

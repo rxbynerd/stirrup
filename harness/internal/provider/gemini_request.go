@@ -101,10 +101,16 @@ func BuildGenerateContentRequest(
 	// Generation config: only emit fields that were actually set. A nil
 	// StreamParams.Temperature means "use Gemini's default" and is omitted
 	// from the wire; a non-nil pointer (including an explicit 0.0 for
-	// greedy decoding) is transmitted verbatim.
+	// greedy decoding) is transmitted verbatim. MaxOutputTokens is
+	// guarded separately: the *float64 migration on Temperature made the
+	// MaxTokens=0 + Temperature=Float64Ptr(0.0) combination newly
+	// reachable, and Vertex AI's documented behaviour on an explicit
+	// maxOutputTokens:0 is either a validation error or a hard
+	// zero-output cap — neither what the caller wants.
 	if params.MaxTokens > 0 || params.Temperature != nil {
-		gc := &geminiGenerationConfig{
-			MaxOutputTokens: params.MaxTokens,
+		gc := &geminiGenerationConfig{}
+		if params.MaxTokens > 0 {
+			gc.MaxOutputTokens = params.MaxTokens
 		}
 		if params.Temperature != nil {
 			t := *params.Temperature
