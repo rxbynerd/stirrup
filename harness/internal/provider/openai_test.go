@@ -343,20 +343,28 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 	cases := []struct {
 		name              string
+		maxTokens         int
 		temperature       float64
 		wantTemperature   bool
 		wantTempSubstring string
 	}{
 		{
 			name:            "zero temperature omitted",
+			maxTokens:       4096,
 			temperature:     0,
 			wantTemperature: false,
 		},
 		{
 			name:              "non-zero temperature serialised",
+			maxTokens:         4096,
 			temperature:       0.7,
 			wantTemperature:   true,
 			wantTempSubstring: `"temperature":0.7`,
+		},
+		{
+			name:      "zero max_tokens still serialised",
+			maxTokens: 0,
+			// no omitempty on MaxCompletionTokens; zero must appear on the wire
 		},
 	}
 
@@ -380,7 +388,7 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{
 				Model:       "gpt-5.4",
-				MaxTokens:   4096,
+				MaxTokens:   tc.maxTokens,
 				Temperature: tc.temperature,
 			})
 			if err != nil {
@@ -398,6 +406,13 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 			// as a substring.
 			if strings.Contains(body, `"max_tokens"`) {
 				t.Errorf("request body contains legacy 'max_tokens' (reasoning models reject it): %s", body)
+			}
+			// MaxCompletionTokens has no omitempty: a zero value must
+			// still appear on the wire. This pins the asymmetry with
+			// Temperature (which intentionally omits zero) and guards
+			// against a regression that would silently strip it.
+			if tc.maxTokens == 0 && !strings.Contains(body, `"max_completion_tokens":0`) {
+				t.Errorf("request body missing 'max_completion_tokens':0 for zero MaxTokens (omitempty regression?): %s", body)
 			}
 
 			hasTemperatureKey := strings.Contains(body, `"temperature"`)
