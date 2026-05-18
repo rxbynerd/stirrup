@@ -98,13 +98,16 @@ func BuildGenerateContentRequest(
 	// medium-and-above on several categories).
 	req.SafetySettings = buildGeminiSafetySettings(safety)
 
-	// Generation config: only emit fields that were actually set.
-	if params.MaxTokens > 0 || params.Temperature != 0 {
+	// Generation config: only emit fields that were actually set. A nil
+	// StreamParams.Temperature means "use Gemini's default" and is omitted
+	// from the wire; a non-nil pointer (including an explicit 0.0 for
+	// greedy decoding) is transmitted verbatim.
+	if params.MaxTokens > 0 || params.Temperature != nil {
 		gc := &geminiGenerationConfig{
 			MaxOutputTokens: params.MaxTokens,
 		}
-		if params.Temperature != 0 {
-			t := params.Temperature
+		if params.Temperature != nil {
+			t := *params.Temperature
 			gc.Temperature = &t
 		}
 		req.GenerationConfig = gc

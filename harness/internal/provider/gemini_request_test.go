@@ -469,7 +469,7 @@ func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:       "gemini-2.5-pro",
 		MaxTokens:   2048,
-		Temperature: 0.2,
+		Temperature: types.Float64Ptr(0.2),
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},

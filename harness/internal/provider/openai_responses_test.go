@@ -547,7 +547,7 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 		Model:       "gpt-4.1",
 		System:      "You are helpful.",
 		MaxTokens:   4096,
-		Temperature: 0.5,
+		Temperature: types.Float64Ptr(0.5),
 		Tools:       tools,
 		Messages: []types.Message{
 			{
@@ -592,8 +592,8 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	if received.MaxOutputTokens != 4096 {
 		t.Errorf("max_output_tokens = %d, want 4096", received.MaxOutputTokens)
 	}
-	if received.Temperature != 0.5 {
-		t.Errorf("temperature = %v, want 0.5", received.Temperature)
+	if received.Temperature == nil || *received.Temperature != 0.5 {
+		t.Errorf("temperature = %v, want *=0.5", received.Temperature)
 	}
 
 	// Raw body must NOT contain a Chat Completions-style top-level "messages"

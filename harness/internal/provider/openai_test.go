@@ -281,7 +281,7 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 		Model:       "gpt-4o",
 		System:      "You are helpful.",
 		MaxTokens:   4096,
-		Temperature: 0.5,
+		Temperature: types.Float64Ptr(0.5),
 		Tools:       tools,
 		Messages: []types.Message{
 			{
@@ -307,8 +307,8 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 	if received.MaxCompletionTokens != 4096 {
 		t.Errorf("max_completion_tokens = %d, want 4096", received.MaxCompletionTokens)
 	}
-	if received.Temperature != 0.5 {
-		t.Errorf("temperature = %v, want 0.5", received.Temperature)
+	if received.Temperature == nil || *received.Temperature != 0.5 {
+		t.Errorf("temperature = %v, want *=0.5", received.Temperature)
 	}
 
 	// System message should be first.
@@ -344,20 +344,20 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 	cases := []struct {
 		name              string
 		maxTokens         int
-		temperature       float64
+		temperature       *float64
 		wantTemperature   bool
 		wantTempSubstring string
 	}{
 		{
-			name:            "zero temperature omitted",
+			name:            "nil temperature omitted",
 			maxTokens:       4096,
-			temperature:     0,
+			temperature:     nil,
 			wantTemperature: false,
 		},
 		{
 			name:              "non-zero temperature serialised",
 			maxTokens:         4096,
-			temperature:       0.7,
+			temperature:       types.Float64Ptr(0.7),
 			wantTemperature:   true,
 			wantTempSubstring: `"temperature":0.7`,
 		},
@@ -417,10 +417,10 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 
 			hasTemperatureKey := strings.Contains(body, `"temperature"`)
 			if tc.wantTemperature && !hasTemperatureKey {
-				t.Errorf("request body missing 'temperature' for non-zero value: %s", body)
+				t.Errorf("request body missing 'temperature' for non-nil pointer: %s", body)
 			}
 			if !tc.wantTemperature && hasTemperatureKey {
-				t.Errorf("request body contains 'temperature' for zero value (omitempty broken): %s", body)
+				t.Errorf("request body contains 'temperature' for nil pointer (omitempty broken): %s", body)
 			}
 			if tc.wantTempSubstring != "" && !strings.Contains(body, tc.wantTempSubstring) {
 				t.Errorf("request body missing %q: %s", tc.wantTempSubstring, body)

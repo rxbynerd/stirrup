@@ -47,11 +47,21 @@ type StreamParams struct {
 	Messages  []Message        `json:"messages"`
 	Tools     []ToolDefinition `json:"tools"`
 	MaxTokens int              `json:"maxTokens"`
-	// Temperature controls sampling randomness. On the openai-compatible provider,
-	// a zero value is omitted from the wire request (omitempty); it is not
-	// transmitted as explicit greedy decoding. See issue #200 for the *float64
-	// migration that will fix this.
-	Temperature float64 `json:"temperature"`
+	// Temperature controls sampling randomness. A nil pointer means "use
+	// the provider's default" — adapters MUST NOT transmit a temperature
+	// field on the wire in that case (some endpoints, notably OpenAI's
+	// reasoning models on Chat Completions, reject any temperature value
+	// including zero). A non-nil pointer transmits the dereferenced value
+	// verbatim, including an explicit 0.0 to request greedy decoding.
+	// Use Float64Ptr to construct a pointer from a literal.
+	Temperature *float64 `json:"temperature,omitempty"`
+}
+
+// Float64Ptr returns a pointer to the given float64 value. It is a
+// readability helper for constructing StreamParams.Temperature literals
+// without a temporary variable.
+func Float64Ptr(v float64) *float64 {
+	return &v
 }
 
 // HarnessEvent is an event emitted by the harness to the control plane.

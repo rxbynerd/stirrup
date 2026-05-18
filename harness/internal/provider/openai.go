@@ -105,18 +105,20 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 // gpt-5.x family) reject "max_tokens" with HTTP 400 on both OpenAI and
 // Azure OpenAI Chat Completions endpoints; "max_completion_tokens" is
 // required there and accepted by every non-reasoning model, so the rename
-// is strictly safer than feature-detecting per model. Temperature carries
-// omitempty for the same reason — reasoning models reject "temperature"
-// outright, so a zero-value temperature must not be transmitted. The
-// trade-off is that temperature=0 is now indistinguishable from "unset";
-// recovering that distinction needs a *float64 migration, tracked
-// separately.
+// is strictly safer than feature-detecting per model.
+//
+// Temperature is *float64 with omitempty: a nil pointer omits the key
+// entirely (reasoning models reject "temperature" outright); a non-nil
+// pointer transmits the dereferenced value verbatim, including an
+// explicit 0.0 for greedy decoding. This mirrors the upstream
+// StreamParams.Temperature pointer type so the unset-vs-explicit-zero
+// distinction survives marshalling. See issue #200.
 type openaiRequest struct {
 	Model               string          `json:"model"`
 	Messages            []openaiMessage `json:"messages"`
 	Tools               []openaiTool    `json:"tools,omitempty"`
 	MaxCompletionTokens int             `json:"max_completion_tokens"`
-	Temperature         float64         `json:"temperature,omitempty"`
+	Temperature         *float64        `json:"temperature,omitempty"`
 	Stream              bool            `json:"stream"`
 }
 

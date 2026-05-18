@@ -168,10 +168,10 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 		System:    cloudJudgeSystem,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
 		MaxTokens: cloudJudgeMaxTokens,
-		// TODO(gh-200): Temperature: 0.0 is omitted (not transmitted) by the openai-compatible
-		// provider due to omitempty on float64. Follow-up *float64 migration will restore
-		// greedy-decoding guarantee for that provider.
-		Temperature: 0.0,
+		// Greedy decoding is transmitted as an explicit 0.0 via the
+		// pointer type, distinguishing "guard asked for greedy" from
+		// "unset" on the wire.
+		Temperature: types.Float64Ptr(0.0),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("cloud-judge: provider stream: %w", err)

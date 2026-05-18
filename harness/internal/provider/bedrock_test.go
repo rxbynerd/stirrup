@@ -572,7 +572,7 @@ func TestBedrock_BuildConverseStreamInput(t *testing.T) {
 		Model:       "anthropic.claude-sonnet-4-6-v1",
 		System:      "You are helpful.",
 		MaxTokens:   4096,
-		Temperature: 0.1,
+		Temperature: types.Float64Ptr(0.1),
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Hello"}}},
 		},

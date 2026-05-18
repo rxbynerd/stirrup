@@ -103,9 +103,17 @@ type responsesRequest struct {
 	Input           []responsesInput `json:"input"`
 	Tools           []responsesTool  `json:"tools,omitempty"`
 	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
-	Temperature     float64          `json:"temperature"`
-	Stream          bool             `json:"stream"`
-	Store           bool             `json:"store"`
+	// Temperature is *float64 with omitempty: a nil pointer omits the
+	// key entirely (the Responses API rejects "temperature" outright on
+	// reasoning models — the same class-wide rejection that motivated
+	// #200 on the Chat Completions adapter). A non-nil pointer transmits
+	// the dereferenced value verbatim, including an explicit 0.0 for
+	// greedy decoding. This mirrors the upstream StreamParams.Temperature
+	// pointer type so the unset-vs-explicit-zero distinction survives
+	// marshalling.
+	Temperature *float64 `json:"temperature,omitempty"`
+	Stream      bool     `json:"stream"`
+	Store       bool     `json:"store"`
 }
 
 // responsesInput is one item in the Responses API input array. The Type
