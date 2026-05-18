@@ -181,14 +181,14 @@ func backoffDelay(n int, policy RetryPolicy, r *rand.Rand) time.Duration {
 //
 //   - succeeded:        terminal 2xx response (with or without retries).
 //   - exhausted:        retries exhausted by MaxAttempts on a retryable
-//                       status; the last response is returned to caller.
+//     status; the last response is returned to caller.
 //   - non_retryable:    terminal non-retryable status or transport error.
 //   - budget_exhausted: wall-clock budget would be exceeded by the next
-//                       sleep; the last response is returned to caller.
+//     sleep; the last response is returned to caller.
 //   - context_done:     ctx.Done() fired during the inter-attempt sleep.
 //   - rewind_failed:    req.GetBody() returned an error on attempt > 0;
-//                       no further attempt could be made even though
-//                       MaxAttempts had not been reached.
+//     no further attempt could be made even though
+//     MaxAttempts had not been reached.
 const (
 	retryOutcomeSucceeded       = "succeeded"
 	retryOutcomeExhausted       = "exhausted"
@@ -212,20 +212,20 @@ const (
 //
 // Fields:
 //   - Policy:       resolved retry configuration; a zero value
-//                   produces single-attempt behaviour.
+//     produces single-attempt behaviour.
 //   - Logger:       optional; nil falls back to slog.Default().
 //   - Metrics:      optional; nil disables outcome recording.
 //   - ProviderType: provider identity for log/metric/span attribution
-//                   (e.g. "openai", "anthropic"). Free-form string.
+//     (e.g. "openai", "anthropic"). Free-form string.
 //   - Model:        model identity for log/metric/span attribution.
 //   - ShouldRetry:  optional adapter-specific retry classifier. When
-//                   non-nil it is consulted before the default status
-//                   heuristic. It receives the response and returns
-//                   (retryable, consumed). If consumed=true, retryable
-//                   is the final answer for that response. If
-//                   consumed=false, the default retryableStatus
-//                   heuristic applies. Transport errors bypass this
-//                   classifier — they are routed through transientErr.
+//     non-nil it is consulted before the default status
+//     heuristic. It receives the response and returns
+//     (retryable, consumed). If consumed=true, retryable
+//     is the final answer for that response. If
+//     consumed=false, the default retryableStatus
+//     heuristic applies. Transport errors bypass this
+//     classifier — they are routed through transientErr.
 type RetryOptions struct {
 	Policy       RetryPolicy
 	Logger       *slog.Logger

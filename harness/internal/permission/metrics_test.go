@@ -178,7 +178,7 @@ func TestMetricRecorder_AddApprovalToolViaUnwrap(t *testing.T) {
 // AskUpstreamPolicy without exercising the wire path.
 type nopTransport struct{}
 
-func (nopTransport) Emit(_ types.HarnessEvent) error             { return nil }
+func (nopTransport) Emit(_ types.HarnessEvent) error            { return nil }
 func (nopTransport) OnControl(_ func(event types.ControlEvent)) {}
 
 // --- helpers ---
