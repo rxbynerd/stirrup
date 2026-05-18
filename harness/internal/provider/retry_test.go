@@ -1353,3 +1353,99 @@ func TestDoWithRetry_TransportError_URLNotLogged(t *testing.T) {
 		t.Errorf("log output contains server URL host %q:\n%s", host, logOutput)
 	}
 }
+
+// scrubbableTransport is a stub http.RoundTripper that fails on the
+// first call with a *net.OpError whose embedded error message contains
+// a known scrub pattern (the sk-ant- prefix). transientErr classifies
+// net.OpError timeouts as retryable; we set Op="dial" + Err=timeout so
+// the helper logs a retry attempt rather than surfacing the error
+// immediately.
+type scrubbableTransport struct {
+	mu       sync.Mutex
+	calls    int
+	innerErr error
+	delegate http.RoundTripper
+}
+
+func (t *scrubbableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls++
+	if t.calls == 1 {
+		return nil, t.innerErr
+	}
+	return t.delegate.RoundTrip(req)
+}
+
+// scrubTimeoutErr satisfies net.Error.Timeout()==true so transientErr
+// classifies it as retryable. Embedding a scrub-pattern in the message
+// is the load-bearing piece — it lets the span attribute assertion
+// verify that the scrubber runs on the value the OTel exporter sees.
+type scrubTimeoutErr struct{ msg string }
+
+func (e *scrubTimeoutErr) Error() string   { return e.msg }
+func (e *scrubTimeoutErr) Timeout() bool   { return true }
+func (e *scrubTimeoutErr) Temporary() bool { return true }
+
+// TestDoWithRetry_SpanErrorAttributeIsScrubbed asserts the OTel span's
+// `error` attribute is run through security.Scrub before export, so a
+// scrubbable secret pattern surfacing in a transport-error message
+// never reaches the span exporter unredacted. This mirrors the
+// existing slog scrubbing behaviour at the same code site.
+func TestDoWithRetry_SpanErrorAttributeIsScrubbed(t *testing.T) {
+	// Use a known scrubbable pattern (Anthropic API key prefix). The
+	// scrubber replaces it with "[REDACTED]" — asserting on the
+	// presence of the literal token in the span attribute would tell
+	// us the scrubber did not run.
+	secret := "sk-ant-test-abcdef1234567890"
+	transport := &scrubbableTransport{
+		innerErr: &scrubTimeoutErr{msg: "dial tcp: " + secret + " timed out"},
+		delegate: http.DefaultTransport,
+	}
+
+	// Need a real server for attempt 2 (helper retries on the timeout).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	m, _ := newTestMetrics(t)
+	ctx, exporter, span := withRecordingSpan(t)
+
+	req := newPostReq(t, srv.URL, `{}`)
+	resp, err := DoWithRetry(ctx, client, req, testOpts(defaultTestPolicy(), m))
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	span.End()
+	events := collectSpanEvents(exporter, "provider_retry_attempt")
+	if len(events) != 1 {
+		t.Fatalf("expected 1 provider_retry_attempt event, got %d", len(events))
+	}
+	var got string
+	var foundErrAttr bool
+	for _, kv := range events[0].Attributes {
+		if string(kv.Key) == "error" {
+			foundErrAttr = true
+			got = kv.Value.AsString()
+		}
+	}
+	if !foundErrAttr {
+		t.Fatalf("provider_retry_attempt event missing error attribute")
+	}
+	if strings.Contains(got, secret) {
+		t.Errorf("span error attribute leaks the scrubbable token %q: %q", secret, got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("span error attribute should contain [REDACTED] marker, got: %q", got)
+	}
+	// Belt-and-braces: explicitly compare against the scrubber output
+	// so a future divergence between log and span sinks fails here.
+	wantPrefix := "dial tcp: "
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("span error attribute should retain the non-secret prefix %q, got: %q", wantPrefix, got)
+	}
+}

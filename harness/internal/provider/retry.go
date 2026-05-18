@@ -427,7 +427,12 @@ func DoWithRetry(
 				attribute.String("delay_source", delaySource),
 			}
 			if err != nil {
-				spanAttrs = append(spanAttrs, attribute.String("error", unwrappedErrStr))
+				// Mirror the slog scrubbing applied at line above so the
+				// OTel span exporter does not receive a raw value that
+				// the slog handler would have redacted. The scrubber is
+				// a no-op for clean strings; the consistency invariant
+				// across log and span sinks is the load-bearing piece.
+				spanAttrs = append(spanAttrs, attribute.String("error", security.Scrub(unwrappedErrStr)))
 			} else if lastResp != nil {
 				spanAttrs = append(spanAttrs, attribute.Int("status", lastResp.StatusCode))
 			}
