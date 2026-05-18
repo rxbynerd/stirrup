@@ -1418,7 +1418,7 @@ func validateRuleOfTwo(config *RunConfig, errs *[]string) {
 	holdsSensitive := ruleOfTwoSensitiveData(config)
 	canCommExternal := ruleOfTwoExternalComm(config)
 
-	if !(holdsUntrusted && holdsSensitive && canCommExternal) {
+	if !holdsUntrusted || !holdsSensitive || !canCommExternal {
 		return
 	}
 	if config.PermissionPolicy.Type == "ask-upstream" {
