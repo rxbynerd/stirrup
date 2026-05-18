@@ -539,3 +539,62 @@ func TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved(t *testing.T
 		t.Errorf("TraceEmitter.Headers[X-Tenant]: got %q, want %q", got, want)
 	}
 }
+
+// TestRunConfigFromProto_ProviderRetryConfigPreserved guards the
+// ProviderRetryConfig wire fields against the same silent-drop class of
+// regression that occurred in gh-95 (SessionName), gh-117 (Anthropic
+// WIF), gh-118 (Azure WIF), and gh-100 (TraceEmitter Protocol/Headers).
+// Without this coverage, an operator who dispatches a tuned retry
+// policy over gRPC would have it stripped on the harness side and
+// silently replaced with the documented defaults — no log, no error.
+// The non-nil case checks all four fields round-trip; the nil case
+// checks that the wire-absent retry block produces a nil pointer on
+// the Go side so the validator's defaulter runs (rather than the
+// translate layer cross-binding "field unset" to "explicit zero").
+func TestRunConfigFromProto_ProviderRetryConfigPreserved(t *testing.T) {
+	t.Run("non-nil retry round-trips all four fields", func(t *testing.T) {
+		pc := &pb.RunConfig{
+			Provider: &pb.ProviderConfig{
+				Type: "openai-compatible",
+				Retry: &pb.ProviderRetryConfig{
+					MaxAttempts:       4,
+					InitialDelayMs:    250,
+					MaxDelayMs:        12000,
+					WallClockBudgetMs: 60000,
+				},
+			},
+		}
+
+		rc := runConfigFromProto(pc)
+
+		if rc.Provider.Retry == nil {
+			t.Fatal("Retry dropped during proto translation")
+		}
+		if got, want := rc.Provider.Retry.MaxAttempts, 4; got != want {
+			t.Errorf("Retry.MaxAttempts: got %d, want %d", got, want)
+		}
+		if got, want := rc.Provider.Retry.InitialDelayMs, 250; got != want {
+			t.Errorf("Retry.InitialDelayMs: got %d, want %d", got, want)
+		}
+		if got, want := rc.Provider.Retry.MaxDelayMs, 12000; got != want {
+			t.Errorf("Retry.MaxDelayMs: got %d, want %d", got, want)
+		}
+		if got, want := rc.Provider.Retry.WallClockBudgetMs, 60000; got != want {
+			t.Errorf("Retry.WallClockBudgetMs: got %d, want %d", got, want)
+		}
+	})
+
+	t.Run("nil retry stays nil on the Go side", func(t *testing.T) {
+		pc := &pb.RunConfig{
+			Provider: &pb.ProviderConfig{
+				Type: "openai-compatible",
+			},
+		}
+
+		rc := runConfigFromProto(pc)
+
+		if rc.Provider.Retry != nil {
+			t.Fatalf("expected nil Retry when proto omits the field, got %+v", rc.Provider.Retry)
+		}
+	})
+}

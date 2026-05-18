@@ -271,6 +271,24 @@ func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 	if pc.Credential != nil {
 		cfg.Credential = credentialConfigFromProto(pc.Credential)
 	}
+	if pc.Retry != nil {
+		// Nil-guarded: a wire-absent retry block must produce a nil
+		// types.ProviderRetryConfig so ValidateRunConfig's defaulter
+		// allocates and populates a fresh struct. Mapping into an
+		// always-allocated zero value would cross-bind the wire's
+		// "field unset" semantics into the harness's "explicit zero"
+		// semantics and silently override the documented defaults.
+		// This is the recurring control-plane translation gap (gh-95,
+		// gh-117, gh-118, gh-100): every operator-supplied policy
+		// would otherwise be dropped silently, with no log and no
+		// error.
+		cfg.Retry = &types.ProviderRetryConfig{
+			MaxAttempts:       int(pc.Retry.GetMaxAttempts()),
+			InitialDelayMs:    int(pc.Retry.GetInitialDelayMs()),
+			MaxDelayMs:        int(pc.Retry.GetMaxDelayMs()),
+			WallClockBudgetMs: int(pc.Retry.GetWallClockBudgetMs()),
+		}
+	}
 	return cfg
 }
 

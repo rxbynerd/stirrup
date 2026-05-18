@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -59,6 +60,8 @@ type OpenAICompatibleAdapter struct {
 	queryParams  map[string]string
 	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	RetryPolicy  RetryPolicy            // optional, set by factory; zero value disables retry
+	Logger       *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
 }
 
 // NewOpenAICompatibleAdapter creates an adapter for an OpenAI-compatible
@@ -66,7 +69,9 @@ type OpenAICompatibleAdapter struct {
 // (e.g. "https://api.openai.com/v1"); the /chat/completions path is appended
 // automatically. Pass an empty string for the default OpenAI URL. The auth
 // argument carries optional header-name and query-parameter overrides; pass
-// a zero value for OpenAI-default behaviour.
+// a zero value for OpenAI-default behaviour. The retry argument is the
+// resolved retry policy; pass a zero RetryPolicy to disable retries (one
+// attempt with no backoff).
 //
 // bearer is invoked on every Stream call to fetch the current API key. For
 // Azure Entra ID and other refresh-aware credentials this lets the
@@ -74,7 +79,7 @@ type OpenAICompatibleAdapter struct {
 // return a captured value with no IO. A nil bearer or one returning an
 // empty string is treated as "no auth header" (some local gateways accept
 // anonymous requests).
-func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL string, auth OpenAIAuthConfig) *OpenAICompatibleAdapter {
+func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL string, auth OpenAIAuthConfig, retry RetryPolicy) *OpenAICompatibleAdapter {
 	if baseURL == "" {
 		baseURL = openaiDefaultBaseURL
 	}
@@ -93,6 +98,7 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 		baseURL:      baseURL,
 		apiKeyHeader: auth.APIKeyHeader,
 		queryParams:  auth.QueryParams,
+		RetryPolicy:  retry,
 	}
 }
 
@@ -377,13 +383,25 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	req.Header.Set("Content-Type", "application/json")
 	setOpenAIAuthHeader(req, apiKey, o.apiKeyHeader)
 
-	resp, err := o.httpClient.Do(req)
+	resp, err := DoWithRetry(ctx, o.httpClient, req, RetryOptions{
+		Policy:       o.RetryPolicy,
+		Logger:       o.Logger,
+		Metrics:      o.Metrics,
+		ProviderType: "openai-compatible",
+		Model:        params.Model,
+	})
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("execute request: %w", err)
 	}
 
 	// Record HTTP-level metadata on the span from context when OTel is enabled.
+	// The rate_limited event fires when DoWithRetry returns a terminal 429
+	// response (retries exhausted, budget exhausted, or retries disabled via
+	// MaxAttempts=1). DoWithRetry records provider_retry_attempt for any
+	// intermediate retries; the user-visible "request failed with 429" signal
+	// remains here so existing dashboards and alerts that key off rate_limited
+	// continue to function.
 	if o.Tracer != nil {
 		span := oteltrace.SpanFromContext(ctx)
 		span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))

@@ -74,6 +74,47 @@ For the full per-adapter wire-format reference, including Azure
 Foundry notes and intentional exclusions, see
 [`providers.md`](providers.md).
 
+### Retry policy
+
+The harness retries transient provider failures (HTTP 408, 409, 429,
+500, 502, 503, 504 and transport-level timeouts) with exponential
+backoff and full jitter. `Retry-After` and `Retry-After-Ms` headers
+are honoured when present and bounded by the configured max delay.
+
+| Flag | Config field | Default | Hard ceiling |
+|---|---|---|---|
+| `--provider-retry-max-attempts` | `provider.retry.maxAttempts` | `3` | `5` |
+| `--provider-retry-initial-delay` | `provider.retry.initialDelayMs` | `500ms` | — |
+| `--provider-retry-max-delay` | `provider.retry.maxDelayMs` | `16s` | `60s` |
+| `--provider-retry-wall-clock` | `provider.retry.wallClockBudgetMs` | `90s` | `300s` |
+
+`maxAttempts` is the total number of HTTP attempts including the
+first, so the default value of `3` permits two retries. A value of
+`1` disables retries. `initialDelayMs: 0` is treated as unset and
+the defaulter substitutes 500ms. To request a 1ms initial delay
+(the minimum resolvable value), set `1`. Negative values are
+rejected.
+
+`ValidateRunConfig` fills the documented defaults when a field is
+left at its zero value, so leaving every flag unset behaves
+identically to passing no retry block at all. CLI flags apply only
+to the default provider — per-named-provider retry policy (under
+`providers.<name>.retry`) requires `--config`.
+
+The wall-clock budget is bounded by the run's `--timeout`; setting
+`--provider-retry-wall-clock` higher than `--timeout` is valid but
+the effective ceiling becomes the remaining run timeout.
+
+Currently honoured only by the `openai-compatible` adapter; the
+`anthropic`, `bedrock`, `gemini`, and `openai-responses` adapters
+fall through unconditionally pending their own wire-ups (tracked in
+follow-up issues).
+
+Defaults are tuned for the cost of one extra coding-loop turn rather
+than the OpenAI Python SDK's 8 s cap: a coding agent typically has
+many minutes per turn and benefits more from clearing a transient
+upstream blip than from failing fast.
+
 ### Vertex AI / Gemini
 
 | Flag | Default | Notes |

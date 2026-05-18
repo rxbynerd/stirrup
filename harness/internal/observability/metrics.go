@@ -22,22 +22,23 @@ type Metrics struct {
 	meter    metric.Meter             // retained for late callback registration
 
 	// Counters
-	Runs                 metric.Int64Counter
-	Turns                metric.Int64Counter
-	TokensInput          metric.Int64Counter
-	TokensOutput         metric.Int64Counter
-	ToolCalls            metric.Int64Counter
-	ToolErrors           metric.Int64Counter
-	ProviderRequests     metric.Int64Counter
-	ProviderErrors       metric.Int64Counter
-	ContextCompactions   metric.Int64Counter
-	SecurityEvents       metric.Int64Counter
-	VerificationAttempts metric.Int64Counter
-	Stalls               metric.Int64Counter
-	GuardChecks          metric.Int64Counter
-	GuardErrors          metric.Int64Counter
-	GuardSkips           metric.Int64Counter
-	GuardSpotlights      metric.Int64Counter
+	Runs                  metric.Int64Counter
+	Turns                 metric.Int64Counter
+	TokensInput           metric.Int64Counter
+	TokensOutput          metric.Int64Counter
+	ToolCalls             metric.Int64Counter
+	ToolErrors            metric.Int64Counter
+	ProviderRequests      metric.Int64Counter
+	ProviderErrors        metric.Int64Counter
+	ProviderRetryOutcomes metric.Int64Counter
+	ContextCompactions    metric.Int64Counter
+	SecurityEvents        metric.Int64Counter
+	VerificationAttempts  metric.Int64Counter
+	Stalls                metric.Int64Counter
+	GuardChecks           metric.Int64Counter
+	GuardErrors           metric.Int64Counter
+	GuardSkips            metric.Int64Counter
+	GuardSpotlights       metric.Int64Counter
 
 	// --- Component-level instruments (issue #97) ---
 	// Counters
@@ -297,6 +298,14 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.ProviderErrors, err = meter.Int64Counter("stirrup.harness.provider_errors",
 		metric.WithUnit("{request}"),
 		metric.WithDescription("Total provider request errors"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.ProviderRetryOutcomes, err = meter.Int64Counter("stirrup.harness.provider_retry_outcomes",
+		metric.WithUnit("{outcome}"),
+		metric.WithDescription("Outcome of each DoWithRetry invocation"),
 	)
 	if err != nil {
 		return nil, err

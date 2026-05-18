@@ -196,6 +196,18 @@ type harnessCLIOptions struct {
 	// local development.
 	DeploymentEnvironment string
 	ServiceNamespace      string
+
+	// Provider retry policy overrides (issue #197). Zero values leave
+	// the corresponding field unset on Provider.Retry so
+	// ValidateRunConfig fills in the documented defaults
+	// (MaxAttempts=3, InitialDelayMs=500, MaxDelayMs=16000,
+	// WallClockBudgetMs=90000). Operators with multi-provider configs
+	// must use --config to set per-named-provider retry policies; the
+	// flags here apply only to the default provider.
+	ProviderRetryMaxAttempts     int
+	ProviderRetryInitialDelay    time.Duration
+	ProviderRetryMaxDelay        time.Duration
+	ProviderRetryWallClockBudget time.Duration
 }
 
 // buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
@@ -203,7 +215,13 @@ type harnessCLIOptions struct {
 // permission policy and the fall-back built-in tool list required by
 // read-only modes. Kept pure so tests can exercise every --mode value
 // without invoking the agentic loop.
-func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
+//
+// Returns a non-nil error only when an operator-supplied flag fails an
+// up-front sanity check (e.g. a sub-millisecond retry duration that
+// would silently truncate to zero). Most validation still happens later
+// in `ValidateRunConfig`; the checks here exist where the truncation
+// would erase operator intent before the validator ever sees it.
+func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 	timeout := opts.Timeout
 
 	executorType := opts.ExecutorType
@@ -386,8 +404,79 @@ func buildHarnessRunConfig(opts harnessCLIOptions) *types.RunConfig {
 		}
 	}
 
+	// Provider retry policy (issue #197). Only allocate
+	// Provider.Retry when the caller touched at least one flag;
+	// otherwise leave it nil so ValidateRunConfig fills the documented
+	// defaults. Each non-zero field overrides its slot independently,
+	// matching the partial-override pattern used by GuardRail above.
+	if err := applyProviderRetryOverrides(&config.Provider, opts); err != nil {
+		return nil, err
+	}
+
 	applyModeDefaults(config)
-	return config
+	return config, nil
+}
+
+// applyProviderRetryOverrides mutates pc.Retry to reflect any of the
+// four provider-retry CLI flags the operator set. Each flag maps to a
+// single ProviderRetryConfig field; an unset flag (zero value) leaves
+// its slot zero so ValidateRunConfig's per-field defaulting fills it
+// in. Duration flags are converted to integer milliseconds because the
+// wire format (ProviderRetryConfig) stores millisecond magnitudes.
+//
+// Returns a non-nil error if any non-zero duration is below the
+// millisecond resolution boundary (e.g. 500µs). Without that guard a
+// `int(d / time.Millisecond)` conversion truncates to zero and the
+// zero-guard below treats the value as "flag not set", silently
+// erasing the operator's expressed intent.
+func applyProviderRetryOverrides(pc *types.ProviderConfig, opts harnessCLIOptions) error {
+	maxAttempts := opts.ProviderRetryMaxAttempts
+	initialMs, err := retryDurationToMs("--provider-retry-initial-delay", opts.ProviderRetryInitialDelay)
+	if err != nil {
+		return err
+	}
+	maxMs, err := retryDurationToMs("--provider-retry-max-delay", opts.ProviderRetryMaxDelay)
+	if err != nil {
+		return err
+	}
+	wallMs, err := retryDurationToMs("--provider-retry-wall-clock", opts.ProviderRetryWallClockBudget)
+	if err != nil {
+		return err
+	}
+	if maxAttempts == 0 && initialMs == 0 && maxMs == 0 && wallMs == 0 {
+		return nil
+	}
+	if pc.Retry == nil {
+		pc.Retry = &types.ProviderRetryConfig{}
+	}
+	if maxAttempts != 0 {
+		pc.Retry.MaxAttempts = maxAttempts
+	}
+	if initialMs != 0 {
+		pc.Retry.InitialDelayMs = initialMs
+	}
+	if maxMs != 0 {
+		pc.Retry.MaxDelayMs = maxMs
+	}
+	if wallMs != 0 {
+		pc.Retry.WallClockBudgetMs = wallMs
+	}
+	return nil
+}
+
+// retryDurationToMs converts a positive Duration to whole milliseconds
+// for the provider-retry CLI flags, rejecting any non-zero value below
+// 1ms. A zero input (the flag's default sentinel) returns zero with no
+// error, preserving the "flag not set" path. Errors include the flag
+// name so the operator sees which value they need to raise.
+func retryDurationToMs(flagName string, d time.Duration) (int, error) {
+	if d == 0 {
+		return 0, nil
+	}
+	if d < time.Millisecond {
+		return 0, fmt.Errorf("%s: minimum resolution is 1ms, got %v", flagName, d)
+	}
+	return int(d / time.Millisecond), nil
 }
 
 // applyModeDefaults fills in PermissionPolicy and the read-only Tools.BuiltIn
@@ -567,6 +656,17 @@ func init() {
 	// to defaults ("local" / "stirrup") at resource construction time.
 	f.String("deployment-environment", "", "OTel deployment.environment resource attribute (e.g. production, staging). Empty falls through to OTEL_DEPLOYMENT_ENVIRONMENT, then to \"local\".")
 	f.String("service-namespace", "", "OTel service.namespace resource attribute (e.g. stirrup-eval, team-a). Empty falls through to OTEL_SERVICE_NAMESPACE, then to \"stirrup\".")
+
+	// Provider retry policy (issue #197). No flag-level default — when
+	// a flag is left unset its corresponding Provider.Retry field stays
+	// at the zero value and ValidateRunConfig fills the documented
+	// default (MaxAttempts=3, InitialDelay=500ms, MaxDelay=16s,
+	// WallClockBudget=90s). Per-named-provider retry policy requires
+	// --config; these flags apply only to the default provider.
+	f.Int("provider-retry-max-attempts", 0, "Maximum HTTP attempts (including the first) for the default provider. 1 disables retry. Hard ceiling: 5. Default (when unset): 3. Currently honoured only by the openai-compatible adapter; the other adapters fall through unconditionally pending their own wire-ups.")
+	f.Duration("provider-retry-initial-delay", 0, "Base delay for exponential backoff before jitter, applied between retries on the default provider. Accepts Go duration syntax (e.g. 500ms, 1s). Default (when unset): 500ms.")
+	f.Duration("provider-retry-max-delay", 0, "Per-attempt sleep ceiling for the default provider (also caps Retry-After hints). Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 60s. Default (when unset): 16s.")
+	f.Duration("provider-retry-wall-clock", 0, "Wall-clock budget for the entire retry sequence on the default provider. Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 300s. Default (when unset): 90s.")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -873,6 +973,67 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if changed("service-namespace") {
 		cfg.Observability.ServiceNamespace, _ = f.GetString("service-namespace")
 	}
+	// Provider retry policy (issue #197). Each flag overrides its slot
+	// on cfg.Provider.Retry independently so an operator can pin a
+	// single value (e.g. just --provider-retry-max-attempts=5) without
+	// having to restate the rest of the file's retry block. A flag left
+	// at its zero default does NOT override the file, matching the
+	// general "explicit flag wins; defaults don't" rule documented in
+	// the precedence section of docs/configuration.md.
+	if err := applyProviderRetryFlagOverrides(cmd, &cfg.Provider); err != nil {
+		return err
+	}
+	return nil
+}
+
+// applyProviderRetryFlagOverrides mutates pc.Retry to reflect any of
+// the --provider-retry-* CLI flags the operator explicitly set on top
+// of an existing --config file. Mirrors applyProviderRetryOverrides for
+// the flag-only path but uses cmd.Flags().Changed() so a flag left at
+// its zero default does not clobber a file-supplied value.
+//
+// Returns a non-nil error if any operator-supplied duration is below
+// the 1ms resolution boundary (see retryDurationToMs).
+func applyProviderRetryFlagOverrides(cmd *cobra.Command, pc *types.ProviderConfig) error {
+	f := cmd.Flags()
+	changed := func(name string) bool { return f.Changed(name) }
+	if !changed("provider-retry-max-attempts") &&
+		!changed("provider-retry-initial-delay") &&
+		!changed("provider-retry-max-delay") &&
+		!changed("provider-retry-wall-clock") {
+		return nil
+	}
+	if pc.Retry == nil {
+		pc.Retry = &types.ProviderRetryConfig{}
+	}
+	if changed("provider-retry-max-attempts") {
+		v, _ := f.GetInt("provider-retry-max-attempts")
+		pc.Retry.MaxAttempts = v
+	}
+	if changed("provider-retry-initial-delay") {
+		d, _ := f.GetDuration("provider-retry-initial-delay")
+		ms, err := retryDurationToMs("--provider-retry-initial-delay", d)
+		if err != nil {
+			return err
+		}
+		pc.Retry.InitialDelayMs = ms
+	}
+	if changed("provider-retry-max-delay") {
+		d, _ := f.GetDuration("provider-retry-max-delay")
+		ms, err := retryDurationToMs("--provider-retry-max-delay", d)
+		if err != nil {
+			return err
+		}
+		pc.Retry.MaxDelayMs = ms
+	}
+	if changed("provider-retry-wall-clock") {
+		d, _ := f.GetDuration("provider-retry-wall-clock")
+		ms, err := retryDurationToMs("--provider-retry-wall-clock", d)
+		if err != nil {
+			return err
+		}
+		pc.Retry.WallClockBudgetMs = ms
+	}
 	return nil
 }
 
@@ -1012,6 +1173,10 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
 	deploymentEnvironment, _ := f.GetString("deployment-environment")
 	serviceNamespace, _ := f.GetString("service-namespace")
+	providerRetryMaxAttempts, _ := f.GetInt("provider-retry-max-attempts")
+	providerRetryInitialDelay, _ := f.GetDuration("provider-retry-initial-delay")
+	providerRetryMaxDelay, _ := f.GetDuration("provider-retry-max-delay")
+	providerRetryWallClockBudget, _ := f.GetDuration("provider-retry-wall-clock")
 
 	var queryParams map[string]string
 	for _, entry := range queryParamRaw {
@@ -1034,53 +1199,60 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	config := buildHarnessRunConfig(harnessCLIOptions{
-		RunID:                      generateRunID(),
-		Mode:                       mode,
-		SessionName:                sessionName,
-		Prompt:                     prompt,
-		ProviderType:               providerType,
-		BaseURL:                    baseURL,
-		APIKeyHeader:               apiKeyHeader,
-		QueryParams:                queryParams,
-		APIKeyRef:                  apiKeyRef,
-		GCPProject:                 gcpProject,
-		GCPLocation:                gcpLocation,
-		GCPCredentialsFile:         gcpCredentialsFile,
-		AnthropicFederationRuleID:  anthropicFederationRuleID,
-		AnthropicOrganizationID:    anthropicOrganizationID,
-		AnthropicServiceAccountID:  anthropicServiceAccountID,
-		AnthropicWorkspaceID:       anthropicWorkspaceID,
-		AnthropicFromGitHubActions: anthropicFromGitHubActions,
-		AzureTenantID:              azureTenantID,
-		AzureClientID:              azureClientID,
-		AzureScope:                 azureScope,
-		Model:                      model,
-		Workspace:                  workspace,
-		MaxTurns:                   maxTurns,
-		Timeout:                    timeout,
-		TracePath:                  tracePath,
-		TransportType:              transportType,
-		TransportAddr:              transportAddr,
-		FollowUpGrace:              followUpGrace,
-		LogLevel:                   logLevel,
-		ExecutorType:               executorType,
-		EditStrategyType:           editStrategyType,
-		VerifierType:               verifierType,
-		GitStrategyType:            gitStrategyType,
-		TraceEmitterType:           traceEmitterType,
-		OTelEndpoint:               otelEndpoint,
-		OTelProtocol:               otelProtocol,
-		ContainerRuntime:           containerRuntime,
-		PermissionPolicyFile:       permissionPolicyFile,
-		CodeScannerType:            codeScannerType,
-		GuardRailType:              guardRailType,
-		GuardRailEndpoint:          guardRailEndpoint,
-		GuardRailModel:             guardRailModel,
-		GuardRailFailOpen:          guardRailFailOpen,
-		DeploymentEnvironment:      deploymentEnvironment,
-		ServiceNamespace:           serviceNamespace,
+	config, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:                        generateRunID(),
+		Mode:                         mode,
+		SessionName:                  sessionName,
+		Prompt:                       prompt,
+		ProviderType:                 providerType,
+		BaseURL:                      baseURL,
+		APIKeyHeader:                 apiKeyHeader,
+		QueryParams:                  queryParams,
+		APIKeyRef:                    apiKeyRef,
+		GCPProject:                   gcpProject,
+		GCPLocation:                  gcpLocation,
+		GCPCredentialsFile:           gcpCredentialsFile,
+		AnthropicFederationRuleID:    anthropicFederationRuleID,
+		AnthropicOrganizationID:      anthropicOrganizationID,
+		AnthropicServiceAccountID:    anthropicServiceAccountID,
+		AnthropicWorkspaceID:         anthropicWorkspaceID,
+		AnthropicFromGitHubActions:   anthropicFromGitHubActions,
+		AzureTenantID:                azureTenantID,
+		AzureClientID:                azureClientID,
+		AzureScope:                   azureScope,
+		Model:                        model,
+		Workspace:                    workspace,
+		MaxTurns:                     maxTurns,
+		Timeout:                      timeout,
+		TracePath:                    tracePath,
+		TransportType:                transportType,
+		TransportAddr:                transportAddr,
+		FollowUpGrace:                followUpGrace,
+		LogLevel:                     logLevel,
+		ExecutorType:                 executorType,
+		EditStrategyType:             editStrategyType,
+		VerifierType:                 verifierType,
+		GitStrategyType:              gitStrategyType,
+		TraceEmitterType:             traceEmitterType,
+		OTelEndpoint:                 otelEndpoint,
+		OTelProtocol:                 otelProtocol,
+		ContainerRuntime:             containerRuntime,
+		PermissionPolicyFile:         permissionPolicyFile,
+		CodeScannerType:              codeScannerType,
+		GuardRailType:                guardRailType,
+		GuardRailEndpoint:            guardRailEndpoint,
+		GuardRailModel:               guardRailModel,
+		GuardRailFailOpen:            guardRailFailOpen,
+		DeploymentEnvironment:        deploymentEnvironment,
+		ServiceNamespace:             serviceNamespace,
+		ProviderRetryMaxAttempts:     providerRetryMaxAttempts,
+		ProviderRetryInitialDelay:    providerRetryInitialDelay,
+		ProviderRetryMaxDelay:        providerRetryMaxDelay,
+		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
 	})
+	if err != nil {
+		return err
+	}
 
 	// Anthropic WIF env-var fallbacks and token-source inference run
 	// after buildHarnessRunConfig so the flag-only path mirrors the

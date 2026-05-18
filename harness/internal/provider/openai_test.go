@@ -10,9 +10,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -46,7 +50,7 @@ func TestOpenAIAdapter_StreamTextDelta(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -93,7 +97,7 @@ func TestOpenAIAdapter_StreamToolCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -144,7 +148,7 @@ func TestOpenAIAdapter_MultipleToolCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -193,7 +197,7 @@ func TestOpenAIAdapter_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -213,7 +217,7 @@ func TestOpenAIAdapter_HTTPErrorNoBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -238,7 +242,7 @@ func TestOpenAIAdapter_HTTPErrorLargeBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -267,7 +271,7 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	tools := []types.ToolDefinition{
 		{
@@ -457,7 +461,7 @@ func TestOpenAIAdapter_ContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -494,7 +498,7 @@ func TestOpenAIAdapter_MalformedChunk(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -536,7 +540,7 @@ func TestOpenAIAdapter_MalformedToolArguments(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -565,14 +569,14 @@ func TestOpenAIAdapter_MalformedToolArguments(t *testing.T) {
 }
 
 func TestOpenAIAdapter_DefaultBaseURL(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), "", OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), "", OpenAIAuthConfig{}, RetryPolicy{})
 	if adapter.baseURL != openaiDefaultBaseURL {
 		t.Errorf("baseURL = %q, want %q", adapter.baseURL, openaiDefaultBaseURL)
 	}
 }
 
 func TestOpenAIAdapter_TrailingSlashBaseURL(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), "https://example.com/v1/", OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("key"), "https://example.com/v1/", OpenAIAuthConfig{}, RetryPolicy{})
 	if adapter.baseURL != "https://example.com/v1" {
 		t.Errorf("baseURL = %q, want https://example.com/v1", adapter.baseURL)
 	}
@@ -590,7 +594,7 @@ func TestOpenAIAdapter_NoAPIKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer(""), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer(""), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "llama3",
@@ -720,7 +724,7 @@ func TestOpenAIAdapter_TextThenToolCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -758,7 +762,7 @@ func TestOpenAIAdapter_BearerClosureError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	adapter := NewOpenAICompatibleAdapter(erroringBearer("federation: STS returned 401"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(erroringBearer("federation: STS returned 401"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -773,7 +777,7 @@ func TestOpenAIAdapter_BearerClosureError(t *testing.T) {
 }
 
 func TestOpenAIAdapter_HasTimeout(t *testing.T) {
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), "", OpenAIAuthConfig{}, RetryPolicy{})
 	if adapter.httpClient.Timeout == 0 {
 		t.Error("HTTP client should have a non-zero timeout")
 	}
@@ -812,7 +816,7 @@ func TestOpenAIAdapter_RecordsLatencyAndTTFB(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 	adapter.Metrics = metrics
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
@@ -859,7 +863,7 @@ func TestOpenAIAdapter_RecordsLatencyOnHTTPError(t *testing.T) {
 		t.Fatalf("NewMetricsForTesting: %v", err)
 	}
 
-	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{})
+	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 	adapter.Metrics = metrics
 
 	if _, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024}); err == nil {
@@ -910,7 +914,7 @@ func TestOpenAIAdapter_AzureKeyHeaderAndQueryParam(t *testing.T) {
 	adapter := NewOpenAICompatibleAdapter(staticBearer("AZURE-KEY"), srv.URL+"/openai/v1", OpenAIAuthConfig{
 		APIKeyHeader: "api-key",
 		QueryParams:  map[string]string{"api-version": "preview"},
-	})
+	}, RetryPolicy{})
 
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -953,7 +957,7 @@ func TestOpenAIAdapter_QueryParamsOverrideBaseURL(t *testing.T) {
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("KEY"), srv.URL+"/v1?api-version=2024-10-01-preview&deployment-id=gpt4-prod", OpenAIAuthConfig{
 		QueryParams: map[string]string{"api-version": "preview"},
-	})
+	}, RetryPolicy{})
 	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
 	if err != nil {
 		t.Fatalf("Stream() error: %v", err)
@@ -1047,7 +1051,7 @@ func TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed(t *testing.T) {
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{
 		QueryParams: queryParams,
-	})
+	}, RetryPolicy{})
 
 	_, err := adapter.Stream(context.Background(), types.StreamParams{
 		Model:     "gpt-4o",
@@ -1086,5 +1090,309 @@ func TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed(t *testing.T) {
 	// canonical signal that a pattern fired.
 	if !strings.Contains(scrubbed, "[REDACTED]") {
 		t.Errorf("scrubbed error missing [REDACTED] marker: %s", scrubbed)
+	}
+}
+
+// testRetryPolicy returns a RetryPolicy tuned for unit tests: small
+// delays keep the test wall-clock short while still exercising the
+// helper's sleep + budget paths.
+func testRetryPolicy() RetryPolicy {
+	return RetryPolicy{
+		MaxAttempts:     2,
+		InitialDelay:    time.Millisecond,
+		MaxDelay:        5 * time.Millisecond,
+		WallClockBudget: 200 * time.Millisecond,
+	}
+}
+
+// TestOpenAIAdapter_RetriesOnce429ThenSucceeds verifies the end-to-end
+// retry path on the openai-compatible adapter: a single 429 from the
+// upstream is retried once, the second attempt's SSE stream succeeds,
+// and the events delivered to the caller match the no-retry baseline.
+// The provider_retry_attempt span event fires exactly once on the
+// intermediate 429; rate_limited does NOT fire on terminal success
+// because the final response was a 200.
+func TestOpenAIAdapter_RetriesOnce429ThenSucceeds(t *testing.T) {
+	body := strings.Join([]string{
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`),
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`),
+		makeOpenAIChunk(`{"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`),
+		"data: [DONE]\n\n",
+	}, "")
+
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"slow down"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, testRetryPolicy())
+	adapter.Tracer = tracer
+
+	ctx, span := tracer.Start(context.Background(), "test")
+
+	ch, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := collectEvents(t, ch)
+	span.End()
+
+	if got, want := calls.Load(), int32(2); got != want {
+		t.Errorf("server received %d requests, want %d", got, want)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 stream events (text_delta, message_complete), got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "text_delta" || events[0].Text != "Hi" {
+		t.Errorf("event[0] = %+v, want text_delta/Hi", events[0])
+	}
+	if events[1].Type != "message_complete" || events[1].StopReason != "end_turn" {
+		t.Errorf("event[1] = %+v, want message_complete/end_turn", events[1])
+	}
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var retryAttempts, rateLimited int
+	for _, s := range stubs {
+		for _, ev := range s.Events {
+			switch ev.Name {
+			case "provider_retry_attempt":
+				retryAttempts++
+			case "rate_limited":
+				rateLimited++
+			}
+		}
+	}
+	if retryAttempts != 1 {
+		t.Errorf("provider_retry_attempt events = %d, want 1", retryAttempts)
+	}
+	if rateLimited != 0 {
+		t.Errorf("rate_limited events = %d, want 0 on terminal success", rateLimited)
+	}
+}
+
+// TestOpenAIAdapter_429ExhaustedSurfacesTerminalError verifies that when
+// the upstream returns 429 on every attempt, the adapter exhausts its
+// retries and surfaces the boundary error format unchanged. The
+// rate_limited span event fires exactly once on the terminal attempt
+// — this is the dashboard-facing signal that an operator-visible
+// failure occurred (intermediate retries are kept off the
+// rate_limited event to avoid double-counting against alerts that key
+// off it).
+func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"still rate limited"}}`)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	// Metrics reader exercises the recordLatency-on-terminal-429 invariant
+	// (issue #197 remediation N-2): without a non-nil Metrics, the histogram
+	// branch executes as a no-op, leaving the "terminal error always records
+	// latency" invariant verified only for 401 (TestOpenAIAdapter_RecordsLatencyOnHTTPError).
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, testRetryPolicy())
+	adapter.Tracer = tracer
+	adapter.Metrics = metrics
+
+	ctx, span := tracer.Start(context.Background(), "test")
+
+	_, err = adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	span.End()
+	if err == nil {
+		t.Fatal("expected terminal error after retry exhaustion, got nil")
+	}
+	// Pin the full prefix so log scrapers / orchestrators that pattern-match
+	// on the error string break loudly if the wrap format changes (issue #197
+	// remediation N-1). strings.Contains hides format drift.
+	//
+	// On the exhausted-MaxAttempts path the helper returns (lastResp, nil),
+	// so the adapter formats from resp.StatusCode + errResp.Error.Message
+	// rather than wrapping a transport error — no "execute request: " prefix.
+	wantPrefix := "openai API returned status 429: still rate limited"
+	if !strings.HasPrefix(err.Error(), wantPrefix) {
+		t.Errorf("error = %q, want HasPrefix %q", err.Error(), wantPrefix)
+	}
+	if got, want := calls.Load(), int32(2); got != want {
+		t.Errorf("server received %d requests, want %d (MaxAttempts=2)", got, want)
+	}
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var retryAttempts, rateLimited int
+	for _, s := range stubs {
+		for _, ev := range s.Events {
+			switch ev.Name {
+			case "provider_retry_attempt":
+				retryAttempts++
+			case "rate_limited":
+				rateLimited++
+			}
+		}
+	}
+	// One intermediate retry event (attempt 1 → 2) and one terminal
+	// rate_limited event on the final 429.
+	if retryAttempts != 1 {
+		t.Errorf("provider_retry_attempt events = %d, want 1", retryAttempts)
+	}
+	if rateLimited != 1 {
+		t.Errorf("rate_limited events = %d, want 1 on terminal 429", rateLimited)
+	}
+	// N-2: a terminal 429 with non-nil Metrics must still record a
+	// provider_latency observation.
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got < 1 {
+		t.Errorf("provider_latency count = %d, want >= 1 (terminal 429 must still record latency)", got)
+	}
+}
+
+// TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError covers the
+// `retryOutcomeBudgetExhausted` branch in DoWithRetry. The previous
+// test exhausts via MaxAttempts; this one exhausts via WallClockBudget
+// — the WallClockBudget=5ms is smaller than the first retry's InitialDelay,
+// so the budget check fires before the second attempt is even made. The
+// rate_limited span event still fires on the resulting terminal 429.
+func TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"budget should run out"}}`)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	// Allow up to 10 attempts but cap the wall-clock at 5ms so the budget
+	// is the binding constraint. InitialDelay=50ms guarantees the first
+	// retry's sleep would already exceed the budget.
+	budgetPolicy := RetryPolicy{
+		MaxAttempts:     10,
+		InitialDelay:    50 * time.Millisecond,
+		MaxDelay:        100 * time.Millisecond,
+		WallClockBudget: 5 * time.Millisecond,
+	}
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, budgetPolicy)
+	adapter.Tracer = tracer
+
+	ctx, span := tracer.Start(context.Background(), "test")
+	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	span.End()
+	if err == nil {
+		t.Fatal("expected terminal error after budget exhaustion, got nil")
+	}
+	if !strings.Contains(err.Error(), "openai API returned status 429") {
+		t.Errorf("error = %q, want substring 'openai API returned status 429'", err.Error())
+	}
+
+	// Budget exhaustion before any retry sleep means only the first
+	// attempt reaches the server.
+	if got := calls.Load(); got != 1 {
+		t.Errorf("server received %d requests, want 1 (budget should cut before retry)", got)
+	}
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var rateLimited int
+	for _, s := range stubs {
+		for _, ev := range s.Events {
+			if ev.Name == "rate_limited" {
+				rateLimited++
+			}
+		}
+	}
+	if rateLimited != 1 {
+		t.Errorf("rate_limited events = %d, want 1 on terminal 429 from budget exhaustion", rateLimited)
+	}
+}
+
+// TestOpenAIAdapter_429TerminalWithTracer_SetsHTTPStatusCode exercises the
+// `o.Tracer != nil` + terminal non-429 non-2xx response path. The previous
+// 401-only test (TestOpenAIAdapter_RecordsLatencyOnHTTPError) ran without
+// a tracer; this one asserts the span attribute side of the same code
+// path and confirms `rate_limited` does NOT fire for a non-429 terminal.
+func TestOpenAIAdapter_429TerminalWithTracer_SetsHTTPStatusCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"bad key"}}`)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{}, testRetryPolicy())
+	adapter.Tracer = tracer
+
+	ctx, span := tracer.Start(context.Background(), "test")
+	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	span.End()
+	if err == nil {
+		t.Fatal("expected error for 401")
+	}
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var foundStatus, foundRateLimited bool
+	for _, s := range stubs {
+		for _, kv := range s.Attributes {
+			if string(kv.Key) == "http.status_code" {
+				if kv.Value.AsInt64() == int64(http.StatusUnauthorized) {
+					foundStatus = true
+				} else {
+					t.Errorf("http.status_code = %d, want %d", kv.Value.AsInt64(), http.StatusUnauthorized)
+				}
+			}
+		}
+		for _, ev := range s.Events {
+			if ev.Name == "rate_limited" {
+				foundRateLimited = true
+			}
+		}
+	}
+	if !foundStatus {
+		t.Error("expected http.status_code=401 attribute on the span")
+	}
+	if foundRateLimited {
+		t.Error("rate_limited event must NOT fire on a non-429 terminal status")
 	}
 }
