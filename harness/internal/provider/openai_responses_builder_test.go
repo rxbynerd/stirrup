@@ -72,6 +72,27 @@ func responsesBuilderCases() []struct {
 				},
 			},
 		},
+		{
+			// Pins the "Error: " prefix injection in
+			// translateMessagesResponses at the builder level. Covered by
+			// openai_responses_test.go through Stream, but the batch path
+			// will call the builder directly; the MatchesStream harness
+			// extends that coverage here automatically.
+			name: "is_error_tool_result",
+			params: types.StreamParams{
+				Model:     "gpt-4o",
+				MaxTokens: 1024,
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "run it"}}},
+					{Role: "assistant", Content: []types.ContentBlock{
+						{Type: "tool_use", ID: "call_1", Name: "run", Input: json.RawMessage(`{}`)},
+					}},
+					{Role: "user", Content: []types.ContentBlock{
+						{Type: "tool_result", ToolUseID: "call_1", Content: "disk full", IsError: true},
+					}},
+				},
+			},
+		},
 	}
 }
 

@@ -132,6 +132,12 @@ func TestBuildAnthropicRequest_MatchesStream(t *testing.T) {
 // drives the wire field, so a future batch caller passing false produces
 // a body with "stream":false. Pinning this here prevents the helper
 // from regressing to a hard-coded true once the batch path lands.
+//
+// The marshalled-body assertions catch the failure mode the struct-level
+// checks miss: if anthropicRequest.Stream were tagged omitempty, the
+// struct check would still pass while "stream":false silently disappeared
+// from the wire body. Anthropic's tag intentionally lacks omitempty, so
+// false must serialise as "stream":false — pin both.
 func TestBuildAnthropicRequest_StreamFlag(t *testing.T) {
 	params := types.StreamParams{
 		Model:     "claude-sonnet-4-6",
@@ -143,6 +149,20 @@ func TestBuildAnthropicRequest_StreamFlag(t *testing.T) {
 	}
 	if got := buildAnthropicRequest(params, false).Stream; got != false {
 		t.Errorf("stream=false argument: got Stream=%v, want false", got)
+	}
+	trueBody, err := json.Marshal(buildAnthropicRequest(params, true))
+	if err != nil {
+		t.Fatalf("marshal stream=true body: %v", err)
+	}
+	if !strings.Contains(string(trueBody), `"stream":true`) {
+		t.Errorf(`expected "stream":true in stream=true body: %s`, trueBody)
+	}
+	falseBody, err := json.Marshal(buildAnthropicRequest(params, false))
+	if err != nil {
+		t.Fatalf("marshal stream=false body: %v", err)
+	}
+	if !strings.Contains(string(falseBody), `"stream":false`) {
+		t.Errorf(`expected "stream":false in stream=false body: %s`, falseBody)
 	}
 }
 

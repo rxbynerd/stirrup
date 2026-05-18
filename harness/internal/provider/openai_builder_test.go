@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -75,6 +76,27 @@ func openaiBuilderCases() []struct {
 				},
 			},
 		},
+		{
+			// Pins the "Error: " prefix injection in translateMessages
+			// (openai.go) at the builder level. Covered by openai_test.go
+			// through Stream, but the batch path will call the builder
+			// directly; the MatchesStream harness extends that coverage
+			// here automatically.
+			name: "is_error_tool_result",
+			params: types.StreamParams{
+				Model:     "gpt-4o",
+				MaxTokens: 1024,
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "run it"}}},
+					{Role: "assistant", Content: []types.ContentBlock{
+						{Type: "tool_use", ID: "call_1", Name: "run", Input: json.RawMessage(`{}`)},
+					}},
+					{Role: "user", Content: []types.ContentBlock{
+						{Type: "tool_result", ToolUseID: "call_1", Content: "disk full", IsError: true},
+					}},
+				},
+			},
+		},
 	}
 }
 
@@ -132,6 +154,12 @@ func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 // the wire field, so a future batch caller passing false produces a body
 // with "stream":false. Pinning this here prevents the helper from
 // regressing to a hard-coded true once the batch path lands.
+//
+// The marshalled-body assertions catch the failure mode the struct-level
+// checks miss: if openaiRequest.Stream were tagged omitempty, the struct
+// check would still pass while "stream":false silently disappeared from
+// the wire body. OpenAI's tag intentionally lacks omitempty, so false
+// must serialise as "stream":false — pin both.
 func TestBuildOpenAIRequest_StreamFlag(t *testing.T) {
 	params := types.StreamParams{
 		Model:     "gpt-4o",
@@ -143,5 +171,19 @@ func TestBuildOpenAIRequest_StreamFlag(t *testing.T) {
 	}
 	if got := buildOpenAIRequest(params, false).Stream; got != false {
 		t.Errorf("stream=false argument: got Stream=%v, want false", got)
+	}
+	trueBody, err := json.Marshal(buildOpenAIRequest(params, true))
+	if err != nil {
+		t.Fatalf("marshal stream=true body: %v", err)
+	}
+	if !strings.Contains(string(trueBody), `"stream":true`) {
+		t.Errorf(`expected "stream":true in stream=true body: %s`, trueBody)
+	}
+	falseBody, err := json.Marshal(buildOpenAIRequest(params, false))
+	if err != nil {
+		t.Fatalf("marshal stream=false body: %v", err)
+	}
+	if !strings.Contains(string(falseBody), `"stream":false`) {
+		t.Errorf(`expected "stream":false in stream=false body: %s`, falseBody)
 	}
 }
