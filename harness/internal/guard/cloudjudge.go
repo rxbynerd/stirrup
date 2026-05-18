@@ -164,10 +164,13 @@ func (c *CloudJudge) Check(ctx context.Context, in Input) (*Decision, error) {
 	defer cancel()
 
 	events, err := c.provider.Stream(streamCtx, types.StreamParams{
-		Model:       c.model,
-		System:      cloudJudgeSystem,
-		Messages:    []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
-		MaxTokens:   cloudJudgeMaxTokens,
+		Model:     c.model,
+		System:    cloudJudgeSystem,
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: prompt}}}},
+		MaxTokens: cloudJudgeMaxTokens,
+		// TODO(gh-200): Temperature: 0.0 is omitted (not transmitted) by the openai-compatible
+		// provider due to omitempty on float64. Follow-up *float64 migration will restore
+		// greedy-decoding guarantee for that provider.
 		Temperature: 0.0,
 	})
 	if err != nil {

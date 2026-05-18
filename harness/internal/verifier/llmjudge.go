@@ -21,7 +21,10 @@ Respond with ONLY a JSON object in this exact format:
 
 Do not include any text outside the JSON object.`
 
-	judgeMaxTokens   = 1024
+	judgeMaxTokens = 1024
+	// TODO(gh-200): Temperature: 0.0 is omitted (not transmitted) by the openai-compatible
+	// provider due to omitempty on float64. Follow-up *float64 migration will restore
+	// greedy-decoding guarantee for that provider.
 	judgeTemperature = 0.0
 )
 
