@@ -1403,6 +1403,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateExecutorWorkspaceExportTo(config.Executor, &errs)
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
 	validateProviderConfigs(config, retryDefaulted, &errs)
+	validateAPIKeyRefs(config, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	for name, prov := range config.Providers {
@@ -1958,6 +1959,38 @@ func validateBuiltInTools(builtIns []string, errs *[]string) {
 		if !validBuiltInToolNames[name] {
 			*errs = append(*errs, fmt.Sprintf("tools.builtIn contains unsupported tool %q", name))
 		}
+	}
+}
+
+// validateAPIKeyRefs enforces that every secret-bearing apiKeyRef on
+// the config is either empty (the field is optional / driven by
+// credential federation) or begins with the "secret://" scheme.
+// Without this, an operator who pastes a literal API key into a
+// suite's run_config gets a confusing runtime failure (the harness
+// will try to resolve "sk-ant-..." through SecretStore and surface a
+// generic "no such secret" error) instead of a clear validation
+// message. Apply to every field redactProviderAPIKeyRefs and friends
+// know to scrub — the set of secret-bearing fields and the set of
+// fields the redactor handles must stay in lockstep, otherwise a new
+// field that the redactor missed would also miss this check.
+func validateAPIKeyRefs(config *RunConfig, errs *[]string) {
+	check := func(path, ref string) {
+		if ref == "" {
+			return
+		}
+		if !strings.HasPrefix(ref, "secret://") {
+			*errs = append(*errs, fmt.Sprintf("%s must be a secret reference (e.g. \"secret://NAME\"), got a literal value", path))
+		}
+	}
+	check("provider.apiKeyRef", config.Provider.APIKeyRef)
+	for name, prov := range config.Providers {
+		check(fmt.Sprintf("providers[%s].apiKeyRef", name), prov.APIKeyRef)
+	}
+	if config.Executor.VcsBackend != nil {
+		check("executor.vcsBackend.apiKeyRef", config.Executor.VcsBackend.APIKeyRef)
+	}
+	for i, server := range config.Tools.MCPServers {
+		check(fmt.Sprintf("tools.mcpServers[%d].apiKeyRef", i), server.APIKeyRef)
 	}
 }
 

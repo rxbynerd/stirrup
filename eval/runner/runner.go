@@ -20,6 +20,13 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// defaultTaskTimeoutSeconds is the per-task timeout the runner falls back
+// to when the merged RunConfig does not pin one and on the legacy
+// invocation path. It matches the historic `--timeout 300` value the
+// runner has always supplied so suites that opt into the RunConfig
+// surface without setting `timeout = ...` keep behaving the same.
+const defaultTaskTimeoutSeconds = 300
+
 // RunConfig configures how the runner executes tasks.
 type RunConfig struct {
 	// HarnessPath is the path to the harness binary for live runs.
@@ -70,17 +77,28 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 	runID := fmt.Sprintf("eval-%d", time.Now().UnixMilli())
 	startedAt := time.Now()
 
+	// Load the suite-level RunConfig baseline once; per-task overlays are
+	// applied against a fresh clone inside runTask / dry-run validation.
+	// A nil baseline preserves the legacy five-flag invocation path.
+	baseline, baselineErr := resolveBaseline(suite)
+	if baselineErr != nil {
+		return eval.SuiteResult{}, baselineErr
+	}
+
 	if cfg.DryRun {
 		tasks := make([]eval.TaskResult, len(suite.Tasks))
 		for i, t := range suite.Tasks {
-			tasks[i] = eval.TaskResult{
-				TaskID:  t.ID,
-				Outcome: "pass",
-				JudgeVerdict: eval.JudgeVerdict{
-					Passed: true,
-					Reason: "dry run — skipped",
-				},
+			tasks[i] = dryRunTask(t, baseline)
+		}
+		passCount := 0
+		for _, tr := range tasks {
+			if tr.Outcome == "pass" {
+				passCount++
 			}
+		}
+		passRate := float64(0)
+		if len(tasks) > 0 {
+			passRate = float64(passCount) / float64(len(tasks))
 		}
 		return eval.SuiteResult{
 			SuiteID:     suite.ID,
@@ -88,11 +106,11 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 			StartedAt:   startedAt,
 			CompletedAt: time.Now(),
 			Tasks:       tasks,
-			PassRate:    1.0,
+			PassRate:    passRate,
 		}, nil
 	}
 
-	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir)
+	results := runTasksConcurrently(ctx, suite.Tasks, cfg, suiteArtifactDir, baseline)
 
 	passCount := 0
 	for _, tr := range results {
@@ -121,7 +139,7 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 // len(tasks) so we never spawn idle workers; values <= 0 collapse to 1
 // (the historical sequential behaviour). Per-task errors do not abort
 // siblings — every task contributes a TaskResult.
-func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string) []eval.TaskResult {
+func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig) []eval.TaskResult {
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
 		concurrency = 1
@@ -144,7 +162,7 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
-				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir)
+				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir, baseline)
 			}
 		}()
 	}
@@ -227,6 +245,15 @@ func validatePathSegment(label, id string) error {
 	if strings.ContainsAny(id, "/\\") {
 		return fmt.Errorf("%s %q must not contain path separators", label, id)
 	}
+	if strings.ContainsRune(id, '\x00') {
+		// A NUL inside a filename is rejected by every supported
+		// filesystem, but the validator is the single place that
+		// documents what the runner will accept as a directory name;
+		// reject it here so the error surfaces against the operator's
+		// suite ID rather than later as an obscure filesystem syscall
+		// error. Cheap to check, hard to silently let through.
+		return fmt.Errorf("%s %q must not contain a null byte", label, id)
+	}
 	if id == "." || id == ".." {
 		return fmt.Errorf("%s %q is a reserved path segment", label, id)
 	}
@@ -239,8 +266,11 @@ func validatePathSegment(label, id string) error {
 // runTask executes a single eval task and returns the result. If
 // suiteArtifactDir is non-empty, the task's trace and harness output streams
 // are copied into <suiteArtifactDir>/<taskID>/ before the temp workspace is
-// removed.
-func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string) eval.TaskResult {
+// removed. When baseline is non-nil, the runner merges the task's
+// RunConfigOverrides on top, writes the result to a per-task temp file,
+// invokes the harness with --config, and retains a redacted copy under
+// <suiteArtifactDir>/<taskID>/run_config.redacted.json.
+func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtifactDir string, baseline *types.RunConfig) eval.TaskResult {
 	start := time.Now()
 
 	tmpDir, err := os.MkdirTemp("", "eval-task-"+task.ID+"-")
@@ -258,13 +288,77 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 
 	traceFile := filepath.Join(tmpDir, "trace.jsonl")
 
-	args := []string{
-		"harness",
-		"--prompt", task.Prompt,
-		"--mode", taskMode(task),
-		"--workspace", workspaceDir,
-		"--trace", traceFile,
-		"--timeout", "300",
+	// Merge baseline + per-task overrides into a fresh RunConfig and
+	// write it next to the workspace. A nil baseline (suite declared no
+	// run_config_file / run_config block) preserves the legacy
+	// five-flag invocation: no --config arg, no redacted artifact.
+	merged, mergeErr := buildMergedConfig(baseline, task.RunConfigOverrides)
+	if mergeErr != nil {
+		return errorResult(task.ID, start, mergeErr)
+	}
+
+	configPath := ""
+	if merged != nil {
+		// Route the runner-managed trace path through the merged
+		// config so --trace never has to appear on the command line
+		// when --config is in use. The harness's applyOverrides
+		// coerces TraceEmitter.Type to "jsonl" whenever --trace is
+		// passed and --trace-emitter is not, which would silently
+		// reset a suite's intentional otel emitter to jsonl. Setting
+		// FilePath in the merged config lets the harness pick up the
+		// per-task trace path without that coercion side-effect.
+		merged.TraceEmitter.FilePath = traceFile
+
+		// Validate the merged config before spawning the harness so a
+		// structural error (e.g. a read-only mode paired with an
+		// allow-all permission policy, or a write-tool entry under
+		// planning mode) becomes a per-task "error" outcome instead
+		// of a wasted subprocess launch followed by a harness boot
+		// failure. dryRunTask already runs this check; keeping the
+		// live path in sync prevents the two from drifting.
+		if vErr := types.ValidateRunConfig(merged); vErr != nil {
+			return errorResult(task.ID, start, vErr)
+		}
+
+		configPath = filepath.Join(tmpDir, "runconfig.json")
+		if err := writeMergedConfig(configPath, merged); err != nil {
+			return errorResult(task.ID, start, err)
+		}
+	}
+
+	// --workspace is always needed: the runner manages the per-task
+	// tmpdir and the harness has no way to discover it otherwise.
+	// --trace is conditional: when a merged config is in use, the
+	// runner already injected the trace path into TraceEmitter.FilePath
+	// above, and passing --trace as well would trigger the harness's
+	// applyOverrides path that coerces TraceEmitter.Type to "jsonl"
+	// (silently clobbering a suite's intentional otel emitter).
+	// --prompt and --mode are passed only when the task supplies a
+	// non-zero value, so the merged config's prompt/mode is honoured
+	// when the task itself does not override. --timeout is never
+	// passed alongside --config — the merged config carries it.
+	args := []string{"harness"}
+	if configPath != "" {
+		args = append(args, "--config", configPath)
+	}
+	args = append(args, "--workspace", workspaceDir)
+	if configPath == "" {
+		args = append(args, "--trace", traceFile)
+	}
+	if task.Prompt != "" {
+		args = append(args, "--prompt", task.Prompt)
+	}
+	if task.Mode != "" {
+		args = append(args, "--mode", task.Mode)
+	}
+	if configPath == "" {
+		// Legacy invocation has no in-config carrier for these two —
+		// fall back to the historic defaults so behaviour for suites
+		// that have not opted into the RunConfig surface is unchanged.
+		if task.Mode == "" {
+			args = append(args, "--mode", "execution")
+		}
+		args = append(args, "--timeout", fmt.Sprintf("%d", defaultTaskTimeoutSeconds))
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
@@ -281,6 +375,9 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// retention failures must not mask the harness/judge result.
 	if suiteArtifactDir != "" {
 		retainArtifacts(suiteArtifactDir, task.ID, traceFile, stdoutBuf.Bytes(), stderrBuf.Bytes())
+		if merged != nil {
+			retainRedactedConfig(suiteArtifactDir, task.ID, merged)
+		}
 	}
 
 	if cmdErr != nil {
@@ -370,6 +467,13 @@ func parseTraceFile(path string) (*types.RunTrace, error) {
 
 	var lastLine string
 	scanner := bufio.NewScanner(f)
+	// bufio.Scanner's default 64 KiB line limit is too small for traces
+	// that carry a large tool output in a single JSONL record. A
+	// correct harness run with a multi-hundred-KiB grep result would
+	// otherwise surface as "bufio.Scanner: token too long" and the
+	// task would land as an "error" outcome rather than a real fail.
+	// 4 MiB matches the trace-emitter's own per-record cap.
+	scanner.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line != "" {
@@ -391,14 +495,6 @@ func parseTraceFile(path string) (*types.RunTrace, error) {
 	return &trace, nil
 }
 
-// taskMode returns the mode for a task, defaulting to "execution".
-func taskMode(task types.EvalTask) string {
-	if task.Mode != "" {
-		return task.Mode
-	}
-	return "execution"
-}
-
 // errorResult builds a TaskResult with outcome "error".
 func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 	return eval.TaskResult{
@@ -410,6 +506,180 @@ func errorResult(taskID string, start time.Time, err error) eval.TaskResult {
 			Reason: err.Error(),
 		},
 		DurationMs: time.Since(start).Milliseconds(),
+	}
+}
+
+// buildMergedConfig produces a per-task RunConfig from the suite baseline
+// and per-task overlay. A nil baseline returns (nil, nil): the suite has
+// not opted into the RunConfig surface, so the legacy invocation path
+// stays in effect. The baseline argument is cloned before the overlay is
+// applied so callers can reuse it across tasks.
+//
+// types.ValidateRunConfig requires Timeout to be set and positive, but
+// `timeout` is not surfaced in the HCL grammar (it is runner-owned at
+// the eval layer). Without an injection here, every suite whose merged
+// config originates from an inline run_config block — the common case
+// — would false-fail both dry-run validation and the live-run pre-
+// flight check with a misleading "timeout is required" error. Inject
+// the runner's default Timeout when the merged config does not already
+// pin one; a value already present in a JSON baseline (loaded via
+// run_config_file) or set by an overlay survives unchanged.
+func buildMergedConfig(baseline *types.RunConfig, overlay *types.RunConfigOverrides) (*types.RunConfig, error) {
+	if baseline == nil {
+		return nil, nil
+	}
+	// JSON round-trip clones every field, including pointer-typed
+	// sub-structs. Cheap enough for RunConfig-sized blobs and avoids
+	// hand-maintaining a deep copier that would silently miss new fields.
+	data, err := json.Marshal(baseline)
+	if err != nil {
+		return nil, fmt.Errorf("cloning suite baseline RunConfig: %w", err)
+	}
+	clone := &types.RunConfig{}
+	if err := json.Unmarshal(data, clone); err != nil {
+		return nil, fmt.Errorf("cloning suite baseline RunConfig: %w", err)
+	}
+	merged := mergeOverrides(clone, overlay)
+	if merged != nil && merged.Timeout == nil {
+		t := defaultTaskTimeoutSeconds
+		merged.Timeout = &t
+	}
+	return merged, nil
+}
+
+// writeMergedConfig marshals the merged RunConfig to path. The file is
+// created inside the per-task tmpdir and is removed with the rest of the
+// workspace via the caller's defer os.RemoveAll. Permissions are 0o600 —
+// although secret values are not present (only secret:// references), the
+// file still carries the operator's chosen run posture and should not be
+// world-readable on shared CI runners.
+func writeMergedConfig(path string, cfg *types.RunConfig) error {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshalling merged RunConfig: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("writing merged RunConfig: %w", err)
+	}
+	return nil
+}
+
+// retainRedactedConfig writes the redacted form of the merged RunConfig
+// alongside the trace and harness output streams. Redact() rewrites every
+// secret:// reference to "secret://[REDACTED]" before the file lands on
+// disk so a retained artifact never carries a resolved secret out of the
+// process. Retention errors are reported on stderr to match retainArtifacts
+// but never mask the TaskResult.
+//
+// A stderr warning fires for any apiKeyRef that does not use the
+// secret:// scheme. The invariant is already enforced at HCL parse time
+// (eval/spec.validateInlineAPIKeyRefs) and again by
+// types.ValidateRunConfig before the harness is spawned, but the warning
+// here is the third defensive layer: if a regression ever lets a raw
+// value through both prior gates, Redact() will quietly rewrite it to
+// the sentinel — masking the misconfiguration from anyone inspecting the
+// artifact tree. The warning makes the bypass visible.
+func retainRedactedConfig(suiteArtifactDir, taskID string, cfg *types.RunConfig) {
+	warnIfRawAPIKeyRef(taskID, cfg)
+	redacted := cfg.Redact()
+	data, err := json.MarshalIndent(redacted, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: redacted config marshal: %v\n", taskID, err)
+		return
+	}
+	taskDir := filepath.Join(suiteArtifactDir, taskID)
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: mkdir: %v\n", taskID, err)
+		return
+	}
+	// 0o600 matches the on-disk live config: although Redact() strips
+	// secrets, the file still carries operational posture (provider
+	// type, model, network allowlists, permission policy). On shared
+	// CI runners the artifact tree may be inspectable by other jobs;
+	// 0o600 narrows that exposure.
+	if err := os.WriteFile(filepath.Join(taskDir, "run_config.redacted.json"), data, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: redacted config write: %v\n", taskID, err)
+	}
+}
+
+// warnIfRawAPIKeyRef emits a stderr warning for any apiKeyRef field in
+// the merged config that does not use the secret:// scheme. The
+// invariant is enforced at HCL parse time and again by
+// types.ValidateRunConfig before the harness is spawned, so reaching
+// this code with a raw value means both prior gates were bypassed —
+// likely a regression in either layer. Without this warning, Redact()
+// would silently rewrite the raw value to "[REDACTED]" in the audit
+// artifact and an operator inspecting the artifact tree would have no
+// signal that the configuration was rejected for that reason.
+//
+// The field list here must stay in lockstep with the redactor in
+// types.RunConfig.Redact() and with eval/spec.validateInlineAPIKeyRefs.
+// A new secret-bearing field added to RunConfig without extending this
+// helper would create a defense-in-depth hole.
+func warnIfRawAPIKeyRef(taskID string, cfg *types.RunConfig) {
+	if cfg == nil {
+		return
+	}
+	check := func(path, ref string) {
+		if ref == "" || strings.HasPrefix(ref, "secret://") {
+			return
+		}
+		fmt.Fprintf(os.Stderr,
+			"eval: task %q: %s is a raw value (not a secret:// reference); it should have been rejected at parse/validate time — redacting in artifact but the harness will refuse this configuration\n",
+			taskID, path)
+	}
+	check("provider.apiKeyRef", cfg.Provider.APIKeyRef)
+	for name, p := range cfg.Providers {
+		check(fmt.Sprintf("providers[%s].apiKeyRef", name), p.APIKeyRef)
+	}
+	if cfg.Executor.VcsBackend != nil {
+		check("executor.vcsBackend.apiKeyRef", cfg.Executor.VcsBackend.APIKeyRef)
+	}
+	for i, server := range cfg.Tools.MCPServers {
+		check(fmt.Sprintf("tools.mcpServers[%d].apiKeyRef", i), server.APIKeyRef)
+	}
+}
+
+// dryRunTask produces a TaskResult for a single task during a --dry-run
+// invocation. With a nil baseline the task behaves as it does today
+// (pass, "dry run — skipped"). With a baseline, the runner builds the
+// merged RunConfig and calls ValidateRunConfig; a validation failure
+// flips the outcome to "error" and surfaces the validator's message.
+// Other tasks in the same dry-run pass are unaffected (each task is
+// validated independently).
+func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult {
+	merged, err := buildMergedConfig(baseline, task.RunConfigOverrides)
+	if err != nil {
+		return eval.TaskResult{
+			TaskID:  task.ID,
+			Outcome: "error",
+			Error:   err.Error(),
+			JudgeVerdict: eval.JudgeVerdict{
+				Passed: false,
+				Reason: err.Error(),
+			},
+		}
+	}
+	if merged != nil {
+		if vErr := types.ValidateRunConfig(merged); vErr != nil {
+			return eval.TaskResult{
+				TaskID:  task.ID,
+				Outcome: "error",
+				Error:   vErr.Error(),
+				JudgeVerdict: eval.JudgeVerdict{
+					Passed: false,
+					Reason: vErr.Error(),
+				},
+			}
+		}
+	}
+	return eval.TaskResult{
+		TaskID:  task.ID,
+		Outcome: "pass",
+		JudgeVerdict: eval.JudgeVerdict{
+			Passed: true,
+			Reason: "dry run — skipped",
+		},
 	}
 }
 

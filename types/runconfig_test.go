@@ -4462,3 +4462,68 @@ func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 		}
 	})
 }
+
+// TestValidateRunConfig_APIKeyRefMustBeSecretReference asserts that
+// every secret-bearing apiKeyRef field is required to use the
+// "secret://" scheme. A literal API key landing in RunConfig is a
+// configuration mistake the validator should surface clearly rather
+// than letting SecretStore fail at first provider call with a
+// generic "no such secret" error.
+func TestValidateRunConfig_APIKeyRefMustBeSecretReference(t *testing.T) {
+	t.Run("provider.apiKeyRef literal rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Provider = ProviderConfig{Type: "anthropic", APIKeyRef: "sk-ant-literal-key"}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for literal provider.apiKeyRef")
+		}
+		if !strings.Contains(err.Error(), "secret://") {
+			t.Errorf("error = %q, want substring %q", err.Error(), "secret://")
+		}
+		if !strings.Contains(err.Error(), "provider.apiKeyRef") {
+			t.Errorf("error = %q, want it to name the offending field", err.Error())
+		}
+	})
+
+	t.Run("provider.apiKeyRef secret reference accepted", func(t *testing.T) {
+		c := validConfig()
+		c.Provider = ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ANTHROPIC_KEY"}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	})
+
+	t.Run("provider.apiKeyRef empty accepted", func(t *testing.T) {
+		// Empty is the unset form — credential federation may leave
+		// apiKeyRef blank and resolve auth via Credential instead.
+		c := validConfig()
+		c.Provider = ProviderConfig{Type: "anthropic"}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	})
+
+	t.Run("executor.vcsBackend.apiKeyRef literal rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Executor.VcsBackend = &VcsBackendConfig{Type: "github", APIKeyRef: "ghp_literal"}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for literal vcsBackend.apiKeyRef")
+		}
+		if !strings.Contains(err.Error(), "executor.vcsBackend.apiKeyRef") {
+			t.Errorf("error = %q, want it to name the offending field", err.Error())
+		}
+	})
+
+	t.Run("tools.mcpServers literal rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Tools.MCPServers = []MCPServerConfig{{Name: "x", URI: "http://localhost", APIKeyRef: "literal-token"}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for literal mcpServers apiKeyRef")
+		}
+		if !strings.Contains(err.Error(), "tools.mcpServers[0].apiKeyRef") {
+			t.Errorf("error = %q, want it to name the offending field index", err.Error())
+		}
+	})
+}

@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -110,7 +111,20 @@ func LoadSuiteHCL(path string) (types.EvalSuite, error) {
 		return types.EvalSuite{}, fmt.Errorf("expected exactly one suite block, found %d", len(root.Suites))
 	}
 
-	return convertSuite(root.Suites[0])
+	suite, err := convertSuite(root.Suites[0])
+	if err != nil {
+		return types.EvalSuite{}, err
+	}
+	// Resolve a suite-level run_config_file relative to the suite file's
+	// directory so authors can write intuitive relative paths
+	// (`configs/base.json` next to the suite) without depending on the
+	// caller's working directory. Absolute paths pass through unchanged.
+	// Done here rather than in the runner so the runner stays pure with
+	// respect to filesystem layout.
+	if suite.RunConfigFile != "" && !filepath.IsAbs(suite.RunConfigFile) {
+		suite.RunConfigFile = filepath.Join(filepath.Dir(path), suite.RunConfigFile)
+	}
+	return suite, nil
 }
 
 // rootSpec is the top level of the HCL grammar.
@@ -119,19 +133,22 @@ type rootSpec struct {
 }
 
 type suiteSpec struct {
-	ID          string     `hcl:"id,label"`
-	Description string     `hcl:"description,optional"`
-	Tasks       []taskSpec `hcl:"task,block"`
+	ID            string         `hcl:"id,label"`
+	Description   string         `hcl:"description,optional"`
+	RunConfigFile string         `hcl:"run_config_file,optional"`
+	RunConfig     *runConfigSpec `hcl:"run_config,block"`
+	Tasks         []taskSpec     `hcl:"task,block"`
 }
 
 type taskSpec struct {
-	ID          string    `hcl:"id,label"`
-	Description string    `hcl:"description,optional"`
-	Repo        string    `hcl:"repo,optional"`
-	Ref         string    `hcl:"ref,optional"`
-	Mode        string    `hcl:"mode,optional"`
-	Prompt      string    `hcl:"prompt,optional"`
-	Judge       judgeSpec `hcl:"judge,block"`
+	ID                 string                  `hcl:"id,label"`
+	Description        string                  `hcl:"description,optional"`
+	Repo               string                  `hcl:"repo,optional"`
+	Ref                string                  `hcl:"ref,optional"`
+	Mode               string                  `hcl:"mode,optional"`
+	Prompt             string                  `hcl:"prompt,optional"`
+	RunConfigOverrides *runConfigOverridesSpec `hcl:"run_config_overrides,block"`
+	Judge              judgeSpec               `hcl:"judge,block"`
 }
 
 type judgeSpec struct {
@@ -254,6 +271,17 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 	if len(s.Tasks) == 0 {
 		return types.EvalSuite{}, fmt.Errorf("suite %q must contain at least one task", s.ID)
 	}
+	if s.RunConfigFile != "" && s.RunConfig != nil {
+		return types.EvalSuite{}, fmt.Errorf(
+			"suite %q sets both `run_config_file` and `run_config` block; these are mutually exclusive — pick one",
+			s.ID,
+		)
+	}
+
+	suiteRunConfig := runConfigSpecToType(s.RunConfig)
+	if err := validateInlineAPIKeyRefs(suiteRunConfig, nil); err != nil {
+		return types.EvalSuite{}, fmt.Errorf("suite %q: %w", s.ID, err)
+	}
 
 	tasks := make([]types.EvalTask, 0, len(s.Tasks))
 	for i, t := range s.Tasks {
@@ -264,21 +292,28 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		if err != nil {
 			return types.EvalSuite{}, err
 		}
+		taskOverrides := runConfigOverridesSpecToType(t.RunConfigOverrides)
+		if err := validateInlineAPIKeyRefs(nil, taskOverrides); err != nil {
+			return types.EvalSuite{}, fmt.Errorf("task %q: %w", t.ID, err)
+		}
 		tasks = append(tasks, types.EvalTask{
-			ID:          t.ID,
-			Description: t.Description,
-			Repo:        t.Repo,
-			Ref:         t.Ref,
-			Prompt:      t.Prompt,
-			Mode:        t.Mode,
-			Judge:       j,
+			ID:                 t.ID,
+			Description:        t.Description,
+			Repo:               t.Repo,
+			Ref:                t.Ref,
+			Prompt:             t.Prompt,
+			Mode:               t.Mode,
+			Judge:              j,
+			RunConfigOverrides: taskOverrides,
 		})
 	}
 
 	return types.EvalSuite{
-		ID:          s.ID,
-		Description: s.Description,
-		Tasks:       tasks,
+		ID:            s.ID,
+		Description:   s.Description,
+		Tasks:         tasks,
+		RunConfigFile: s.RunConfigFile,
+		RunConfig:     suiteRunConfig,
 	}, nil
 }
 

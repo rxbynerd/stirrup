@@ -5,11 +5,19 @@
 # "Missing required parameter: 'input[N].output'".
 #
 # This suite is opt-in. It exercises a real round-trip against the
-# OpenAI Responses API and therefore requires:
+# OpenAI Responses API and therefore requires a real OpenAI API key
+# resolvable from the `secret://OPENAI_KEY` reference declared in
+# the suite-level `run_config` block below.
 #
-#   - A real OpenAI API key set in the environment.
-#   - The harness binary configured with
-#     `--provider openai-responses --model <model>`.
+# The suite pins its own provider posture inline (issue #177): the
+# suite-level `run_config` block sets `provider.type =
+# "openai-responses"` and the model_router, so the regression
+# scenario cannot be silently nullified by an operator invoking the
+# harness with a different provider. The runner merges this
+# baseline into a per-task RunConfig and invokes
+# `stirrup harness --config <merged>.json --prompt ... --mode ...`;
+# the redacted form is retained under `<output>/<suite>/<task>/
+# run_config.redacted.json` alongside the trace.
 #
 # The unit-level marshal tests in
 # harness/internal/provider/openai_responses_test.go (covering
@@ -34,7 +42,28 @@
 #       --output results/
 
 suite "openai-responses-empty-tool-output-regression" {
-  description = "Live-API regression for issue #172: the openai-responses adapter dropped the required `output` key from function_call_output items when a tool produced empty stdout, causing the next turn to be rejected with HTTP 400. Opt-in — requires a real OpenAI API key and the harness configured for --provider openai-responses; the unit tests in openai_responses_test.go are the per-PR gate, this suite is the end-to-end pin against the real Responses API."
+  description = "Live-API regression for issue #172: the openai-responses adapter dropped the required `output` key from function_call_output items when a tool produced empty stdout, causing the next turn to be rejected with HTTP 400. Opt-in — requires a real OpenAI API key resolvable from secret://OPENAI_KEY. The suite pins provider posture inline so the regression scenario cannot be nullified by an operator invoking the harness with a different provider. The unit tests in openai_responses_test.go are the per-PR gate; this suite is the end-to-end pin against the real Responses API."
+
+  # Suite-level baseline (issue #177). Every task inherits this
+  # RunConfig; per-task `run_config_overrides` blocks could
+  # overlay a sparse subset, but none are needed here. The runner
+  # merges this baseline into a fresh RunConfig per task, writes
+  # it to a per-task tempfile, and invokes
+  # `stirrup harness --config <path>`. The retained artifact under
+  # `--output` includes the redacted form (every `secret://` ref
+  # rewritten to `secret://[REDACTED]`).
+  run_config {
+    provider {
+      type        = "openai-responses"
+      api_key_ref = "secret://OPENAI_KEY"
+    }
+
+    model_router {
+      type     = "static"
+      provider = "openai-responses"
+      model    = "gpt-5.4-nano"
+    }
+  }
 
   task "empty-stdout-run-command-completes" {
     description = "Drives the agent through at least one run_command whose stdout is empty (`true`), then a write_file that drops a sentinel. Under the buggy adapter, turn 2's request is rejected with HTTP 400 and `completed.txt` is never written. Under the fix, the sentinel is present with the literal text `ok`."
