@@ -266,7 +266,14 @@ func DoWithRetry(
 
 	logger := opts.Logger
 	if logger == nil {
-		logger = slog.Default()
+		// Wrap the process-wide slog default with a ScrubHandler so a
+		// direct embedder who does not set Logger still gets retry
+		// warnings redacted. The factory-constructed path sets Logger
+		// to a ScrubHandler-backed slog already, so this fallback only
+		// runs on integration tests, the deferred peer-adapter call
+		// sites, and bare embedder code — exactly where the scrub
+		// invariant would otherwise quietly break.
+		logger = slog.New(observability.NewScrubHandler(slog.Default().Handler()))
 	}
 	policy := opts.Policy
 	metrics := opts.Metrics

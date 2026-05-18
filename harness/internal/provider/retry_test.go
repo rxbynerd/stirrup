@@ -1235,20 +1235,42 @@ func TestDoWithRetry_ShouldRetry_FallsThroughOnNotConsumed(t *testing.T) {
 
 // --- Nil-logger default fallback ---
 
+// TestDoWithRetry_NilLoggerFallback drives a 429-then-200 exchange so
+// the nil-logger fallback path actually emits a `provider_retry` warn
+// record. The slog.Default() handler is replaced for the duration of
+// the test with a JSON handler writing to an in-memory buffer; the
+// assertion verifies the buffer (i) received at least one record,
+// confirming the fallback is wired, and (ii) does not contain the
+// raw scrubbable test sentinel — confirming the fallback wraps the
+// default handler in a ScrubHandler. Without the wrapper the sentinel
+// would land verbatim.
 func TestDoWithRetry_NilLoggerFallback(t *testing.T) {
+	var count int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n := atomic.AddInt32(&count, 1); n == 1 {
+			w.Header().Set("Retry-After-Ms", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	m, _ := newTestMetrics(t)
 
+	// Swap the process-global slog default for the duration of the
+	// test so we can inspect what reaches the fallback handler.
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	// Logger left zero so DoWithRetry's nil-fallback branch fires.
 	opts := RetryOptions{
 		Policy:       defaultTestPolicy(),
 		Metrics:      m,
 		ProviderType: "openai",
-		Model:        "gpt-test",
+		Model:        "gpt-test-sk-ant-test-cafebabe1234567890",
 	}
 
 	req := newPostReq(t, srv.URL, `{}`)
@@ -1260,6 +1282,20 @@ func TestDoWithRetry_NilLoggerFallback(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	}
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "provider_retry") {
+		t.Fatalf("nil-logger fallback emitted no provider_retry record:\n%s", logOutput)
+	}
+	// The sentinel is a known scrubbable Anthropic key prefix embedded
+	// in the Model field, which surfaces in the warn record. If the
+	// ScrubHandler wrapper is missing it lands raw — assert it does
+	// not.
+	if strings.Contains(logOutput, "sk-ant-test-cafebabe1234567890") {
+		t.Errorf("nil-logger fallback leaked scrubbable sentinel; ScrubHandler wrap may be missing:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "[REDACTED]") {
+		t.Errorf("nil-logger fallback should run sentinel through ScrubHandler, expected [REDACTED] marker:\n%s", logOutput)
 	}
 }
 
