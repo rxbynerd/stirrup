@@ -378,6 +378,14 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// rawBody is assigned inside the test server's handler closure
+			// and read by the assertions below. This is race-free because
+			// the channel-drain (`for range ch`) does not return until the
+			// adapter goroutine has finished consuming the HTTP response,
+			// and the response body cannot be fully delivered to the
+			// adapter until the handler has returned. The handler
+			// assignment therefore happens-before the assertion read
+			// without any explicit synchronisation primitive.
 			var rawBody []byte
 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
