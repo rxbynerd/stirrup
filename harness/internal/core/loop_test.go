@@ -962,6 +962,78 @@ func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
 	}
 }
 
+// TestStreamEventsToResult_PersistsThoughtSignature pins the middle
+// link of #194's round-trip: an adapter event carrying ThoughtSignature
+// must surface on the resulting ContentBlock. Three scenarios:
+//
+//   - A tool_call event takes its signature directly onto the
+//     resulting tool_use ContentBlock.
+//   - A text_delta carrying a signature lands on the assembled text
+//     ContentBlock.
+//   - When a text run is built from multiple text_deltas where only
+//     one carries a signature, the assembled block surfaces that
+//     signature regardless of which delta carried it (pinned: a
+//     later non-empty signature wins; later empty deltas do not
+//     clear it).
+func TestStreamEventsToResult_PersistsThoughtSignature(t *testing.T) {
+	const toolSig = "AY-tool-sig=="
+	const textSig = "AY-text-sig=="
+
+	ch := make(chan types.StreamEvent, 6)
+	// First text run: signature arrives on the second of three deltas;
+	// the trailing empty delta must not clear it.
+	ch <- types.StreamEvent{Type: "text_delta", Text: "Reading "}
+	ch <- types.StreamEvent{Type: "text_delta", Text: "the ", ThoughtSignature: textSig}
+	ch <- types.StreamEvent{Type: "text_delta", Text: "file."}
+	// Tool call carries its own signature; the flushed text block
+	// before it must retain textSig (not be clobbered with toolSig).
+	ch <- types.StreamEvent{Type: "tool_call", ID: "call_1", Name: "read_file", Input: map[string]any{"path": "x"}, ThoughtSignature: toolSig}
+	ch <- types.StreamEvent{Type: "message_complete", StopReason: "tool_use"}
+	close(ch)
+
+	result, err := streamEventsToResult(context.Background(), ch, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}), slog.Default())
+	if err != nil {
+		t.Fatalf("streamEventsToResult() error: %v", err)
+	}
+	if len(result.Blocks) != 2 {
+		t.Fatalf("expected 2 blocks (text + tool_use), got %d: %+v", len(result.Blocks), result.Blocks)
+	}
+	if result.Blocks[0].Type != "text" || result.Blocks[0].Text != "Reading the file." {
+		t.Errorf("blocks[0] mismatch: %+v", result.Blocks[0])
+	}
+	if result.Blocks[0].ThoughtSignature != textSig {
+		t.Errorf("blocks[0].ThoughtSignature = %q, want %q", result.Blocks[0].ThoughtSignature, textSig)
+	}
+	if result.Blocks[1].Type != "tool_use" || result.Blocks[1].ID != "call_1" {
+		t.Errorf("blocks[1] mismatch: %+v", result.Blocks[1])
+	}
+	if result.Blocks[1].ThoughtSignature != toolSig {
+		t.Errorf("blocks[1].ThoughtSignature = %q, want %q", result.Blocks[1].ThoughtSignature, toolSig)
+	}
+}
+
+// TestStreamEventsToResult_OmitsThoughtSignatureWhenAbsent confirms
+// the persistence path does not fabricate signatures: a stream that
+// emits no signature must produce ContentBlocks with the empty
+// default. The omitempty JSON tag then drops the field on the wire.
+func TestStreamEventsToResult_OmitsThoughtSignatureWhenAbsent(t *testing.T) {
+	ch := make(chan types.StreamEvent, 3)
+	ch <- types.StreamEvent{Type: "text_delta", Text: "Hello"}
+	ch <- types.StreamEvent{Type: "tool_call", ID: "c1", Name: "noop", Input: map[string]any{}}
+	ch <- types.StreamEvent{Type: "message_complete", StopReason: "tool_use"}
+	close(ch)
+
+	result, err := streamEventsToResult(context.Background(), ch, transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}), slog.Default())
+	if err != nil {
+		t.Fatalf("streamEventsToResult() error: %v", err)
+	}
+	for i, b := range result.Blocks {
+		if b.ThoughtSignature != "" {
+			t.Errorf("blocks[%d].ThoughtSignature = %q, want empty", i, b.ThoughtSignature)
+		}
+	}
+}
+
 func TestAgenticLoopClose_ClosesOwnedResources(t *testing.T) {
 	first := &closeTracker{}
 	second := &closeTracker{}

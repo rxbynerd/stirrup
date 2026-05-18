@@ -15,10 +15,26 @@ type Message struct {
 //
 // ThoughtSignature is an opaque, provider-specific blob the model emits
 // alongside a part to encode its hidden chain-of-thought. Today only the
-// Gemini 3.x adapter populates it (on text and tool_use blocks); the
+// Gemini 3.x adapter populates it (on text and tool_use blocks). The
 // harness preserves the blob unchanged across turns so the model can
 // resume its prior reasoning. Other providers ignore the field on
 // translation.
+//
+// Invariants intentionally preserved:
+//   - tool_result blocks never carry a signature. Signatures live on
+//     model-produced parts; the tool-response leg is operator-side.
+//   - The JSON tag uses snake_case here (`thought_signature`) to match
+//     the rest of ContentBlock's tag style; the corresponding field on
+//     StreamEvent uses camelCase (`thoughtSignature`) to match its
+//     tag style. The asymmetry is deliberate and stays internal:
+//     translation between the two struct shapes happens in
+//     core.streamEventsToResult, so the wire shapes never need to
+//     round-trip through both encodings.
+//   - The field is JSON-only on the trace path. The gRPC RunTrace
+//     proto representation does not embed ContentBlock today, so
+//     thought_signature never crosses the gRPC wire. A future
+//     refactor that embeds ContentBlock-equivalent into proto must
+//     preserve the field explicitly.
 type ContentBlock struct {
 	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result"
 	Text             string          `json:"text,omitempty"`

@@ -474,6 +474,16 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	// the signature once per part regardless of how many delta chunks
 	// build the part; carrying the latest seen value lets the assembled
 	// text block round-trip the signature on the next turn.
+	//
+	// Trade-off: if a single text run is built from two distinct text
+	// parts that each carry a different signature, the harness collapses
+	// them into one ContentBlock and the *earlier* signature is
+	// overwritten by the later one. Today Vertex emits a single text
+	// part per assistant turn, so the loss is theoretical; pinning the
+	// semantic here means a future change that splits the run is the
+	// caller's responsibility to surface — splitting runs without also
+	// preserving per-part signatures would silently regress
+	// chain-of-thought continuity.
 	var textSig string
 	inText := false
 
