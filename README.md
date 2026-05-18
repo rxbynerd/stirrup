@@ -27,8 +27,11 @@ Stirrup has two main modes of operation:
 ```sh
 just build # produces ./stirrup and ./stirrup-eval
 
-# simplest example
-ANTHROPIC_API_KEY=... ./stirrup harness --prompt "Fix the failing test in main_test.go"
+# simplest example — bare invocation lands in read-only `planning` mode by default
+ANTHROPIC_API_KEY=... ./stirrup harness --prompt "Outline a fix for the failing test in main_test.go"
+
+# editable run — opt in to writes and shell access with --mode execution
+ANTHROPIC_API_KEY=... ./stirrup harness --mode execution --prompt "Fix the failing test in main_test.go"
 
 # using example full RunConfig, see examples/runconfig/README.md for further details
 ./stirrup harness \

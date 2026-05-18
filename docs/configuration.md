@@ -52,7 +52,7 @@ the same flags grouped by concern.
 | Flag | Default | Notes |
 |---|---|---|
 | `--config <path>` | (none) | JSON `RunConfig`. |
-| `--mode`, `-m` | `execution` | One of `execution`, `planning`, `review`, `research`, `toil`. |
+| `--mode`, `-m` | `planning` | One of `execution`, `planning`, `review`, `research`, `toil`. `planning`, `review`, `research`, and `toil` are read-only (no writes, no shell); `execution` is the editable mode. The default is `planning` so a bare invocation has no write or shell capability — pass `--mode execution` to enable edits and shell. See [Read-only modes](#read-only-modes). |
 | `--name` | (none) | Human-readable session label, attached to logs/traces. Metadata only — not injected into the prompt. |
 | `--workspace`, `-w` | cwd | Workspace directory. |
 | `--max-turns` | `20` | Hard-capped at 100. |
@@ -201,6 +201,18 @@ invariant via `ValidateRunConfig`: the tool list must exclude
 `write_file`, `run_command`, and `edit_file`, and the permission
 policy must not be `allow-all`. The validator rejects any
 `RunConfig` that violates this before any component is constructed.
+
+`planning` is the CLI default. A bare `stirrup harness --prompt "..."`
+invocation therefore lands in a read-only posture with no write or
+shell capability and the `deny-side-effects` permission policy.
+Operators wanting the editable, shell-capable behaviour opt in
+explicitly with `--mode execution` (or by selecting one of the
+restrictive `permissionPolicy` types in [`safety-rings.md`](safety-rings.md)
+for finer-grained control). The read-only modes differ from each
+other only in prompt template: `planning` for "describe and reason
+before acting" first-touch use, `review` for change-review tasks,
+`research` for investigation across a codebase or the web, and
+`toil` for structured-briefing workflows.
 
 ## Limits and budgets
 
