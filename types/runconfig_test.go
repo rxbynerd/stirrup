@@ -4330,3 +4330,133 @@ func TestRedact_ResultSinkAttributes(t *testing.T) {
 		t.Error("Redact mutated original ResultSink.Attributes")
 	}
 }
+
+// TestValidateRunConfig_BedrockModelIDShape pins the fail-fast guard
+// added for #65. The CLI's default --model is an Anthropic-API alias
+// ("claude-sonnet-4-6") that Bedrock rejects only after IAM/SigV4
+// setup and a network round-trip; the validator catches the shape
+// before any provider call and points the operator at the
+// inference-profile path.
+func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
+	t.Run("valid_model_ids", func(t *testing.T) {
+		cases := []string{
+			"anthropic.claude-sonnet-4-6",
+			"eu.anthropic.claude-sonnet-4-6",
+			"global.anthropic.claude-sonnet-4-6",
+			"anthropic.claude-sonnet-4-5-20250929-v1:0",
+			"arn:aws:bedrock:eu-west-1:123456789012:inference-profile/eu.anthropic.claude-sonnet-4-6",
+		}
+		for _, model := range cases {
+			t.Run(model, func(t *testing.T) {
+				c := validConfig()
+				c.Provider = ProviderConfig{
+					Type:       "bedrock",
+					Region:     "us-east-1",
+					Credential: &CredentialConfig{Type: "aws-default"},
+				}
+				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: model}
+				if err := ValidateRunConfig(c); err != nil {
+					t.Fatalf("expected %q to be accepted on bedrock, got: %v", model, err)
+				}
+			})
+		}
+	})
+
+	t.Run("invalid_anthropic_alias_shapes", func(t *testing.T) {
+		cases := []string{
+			"claude-sonnet-4-6",
+			"claude-opus-4-1",
+			"gpt-4",
+			" ", // whitespace-only — never a valid bedrock id
+		}
+		for _, model := range cases {
+			t.Run(model, func(t *testing.T) {
+				c := validConfig()
+				c.Provider = ProviderConfig{
+					Type:       "bedrock",
+					Region:     "us-east-1",
+					Credential: &CredentialConfig{Type: "aws-default"},
+				}
+				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: model}
+				err := ValidateRunConfig(c)
+				if err == nil {
+					t.Fatalf("expected %q to be rejected on bedrock, got nil", model)
+				}
+				errStr := err.Error()
+				// The error names the bedrock provider type and the
+				// inference-profile remediation path. Two anchors so
+				// the wording can evolve without losing coverage of
+				// the actionable parts.
+				if !strings.Contains(errStr, "bedrock") {
+					t.Errorf("expected error to mention bedrock, got: %v", err)
+				}
+				if !strings.Contains(errStr, "inference-profile") &&
+					!strings.Contains(errStr, "inference profile") &&
+					!strings.Contains(errStr, "list-inference-profiles") {
+					t.Errorf("expected error to point at the inference-profile remediation path, got: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("empty_model_defers_to_required_field_handling", func(t *testing.T) {
+		// An empty Model on a bedrock provider must not trip the new
+		// shape check — the operator should see whatever required-
+		// field complaint the rest of the validator emits for the
+		// router type they chose. ModelRouter.Type="static" with an
+		// empty Model produces no error today; that's accepted and
+		// we are only asserting that the bedrock shape check does
+		// not synthesise a spurious one.
+		c := validConfig()
+		c.Provider = ProviderConfig{
+			Type:       "bedrock",
+			Region:     "us-east-1",
+			Credential: &CredentialConfig{Type: "aws-default"},
+		}
+		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: ""}
+		err := ValidateRunConfig(c)
+		if err != nil && strings.Contains(err.Error(), "Bedrock requires either") {
+			t.Fatalf("empty model should not trip the bedrock shape check, got: %v", err)
+		}
+	})
+
+	t.Run("anthropic_provider_with_alias_still_valid", func(t *testing.T) {
+		// Regression guard: the bedrock-scoped check must not bleed
+		// into the anthropic path. "claude-sonnet-4-6" is the CLI
+		// default and the canonical Anthropic-API alias.
+		c := validConfig()
+		c.Provider = ProviderConfig{Type: "anthropic"}
+		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("anthropic provider with alias should be accepted, got: %v", err)
+		}
+	})
+
+	t.Run("named_bedrock_provider_via_mode_models", func(t *testing.T) {
+		// The check resolves through Providers[name] entries too, so
+		// a per-mode override that points at a bedrock-typed named
+		// provider with an Anthropic-shaped alias is rejected.
+		c := validConfig()
+		c.Provider = ProviderConfig{Type: "anthropic"}
+		c.Providers = map[string]ProviderConfig{
+			"bdrk": {
+				Type:       "bedrock",
+				Region:     "us-east-1",
+				Credential: &CredentialConfig{Type: "aws-default"},
+			},
+		}
+		c.ModelRouter = ModelRouterConfig{
+			Type:       "per-mode",
+			Provider:   "anthropic",
+			Model:      "claude-sonnet-4-6",
+			ModeModels: map[string]string{"execution": "bdrk/claude-sonnet-4-6"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected per-mode bedrock override with anthropic alias to be rejected")
+		}
+		if !strings.Contains(err.Error(), "bedrock") {
+			t.Errorf("expected error to mention bedrock, got: %v", err)
+		}
+	})
+}

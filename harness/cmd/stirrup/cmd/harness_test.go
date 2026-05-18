@@ -111,6 +111,77 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation pins
+// the fail-fast guard added for #65. Running `stirrup harness
+// --provider bedrock` without overriding --model would otherwise send
+// the Anthropic-API alias "claude-sonnet-4-6" to Bedrock, which
+// rejects it with an opaque ValidationException only after IAM/SigV4
+// setup and a network round-trip. The validator catches the shape
+// at config-load time and points the operator at the inference-
+// profile path.
+//
+// The test asserts that ValidateRunConfig (not the provider) is the
+// thing that complains, so the failure mode is "no network call, with
+// an actionable error" — the explicit acceptance criterion in #65.
+func TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "bedrock",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY", // CLI default; ignored by bedrock auth
+		Model:         "claude-sonnet-4-6",          // CLI default
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+
+	verr := types.ValidateRunConfig(cfg)
+	if verr == nil {
+		t.Fatal("expected ValidateRunConfig to reject --provider bedrock with CLI-default --model")
+	}
+	errStr := verr.Error()
+	if !strings.Contains(errStr, "bedrock") {
+		t.Errorf("expected error to mention bedrock, got: %v", verr)
+	}
+	if !strings.Contains(errStr, "inference-profile") &&
+		!strings.Contains(errStr, "inference profile") &&
+		!strings.Contains(errStr, "list-inference-profiles") {
+		t.Errorf("expected error to point at the inference-profile remediation path, got: %v", verr)
+	}
+	if !strings.Contains(errStr, "claude-sonnet-4-6") {
+		t.Errorf("expected error to name the offending model id, got: %v", verr)
+	}
+}
+
+// TestBuildHarnessRunConfig_BedrockInferenceProfileValidates is the
+// positive complement: with a properly-shaped inference profile id,
+// the flag-only path produces a config that passes validation.
+func TestBuildHarnessRunConfig_BedrockInferenceProfileValidates(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "bedrock",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "eu.anthropic.claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig rejected eu.anthropic.claude-sonnet-4-6 on bedrock: %v", err)
+	}
+}
+
 // TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList verifies that
 // when no explicit Tools.BuiltIn list is supplied, read-only modes get
 // the documented default list rather than passing validation by accident.
