@@ -65,7 +65,7 @@ func run(args []string, stdout io.Writer) int {
 
 	switch args[0] {
 	case "--version", "-v", "version":
-		fmt.Fprintf(stdout, "stirrup-eval version %s\n", version.Full())
+		_, _ = fmt.Fprintf(stdout, "stirrup-eval version %s\n", version.Full())
 		return 0
 	case "run":
 		cmdRun(args[1:])
@@ -782,20 +782,26 @@ func buildLabVsProductionReport(experimentID string, prodMetrics types.TraceMetr
 // injected so tests can supply io.Discard rather than mutating
 // os.Stderr globally; callers in cmdCompareToProduction pass os.Stderr.
 func printComparisonSummary(w io.Writer, report types.LabVsProductionReport) {
-	fmt.Fprintf(w, "Experiment: %s\n", report.ExperimentID)
-	fmt.Fprintf(w, "Production sample size: %d\n\n", report.Production.SampleSize)
+	// Writes target a terminal (os.Stderr in production, io.Discard in
+	// tests); a partial-write error here is unrecoverable and not worth
+	// propagating to the caller.
+	p := func(format string, args ...any) {
+		_, _ = fmt.Fprintf(w, format, args...)
+	}
+	p("Experiment: %s\n", report.ExperimentID)
+	p("Production sample size: %d\n\n", report.Production.SampleSize)
 
 	for _, v := range report.Variants {
-		fmt.Fprintf(w, "Variant: %s\n", v.Name)
-		fmt.Fprintf(w, "%-16s %12s %12s %12s\n", "Metric", "Production", "Lab", "Delta")
-		fmt.Fprintf(w, "%-16s %12s %12s %12s\n", "------", "----------", "---", "-----")
+		p("Variant: %s\n", v.Name)
+		p("%-16s %12s %12s %12s\n", "Metric", "Production", "Lab", "Delta")
+		p("%-16s %12s %12s %12s\n", "------", "----------", "---", "-----")
 
 		prodPassPct := report.Production.PassRate * 100
 		labPassPct := v.Results.PassRate * 100
-		fmt.Fprintf(w, "%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
+		p("%-16s %11.1f%% %11.1f%% %+11.1fpp\n",
 			"Pass rate", prodPassPct, labPassPct, labPassPct-prodPassPct)
 
-		fmt.Fprintf(w, "%-16s %12.1f %12d %+12.1f\n",
+		p("%-16s %12.1f %12d %+12.1f\n",
 			"Mean turns",
 			report.Production.MeanTurns,
 			v.Results.MedianTurns,

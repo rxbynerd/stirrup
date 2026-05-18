@@ -712,7 +712,9 @@ func TestApplyOverrides_SessionNameExplicit(t *testing.T) {
 	if err := cmd.Flags().Set("name", "from-flag"); err != nil {
 		t.Fatalf("set name: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.SessionName != "from-flag" {
 		t.Errorf("explicit --name should win, got %q", cfg.SessionName)
@@ -728,7 +730,9 @@ func TestApplyOverrides_SessionNameFilePreserved(t *testing.T) {
 	cfg := baseFileConfig()
 	cfg.SessionName = "from-file"
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.SessionName != "from-file" {
 		t.Errorf("SessionName from file should survive, got %q", cfg.SessionName)
@@ -1172,7 +1176,9 @@ func TestApplyOverrides_SafetyRingFlagsOverride(t *testing.T) {
 	must("permission-policy-file", "/tmp/p.cedar")
 	must("code-scanner", "patterns")
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Executor.Runtime != "runsc" {
 		t.Errorf("Executor.Runtime override failed: %q", cfg.Executor.Runtime)
@@ -1203,7 +1209,9 @@ func TestApplyOverrides_PermissionPolicyFileImpliesPolicyEngine(t *testing.T) {
 	if err := cmd.Flags().Set("permission-policy-file", "/tmp/p.cedar"); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.PermissionPolicy.Type != "policy-engine" {
 		t.Errorf("expected type=policy-engine when file omitted type, got %q", cfg.PermissionPolicy.Type)
@@ -1226,7 +1234,9 @@ func TestApplyOverrides_DefaultSafetyRingFlagsDoNotOverride(t *testing.T) {
 	}
 	cfg.CodeScanner = &types.CodeScannerConfig{Type: "semgrep"}
 
-	applyOverrides(cmd, cfg, nil)
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
 
 	if cfg.Executor.Runtime != "kata" {
 		t.Errorf("Runtime: file value should survive, got %q", cfg.Executor.Runtime)
