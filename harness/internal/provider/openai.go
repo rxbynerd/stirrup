@@ -382,10 +382,12 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	}
 
 	// Record HTTP-level metadata on the span from context when OTel is enabled.
-	// The rate_limited event fires only on the terminal attempt — DoWithRetry
-	// records provider_retry_attempt for intermediate retries, but the
-	// user-visible "request failed with 429" signal remains here so existing
-	// dashboards and alerts that key off rate_limited continue to function.
+	// The rate_limited event fires when DoWithRetry returns a terminal 429
+	// response (retries exhausted, budget exhausted, or retries disabled via
+	// MaxAttempts=1). DoWithRetry records provider_retry_attempt for any
+	// intermediate retries; the user-visible "request failed with 429" signal
+	// remains here so existing dashboards and alerts that key off rate_limited
+	// continue to function.
 	if o.Tracer != nil {
 		span := oteltrace.SpanFromContext(ctx)
 		span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))

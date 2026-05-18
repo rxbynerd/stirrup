@@ -101,6 +101,10 @@ identically to passing no retry block at all. CLI flags apply only
 to the default provider — per-named-provider retry policy (under
 `providers.<name>.retry`) requires `--config`.
 
+The wall-clock budget is bounded by the run's `--timeout`; setting
+`--provider-retry-wall-clock` higher than `--timeout` is valid but
+the effective ceiling becomes the remaining run timeout.
+
 Currently honoured only by the `openai-compatible` adapter; the
 `anthropic`, `bedrock`, `gemini`, and `openai-responses` adapters
 fall through unconditionally pending their own wire-ups (tracked in
