@@ -1332,8 +1332,11 @@ func DefaultReadOnlyBuiltInTools() []string {
 // list exists purely so RunConfig validation can reject impossible
 // combinations before the harness boots.
 var mutatingTools = map[string]bool{
-	"write_file":  true,
-	"run_command": true,
+	"write_file":     true,
+	"run_command":    true,
+	"edit_file":      true,
+	"search_replace": true,
+	"apply_diff":     true,
 }
 
 // ModePreset is a named set of RunConfig overrides.
@@ -1415,7 +1418,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	if readOnlyModes[config.Mode] {
 		if len(config.Tools.BuiltIn) == 0 {
 			errs = append(errs, fmt.Sprintf(
-				"read-only mode %q requires an explicit tools.builtIn list that excludes write tools (write_file, run_command)",
+				"read-only mode %q requires an explicit tools.builtIn list that excludes write tools (write_file, run_command, edit_file, search_replace, apply_diff)",
 				config.Mode))
 		} else {
 			for _, tool := range config.Tools.BuiltIn {
@@ -1895,6 +1898,14 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 	// resolves to a gemini-typed entry, OR when the top-level
 	// Provider.Type is "gemini" and ModelRouter.Provider is unset.
 	validateGeminiModelName(config, errs)
+
+	// Per-provider model-id validation for Bedrock. The Anthropic-API
+	// alias shape ("claude-sonnet-4-6") is structurally invalid against
+	// Bedrock but the failure only surfaces after IAM/SigV4 setup and a
+	// network round-trip. Reject the shape here with an actionable
+	// pointer to the inference-profile path so the operator never sees
+	// the opaque ValidationException from AWS.
+	validateBedrockModelID(config, errs)
 
 	checkProviderRef := func(path, name string) {
 		if name == "" {
@@ -2528,6 +2539,86 @@ func validateGeminiModelName(config *RunConfig, errs *[]string) {
 			continue
 		}
 		if providerIsGemini(providerName) {
+			checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), model)
+		}
+	}
+}
+
+// validateBedrockModelID rejects model identifiers that cannot be the
+// thing a Bedrock endpoint expects. Bedrock model ids fall into two
+// shapes: a dotted form like "anthropic.<model>" or
+// "<region>.anthropic.<model>" (inference profile), or a full ARN. The
+// CLI's flag-only default is "claude-sonnet-4-6" — the Anthropic API
+// alias — which Bedrock rejects with an opaque ValidationException only
+// after IAM/SigV4 setup and a network round-trip (see #65). We have
+// enough information at config-load time to fail closed with a message
+// that names the inference-profile shape and points the operator at
+// `aws bedrock list-inference-profiles`.
+//
+// The check trips whenever the resolved router provider is bedrock,
+// mirroring the resolution rules in validateGeminiModelName: explicit
+// Providers[name] entries, the "bedrock" type alias, ModeModels
+// "provider/model" overrides, and the implicit-default case where
+// ModelRouter.Provider is empty and Provider.Type == "bedrock".
+//
+// The shape test is deliberately permissive in the "looks valid"
+// direction: any identifier containing "." or starting with "arn:" is
+// accepted. We do not enumerate the set of valid Bedrock model ids
+// here — AWS adds new model and inference-profile ids continuously,
+// and a closed list would become a maintenance burden that produces
+// false negatives. The only thing we want to catch is the obvious
+// Anthropic-API alias shape (no separator, no ARN prefix) that has
+// already cost operators a wall-clock-second on-ramp failure.
+func validateBedrockModelID(config *RunConfig, errs *[]string) {
+	providerIsBedrock := func(name string) bool {
+		if name == "" {
+			return config.Provider.Type == "bedrock"
+		}
+		if name == "bedrock" {
+			return true
+		}
+		if p, ok := config.Providers[name]; ok {
+			return p.Type == "bedrock"
+		}
+		return false
+	}
+
+	checkModel := func(label, model string) {
+		// Empty string is handled by the router's own required-field
+		// validation (or simply not reaching a provider call for a
+		// static router that never sees a turn); skip it here so the
+		// operator gets the focused "required" error rather than a
+		// shape complaint about a value they did not set. Whitespace-
+		// only strings are not "empty" in that sense and trip the
+		// check below — they are never a valid Bedrock id and the
+		// operator almost certainly meant to type something else.
+		if model == "" {
+			return
+		}
+		if strings.TrimSpace(model) != "" && (strings.Contains(model, ".") || strings.HasPrefix(model, "arn:")) {
+			return
+		}
+		*errs = append(*errs, fmt.Sprintf(
+			"%s %q is invalid for provider type %q; Bedrock requires either a model id like "+
+				`"anthropic.<model>" or an inference profile id like "<region>.anthropic.<model>" `+
+				`(e.g. "eu.anthropic.claude-sonnet-4-6"). `+
+				`Use "aws bedrock list-inference-profiles" to enumerate profiles available in your region.`,
+			label, model, "bedrock"))
+	}
+
+	if providerIsBedrock(config.ModelRouter.Provider) {
+		checkModel("modelRouter.model", config.ModelRouter.Model)
+	}
+
+	for mode, spec := range config.ModelRouter.ModeModels {
+		providerName, model, ok := strings.Cut(spec, "/")
+		if !ok {
+			if providerIsBedrock(config.ModelRouter.Provider) {
+				checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), spec)
+			}
+			continue
+		}
+		if providerIsBedrock(providerName) {
 			checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), model)
 		}
 	}

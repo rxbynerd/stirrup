@@ -129,17 +129,26 @@ the `TraceEmitter` records spans and metrics throughout.
 ## Modes
 
 Five run modes ship as partial `RunConfig` presets that select
-mode-appropriate tools, permissions, and prompt templates:
+mode-appropriate tools, permissions, and prompt templates. One is
+editable (`execution`); the other four are read-only, structurally
+enforced by `ValidateRunConfig` to exclude `write_file`,
+`edit_file`, and `run_command`.
 
 | Mode | Tools | Default permission | Output shape |
 |---|---|---|---|
 | `execution` | read, write, shell, search, web fetch, sub-agent | `allow-all` | Code changes |
-| `planning` | read-only | `deny-side-effects` | Structured plan |
+| `planning` (CLI default) | read-only | `deny-side-effects` | Structured plan |
 | `review` | read-only | `deny-side-effects` | Structured review |
 | `research` | read-only + web fetch | `deny-side-effects` | Research brief |
 | `toil` | read-only + web fetch | `deny-side-effects` | Structured briefing |
 
-Modes are not special — they are saved configurations. Any field can
+`planning` is the CLI default so a bare `stirrup harness --prompt
+"..."` invocation has no write or shell capability and passes Rule
+of Two (Ring 4) without operator-supplied overrides. Operators who
+need editing or shell access opt in explicitly via `--mode
+execution`; finer-grained tool and permission selection is
+available through `--config` or the individual CLI flags. Modes
+are not special — they are saved configurations, and any field can
 be overridden per-task via `RunConfig`.
 
 ## Provider adapters

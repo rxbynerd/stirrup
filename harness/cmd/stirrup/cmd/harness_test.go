@@ -79,6 +79,71 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 	}
 }
 
+// TestHarnessCmd_DefaultModeIsPlanning pins the CLI-surface default for
+// --mode after #74: a bare `stirrup harness` invocation lands in the
+// read-only `planning` mode, not the editable `execution` mode, so the
+// first-touch posture is safe by default and operators must explicitly
+// opt in to write/shell capabilities via --mode execution. The pin is
+// against the flag registration on harnessCmd itself rather than the
+// helper command, so a regression that flips the default in only one
+// of the two places fails this test.
+func TestHarnessCmd_DefaultModeIsPlanning(t *testing.T) {
+	flag := harnessCmd.Flags().Lookup("mode")
+	if flag == nil {
+		t.Fatal("--mode flag is not registered on harnessCmd")
+	}
+	if flag.DefValue != "planning" {
+		t.Errorf("default --mode = %q, want %q (safe-by-default per #74)", flag.DefValue, "planning")
+	}
+}
+
+// TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning proves the
+// safe-by-default property end-to-end: a flag-only invocation with only
+// the documented CLI defaults (no --mode override) produces a RunConfig
+// that has Mode == "planning" and passes ValidateRunConfig — including
+// the read-only-mode invariants (deny-side-effects policy, non-empty
+// Tools.BuiltIn that excludes write_file/edit_file/run_command).
+//
+// This pins acceptance criterion (a) from #74: "Validate cleanly
+// (already true after #73)" — but specifically through the new default
+// rather than relying on a caller passing --mode planning explicitly.
+func TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning(t *testing.T) {
+	defaultMode := harnessCmd.Flags().Lookup("mode").DefValue
+
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          defaultMode,
+		Prompt:        "test prompt",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if cfg.Mode != "planning" {
+		t.Errorf("bare invocation should land in planning mode, got %q", cfg.Mode)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("bare invocation must validate cleanly: %v", err)
+	}
+	if cfg.PermissionPolicy.Type != "deny-side-effects" {
+		t.Errorf("planning mode should default to deny-side-effects, got %q", cfg.PermissionPolicy.Type)
+	}
+	if len(cfg.Tools.BuiltIn) == 0 {
+		t.Fatal("planning mode should populate a non-empty Tools.BuiltIn list")
+	}
+	for _, tool := range cfg.Tools.BuiltIn {
+		if tool == "write_file" || tool == "edit_file" || tool == "run_command" {
+			t.Errorf("planning mode must not enable write tool %q in the default list", tool)
+		}
+	}
+}
+
 // TestBuildHarnessRunConfig_OpenAIResponsesProvider verifies that the
 // openai-responses provider type is accepted by both the CLI option-to-
 // RunConfig path and ValidateRunConfig. Before this case existed, picking
@@ -108,6 +173,77 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	}
 	if err := types.ValidateRunConfig(cfg); err != nil {
 		t.Fatalf("ValidateRunConfig rejected openai-responses: %v", err)
+	}
+}
+
+// TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation pins
+// the fail-fast guard added for #65. Running `stirrup harness
+// --provider bedrock` without overriding --model would otherwise send
+// the Anthropic-API alias "claude-sonnet-4-6" to Bedrock, which
+// rejects it with an opaque ValidationException only after IAM/SigV4
+// setup and a network round-trip. The validator catches the shape
+// at config-load time and points the operator at the inference-
+// profile path.
+//
+// The test asserts that ValidateRunConfig (not the provider) is the
+// thing that complains, so the failure mode is "no network call, with
+// an actionable error" — the explicit acceptance criterion in #65.
+func TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "bedrock",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY", // CLI default; ignored by bedrock auth
+		Model:         "claude-sonnet-4-6",          // CLI default
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+
+	verr := types.ValidateRunConfig(cfg)
+	if verr == nil {
+		t.Fatal("expected ValidateRunConfig to reject --provider bedrock with CLI-default --model")
+	}
+	errStr := verr.Error()
+	if !strings.Contains(errStr, "bedrock") {
+		t.Errorf("expected error to mention bedrock, got: %v", verr)
+	}
+	if !strings.Contains(errStr, "inference-profile") &&
+		!strings.Contains(errStr, "inference profile") &&
+		!strings.Contains(errStr, "list-inference-profiles") {
+		t.Errorf("expected error to point at the inference-profile remediation path, got: %v", verr)
+	}
+	if !strings.Contains(errStr, "claude-sonnet-4-6") {
+		t.Errorf("expected error to name the offending model id, got: %v", verr)
+	}
+}
+
+// TestBuildHarnessRunConfig_BedrockInferenceProfileValidates is the
+// positive complement: with a properly-shaped inference profile id,
+// the flag-only path produces a config that passes validation.
+func TestBuildHarnessRunConfig_BedrockInferenceProfileValidates(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "bedrock",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "eu.anthropic.claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig rejected eu.anthropic.claude-sonnet-4-6 on bedrock: %v", err)
 	}
 }
 
@@ -442,7 +578,7 @@ func newTestHarnessCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "harness"}
 	f := cmd.Flags()
 	f.String("config", "", "")
-	f.StringP("mode", "m", "execution", "")
+	f.StringP("mode", "m", "planning", "")
 	f.String("model", "claude-sonnet-4-6", "")
 	f.String("provider", "anthropic", "")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "")
