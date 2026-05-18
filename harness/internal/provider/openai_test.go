@@ -1097,19 +1097,39 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	tracer := tp.Tracer("test")
 
+	// Metrics reader exercises the recordLatency-on-terminal-429 invariant
+	// (issue #197 remediation N-2): without a non-nil Metrics, the histogram
+	// branch executes as a no-op, leaving the "terminal error always records
+	// latency" invariant verified only for 401 (TestOpenAIAdapter_RecordsLatencyOnHTTPError).
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, testRetryPolicy())
 	adapter.Tracer = tracer
+	adapter.Metrics = metrics
 
 	ctx, span := tracer.Start(context.Background(), "test")
 
-	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	_, err = adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
 	span.End()
 	if err == nil {
 		t.Fatal("expected terminal error after retry exhaustion, got nil")
 	}
-	wantMsg := "openai API returned status 429: still rate limited"
-	if !strings.Contains(err.Error(), wantMsg) {
-		t.Errorf("error = %q, want substring %q", err.Error(), wantMsg)
+	// Pin the full prefix so log scrapers / orchestrators that pattern-match
+	// on the error string break loudly if the wrap format changes (issue #197
+	// remediation N-1). strings.Contains hides format drift.
+	//
+	// On the exhausted-MaxAttempts path the helper returns (lastResp, nil),
+	// so the adapter formats from resp.StatusCode + errResp.Error.Message
+	// rather than wrapping a transport error — no "execute request: " prefix.
+	wantPrefix := "openai API returned status 429: still rate limited"
+	if !strings.HasPrefix(err.Error(), wantPrefix) {
+		t.Errorf("error = %q, want HasPrefix %q", err.Error(), wantPrefix)
 	}
 	if got, want := calls.Load(), int32(2); got != want {
 		t.Errorf("server received %d requests, want %d (MaxAttempts=2)", got, want)
@@ -1137,5 +1157,130 @@ func TestOpenAIAdapter_429ExhaustedSurfacesTerminalError(t *testing.T) {
 	}
 	if rateLimited != 1 {
 		t.Errorf("rate_limited events = %d, want 1 on terminal 429", rateLimited)
+	}
+	// N-2: a terminal 429 with non-nil Metrics must still record a
+	// provider_latency observation.
+	if got := providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"); got < 1 {
+		t.Errorf("provider_latency count = %d, want >= 1 (terminal 429 must still record latency)", got)
+	}
+}
+
+// TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError covers the
+// `retryOutcomeBudgetExhausted` branch in DoWithRetry. The previous
+// test exhausts via MaxAttempts; this one exhausts via WallClockBudget
+// — the WallClockBudget=5ms is smaller than the first retry's InitialDelay,
+// so the budget check fires before the second attempt is even made. The
+// rate_limited span event still fires on the resulting terminal 429.
+func TestOpenAIAdapter_429BudgetExhaustedSurfacesTerminalError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"budget should run out"}}`)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	// Allow up to 10 attempts but cap the wall-clock at 5ms so the budget
+	// is the binding constraint. InitialDelay=50ms guarantees the first
+	// retry's sleep would already exceed the budget.
+	budgetPolicy := RetryPolicy{
+		MaxAttempts:     10,
+		InitialDelay:    50 * time.Millisecond,
+		MaxDelay:        100 * time.Millisecond,
+		WallClockBudget: 5 * time.Millisecond,
+	}
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, budgetPolicy)
+	adapter.Tracer = tracer
+
+	ctx, span := tracer.Start(context.Background(), "test")
+	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	span.End()
+	if err == nil {
+		t.Fatal("expected terminal error after budget exhaustion, got nil")
+	}
+	if !strings.Contains(err.Error(), "openai API returned status 429") {
+		t.Errorf("error = %q, want substring 'openai API returned status 429'", err.Error())
+	}
+
+	// Budget exhaustion before any retry sleep means only the first
+	// attempt reaches the server.
+	if got := calls.Load(); got != 1 {
+		t.Errorf("server received %d requests, want 1 (budget should cut before retry)", got)
+	}
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var rateLimited int
+	for _, s := range stubs {
+		for _, ev := range s.Events {
+			if ev.Name == "rate_limited" {
+				rateLimited++
+			}
+		}
+	}
+	if rateLimited != 1 {
+		t.Errorf("rate_limited events = %d, want 1 on terminal 429 from budget exhaustion", rateLimited)
+	}
+}
+
+// TestOpenAIAdapter_429TerminalWithTracer_SetsHTTPStatusCode exercises the
+// `o.Tracer != nil` + terminal non-429 non-2xx response path. The previous
+// 401-only test (TestOpenAIAdapter_RecordsLatencyOnHTTPError) ran without
+// a tracer; this one asserts the span attribute side of the same code
+// path and confirms `rate_limited` does NOT fire for a non-429 terminal.
+func TestOpenAIAdapter_429TerminalWithTracer_SetsHTTPStatusCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"bad key"}}`)
+	}))
+	defer srv.Close()
+
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	tracer := tp.Tracer("test")
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("bad-key"), srv.URL, OpenAIAuthConfig{}, testRetryPolicy())
+	adapter.Tracer = tracer
+
+	ctx, span := tracer.Start(context.Background(), "test")
+	_, err := adapter.Stream(ctx, types.StreamParams{Model: "gpt-4o", MaxTokens: 1024})
+	span.End()
+	if err == nil {
+		t.Fatal("expected error for 401")
+	}
+
+	stubs := exporter.GetSpans()
+	if len(stubs) == 0 {
+		t.Fatal("expected at least one finished span")
+	}
+	var foundStatus, foundRateLimited bool
+	for _, s := range stubs {
+		for _, kv := range s.Attributes {
+			if string(kv.Key) == "http.status_code" {
+				if kv.Value.AsInt64() == int64(http.StatusUnauthorized) {
+					foundStatus = true
+				} else {
+					t.Errorf("http.status_code = %d, want %d", kv.Value.AsInt64(), http.StatusUnauthorized)
+				}
+			}
+		}
+		for _, ev := range s.Events {
+			if ev.Name == "rate_limited" {
+				foundRateLimited = true
+			}
+		}
+	}
+	if !foundStatus {
+		t.Error("expected http.status_code=401 attribute on the span")
+	}
+	if foundRateLimited {
+		t.Error("rate_limited event must NOT fire on a non-429 terminal status")
 	}
 }
