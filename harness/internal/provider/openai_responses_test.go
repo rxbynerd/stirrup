@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -728,9 +729,7 @@ func TestOpenAIResponsesAdapter_TemperatureWireShape(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var rawBody []byte
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				buf := make([]byte, 1<<20)
-				n, _ := r.Body.Read(buf)
-				rawBody = buf[:n]
+				rawBody, _ = io.ReadAll(r.Body)
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
 				_, _ = fmt.Fprint(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`))
