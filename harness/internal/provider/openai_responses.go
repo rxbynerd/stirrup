@@ -119,25 +119,137 @@ type responsesRequest struct {
 // responsesInput is one item in the Responses API input array. The Type
 // field selects which other fields are populated; this matches the
 // discriminated-union shape OpenAI publishes for typed input items.
+//
+// The struct keeps an ergonomic flat shape so construction-site code
+// (translateMessagesResponses and friends) can build items without
+// branching on type. MarshalJSON below switches on Type and emits only
+// the keys valid for that variant, via per-type wire structs. This is
+// the structural fix for #199: stricter validators (Azure OpenAI's
+// Responses endpoint) reject "output":"" on message / function_call
+// items even though upstream OpenAI tolerates it.
+//
+// The per-variant wire shapes preserve the #172 invariant: the
+// function_call_output wire struct's Output field has no omitempty, so
+// the "output" key is always present on function_call_output items
+// even when the value is the empty string.
 type responsesInput struct {
-	Type    string                  `json:"type"`              // "message" | "function_call" | "function_call_output"
-	Role    string                  `json:"role,omitempty"`    // for "message"
-	Content []responsesContentBlock `json:"content,omitempty"` // for "message"
-	Name    string                  `json:"name,omitempty"`    // for "function_call"
-	// CallID retains omitempty because the harness's construction path
-	// guarantees a non-empty ToolUseID on every tool_result block (so the
-	// key is always populated in practice). The Responses API treats
-	// call_id as required on function_call_output items, structurally
-	// parallel to the output field below — a future contributor relaxing
-	// the construction-side invariant would resurface #172 through this
-	// field. Splitting responsesInput into per-type structs is the long-term
-	// remedy; for now, the construction-path invariant carries it.
-	CallID    string `json:"call_id,omitempty"`   // for "function_call" / "function_call_output"
-	Arguments string `json:"arguments,omitempty"` // for "function_call" — JSON string
-	// Output has no omitempty: the Responses API rejects function_call_output
-	// items missing the "output" key with HTTP 400 (Missing required parameter:
-	// 'input[N].output'), even when the value is the empty string. See #172.
-	Output string `json:"output"` // for "function_call_output" — required even when empty
+	Type      string                  `json:"-"` // "message" | "function_call" | "function_call_output"
+	Role      string                  `json:"-"` // for "message"
+	Content   []responsesContentBlock `json:"-"` // for "message"
+	Name      string                  `json:"-"` // for "function_call"
+	CallID    string                  `json:"-"` // for "function_call" / "function_call_output"
+	Arguments string                  `json:"-"` // for "function_call" — JSON string
+	Output    string                  `json:"-"` // for "function_call_output" — required even when empty
+}
+
+// MarshalJSON emits only the wire fields valid for the input item's Type
+// discriminant. Each Type maps to a dedicated wire struct so a future
+// edit cannot accidentally leak a field across variants — the original
+// shared-struct shape silently emitted "output":"" on every variant,
+// which #199 surfaced as an Azure OpenAI HTTP 400.
+//
+// function_call_output is the variant that requires the "output" key
+// even when its value is the empty string (see #172). Its wire struct's
+// Output field therefore has no omitempty.
+func (r responsesInput) MarshalJSON() ([]byte, error) {
+	switch r.Type {
+	case "message":
+		return json.Marshal(responsesMessageInputWire{
+			Type:    "message",
+			Role:    r.Role,
+			Content: r.Content,
+		})
+	case "function_call":
+		return json.Marshal(responsesFunctionCallInputWire{
+			Type:      "function_call",
+			CallID:    r.CallID,
+			Name:      r.Name,
+			Arguments: r.Arguments,
+		})
+	case "function_call_output":
+		return json.Marshal(responsesFunctionCallOutputInputWire{
+			Type:   "function_call_output",
+			CallID: r.CallID,
+			Output: r.Output,
+		})
+	default:
+		// Unknown variants would previously have been serialised as a
+		// pile of empty-string keys. Surfacing the type explicitly makes
+		// the failure mode debuggable rather than a silent wire-format
+		// mismatch.
+		return nil, fmt.Errorf("responsesInput: unknown type %q", r.Type)
+	}
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON: it accepts any of the
+// per-type wire shapes and populates the ergonomic flat struct so test
+// roundtrips and any future caller-side parsing continues to work. The
+// adapter itself never decodes request bodies — this exists for symmetry
+// and to keep tests that send-then-receive a request able to inspect the
+// shape through the same struct that built it.
+func (r *responsesInput) UnmarshalJSON(data []byte) error {
+	var head struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return err
+	}
+	r.Type = head.Type
+	switch head.Type {
+	case "message":
+		var w responsesMessageInputWire
+		if err := json.Unmarshal(data, &w); err != nil {
+			return err
+		}
+		r.Role = w.Role
+		r.Content = w.Content
+	case "function_call":
+		var w responsesFunctionCallInputWire
+		if err := json.Unmarshal(data, &w); err != nil {
+			return err
+		}
+		r.CallID = w.CallID
+		r.Name = w.Name
+		r.Arguments = w.Arguments
+	case "function_call_output":
+		var w responsesFunctionCallOutputInputWire
+		if err := json.Unmarshal(data, &w); err != nil {
+			return err
+		}
+		r.CallID = w.CallID
+		r.Output = w.Output
+	default:
+		return fmt.Errorf("responsesInput: unknown type %q", head.Type)
+	}
+	return nil
+}
+
+// responsesMessageInputWire is the wire shape for type=="message".
+// Only type/role/content are valid for this variant.
+type responsesMessageInputWire struct {
+	Type    string                  `json:"type"`
+	Role    string                  `json:"role,omitempty"`
+	Content []responsesContentBlock `json:"content,omitempty"`
+}
+
+// responsesFunctionCallInputWire is the wire shape for type=="function_call".
+// Only type/call_id/name/arguments are valid for this variant.
+type responsesFunctionCallInputWire struct {
+	Type      string `json:"type"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// responsesFunctionCallOutputInputWire is the wire shape for
+// type=="function_call_output". Output deliberately lacks omitempty: the
+// Responses API rejects function_call_output items missing the "output"
+// key with HTTP 400 (Missing required parameter: 'input[N].output'),
+// even when the value is the empty string. See #172.
+type responsesFunctionCallOutputInputWire struct {
+	Type   string `json:"type"`
+	CallID string `json:"call_id,omitempty"`
+	Output string `json:"output"`
 }
 
 // responsesContentBlock is one part inside a message item.
@@ -145,9 +257,12 @@ type responsesInput struct {
 // assistant messages — the asymmetry is part of their wire format.
 //
 // Text deliberately lacks omitempty: the Responses API requires the "text"
-// key on input_text / output_text content parts, even when the value is the
-// empty string. Structurally parallel to responsesInput.Output — see #172
-// for the analogous HTTP 400 that the missing-key surface produces.
+// key on input_text / output_text content parts, even when the value is
+// the empty string. Both content-block variants today carry the same set
+// of fields (type, text), so a single struct expresses the wire shape
+// without the cross-variant leakage that motivated splitting
+// responsesInput. If a future variant introduces non-shared fields, this
+// struct should be split along the same lines.
 type responsesContentBlock struct {
 	Type string `json:"type"` // "input_text" | "output_text"
 	Text string `json:"text"`

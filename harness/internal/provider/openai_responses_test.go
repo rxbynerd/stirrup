@@ -1128,6 +1128,126 @@ func TestTranslateMessagesResponses_AssistantToolUseEmptyInput(t *testing.T) {
 	}
 }
 
+// TestResponsesInputMarshal_MessageOmitsOutput is the gh-199 wire-shape
+// regression: the original shared-struct shape emitted "output":"" on
+// every input item, including plain "message" items. Azure OpenAI's
+// stricter validator rejects the spurious key with HTTP 400 ("Unknown
+// parameter: 'input[0].output'"). The per-type marshaller must emit
+// only the keys valid for the message variant.
+func TestResponsesInputMarshal_MessageOmitsOutput(t *testing.T) {
+	item := responsesInput{
+		Type: "message",
+		Role: "user",
+		Content: []responsesContentBlock{
+			{Type: "input_text", Text: "hello"},
+		},
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte(`"output"`)) {
+		t.Errorf("message item must not emit 'output' key (gh-199): %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"call_id"`)) {
+		t.Errorf("message item must not emit 'call_id' key: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"name"`)) {
+		t.Errorf("message item must not emit 'name' key: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"arguments"`)) {
+		t.Errorf("message item must not emit 'arguments' key: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"type":"message"`)) {
+		t.Errorf("message item must emit type=message: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"role":"user"`)) {
+		t.Errorf("message item must emit role: %s", raw)
+	}
+}
+
+// TestResponsesInputMarshal_FunctionCallOmitsOutput pins the gh-199 fix
+// on the function_call variant: only type/call_id/name/arguments are
+// valid, so the spurious "output" key (and "role"/"content") must not
+// leak across the discriminant.
+func TestResponsesInputMarshal_FunctionCallOmitsOutput(t *testing.T) {
+	item := responsesInput{
+		Type:      "function_call",
+		CallID:    "call_abc",
+		Name:      "read_file",
+		Arguments: `{"path":"main.go"}`,
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte(`"output"`)) {
+		t.Errorf("function_call item must not emit 'output' key (gh-199): %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"role"`)) {
+		t.Errorf("function_call item must not emit 'role' key: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"content"`)) {
+		t.Errorf("function_call item must not emit 'content' key: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"type":"function_call"`)) {
+		t.Errorf("function_call item must emit type=function_call: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"call_id":"call_abc"`)) {
+		t.Errorf("function_call item must emit call_id: %s", raw)
+	}
+}
+
+// TestResponsesInputMarshal_FunctionCallOutputKeepsEmptyOutput preserves
+// the #172 invariant under the per-type marshaller: function_call_output
+// items must emit "output":"" even when the value is the empty string,
+// otherwise the Responses API rejects the request with HTTP 400
+// ("Missing required parameter: 'input[N].output'").
+func TestResponsesInputMarshal_FunctionCallOutputKeepsEmptyOutput(t *testing.T) {
+	item := responsesInput{
+		Type:   "function_call_output",
+		CallID: "call_1",
+		Output: "",
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"output":""`)) {
+		t.Errorf("function_call_output must emit 'output':'' even when empty (#172): %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"role"`)) {
+		t.Errorf("function_call_output must not emit 'role' key: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"content"`)) {
+		t.Errorf("function_call_output must not emit 'content' key: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"name"`)) {
+		t.Errorf("function_call_output must not emit 'name' key: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"arguments"`)) {
+		t.Errorf("function_call_output must not emit 'arguments' key: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"type":"function_call_output"`)) {
+		t.Errorf("function_call_output must emit type=function_call_output: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"call_id":"call_1"`)) {
+		t.Errorf("function_call_output must emit call_id: %s", raw)
+	}
+}
+
+// TestResponsesInputMarshal_UnknownTypeErrors guards against a future
+// edit accidentally introducing a new Type value without adding a wire
+// variant. The previous shared-struct shape silently serialised unknown
+// types as a pile of empty-string keys; the per-type marshaller surfaces
+// the gap explicitly so it cannot land as a quiet wire-format mismatch.
+func TestResponsesInputMarshal_UnknownTypeErrors(t *testing.T) {
+	item := responsesInput{Type: "reasoning"}
+	if _, err := json.Marshal(item); err == nil {
+		t.Errorf("expected error marshalling unknown type, got nil")
+	}
+}
+
 func TestTranslateToolsResponses(t *testing.T) {
 	tools := []types.ToolDefinition{
 		{
