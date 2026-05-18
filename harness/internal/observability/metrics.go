@@ -30,7 +30,7 @@ type Metrics struct {
 	ToolErrors           metric.Int64Counter
 	ProviderRequests     metric.Int64Counter
 	ProviderErrors       metric.Int64Counter
-	ProviderRetries      metric.Int64Counter
+	ProviderRetryOutcomes metric.Int64Counter
 	ContextCompactions   metric.Int64Counter
 	SecurityEvents       metric.Int64Counter
 	VerificationAttempts metric.Int64Counter
@@ -303,9 +303,9 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.ProviderRetries, err = meter.Int64Counter("stirrup.harness.provider_retries",
-		metric.WithUnit("{retry}"),
-		metric.WithDescription("Total provider request retries"),
+	m.ProviderRetryOutcomes, err = meter.Int64Counter("stirrup.harness.provider_retry_outcomes",
+		metric.WithUnit("{outcome}"),
+		metric.WithDescription("Outcome of each DoWithRetry invocation"),
 	)
 	if err != nil {
 		return nil, err

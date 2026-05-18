@@ -465,7 +465,7 @@ func recordOutcome(ctx context.Context, m *observability.Metrics, providerType, 
 	if m == nil {
 		return
 	}
-	m.ProviderRetries.Add(ctx, 1, metric.WithAttributes(
+	m.ProviderRetryOutcomes.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("provider.type", providerType),
 		attribute.String("provider.model", model),
 		attribute.String("provider.retry.outcome", outcome),

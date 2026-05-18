@@ -241,8 +241,8 @@ func newTestMetrics(t *testing.T) (*observability.Metrics, *sdkmetric.ManualRead
 	return m, reader
 }
 
-// retryOutcomeFromMetrics extracts the recorded provider_retries counter
-// data points keyed by outcome.
+// retryOutcomeFromMetrics extracts the recorded provider_retry_outcomes
+// counter data points keyed by outcome.
 func retryOutcomeFromMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -252,7 +252,7 @@ func retryOutcomeFromMetrics(t *testing.T, reader *sdkmetric.ManualReader) map[s
 	out := make(map[string]int64)
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != "stirrup.harness.provider_retries" {
+			if m.Name != "stirrup.harness.provider_retry_outcomes" {
 				continue
 			}
 			sum, ok := m.Data.(metricdata.Sum[int64])
