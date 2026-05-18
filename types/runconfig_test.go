@@ -3934,3 +3934,114 @@ func TestValidateRunConfig_ProviderRetryNamedProviderDefaultsIndependently(t *te
 		t.Errorf("top-level provider Retry not defaulted independently; got %+v", c.Provider.Retry)
 	}
 }
+
+// TestValidateRunConfig_BedrockModelShape exercises the fail-fast check
+// added for issue #65. Anthropic-API aliases (no "." and no "arn:"
+// prefix) cannot resolve at AWS Bedrock and previously surfaced only
+// after a full network round-trip as a generic ValidationException.
+func TestValidateRunConfig_BedrockModelShape(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		model        string
+		wantErr      bool
+		wantContains []string
+	}{
+		// Invalid: Anthropic-API aliases that the CLI default and the
+		// Anthropic provider docs encourage. Must surface the
+		// inference-profile redirect in the error message.
+		{name: "anthropic_alias_sonnet_4_6", model: "claude-sonnet-4-6", wantErr: true, wantContains: []string{"bedrock", "inference profile", "claude-sonnet-4-6"}},
+		{name: "anthropic_alias_opus_4", model: "claude-opus-4", wantErr: true, wantContains: []string{"bedrock", "inference profile"}},
+		{name: "openai_id", model: "gpt-4", wantErr: true, wantContains: []string{"bedrock"}},
+
+		// Valid: vendor-prefixed model id (on-demand throughput models).
+		{name: "anthropic_prefixed", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", wantErr: false},
+		// Valid: inference profile id.
+		{name: "eu_inference_profile", model: "eu.anthropic.claude-sonnet-4-6", wantErr: false},
+		{name: "us_inference_profile", model: "us.anthropic.claude-haiku-4-5-20251001-v1:0", wantErr: false},
+		{name: "global_inference_profile", model: "global.anthropic.claude-sonnet-4-6", wantErr: false},
+		// Valid: full ARN to an inference profile.
+		{name: "arn_inference_profile", model: "arn:aws:bedrock:eu-west-1:123456789012:inference-profile/eu.anthropic.claude-sonnet-4-6", wantErr: false},
+		// Empty: validated elsewhere (or means "use a per-mode model"); the
+		// shape check must not introduce a phantom error here.
+		{name: "empty_model", model: "", wantErr: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "bedrock", Region: "eu-west-1"}
+			c.ModelRouter = ModelRouterConfig{Type: "static", Model: tc.model}
+
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for bedrock model %q, got nil", tc.model)
+				}
+				for _, want := range tc.wantContains {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q missing substring %q", err, want)
+					}
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error for bedrock model %q: %v", tc.model, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_BedrockModelShape_NonBedrockProviderUnaffected
+// confirms the shape check is provider-scoped: an Anthropic provider
+// using "claude-sonnet-4-6" must continue to validate, otherwise we
+// regress the default `stirrup harness` invocation.
+func TestValidateRunConfig_BedrockModelShape_NonBedrockProviderUnaffected(t *testing.T) {
+	c := validConfig() // anthropic
+	c.ModelRouter = ModelRouterConfig{Type: "static", Model: "claude-sonnet-4-6"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("anthropic + claude-sonnet-4-6 must remain valid, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_BedrockModelShape_PerModeOverride exercises the
+// per-mode router branch. A bedrock-typed default with a per-mode entry
+// "bedrock/claude-sonnet-4-6" must fail with the same redirect.
+func TestValidateRunConfig_BedrockModelShape_PerModeOverride(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{Type: "bedrock", Region: "eu-west-1"}
+	c.ModelRouter = ModelRouterConfig{
+		Type:       "per-mode",
+		Model:      "eu.anthropic.claude-sonnet-4-6", // valid default
+		ModeModels: map[string]string{"execution": "bedrock/claude-opus-4"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected per-mode bedrock override to be rejected for anthropic-shaped alias")
+	}
+	if !strings.Contains(err.Error(), "modelRouter.modeModels[execution]") {
+		t.Errorf("error should name the per-mode key, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_BedrockModelShape_NamedProvider exercises the
+// Providers map branch. A named provider declared as bedrock-typed and
+// referenced from ModelRouter.Provider must trigger the same check.
+func TestValidateRunConfig_BedrockModelShape_NamedProvider(t *testing.T) {
+	c := validConfig()
+	c.Providers = map[string]ProviderConfig{
+		"aws": {Type: "bedrock", Region: "eu-west-1"},
+	}
+	c.ModelRouter = ModelRouterConfig{
+		Type:     "static",
+		Provider: "aws",
+		Model:    "claude-sonnet-4-6",
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for named bedrock provider with anthropic-alias model")
+	}
+	if !strings.Contains(err.Error(), "modelRouter.model") {
+		t.Errorf("error should name modelRouter.model, got: %v", err)
+	}
+}

@@ -1743,6 +1743,13 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 	// Provider.Type is "gemini" and ModelRouter.Provider is unset.
 	validateGeminiModelName(config, errs)
 
+	// Per-provider model-shape validation for AWS Bedrock. Anthropic-API
+	// aliases (e.g. "claude-sonnet-4-6", the CLI default) cannot resolve
+	// at Bedrock and fail server-side with a generic
+	// ValidationException. Fail fast here with an actionable message
+	// pointing at the inference-profile path (issue #65).
+	validateBedrockModelShape(config, errs)
+
 	checkProviderRef := func(path, name string) {
 		if name == "" {
 			return
@@ -2375,6 +2382,83 @@ func validateGeminiModelName(config *RunConfig, errs *[]string) {
 			continue
 		}
 		if providerIsGemini(providerName) {
+			checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), model)
+		}
+	}
+}
+
+// validateBedrockModelShape rejects model identifiers configured against
+// a bedrock-typed provider that structurally cannot resolve at AWS
+// Bedrock — specifically, the Anthropic-API aliases (e.g.
+// "claude-sonnet-4-6") that the harness's default `--model` flag emits.
+// Bedrock requires either a model id prefixed with a vendor segment
+// (e.g. "anthropic.claude-sonnet-4-5-20250929-v1:0"), an inference
+// profile id of the form "<region>.<vendor>.<model>" (e.g.
+// "eu.anthropic.claude-sonnet-4-6"), or a full ARN
+// ("arn:aws:bedrock:...:inference-profile/...").
+//
+// Without this check Bedrock fails the request server-side with a
+// generic `ValidationException: The provided model identifier is
+// invalid.`, after a full network round-trip plus SigV4 + IAM setup.
+// Failing at config-load time saves the user that round-trip and names
+// the inference-profile path in the error so the next attempt is
+// actionable.
+//
+// The check applies whenever a bedrock-typed provider would actually
+// service the configured ModelRouter — the same surface area as
+// validateGeminiModelName above. Mirrors the gemini-specific check.
+func validateBedrockModelShape(config *RunConfig, errs *[]string) {
+	providerIsBedrock := func(name string) bool {
+		if name == "" {
+			return config.Provider.Type == "bedrock"
+		}
+		if name == "bedrock" {
+			return true
+		}
+		if p, ok := config.Providers[name]; ok {
+			return p.Type == "bedrock"
+		}
+		return false
+	}
+
+	checkModel := func(label, model string) {
+		if model == "" {
+			return
+		}
+		// A full ARN is always accepted — the literal "arn:" prefix is
+		// the documented Bedrock identifier shape for inference profiles
+		// and provisioned-throughput models. Anything else must contain
+		// a "." separator: Bedrock model ids partition on
+		// "<region-or-vendor>.<...>".
+		if strings.HasPrefix(model, "arn:") {
+			return
+		}
+		if strings.Contains(model, ".") {
+			return
+		}
+		*errs = append(*errs, fmt.Sprintf(
+			"%s %q is invalid for provider type %q: Bedrock requires a vendor-prefixed model id "+
+				"(e.g. %q), an inference profile id (e.g. %q), or a full ARN. "+
+				"Use \"aws bedrock list-inference-profiles\" to enumerate profiles available in your region.",
+			label, model, "bedrock",
+			"anthropic.claude-sonnet-4-5-20250929-v1:0",
+			"eu.anthropic.claude-sonnet-4-6",
+		))
+	}
+
+	if providerIsBedrock(config.ModelRouter.Provider) {
+		checkModel("modelRouter.model", config.ModelRouter.Model)
+	}
+
+	for mode, spec := range config.ModelRouter.ModeModels {
+		providerName, model, ok := strings.Cut(spec, "/")
+		if !ok {
+			if providerIsBedrock(config.ModelRouter.Provider) {
+				checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), spec)
+			}
+			continue
+		}
+		if providerIsBedrock(providerName) {
 			checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), model)
 		}
 	}

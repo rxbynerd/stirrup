@@ -111,6 +111,63 @@ func TestBuildHarnessRunConfig_OpenAIResponsesProvider(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRunConfig_BedrockWithAnthropicAliasRejected pins
+// the fail-fast posture from issue #65: a bare `--provider bedrock`
+// invocation that inherits the CLI default `--model claude-sonnet-4-6`
+// must be rejected at config validation with a message that names the
+// inference-profile path, not silently sent to AWS to fail server-side
+// with a generic ValidationException after a full SigV4 round-trip.
+func TestBuildHarnessRunConfig_BedrockWithAnthropicAliasRejected(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "bedrock",
+		Model:         "claude-sonnet-4-6", // CLI default; an Anthropic-API alias
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	verr := types.ValidateRunConfig(cfg)
+	if verr == nil {
+		t.Fatal("expected ValidateRunConfig to reject bedrock + anthropic-alias model")
+	}
+	msg := verr.Error()
+	for _, want := range []string{"bedrock", "inference profile", "claude-sonnet-4-6"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("validation error %q missing substring %q", msg, want)
+		}
+	}
+}
+
+// TestBuildHarnessRunConfig_BedrockWithInferenceProfileAccepted is the
+// positive companion to the alias-rejection test: a properly-shaped
+// inference profile id must validate cleanly so operators with a
+// configured Bedrock setup are unimpeded.
+func TestBuildHarnessRunConfig_BedrockWithInferenceProfileAccepted(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "bedrock",
+		Model:         "eu.anthropic.claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig rejected a valid bedrock inference profile: %v", err)
+	}
+}
+
 // TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList verifies that
 // when no explicit Tools.BuiltIn list is supplied, read-only modes get
 // the documented default list rather than passing validation by accident.
