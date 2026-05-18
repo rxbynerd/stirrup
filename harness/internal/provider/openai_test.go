@@ -404,7 +404,7 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{
 				Model:       "gpt-5.4",
