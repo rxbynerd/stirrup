@@ -1236,6 +1236,32 @@ func TestResponsesInputMarshal_FunctionCallOutputKeepsEmptyOutput(t *testing.T) 
 	}
 }
 
+// TestResponsesInputMarshal_FunctionCallOutputNonEmpty pairs with the
+// empty-output pin: a function_call_output item carrying a real result
+// string must put it under the "output" key on the wire. Together the
+// two tests fence the field on both sides — required when empty
+// (#172), and faithfully transmitted when populated.
+func TestResponsesInputMarshal_FunctionCallOutputNonEmpty(t *testing.T) {
+	item := responsesInput{
+		Type:   "function_call_output",
+		CallID: "call_1",
+		Output: "some result",
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"output":"some result"`)) {
+		t.Errorf("function_call_output must carry non-empty output verbatim: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"type":"function_call_output"`)) {
+		t.Errorf("function_call_output must emit type=function_call_output: %s", raw)
+	}
+	if !bytes.Contains(raw, []byte(`"call_id":"call_1"`)) {
+		t.Errorf("function_call_output must emit call_id: %s", raw)
+	}
+}
+
 // TestResponsesInputMarshal_UnknownTypeErrors guards against a future
 // edit accidentally introducing a new Type value without adding a wire
 // variant. The previous shared-struct shape silently serialised unknown
@@ -1245,6 +1271,105 @@ func TestResponsesInputMarshal_UnknownTypeErrors(t *testing.T) {
 	item := responsesInput{Type: "reasoning"}
 	if _, err := json.Marshal(item); err == nil {
 		t.Errorf("expected error marshalling unknown type, got nil")
+	}
+}
+
+// TestResponsesInputRoundTrip exercises the MarshalJSON/UnmarshalJSON
+// pair across all three valid variants. The Unmarshal path exists to
+// keep test roundtrips (and any future caller-side parsing) able to
+// inspect a wire body through the same struct that built it, so the
+// invariant being pinned is: marshalling then unmarshalling returns
+// a struct equal to the original on every field valid for that
+// variant.
+func TestResponsesInputRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		in   responsesInput
+	}{
+		{
+			name: "message",
+			in: responsesInput{
+				Type: "message",
+				Role: "user",
+				Content: []responsesContentBlock{
+					{Type: "input_text", Text: "hello"},
+				},
+			},
+		},
+		{
+			name: "function_call",
+			in: responsesInput{
+				Type:      "function_call",
+				CallID:    "call_abc",
+				Name:      "read_file",
+				Arguments: `{"path":"main.go"}`,
+			},
+		},
+		{
+			name: "function_call_output",
+			in: responsesInput{
+				Type:   "function_call_output",
+				CallID: "call_abc",
+				Output: "file contents",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.in)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var got responsesInput
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got.Type != tc.in.Type {
+				t.Errorf("Type = %q, want %q", got.Type, tc.in.Type)
+			}
+			switch tc.in.Type {
+			case "message":
+				if got.Role != tc.in.Role {
+					t.Errorf("Role = %q, want %q", got.Role, tc.in.Role)
+				}
+				if len(got.Content) != len(tc.in.Content) {
+					t.Fatalf("Content len = %d, want %d", len(got.Content), len(tc.in.Content))
+				}
+				for i := range tc.in.Content {
+					if got.Content[i] != tc.in.Content[i] {
+						t.Errorf("Content[%d] = %+v, want %+v", i, got.Content[i], tc.in.Content[i])
+					}
+				}
+			case "function_call":
+				if got.CallID != tc.in.CallID {
+					t.Errorf("CallID = %q, want %q", got.CallID, tc.in.CallID)
+				}
+				if got.Name != tc.in.Name {
+					t.Errorf("Name = %q, want %q", got.Name, tc.in.Name)
+				}
+				if got.Arguments != tc.in.Arguments {
+					t.Errorf("Arguments = %q, want %q", got.Arguments, tc.in.Arguments)
+				}
+			case "function_call_output":
+				if got.CallID != tc.in.CallID {
+					t.Errorf("CallID = %q, want %q", got.CallID, tc.in.CallID)
+				}
+				if got.Output != tc.in.Output {
+					t.Errorf("Output = %q, want %q", got.Output, tc.in.Output)
+				}
+			}
+		})
+	}
+}
+
+// TestResponsesInputUnmarshal_UnknownTypeErrors is the inverse of the
+// marshal-side guard: receiving a wire item with an unrecognised type
+// discriminant must surface as an error rather than silently zeroing
+// the struct. Mirrors TestResponsesInputMarshal_UnknownTypeErrors.
+func TestResponsesInputUnmarshal_UnknownTypeErrors(t *testing.T) {
+	var got responsesInput
+	if err := json.Unmarshal([]byte(`{"type":"reasoning"}`), &got); err == nil {
+		t.Errorf("expected error unmarshalling unknown type, got nil")
 	}
 }
 
