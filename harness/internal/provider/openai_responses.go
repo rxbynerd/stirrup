@@ -155,20 +155,20 @@ func (r responsesInput) MarshalJSON() ([]byte, error) {
 	switch r.Type {
 	case "message":
 		return json.Marshal(responsesMessageInputWire{
-			Type:    "message",
+			Type:    r.Type,
 			Role:    r.Role,
 			Content: r.Content,
 		})
 	case "function_call":
 		return json.Marshal(responsesFunctionCallInputWire{
-			Type:      "function_call",
+			Type:      r.Type,
 			CallID:    r.CallID,
 			Name:      r.Name,
 			Arguments: r.Arguments,
 		})
 	case "function_call_output":
 		return json.Marshal(responsesFunctionCallOutputInputWire{
-			Type:   "function_call_output",
+			Type:   r.Type,
 			CallID: r.CallID,
 			Output: r.Output,
 		})
