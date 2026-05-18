@@ -338,6 +338,16 @@ func TestNoopMetrics_NoPanic(t *testing.T) {
 	m.ProviderLatency.Record(ctx, 100.0)
 	m.ProviderTTFB.Record(ctx, 30.0)
 
+	// Guard instruments. Same rationale as the component-level
+	// block below: every instrument registered in newMetricsFromMeter
+	// must appear here so a nil-field regression surfaces on the
+	// noop path immediately, not hours into a deployment.
+	m.GuardChecks.Add(ctx, 1)
+	m.GuardErrors.Add(ctx, 1)
+	m.GuardSkips.Add(ctx, 1)
+	m.GuardSpotlights.Add(ctx, 1)
+	m.GuardDuration.Record(ctx, 42.0)
+
 	// Component-level instruments (issue #97). Exercising every new
 	// instrument here means a regression that leaves any of them as a
 	// nil field in newMetricsFromMeter would surface as a panic on the

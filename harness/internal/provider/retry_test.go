@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // --- unit tests ---
@@ -654,4 +656,672 @@ func collectSpanEvents(exporter *tracetest.InMemoryExporter, name string) []sdkt
 		}
 	}
 	return out
+}
+
+// --- B3: transientErr + transport error coverage ---
+
+// timeoutOpError synthesises a net.OpError whose underlying error
+// reports Timeout()==true. The retry helper classifies transport
+// errors via errors.As(*net.Error) + Timeout(); this is the
+// shortest path to a value that satisfies that contract.
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+func TestTransientErr(t *testing.T) {
+	t.Run("nil error is not transient", func(t *testing.T) {
+		if transientErr(nil, 0) {
+			t.Fatal("transientErr(nil, 0) = true, want false")
+		}
+	})
+	t.Run("net.OpError with timeout is transient", func(t *testing.T) {
+		opErr := &net.OpError{Op: "dial", Net: "tcp", Err: timeoutError{}}
+		if !transientErr(opErr, 0) {
+			t.Fatal("transientErr(*net.OpError{Timeout=true}, 0) = false, want true")
+		}
+		// Also retryable on subsequent attempts.
+		if !transientErr(opErr, 1) {
+			t.Fatal("transientErr(*net.OpError{Timeout=true}, 1) = false, want true")
+		}
+	})
+	t.Run("io.EOF on first attempt is transient", func(t *testing.T) {
+		if !transientErr(io.EOF, 0) {
+			t.Fatal("transientErr(io.EOF, 0) = false, want true")
+		}
+	})
+	t.Run("io.EOF on second attempt is not transient", func(t *testing.T) {
+		// Guards against regressing the "io.EOF only on first attempt"
+		// rule. A repeat EOF likely indicates a server-side condition
+		// the next attempt would also hit, not a stale keepalive.
+		if transientErr(io.EOF, 1) {
+			t.Fatal("transientErr(io.EOF, 1) = true, want false")
+		}
+	})
+	t.Run("plain error is not transient", func(t *testing.T) {
+		if transientErr(errors.New("connection reset"), 0) {
+			t.Fatal("transientErr(plain, 0) = true, want false")
+		}
+	})
+}
+
+// hijackAndCloseHandler returns an http.HandlerFunc that hijacks the
+// connection and closes it immediately, simulating a stale-keepalive
+// EOF on the client. If alwaysClose is false, the handler closes only
+// on the first request and answers 200 OK on every subsequent one.
+func hijackAndCloseHandler(t *testing.T, alwaysClose bool, count *int32) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(count, 1)
+		if alwaysClose || n == 1 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Errorf("ResponseWriter does not support Hijacker")
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("Hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func TestDoWithRetry_TransientNetworkError(t *testing.T) {
+	var count int32
+	srv := httptest.NewServer(hijackAndCloseHandler(t, false, &count))
+	defer srv.Close()
+
+	m, reader := newTestMetrics(t)
+
+	// http.Client with no keep-alive disabled — we want connection
+	// re-use so the first request sees the close-after-hijack and the
+	// second attempt opens a fresh connection.
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	req := newPostReq(t, srv.URL, `{}`)
+	resp, err := DoWithRetry(context.Background(), client, req, testOpts(defaultTestPolicy(), m))
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&count); got != 2 {
+		t.Fatalf("server hit count: got %d, want 2", got)
+	}
+
+	outcomes := retryOutcomeFromMetrics(t, reader)
+	if outcomes[retryOutcomeSucceeded] != 1 {
+		t.Errorf("succeeded counter: got %d, want 1 (all: %+v)", outcomes[retryOutcomeSucceeded], outcomes)
+	}
+}
+
+func TestDoWithRetry_TransientNetworkError_RecordsSpanAttr(t *testing.T) {
+	// Same hijack-and-close pattern as TestDoWithRetry_TransientNetworkError
+	// but with a recording span attached so the span-error-attribute
+	// branch in the retry log/span block is exercised.
+	var count int32
+	srv := httptest.NewServer(hijackAndCloseHandler(t, false, &count))
+	defer srv.Close()
+
+	m, _ := newTestMetrics(t)
+	ctx, exporter, span := withRecordingSpan(t)
+
+	req := newPostReq(t, srv.URL, `{}`)
+	resp, err := DoWithRetry(ctx, &http.Client{Timeout: 5 * time.Second}, req, testOpts(defaultTestPolicy(), m))
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	span.End()
+	events := collectSpanEvents(exporter, "provider_retry_attempt")
+	if len(events) != 1 {
+		t.Fatalf("expected 1 provider_retry_attempt event, got %d", len(events))
+	}
+	// The event must carry the unwrapped error string. We don't
+	// assert on its exact content (varies by platform: "EOF",
+	// "connection reset by peer") but it must exist on the
+	// transport-error path.
+	var foundErrAttr bool
+	for _, kv := range events[0].Attributes {
+		if string(kv.Key) == "error" {
+			foundErrAttr = true
+			if strings.Contains(kv.Value.AsString(), srv.URL) {
+				t.Errorf("span error attribute leaks URL: %q", kv.Value.AsString())
+			}
+		}
+	}
+	if !foundErrAttr {
+		t.Errorf("provider_retry_attempt event missing error attribute")
+	}
+}
+
+func TestDoWithRetry_PersistentEOF(t *testing.T) {
+	var count int32
+	srv := httptest.NewServer(hijackAndCloseHandler(t, true, &count))
+	defer srv.Close()
+
+	m, reader := newTestMetrics(t)
+
+	req := newPostReq(t, srv.URL, `{}`)
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
+		testOpts(defaultTestPolicy(), m))
+	if err == nil {
+		// Drain and close even on unexpected success so the server's
+		// finished its work.
+		_ = resp.Body.Close()
+		t.Fatal("expected non-nil error from persistent EOF, got nil")
+	}
+
+	// Exactly two attempts: first sees EOF (retry), second sees EOF
+	// with attempt>0 so transientErr returns false, helper surfaces
+	// the error as non-retryable.
+	if got := atomic.LoadInt32(&count); got != 2 {
+		t.Fatalf("server hit count: got %d, want 2", got)
+	}
+
+	outcomes := retryOutcomeFromMetrics(t, reader)
+	if outcomes[retryOutcomeNonRetryable] != 1 {
+		t.Errorf("non_retryable counter: got %d, want 1 (all: %+v)", outcomes[retryOutcomeNonRetryable], outcomes)
+	}
+}
+
+// --- B4: RetryPolicyFromConfig ---
+
+func TestRetryPolicyFromConfig(t *testing.T) {
+	t.Run("nil cfg returns zero policy", func(t *testing.T) {
+		got := RetryPolicyFromConfig(nil)
+		if got != (RetryPolicy{}) {
+			t.Errorf("RetryPolicyFromConfig(nil) = %+v, want zero RetryPolicy", got)
+		}
+	})
+	t.Run("populated cfg converts ms fields to durations", func(t *testing.T) {
+		cfg := &types.ProviderRetryConfig{
+			MaxAttempts:       3,
+			InitialDelayMs:    200,
+			MaxDelayMs:        5000,
+			WallClockBudgetMs: 30000,
+		}
+		got := RetryPolicyFromConfig(cfg)
+		want := RetryPolicy{
+			MaxAttempts:     3,
+			InitialDelay:    200 * time.Millisecond,
+			MaxDelay:        5 * time.Second,
+			WallClockBudget: 30 * time.Second,
+		}
+		if got != want {
+			t.Errorf("RetryPolicyFromConfig() = %+v, want %+v", got, want)
+		}
+	})
+}
+
+// --- M4: backoffDelay zero-guard paths ---
+
+func TestBackoffDelay_ZeroInitialDelay(t *testing.T) {
+	policy := RetryPolicy{
+		InitialDelay: 0,
+		MaxDelay:     1 * time.Second,
+	}
+	prng := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < 100; i++ {
+		got := backoffDelay(i%5, policy, prng)
+		if got != 0 {
+			t.Fatalf("backoffDelay with zero InitialDelay = %v, want 0", got)
+		}
+	}
+}
+
+func TestBackoffDelay_ZeroMaxDelay(t *testing.T) {
+	policy := RetryPolicy{
+		InitialDelay: 100 * time.Millisecond,
+		MaxDelay:     0,
+	}
+	prng := rand.New(rand.NewPCG(1, 2))
+	for i := 0; i < 100; i++ {
+		// Any non-zero shift would still produce a positive `upper`
+		// initially, but the post-cap guard (`upper > policy.MaxDelay`
+		// → `upper = policy.MaxDelay = 0`) drives the second guard
+		// (`upper <= 0`) into returning zero. The test would panic if
+		// the second guard were ever removed.
+		got := backoffDelay(i%5, policy, prng)
+		if got != 0 {
+			t.Fatalf("backoffDelay with zero MaxDelay = %v, want 0", got)
+		}
+	}
+}
+
+// --- M5: Retry-After capping ---
+
+func TestDoWithRetry_RetryAfterMsCapped(t *testing.T) {
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&count, 1)
+		if n == 1 {
+			// Within parseRetryAfter's 60 s ceiling, but well above
+			// the test policy's 100 ms MaxDelay — exercises the cap.
+			w.Header().Set("Retry-After-Ms", "5000")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m, _ := newTestMetrics(t)
+
+	policy := RetryPolicy{
+		MaxAttempts:     3,
+		InitialDelay:    1 * time.Millisecond,
+		MaxDelay:        100 * time.Millisecond,
+		WallClockBudget: 5 * time.Second,
+	}
+
+	req := newPostReq(t, srv.URL, `{}`)
+	start := time.Now()
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
+		testOpts(policy, m))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	// Cap at 100 ms; tolerate scheduler overhead. The unbounded
+	// uncapped path would sleep ~5 s.
+	if elapsed > 1*time.Second {
+		t.Errorf("elapsed = %v, want capped near MaxDelay=100ms", elapsed)
+	}
+}
+
+func TestDoWithRetry_RetryAfterSecondsCapped(t *testing.T) {
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&count, 1)
+		if n == 1 {
+			// parseRetryAfter caps Retry-After at 60 s (its own
+			// ceiling). Use 30 s so the value reaches the dispatch
+			// switch's MaxDelay cap unmodified by the header parser.
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m, _ := newTestMetrics(t)
+
+	policy := RetryPolicy{
+		MaxAttempts:     3,
+		InitialDelay:    1 * time.Millisecond,
+		MaxDelay:        100 * time.Millisecond,
+		WallClockBudget: 5 * time.Second,
+	}
+
+	req := newPostReq(t, srv.URL, `{}`)
+	start := time.Now()
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
+		testOpts(policy, m))
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	// Cap at 100 ms; uncapped would sleep ~30 s.
+	if elapsed > 1*time.Second {
+		t.Errorf("elapsed = %v, want capped near MaxDelay=100ms", elapsed)
+	}
+}
+
+// --- M7: small coverage gaps ---
+
+func TestDoWithRetry_MaxAttemptsZeroNormalisedToOne(t *testing.T) {
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&count, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m, _ := newTestMetrics(t)
+
+	// MaxAttempts == 0 must be normalised to one attempt by the
+	// helper. The for-loop bound is the only protection against a
+	// zero-attempts misconfiguration causing the loop to never run.
+	policy := RetryPolicy{MaxAttempts: 0, InitialDelay: 1 * time.Millisecond}
+
+	req := newPostReq(t, srv.URL, `{}`)
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
+		testOpts(policy, m))
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if got := atomic.LoadInt32(&count); got != 1 {
+		t.Fatalf("server hits: got %d, want 1", got)
+	}
+}
+
+func TestDoWithRetry_NilMetrics(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Pass nil metrics; recordOutcome's nil guard must prevent panic.
+	req := newPostReq(t, srv.URL, `{}`)
+	opts := RetryOptions{
+		Policy:       defaultTestPolicy(),
+		Logger:       discardLogger(),
+		Metrics:      nil,
+		ProviderType: "openai",
+		Model:        "gpt-test",
+	}
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req, opts)
+	if err != nil {
+		t.Fatalf("DoWithRetry with nil metrics: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// --- M1: rewind failure path ---
+
+// flakyGetBody is a counter-backed GetBody implementation that returns
+// the body successfully on first call (for http.NewRequest's initial
+// read) and fails on subsequent calls. Used to drive the
+// retryOutcomeRewindFailed path.
+type flakyGetBody struct {
+	body    []byte
+	calls   int32
+	failAt  int32
+	failErr error
+}
+
+func (f *flakyGetBody) get() (io.ReadCloser, error) {
+	n := atomic.AddInt32(&f.calls, 1)
+	if n >= f.failAt {
+		return nil, f.failErr
+	}
+	return io.NopCloser(bytes.NewReader(f.body)), nil
+}
+
+func TestDoWithRetry_GetBodyError(t *testing.T) {
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&count, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	m, reader := newTestMetrics(t)
+
+	bodyBytes := []byte(`{"x":1}`)
+	injected := errors.New("rewind failed: source exhausted")
+	// failAt=1 → fail on the first GetBody call (which happens at
+	// attempt 1 to rewind for the retry). Attempt 0 uses req.Body
+	// directly without consulting GetBody.
+	flaky := &flakyGetBody{body: bodyBytes, failAt: 1, failErr: injected}
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.GetBody = flaky.get
+
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req,
+		testOpts(defaultTestPolicy(), m))
+	if !errors.Is(err, injected) {
+		t.Fatalf("err: got %v, want %v", err, injected)
+	}
+	if resp != nil {
+		t.Errorf("expected nil resp on rewind failure, got %v", resp)
+		_ = resp.Body.Close()
+	}
+
+	// Exactly one server hit: the first attempt succeeded in sending,
+	// the response was 429, then GetBody failed before attempt 2 could
+	// be dispatched.
+	if got := atomic.LoadInt32(&count); got != 1 {
+		t.Errorf("server hits: got %d, want 1", got)
+	}
+
+	outcomes := retryOutcomeFromMetrics(t, reader)
+	if outcomes[retryOutcomeRewindFailed] != 1 {
+		t.Errorf("rewind_failed counter: got %d, want 1 (all: %+v)", outcomes[retryOutcomeRewindFailed], outcomes)
+	}
+	// And specifically NOT exhausted — that was the M2 mislabel.
+	if outcomes[retryOutcomeExhausted] != 0 {
+		t.Errorf("exhausted counter: got %d, want 0 — rewind failure must not record exhaustion", outcomes[retryOutcomeExhausted])
+	}
+}
+
+// --- ShouldRetry classifier coverage ---
+
+func TestDoWithRetry_ShouldRetry_ConsumesAndRetries(t *testing.T) {
+	// ShouldRetry returns (retryable=true, consumed=true) on the
+	// first attempt's 200 response. Exercises the "consumed=true"
+	// branch overriding the default heuristic (which would treat
+	// 200 as success).
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&count, 1)
+		if n == 1 {
+			w.Header().Set("x-force-retry", "1")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m, _ := newTestMetrics(t)
+
+	opts := RetryOptions{
+		Policy:       defaultTestPolicy(),
+		Logger:       discardLogger(),
+		Metrics:      m,
+		ProviderType: "anthropic",
+		Model:        "claude-test",
+		ShouldRetry: func(resp *http.Response) (bool, bool) {
+			if resp.Header.Get("x-force-retry") == "1" {
+				return true, true
+			}
+			return false, false
+		},
+	}
+
+	req := newPostReq(t, srv.URL, `{}`)
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req, opts)
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if got := atomic.LoadInt32(&count); got != 2 {
+		t.Errorf("server hits: got %d, want 2", got)
+	}
+}
+
+func TestDoWithRetry_ShouldRetry_FallsThroughOnNotConsumed(t *testing.T) {
+	// ShouldRetry returns (false, false=not consumed) for every
+	// response. The default retryableStatus heuristic should apply
+	// — first 429 retries, second 200 succeeds.
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&count, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m, _ := newTestMetrics(t)
+
+	var shouldRetryCalls int32
+	opts := RetryOptions{
+		Policy:       defaultTestPolicy(),
+		Logger:       discardLogger(),
+		Metrics:      m,
+		ProviderType: "anthropic",
+		Model:        "claude-test",
+		ShouldRetry: func(resp *http.Response) (bool, bool) {
+			atomic.AddInt32(&shouldRetryCalls, 1)
+			return false, false
+		},
+	}
+
+	req := newPostReq(t, srv.URL, `{}`)
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req, opts)
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if got := atomic.LoadInt32(&count); got != 2 {
+		t.Errorf("server hits: got %d, want 2", got)
+	}
+	// ShouldRetry consulted on the 429 response (fall-through), AND
+	// again on the second 200 (also fall-through, treated as
+	// success).
+	if got := atomic.LoadInt32(&shouldRetryCalls); got < 1 {
+		t.Errorf("shouldRetry calls: got %d, want at least 1", got)
+	}
+}
+
+// --- Nil-logger default fallback ---
+
+func TestDoWithRetry_NilLoggerFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m, _ := newTestMetrics(t)
+
+	// Logger left zero so DoWithRetry's nil-fallback branch fires.
+	opts := RetryOptions{
+		Policy:       defaultTestPolicy(),
+		Metrics:      m,
+		ProviderType: "openai",
+		Model:        "gpt-test",
+	}
+
+	req := newPostReq(t, srv.URL, `{}`)
+	resp, err := DoWithRetry(context.Background(), &http.Client{Timeout: 5 * time.Second}, req, opts)
+	if err != nil {
+		t.Fatalf("DoWithRetry with nil Logger: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	}
+}
+
+// --- B1: URL scrubbing ---
+
+func TestDoWithRetry_TransportError_URLNotLogged(t *testing.T) {
+	// Pick a port that nothing is listening on. The connection
+	// attempt fails fast, producing a *url.Error wrapping the dial
+	// failure.
+	target := "http://127.0.0.1:1/sensitive-path?api_key=should-not-appear"
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	m, _ := newTestMetrics(t)
+
+	bodyBytes := []byte(`{}`)
+	req, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(bodyBytes))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+	}
+
+	// Use a short-timeout dialer so the test does not block on
+	// connection retry timeouts.
+	client := &http.Client{
+		Timeout: 500 * time.Millisecond,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext,
+		},
+	}
+
+	policy := RetryPolicy{
+		MaxAttempts:     2,
+		InitialDelay:    1 * time.Millisecond,
+		MaxDelay:        5 * time.Millisecond,
+		WallClockBudget: 2 * time.Second,
+	}
+
+	opts := RetryOptions{
+		Policy:       policy,
+		Logger:       logger,
+		Metrics:      m,
+		ProviderType: "openai",
+		Model:        "gpt-test",
+	}
+
+	// transientErr is false for plain "connection refused" so the
+	// helper will surface the error after the first attempt. The
+	// slog handler will be called via the non_retryable path only if
+	// a provider_retry warn happened — which requires a transient
+	// classification. To force a retry log, simulate the EOF path
+	// with a hijack-and-close server.
+
+	// Reroute: use the hijack-and-close pattern but pick a target
+	// whose URL contains the secrets we want to test against.
+	var hits int32
+	srv := httptest.NewServer(hijackAndCloseHandler(t, false, &hits))
+	defer srv.Close()
+
+	secretURL := srv.URL + "/path?api_key=topsecret&token=alsosecret"
+	req2, err := http.NewRequest(http.MethodPost, secretURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		t.Fatalf("NewRequest secret: %v", err)
+	}
+	req2.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+	}
+
+	buf.Reset()
+	resp, err := DoWithRetry(context.Background(), client, req2, opts)
+	if err != nil {
+		t.Fatalf("DoWithRetry: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "topsecret") {
+		t.Errorf("log output contains api_key value 'topsecret':\n%s", logOutput)
+	}
+	if strings.Contains(logOutput, "alsosecret") {
+		t.Errorf("log output contains token value 'alsosecret':\n%s", logOutput)
+	}
+	// The server-side host:port is also part of the *url.Error
+	// string. Asserting on its absence proves the unwrap occurred —
+	// the inner net error message does not contain the URL.
+	host := strings.TrimPrefix(srv.URL, "http://")
+	if strings.Contains(logOutput, host) {
+		t.Errorf("log output contains server URL host %q:\n%s", host, logOutput)
+	}
 }
