@@ -266,6 +266,32 @@ func TestApplyModeDefaults_ExecutionAllowAllOptIn(t *testing.T) {
 	}
 }
 
+// TestApplyModeDefaults_ExecutionPartialOptIn pins the documented
+// independent-axes behaviour: an operator who sets one knob explicitly
+// (tool list) and leaves the other (policy) for the default keeps both
+// choices — the explicit tool list survives, the policy fills with
+// deny-side-effects. The combination listed below (run_command
+// declared but the safe-default policy denies it) is the canonical
+// "footgun" case the safe-default design intentionally allows: the
+// operator sees their explicit choice preserved, and discovers via a
+// denied tool dispatch that they also need to opt out of
+// deny-side-effects. The test exists so a future fixup that decides
+// to "be helpful" by also lifting the policy on partial opt-in is
+// recognised as a behaviour change rather than a silent fix.
+func TestApplyModeDefaults_ExecutionPartialOptIn(t *testing.T) {
+	cfg := &types.RunConfig{
+		Mode:  "execution",
+		Tools: types.ToolsConfig{BuiltIn: []string{"run_command"}},
+	}
+	applyModeDefaults(cfg)
+	if cfg.PermissionPolicy.Type != "deny-side-effects" {
+		t.Errorf("PermissionPolicy.Type should fill to deny-side-effects when unset, got %q", cfg.PermissionPolicy.Type)
+	}
+	if len(cfg.Tools.BuiltIn) != 1 || cfg.Tools.BuiltIn[0] != "run_command" {
+		t.Errorf("explicit tool list should survive, got %v", cfg.Tools.BuiltIn)
+	}
+}
+
 // TestApplyModeDefaults_RespectsExplicitPolicy verifies that an
 // explicit PermissionPolicy survives applyModeDefaults — even one that
 // will later fail validation (allow-all on a read-only mode). Auto-

@@ -104,12 +104,15 @@ to make a feature easier:
   permission policy is not `allow-all`. A new mode added to the
   list inherits the invariant.
 - **Safe-by-default execution mode.** A bare `stirrup harness` run
-  inherits `permissionPolicy.type=deny-side-effects` and the
-  `DefaultExecutionBuiltInTools()` allowlist (no `web_fetch`, no
-  `run_command`). Loosening either default — re-enabling all
-  built-ins for empty `Tools.BuiltIn`, or flipping the policy back
-  to `allow-all` — is a regression of issue #74. Opt-in remains
-  per-knob via `--config`.
+  inherits a non-`allow-all` permission policy (currently
+  `deny-side-effects`) and the `DefaultExecutionBuiltInTools()`
+  allowlist (no `web_fetch`, no `run_command`). Loosening either
+  default — re-enabling all built-ins for empty `Tools.BuiltIn`, or
+  flipping the policy default back to `allow-all` — is a regression
+  of issue #74. `ask-upstream` is also a valid future policy
+  default; the invariant is "not unconditionally permissive", not
+  literal `deny-side-effects`. Opt-in remains per-knob via
+  `--config`.
 - **Hand-rolled HTTP over SDKs.** The container executor uses the
   Docker Engine REST API directly to avoid the `github.com/docker/docker`
   dependency tree. Provider adapters are stdlib HTTP+SSE for the

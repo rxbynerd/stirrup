@@ -194,7 +194,7 @@ configuration space — the common cases. Anything below requires
 
 The CLI flags for each of these set the *type* selection only.
 
-## Default safe-by-default posture (execution mode)
+## Safe-by-default execution mode
 
 A bare `stirrup harness --prompt "x"` with no `--config`, no explicit
 `Tools.BuiltIn`, and no explicit `PermissionPolicy` lands on the
@@ -202,16 +202,36 @@ following conservative defaults (issue #74):
 
 | Knob | Default | Notes |
 |---|---|---|
-| `permissionPolicy.type` | `deny-side-effects` | Workspace-mutating tools (`write_file`, `edit_file`, `run_command`) are denied. Opt out with `permissionPolicy.type: allow-all` in `--config` or pair with `--permission-policy-file` for Cedar. |
+| `permissionPolicy.type` | `deny-side-effects` | Workspace-mutating tools (`write_file`, `edit_file`, `run_command`) are denied at dispatch time. Opt out with `permissionPolicy.type: allow-all` (or `ask-upstream`) in `--config`, or pair with `--permission-policy-file` for Cedar. |
 | `tools.builtIn` | `["read_file", "list_directory", "search_files", "edit_file", "spawn_agent"]` | Conservative starter set. `web_fetch` (external egress + untrusted ingress) and `run_command` (host shell) are opt-in: list them explicitly under `tools.builtIn` in `--config`. |
 
-Operators who explicitly set either knob in `--config` survive the
-fixup — `applyModeDefaults` only fills *unset* fields. Setting
-`permissionPolicy.type: allow-all` does not re-enable the excluded
-tools automatically; both axes are independent.
+The two knobs interact in a way operators should understand:
 
-Read-only modes (below) continue to use their pre-existing
-conservative defaults from `DefaultReadOnlyBuiltInTools()`.
+- The tool list is a *declaration* of what the model is told exists.
+  `edit_file` appearing in the default list means the model can plan
+  around the editor's existence.
+- The permission policy is the *dispatch gate*. Under
+  `deny-side-effects`, `edit_file` calls are rejected at dispatch
+  with the reason `workspace-mutating tools are not permitted in
+  this mode`. The model sees a denied tool result and adapts.
+- An operator who wants the model to actually edit must opt in via
+  `permissionPolicy.type: allow-all` (or `ask-upstream` for
+  per-call approval) in `--config`. The same applies to any tool
+  the operator explicitly lists alongside the safe default but that
+  the policy denies — for instance, listing `run_command` without
+  also opting out of `deny-side-effects` leaves the tool declared
+  but blocked.
+
+Each knob is set independently. Setting `permissionPolicy.type:
+allow-all` does NOT re-enable `web_fetch` or `run_command` — the
+tool list governs *declaration*, the policy governs *dispatch*.
+
+Read-only modes (below) use `DefaultReadOnlyBuiltInTools()`, which
+asymmetrically *includes* `web_fetch` (read-only modes neutralise
+the other two Rule-of-Two legs, so the untrusted-ingress leg is
+considered acceptable in those modes) but excludes `edit_file` /
+`run_command` / `write_file` (those would violate the structural
+read-only invariant below).
 
 ## Read-only modes
 

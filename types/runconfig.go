@@ -1201,6 +1201,18 @@ func DefaultReadOnlyBuiltInTools() []string {
 // always declaration-gated, this defaulting change does not alter
 // their posture.
 //
+// Important interaction with the default permission policy: when
+// applyModeDefaults also installs deny-side-effects (the safe-by-
+// default policy for execution mode), edit_file is declared to the
+// model but blocked at dispatch time — it is WorkspaceMutating and
+// therefore in the policy's denied set. This is intentional: the
+// safe-default posture lets the model plan around the editor's
+// existence but requires an explicit operator opt-in (e.g.
+// permissionPolicy.type=allow-all or ask-upstream) before any
+// workspace mutation occurs. The same logic applies to any future
+// mutating built-in landed in this list — including a tool here is
+// a *declaration*, not an unconditional unlock.
+//
 // Operators wanting the previous "everything enabled" behaviour can
 // either list every built-in explicitly under Tools.BuiltIn in
 // --config, or pair the conservative default with an explicit
