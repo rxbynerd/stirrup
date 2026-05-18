@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
@@ -1895,6 +1896,92 @@ func TestBuildProvider_GeminiNilTokenSourceErrors(t *testing.T) {
 	// a half-built adapter.
 	if !strings.Contains(err.Error(), "credentials") && !strings.Contains(err.Error(), "credential") {
 		t.Errorf("error should mention credentials, got: %v", err)
+	}
+}
+
+// TestBuildProvider_OpenAICompatibleWithRetryConfig asserts the factory
+// propagates a non-nil ProviderRetryConfig through to the resulting
+// OpenAICompatibleAdapter's RetryPolicy. Without this, a future change
+// that hard-codes a zero RetryPolicy in `buildProvider` would silently
+// disable the retry path for openai-compatible runs.
+func TestBuildProvider_OpenAICompatibleWithRetryConfig(t *testing.T) {
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:      "openai-compatible",
+		APIKeyRef: "secret://OPENAI_KEY",
+		BaseURL:   "https://api.openai.com/v1",
+		Retry: &types.ProviderRetryConfig{
+			MaxAttempts:       5,
+			InitialDelayMs:    200,
+			MaxDelayMs:        10000,
+			WallClockBudgetMs: 60000,
+		},
+	}, secrets)
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	adapter, ok := prov.(*provider.OpenAICompatibleAdapter)
+	if !ok {
+		t.Fatalf("buildProvider type = %T, want *provider.OpenAICompatibleAdapter", prov)
+	}
+	if got, want := adapter.RetryPolicy.MaxAttempts, 5; got != want {
+		t.Errorf("RetryPolicy.MaxAttempts = %d, want %d", got, want)
+	}
+	if got, want := adapter.RetryPolicy.InitialDelay, 200*time.Millisecond; got != want {
+		t.Errorf("RetryPolicy.InitialDelay = %v, want %v", got, want)
+	}
+	if got, want := adapter.RetryPolicy.MaxDelay, 10*time.Second; got != want {
+		t.Errorf("RetryPolicy.MaxDelay = %v, want %v", got, want)
+	}
+	if got, want := adapter.RetryPolicy.WallClockBudget, 60*time.Second; got != want {
+		t.Errorf("RetryPolicy.WallClockBudget = %v, want %v", got, want)
+	}
+}
+
+// TestBuildLoopWithTransport_OpenAICompatibleAdapterHasLogger asserts that
+// BuildLoopWithTransport injects a non-nil Logger into the
+// OpenAICompatibleAdapter, so DoWithRetry's warn output runs through the
+// factory's ScrubHandler-backed logger rather than the slog.Default
+// fallback. A future deletion of the `pa.Logger = logger` line in the
+// factory would silently regress the scrub invariant for retry warnings;
+// this test surfaces that regression at the assembly seam.
+func TestBuildLoopWithTransport_OpenAICompatibleAdapterHasLogger(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-retry-logger",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	adapter, ok := loop.Provider.(*provider.OpenAICompatibleAdapter)
+	if !ok {
+		t.Fatalf("loop.Provider type = %T, want *provider.OpenAICompatibleAdapter", loop.Provider)
+	}
+	if adapter.Logger == nil {
+		t.Error("OpenAICompatibleAdapter.Logger is nil; factory should inject the ScrubHandler-backed logger so retry warnings get scrubbed")
 	}
 }
 
