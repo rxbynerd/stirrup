@@ -29,6 +29,7 @@ type decodedPart struct {
 	Text             string               `json:"text,omitempty"`
 	FunctionCall     *decodedFunctionCall `json:"functionCall,omitempty"`
 	FunctionResponse *decodedFuncResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string               `json:"thoughtSignature,omitempty"`
 }
 
 type decodedFunctionCall struct {
@@ -632,5 +633,76 @@ func TestBuildGenerateContentRequest_UserTextAndToolResultOrdering(t *testing.T)
 	}
 	if dr.Contents[2].Role != "user" || dr.Contents[2].Parts[0].Text != "follow-up note" {
 		t.Errorf("contents[2] mismatch: %+v", dr.Contents[2])
+	}
+}
+
+// TestBuildGenerateContentRequest_RoundTripsThoughtSignature pins the
+// outbound wire shape for #194: when the prior assistant turn carried a
+// ThoughtSignature on a text or tool_use block, the marshaller must echo
+// the blob verbatim on the corresponding part of the next request so
+// Gemini 3.x can resume its hidden chain-of-thought.
+func TestBuildGenerateContentRequest_RoundTripsThoughtSignature(t *testing.T) {
+	const textSig = "AY-text-sig-001=="
+	const toolSig = "AY-tool-sig-002=="
+
+	body, _, err := BuildGenerateContentRequest(types.StreamParams{
+		Model: "gemini-3.1-pro-preview",
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Read safety-rings"}}},
+			{Role: "assistant", Content: []types.ContentBlock{
+				{Type: "text", Text: "Reading now.", ThoughtSignature: textSig},
+				{Type: "tool_use", ID: "c1", Name: "read_file", Input: json.RawMessage(`{"path":"docs/safety-rings.md"}`), ThoughtSignature: toolSig},
+			}},
+			{Role: "user", Content: []types.ContentBlock{
+				{Type: "tool_result", ToolUseID: "c1", Content: "..."},
+			}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dr := decodeGeminiRequest(t, body)
+	if len(dr.Contents) < 2 {
+		t.Fatalf("expected at least 2 contents, got %d", len(dr.Contents))
+	}
+	model := dr.Contents[1]
+	if model.Role != "model" || len(model.Parts) != 2 {
+		t.Fatalf("contents[1] mismatch: %+v", model)
+	}
+	if model.Parts[0].ThoughtSignature != textSig {
+		t.Errorf("text part thoughtSignature = %q, want %q", model.Parts[0].ThoughtSignature, textSig)
+	}
+	if model.Parts[1].ThoughtSignature != toolSig {
+		t.Errorf("tool_use part thoughtSignature = %q, want %q", model.Parts[1].ThoughtSignature, toolSig)
+	}
+
+	// Defence-in-depth: the wire JSON must not emit the field for the
+	// user / function_response parts that never carried a signature.
+	if strings.Count(string(body), "thoughtSignature") != 2 {
+		t.Errorf("expected exactly 2 thoughtSignature occurrences on the wire, got: %s", body)
+	}
+}
+
+// TestBuildGenerateContentRequest_OmitsEmptyThoughtSignature confirms that
+// the field is omitted from the wire when the block carries no signature,
+// so the legacy Gemini 2.x shape is preserved on operators that never
+// touch 3.x.
+func TestBuildGenerateContentRequest_OmitsEmptyThoughtSignature(t *testing.T) {
+	body, _, err := BuildGenerateContentRequest(types.StreamParams{
+		Model: "gemini-2.5-pro",
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+			{Role: "assistant", Content: []types.ContentBlock{
+				{Type: "text", Text: "hello"},
+				{Type: "tool_use", ID: "c1", Name: "noop", Input: json.RawMessage(`{}`)},
+			}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(string(body), "thoughtSignature") {
+		t.Errorf("body should not mention thoughtSignature when blocks carry none: %s", body)
 	}
 }

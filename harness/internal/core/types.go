@@ -469,6 +469,12 @@ type streamResult struct {
 func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp transport.Transport, logger *slog.Logger) (*streamResult, error) {
 	result := &streamResult{}
 	var currentText string
+	// textSig retains the last non-empty thought signature observed on
+	// streamed text deltas in the current text run. Vertex 3.x attaches
+	// the signature once per part regardless of how many delta chunks
+	// build the part; carrying the latest seen value lets the assembled
+	// text block round-trip the signature on the next turn.
+	var textSig string
 	inText := false
 
 	for event := range ch {
@@ -483,8 +489,12 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			if !inText {
 				inText = true
 				currentText = ""
+				textSig = ""
 			}
 			currentText += event.Text
+			if event.ThoughtSignature != "" {
+				textSig = event.ThoughtSignature
+			}
 			if err := tp.Emit(types.HarnessEvent{
 				Type: "text_delta",
 				Text: event.Text,
@@ -495,22 +505,25 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 		case "tool_call":
 			// Flush any accumulated text block.
 			if inText {
-				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
+				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText, ThoughtSignature: textSig})
 				inText = false
 				currentText = ""
+				textSig = ""
 			}
 			inputBytes, _ := json.Marshal(event.Input)
 			result.Blocks = append(result.Blocks, types.ContentBlock{
-				Type:  "tool_use",
-				ID:    event.ID,
-				Name:  event.Name,
-				Input: json.RawMessage(inputBytes),
+				Type:             "tool_use",
+				ID:               event.ID,
+				Name:             event.Name,
+				Input:            json.RawMessage(inputBytes),
+				ThoughtSignature: event.ThoughtSignature,
 			})
 
 		case "message_complete":
 			if inText {
-				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
+				result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText, ThoughtSignature: textSig})
 				inText = false
+				textSig = ""
 			}
 			if event.StopReason != "" {
 				result.StopReason = event.StopReason
@@ -527,7 +540,7 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 	}
 
 	if inText {
-		result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText})
+		result.Blocks = append(result.Blocks, types.ContentBlock{Type: "text", Text: currentText, ThoughtSignature: textSig})
 	}
 
 	return result, nil

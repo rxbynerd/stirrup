@@ -171,7 +171,10 @@ func translateMessagesGemini(system string, messages []types.Message) ([]geminiC
 					if block.Text == "" {
 						continue
 					}
-					parts = append(parts, geminiPart{Text: block.Text})
+					parts = append(parts, geminiPart{
+						Text:             block.Text,
+						ThoughtSignature: block.ThoughtSignature,
+					})
 				case "tool_use":
 					args := normaliseToolArgs(block.Input)
 					parts = append(parts, geminiPart{
@@ -179,6 +182,7 @@ func translateMessagesGemini(system string, messages []types.Message) ([]geminiC
 							Name: block.Name,
 							Args: args,
 						},
+						ThoughtSignature: block.ThoughtSignature,
 					})
 					if block.ID != "" {
 						toolNameByID[block.ID] = block.Name

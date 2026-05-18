@@ -42,10 +42,17 @@ type geminiContent struct {
 // FunctionResponse should be populated per part. (InlineData /
 // fileData / videoMetadata exist in the spec but are intentionally not
 // supported by this adapter — the harness is text-and-tools only.)
+//
+// ThoughtSignature is emitted by Gemini 3.x on parts produced by the model
+// (text and functionCall). It encodes the model's hidden chain-of-thought
+// and must be echoed back unchanged on the corresponding part of the next
+// request so the model can resume reasoning across multi-turn tool
+// exchanges. Empty on 2.x responses and on operator-side parts.
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
+	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
 }
 
 // geminiFunctionCall is a model-emitted call to one of the declared tools.

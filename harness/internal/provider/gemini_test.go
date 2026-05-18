@@ -985,3 +985,79 @@ func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
 		t.Errorf("stop_reason = %q, want tool_use", stop.StopReason)
 	}
 }
+
+// TestGeminiAdapter_ThoughtSignatureFromFunctionCallPart pins the parse
+// side of #194: a Gemini 3.x chunk that carries a thoughtSignature on the
+// part wrapping a functionCall surfaces the blob on the corresponding
+// tool_call StreamEvent so the agentic loop can persist it onto the
+// resulting ContentBlock for round-tripping on the next turn.
+func TestGeminiAdapter_ThoughtSignatureFromFunctionCallPart(t *testing.T) {
+	const sig = "AY89a18t+D98lADcFYKgjMgoHS7rROUND_TRIP=="
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"docs/safety-rings.md"}},"thoughtSignature":"` + sig + `"}]},"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	var toolCall *types.StreamEvent
+	for _, ev := range collectEvents(t, ch) {
+		if ev.Type == "tool_call" {
+			toolCall = &ev
+		}
+		if ev.Type == "error" {
+			t.Fatalf("unexpected error event: %v", ev.Error)
+		}
+	}
+	if toolCall == nil {
+		t.Fatal("expected tool_call event")
+	}
+	if toolCall.ThoughtSignature != sig {
+		t.Errorf("tool_call.ThoughtSignature = %q, want %q", toolCall.ThoughtSignature, sig)
+	}
+}
+
+// TestGeminiAdapter_ThoughtSignatureFromTextPart confirms that signatures
+// attached to text parts also surface on the corresponding text_delta
+// event. The signature applies to the whole part regardless of how many
+// delta chunks build it, so the adapter forwards it on the chunk it was
+// observed on.
+func TestGeminiAdapter_ThoughtSignatureFromTextPart(t *testing.T) {
+	const sig = "AY-text-sig-roundtrip=="
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello","thoughtSignature":"`+sig+`"}]}}]}`) +
+		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	var sawSig bool
+	for _, ev := range collectEvents(t, ch) {
+		if ev.Type == "text_delta" && ev.ThoughtSignature == sig {
+			sawSig = true
+		}
+		if ev.Type == "error" {
+			t.Fatalf("unexpected error event: %v", ev.Error)
+		}
+	}
+	if !sawSig {
+		t.Errorf("expected a text_delta event carrying thoughtSignature=%q", sig)
+	}
+}

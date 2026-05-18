@@ -37,7 +37,13 @@ type StreamEvent struct {
 	StopReason   string         `json:"stopReason,omitempty"`
 	OutputTokens int            `json:"outputTokens,omitempty"`
 	Content      []ContentBlock `json:"content,omitempty"`
-	Error        error          `json:"-"`
+	// ThoughtSignature is an opaque provider-specific blob attached to the
+	// part the event represents (Gemini 3.x hidden chain-of-thought). The
+	// agentic loop persists it onto the resulting ContentBlock so the next
+	// turn can round-trip it back to the provider. Empty for providers
+	// that do not emit a signature.
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
+	Error            error  `json:"-"`
 }
 
 // StreamParams holds the parameters for a model streaming request.

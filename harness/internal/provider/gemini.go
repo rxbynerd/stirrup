@@ -270,11 +270,17 @@ func mapGeminiFinishReason(in string) string {
 // (or when the stream terminates on a finishReason without a closing
 // chunk, in which case we treat the latest snapshot as final).
 //
+// thoughtSignature is captured separately: Gemini 3.x attaches it to the
+// part wrapping the functionCall, not to the functionCall sub-object. We
+// retain the last non-empty signature seen on the slot so the value
+// survives multi-chunk streamed calls and is available at emit time.
+//
 // The retained blob is bounded at maxToolInputSize (10 MB) to mirror the
 // Anthropic adapter's safety cap.
 type toolCallBuf struct {
-	name string
-	args []byte
+	name             string
+	args             []byte
+	thoughtSignature string
 }
 
 // consumeSSE reads SSE events from the response body and emits StreamEvents
@@ -352,9 +358,9 @@ func (g *GeminiAdapter) consumeSSE(
 	// follow-up chunk with the same name does not double-emit. The ID
 	// is synthesised from streamN and the monotonic nextPartIdx counter
 	// (incremented by the caller after a successful emit).
-	emitToolCall := func(name string, fullArgs []byte, idForSeq int) bool {
+	emitToolCall := func(buf *toolCallBuf, idForSeq int) bool {
 		var input map[string]any
-		argsBytes := fullArgs
+		argsBytes := buf.args
 		if len(argsBytes) == 0 {
 			argsBytes = []byte("{}")
 		}
@@ -363,12 +369,13 @@ func (g *GeminiAdapter) consumeSSE(
 			return false
 		}
 		emitEvent(types.StreamEvent{
-			Type:  "tool_call",
-			ID:    fmt.Sprintf("gemini-%d-%d", streamN, idForSeq),
-			Name:  name,
-			Input: input,
+			Type:             "tool_call",
+			ID:               fmt.Sprintf("gemini-%d-%d", streamN, idForSeq),
+			Name:             buf.name,
+			Input:            input,
+			ThoughtSignature: buf.thoughtSignature,
 		})
-		delete(toolBufs, name)
+		delete(toolBufs, buf.name)
 		return true
 	}
 
@@ -420,8 +427,9 @@ func (g *GeminiAdapter) consumeSSE(
 					switch {
 					case part.Text != "":
 						emitEvent(types.StreamEvent{
-							Type: "text_delta",
-							Text: part.Text,
+							Type:             "text_delta",
+							Text:             part.Text,
+							ThoughtSignature: part.ThoughtSignature,
 						})
 					case part.FunctionCall != nil:
 						sawFunctionCall = true
@@ -465,6 +473,15 @@ func (g *GeminiAdapter) consumeSSE(
 							buf.args = snapshot
 						}
 
+						// thoughtSignature lives on the wrapping part, not
+						// inside functionCall. Retain the latest non-empty
+						// value so a multi-chunk streamed call that carries
+						// the signature on (say) the first chunk still
+						// surfaces it on the eventual emit.
+						if part.ThoughtSignature != "" {
+							buf.thoughtSignature = part.ThoughtSignature
+						}
+
 						// Unreachable when streamFunctionCallArguments=false (current default); retained for correctness if the flag is re-enabled.
 						if !fc.WillContinue {
 							// Final chunk for this call: emit, then
@@ -472,7 +489,7 @@ func (g *GeminiAdapter) consumeSSE(
 							// synthesis. nextPartIdx is no longer the
 							// slot key — emitting deletes the named
 							// slot directly.
-							if !emitToolCall(buf.name, buf.args, nextPartIdx) {
+							if !emitToolCall(buf, nextPartIdx) {
 								return
 							}
 							nextPartIdx++
@@ -490,7 +507,7 @@ func (g *GeminiAdapter) consumeSSE(
 				// represents a distinct tool name — order between
 				// drained calls is not load-bearing.
 				for _, buf := range toolBufs {
-					if !emitToolCall(buf.name, buf.args, nextPartIdx) {
+					if !emitToolCall(buf, nextPartIdx) {
 						return
 					}
 					nextPartIdx++

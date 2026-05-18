@@ -12,15 +12,23 @@ type Message struct {
 
 // ContentBlock is a single block of content within a message.
 // Use the Type field to determine which variant fields are populated.
+//
+// ThoughtSignature is an opaque, provider-specific blob the model emits
+// alongside a part to encode its hidden chain-of-thought. Today only the
+// Gemini 3.x adapter populates it (on text and tool_use blocks); the
+// harness preserves the blob unchanged across turns so the model can
+// resume its prior reasoning. Other providers ignore the field on
+// translation.
 type ContentBlock struct {
-	Type      string          `json:"type"` // "text" | "tool_use" | "tool_result"
-	Text      string          `json:"text,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	Type             string          `json:"type"` // "text" | "tool_use" | "tool_result"
+	Text             string          `json:"text,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Input            json.RawMessage `json:"input,omitempty"`
+	ToolUseID        string          `json:"tool_use_id,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	IsError          bool            `json:"is_error,omitempty"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
 }
 
 // ToolDefinition describes a tool available to the model.
