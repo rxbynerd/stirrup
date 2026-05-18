@@ -779,6 +779,49 @@ func TestGeminiAdapter_MalformedSSEChunk(t *testing.T) {
 	}
 }
 
+// TestGeminiAdapter_BlankFunctionCallName pins the empty-name guard in
+// the functionCall branch: a chunk whose functionCall part lacks a name
+// must surface as a single error event and abort the stream without
+// emitting a tool_call or message_complete. A blank Name was the bucket
+// key that motivated the explicit guard (#193); regressing it would
+// silently coalesce the chunk into a "" slot rather than failing fast.
+func TestGeminiAdapter_BlankFunctionCallName(t *testing.T) {
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"args":{"path":"x"}}}]}}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-2.5-pro"})
+	if err != nil {
+		t.Fatalf("Stream(): %v", err)
+	}
+
+	events := collectEvents(t, ch)
+
+	var errCount int
+	for _, ev := range events {
+		switch ev.Type {
+		case "error":
+			errCount++
+			if ev.Error == nil || !strings.Contains(ev.Error.Error(), "functionCall part missing name") {
+				t.Errorf("error event = %+v, want error containing %q", ev, "functionCall part missing name")
+			}
+		case "tool_call":
+			t.Errorf("unexpected tool_call event: %+v", ev)
+		case "message_complete":
+			t.Errorf("unexpected message_complete event: %+v", ev)
+		}
+	}
+	if errCount != 1 {
+		t.Errorf("expected exactly 1 error event, got %d (events=%+v)", errCount, events)
+	}
+}
+
 // TestGeminiAdapter_ToolCallBufferDrainOnFinishReason verifies the
 // drain path: a tool call with willContinue=true followed immediately
 // by a finishReason=STOP chunk (without a closing willContinue=false)
