@@ -119,6 +119,13 @@ func TestSummarise_OverBudget_SummarisesOldMessages(t *testing.T) {
 	if !strings.Contains(mock.lastParams.System, "untrusted data") {
 		t.Error("summary system prompt should warn about untrusted data")
 	}
+	// The summariser asks for greedy decoding via an explicit *float64
+	// zero. Guard against a silent regression to nil — which would surface
+	// downstream as the service-default temperature and undermine the
+	// determinism contract of the summary path.
+	if mock.lastParams.Temperature == nil || *mock.lastParams.Temperature != 0.0 {
+		t.Errorf("temperature = %v, want *=0.0 (greedy decoding)", mock.lastParams.Temperature)
+	}
 }
 
 func TestSummarise_RecentMessagesPreservedVerbatim(t *testing.T) {

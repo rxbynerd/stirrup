@@ -34,11 +34,16 @@ import (
 )
 
 // mockProvider is a test ProviderAdapter that returns predefined events.
+// lastParams captures the StreamParams of the most recent Stream call so
+// tests can assert request-shape invariants (e.g. the loop's
+// Temperature=Float64Ptr(0.1) producer guarantee).
 type mockProvider struct {
-	events []types.StreamEvent
+	events     []types.StreamEvent
+	lastParams types.StreamParams
 }
 
-func (m *mockProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+func (m *mockProvider) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	m.lastParams = params
 	ch := make(chan types.StreamEvent, len(m.events))
 	for _, e := range m.events {
 		ch <- e
@@ -139,6 +144,12 @@ func TestLoop_SimpleTextResponse(t *testing.T) {
 	}
 	if runTrace.Turns != 1 {
 		t.Errorf("expected 1 turn, got %d", runTrace.Turns)
+	}
+	// The loop pins Temperature=Float64Ptr(0.1) on every provider call
+	// (see loop.go). If that producer regresses to nil, downstream
+	// callers will silently receive the service-default temperature.
+	if prov.lastParams.Temperature == nil || *prov.lastParams.Temperature != 0.1 {
+		t.Errorf("loop temperature = %v, want *=0.1", prov.lastParams.Temperature)
 	}
 }
 
