@@ -152,13 +152,27 @@ func backoffDelay(n int, policy RetryPolicy, r *rand.Rand) time.Duration {
 	return time.Duration(r.Int64N(int64(upper)))
 }
 
-// retry outcome attribute values.
+// retry outcome attribute values. This is a closed set: every code
+// path through DoWithRetry that reaches recordOutcome must use one
+// of these constants.
+//
+//   - succeeded:        terminal 2xx response (with or without retries).
+//   - exhausted:        retries exhausted by MaxAttempts on a retryable
+//                       status; the last response is returned to caller.
+//   - non_retryable:    terminal non-retryable status or transport error.
+//   - budget_exhausted: wall-clock budget would be exceeded by the next
+//                       sleep; the last response is returned to caller.
+//   - context_done:     ctx.Done() fired during the inter-attempt sleep.
+//   - rewind_failed:    req.GetBody() returned an error on attempt > 0;
+//                       no further attempt could be made even though
+//                       MaxAttempts had not been reached.
 const (
 	retryOutcomeSucceeded       = "succeeded"
 	retryOutcomeExhausted       = "exhausted"
 	retryOutcomeNonRetryable    = "non_retryable"
 	retryOutcomeBudgetExhausted = "budget_exhausted"
 	retryOutcomeContextDone     = "context_done"
+	retryOutcomeRewindFailed    = "rewind_failed"
 )
 
 // retry delay-source attribute values.
@@ -229,7 +243,25 @@ func DoWithRetry(
 			if req.GetBody != nil {
 				body, err := req.GetBody()
 				if err != nil {
-					recordOutcome(ctx, metrics, providerType, model, retryOutcomeExhausted)
+					// Rewind failure is distinct from exhaustion: retries
+					// were not used up, the body just cannot be replayed.
+					// Drain and close the previous response so the
+					// connection can be reused (caller receives nil resp
+					// and cannot do this itself). Bound the drain at 4 KB
+					// — matches the M3 drain limit at the retry-loop
+					// site.
+					if lastResp != nil {
+						_, _ = io.Copy(io.Discard, io.LimitReader(lastResp.Body, 4096))
+						_ = lastResp.Body.Close()
+					}
+					logger.Warn("provider_retry_rewind_failed",
+						"event", "provider_retry_rewind_failed",
+						"provider", providerType,
+						"model", model,
+						"attempt", attempt+1,
+						"error", security.Scrub(err.Error()),
+					)
+					recordOutcome(ctx, metrics, providerType, model, retryOutcomeRewindFailed)
 					return nil, err
 				}
 				req.Body = body
@@ -346,9 +378,12 @@ func DoWithRetry(
 
 		// Drain the previous response body before retrying so the
 		// connection can be reused. Skip for transport errors where
-		// resp is nil.
+		// resp is nil. Bound the drain at 4 KB so a hostile upstream
+		// cannot stall progress by streaming an unbounded body on a
+		// 429/503 response — the wall-clock budget check runs after
+		// the drain returns and cannot help if the drain blocks.
 		if lastResp != nil {
-			_, _ = io.Copy(io.Discard, lastResp.Body)
+			_, _ = io.Copy(io.Discard, io.LimitReader(lastResp.Body, 4096))
 			_ = lastResp.Body.Close()
 			lastResp = nil
 		}
