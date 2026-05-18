@@ -22,8 +22,8 @@ that provider. Recent breakage shows the assumption is false:
 | Provider | Model pattern | Divergence | Status |
 |---|---|---|---|
 | `gemini` (Vertex AI) | `gemini-3*` | `streamFunctionCallArguments` deltas; `thoughtSignature` on parts | Worked around in [#191] (flag off); thoughtSignature deferred |
-| `openai-compatible` | OpenAI o-series; Azure OpenAI deployments backed by newer reasoning models | `max_tokens` rejected, `max_completion_tokens` required | **Broken** |
-| `openai-compatible` | OpenAI reasoning models | `temperature` rejected on some o-series deployments | Suspected |
+| `openai-compatible` | OpenAI o-series; Azure OpenAI deployments backed by newer reasoning models | `max_tokens` rejected, `max_completion_tokens` required; `temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs`, `logit_bias` all rejected | **Broken** |
+| `openai-compatible` | GPT-5 family | `max_tokens` rejected; reasoning variants reject the same sampling param set as o-series; gpt-5.1 defaults `reasoning_effort=none`; gpt-5-pro accepts only `high`; gpt-5.1-codex-max adds `xhigh` | **Broken** |
 | `openai-responses` | Various Azure Foundry deployments | Required-key rules for empty `output` / `text` fields | Resolved per-case in [#172] / [#176] |
 
 [#191]: https://github.com/rxbynerd/stirrup/pull/191
@@ -35,7 +35,7 @@ adapter wire shape S. M1 accepts S; M2 rejects S or interprets S
 differently. The harness's only existing knobs (`--query-param`,
 `--api-key-header`, `--base-url`) live at the URL/header layer; they
 do not address body shape, field renames, conditional field omission,
-or value reshaping.
+value reshaping, or replay-required opaque state.
 
 Two non-starters frame the design space:
 
@@ -78,7 +78,10 @@ Headline findings that shape this plan:
   outbound." Azure OpenAI's strict outbound is what the harness
   absorbs.
 - **OpenRouter** is a negative result: no public wire-format
-  rewrite spec; everything is implicit per upstream.
+  rewrite spec; everything is implicit per upstream. The interesting
+  signal is what they normalise externally (a fixed `finish_reason`
+  vocabulary plus a typed `reasoning_details[]` opaque-replay array),
+  which informs this plan's `ReplayFields` design.
 
 Two invariants from the survey are load-bearing for the design that
 follows:
@@ -113,21 +116,28 @@ multimodal work tracked in [issue #103]. Naming the abstraction
    demarshalling a response.
 2. A registry keyed on `(provider-type, model-pattern)` that maps to
    `ProviderQuirks` instances. Lives inside the `provider` package, not
-   on `RunConfig`.
-3. Coverage of the **field-rename**, **conditional-omission**, and
-   **value-override** categories — the 80% case the OpenAI Chat
-   Completions divergences fall into.
+   on `RunConfig`. The registry is designed to accommodate a future
+   `BaseURLMatch` predicate without renumbering existing rules (see
+   §3.2.2).
+3. Coverage of the **field-rename**, **conditional-omission**,
+   **value-override**, and **enum-coercion** categories — the 80% case
+   the OpenAI Chat Completions divergences fall into.
 4. A typed-capability flag surface for adapter-internal structural
    branching — the 20% case the Gemini 3.x streaming-deltas divergence
    falls into.
-5. Forward-compatible defaults: a model name unmatched by any rule
+5. A declared but not-yet-implemented `ReplayFields` surface for
+   opaque-state fields the next turn must thread back verbatim
+   (`reasoning_content`, `reasoning.encrypted_content`,
+   `thinking.signature`, `thought_signature`). Declaring the surface
+   in v1 pins the shape the deferred-work PRs will implement against.
+6. Forward-compatible defaults: a model name unmatched by any rule
    inherits the latest known shape for its provider type, not the
    legacy one. Explicit fallback rules carry older model families
    forward.
-6. Every applied quirk is observable: emitted as span attributes on
+7. Every applied quirk is observable: emitted as span attributes on
    the existing `provider.stream` span and as a structured log line
    at debug level.
-7. Each registry entry is paired with captured wire fixtures
+8. Each registry entry is paired with captured wire fixtures
    (request + response) and exercised in the existing
    `httptest`-based test suite. The fixture is the contract.
 
@@ -145,6 +155,12 @@ multimodal work tracked in [issue #103]. Naming the abstraction
   refusal differently), (b) silent retry doubles request cost on
   every miss, and (c) "predictable behaviour" is a load-bearing
   Stirrup invariant. Detection is a v2 layer, opt-in.
+- **Replay-fields conversation threading.** The `ReplayFields`
+  surface lands in v1 (so the rule shape stabilises) but the
+  conversation-history builder that consults it is deferred to its
+  own PR. Rules declaring `ReplayFields` parse the field on
+  responses but the next-turn replay is not yet wired. Tracked
+  alongside the [#191] follow-up for `thoughtSignature`.
 - **Bedrock.** The `bedrock` adapter speaks through the AWS SDK's
   Converse API, which already abstracts model-family wire
   differences. Bedrock-family divergences (e.g. Llama-3 vs Claude-on-
@@ -152,13 +168,29 @@ multimodal work tracked in [issue #103]. Naming the abstraction
   addressed by extending the stop-reason mapping path in
   [`harness/internal/provider/bedrock.go`](../harness/internal/provider/bedrock.go),
   not by the registry. The registry's interface is provider-
-  agnostic, so Bedrock can plug in later without redesign.
-- **`thoughtSignature` round-trip.** Tracked separately as a follow-up
-  to [#191].
+  agnostic, so Bedrock can plug in later without redesign. Note:
+  AWS Bedrock now also serves a separate OpenAI-compatible endpoint
+  (`bedrock-runtime.*.amazonaws.com/openai/v1/`) which would be
+  reached via `provider.type = openai-compatible`; quirks for that
+  endpoint do land in the registry, just under the openai-compatible
+  provider type.
+- **`thoughtSignature` round-trip.** The `ReplayFields` surface in
+  §3.1 declares the shape; the actual history-builder threading is
+  tracked separately as a follow-up to [#191] and lands in the same
+  PR that wires the broader replay-fields path.
 - **Multimodal content shape variations.** Tracked under
   [issue #103]; multimodal blocks have their own per-provider
   serialisation concerns that overlap but are largely additive to the
   quirks surface.
+- **Message-role rewriting** (e.g. mapping `system` → `developer`
+  for OpenAI o-series / gpt-5; mapping `system` → `developer` on
+  Cerebras gpt-oss-120b). The transformation is well-defined but
+  invasive — it touches the conversation-history builder, not just
+  the marshaller — and the production failure rate on this is low
+  (most o-series deployments tolerate `system` and the documented
+  rename to `developer` is forward-looking). Deferred to a follow-up
+  once the `ReplayFields` work lands, since both touch the same
+  history-builder path.
 
 [issue #103]: https://github.com/rxbynerd/stirrup/issues/103
 
@@ -197,7 +229,9 @@ type ProviderQuirks struct {
     // OmitFields lists canonical fields the adapter MUST NOT emit on
     // the wire for this (provider, model) pair, even when their value
     // is non-zero. Used for parameters models reject outright — e.g.
-    // OpenAI o-series rejects `temperature` entirely.
+    // OpenAI o-series rejects `temperature`, `top_p`,
+    // `presence_penalty`, `frequency_penalty`, `logprobs`,
+    // `top_logprobs`, and `logit_bias` entirely.
     OmitFields []string
 
     // ValueOverrides forces a canonical field's serialised value,
@@ -211,16 +245,76 @@ type ProviderQuirks struct {
     // surprises; see `quirks.Value`.
     ValueOverrides map[string]Value
 
+    // EnumCoercions maps a canonical field's caller-supplied string
+    // value to the wire value the request should emit. Used when a
+    // model accepts a parameter but only at a subset of canonical
+    // enum values — e.g. Cohere's compatibility endpoint accepts
+    // `reasoning_effort` only as "none" or "high", so a caller-
+    // supplied "medium" needs coercing to "high"; DeepSeek-V4 thinking
+    // mode coerces "low"/"medium" up to "high" and "xhigh" up to "max".
+    //
+    // Distinct from ValueOverrides: ValueOverrides forces a value
+    // irrespective of caller input; EnumCoercions transforms the
+    // caller's value through a per-field translation table. A
+    // missing outer key falls through to the canonical value
+    // unchanged. A present outer key with no matching inner entry
+    // means the caller's value is unsupported and the field is
+    // dropped (equivalent to a one-off OmitFields entry); the
+    // registry self-test warns on rules that use this pattern
+    // without explicit intent, since it can hide breakage from
+    // operators.
+    //
+    // Restricted to string-valued enums in v1. Reasoning-effort,
+    // service-tier, and similar canonical fields all fit this
+    // shape. A future numeric-enum case would extend to Value-typed
+    // coercion; the keyed-by-string design preserves trace
+    // readability (`reasoning_effort: medium → high` reads cleanly
+    // in span attributes).
+    EnumCoercions map[string]map[string]string
+
+    // ReplayFields lists canonical assistant-message field paths the
+    // conversation-history builder MUST thread verbatim across turns.
+    // Used for opaque-state fields the upstream gateway treats as
+    // required-on-follow-up: omitting them on the next turn returns
+    // 400 with a gateway-specific error message.
+    //
+    // Known cases (lands in v1 as parse-side recognition; history-
+    // builder threading deferred to the [#191] follow-up PR):
+    //   - "reasoning_content"           — DeepSeek-V4 thinking
+    //   - "reasoning.encrypted_content" — OpenAI Responses reasoning
+    //   - "thinking.signature"          — Anthropic thinking blocks
+    //   - "tool_calls[].thought_signature" — Gemini 3 partial-args
+    //
+    // Paths use a small JSON-pointer-ish dialect: dot-separated keys,
+    // `[]` denoting array-of-objects iteration. The history builder
+    // walks the path on each prior assistant message and preserves
+    // the value byte-for-byte on the next turn.
+    //
+    // v1 only requires the response parser to recognise and preserve
+    // the field on the inbound side; the threading on outbound is
+    // implemented in the follow-up. Until then, multi-turn runs
+    // against models that require replay will fail on turn 2 — same
+    // failure mode as today, but at least observable via the
+    // resolved quirks.
+    ReplayFields []string
+
     // StructuralFlags carries adapter-specific flags for divergences
     // that cannot be expressed as flat field operations. The flag set
     // is closed and typed per adapter (e.g. `openai.StructuralFlags`,
     // `gemini.StructuralFlags`) so the compiler enforces that an
     // adapter only ever reads flags it knows about.
     //
-    // Example: Gemini's StructuralFlags carries
-    // `StreamFunctionCallArgsShape ∈ {Off, V2Snapshot, V3Deltas}`.
-    // The default (`Off`) preserves the post-#191 production
-    // behaviour.
+    // Examples:
+    //   - Gemini's StructuralFlags carries
+    //     `StreamFunctionCallArgsShape ∈ {Off, V2Snapshot, V3Deltas}`.
+    //     The default (`Off`) preserves the post-#191 production
+    //     behaviour.
+    //   - openai-compatible's StructuralFlags will gain a
+    //     `StreamFraming ∈ {OpenAIChat, OpenRouterEnveloped,
+    //     LMStudioResponses}` flag in a future wave when Stirrup
+    //     starts proxying through gateways whose SSE shape differs.
+    //     v1's openaiStructuralFlags is empty; the type exists so
+    //     the registry already speaks the right shape.
     StructuralFlags any
 }
 ```
@@ -287,6 +381,21 @@ type Rule struct {
     // doubles as the rule's audit name.
     Description string
 
+    // LastVerified is the date the rule's behaviour was last
+    // empirically confirmed against the upstream gateway. Used for
+    // staleness signalling: rules whose LastVerified is older than
+    // 180 days emit a debug-level "rule may be stale" log line on
+    // first match in a run, and the introspection subcommand renders
+    // a warning column. Not a correctness gate — just a maintenance
+    // signal so perishable rules (DeepSeek's 2026-07-24 model
+    // retirement, Azure Foundry API rebrands, mid-life model
+    // renames) surface for review before they break.
+    //
+    // Set via the helper `quirks.Date("2026-05-01")` which panics
+    // on parse error; rules are static so a bad date is effectively
+    // a compile-time failure.
+    LastVerified time.Time
+
     // Apply composes this rule's adjustments onto q. Implementations
     // mutate q in place. Apply is called only after a positive match,
     // so the function does not re-check ProviderType / ModelMatch.
@@ -312,9 +421,10 @@ familiar to operators reading test output and matches the directory-
 glob conventions already used in the codebase. Examples:
 
 - `gemini-3*` matches `gemini-3.1-pro-preview` and `gemini-3-flash`.
-- `o1-*` matches `o1-mini` and `o1-preview`, but NOT bare `o1` (the
-  trailing hyphen is literal).
+- `o[1-9]-*` matches `o1-mini`, `o3-mini`, `o4-mini`, but NOT
+  bare `o1` (the trailing hyphen is literal).
 - `gpt-4*` matches `gpt-4`, `gpt-4o`, `gpt-4o-mini`.
+- `gpt-5*` matches `gpt-5`, `gpt-5-mini`, `gpt-5.1-codex-max`.
 
 Regex was considered and rejected: glob covers every realistic case,
 the trace attribute is more readable, and there is no need for the
@@ -323,12 +433,18 @@ expressive power of capture groups or character classes.
 `path.Match`'s metacharacters are `*`, `?`, `[`, `]`, and `\`. A
 survey of current OpenAI, Anthropic, Vertex AI, Bedrock, and
 Mistral catalogue identifiers shows none contains any of these
-characters; v1 assumes that property and the registry validates it
-at startup via `TestNoMetacharsInKnownModelIDs`. A future identifier
-that breaks the assumption forces a switch to literal-then-glob
-escaping, not a redesign.
+characters. Self-hosted echoes are noisier — Ollama emits tags
+(`llama3.3:70b-instruct`), LM Studio emits variant qualifiers
+(`google/gemma-3-12b@q3_k_l`), and vLLM emits LoRA module names
+that are operator-chosen. The colon, slash, and `@` are all safe
+for `path.Match`, but the registry self-test
+`TestNoMetacharsInKnownModelIDs` pins the assumption against a
+catalogue file that includes representative samples from each
+self-hosted server in addition to the hosted catalogues. A future
+identifier that breaks the assumption forces a switch to
+literal-then-glob escaping, not a redesign.
 
-### 3.2.1 Rule composition: longest-pattern wins, then declaration order
+#### 3.2.1 Rule composition: longest-pattern wins, then declaration order
 
 The registry composes by **specificity, then declaration order**:
 
@@ -352,6 +468,52 @@ v1 ships specificity-ordered composition; if the rule set proves to
 be one-rule-per-model in practice, the registry can be simplified
 post hoc.
 
+Composable Apply helpers — small named functions in
+`harness/internal/provider/quirks_helpers.go` — let several rules
+share a common policy without duplicating its logic. The
+`applyOpenAIReasoningClass` helper used in §6.1 is the first such
+helper; further helpers can be added as patterns emerge across
+rules.
+
+#### 3.2.2 Future seam: `BaseURLMatch` predicate
+
+The registry keys on `(ProviderType, ModelMatch)` in v1. A future
+revision will add an optional `BaseURLMatch` glob that, when
+non-empty, narrows the rule to gateways whose base URL matches the
+glob:
+
+```go
+// (sketch, not in v1)
+type Rule struct {
+    ProviderType  string
+    ModelMatch    string
+    BaseURLMatch  string  // optional; "" matches all base URLs
+    Description   string
+    LastVerified  time.Time
+    Apply         func(q *ProviderQuirks)
+}
+```
+
+The seam matters because real gateways break the upstream's shape:
+Azure Foundry adds preview-header quirks under
+`*.openai.azure.com`; OpenRouter wraps errors in a nested envelope
+and exposes `native_finish_reason` under `openrouter.ai/api/*`;
+self-hosted vLLM/llama.cpp under `localhost:*` is more lenient than
+hosted OpenAI under `api.openai.com/*`. v1 punts on this — operators
+configuring a non-canonical gateway under `provider.type =
+openai-compatible` get the canonical OpenAI rules, which the gateway
+will usually tolerate.
+
+The reason to sketch the seam now rather than later: rules
+declared in v1 must be representable in the v2 shape without
+ambiguity. The v1 rules below all assume the canonical hosted
+endpoint; a future rule that explicitly targets Azure can add
+`BaseURLMatch: "*openai.azure.com*"` without renumbering or
+restructuring. The composition order extends naturally:
+specificity is the sum of `len(ModelMatch) + len(BaseURLMatch)`,
+so a `(ProviderType + ModelMatch + BaseURLMatch)` triple is more
+specific than a `(ProviderType + ModelMatch)` pair.
+
 ### 3.3 Adapter integration
 
 Each adapter exposes a small, typed surface that the registry
@@ -364,18 +526,28 @@ adapter package owns.
 type openaiCanonicalField string
 
 const (
-    fieldMaxTokens     openaiCanonicalField = "max_tokens"
-    fieldTemperature   openaiCanonicalField = "temperature"
-    fieldStream        openaiCanonicalField = "stream"
+    fieldMaxTokens         openaiCanonicalField = "max_tokens"
+    fieldTemperature       openaiCanonicalField = "temperature"
+    fieldTopP              openaiCanonicalField = "top_p"
+    fieldPresencePenalty   openaiCanonicalField = "presence_penalty"
+    fieldFrequencyPenalty  openaiCanonicalField = "frequency_penalty"
+    fieldLogprobs          openaiCanonicalField = "logprobs"
+    fieldTopLogprobs       openaiCanonicalField = "top_logprobs"
+    fieldLogitBias         openaiCanonicalField = "logit_bias"
+    fieldReasoningEffort   openaiCanonicalField = "reasoning_effort"
+    fieldStream            openaiCanonicalField = "stream"
     // ... etc
 )
 
 // openaiStructuralFlags is the typed flag set the Chat Completions
 // adapter reads off ProviderQuirks.StructuralFlags. v1 is empty;
-// future Chat Completions divergences declare flags here.
+// future Chat Completions divergences declare flags here. The first
+// known case landing in a follow-up wave is SSE-dialect selection
+// (OpenAI canonical vs OpenRouter envelope vs LM Studio Responses
+// shape), keyed off provider.type + BaseURLMatch once §3.2.2 lands.
 type openaiStructuralFlags struct {
     // (none in v1; the openai-compatible divergences known today are
-    // all expressible as FieldRenames / OmitFields.)
+    // all expressible as FieldRenames / OmitFields / EnumCoercions.)
 }
 ```
 
@@ -385,19 +557,23 @@ The adapter's request-marshalling path becomes:
    top of each `Stream` call. Section 4 explains why per-stream
    rather than per-adapter.
 2. The marshaller asks `quirks` for the wire key of each canonical
-   field, the omission set, and the value-override set, then emits
-   the body accordingly.
+   field, the omission set, the value-override set, and the
+   enum-coercion table; then emits the body accordingly.
 3. The marshaller branches on `StructuralFlags` for any divergence
    it has been written to honour.
 4. The same `quirks` value is captured into the SSE-reader closure
    so the parse path consults the same source of truth as the send
    path (the Codec invariant; see 3.3.1).
+5. The response parser preserves any path in `ReplayFields` from
+   the inbound assistant message onto the message struct so the
+   history builder (when it lands in the follow-up PR) can thread
+   it on the next turn.
 
 For Gemini, the same pattern applies; `geminiStructuralFlags` would
 contain `StreamFunctionCallArgsShape` and the adapter would key off
 that when constructing the `toolConfig.functionCallingConfig` block.
 
-### 3.3.1 The Codec invariant
+#### 3.3.1 The Codec invariant
 
 The same resolved `ProviderQuirks` value drives both the **send
 path** (request marshalling) and the **parse path** (response/SSE
@@ -429,6 +605,11 @@ Concretely:
   captured at request time. The streaming closure carries the
   quirks value into `consumeSSE`, so a long-lived stream cannot
   see a different rule resolution mid-flight.
+- `ReplayFields` is the canonical example of the invariant: the
+  same path string drives the response parser's "preserve this
+  field" behaviour and (in the follow-up PR) the history builder's
+  "thread this field" behaviour. The two halves cannot diverge
+  because they consult the same slice.
 - Tests assert symmetry: each registered rule has both a request
   fixture and (where the parse path diverges) a response fixture,
   and the test exercises both halves through the same `Resolve`
@@ -459,11 +640,11 @@ Two visibility seams are added:
    ```
 
    prints the resolved `ProviderQuirks` as JSON, including the
-   description of every rule that contributed. The subcommand is
-   side-effect-free and reads only the in-memory registry. It exists
-   so an operator hitting an unexpected 400 from an upstream gateway
-   can confirm what shape the harness was sending without enabling
-   debug logs.
+   description, `LastVerified` date, and staleness status of every
+   rule that contributed. The subcommand is side-effect-free and
+   reads only the in-memory registry. It exists so an operator
+   hitting an unexpected 400 from an upstream gateway can confirm
+   what shape the harness was sending without enabling debug logs.
 
 ### 3.5 Future operator override (deliberately not in v1)
 
@@ -480,10 +661,10 @@ The plan deliberately defers an operator-authored override
 
 If operational pressure ever justifies it, the override should be a
 narrow surface that piggybacks the same `ProviderQuirks` type
-(e.g. only `OmitFields` and `FieldRenames`; no `StructuralFlags` or
-`ValueOverrides`), and every applied override should fire a
-`security.SecurityLogger` event so audit trails can flag custom
-wire-shape adjustments.
+(e.g. only `OmitFields`, `FieldRenames`, and `EnumCoercions`; no
+`StructuralFlags`, `ValueOverrides`, or `ReplayFields`), and every
+applied override should fire a `security.SecurityLogger` event so
+audit trails can flag custom wire-shape adjustments.
 
 ## 4. Where quirks are resolved
 
@@ -517,21 +698,32 @@ cost is genuinely irrelevant.
 
 | Category | Mechanism | Example |
 |---|---|---|
-| Field rename | `FieldRenames` map | OpenAI `max_tokens` → `max_completion_tokens` for `o1-*`, `o3-*`, `gpt-5*` |
-| Conditional omission | `OmitFields` slice | OpenAI o-series rejects `temperature`; omit when matched |
+| Field rename | `FieldRenames` map | OpenAI `max_tokens` → `max_completion_tokens` for `o1-*`, `o3-*`, `o4-*`, `gpt-5*` |
+| Conditional omission | `OmitFields` slice | OpenAI reasoning class rejects `temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `logprobs`, `top_logprobs`, `logit_bias`; omit when matched |
 | Value override | `ValueOverrides` map | A model that accepts `temperature` only when it equals 1.0 |
-| Structural shape | typed `StructuralFlags` per adapter | Gemini 3.x `streamFunctionCallArguments` deltas (currently set to "off" universally; the flag exists so a future reinstatement can be model-scoped) |
+| Enum coercion | `EnumCoercions` map | Cohere compat accepts `reasoning_effort ∈ {none, high}` only; DeepSeek-V4 thinking coerces `low\|medium → high` and `xhigh → max` |
+| Replay-required state (parse-side only in v1) | `ReplayFields` slice | DeepSeek `reasoning_content`, OpenAI Responses `reasoning.encrypted_content`, Anthropic `thinking.signature`, Gemini 3 `thought_signature` |
+| Structural shape | typed `StructuralFlags` per adapter | Gemini 3.x `streamFunctionCallArguments` deltas (currently set to "off" universally; the flag exists so a future reinstatement can be model-scoped). Future SSE-dialect selection on openai-compatible (OpenRouter envelope, LM Studio Responses) will land here. |
 | Response parsing | adapter-side branch on `StructuralFlags` | Gemini 3.x `partialArgs` array vs 2.x snapshot |
 
 Out of v1 scope (deferred to follow-up issues):
 
-- Cross-cutting metadata renames (e.g. `usage.completion_tokens` →
-  `usage.output_tokens`). The parse-side rename surface is more
+- **Replay-fields threading on outbound** — the field surface is
+  declared and the response parser preserves the data; the
+  conversation-history builder that emits the preserved values on
+  the next turn is the deferred piece. Tracked with [#191].
+- **Message-role rewriting** (system → developer for OpenAI o-
+  series / gpt-5 and Cerebras gpt-oss-120b). The transformation
+  touches the conversation-history builder, not the marshaller; it
+  lands alongside the replay-fields threading work.
+- **Cross-cutting metadata renames** (e.g. `usage.completion_tokens`
+  → `usage.output_tokens`). The parse-side rename surface is more
   invasive than the send side and warrants its own design pass once
   a concrete case lands.
-- Authentication-shape divergences (already handled by the existing
-  `APIKeyHeader` / `Credential` surface; out of registry scope).
-- Endpoint path divergences (e.g. moving from
+- **Authentication-shape divergences** (already handled by the
+  existing `APIKeyHeader` / `Credential` surface; out of registry
+  scope).
+- **Endpoint path divergences** (e.g. moving from
   `/v1/chat/completions` to `/v2/...`). `BaseURL` already covers
   this; the registry should not.
 
@@ -540,38 +732,102 @@ Out of v1 scope (deferred to follow-up issues):
 Each entry below is a rule that lands in the v1 registry. Every rule
 ships with one or more captured wire fixtures and a regression test.
 
-### 6.1 OpenAI Chat Completions: `max_tokens` → `max_completion_tokens`
+### 6.1 OpenAI Chat Completions: reasoning-class param restrictions
+
+The o-series and gpt-5 reasoning models share a common rejection set:
+`max_tokens` is replaced by `max_completion_tokens`, and the sampling
+parameters `temperature`, `top_p`, `presence_penalty`,
+`frequency_penalty`, `logprobs`, `top_logprobs`, and `logit_bias` are
+rejected outright. (Source: Microsoft Foundry docs,
+`learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning`;
+empirically confirmed against `api.openai.com` Chat Completions and
+Azure deployments backed by o-series.)
+
+A composable helper expresses the shared policy without duplicating
+seven omissions across each family rule:
+
+```go
+// In harness/internal/provider/quirks_helpers.go
+func applyOpenAIReasoningClass(q *ProviderQuirks) {
+    q.FieldRenames["max_tokens"] = "max_completion_tokens"
+    q.OmitFields = append(q.OmitFields,
+        "temperature",
+        "top_p",
+        "presence_penalty",
+        "frequency_penalty",
+        "logprobs",
+        "top_logprobs",
+        "logit_bias",
+    )
+}
+```
+
+The rules call the helper:
 
 ```go
 // inside BuiltinRules() []Rule { return []Rule{
 {
     ProviderType: "openai-compatible",
-    ModelMatch:   "o1-*",
-    Description:  "OpenAI o1 family requires max_completion_tokens",
-    Apply: func(q *ProviderQuirks) {
-        q.FieldRenames["max_tokens"] = "max_completion_tokens"
-        q.OmitFields = append(q.OmitFields, "temperature")
-    },
-},
-{
-    ProviderType: "openai-compatible",
-    ModelMatch:   "o3-*",
-    Description:  "OpenAI o3 family requires max_completion_tokens",
-    Apply: func(q *ProviderQuirks) {
-        q.FieldRenames["max_tokens"] = "max_completion_tokens"
-        q.OmitFields = append(q.OmitFields, "temperature")
-    },
+    ModelMatch:   "o[1-9]-*",
+    Description:  "OpenAI o-series: reasoning-class param restrictions",
+    LastVerified: Date("2026-05-01"),
+    Apply:        applyOpenAIReasoningClass,
 },
 {
     ProviderType: "openai-compatible",
     ModelMatch:   "gpt-5*",
-    Description:  "GPT-5 family requires max_completion_tokens",
+    Description:  "OpenAI GPT-5 family: max_completion_tokens required",
+    LastVerified: Date("2026-05-01"),
     Apply: func(q *ProviderQuirks) {
+        // GPT-5 family always requires max_completion_tokens, even
+        // for non-reasoning variants (gpt-5-chat-latest).
         q.FieldRenames["max_tokens"] = "max_completion_tokens"
+    },
+},
+{
+    // Narrower override: gpt-5 reasoning variants (everything in
+    // the gpt-5 family that is NOT gpt-5-chat*) inherit the full
+    // reasoning-class omissions.
+    ProviderType: "openai-compatible",
+    ModelMatch:   "gpt-5*",
+    Description:  "OpenAI GPT-5 reasoning: sampling param restrictions",
+    LastVerified: Date("2026-05-01"),
+    Apply: func(q *ProviderQuirks) {
+        // applyOpenAIReasoningClass adds the rename and omissions.
+        // The rename is idempotent; the omissions are append-only,
+        // so re-applying it is safe.
+        applyOpenAIReasoningClass(q)
+    },
+},
+{
+    // Carve-out: gpt-5-chat is non-reasoning and accepts the full
+    // sampling set. The rule applies AFTER the broader gpt-5* rule
+    // by virtue of being a longer pattern (specificity-then-order;
+    // see §3.2.1).
+    ProviderType: "openai-compatible",
+    ModelMatch:   "gpt-5-chat*",
+    Description:  "OpenAI gpt-5-chat: non-reasoning, restore sampling",
+    LastVerified: Date("2026-05-01"),
+    Apply: func(q *ProviderQuirks) {
+        // The broader gpt-5* rules have populated OmitFields; this
+        // rule clears the entries that gpt-5-chat actually accepts.
+        // A small helper, removeFromOmit, keeps the semantics
+        // explicit.
+        removeFromOmit(q,
+            "temperature", "top_p",
+            "presence_penalty", "frequency_penalty",
+            "logprobs", "top_logprobs", "logit_bias",
+        )
     },
 },
 // }}
 ```
+
+The composition relies on specificity ordering: `gpt-5*` (5 chars,
+not counting `*`) applies before `gpt-5-chat*` (10 chars). The
+negative-test discipline in §7.2 pins this — a test asserts
+`gpt-5-chat-latest` ends with no entries in `OmitFields`, while
+`gpt-5-mini` ends with the full reasoning-class set.
 
 #### 6.1.1 Azure deployment-name handling
 
@@ -588,6 +844,13 @@ with non-canonical Azure deployment names can opt into a model
 family; this is the operator-authored-override seam from
 section 3.5, kept behind a tighter contract than free-form quirks.
 
+The future `BaseURLMatch` predicate (§3.2.2) covers the inverse
+case: an Azure-only quirk that does not apply to OpenAI direct
+deployments under the same model name. Azure preview-header
+behaviour and Azure-side rate-limit-header inconsistencies (both
+documented as buggy by Microsoft) are candidates once `BaseURLMatch`
+lands.
+
 ### 6.2 Gemini 3.x: streamed function-call argument shape
 
 The current state is "flag globally off". The registry codifies that
@@ -599,6 +862,7 @@ and gives a future re-enablement a model-scoped seam:
     ProviderType: "gemini",
     ModelMatch:   "*",
     Description:  "Default: do not stream function-call arguments",
+    LastVerified: Date("2026-05-01"),
     Apply: func(q *ProviderQuirks) {
         q.StructuralFlags = geminiStructuralFlags{
             StreamFunctionCallArgsShape: StreamArgsOff,
@@ -610,6 +874,7 @@ and gives a future re-enablement a model-scoped seam:
 //     ProviderType: "gemini",
 //     ModelMatch:   "gemini-2.*",
 //     Description:  "Gemini 2.x supports cumulative-snapshot streaming",
+//     LastVerified: Date("2026-XX-XX"),
 //     Apply: func(q *ProviderQuirks) {
 //         q.StructuralFlags = geminiStructuralFlags{
 //             StreamFunctionCallArgsShape: StreamArgsV2Snapshot,
@@ -642,12 +907,88 @@ requires a present-but-empty value", not "this model differs from
 that model". Registry membership is reserved for genuine per-model
 splits.
 
-### 6.4 OpenAI Chat Completions: `temperature` rejection on o-series
+### 6.4 OpenAI Chat Completions: sampling-parameter rejection on reasoning models
 
-Covered by the rules in 6.1 (the `OmitFields` clause). When the
-o-series rule is matched, `temperature` is dropped from the request
-body. `StreamParams.Temperature` retains its value for tracing; the
-omission happens at marshal time.
+Covered by the rules in 6.1 (the `applyOpenAIReasoningClass` helper).
+When a reasoning-class rule is matched, the seven rejected sampling
+parameters are dropped from the request body. `StreamParams`'
+populated fields retain their values for tracing; the omission
+happens at marshal time.
+
+### 6.5 Replay-fields recognition (parse-side; threading deferred)
+
+Three rules land in v1 to declare the `ReplayFields` surface and wire
+the response-parse recognition. The corresponding outbound threading
+in the conversation-history builder is deferred to the [#191]
+follow-up PR. Until that PR lands, multi-turn runs against the
+affected models will fail on turn 2 — the same failure mode as today,
+but at least the resolved quirks make the cause observable.
+
+```go
+// inside BuiltinRules() []Rule { return []Rule{
+{
+    ProviderType: "openai-compatible",
+    ModelMatch:   "deepseek-reasoner*",
+    Description:  "DeepSeek thinking: preserve reasoning_content (parse-side only)",
+    LastVerified: Date("2026-05-01"),
+    Apply: func(q *ProviderQuirks) {
+        q.ReplayFields = append(q.ReplayFields, "reasoning_content")
+    },
+},
+{
+    ProviderType: "openai-compatible",
+    ModelMatch:   "deepseek-v4*",
+    Description:  "DeepSeek-V4 thinking: preserve reasoning_content (parse-side only)",
+    LastVerified: Date("2026-05-01"),
+    Apply: func(q *ProviderQuirks) {
+        q.ReplayFields = append(q.ReplayFields, "reasoning_content")
+    },
+},
+{
+    ProviderType: "gemini",
+    ModelMatch:   "gemini-3*",
+    Description:  "Gemini 3: preserve thought_signature on tool-call parts (parse-side only)",
+    LastVerified: Date("2026-05-01"),
+    Apply: func(q *ProviderQuirks) {
+        q.ReplayFields = append(q.ReplayFields,
+            "tool_calls[].thought_signature",
+        )
+    },
+},
+// }}
+```
+
+The OpenAI Responses `reasoning.encrypted_content` and Anthropic
+`thinking.signature` cases will land as rules when their adapters
+gain the response-parse hook; both are tracked in the same follow-up.
+
+### 6.6 Enum coercion (deferred but with sketched rules)
+
+The `EnumCoercions` surface lands with no rules in v1 — the
+existing five-adapter set does not include Cohere or DeepSeek-V4.
+The surface is sketched here so the design intent is on record and
+the registry self-tests can pin its semantics with synthetic rules.
+
+The intended shape, when Cohere is added:
+
+```go
+// (illustrative; not in v1 BuiltinRules)
+{
+    ProviderType: "openai-compatible",
+    ModelMatch:   "command-*",
+    BaseURLMatch: "*.cohere.ai/compatibility/*",  // requires §3.2.2
+    Description:  "Cohere compat: reasoning_effort accepts only none/high",
+    LastVerified: Date("2026-XX-XX"),
+    Apply: func(q *ProviderQuirks) {
+        q.EnumCoercions["reasoning_effort"] = map[string]string{
+            "low":     "none",
+            "medium":  "high",
+            "minimal": "none",
+            "xhigh":   "high",
+        }
+    },
+},
+```
 
 ## 7. Validation and testing
 
@@ -661,6 +1002,9 @@ Each rule lands with at least one captured wire fixture stored under
   upstream gateway, or a synthetic equivalent when the rule covers a
   response-parse path. Synthetic fixtures must include a comment
   explaining their derivation.
+- `replay.json` — for `ReplayFields` rules, an assistant-message
+  snapshot showing the preserved field as the response parser
+  retains it. Present only for rules that touch `ReplayFields`.
 
 The fixture is the contract: if a rule's `Apply` changes, the
 captured request must change with it. The test:
@@ -682,7 +1026,20 @@ captured request must change with it. The test:
 
 For each shipped rule, a parallel negative test confirms a sibling
 model that should NOT match the rule produces the default wire shape.
-E.g. `gpt-4o` does NOT take the `max_completion_tokens` rule.
+The set is enumerated explicitly:
+
+- `gpt-4o` does NOT inherit `applyOpenAIReasoningClass`.
+- `gpt-5-chat-latest` does NOT carry the reasoning-class omissions
+  (the `gpt-5-chat*` carve-out clears them; the test pins this).
+- `gpt-5-mini` DOES carry the full omission set.
+- `gemini-2.5-pro` does NOT match the `gemini-3*` `ReplayFields`
+  rule.
+- `deepseek-chat` (non-thinking) does NOT carry the
+  `reasoning_content` `ReplayFields` entry.
+
+A `TestRuleCarveOuts` table-driven test pins all the carve-out cases
+so a rule re-ordering or `path.Match` semantics change cannot
+silently broaden a rule's reach.
 
 ### 7.3 Replay safety
 
@@ -699,7 +1056,26 @@ bypasses quirk resolution entirely. A drift-detection eval that
 compares a replayed run to a fresh live run can therefore still
 flag a registry change as an attribute-set diff.
 
-### 7.4 End-to-end smoke
+### 7.4 Glob safety
+
+`TestNoMetacharsInKnownModelIDs` exercises every model identifier
+from a catalogue file (`testdata/model-ids.txt`) against the
+`path.Match` grammar's metacharacter set (`*`, `?`, `[`, `]`, `\`).
+The catalogue includes:
+
+- Hosted: OpenAI, Azure OpenAI, Anthropic, Vertex AI, Bedrock,
+  Mistral, Groq, Together, Fireworks, DeepSeek, Cerebras,
+  Perplexity, Cohere, xAI, OpenRouter (sampled).
+- Self-hosted echoes: Ollama tags (`llama3.3:70b-instruct`,
+  `qwen2.5-coder:32b`), LM Studio variant qualifiers
+  (`google/gemma-3-12b@q3_k_l`), vLLM and llama.cpp HF-style
+  identifiers, LiteLLM proxy prefixes.
+
+The catalogue is refreshed quarterly; the test fails CI when a new
+identifier introduces a metacharacter, forcing a design conversation
+rather than a silent escaping pass.
+
+### 7.5 End-to-end smoke
 
 The Azure OpenAI smoke workflow tracked in [issue #160] gains a
 second matrix row pinning a deployment of an o-series or GPT-5
@@ -707,6 +1083,17 @@ model. The smoke test is the integration-side confirmation that the
 matched rule produces a body the upstream gateway accepts.
 
 [issue #160]: https://github.com/rxbynerd/stirrup/issues/160
+
+### 7.6 Staleness signal
+
+A `TestRuleStaleness` test enumerates every `BuiltinRules` entry
+and asserts `LastVerified` is set (non-zero). A separate
+`TestRuleStalenessWarning` invokes the staleness-check helper and
+confirms a synthetic rule dated 200 days ago produces the expected
+debug log line. The 180-day threshold is a constant in
+`harness/internal/provider/quirks.go`; staleness is a maintenance
+signal, not a correctness gate, so the test does not fail on real
+stale rules — it pins the warning mechanism.
 
 ## 8. Observability
 
@@ -721,9 +1108,13 @@ Quirks are observable through three channels:
   the standard OTel SDK so no replay-side changes are needed.
 - **Structured log line.** At debug level, a single line at the
   top of each `Stream` call:
-  `provider quirks resolved provider=openai-compatible model=o1-mini rules=[...]`
+  `provider quirks resolved provider=openai-compatible model=o1-mini rules=[...]`.
+  A separate `warn`-level line fires when any matched rule's
+  `LastVerified` is older than 180 days.
 - **CLI introspection.** `stirrup providers quirks --provider X --model Y`
-  prints the resolved `ProviderQuirks` as JSON for human inspection.
+  prints the resolved `ProviderQuirks` as JSON for human inspection,
+  including the description, `LastVerified` date, and staleness
+  status of every rule that contributed.
 
 The trace attribute is the load-bearing one: every recorded run can
 be replayed against the resolved quirks, and a regression in the
@@ -738,7 +1129,11 @@ independently mergeable waves:
 ### Wave 1 — Scaffolding (no behaviour change)
 
 - Land `harness/internal/provider/quirks.go` with the `Rule`,
-  `Registry`, `ProviderQuirks`, and `Value` types.
+  `Registry`, `ProviderQuirks`, and `Value` types, including the
+  `EnumCoercions` and `ReplayFields` fields and the `LastVerified`
+  field on `Rule`.
+- Land `harness/internal/provider/quirks_helpers.go` with
+  `applyOpenAIReasoningClass`, `removeFromOmit`, and `Date`.
 - Land an empty default registry and the `BuiltinRules` constructor.
 - Land the introspection subcommand at
   `harness/cmd/stirrup/cmd/providers_quirks.go`. With an empty
@@ -753,8 +1148,9 @@ independently mergeable waves:
   `ProviderQuirks`. The default-rule registry still produces today's
   exact bytes; this is enforced by golden-file tests on every
   existing supported model.
-- Land the `o1-*`, `o3-*`, `gpt-5*` rules from section 6.1 with
-  captured fixtures.
+- Land the `o[1-9]-*`, `gpt-5*`, and `gpt-5-chat*` rules from
+  section 6.1 with captured fixtures, including the carve-out
+  negative tests in §7.2.
 - Expand the Azure smoke workflow ([issue #160]) to exercise an
   o-series deployment.
 
@@ -775,7 +1171,18 @@ plumbing so future Responses-side divergences (Azure Foundry's
 content-part lifecycle events, server-side state events that some
 gateways inject) can be addressed without re-plumbing the adapter.
 
-### Wave 5 — Documentation pass
+### Wave 5 — Replay-fields recognition (parse-side)
+
+- Land the response-parse hook in `openai.go` and `gemini.go` that
+  preserves `ReplayFields` paths onto the assistant-message struct.
+- Land the §6.5 rules for `deepseek-reasoner*`, `deepseek-v4*`, and
+  `gemini-3*`.
+- Captured `replay.json` fixtures pin the preserved-field shape.
+
+The conversation-history-builder outbound threading is a separate
+follow-up PR (tracked alongside [#191]) and not part of v1.
+
+### Wave 6 — Documentation pass
 
 - [`docs/providers.md`](./providers.md) cross-references this
   document.
@@ -817,32 +1224,46 @@ can see the seam left for it.
   mid-life. A rule keyed on `gpt-5*` survives the rename from
   `gpt-5-nano-2025-10-01` to `gpt-5-nano-stable`; a rule keyed on
   the dated suffix does not. Rules should match the longest stable
-  prefix per provider; the choice is a per-rule judgment.
-- **Gateway-shaped divergences.** Azure, OpenRouter, LiteLLM, and
-  vLLM each add their own variants. The registry keys on
-  `(provider-type, model)` only; a gateway that breaks the
-  upstream's shape today does not have a clean expression unless a
-  distinct `provider.type` is configured for it. v1 accepts this
-  limitation; a future revision could extend rules with a
-  `BaseURLMatch` predicate.
+  prefix per provider; the choice is a per-rule judgment. The
+  `LastVerified` field surfaces stale rules for review before they
+  break, but is not a substitute for prefix discipline.
+- **Replay-fields half-implementation gap.** Wave 5 lands the
+  parse-side recognition but not the outbound threading. Multi-turn
+  runs against `deepseek-v4*` and `gemini-3*` will continue to fail
+  on turn 2 until the [#191] follow-up lands. The risk is operators
+  seeing `provider.quirk.applied` in their trace and assuming the
+  full fix has shipped. Mitigation: the rule descriptions in §6.5
+  end with `(parse-side only)` and the docs cross-reference [#191].
+- **Carve-out fragility.** The `gpt-5-chat*` carve-out in §6.1
+  depends on specificity ordering AND on the broader `gpt-5*` rule
+  having populated `OmitFields` before it runs. A reordering of
+  `BuiltinRules` would break it silently if not for the negative
+  test in §7.2. The negative test is therefore load-bearing, not
+  documentary.
+- **Enum coercion as silent breakage.** A rule that adds an
+  `EnumCoercions` entry can effectively drop a caller's parameter
+  (when the inner table has no match). The registry self-test
+  warns on this pattern but operators can still be surprised.
+  Mitigation: the resolved quirks include the coercion table, so
+  the introspection subcommand surfaces "your `medium` will be
+  sent as `high`" directly.
 
 ### Open questions
 
 These are intentionally surfaced for the implementation review.
 
 1. **Glob vs prefix-with-version-suffix.** `path.Match` is the v1
-   pick. Are there real-world model names with characters
-   `path.Match` mistreats (e.g. embedded `[`, `]`)? Survey of
-   OpenAI / Azure / Vertex / OpenRouter catalogues suggests no, but
-   pinning a test that exercises every known model name against the
-   matcher would catch regressions early.
+   pick. The §7.4 catalogue test pins the assumption against current
+   identifiers; confirm reviewers are satisfied with the catalogue's
+   coverage of self-hosted echoes (Ollama, LM Studio, vLLM) before
+   merging Wave 1.
 
-2. **Order vs first-match.** v1 chooses all-matches-apply-in-order.
-   The alternative is first-match-wins. The former composes cleanly
-   for "provider-wide default + model-specific overlay" patterns;
-   the latter is easier to reason about. A real-world rule set of
-   ten entries should make the choice obvious; v1's choice can flip
-   if the rule-set ergonomics demand it.
+2. **Order vs first-match.** v1 chooses specificity-then-declaration-
+   order. The alternative is first-match-wins. The former composes
+   cleanly for "provider-wide default + model-specific overlay"
+   patterns (which the `gpt-5*` / `gpt-5-chat*` carve-out exercises);
+   the latter is easier to reason about. v1's choice can flip if the
+   rule-set ergonomics demand it.
 
 3. **Per-stream vs per-adapter resolution.** v1 picks per-stream
    (section 4) for dynamic-router correctness. Confirm with a
@@ -855,11 +1276,15 @@ These are intentionally surfaced for the implementation review.
    every adapter's canonical fields. v1 keeps them per-adapter; the
    alternative is easier to audit but adds an import cycle.
 
-5. **Bedrock.** Section 2 explicitly defers Bedrock. Confirm with
-   reviewers that the SDK abstraction genuinely covers the
-   model-family divergences known today (Claude-on-Bedrock vs
+5. **Bedrock.** Section 2 explicitly defers Bedrock (Converse API).
+   Confirm with reviewers that the SDK abstraction genuinely covers
+   the model-family divergences known today (Claude-on-Bedrock vs
    Llama-3 vs Mistral). If the SDK leaks shape variations through
    `additional_model_request_fields`, Bedrock joins the registry.
+   Bedrock's separate OpenAI-compatible endpoint
+   (`bedrock-runtime.*.amazonaws.com/openai/v1/`) is reached via
+   the openai-compatible adapter and is in scope; rules for it land
+   once `BaseURLMatch` (§3.2.2) is implemented.
 
 6. **Eval-suite implications.** [`stirrup-eval`](./eval.md)
    replays recorded runs and does not need quirks. But a *live* eval
@@ -882,13 +1307,21 @@ These are intentionally surfaced for the implementation review.
    issue every multi-provider router has had to solve.
 
 8. **Response-side parse divergences beyond Gemini 3.x.** The plan
-   provisions `StructuralFlags` for parse-path branching, but the
-   only known case today is Gemini 3.x. Survey the other adapters'
-   response shapes against their newest models (Claude 4.x SSE
-   events, OpenAI Responses content-part lifecycle additions, Azure
-   Foundry SSE extensions) to confirm there are no latent
-   divergences the plan hasn't accounted for. A quick fixture
-   capture pass before Wave 3 would be cheap insurance.
+   provisions `StructuralFlags` for parse-path branching, and
+   `ReplayFields` for opaque-state preservation. A fixture-capture
+   pass before Wave 3 should confirm there are no latent
+   divergences the plan hasn't accounted for: Claude 4.x SSE events,
+   OpenAI Responses content-part lifecycle additions, Azure
+   Foundry SSE extensions, DeepSeek's `insufficient_system_resource`
+   `finish_reason` value, Perplexity's citation tokens in usage,
+   llama.cpp's `timings` block.
+
+9. **`BaseURLMatch` design seam.** The §3.2.2 sketch needs reviewer
+   sign-off on the specificity formula (`len(ModelMatch) +
+   len(BaseURLMatch)`) before v1 lands, since it pins the v2 PR's
+   composition semantics. The alternative (lexical: `BaseURLMatch`
+   beats `ModelMatch` ties) is simpler but breaks the "longer = more
+   specific" mental model that §3.2.1 establishes.
 
 ## 11. Worked example
 
@@ -906,10 +1339,11 @@ RunConfig {
 2. The agentic loop calls `Stream(ctx, StreamParams{Model: "o1-mini", ...})`.
 3. The adapter calls `registry.Resolve("openai-compatible", "o1-mini")`.
 4. The registry walks its rules. The rule
-   `{ProviderType: "openai-compatible", ModelMatch: "o1-*"}` matches;
-   its `Apply` sets:
+   `{ProviderType: "openai-compatible", ModelMatch: "o[1-9]-*"}` matches;
+   its `Apply` (via `applyOpenAIReasoningClass`) sets:
    - `q.FieldRenames["max_tokens"] = "max_completion_tokens"`
-   - `q.OmitFields = ["temperature"]`
+   - `q.OmitFields = ["temperature", "top_p", "presence_penalty",
+     "frequency_penalty", "logprobs", "top_logprobs", "logit_bias"]`
 5. The adapter's marshaller emits:
    ```json
    {
@@ -919,23 +1353,30 @@ RunConfig {
      "stream": true
    }
    ```
-   (No `temperature`; `max_completion_tokens` instead of `max_tokens`.)
+   (No sampling parameters; `max_completion_tokens` instead of
+   `max_tokens`.)
 6. The `provider.stream` span carries
-   `provider.quirk.applied = ["OpenAI o1 family requires max_completion_tokens"]`.
+   `provider.quirk.applied = ["OpenAI o-series: reasoning-class param restrictions"]`.
 7. An operator running
    `stirrup providers quirks --provider openai-compatible --model o1-mini`
-   sees the same description plus the resolved `ProviderQuirks` JSON.
+   sees the same description, `LastVerified: 2026-05-01`, and the
+   resolved `ProviderQuirks` JSON.
 
 ## 12. Implementation summary
 
-- New package contents: `harness/internal/provider/quirks.go`
-  (types + registry + `BuiltinRules`).
+- New package contents:
+  - `harness/internal/provider/quirks.go` — types, `Registry`,
+    `BuiltinRules`, `Date` helper.
+  - `harness/internal/provider/quirks_helpers.go` —
+    `applyOpenAIReasoningClass`, `removeFromOmit`, future helpers.
 - Modified files: `openai.go`, `openai_responses.go`, `gemini.go`,
   `gemini_request.go` — each gains a per-stream
   `registry.Resolve` call and threads `ProviderQuirks` through its
-  marshaller.
+  marshaller. `openai.go` and `gemini.go` also gain a `ReplayFields`
+  parse hook in Wave 5.
 - New CLI subcommand: `harness/cmd/stirrup/cmd/providers_quirks.go`.
-- New test fixtures: `harness/internal/provider/testdata/quirks/`.
+- New test fixtures: `harness/internal/provider/testdata/quirks/`
+  and `harness/internal/provider/testdata/model-ids.txt`.
 - Documentation: this file, plus updates to
   [`docs/providers.md`](./providers.md),
   [`docs/configuration.md`](./configuration.md), and the trace-schema
