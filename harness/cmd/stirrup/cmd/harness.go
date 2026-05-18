@@ -599,7 +599,13 @@ URI. The flag overrides executor.workspaceExportTo from --config when
 explicitly set. Default error semantics: upload failures are logged and
 the run's exit code is unchanged. Pass --export-workspace-required to
 flip that — a failed upload then exits the run non-zero, suitable for
-Cloud Run jobs whose downstream automation depends on the artifact.`,
+Cloud Run jobs whose downstream automation depends on the artifact.
+
+The default --mode is "planning" (read-only: no write_file / edit_file /
+run_command, deny-side-effects permission policy). Pass --mode execution
+to enable editing and shell access; the read-only modes (planning, review,
+research, toil) differ only in prompt template and ship as the safe-by-
+default first-touch posture.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runHarness,
 }
@@ -609,7 +615,7 @@ func init() {
 
 	f := harnessCmd.Flags()
 	f.String("config", "", "Path to a JSON RunConfig file (mirrors proto/harness/v1/harness.proto). Explicit flags still override individual fields; unset flags do not.")
-	f.StringP("mode", "m", "execution", "Run mode: execution, planning, review, research, toil")
+	f.StringP("mode", "m", "planning", "Run mode: execution, planning, review, research, toil. Default is the read-only `planning` mode (no edits, no shell, deny-side-effects policy); pass `--mode execution` for editable runs with shell access.")
 	f.String("model", "claude-sonnet-4-6", "Model to use (sets ModelRouter.Model; for dynamic/per-mode routers in --config files this only sets the default-model field, not the cheap/expensive override)")
 	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, gemini (Vertex AI), openai-compatible (Chat Completions), openai-responses (Responses API). The two OpenAI variants speak different wire formats and must be selected explicitly.")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "Secret reference for API key")

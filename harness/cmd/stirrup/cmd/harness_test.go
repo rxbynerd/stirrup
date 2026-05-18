@@ -79,6 +79,71 @@ func TestBuildHarnessRunConfig_AllModesValidate(t *testing.T) {
 	}
 }
 
+// TestHarnessCmd_DefaultModeIsPlanning pins the CLI-surface default for
+// --mode after #74: a bare `stirrup harness` invocation lands in the
+// read-only `planning` mode, not the editable `execution` mode, so the
+// first-touch posture is safe by default and operators must explicitly
+// opt in to write/shell capabilities via --mode execution. The pin is
+// against the flag registration on harnessCmd itself rather than the
+// helper command, so a regression that flips the default in only one
+// of the two places fails this test.
+func TestHarnessCmd_DefaultModeIsPlanning(t *testing.T) {
+	flag := harnessCmd.Flags().Lookup("mode")
+	if flag == nil {
+		t.Fatal("--mode flag is not registered on harnessCmd")
+	}
+	if flag.DefValue != "planning" {
+		t.Errorf("default --mode = %q, want %q (safe-by-default per #74)", flag.DefValue, "planning")
+	}
+}
+
+// TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning proves the
+// safe-by-default property end-to-end: a flag-only invocation with only
+// the documented CLI defaults (no --mode override) produces a RunConfig
+// that has Mode == "planning" and passes ValidateRunConfig — including
+// the read-only-mode invariants (deny-side-effects policy, non-empty
+// Tools.BuiltIn that excludes write_file/edit_file/run_command).
+//
+// This pins acceptance criterion (a) from #74: "Validate cleanly
+// (already true after #73)" — but specifically through the new default
+// rather than relying on a caller passing --mode planning explicitly.
+func TestBuildHarnessRunConfig_BareInvocationValidatesAsPlanning(t *testing.T) {
+	defaultMode := harnessCmd.Flags().Lookup("mode").DefValue
+
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          defaultMode,
+		Prompt:        "test prompt",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if cfg.Mode != "planning" {
+		t.Errorf("bare invocation should land in planning mode, got %q", cfg.Mode)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("bare invocation must validate cleanly: %v", err)
+	}
+	if cfg.PermissionPolicy.Type != "deny-side-effects" {
+		t.Errorf("planning mode should default to deny-side-effects, got %q", cfg.PermissionPolicy.Type)
+	}
+	if len(cfg.Tools.BuiltIn) == 0 {
+		t.Fatal("planning mode should populate a non-empty Tools.BuiltIn list")
+	}
+	for _, tool := range cfg.Tools.BuiltIn {
+		if tool == "write_file" || tool == "edit_file" || tool == "run_command" {
+			t.Errorf("planning mode must not enable write tool %q in the default list", tool)
+		}
+	}
+}
+
 // TestBuildHarnessRunConfig_OpenAIResponsesProvider verifies that the
 // openai-responses provider type is accepted by both the CLI option-to-
 // RunConfig path and ValidateRunConfig. Before this case existed, picking
@@ -513,7 +578,7 @@ func newTestHarnessCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "harness"}
 	f := cmd.Flags()
 	f.String("config", "", "")
-	f.StringP("mode", "m", "execution", "")
+	f.StringP("mode", "m", "planning", "")
 	f.String("model", "claude-sonnet-4-6", "")
 	f.String("provider", "anthropic", "")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "")
