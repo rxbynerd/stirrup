@@ -468,6 +468,46 @@ func TestDefaultReadOnlyBuiltInTools_PassesValidation(t *testing.T) {
 	}
 }
 
+// TestDefaultExecutionBuiltInTools_PassesValidation pins the safe-by-
+// default execution allowlist (issue #74) against ValidateRunConfig
+// under the new default permission policy (deny-side-effects). A
+// regression that introduced a tool the validator rejects, or that
+// regressed the policy default back to allow-all, would surface here.
+func TestDefaultExecutionBuiltInTools_PassesValidation(t *testing.T) {
+	defaults := DefaultExecutionBuiltInTools()
+	if len(defaults) == 0 {
+		t.Fatal("DefaultExecutionBuiltInTools returned an empty list")
+	}
+
+	// All entries must be recognised built-ins.
+	for _, name := range defaults {
+		if !validBuiltInToolNames[name] {
+			t.Errorf("DefaultExecutionBuiltInTools contains unknown tool %q", name)
+		}
+	}
+
+	// Safety-ring invariant: the two tools that singlehandedly trip
+	// Rule of Two (web_fetch: untrusted ingress + external comm;
+	// run_command: host shell access) must NOT be in the default set.
+	bannedFromDefault := map[string]bool{"web_fetch": true, "run_command": true}
+	for _, name := range defaults {
+		if bannedFromDefault[name] {
+			t.Errorf("DefaultExecutionBuiltInTools includes opt-in-only tool %q", name)
+		}
+	}
+
+	// Validation must accept the defaults paired with deny-side-effects
+	// on execution mode — the exact combination applyModeDefaults
+	// lands on for a bare `stirrup harness --prompt "x"` invocation.
+	c := validConfig()
+	c.Mode = "execution"
+	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+	c.Tools = ToolsConfig{BuiltIn: defaults}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("DefaultExecutionBuiltInTools + deny-side-effects must validate, got: %v", err)
+	}
+}
+
 func TestIsReadOnlyMode(t *testing.T) {
 	readOnly := []string{"planning", "review", "research", "toil"}
 	for _, m := range readOnly {

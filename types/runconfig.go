@@ -1182,6 +1182,39 @@ func DefaultReadOnlyBuiltInTools() []string {
 	}
 }
 
+// DefaultExecutionBuiltInTools returns the default set of built-in tools
+// enabled for execution mode when the caller has not supplied an explicit
+// Tools.BuiltIn list. Mirrors DefaultReadOnlyBuiltInTools for the
+// editable mode.
+//
+// The list is the conservative safe-by-default surface from issue #74:
+// introspection plus a multi-strategy editor and the sub-agent helper.
+// Two tools are deliberately excluded and must be opted in explicitly by
+// listing them in Tools.BuiltIn:
+//
+//   - web_fetch: external HTTP egress + untrusted-input ingress, two of
+//     the three Rule-of-Two legs all by itself.
+//   - run_command: arbitrary host-shell access. Lethal-by-default
+//     when paired with the local executor and no sandbox.
+//
+// MCP servers remain opt-in via MCPServers declarations; they were
+// always declaration-gated, this defaulting change does not alter
+// their posture.
+//
+// Operators wanting the previous "everything enabled" behaviour can
+// either list every built-in explicitly under Tools.BuiltIn in
+// --config, or pair the conservative default with an explicit
+// permissionPolicy=allow-all opt-out.
+func DefaultExecutionBuiltInTools() []string {
+	return []string{
+		"read_file",
+		"list_directory",
+		"search_files",
+		"edit_file",
+		"spawn_agent",
+	}
+}
+
 // mutatingTools enumerates built-in tools that mutate workspace state and
 // must therefore be excluded from read-only modes (research, review,
 // planning, toil). Other policy-relevant attributes (such as whether a

@@ -479,16 +479,32 @@ func retryDurationToMs(flagName string, d time.Duration) (int, error) {
 	return int(d / time.Millisecond), nil
 }
 
-// applyModeDefaults fills in PermissionPolicy and the read-only Tools.BuiltIn
-// list based on cfg.Mode, but only for fields the caller has not set
-// explicitly. This is shared between the flag-only path (buildHarnessRunConfig)
-// and the --config path (runHarness, after applyOverrides) so the two paths
-// produce architecturally consistent configs.
+// applyModeDefaults fills in PermissionPolicy and the Tools.BuiltIn list
+// based on cfg.Mode, but only for fields the caller has not set
+// explicitly. This is shared between the flag-only path
+// (buildHarnessRunConfig) and the --config path (runHarness, after
+// applyOverrides) so the two paths produce architecturally consistent
+// configs.
 //
-// The function never strips an explicit configuration — if the caller set
-// allow-all on a read-only mode, ValidateRunConfig will reject it with a
-// clear error rather than this function silently rewriting the choice.
-// That keeps user intent visible: a wrong combination fails loudly.
+// Execution mode landed on safe-by-default defaults in issue #74:
+//
+//   - PermissionPolicy.Type defaults to "deny-side-effects" (was
+//     "allow-all"). Workspace-mutating tools and approval-gated
+//     operations are denied until the operator explicitly opts in with
+//     a --config override.
+//   - Tools.BuiltIn defaults to DefaultExecutionBuiltInTools(), a
+//     conservative allowlist that excludes web_fetch (external egress
+//     + untrusted ingress) and run_command (host shell). Opting in
+//     requires listing them under Tools.BuiltIn in --config.
+//
+// Read-only modes already used deny-side-effects + a conservative
+// allowlist; the change brings execution mode into line.
+//
+// The function never strips an explicit configuration — if the caller
+// set allow-all on a read-only mode, ValidateRunConfig will reject it
+// with a clear error rather than this function silently rewriting the
+// choice. That keeps user intent visible: a wrong combination fails
+// loudly.
 func applyModeDefaults(cfg *types.RunConfig) {
 	if types.IsReadOnlyMode(cfg.Mode) {
 		if cfg.PermissionPolicy.Type == "" {
@@ -501,8 +517,15 @@ func applyModeDefaults(cfg *types.RunConfig) {
 		if len(cfg.Tools.BuiltIn) == 0 {
 			cfg.Tools.BuiltIn = types.DefaultReadOnlyBuiltInTools()
 		}
-	} else if cfg.PermissionPolicy.Type == "" {
-		cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "allow-all"}
+		return
+	}
+	// Execution mode (or any future editable mode that lands outside the
+	// read-only set).
+	if cfg.PermissionPolicy.Type == "" {
+		cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "deny-side-effects"}
+	}
+	if len(cfg.Tools.BuiltIn) == 0 {
+		cfg.Tools.BuiltIn = types.DefaultExecutionBuiltInTools()
 	}
 }
 

@@ -212,6 +212,60 @@ func TestApplyModeDefaults_RespectsExplicitTools(t *testing.T) {
 	}
 }
 
+// TestApplyModeDefaults_ExecutionSafeDefaults pins the safe-by-default
+// posture for execution mode from issue #74: a bare invocation with no
+// explicit Tools.BuiltIn list and no explicit PermissionPolicy lands
+// on the conservative DefaultExecutionBuiltInTools() allowlist and the
+// deny-side-effects permission policy. Regressing either knob would
+// silently re-enable web_fetch / run_command and allow-all on the
+// first turn of a fresh `stirrup harness --prompt "x"` run.
+func TestApplyModeDefaults_ExecutionSafeDefaults(t *testing.T) {
+	cfg := &types.RunConfig{Mode: "execution"}
+	applyModeDefaults(cfg)
+
+	if cfg.PermissionPolicy.Type != "deny-side-effects" {
+		t.Errorf("PermissionPolicy.Type = %q, want deny-side-effects", cfg.PermissionPolicy.Type)
+	}
+
+	wantTools := types.DefaultExecutionBuiltInTools()
+	if len(cfg.Tools.BuiltIn) != len(wantTools) {
+		t.Fatalf("Tools.BuiltIn = %v, want %v", cfg.Tools.BuiltIn, wantTools)
+	}
+	for i, name := range wantTools {
+		if cfg.Tools.BuiltIn[i] != name {
+			t.Errorf("Tools.BuiltIn[%d] = %q, want %q", i, cfg.Tools.BuiltIn[i], name)
+		}
+	}
+
+	// Defence-in-depth: the two opt-in-only tools must NOT appear.
+	for _, banned := range []string{"web_fetch", "run_command"} {
+		for _, got := range cfg.Tools.BuiltIn {
+			if got == banned {
+				t.Errorf("execution default unexpectedly includes %q: %v", banned, cfg.Tools.BuiltIn)
+			}
+		}
+	}
+}
+
+// TestApplyModeDefaults_ExecutionAllowAllOptIn confirms that an operator
+// who explicitly opts in to the legacy unconstrained posture (allow-all
+// + a tool list including run_command / web_fetch) survives the
+// safe-default fixup. The defaults must only fill *unset* fields.
+func TestApplyModeDefaults_ExecutionAllowAllOptIn(t *testing.T) {
+	cfg := &types.RunConfig{
+		Mode:             "execution",
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"run_command", "web_fetch"}},
+	}
+	applyModeDefaults(cfg)
+	if cfg.PermissionPolicy.Type != "allow-all" {
+		t.Errorf("explicit allow-all should survive, got %q", cfg.PermissionPolicy.Type)
+	}
+	if len(cfg.Tools.BuiltIn) != 2 || cfg.Tools.BuiltIn[0] != "run_command" || cfg.Tools.BuiltIn[1] != "web_fetch" {
+		t.Errorf("explicit tool list should survive, got %v", cfg.Tools.BuiltIn)
+	}
+}
+
 // TestApplyModeDefaults_RespectsExplicitPolicy verifies that an
 // explicit PermissionPolicy survives applyModeDefaults — even one that
 // will later fail validation (allow-all on a read-only mode). Auto-

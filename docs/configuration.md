@@ -194,6 +194,25 @@ configuration space — the common cases. Anything below requires
 
 The CLI flags for each of these set the *type* selection only.
 
+## Default safe-by-default posture (execution mode)
+
+A bare `stirrup harness --prompt "x"` with no `--config`, no explicit
+`Tools.BuiltIn`, and no explicit `PermissionPolicy` lands on the
+following conservative defaults (issue #74):
+
+| Knob | Default | Notes |
+|---|---|---|
+| `permissionPolicy.type` | `deny-side-effects` | Workspace-mutating tools (`write_file`, `edit_file`, `run_command`) are denied. Opt out with `permissionPolicy.type: allow-all` in `--config` or pair with `--permission-policy-file` for Cedar. |
+| `tools.builtIn` | `["read_file", "list_directory", "search_files", "edit_file", "spawn_agent"]` | Conservative starter set. `web_fetch` (external egress + untrusted ingress) and `run_command` (host shell) are opt-in: list them explicitly under `tools.builtIn` in `--config`. |
+
+Operators who explicitly set either knob in `--config` survive the
+fixup — `applyModeDefaults` only fills *unset* fields. Setting
+`permissionPolicy.type: allow-all` does not re-enable the excluded
+tools automatically; both axes are independent.
+
+Read-only modes (below) continue to use their pre-existing
+conservative defaults from `DefaultReadOnlyBuiltInTools()`.
+
 ## Read-only modes
 
 `planning`, `review`, `research`, and `toil` enforce a structural
