@@ -986,6 +986,47 @@ func TestGeminiAdapter_NonStreamedFunctionCall3xShape(t *testing.T) {
 	}
 }
 
+// TestGeminiAdapter_BlankFunctionCallName pins the blank-name guard in
+// the SSE consumer (gemini.go's "functionCall part missing name" branch).
+// A chunk with a functionCall part that omits the name is a protocol
+// violation; the adapter must surface it as a stream error rather than
+// silently bucket the chunk into an empty-name slot. Closes #193.
+func TestGeminiAdapter_BlankFunctionCallName(t *testing.T) {
+	body := makeGeminiData(`{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"args":{"path":"x"}}}]}}]}`) +
+		makeGeminiData(`{"candidates":[{"finishReason":"STOP"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := newGeminiTestAdapter(srv.URL, &stubTokenSource{token: "tok"})
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{Model: "gemini-3.1-pro-preview"})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	var errorEvents []types.StreamEvent
+	for _, ev := range collectEvents(t, ch) {
+		switch ev.Type {
+		case "error":
+			errorEvents = append(errorEvents, ev)
+		case "tool_call":
+			t.Errorf("unexpected tool_call event for a name-less functionCall part: %+v", ev)
+		case "message_complete":
+			t.Errorf("unexpected message_complete event after a protocol-violating chunk: %+v", ev)
+		}
+	}
+	if len(errorEvents) != 1 {
+		t.Fatalf("expected exactly 1 error event, got %d: %+v", len(errorEvents), errorEvents)
+	}
+	if errorEvents[0].Error == nil || !strings.Contains(errorEvents[0].Error.Error(), "functionCall part missing name") {
+		t.Errorf("error message = %v, want substring %q", errorEvents[0].Error, "functionCall part missing name")
+	}
+}
+
 // TestGeminiAdapter_ThoughtSignatureFromFunctionCallPart pins the parse
 // side of #194: a Gemini 3.x chunk that carries a thoughtSignature on the
 // part wrapping a functionCall surfaces the blob on the corresponding
