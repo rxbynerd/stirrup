@@ -89,13 +89,14 @@ func responsesBuilderCases() []struct {
 func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 	for _, tc := range responsesBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			var captured []byte
+			capturedCh := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, err := io.ReadAll(r.Body)
 				if err != nil {
-					t.Fatalf("read body: %v", err)
+					t.Errorf("read body: %v", err)
+					return
 				}
-				captured = b
+				capturedCh <- b
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
 				// Minimal completion event so Stream returns without a
@@ -115,6 +116,7 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 			}
 			for range ch {
 			}
+			captured := <-capturedCh
 
 			built := buildResponsesRequest(tc.params)
 			built.Stream = true

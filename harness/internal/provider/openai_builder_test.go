@@ -86,13 +86,14 @@ func openaiBuilderCases() []struct {
 func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 	for _, tc := range openaiBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			var captured []byte
+			capturedCh := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, err := io.ReadAll(r.Body)
 				if err != nil {
-					t.Fatalf("read body: %v", err)
+					t.Errorf("read body: %v", err)
+					return
 				}
-				captured = b
+				capturedCh <- b
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
 				// Minimal valid chunk + DONE so Stream's SSE consumer
@@ -112,6 +113,7 @@ func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 			}
 			for range ch {
 			}
+			captured := <-capturedCh
 
 			built := buildOpenAIRequest(tc.params, true)
 			builtBytes, err := json.Marshal(built)

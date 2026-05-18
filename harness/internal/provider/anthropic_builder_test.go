@@ -88,13 +88,14 @@ func anthropicBuilderCases() []struct {
 func TestBuildAnthropicRequest_MatchesStream(t *testing.T) {
 	for _, tc := range anthropicBuilderCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			var captured []byte
+			capturedCh := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				b, err := io.ReadAll(r.Body)
 				if err != nil {
-					t.Fatalf("read body: %v", err)
+					t.Errorf("read body: %v", err)
+					return
 				}
-				captured = b
+				capturedCh <- b
 				// Minimal valid stream so Stream returns without surfacing
 				// a parser error on the response side.
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -112,6 +113,7 @@ func TestBuildAnthropicRequest_MatchesStream(t *testing.T) {
 			}
 			for range ch {
 			}
+			captured := <-capturedCh
 
 			built := buildAnthropicRequest(tc.params, true)
 			builtBytes, err := json.Marshal(built)
