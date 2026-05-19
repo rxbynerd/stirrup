@@ -189,17 +189,56 @@ func TestHarnessPollingBatch_SubmitMissingID(t *testing.T) {
 
 // pollServer is a tiny stateful test fixture: it serves a configurable
 // sequence of /v1/messages/batches/{id} polls, then a results JSONL
-// document, and tracks how many cancel calls fired. mu guards every
-// shared field so a t.Parallel() future-self stays race-free.
+// document, and tracks how many cancel calls fired. httptest dispatches
+// each request on its own goroutine, so every shared counter sits behind
+// a real sync.Mutex — the prior anonymous-struct grouping was a data
+// race waiting for go test -race to catch it.
 type pollServer struct {
 	*httptest.Server
 
 	pollResponses []string // one body per GET on the batch object; final is the "ended" response
 	resultsBody   string   // JSONL served at /results
-	mu            struct {
-		pollCalls   int
-		cancelCalls int
-		resultCalls int
+
+	mu          sync.Mutex
+	pollCalls   int
+	cancelCalls int
+	resultCalls int
+}
+
+// pollCount, cancelCount, resultCount are accessor helpers used by tests
+// to inspect the counters under the lock. The bare fields stay
+// addressable (no getter for the handler-side writes) so the handler can
+// take and release the lock as a single critical section.
+func (ps *pollServer) pollCount() int {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	return ps.pollCalls
+}
+
+func (ps *pollServer) cancelCount() int {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	return ps.cancelCalls
+}
+
+func (ps *pollServer) resultCount() int {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	return ps.resultCalls
+}
+
+// waitForCancelCount blocks (up to timeout) until cancelCalls reaches the
+// expected count. With bestEffortCancel now detached into a goroutine,
+// tests must wait on the side-effect rather than reading the counter
+// immediately after Result returns.
+func (ps *pollServer) waitForCancelCount(t *testing.T, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ps.cancelCount() >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -209,21 +248,29 @@ func newPollServer(t *testing.T, polls []string, resultsBody string) *pollServer
 	ps.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/results":
-			ps.mu.resultCalls++
+			ps.mu.Lock()
+			ps.resultCalls++
+			body := ps.resultsBody
+			ps.mu.Unlock()
 			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, ps.resultsBody)
+			_, _ = io.WriteString(w, body)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
-			ps.mu.cancelCalls++
+			ps.mu.Lock()
+			ps.cancelCalls++
+			ps.mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/messages/batches/"):
-			idx := ps.mu.pollCalls
+			ps.mu.Lock()
+			idx := ps.pollCalls
 			if idx >= len(ps.pollResponses) {
 				idx = len(ps.pollResponses) - 1
 			}
-			ps.mu.pollCalls++
+			ps.pollCalls++
+			body := ps.pollResponses[idx]
+			ps.mu.Unlock()
 			w.WriteHeader(http.StatusOK)
-			_, _ = io.WriteString(w, ps.pollResponses[idx])
+			_, _ = io.WriteString(w, body)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -266,14 +313,14 @@ func TestHarnessPollingBatch_ResultEventually(t *testing.T) {
 	if !strings.Contains(string(entry.Response), `"text":"ok"`) {
 		t.Errorf("response body: %s", entry.Response)
 	}
-	if ps.mu.pollCalls < 3 {
-		t.Errorf("pollCalls: got %d, want >=3", ps.mu.pollCalls)
+	if n := ps.pollCount(); n < 3 {
+		t.Errorf("pollCalls: got %d, want >=3", n)
 	}
-	if ps.mu.resultCalls != 1 {
-		t.Errorf("resultCalls: got %d, want 1", ps.mu.resultCalls)
+	if n := ps.resultCount(); n != 1 {
+		t.Errorf("resultCalls: got %d, want 1", n)
 	}
-	if ps.mu.cancelCalls != 0 {
-		t.Errorf("cancelCalls on happy path: got %d, want 0", ps.mu.cancelCalls)
+	if n := ps.cancelCount(); n != 0 {
+		t.Errorf("cancelCalls on happy path: got %d, want 0", n)
 	}
 }
 
@@ -295,8 +342,11 @@ func TestHarnessPollingBatch_ResultTimeout(t *testing.T) {
 	if !errors.Is(err, errBatchExpired) {
 		t.Errorf("error must wrap errBatchExpired so isBatchTimeout routes correctly; got: %v", err)
 	}
-	if ps.mu.cancelCalls != 1 {
-		t.Errorf("cancelCalls on timeout: got %d, want 1", ps.mu.cancelCalls)
+	// bestEffortCancel is detached into a goroutine (B3), so wait for the
+	// side-effect rather than reading the counter immediately.
+	ps.waitForCancelCount(t, 1, time.Second)
+	if n := ps.cancelCount(); n != 1 {
+		t.Errorf("cancelCalls on timeout: got %d, want 1", n)
 	}
 }
 
@@ -331,10 +381,11 @@ func TestHarnessPollingBatch_ResultCtxCancel(t *testing.T) {
 		t.Fatal("Result did not return promptly after ctx cancel")
 	}
 
-	// Give the best-effort cancel a moment to fire on the server.
-	time.Sleep(50 * time.Millisecond)
-	if ps.mu.cancelCalls != 1 {
-		t.Errorf("cancelCalls on ctx cancel: got %d, want 1", ps.mu.cancelCalls)
+	// bestEffortCancel runs in a detached goroutine (B3); wait on the
+	// side-effect rather than a sleep-and-pray window.
+	ps.waitForCancelCount(t, 1, time.Second)
+	if n := ps.cancelCount(); n != 1 {
+		t.Errorf("cancelCalls on ctx cancel: got %d, want 1", n)
 	}
 }
 
