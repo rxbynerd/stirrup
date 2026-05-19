@@ -184,9 +184,9 @@ type anthropicBatchResultLine struct {
 // fabrication path (fabricateAnthropicStream) sees exactly what the
 // streaming endpoint would have returned.
 type anthropicBatchResultOutput struct {
-	Type    string                    `json:"type"` // "succeeded" | "errored" | "canceled" | "expired"
-	Message json.RawMessage           `json:"message,omitempty"`
-	Error   *anthropicBatchResultErr  `json:"error,omitempty"`
+	Type    string                   `json:"type"` // "succeeded" | "errored" | "canceled" | "expired"
+	Message json.RawMessage          `json:"message,omitempty"`
+	Error   *anthropicBatchResultErr `json:"error,omitempty"`
 }
 
 type anthropicBatchResultErr struct {
