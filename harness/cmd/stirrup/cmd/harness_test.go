@@ -641,6 +641,9 @@ func newTestHarnessCommand() *cobra.Command {
 	// TestApplyOverrides_MaxToolParallel* tests can exercise the override
 	// path.
 	f.Int("max-tool-parallel", 0, "")
+	// Batch flag (issue #136). Registered here so the override tests
+	// can exercise the applyOverrides path that handles --batch.
+	f.Bool("batch", false, "")
 	return cmd
 }
 
