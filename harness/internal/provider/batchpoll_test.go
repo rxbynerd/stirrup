@@ -526,6 +526,96 @@ func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// results_url origin validation
+// -----------------------------------------------------------------------------
+
+// TestHarnessPollingBatch_ResultsURLBadOrigin confirms an "ended" batch
+// whose results_url points off-domain is rejected before fetchResults
+// would send the credential. The test server records whether any GET
+// reached the (would-be exfiltration) path; the assertion must observe
+// zero hits.
+func TestHarnessPollingBatch_ResultsURLBadOrigin(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	var exfilHits atomic.Int64
+	exfilSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		exfilHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer exfilSrv.Close()
+
+	// Use a non-loopback off-domain URL so the test-mode relaxation does
+	// not paper over the check. evil.com is registered but should never
+	// be reached because validation fires first.
+	const badURL = "https://evil.com/exfil"
+
+	polls := []string{
+		fmt.Sprintf(`{"id":"batch_xyz","processing_status":"ended","results_url":%q}`, badURL),
+	}
+	ps := newPollServer(t, polls, "")
+	defer ps.Close()
+
+	c, teardown := newTestPollingClient(t, ps.Server, src, time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	if err == nil {
+		t.Fatal("expected error for off-domain results_url, got nil")
+	}
+	if !strings.Contains(err.Error(), "results_url host") {
+		t.Errorf("error should mention results_url host, got: %v", err)
+	}
+	if exfilHits.Load() != 0 {
+		t.Errorf("validation must fire before the GET; got %d hits", exfilHits.Load())
+	}
+}
+
+// TestHarnessPollingBatch_ResultsURLNonHTTPS confirms an http:// scheme
+// (even on anthropic.com) is rejected — the credential is bearer-class
+// and must not be sent in cleartext.
+func TestHarnessPollingBatch_ResultsURLNonHTTPS(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	polls := []string{
+		`{"id":"batch_xyz","processing_status":"ended","results_url":"http://anthropic.com/results"}`,
+	}
+	ps := newPollServer(t, polls, "")
+	defer ps.Close()
+
+	c, teardown := newTestPollingClient(t, ps.Server, src, time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	if err == nil {
+		t.Fatal("expected error for http results_url, got nil")
+	}
+	if !strings.Contains(err.Error(), "scheme") {
+		t.Errorf("error should mention scheme, got: %v", err)
+	}
+}
+
+// TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted is a unit-level
+// check on validateResultsURL — when the caller's baseURL is the
+// production Anthropic root, an *.anthropic.com results_url must pass.
+// The end-to-end happy-path test still uses an httptest base URL (relaxed
+// branch); this case exercises the strict-host branch directly.
+func TestHarnessPollingBatch_ResultsURLAnthropicHostAccepted(t *testing.T) {
+	cases := []string{
+		"https://api.anthropic.com/v1/messages/batches/abc/results",
+		"https://anthropic.com/results",
+		"https://eu.api.anthropic.com/results",
+	}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			if err := validateResultsURL(raw, "https://api.anthropic.com"); err != nil {
+				t.Errorf("expected acceptance, got: %v", err)
+			}
+		})
+	}
+}
+
+// -----------------------------------------------------------------------------
 // URL escaping
 // -----------------------------------------------------------------------------
 

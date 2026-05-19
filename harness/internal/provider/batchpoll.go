@@ -280,6 +280,13 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 			if obj.ResultsURL == "" {
 				return nil, fmt.Errorf("anthropic batch %s ended without results_url", batchID)
 			}
+			// Validate before fetch: fetchResults sends the x-api-key header
+			// to results_url unconditionally. A compromised upstream response
+			// (or a misbehaving test fixture) that returns an off-domain URL
+			// would otherwise exfiltrate the credential to that host.
+			if err := validateResultsURL(obj.ResultsURL, c.baseURL); err != nil {
+				return nil, fmt.Errorf("anthropic batch %s: %w", batchID, err)
+			}
 			return c.fetchResults(ctx, obj.ResultsURL, batchID)
 		}
 
@@ -467,6 +474,60 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// validateResultsURL is a defence-in-depth guard on the results_url that
+// the polling loop is about to GET with the run's Anthropic credentials
+// attached. Anthropic's documented endpoints sit on api.anthropic.com (and
+// future regional subdomains under *.anthropic.com), so a results_url
+// pointing anywhere else is either a misframed upstream response or an
+// active exfiltration attempt — either way the credential must not be
+// sent. The check is split into scheme + host so the operator-facing
+// error names which invariant failed.
+//
+// Test-server relaxation: when the client's baseURL is overridden to a
+// loopback / httptest address, accept any URL sharing the same host so
+// the existing httptest-based suite (which serves /results off the same
+// server as /v1/messages/batches) continues to work. The override is
+// scoped to the per-instance baseURL field — production constructions
+// always point at api.anthropic.com and trigger the strict branch.
+func validateResultsURL(raw, baseURL string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("results_url is not a valid URL: %w", err)
+	}
+	if isBaseURLLoopback(baseURL) {
+		base, perr := url.Parse(baseURL)
+		if perr == nil && u.Host == base.Host {
+			return nil
+		}
+		// Fall through to strict checks if hosts differ — the test
+		// override is not a blanket bypass.
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("results_url scheme must be https, got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if host != "anthropic.com" && !strings.HasSuffix(host, ".anthropic.com") {
+		return fmt.Errorf("results_url host %q is not on anthropic.com", host)
+	}
+	return nil
+}
+
+// isBaseURLLoopback reports whether the client's baseURL has been
+// overridden to a loopback address — the signal that an httptest server
+// is wired in and the strict origin check should accept same-host
+// results_url responses.
+func isBaseURLLoopback(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	return false
 }
 
 // jitter applies ±20% randomisation to d so concurrent harnesses do not
