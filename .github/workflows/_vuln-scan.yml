@@ -1,0 +1,557 @@
+name: Vulnerability scan (reusable)
+
+# Reusable vulnerability gate. Queries Artifact Analysis for the
+# DISCOVERY + VULNERABILITY occurrences of an image already in GAR
+# (automatic scanning is triggered by GAR on push when
+# containerscanning.googleapis.com is enabled — see
+# docs/container-publishing.md), normalises the response, writes a
+# step-summary, files tracking issues on CRITICAL+fixable findings,
+# and optionally exits non-zero in `block` mode.
+#
+# Callers:
+#   - release.yml::vulnerability-gate — warn mode, fired automatically
+#     after publish-container on every v* tag push.
+#   - vuln-scan.yml — workflow_dispatch wrapper for ad-hoc dispatches
+#     against any digest URI; defaults to warn but accepts block.
+#
+# The gate does NOT trigger scans. GAR's auto-scan is the trigger;
+# this workflow is observability + remediation tracking.
+
+on:
+  workflow_call:
+    inputs:
+      image_uri:
+        description: >-
+          Full digest-form image URI
+          (`<location>-docker.pkg.dev/<project>/<repo>/<image>@sha256:...`).
+          Tag-form URIs are rejected by Container Analysis APIs; the
+          digest is the only stable handle that pins occurrences to
+          the exact manifest scanned.
+        type: string
+        required: true
+      tag:
+        description: >-
+          Display label for the report (e.g. `v1.2.3`). Also matched
+          against `vars.STIRRUP_RELEASE_VULN_OVERRIDE` for the
+          release-tag bypass path; ad-hoc dispatches with arbitrary
+          labels simply don't match the override.
+        type: string
+        required: true
+      mode:
+        description: >-
+          `warn` (today's release-time behaviour: file an issue,
+          exit 0) or `block` (exit non-zero on CRITICAL+fixable when
+          the override is inactive). Defaults to warn so the
+          existing release calibration window is preserved.
+        type: string
+        required: false
+        default: warn
+
+jobs:
+  scan:
+    name: Scan and report
+    runs-on: ubuntu-latest
+    # Same repository guard as the callers: forks cannot mint a WIF
+    # token against this repo's pool, so skip rather than fail
+    # confusingly. Callers also gate on this; doubling up is
+    # belt-and-braces.
+    if: github.repository == 'rxbynerd/stirrup'
+    # Caller must grant id-token: write (WIF JWT exchange) and
+    # issues: write (gh issue create). contents: read is the
+    # workflow-level default elsewhere in the repo; declaring it
+    # here keeps the reusable workflow's permission demands
+    # explicit.
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    env:
+      TAG: ${{ inputs.tag }}
+      IMAGE_URI: ${{ inputs.image_uri }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      # SHA-pinned to v3.0.0 — same pin as release.yml::publish-container.
+      # See container-publishing.md and the matching comment in
+      # release.yml for the rationale on immutable pinning. This must
+      # move in lockstep with the publish-container pin.
+      - name: Authenticate to Google Cloud (WIF + SA impersonation)
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GAR_PUBLISHER_SA }}
+          token_format: access_token
+
+      # SHA-pinned to v3.0.1, same as release.yml::publish-container.
+      # The impersonated SA `vars.GAR_PUBLISHER_SA` already holds
+      # `containeranalysis.occurrences.editor` (granted during the
+      # Phase 1 bootstrap for `sbom load`), which transitively grants
+      # the `occurrences.get` / `occurrences.list` reads this gate
+      # needs — no new IAM bindings are required.
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          version: '>= 502.0.0'
+
+      # Container Analysis emits a DISCOVERY occurrence per image
+      # describing the scan lifecycle (`PENDING` → `SCANNING` →
+      # `FINISHED_SUCCESS` / `FINISHED_FAILED`). Querying vulnerability
+      # occurrences before discovery reaches `FINISHED_SUCCESS` would
+      # return a half-populated set and create a noisy false-clean
+      # result. Poll until the discovery analysis is finished or the
+      # 10-minute deadline elapses.
+      #
+      # Timeout policy is WARN, not FAIL, regardless of `inputs.mode`:
+      # a Google-side outage in the Container Analysis scanner must
+      # not wedge releases (or ad-hoc dispatches). `block` mode
+      # blocks on observed CRITICAL+fixable findings, not on
+      # scanner-availability incidents. The tradeoff is explicit:
+      # false-negative vulnerability discovery on a scanner outage is
+      # acceptable; release stoppage on transient infrastructure
+      # issues is not.
+      #
+      # `set +e` is used around each `gcloud` invocation because a
+      # transient non-zero exit ("not yet propagated", "no occurrences
+      # of that kind", etc.) is semantically "keep polling," not
+      # "abort." The outer `set -euo pipefail` still applies to the
+      # rest of the script.
+      - name: Poll for discovery occurrence completion
+        id: discovery
+        run: |
+          set -euo pipefail
+          DEADLINE=$(( $(date +%s) + 600 ))
+          INTERVAL=15
+          STATE=""
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            set +e
+            # `--limit=1` caps the record count server-side so we can
+            # avoid piping to `head` — a pipeline would make `RC=$?`
+            # reflect `head`'s exit status, not `gcloud`'s, masking
+            # auth/IAM failures as benign empty results (see #170
+            # remediation MF-1).
+            STATE=$(gcloud artifacts docker images list \
+              "${IMAGE_URI%@*}" \
+              --show-occurrences \
+              --occurrence-filter='kind="DISCOVERY"' \
+              --filter="uri=\"${IMAGE_URI}\"" \
+              --limit=1 \
+              --format='value(DISCOVERY.discovery.analysisStatus)' 2>/dev/null)
+            RC=$?
+            set -e
+            if [ "$RC" -eq 0 ] && [ "$STATE" = "FINISHED_SUCCESS" ]; then
+              echo "discovery finished: $STATE"
+              echo "state=$STATE" >> "$GITHUB_OUTPUT"
+              echo "timed_out=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$RC" -eq 0 ] && [ "$STATE" = "FINISHED_FAILED" ]; then
+              echo "discovery finished with FINISHED_FAILED — proceeding to query anyway"
+              echo "state=$STATE" >> "$GITHUB_OUTPUT"
+              echo "timed_out=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "discovery state: ${STATE:-<empty>} (rc=$RC) — sleeping ${INTERVAL}s"
+            sleep "$INTERVAL"
+          done
+          # Timeout — warn-and-continue. Subsequent steps still run.
+          echo "::warning::Container Analysis discovery did not finish within 10 minutes for ${IMAGE_URI}. Proceeding with whatever occurrences are available."
+          {
+            echo "## Vulnerability gate"
+            echo
+            echo "**Warning:** Container Analysis discovery did not reach \`FINISHED_SUCCESS\` within the 10-minute deadline for tag \`${TAG}\`."
+            echo
+            echo "The gate proceeded with whatever occurrences were available. Scanner-availability incidents do not flip a \`block\`-mode gate to failure — only observed CRITICAL+fixable findings do."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "state=${STATE:-UNKNOWN}" >> "$GITHUB_OUTPUT"
+          echo "timed_out=true" >> "$GITHUB_OUTPUT"
+
+      # Fetch all vulnerability occurrences for the image, compute
+      # severity-bucket counts (total + fixable), persist the raw
+      # JSON for downstream steps, and emit step outputs.
+      #
+      # A zero-occurrence response from `gcloud` produces empty
+      # stdout; the redirect creates an empty file. The `! -s` check
+      # below writes `[]` so that the subsequent `jq` invocation
+      # always receives valid JSON rather than an empty file. The
+      # earlier `if [ "$RC" -ne 0 ]` branch handles the case where
+      # gcloud itself exits non-zero on a clean image (observed
+      # historically with some occurrence kinds) by writing `[]`
+      # before the size check runs.
+      - name: Query vulnerability occurrences
+        id: vulnerabilities
+        run: |
+          set -euo pipefail
+          set +e
+          gcloud artifacts docker images list \
+            "${IMAGE_URI%@*}" \
+            --show-occurrences \
+            --occurrence-filter='kind="VULNERABILITY"' \
+            --filter="uri=\"${IMAGE_URI}\"" \
+            --format=json > vulnerabilities.json 2>/tmp/vuln-stderr
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            echo "gcloud returned rc=$RC; treating as empty occurrence set. stderr:"
+            cat /tmp/vuln-stderr || true
+            echo "[]" > vulnerabilities.json
+          fi
+          if [ ! -s vulnerabilities.json ]; then
+            echo "[]" > vulnerabilities.json
+          fi
+
+          # `gcloud artifacts docker images list --show-occurrences`
+          # returns one record per image with a nested
+          # `package_vulnerability_summary.vulnerabilities` map keyed
+          # by severity. Some installs return a flat `vulnerability`
+          # array instead — handle both shapes defensively.
+          #
+          # SF-1: wrap the jq normalisation in an error guard. If the
+          # raw JSON is malformed (partial gcloud response on a
+          # transient error), bailing mid-step under `set -euo pipefail`
+          # would skip the `$GITHUB_OUTPUT` writes — downstream `if:`
+          # conditions that compare against `''` would then evaluate
+          # `'' != '0'` as true and fire the issue-creation step with
+          # an empty table. Emit a warning, fall back to an empty
+          # normalised set, and surface `parse_error=true` so the
+          # summary step can render "parse_error" instead of a
+          # misleading zero table.
+          PARSE_ERROR=false
+          if ! jq '
+            def normalise:
+              if type == "array" then .
+              elif type == "object" then [.]
+              else []
+              end;
+            [
+              (normalise[]
+               | (.vulnerability // .package_vulnerability_summary.vulnerabilities // {})
+               | if type == "object" then
+                   to_entries | map(.value)
+                   | flatten | map(select(type == "object"))
+                 elif type == "array" then
+                   .
+                 else [] end
+               | .[])
+            ]
+          ' vulnerabilities.json > vulnerabilities.normalised.json 2>/tmp/jq-stderr; then
+            echo "::warning::jq normalisation failed; defaulting all counts to -1 (data absent, not zero)"
+            cat /tmp/jq-stderr || true
+            PARSE_ERROR=true
+            echo "[]" > vulnerabilities.normalised.json
+          fi
+
+          count_by_sev() {
+            local sev="$1"
+            jq --arg sev "$sev" '[.[] | select((.severity // .vulnerability.severity // "") | ascii_upcase == $sev)] | length' vulnerabilities.normalised.json
+          }
+          count_fixable() {
+            local sev="$1"
+            jq --arg sev "$sev" '[.[] | select(((.severity // .vulnerability.severity // "") | ascii_upcase) == $sev) | select((.fixAvailable // .vulnerability.fixAvailable // false) == true)] | length' vulnerabilities.normalised.json
+          }
+
+          if [ "${PARSE_ERROR}" = "true" ]; then
+            # `-1` is structurally distinguishable from "0 findings on a
+            # clean image" downstream — the summary step renders
+            # `parse_error` and the issue-creation `if:` will still match
+            # `!= '0'`, but the body explicitly notes data is absent.
+            CRITICAL=-1
+            CRITICAL_FIXABLE=-1
+            HIGH=-1
+            HIGH_FIXABLE=-1
+            MEDIUM=-1
+            LOW=-1
+          else
+            CRITICAL=$(count_by_sev CRITICAL)
+            CRITICAL_FIXABLE=$(count_fixable CRITICAL)
+            HIGH=$(count_by_sev HIGH)
+            HIGH_FIXABLE=$(count_fixable HIGH)
+            MEDIUM=$(count_by_sev MEDIUM)
+            LOW=$(count_by_sev LOW)
+          fi
+
+          {
+            echo "critical_count=${CRITICAL}"
+            echo "critical_fixable_count=${CRITICAL_FIXABLE}"
+            echo "high_count=${HIGH}"
+            echo "high_fixable_count=${HIGH_FIXABLE}"
+            echo "medium_count=${MEDIUM}"
+            echo "low_count=${LOW}"
+            echo "parse_error=${PARSE_ERROR}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "critical=${CRITICAL} (fixable=${CRITICAL_FIXABLE}) high=${HIGH} (fixable=${HIGH_FIXABLE}) medium=${MEDIUM} low=${LOW} parse_error=${PARSE_ERROR}"
+
+      # Markdown summary runs unconditionally so the calibration data
+      # is visible in the Actions UI even when the gate has nothing to
+      # block on. The reproducer link gives operators the exact
+      # `gcloud` invocation to re-query locally.
+      - name: Write summary
+        if: always()
+        env:
+          CRITICAL: ${{ steps.vulnerabilities.outputs.critical_count }}
+          CRITICAL_FIXABLE: ${{ steps.vulnerabilities.outputs.critical_fixable_count }}
+          HIGH: ${{ steps.vulnerabilities.outputs.high_count }}
+          HIGH_FIXABLE: ${{ steps.vulnerabilities.outputs.high_fixable_count }}
+          MEDIUM: ${{ steps.vulnerabilities.outputs.medium_count }}
+          LOW: ${{ steps.vulnerabilities.outputs.low_count }}
+          PARSE_ERROR: ${{ steps.vulnerabilities.outputs.parse_error }}
+        run: |
+          set -euo pipefail
+          # SF-1: when jq normalisation failed, counts were defaulted to
+          # `-1` upstream so we can distinguish "data absent" from
+          # "clean image with zero findings." Render `parse_error` in
+          # the table cells rather than a misleading `-1`.
+          if [ "${PARSE_ERROR:-false}" = "true" ]; then
+            CRITICAL_CELL="parse_error"
+            CRITICAL_FIXABLE_CELL="parse_error"
+            HIGH_CELL="parse_error"
+            HIGH_FIXABLE_CELL="parse_error"
+            MEDIUM_CELL="parse_error"
+            LOW_CELL="parse_error"
+          else
+            CRITICAL_CELL="${CRITICAL:-?}"
+            CRITICAL_FIXABLE_CELL="${CRITICAL_FIXABLE:-?}"
+            HIGH_CELL="${HIGH:-?}"
+            HIGH_FIXABLE_CELL="${HIGH_FIXABLE:-?}"
+            MEDIUM_CELL="${MEDIUM:-?}"
+            LOW_CELL="${LOW:-?}"
+          fi
+          {
+            echo "## Vulnerability gate — ${TAG}"
+            echo
+            echo "**Image:** \`${IMAGE_URI}\`"
+            echo
+            echo "**Mode:** ${MODE}"
+            echo
+            if [ "${PARSE_ERROR:-false}" = "true" ]; then
+              echo "**WARNING:** jq normalisation failed — vulnerability data is **absent**, not clean. See the \`Query vulnerability occurrences\` step logs and the manual reproducer below."
+              echo
+            fi
+            echo "| Severity | Total | Fixable |"
+            echo "|---|---|---|"
+            echo "| CRITICAL | ${CRITICAL_CELL} | ${CRITICAL_FIXABLE_CELL} |"
+            echo "| HIGH | ${HIGH_CELL} | ${HIGH_FIXABLE_CELL} |"
+            echo "| MEDIUM | ${MEDIUM_CELL} | n/a |"
+            echo "| LOW | ${LOW_CELL} | n/a |"
+            echo
+            echo "Reproduce locally:"
+            echo
+            echo '```sh'
+            echo "gcloud artifacts docker images list ${IMAGE_URI%@*} \\"
+            echo "  --show-occurrences \\"
+            echo "  --occurrence-filter='kind=\"VULNERABILITY\"' \\"
+            echo "  --filter='uri=\"${IMAGE_URI}\"' \\"
+            echo "  --format=json"
+            echo '```'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The STIRRUP_RELEASE_VULN_OVERRIDE repo variable lets an
+      # operator bypass the issue-creation step for a specific tag —
+      # intended for the case where the release is already cut, the
+      # finding is known/triaged, and rolling back is high-cost. The
+      # override does NOT skip the query or the summary above —
+      # observability is preserved.
+      #
+      # The override matches `inputs.tag` literally. Ad-hoc
+      # dispatches via vuln-scan.yml with arbitrary labels won't
+      # collide; the override is structurally release-tag scoped.
+      #
+      # Operator responsibility: every use of this override SHOULD be
+      # accompanied by a separately-filed tracking issue documenting
+      # why. The override is intentionally narrow (matches a single
+      # tag string, no glob, no env-var fallback) so that forgetting
+      # to clear it cannot silently bypass future releases.
+      - name: Check vulnerability override
+        id: override
+        env:
+          OVERRIDE_TAG: ${{ vars.STIRRUP_RELEASE_VULN_OVERRIDE }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OVERRIDE_TAG:-}" ] && [ "${OVERRIDE_TAG}" = "${TAG}" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Override active"
+              echo
+              echo "**WARNING:** Vulnerability gate bypassed via \`vars.STIRRUP_RELEASE_VULN_OVERRIDE\` for tag \`${TAG}\`."
+              echo
+              echo "The issue-creation step has been short-circuited. A durable override-audit issue is being filed automatically — the operator MUST add a rationale comment on it."
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Vulnerability gate override active for ${TAG}"
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # SF-3: when the override fires, the `::warning::` annotation and
+      # step summary block are both ephemeral (90-day GitHub retention).
+      # `vars.STIRRUP_RELEASE_VULN_OVERRIDE` is settable by any repo
+      # collaborator with write access and leaves no trace in git
+      # history. Auto-file a minimal tracking issue so there is a
+      # permanent record an operator can query after the run logs
+      # expire. The body is intentionally minimal — the rationale
+      # belongs in a comment from the operator who set the override.
+      - name: File override-audit tracking issue
+        if: steps.override.outputs.active == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="vuln gate override used: ${TAG}"
+          BODY_FILE=$(mktemp)
+          {
+            echo "Override active for \`${TAG}\`. The vulnerability-gate's tracking-issue step was short-circuited via \`vars.STIRRUP_RELEASE_VULN_OVERRIDE\`."
+            echo
+            echo "The operator who set the override MUST document the rationale as a comment on this issue. Without that comment there is no durable record of why the gate was bypassed."
+            echo
+            echo "**Workflow run:** ${RUN_URL}"
+          } > "${BODY_FILE}"
+
+          if ! gh issue create \
+            --title "${TITLE}" \
+            --body-file "${BODY_FILE}" \
+            --label security; then
+            echo "::warning::override-audit issue create with label failed; retrying without label"
+            if ! gh issue create \
+              --title "${TITLE}" \
+              --body-file "${BODY_FILE}"; then
+              echo "::warning::override-audit issue create WITHOUT label also failed — no durable record filed for ${TAG} override. Manual triage required."
+            fi
+          fi
+
+      # File a tracking issue when critical+fixable findings exist
+      # AND the override is not active. Warn-mode threshold is
+      # deliberately narrow (critical AND fixable) — anything wider
+      # would generate noise during the calibration window. A high-
+      # severity fixable finding still appears in the summary table.
+      #
+      # `--label` flags may fail if the labels do not exist in the
+      # repo; tolerate that with `|| true` and let the operator add
+      # them after the fact. Keeping this defensive avoids a
+      # spurious gate failure on a clean-but-unlabelled repo.
+      - name: File tracking issue for critical fixable vulnerabilities
+        if: steps.override.outputs.active != 'true' && steps.vulnerabilities.outputs.critical_fixable_count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CRITICAL_FIXABLE: ${{ steps.vulnerabilities.outputs.critical_fixable_count }}
+          CRITICAL: ${{ steps.vulnerabilities.outputs.critical_count }}
+          HIGH: ${{ steps.vulnerabilities.outputs.high_count }}
+          HIGH_FIXABLE: ${{ steps.vulnerabilities.outputs.high_fixable_count }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Build the table of critical-fixable findings.
+          TABLE=$(jq -r '
+            def sev: (.severity // .vulnerability.severity // "");
+            def fix: (.fixAvailable // .vulnerability.fixAvailable // false);
+            def cve: (.shortDescription // .vulnerability.shortDescription // .name // "<unknown>");
+            def pkg: (.packageIssue[0].affectedPackage // .vulnerability.packageIssue[0].affectedPackage // "<unknown>");
+            def fixedver: (.packageIssue[0].fixedVersion.name // .vulnerability.packageIssue[0].fixedVersion.name // "<none>");
+            [.[] | select((sev | ascii_upcase) == "CRITICAL") | select(fix == true) |
+              "| " + cve + " | " + pkg + " | " + fixedver + " | CRITICAL | true |"
+            ] | join("\n")
+          ' vulnerabilities.normalised.json)
+
+          BODY_FILE=$(mktemp)
+          {
+            echo "Container Analysis flagged ${CRITICAL_FIXABLE} critical fixable vulnerability(ies) in the image just published for tag \`${TAG}\`."
+            echo
+            echo "**Image:** \`${IMAGE_URI}\`"
+            echo
+            echo "**Gate mode:** ${MODE}. In \`warn\` mode the release was published anyway; this issue exists so the finding is not lost. In \`block\` mode the gate exits non-zero — the caller workflow records the failure."
+            echo
+            echo "### Critical fixable findings"
+            echo
+            echo "| CVE | Package | Fixed version | Severity | Fix available |"
+            echo "|---|---|---|---|---|"
+            if [ -n "${TABLE}" ]; then
+              echo "${TABLE}"
+            else
+              echo "| _(detail extraction failed — see workflow logs and \`gcloud\` reproducer)_ |  |  |  |  |"
+            fi
+            echo
+            echo "### Severity summary"
+            echo
+            echo "| Severity | Total | Fixable |"
+            echo "|---|---|---|"
+            echo "| CRITICAL | ${CRITICAL} | ${CRITICAL_FIXABLE} |"
+            echo "| HIGH | ${HIGH} | ${HIGH_FIXABLE} |"
+            echo
+            echo "### Suggested triage"
+            echo
+            echo "1. Review each finding above and confirm the fix version is non-breaking."
+            echo "2. Patch the affected dependency (image base or Go module)."
+            echo "3. Cut a new tag (\`vX.Y.(Z+1)\` or appropriate semver bump) and let the release pipeline re-run."
+            echo
+            echo "### Workflow run"
+            echo
+            echo "${RUN_URL}"
+          } > "${BODY_FILE}"
+
+          TITLE="vulnerability gate: ${CRITICAL_FIXABLE} critical fixable issue(s) in stirrup ${TAG}"
+
+          # Best-effort labels: if either label does not exist in the
+          # repo, gh exits non-zero and we fall back to a label-less
+          # create. The issue still gets filed — labels are sugar.
+          #
+          # SF-2: do NOT swallow the label-less retry with `|| true`.
+          # A genuine failure (network, auth, GitHub API 5xx) needs to
+          # surface as a `::warning::` annotation so the step doesn't
+          # look green when no issue was filed — that would defeat the
+          # audit-trail purpose of the tracking issue. The final
+          # `Gate result` step decides exit code from MODE +
+          # critical_fixable; this step's exit code is not the gate's
+          # signal.
+          if ! gh issue create \
+            --title "${TITLE}" \
+            --body-file "${BODY_FILE}" \
+            --label security \
+            --label vulnerability; then
+            echo "::warning::issue create with labels failed; retrying without labels"
+            if ! gh issue create \
+              --title "${TITLE}" \
+              --body-file "${BODY_FILE}"; then
+              echo "::warning::issue create WITHOUT labels also failed — no tracking issue filed for ${TAG}. Manual triage required."
+            fi
+          fi
+
+      # Final gate result. `warn` always exits 0 (preserves the
+      # release-time calibration window invariant). `block` exits 1
+      # when CRITICAL+fixable findings exist AND the override is
+      # inactive. A scanner-availability timeout (steps.discovery
+      # outputs timed_out=true) does NOT flip block to failure —
+      # only observed findings do, by design.
+      - name: Gate result
+        if: always()
+        env:
+          CRITICAL_FIXABLE: ${{ steps.vulnerabilities.outputs.critical_fixable_count }}
+          OVERRIDE_ACTIVE: ${{ steps.override.outputs.active }}
+        run: |
+          set -euo pipefail
+          if [ "${OVERRIDE_ACTIVE:-false}" = "true" ]; then
+            echo "${MODE} mode: override active for ${TAG}; gate skipped"
+            exit 0
+          fi
+          if [ "${CRITICAL_FIXABLE:-0}" = "0" ]; then
+            echo "${MODE} mode: gate would pass cleanly"
+            exit 0
+          fi
+          case "${MODE}" in
+            warn)
+              echo "warn mode: would block with ${CRITICAL_FIXABLE} critical fixable — exiting 0 per warn semantics"
+              exit 0
+              ;;
+            block)
+              echo "block mode: ${CRITICAL_FIXABLE} critical fixable — exiting 1"
+              exit 1
+              ;;
+            *)
+              echo "::error::unknown mode '${MODE}' — expected 'warn' or 'block'"
+              exit 2
+              ;;
+          esac

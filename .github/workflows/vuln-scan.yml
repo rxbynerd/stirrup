@@ -1,0 +1,60 @@
+name: Vulnerability scan (on-demand)
+
+# Workflow-dispatch wrapper around `_vuln-scan.yml`. Lets an operator
+# re-query Artifact Analysis findings for any image already in GAR —
+# e.g. after a fresh CVE drops against a previously-clean release,
+# or to investigate a specific digest without cutting a new tag. The
+# scan itself is triggered by GAR's auto-scan on push; this workflow
+# only queries already-completed results.
+#
+# WIF constraint: the `stirrup-gha-provider` attribute-condition (see
+# docs/container-publishing.md) pins `assertion.ref` to
+# `refs/heads/main` or `refs/tags/v*`. Dispatch this workflow against
+# `main` or an existing `v*` tag; feature-branch dispatches will fail
+# at the Authenticate to Google Cloud step with a clean WIF error.
+# That is the documented security boundary working as designed — do
+# not relax the condition to make this workflow more convenient.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_uri:
+        description: >-
+          Digest-form image URI
+          (`<location>-docker.pkg.dev/<project>/<repo>/<image>@sha256:...`).
+        required: true
+        type: string
+      tag:
+        description: Display label for the report (e.g. v1.2.3).
+        required: true
+        type: string
+      mode:
+        description: >-
+          `warn` (file an issue, exit 0) or `block` (exit non-zero on
+          CRITICAL+fixable). Defaults to warn for parity with the
+          release-time gate.
+        required: false
+        type: choice
+        default: warn
+        options:
+          - warn
+          - block
+
+jobs:
+  scan:
+    name: Vulnerability scan
+    # Belt-and-braces fork guard mirroring smoke-gar-publish.yml and
+    # release.yml::vulnerability-gate. The WIF provider's attribute
+    # condition already pins assertion.repository, but the explicit
+    # repository check makes a fork dispatch skip cleanly instead of
+    # failing on a confusing auth error.
+    if: github.repository == 'rxbynerd/stirrup'
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    uses: ./.github/workflows/_vuln-scan.yml
+    with:
+      image_uri: ${{ inputs.image_uri }}
+      tag: ${{ inputs.tag }}
+      mode: ${{ inputs.mode }}
