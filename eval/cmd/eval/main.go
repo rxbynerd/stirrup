@@ -366,7 +366,7 @@ func cmdMineFailures(args []string) {
 	afterStr := fs.String("after", "", "Filter traces after this date (RFC3339 or YYYY-MM-DD)")
 	limit := fs.Int("limit", 0, "Maximum number of failures to mine")
 	output := fs.String("output", "", "Write EvalSuite HCL to this file (.hcl recommended)")
-	includeBatch := fs.Bool("include-batch", false, "Include batch runs in the mined failure set. By default, batch runs (provider.batch.enabled=true) are excluded because their wall-clock duration inflates apparent stall metrics.")
+	includeBatch := fs.Bool("include-batch", false, "By default, batch runs (provider.batch.enabled=true) are excluded from mined failures because their wall-clock duration inflates apparent stall metrics. Pass --include-batch to include them.")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
