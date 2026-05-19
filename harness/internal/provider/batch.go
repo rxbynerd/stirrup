@@ -14,11 +14,26 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// batchWaitingHeartbeatInterval is the cadence at which the
-// controlPlaneBatchClient emits batch_waiting HarnessEvents while a batch
-// submission is in flight. Exposed as a package-level var (not const) so
-// tests can override it without sleeping for minutes.
-var batchWaitingHeartbeatInterval = 5 * time.Minute
+// batchWaitingHeartbeatIntervalNs holds the cadence (in nanoseconds) at
+// which the controlPlaneBatchClient emits batch_waiting HarnessEvents
+// while a batch submission is in flight. Stored as an atomic so tests
+// can lower it without racing the heartbeat goroutines that earlier
+// tests may still be running. Use getBatchWaitingHeartbeatInterval /
+// setBatchWaitingHeartbeatInterval rather than touching this directly.
+var batchWaitingHeartbeatIntervalNs atomic.Int64
+
+func init() {
+	batchWaitingHeartbeatIntervalNs.Store(int64(5 * time.Minute))
+}
+
+func getBatchWaitingHeartbeatInterval() time.Duration {
+	return time.Duration(batchWaitingHeartbeatIntervalNs.Load())
+}
+
+func setBatchWaitingHeartbeatInterval(d time.Duration) time.Duration {
+	prev := batchWaitingHeartbeatIntervalNs.Swap(int64(d))
+	return time.Duration(prev)
+}
 
 // BatchClient submits batch entries to a provider and retrieves results.
 // The multi-entry shape is required to support OpenAI's file-upload flow;
@@ -532,7 +547,7 @@ func (c *controlPlaneBatchClient) nextRequestID() string {
 // to Result via the underlying RPC, which is a more reliable signal than
 // a heartbeat error.
 func (c *controlPlaneBatchClient) heartbeat(ctx context.Context, requestID string) {
-	ticker := time.NewTicker(batchWaitingHeartbeatInterval)
+	ticker := time.NewTicker(getBatchWaitingHeartbeatInterval())
 	defer ticker.Stop()
 	for {
 		select {
