@@ -973,20 +973,24 @@ func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
 
 func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 	current := types.TraceMetrics{
-		Count:       10,
-		PassRate:    0.80,
-		MeanTurns:   5.0,
-		MeanTokens:  1000,
-		P50Duration: 200,
-		P95Duration: 500,
+		Count:            10,
+		PassRate:         0.80,
+		MeanTurns:        5.0,
+		MeanTokens:       1000,
+		P50Duration:      200,
+		P95Duration:      500,
+		BatchP50Duration: 12000,
+		BatchP95Duration: 30000,
 	}
 	baseline := types.TraceMetrics{
-		Count:       10,
-		PassRate:    0.90,
-		MeanTurns:   4.0,
-		MeanTokens:  900,
-		P50Duration: 180,
-		P95Duration: 450,
+		Count:            10,
+		PassRate:         0.90,
+		MeanTurns:        4.0,
+		MeanTokens:       900,
+		P50Duration:      180,
+		P95Duration:      450,
+		BatchP50Duration: 9000,
+		BatchP95Duration: 24000,
 	}
 
 	report := buildDriftReport(current, baseline)
@@ -996,5 +1000,25 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 	}
 	if math.Abs(report.Deltas.MeanTurnsDelta-1.0) > 0.001 {
 		t.Errorf("MeanTurnsDelta = %f, want 1.0", report.Deltas.MeanTurnsDelta)
+	}
+	// Pin the full delta surface: a sign-flip bug (baseline - current
+	// rather than current - baseline) would not be caught by the
+	// pass-rate or mean-turns assertions alone, since the streaming
+	// and batch percentile deltas were entirely unasserted prior to
+	// #138 review B4.
+	if math.Abs(report.Deltas.MeanTokensDelta-100) > 0.001 {
+		t.Errorf("MeanTokensDelta = %f, want 100", report.Deltas.MeanTokensDelta)
+	}
+	if math.Abs(report.Deltas.P50DurationDelta-20) > 0.001 {
+		t.Errorf("P50DurationDelta = %f, want 20", report.Deltas.P50DurationDelta)
+	}
+	if math.Abs(report.Deltas.P95DurationDelta-50) > 0.001 {
+		t.Errorf("P95DurationDelta = %f, want 50", report.Deltas.P95DurationDelta)
+	}
+	if math.Abs(report.Deltas.BatchP50DurationDelta-3000) > 0.001 {
+		t.Errorf("BatchP50DurationDelta = %f, want 3000", report.Deltas.BatchP50DurationDelta)
+	}
+	if math.Abs(report.Deltas.BatchP95DurationDelta-6000) > 0.001 {
+		t.Errorf("BatchP95DurationDelta = %f, want 6000", report.Deltas.BatchP95DurationDelta)
 	}
 }
