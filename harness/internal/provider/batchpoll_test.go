@@ -424,6 +424,229 @@ func TestHarnessPollingBatch_CredentialResolvedPerPoll(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
+// HTTP-error surfaces (B6)
+// -----------------------------------------------------------------------------
+
+// TestHarnessPollingBatch_ResultsURLNonOKStatus confirms a 500 from
+// results_url is propagated up — it must NOT be silently converted into
+// errBatchExpired (which would route to the FallbackOnTimeout branch
+// and mask a real upstream failure).
+func TestHarnessPollingBatch_ResultsURLNonOKStatus(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	// resultsURL is captured by the handler closure; populated after the
+	// httptest.Server starts so the same server serves both the poll and
+	// the failing results_url endpoint (loopback-relaxation branch in
+	// validateResultsURL accepts the same-host URL).
+	var resultsURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/results":
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"upstream meltdown"}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/messages/batches/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"id":"batch_xyz","processing_status":"ended","results_url":%q}`, resultsURL)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	resultsURL = srv.URL + "/results"
+
+	c, teardown := newTestPollingClient(t, srv, src, time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	if err == nil {
+		t.Fatal("expected error for 500 results_url, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should include status 500, got: %v", err)
+	}
+	if errors.Is(err, errBatchExpired) {
+		t.Errorf("non-200 results_url must not be classified as batch_expired, got: %v", err)
+	}
+}
+
+// TestHarnessPollingBatch_PollOnceNonOKStatus confirms a 503 on the
+// first poll is surfaced as an HTTP error (not silently converted to
+// errBatchExpired). Anthropic's batch API is durable, so a transient
+// 5xx is the upstream transport's problem; the harness must surface it
+// so the operator (and any retrying caller above) sees the real status.
+func TestHarnessPollingBatch_PollOnceNonOKStatus(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/messages/batches/"):
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":"overloaded"}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, teardown := newTestPollingClient(t, srv, src, time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	if err == nil {
+		t.Fatal("expected error for 503 poll, got nil")
+	}
+	if !strings.Contains(err.Error(), "503") {
+		t.Errorf("error should include status 503, got: %v", err)
+	}
+	if errors.Is(err, errBatchExpired) {
+		t.Errorf("non-200 poll status must not be classified as batch_expired, got: %v", err)
+	}
+}
+
+// TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout asserts
+// the B3 non-blocking guarantee: when the cancel endpoint hangs longer
+// than batchCancelTimeout, Result must still return promptly because
+// bestEffortCancel runs in a detached goroutine. Before B3 this test
+// would have blocked for the full batchCancelTimeout (10s).
+func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	// Use a chan to release the hanging cancel handler when the test ends,
+	// so we do not leak goroutines beyond the test boundary.
+	release := make(chan struct{})
+	defer close(release)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/messages/batches/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"batch_xyz","processing_status":"in_progress"}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			// Block until the test releases — simulates a slow Anthropic
+			// cancel endpoint that would otherwise pin the goroutine to
+			// the full batchCancelTimeout.
+			<-release
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// 30 ms maxWait lets the timeout fire well before the test budget.
+	c, teardown := newTestPollingClient(t, srv, src, 30*time.Millisecond)
+	defer teardown()
+
+	start := time.Now()
+	_, err := c.Result(context.Background(), "batch_xyz")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !errors.Is(err, errBatchExpired) {
+		t.Errorf("expected errBatchExpired, got: %v", err)
+	}
+	// The cancel handler is still blocked; without B3 we would be inside
+	// httpClient.Do here for up to batchCancelTimeout (10s). The
+	// generous-but-bounded 2s upper bound is well under batchCancelTimeout
+	// so a regression that re-synchronises the call will trip it.
+	if elapsed > 2*time.Second {
+		t.Errorf("Result must not block on bestEffortCancel; took %s", elapsed)
+	}
+}
+
+// TestHarnessPollingBatch_CtxCancelledDuringPoll covers the
+// errors.Is(ctx-error) branch added in R7: cancel the parent ctx after
+// the poll handler has accepted the request but before it writes a
+// response, forcing the request context to be cancelled mid-flight.
+// Without the R7 fix, http.Client.Timeout-driven DeadlineExceeded
+// errors from a per-request ctx would have fallen through the branch.
+func TestHarnessPollingBatch_CtxCancelledDuringPoll(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pollEntered := make(chan struct{}, 1)
+	var cancelHits atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/messages/batches/"):
+			// Signal the test that the request has reached the handler
+			// (buffered chan so the send always succeeds), then wait for
+			// the request context to be cancelled by the test. Returning
+			// without writing a response gives httpClient.Do a
+			// context.Canceled error.
+			select {
+			case pollEntered <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			cancelHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, teardown := newTestPollingClient(t, srv, src, time.Second)
+	defer teardown()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Result(ctx, "batch_xyz")
+		done <- err
+	}()
+
+	select {
+	case <-pollEntered:
+	case <-time.After(time.Second):
+		t.Fatal("poll handler never entered")
+	}
+
+	// Cancel the parent context mid-flight so the in-flight request
+	// fails with context.Canceled — the load-bearing case for the R7
+	// errors.Is branch in Result.
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Result did not return after ctx cancel during poll")
+	}
+
+	// bestEffortCancel runs in a detached goroutine with
+	// context.Background(), so it should reach the server even though
+	// the parent ctx is now cancelled. Wait briefly for it to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cancelHits.Load() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if cancelHits.Load() != 1 {
+		t.Errorf("expected exactly 1 cancel hit, got %d", cancelHits.Load())
+	}
+}
+
+// -----------------------------------------------------------------------------
 // Result type mapping
 // -----------------------------------------------------------------------------
 
