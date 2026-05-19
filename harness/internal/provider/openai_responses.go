@@ -112,8 +112,16 @@ type responsesRequest struct {
 	// pointer type so the unset-vs-explicit-zero distinction survives
 	// marshalling.
 	Temperature *float64 `json:"temperature,omitempty"`
-	Stream      bool     `json:"stream"`
-	Store       bool     `json:"store"`
+	// Stream carries omitempty so that buildResponsesRequest, which leaves
+	// the field at its zero value, produces a wire body with no "stream"
+	// key at all. The streaming caller sets reqBody.Stream = true after
+	// the builder returns, which serialises "stream":true. A future batch
+	// caller can marshal the helper output directly and be sure the field
+	// is absent — the Anthropic Messages Batches API explicitly rejects
+	// the field; the Responses batch endpoint's contract is unverified
+	// but omission is the safer default until that verification lands.
+	Stream bool `json:"stream,omitempty"`
+	Store  bool `json:"store"`
 }
 
 // responsesInput is one item in the Responses API input array. The Type
@@ -446,6 +454,26 @@ func translateToolsResponses(tools []types.ToolDefinition) []responsesTool {
 	return out
 }
 
+// buildResponsesRequest projects a StreamParams into the Responses API wire
+// body. The Stream field is set by the streaming caller after this returns;
+// the builder leaves it false so batch callers get an omitted field (relies
+// on omitempty on the responsesRequest.Stream struct tag). Phase-0 refactor
+// for issue #133.
+//
+// TODO(batch): consider returning json.RawMessage if endpoint-contract drift
+// becomes a maintenance burden.
+func buildResponsesRequest(params types.StreamParams) responsesRequest {
+	return responsesRequest{
+		Model:           params.Model,
+		Instructions:    params.System,
+		Input:           translateMessagesResponses(params.Messages),
+		Tools:           translateToolsResponses(params.Tools),
+		MaxOutputTokens: params.MaxTokens,
+		Temperature:     params.Temperature,
+		Store:           false,
+	}
+}
+
 // Stream sends a streaming request to the OpenAI Responses API and returns
 // a channel of StreamEvents. The channel is closed when the stream ends or
 // an error occurs. Cancelling the context terminates the stream.
@@ -456,16 +484,8 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		attribute.String("provider.model", params.Model),
 	)
 
-	reqBody := responsesRequest{
-		Model:           params.Model,
-		Instructions:    params.System,
-		Input:           translateMessagesResponses(params.Messages),
-		Tools:           translateToolsResponses(params.Tools),
-		MaxOutputTokens: params.MaxTokens,
-		Temperature:     params.Temperature,
-		Stream:          true,
-		Store:           false,
-	}
+	reqBody := buildResponsesRequest(params)
+	reqBody.Stream = true
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

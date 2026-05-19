@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -226,6 +227,33 @@ type sseMessageDelta struct {
 	} `json:"usage,omitempty"`
 }
 
+// buildAnthropicRequest projects a StreamParams into the Anthropic Messages
+// wire body. The stream argument toggles the "stream" field so a future
+// non-streaming caller (batch submission, phase 2 of issue #133) can reuse
+// the same projection without duplicating field-by-field copying.
+//
+// TODO(batch): if the batch endpoint rejects fields the streaming endpoint
+// accepts (e.g. thinking_config), change the return type to
+// (json.RawMessage, error) and apply a batch-specific projection here.
+func buildAnthropicRequest(params types.StreamParams, stream bool) anthropicRequest {
+	return anthropicRequest{
+		Model:    params.Model,
+		System:   params.System,
+		Messages: translateMessagesAnthropic(params.Messages),
+		// slices.Clone avoids aliasing params.Tools into the returned
+		// struct. translateMessagesAnthropic / translateTools(Responses)
+		// allocate fresh output slices for messages and tools on the
+		// sibling adapters; the Anthropic path was the only builder
+		// passing the input slice through by reference. Once the phase-2
+		// batch caller retains the returned struct across a retry or
+		// concurrent send, a caller mutating params.Tools would race.
+		Tools:       slices.Clone(params.Tools),
+		MaxTokens:   params.MaxTokens,
+		Temperature: params.Temperature,
+		Stream:      stream,
+	}
+}
+
 // Stream sends a streaming request to the Anthropic Messages API and returns
 // a channel of StreamEvents. The channel is closed when the stream ends or
 // an error occurs. Cancelling the context terminates the stream.
@@ -236,15 +264,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		attribute.String("provider.model", params.Model),
 	)
 
-	reqBody := anthropicRequest{
-		Model:       params.Model,
-		System:      params.System,
-		Messages:    translateMessagesAnthropic(params.Messages),
-		Tools:       params.Tools,
-		MaxTokens:   params.MaxTokens,
-		Temperature: params.Temperature,
-		Stream:      true,
-	}
+	reqBody := buildAnthropicRequest(params, true)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
