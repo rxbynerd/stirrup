@@ -1350,6 +1350,63 @@ func TestExampleBedrockWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates pins the pre-wired
+// smoke-test fixture consumed by .github/workflows/smoke-vertex-gemini.yml.
+// Unlike the generic vertex-gemini-wif example (which surfaces an
+// aws-irsa token source against placeholder identifiers), this fixture
+// hardcodes the rubynerd-net project + project-number + the shared
+// stirrup-gha WIF pool's audience + the dedicated stirrup-testing SA.
+// The double-slash audience is required (single-slash fails STS with an
+// opaque 400 INVALID_ARGUMENT) and the two audience strings must match
+// because the GHA OIDC `aud` claim must equal the WIF provider's
+// expected audience for the exchange to succeed. Drift in any of these
+// fields breaks the live CI smoke run silently — the workflow only
+// fails on a real Vertex API call.
+func TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "vertex-gemini-wif-smoke.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/vertex-gemini-wif-smoke.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/vertex-gemini-wif-smoke.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "gemini" {
+		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
+	}
+	if cfg.Provider.GCPProject != "rubynerd-net" {
+		t.Errorf("Provider.GCPProject = %q, want rubynerd-net", cfg.Provider.GCPProject)
+	}
+	if cfg.Provider.GCPLocation != "global" {
+		t.Errorf("Provider.GCPLocation = %q, want global", cfg.Provider.GCPLocation)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "gcp-workload-identity-federation" {
+		t.Errorf("Credential.Type = %q, want gcp-workload-identity-federation", cfg.Provider.Credential.Type)
+	}
+	const wantAudience = "//iam.googleapis.com/projects/163317929648/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider"
+	if cfg.Provider.Credential.Audience != wantAudience {
+		t.Errorf("Credential.Audience = %q, want the stirrup-gha provider audience", cfg.Provider.Credential.Audience)
+	}
+	if cfg.Provider.Credential.ServiceAccount != "stirrup-testing@rubynerd-net.iam.gserviceaccount.com" {
+		t.Errorf("Credential.ServiceAccount = %q, want the stirrup-testing SA", cfg.Provider.Credential.ServiceAccount)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != wantAudience {
+		t.Errorf("TokenSource.Audience = %q, want the same WIF audience as Credential.Audience (GHA aud claim must match provider expectation)", cfg.Provider.Credential.TokenSource.Audience)
+	}
+	if cfg.ModelRouter.Model != "gemini-2.5-flash-lite" {
+		t.Errorf("ModelRouter.Model = %q, want gemini-2.5-flash-lite", cfg.ModelRouter.Model)
+	}
+}
+
 // TestExampleCloudRunVertexGeminiJSONLoadsAndValidates pins the shipped
 // Cloud Run fixture: the file must round-trip through loadRunConfigFile,
 // pass ValidateRunConfig, and exercise the three new surface areas that
