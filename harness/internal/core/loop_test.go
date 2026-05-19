@@ -145,11 +145,53 @@ func TestLoop_SimpleTextResponse(t *testing.T) {
 	if runTrace.Turns != 1 {
 		t.Errorf("expected 1 turn, got %d", runTrace.Turns)
 	}
-	// The loop pins Temperature=Float64Ptr(0.1) on every provider call
-	// (see loop.go). If that producer regresses to nil, downstream
-	// callers will silently receive the service-default temperature.
-	if prov.lastParams.Temperature == nil || *prov.lastParams.Temperature != 0.1 {
-		t.Errorf("loop temperature = %v, want *=0.1", prov.lastParams.Temperature)
+}
+
+// TestLoop_ForwardsConfiguredTemperature exercises the three temperature
+// cases the loop must distinguish:
+//
+//   - unset RunConfig.Temperature falls back to the harness default
+//     (0.1). The "loop never silently forwards nil to the provider"
+//     property — historically guarded inline in
+//     TestLoop_SimpleTextResponse — lives in this case. A regression
+//     that drops the fallback re-introduces the silent-provider-default
+//     bug the original assertion was written to catch.
+//   - a non-zero override is forwarded verbatim.
+//   - an explicit 0.0 override (greedy decoding) is forwarded as 0.0,
+//     not coerced back to the default. This is the case the pointer
+//     indirection on RunConfig.Temperature exists to preserve.
+func TestLoop_ForwardsConfiguredTemperature(t *testing.T) {
+	cases := []struct {
+		name     string
+		override *float64
+		want     float64
+	}{
+		{name: "unset falls back to default", override: nil, want: 0.1},
+		{name: "non-zero override forwarded", override: types.Float64Ptr(0.7), want: 0.7},
+		{name: "explicit zero override forwarded", override: types.Float64Ptr(0.0), want: 0.0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prov := &mockProvider{
+				events: []types.StreamEvent{
+					{Type: "text_delta", Text: "Hi"},
+					{Type: "message_complete", StopReason: "end_turn"},
+				},
+			}
+			loop := buildTestLoop(prov)
+			config := buildTestConfig()
+			config.Temperature = tc.override
+
+			if _, err := loop.Run(context.Background(), config); err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if prov.lastParams.Temperature == nil {
+				t.Fatalf("loop temperature = nil, want *=%v (loop must never forward nil)", tc.want)
+			}
+			if *prov.lastParams.Temperature != tc.want {
+				t.Errorf("loop temperature = %v, want *=%v", *prov.lastParams.Temperature, tc.want)
+			}
+		})
 	}
 }
 
