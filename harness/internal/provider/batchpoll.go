@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -269,9 +270,14 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 			// API is durable — retrying a transient 5xx is the upstream
 			// transport's job (the HTTP client has timeouts but no retry
 			// budget). Surfacing keeps the caller's error chain honest.
-			if ctx.Err() != nil {
-				c.bestEffortCancel(batchID)
-				return nil, ctx.Err()
+			//
+			// errors.Is over ctx.Err()!=nil so a per-request
+			// http.Client.Timeout (which wraps context.DeadlineExceeded on
+			// the request context but does not cancel the parent ctx)
+			// still routes to the bestEffortCancel branch.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				go c.bestEffortCancel(batchID)
+				return nil, err
 			}
 			return nil, err
 		}
@@ -295,7 +301,7 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 		// instead of one full interval past it.
 		sleep := jitter(interval)
 		if remaining := time.Until(deadline); remaining <= 0 {
-			c.bestEffortCancel(batchID)
+			go c.bestEffortCancel(batchID)
 			return nil, fmt.Errorf("%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID)
 		} else if sleep > remaining {
 			sleep = remaining
@@ -303,7 +309,7 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 
 		select {
 		case <-ctx.Done():
-			c.bestEffortCancel(batchID)
+			go c.bestEffortCancel(batchID)
 			return nil, ctx.Err()
 		case <-time.After(sleep):
 		}
@@ -319,7 +325,7 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 		// Final deadline check — the sleep may have consumed the entire
 		// remaining budget without yet triggering the loop-top poll.
 		if time.Now().After(deadline) {
-			c.bestEffortCancel(batchID)
+			go c.bestEffortCancel(batchID)
 			return nil, fmt.Errorf("%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID)
 		}
 	}
