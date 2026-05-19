@@ -4626,6 +4626,25 @@ func TestValidateRunConfig_Batch_HarnessSidePollingRejectedWithGRPC(t *testing.T
 	}
 }
 
+func TestValidateRunConfig_Batch_HarnessSidePollingRejectsAnthropicWIF(t *testing.T) {
+	// harnessPollingBatchClient pins x-api-key auth; the anthropic-wif
+	// credential type instead requires Authorization: Bearer (see the
+	// AuthMode switch in anthropic.go). The combination is unreachable
+	// in v1 and the validator must surface that explicitly.
+	c := batchValidConfig()
+	c.Transport = TransportConfig{Type: "stdio"}
+	c.Provider.Credential = validAnthropicWIFCredential()
+	c.Provider.APIKeyRef = "" // mutually exclusive with anthropic-wif
+	c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for batch.harnessSidePolling with anthropic-wif credentials")
+	}
+	if !strings.Contains(err.Error(), "harnessSidePolling does not support anthropic-wif") {
+		t.Errorf("error should mention harnessSidePolling + anthropic-wif, got: %v", err)
+	}
+}
+
 func TestValidateRunConfig_Batch_CancelBundleRejectedWithStdio(t *testing.T) {
 	c := batchValidConfig()
 	c.Transport = TransportConfig{Type: "stdio"}
