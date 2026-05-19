@@ -243,7 +243,7 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 // detection compares streaming-vs-streaming and batch-vs-batch on
 // the strength of this classifier (#138).
 func isBatchRun(t types.RunTrace) bool {
-	return t.Config.Provider.Batch != nil && t.Config.Provider.Batch.Enabled
+	return t.Config.Provider.IsBatchEnabled()
 }
 
 // parentOnlyToolCalls returns the subset of trace.ToolCalls that

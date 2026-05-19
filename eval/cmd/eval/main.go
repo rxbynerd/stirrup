@@ -618,13 +618,13 @@ func mineFailureTasksFiltered(recordings []types.RunRecording, limit int, includ
 	return tasks
 }
 
-// isBatchRecording mirrors lakehouse.isBatchRun (declared private to
-// that package) so mine-failures can apply the same classifier
-// without the eval CLI taking a dependency on lakehouse internals.
-// Both functions key on Config.Provider.Batch.Enabled — if that
-// predicate changes, both call sites must be updated together.
+// isBatchRecording is a thin spelling of ProviderConfig.IsBatchEnabled
+// kept here only so existing tests can call it directly. Both this and
+// lakehouse.isBatchRun now route through the canonical
+// ProviderConfig.IsBatchEnabled predicate (#138) so a future change
+// to the batch posture rule lands in one place.
 func isBatchRecording(rec types.RunRecording) bool {
-	return rec.Config.Provider.Batch != nil && rec.Config.Provider.Batch.Enabled
+	return rec.Config.Provider.IsBatchEnabled()
 }
 
 // buildDriftReport computes deltas between current and baseline metrics.
