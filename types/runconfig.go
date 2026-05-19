@@ -2064,14 +2064,11 @@ func fmtProviderRetryValue(value int, isDefault bool) string {
 // validateBatchConfig enforces the cross-field invariants on
 // ProviderConfig.Batch and applies the MaxWaitSeconds default. Batch
 // only applies to the top-level Provider in v1; entries in
-// Providers[] are streaming-only and validateProviderConfigs rejects
-// any non-nil Batch on a map entry. The validator mutates *config when
-// Batch.Enabled and MaxWaitSeconds is unset — downstream consumers
-// should always see a populated value so the adapter wiring (phase 2)
-// can avoid nil-checking on the hot path. The MaxWaitSeconds default
-// is intentionally withheld when Enabled=false: phase-2 callers rely
-// on nil to distinguish "operator did not configure this field" from
-// "default applied", and the field is meaningless when batch is off.
+// Providers[] are streaming-only and any Batch field on them is
+// ignored. The validator mutates *config when Batch.Enabled and
+// MaxWaitSeconds is unset — downstream consumers should always see
+// a populated value so the adapter wiring (phase 2) can avoid
+// nil-checking on the hot path.
 func validateBatchConfig(config *RunConfig, errs *[]string) {
 	batch := config.Provider.Batch
 	if batch == nil {
