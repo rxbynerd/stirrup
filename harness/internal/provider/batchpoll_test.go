@@ -1014,6 +1014,157 @@ func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
 	}
 }
 
+// -----------------------------------------------------------------------------
+// Transport / decoder edge cases (R5)
+// -----------------------------------------------------------------------------
+
+// TestHarnessPollingBatch_SubmitTransportError covers the path where the
+// initial POST to /v1/messages/batches fails at the transport layer (the
+// upstream server is gone before Submit fires). The harness must surface
+// the failure as a wrapped "submit batch" error rather than returning a
+// bare "" batchID or panicking on the nil response.
+func TestHarnessPollingBatch_SubmitTransportError(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		t.Error("server should not receive a request after Close()")
+	}))
+	// Close immediately so the client's first connection attempt fails.
+	srv.Close()
+
+	c, teardown := newTestPollingClient(t, srv, src, time.Second)
+	defer teardown()
+
+	_, err := c.Submit(context.Background(), anthropicSubmitEntries("id"))
+	if err == nil {
+		t.Fatal("expected transport error, got nil")
+	}
+	if !strings.Contains(err.Error(), "submit batch") {
+		t.Errorf("error should mention 'submit batch', got: %v", err)
+	}
+}
+
+// TestHarnessPollingBatch_MalformedJSONLLine confirms a non-JSON line in
+// the JSONL results document fails fast rather than being silently
+// skipped. The Scanner reads each line in turn; a bad line is the only
+// signal that the upstream document has been truncated or framed
+// incorrectly.
+func TestHarnessPollingBatch_MalformedJSONLLine(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	resultsBody := `{"custom_id":"stirrup-run-1-turn-1","result":{"type":"succeeded","message":{}}}` + "\n" +
+		`not even close to JSON` + "\n"
+
+	polls := []string{`{"id":"batch_xyz","processing_status":"ended","results_url":"REPLACE"}`}
+	ps := newPollServer(t, polls, resultsBody)
+	defer ps.Close()
+	ps.pollResponses[0] = strings.ReplaceAll(ps.pollResponses[0], "REPLACE", ps.URL+"/results")
+
+	c, teardown := newTestPollingClient(t, ps.Server, src, time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	if err == nil {
+		t.Fatal("expected decode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode batch result line") {
+		t.Errorf("error should mention 'decode batch result line', got: %v", err)
+	}
+}
+
+// TestHarnessPollingBatch_BackoffCapped exercises the interval-doubling
+// cap at batchPollMaxInterval. With initialInterval set just above
+// half the cap, the *third* interval would (uncapped) exceed the cap;
+// the loop must clamp it. We observe by spacing between successive poll
+// requests on the test server.
+func TestHarnessPollingBatch_BackoffCapped(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	var (
+		mu        sync.Mutex
+		callTimes []time.Time
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/messages/batches/") &&
+			!strings.HasSuffix(r.URL.Path, "/cancel") {
+			mu.Lock()
+			callTimes = append(callTimes, time.Now())
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"batch_xyz","processing_status":"in_progress"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+
+	// Cap = 5ms for the test; initial = 3ms (>cap/2 so the second
+	// doubling would exceed the cap and trigger the clamp).
+	prevCap := swapBatchPollMaxInterval(5 * time.Millisecond)
+	defer swapBatchPollMaxInterval(prevCap)
+
+	prevInterval := setBatchPollInitialInterval(3 * time.Millisecond)
+	defer setBatchPollInitialInterval(prevInterval)
+	prevJitter := setBatchPollJitterDisabled(true)
+	defer setBatchPollJitterDisabled(prevJitter)
+
+	c := NewHarnessPollingBatchClient("secret://test", src, 40*time.Millisecond)
+	c.baseURL = srv.URL
+
+	_, _ = c.Result(context.Background(), "batch_xyz")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(callTimes) < 4 {
+		t.Fatalf("expected >=4 poll calls within the 40ms budget, got %d", len(callTimes))
+	}
+	// From the third sleep onwards each interval should be <= cap + slack.
+	// Slack covers scheduler jitter on busy CI runners.
+	const slack = 20 * time.Millisecond
+	for i := 2; i < len(callTimes); i++ {
+		gap := callTimes[i].Sub(callTimes[i-1])
+		if gap > 5*time.Millisecond+slack {
+			t.Errorf("poll interval %d exceeded cap+slack: got %s", i, gap)
+		}
+	}
+}
+
+// TestHarnessPollingBatch_TimeoutFiringAlignedToDeadline covers the
+// sleep>remaining clamp at Result. With maxWait set to slightly under
+// 3 × initialInterval, the third sleep would (uncapped) exceed the
+// remaining budget; the loop must clamp it and fire the timeout on the
+// documented cap rather than one full interval past it.
+func TestHarnessPollingBatch_TimeoutFiringAlignedToDeadline(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	polls := []string{`{"id":"batch_xyz","processing_status":"in_progress"}`}
+	ps := newPollServer(t, polls, "")
+	defer ps.Close()
+
+	prevInterval := setBatchPollInitialInterval(10 * time.Millisecond)
+	defer setBatchPollInitialInterval(prevInterval)
+	prevJitter := setBatchPollJitterDisabled(true)
+	defer setBatchPollJitterDisabled(prevJitter)
+
+	maxWait := 30 * time.Millisecond
+	c := NewHarnessPollingBatchClient("secret://test", src, maxWait)
+	c.baseURL = ps.URL
+
+	start := time.Now()
+	_, err := c.Result(context.Background(), "batch_xyz")
+	elapsed := time.Since(start)
+
+	if err == nil || !errors.Is(err, errBatchExpired) {
+		t.Fatalf("expected errBatchExpired, got: %v", err)
+	}
+	// The deadline should fire within ~maxWait + scheduler slack. A
+	// generous 50 ms slack tolerates loaded CI runners without hiding a
+	// genuine regression (which would overshoot by a full interval +).
+	if elapsed > maxWait+50*time.Millisecond {
+		t.Errorf("timeout fired %s past maxWait; want <= maxWait + 50ms", elapsed-maxWait)
+	}
+}
+
 // keysOf is a small map-introspection helper that keeps the table-
 // driven tests above legible. Not exported because the parent package
 // has no other test that needs the same shape.

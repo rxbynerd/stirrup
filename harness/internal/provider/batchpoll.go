@@ -26,11 +26,13 @@ const (
 	// struct so httptest fixtures can swap in a mock server.
 	anthropicBatchAPIBaseURL = "https://api.anthropic.com"
 
-	// batchPollMaxInterval caps the exponential backoff between polls.
-	// Five minutes mirrors the batch_waiting heartbeat cadence the
-	// streaming wrapper emits — there is no value in polling faster
+	// batchPollMaxIntervalDefault caps the exponential backoff between
+	// polls. Five minutes mirrors the batch_waiting heartbeat cadence
+	// the streaming wrapper emits — there is no value in polling faster
 	// than the heartbeat once a batch has been in flight for a while.
-	batchPollMaxInterval = 5 * time.Minute
+	// The live cap is stored in batchPollMaxIntervalNs so tests can
+	// lower it without subjecting the test runner to a 5-minute wait.
+	batchPollMaxIntervalDefault = 5 * time.Minute
 
 	// batchCancelTimeout bounds the best-effort cancel call issued on
 	// timeout / ctx-cancel. Short by design — the cancel is fire-and-
@@ -51,8 +53,15 @@ var batchPollInitialIntervalNs atomic.Int64
 // progression is deterministic; production always leaves it false.
 var batchPollJitterDisabled atomic.Bool
 
+// batchPollMaxIntervalNs holds the live polling cap in nanoseconds.
+// Stored as an atomic so tests can lower it (via swapBatchPollMaxInterval)
+// to exercise the cap branch in well under a minute. Production runs
+// always read the documented default (5 minutes).
+var batchPollMaxIntervalNs atomic.Int64
+
 func init() {
 	batchPollInitialIntervalNs.Store(int64(10 * time.Second))
+	batchPollMaxIntervalNs.Store(int64(batchPollMaxIntervalDefault))
 }
 
 func getBatchPollInitialInterval() time.Duration {
@@ -68,6 +77,19 @@ func setBatchPollJitterDisabled(disabled bool) bool {
 	return batchPollJitterDisabled.Swap(disabled)
 }
 
+func getBatchPollMaxInterval() time.Duration {
+	return time.Duration(batchPollMaxIntervalNs.Load())
+}
+
+// swapBatchPollMaxInterval lets tests lower the polling cap below the
+// 5-minute production default so the cap branch can be exercised
+// within the test runner's budget. Returns the prior value so the
+// caller can restore it on teardown.
+func swapBatchPollMaxInterval(d time.Duration) time.Duration {
+	prev := batchPollMaxIntervalNs.Swap(int64(d))
+	return time.Duration(prev)
+}
+
 // harnessPollingBatchClient implements BatchClient by talking directly to
 // the Anthropic Message Batches API over HTTP. Used when the harness runs
 // in stdio mode (no control plane is available to own the batch lifecycle)
@@ -80,7 +102,12 @@ func setBatchPollJitterDisabled(disabled bool) bool {
 type harnessPollingBatchClient struct {
 	httpClient *http.Client
 	credSource credential.Source
-	apiKeyRef  string //nolint:unused // captured for diagnostic provenance; resolver consumes it via credSource
+	// apiKeyRef is the secret:// reference string captured for diagnostic
+	// provenance — logged as the keyRef attribute in bestEffortCancel's
+	// failure warns. The resolver consumes the underlying secret value
+	// via credSource; the reference string itself is safe to log because
+	// Redact() strips secret references from any persisted trace.
+	apiKeyRef string
 	baseURL    string
 	maxWait    time.Duration
 	logger     *slog.Logger
@@ -282,7 +309,8 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 			return nil, err
 		}
 
-		if obj.ProcessingStatus == "ended" {
+		switch obj.ProcessingStatus {
+		case "ended":
 			if obj.ResultsURL == "" {
 				return nil, fmt.Errorf("anthropic batch %s ended without results_url", batchID)
 			}
@@ -294,6 +322,20 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 				return nil, fmt.Errorf("anthropic batch %s: %w", batchID, err)
 			}
 			return c.fetchResults(ctx, obj.ResultsURL, batchID)
+		case "in_progress", "canceling":
+			// Documented intermediate statuses; continue polling.
+		default:
+			// Anthropic may add new terminal or intermediate statuses
+			// over time (e.g. "cancelled"); a silent infinite poll until
+			// maxWait fires obscures the cause. Warn once per poll and
+			// continue — the deadline still bounds the loop.
+			if c.logger != nil {
+				c.logger.Warn(
+					"batch poll: unrecognised processing_status; continuing to poll",
+					"batchID", batchID,
+					"status", obj.ProcessingStatus,
+				)
+			}
 		}
 
 		// Compute next sleep with jitter, then cap-checked against the
@@ -318,8 +360,8 @@ func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) 
 		// "exponential backoff" guidance; the cap stops a long-running
 		// batch from polling at hour-plus intervals.
 		interval *= 2
-		if interval > batchPollMaxInterval {
-			interval = batchPollMaxInterval
+		if maxInterval := getBatchPollMaxInterval(); interval > maxInterval {
+			interval = maxInterval
 		}
 
 		// Final deadline check — the sleep may have consumed the entire
@@ -457,7 +499,7 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 	apiKey, err := c.resolveAPIKey(ctx)
 	if err != nil {
 		if c.logger != nil {
-			c.logger.Warn("batch cancel: resolve credential", "batchID", batchID, "error", err)
+			c.logger.Warn("batch cancel: resolve credential", "batchID", batchID, "error", err, "keyRef", c.apiKeyRef)
 		}
 		return
 	}
@@ -466,7 +508,7 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cancelURL, nil)
 	if err != nil {
 		if c.logger != nil {
-			c.logger.Warn("batch cancel: build request", "batchID", batchID, "error", err)
+			c.logger.Warn("batch cancel: build request", "batchID", batchID, "error", err, "keyRef", c.apiKeyRef)
 		}
 		return
 	}
@@ -475,11 +517,19 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if c.logger != nil {
-			c.logger.Warn("batch cancel: send", "batchID", batchID, "error", err)
+			c.logger.Warn("batch cancel: send", "batchID", batchID, "error", err, "keyRef", c.apiKeyRef)
 		}
 		return
 	}
+	// Drain the body so the transport can reuse the TCP connection on the
+	// next polling tick. Cap at 4 KiB because the cancel endpoint returns
+	// a small JSON object and a misbehaving server should not be allowed
+	// to push the harness into reading an unbounded body.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && c.logger != nil {
+		c.logger.Warn("batch cancel: unexpected status", "batchID", batchID, "status", resp.StatusCode, "keyRef", c.apiKeyRef)
+	}
 }
 
 // validateResultsURL is a defence-in-depth guard on the results_url that
