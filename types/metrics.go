@@ -74,8 +74,8 @@ type DriftDeltas struct {
 	MeanTokensDelta       float64 `json:"meanTokensDelta"`
 	P50DurationDelta      float64 `json:"p50DurationDelta"`
 	P95DurationDelta      float64 `json:"p95DurationDelta"`
-	BatchP50DurationDelta float64 `json:"batchP50DurationDelta,omitempty"`
-	BatchP95DurationDelta float64 `json:"batchP95DurationDelta,omitempty"`
+	BatchP50DurationDelta float64 `json:"batchP50DurationDelta"`
+	BatchP95DurationDelta float64 `json:"batchP95DurationDelta"`
 }
 
 // TraceMetrics holds aggregate metrics computed over a set of traces.
@@ -94,8 +94,8 @@ type TraceMetrics struct {
 	MeanTokens       float64 `json:"meanTokens"`
 	P50Duration      float64 `json:"p50DurationMs"`
 	P95Duration      float64 `json:"p95DurationMs"`
-	BatchP50Duration float64 `json:"batchP50DurationMs,omitempty"`
-	BatchP95Duration float64 `json:"batchP95DurationMs,omitempty"`
+	BatchP50Duration float64 `json:"batchP50DurationMs"`
+	BatchP95Duration float64 `json:"batchP95DurationMs"`
 }
 
 // DateRange defines a time window for trace queries.
