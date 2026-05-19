@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"math"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -561,6 +563,115 @@ func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
 	tasks := mineFailureTasksFiltered(recordings, 0, true)
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2 (both failures included)", len(tasks))
+	}
+}
+
+// writeMineFailuresFixture stores one streaming and one batch failure
+// recording into a fresh lakehouse rooted at dir. Centralised so the
+// two cmdMineFailures CLI-dispatch tests share an identical input
+// surface and any divergence between default vs --include-batch is
+// attributable to the flag, not the fixture.
+func writeMineFailuresFixture(t *testing.T, dir string) {
+	t.Helper()
+	store, err := lakehouse.NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	recordings := []types.RunRecording{
+		{
+			RunID: "stream-fail",
+			Config: types.RunConfig{
+				Prompt: "streaming failure prompt",
+				Mode:   "execution",
+			},
+			FinalOutcome: types.RunTrace{ID: "stream-fail", Outcome: "error"},
+		},
+		makeBatchRecording("batch-fail", "error", "batch failure prompt"),
+	}
+	for _, rec := range recordings {
+		if err := store.StoreRecording(context.Background(), rec); err != nil {
+			t.Fatalf("StoreRecording %s: %v", rec.RunID, err)
+		}
+	}
+}
+
+// TestRun_MineFailures_DefaultExcludesBatch pins the CLI default at
+// the dispatch layer: invoking `eval mine-failures` without
+// --include-batch must drop batch failures from the emitted suite.
+// The unit tests on mineFailureTasksFiltered cover the helper, but
+// only this test exercises the FlagSet registration, the default
+// value, and the *includeBatch dereference into the helper — a
+// regression that inverted the flag default or wired !*includeBatch
+// would slip past every helper-level test (#138 spec B3).
+func TestRun_MineFailures_DefaultExcludesBatch(t *testing.T) {
+	dir := t.TempDir()
+	writeMineFailuresFixture(t, dir)
+	outPath := filepath.Join(dir, "mined.hcl")
+
+	code := run([]string{
+		"mine-failures",
+		"--lakehouse", dir,
+		"--output", outPath,
+	}, io.Discard)
+	if code != 0 {
+		t.Fatalf("run() exit code = %d, want 0", code)
+	}
+
+	got, err := loadSuite(outPath)
+	if err != nil {
+		t.Fatalf("loadSuite: %v", err)
+	}
+	if len(got.Tasks) != 1 {
+		t.Fatalf("default suite has %d tasks, want 1 (batch must be excluded)", len(got.Tasks))
+	}
+	if got.Tasks[0].Prompt != "streaming failure prompt" {
+		t.Errorf("task[0].Prompt = %q, want %q", got.Tasks[0].Prompt, "streaming failure prompt")
+	}
+}
+
+// TestRun_MineFailures_IncludeBatchFlag pins the --include-batch
+// escape hatch at the dispatch layer: the flag must opt batch
+// failures back into the emitted suite alongside streaming ones.
+// Operators investigating batch-specific failure modes rely on this
+// flag, so a regression that ignored it or hardcoded the helper's
+// includeBatch argument to false would silently break the
+// documented opt-in (#138 spec B3).
+func TestRun_MineFailures_IncludeBatchFlag(t *testing.T) {
+	dir := t.TempDir()
+	writeMineFailuresFixture(t, dir)
+	outPath := filepath.Join(dir, "mined.hcl")
+
+	code := run([]string{
+		"mine-failures",
+		"--lakehouse", dir,
+		"--output", outPath,
+		"--include-batch",
+	}, io.Discard)
+	if code != 0 {
+		t.Fatalf("run() exit code = %d, want 0", code)
+	}
+
+	got, err := loadSuite(outPath)
+	if err != nil {
+		t.Fatalf("loadSuite: %v", err)
+	}
+	if len(got.Tasks) != 2 {
+		t.Fatalf("--include-batch suite has %d tasks, want 2 (both failures included)", len(got.Tasks))
+	}
+	// Both prompts must be present; recording-iteration order in
+	// QueryRecordings is StartedAt-descending (zero-time here, so
+	// implementation-defined), so assert on set membership rather
+	// than ordering.
+	prompts := map[string]bool{}
+	for _, task := range got.Tasks {
+		prompts[task.Prompt] = true
+	}
+	for _, want := range []string{"streaming failure prompt", "batch failure prompt"} {
+		if !prompts[want] {
+			t.Errorf("--include-batch suite missing prompt %q (got %v)", want, prompts)
+		}
 	}
 }
 
