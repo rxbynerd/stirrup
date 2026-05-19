@@ -1261,6 +1261,49 @@ func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates pins the
+// pre-wired smoke-test fixture consumed by
+// .github/workflows/smoke-azure-openai.yml. Unlike the generic
+// github-actions example, this fixture hardcodes the stirrup test
+// tenant's tenant/client IDs and pins the provider to
+// openai-responses with the AI Foundry (cognitiveservices.azure.com)
+// host. Drift in any of those fields breaks the live CI smoke run
+// silently — the workflow only fails on a real Azure API call.
+func TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-smoke.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai-wif-smoke.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai-wif-smoke.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "azure-workload-identity" {
+		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != "api://AzureADTokenExchange" {
+		t.Errorf("audience = %q, want api://AzureADTokenExchange", cfg.Provider.Credential.TokenSource.Audience)
+	}
+	if cfg.Provider.BaseURL != "https://stirrup-eval-resource.cognitiveservices.azure.com/openai/v1" {
+		t.Errorf("Provider.BaseURL = %q, want the stirrup test tenant cognitiveservices.azure.com host", cfg.Provider.BaseURL)
+	}
+	if cfg.ModelRouter.Model != "gpt-5.4-nano" {
+		t.Errorf("ModelRouter.Model = %q, want gpt-5.4-nano", cfg.ModelRouter.Model)
+	}
+}
+
 // TestExampleCloudRunVertexGeminiJSONLoadsAndValidates pins the shipped
 // Cloud Run fixture: the file must round-trip through loadRunConfigFile,
 // pass ValidateRunConfig, and exercise the three new surface areas that
