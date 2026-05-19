@@ -1304,6 +1304,52 @@ func TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleBedrockWIFSmokeJSONLoadsAndValidates pins the pre-wired
+// smoke-test fixture consumed by .github/workflows/smoke-bedrock.yml.
+// The fixture hardcodes the stirrup sandbox AWS account's role ARN
+// (the 12-digit account ID is non-secret per AWS docs — the role's
+// trust policy is what gates access) and pins us-west-2 as the source
+// region alongside the us. cross-region inference profile for Haiku 4.5.
+// Drift in any of those fields breaks the live CI smoke run silently —
+// the workflow only fails on a real Bedrock API call.
+func TestExampleBedrockWIFSmokeJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "bedrock-wif-smoke.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/bedrock-wif-smoke.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/bedrock-wif-smoke.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "bedrock" {
+		t.Errorf("Provider.Type = %q, want bedrock", cfg.Provider.Type)
+	}
+	if cfg.Provider.Region != "us-west-2" {
+		t.Errorf("Provider.Region = %q, want us-west-2", cfg.Provider.Region)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "web-identity" {
+		t.Errorf("Credential.Type = %q, want web-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.RoleARN != "arn:aws:iam::786874932855:role/stirrup-smoke-bedrock" {
+		t.Errorf("Credential.RoleARN = %q, want the stirrup sandbox role ARN", cfg.Provider.Credential.RoleARN)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != "sts.amazonaws.com" {
+		t.Errorf("audience = %q, want sts.amazonaws.com", cfg.Provider.Credential.TokenSource.Audience)
+	}
+	if cfg.ModelRouter.Model != "us.anthropic.claude-haiku-4-5-20251001-v1:0" {
+		t.Errorf("ModelRouter.Model = %q, want the Haiku 4.5 us. cross-region inference profile", cfg.ModelRouter.Model)
+	}
+}
+
 // TestExampleCloudRunVertexGeminiJSONLoadsAndValidates pins the shipped
 // Cloud Run fixture: the file must round-trip through loadRunConfigFile,
 // pass ValidateRunConfig, and exercise the three new surface areas that
