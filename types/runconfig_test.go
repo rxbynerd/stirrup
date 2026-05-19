@@ -1400,6 +1400,70 @@ func TestValidateRunConfig_ExecutorRuntimeAcceptsClosedSet(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_OpenAIBaseURL_Accepted pins the scheme/host
+// guard: empty BaseURL (uses default), valid https origin, and
+// loopback http origins all pass validation.
+func TestValidateRunConfig_OpenAIBaseURL_Accepted(t *testing.T) {
+	cases := map[string]string{
+		"empty":           "",
+		"https openai":    "https://api.openai.com/v1",
+		"http loopback":   "http://127.0.0.1:8080",
+		"http localhost":  "http://localhost:9000/v1",
+		"https custom":    "https://gateway.example.com",
+		"http ipv6 local": "http://[::1]:8080",
+	}
+	for name, baseURL := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "openai-compatible", BaseURL: baseURL, APIKeyRef: "secret://k"}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Errorf("expected nil error for baseUrl %q, got %v", baseURL, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_OpenAIBaseURL_Rejected ensures the validator
+// blocks the credential-exfiltration / SSRF shapes: http on a
+// non-loopback host, exotic schemes, and an empty host.
+func TestValidateRunConfig_OpenAIBaseURL_Rejected(t *testing.T) {
+	cases := map[string]struct {
+		baseURL   string
+		wantMatch string
+	}{
+		"http evil host":       {"http://evil.internal", "must use https"},
+		"http internal-ip":     {"http://10.0.0.1:8080", "must use https"},
+		"file scheme":          {"file:///etc/passwd", "must include a host"},
+		"ftp scheme":           {"ftp://example.com", "must use https"},
+		"missing host (https)": {"https://", "must include a host"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := validConfig()
+			c.Provider = ProviderConfig{Type: "openai-compatible", BaseURL: tc.baseURL, APIKeyRef: "secret://k"}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for baseUrl %q, got nil", tc.baseURL)
+			}
+			if !strings.Contains(err.Error(), tc.wantMatch) {
+				t.Errorf("error %q does not contain %q", err, tc.wantMatch)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_BaseURL_IgnoredForNonOpenAI confirms the guard
+// is scoped to OpenAI-shaped providers: an unrelated provider type
+// (anthropic) with a stale http baseUrl on a non-loopback host must
+// not trigger validation since the field is not consumed there.
+func TestValidateRunConfig_BaseURL_IgnoredForNonOpenAI(t *testing.T) {
+	c := validConfig()
+	c.Provider = ProviderConfig{Type: "anthropic", BaseURL: "http://evil.internal", APIKeyRef: "secret://k"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Errorf("expected nil error for non-openai provider, got %v", err)
+	}
+}
+
 func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {
 	cases := map[string]string{
 		"contains colon":      "api-key:",
