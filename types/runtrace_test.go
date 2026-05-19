@@ -70,6 +70,32 @@ func TestTurnTrace_StreamingOmitsBatchFields(t *testing.T) {
 	}
 }
 
+// TestTurnTrace_IsBatch pins the empty-mode-means-streaming contract
+// as a method rather than a per-call-site string compare. Empty must
+// resolve to false (legacy / pre-resolution failure path), "streaming"
+// to false, and "batch" to true. A future third mode that consumers
+// must distinguish from batch lands here so the helper can grow a
+// switch rather than every consumer learning a new literal.
+func TestTurnTrace_IsBatch(t *testing.T) {
+	cases := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{"empty-mode", "", false},
+		{"streaming", TurnModeStreaming, false},
+		{"batch", TurnModeBatch, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tt := TurnTrace{Mode: tc.mode}
+			if got := tt.IsBatch(); got != tc.want {
+				t.Errorf("IsBatch() = %v, want %v (mode=%q)", got, tc.want, tc.mode)
+			}
+		})
+	}
+}
+
 // TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode pins the backward-
 // compatibility contract for traces written before #138: a JSON
 // document without the "mode" field must deserialise to Mode: "",
