@@ -603,6 +603,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("transport", "stdio", "")
 	f.String("transport-addr", "", "")
 	f.Int("followup-grace", 0, "")
+	f.Float64("temperature", 0, "")
 	f.String("log-level", "info", "")
 	f.String("prompt", "", "")
 	f.String("prompt-file", "", "")
@@ -1753,6 +1754,66 @@ func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
 	if cfg.FollowUpGrace != nil {
 		t.Errorf("explicit --followup-grace=0 should clear FollowUpGrace, got %v", *cfg.FollowUpGrace)
 	}
+}
+
+// TestApplyOverrides_TemperatureChangedDisambiguatesZero exercises the
+// unset-vs-explicit-zero distinction for --temperature. The flag store
+// is a plain Float64, so cobra cannot represent "absence" — the
+// override path must rely on flags.Changed() instead, or every run
+// that omits the flag silently rewrites a file-provided non-zero
+// value to greedy decoding.
+func TestApplyOverrides_TemperatureChangedDisambiguatesZero(t *testing.T) {
+	t.Run("unset leaves file value alone", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		want := 0.5
+		cfg.Temperature = &want
+		// Do NOT set --temperature on the command line.
+
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.Temperature == nil || *cfg.Temperature != want {
+			t.Errorf("unset --temperature must preserve file value 0.5, got %v", cfg.Temperature)
+		}
+	})
+
+	t.Run("explicit zero is greedy override", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		filed := 0.5
+		cfg.Temperature = &filed
+
+		if err := cmd.Flags().Set("temperature", "0"); err != nil {
+			t.Fatalf("set temperature: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.Temperature == nil {
+			t.Fatalf("explicit --temperature=0 should set greedy decoding, got nil")
+		}
+		if *cfg.Temperature != 0 {
+			t.Errorf("--temperature=0 should set 0.0, got %v", *cfg.Temperature)
+		}
+	})
+
+	t.Run("explicit non-zero overrides file value", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		filed := 0.5
+		cfg.Temperature = &filed
+
+		if err := cmd.Flags().Set("temperature", "1.2"); err != nil {
+			t.Fatalf("set temperature: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.Temperature == nil || *cfg.Temperature != 1.2 {
+			t.Errorf("--temperature=1.2 override failed, got %v", cfg.Temperature)
+		}
+	})
 }
 
 // TestRunHarness_ConfigPathFollowupGraceFromEnv verifies that the
