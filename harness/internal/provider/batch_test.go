@@ -317,6 +317,102 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 	}
 }
 
+// TestDeriveOpenAIResponsesStopReason pins the full
+// status × incomplete-reason × has-tool matrix for the batch path's
+// deriveOpenAIResponsesStopReason. Lifts coverage from the partial
+// streaming-incidental coverage (only completed-with-tool, expired,
+// max_output_tokens) to all eight documented branches plus the
+// non-empty-unknown fallthrough.
+func TestDeriveOpenAIResponsesStopReason(t *testing.T) {
+	mkIncomplete := func(reason string) *struct {
+		Reason string `json:"reason"`
+	} {
+		return &struct {
+			Reason string `json:"reason"`
+		}{Reason: reason}
+	}
+
+	tests := []struct {
+		name    string
+		resp    openaiResponsesBatchResponse
+		hasTool bool
+		want    string
+	}{
+		{
+			name: "completed/no-tool",
+			resp: openaiResponsesBatchResponse{Status: "completed"},
+			want: "end_turn",
+		},
+		{
+			name:    "completed/with-tool",
+			resp:    openaiResponsesBatchResponse{Status: "completed"},
+			hasTool: true,
+			want:    "tool_use",
+		},
+		{
+			name: "incomplete/max_output_tokens",
+			resp: openaiResponsesBatchResponse{
+				Status:            "incomplete",
+				IncompleteDetails: mkIncomplete("max_output_tokens"),
+			},
+			want: "max_tokens",
+		},
+		{
+			name: "incomplete/max_tokens alias",
+			resp: openaiResponsesBatchResponse{
+				Status:            "incomplete",
+				IncompleteDetails: mkIncomplete("max_tokens"),
+			},
+			want: "max_tokens",
+		},
+		{
+			name: "incomplete/content_filter (non-standard reason verbatim)",
+			resp: openaiResponsesBatchResponse{
+				Status:            "incomplete",
+				IncompleteDetails: mkIncomplete("content_filter"),
+			},
+			want: "content_filter",
+		},
+		{
+			name: "incomplete/nil-details",
+			resp: openaiResponsesBatchResponse{Status: "incomplete"},
+			want: "incomplete",
+		},
+		{
+			name: "incomplete/empty-reason",
+			resp: openaiResponsesBatchResponse{
+				Status:            "incomplete",
+				IncompleteDetails: mkIncomplete(""),
+			},
+			want: "incomplete",
+		},
+		{
+			name: "default/non-empty-unknown status verbatim",
+			resp: openaiResponsesBatchResponse{Status: "failed"},
+			want: "failed",
+		},
+		{
+			name:    "default/empty status with tool",
+			resp:    openaiResponsesBatchResponse{Status: ""},
+			hasTool: true,
+			want:    "tool_use",
+		},
+		{
+			name: "default/empty status no tool",
+			resp: openaiResponsesBatchResponse{Status: ""},
+			want: "end_turn",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deriveOpenAIResponsesStopReason(tc.resp, tc.hasTool)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFabricateStream_UnsupportedProviderEmitsError(t *testing.T) {
 	ch := make(chan types.StreamEvent, 1)
 	fabricateStream(ch, []byte(`{}`), "bedrock")

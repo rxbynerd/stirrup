@@ -874,32 +874,44 @@ func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.R
 	return nil
 }
 
-// deriveOpenAIResponsesStopReason mirrors openai_responses.go's
-// deriveStopReason for the batch response shape. Tool calls take
-// precedence over plain end_turn so the agentic loop dispatches tools
-// before treating the turn as final. The status / incomplete_details
-// reason vocabulary mirrors the streaming path.
+// deriveOpenAIResponsesStopReason adapts the batch response shape to
+// the shared deriveResponsesStopReason helper. Retained as a thin
+// wrapper so the call site at fabricateOpenAIResponsesStream stays
+// legible.
 func deriveOpenAIResponsesStopReason(resp openaiResponsesBatchResponse, hasTool bool) string {
-	switch resp.Status {
+	incompleteReason := ""
+	if resp.IncompleteDetails != nil {
+		incompleteReason = resp.IncompleteDetails.Reason
+	}
+	return deriveResponsesStopReason(resp.Status, incompleteReason, hasTool)
+}
+
+// deriveResponsesStopReason maps an OpenAI Responses API status /
+// incomplete_details.reason / tool-presence tuple to stirrup's stop
+// reason vocabulary. Shared between the streaming path
+// (openai_responses.go's deriveStopReason) and the batch fabrication
+// path (batch.go's deriveOpenAIResponsesStopReason) so a new status
+// arm only has to be applied once. Tool calls take precedence over
+// plain end_turn so the agentic loop dispatches tools before treating
+// the turn as final.
+func deriveResponsesStopReason(status, incompleteReason string, hasTool bool) string {
+	switch status {
 	case "completed":
 		if hasTool {
 			return "tool_use"
 		}
 		return "end_turn"
 	case "incomplete":
-		if resp.IncompleteDetails != nil {
-			r := resp.IncompleteDetails.Reason
-			if r == "max_output_tokens" || r == "max_tokens" {
-				return "max_tokens"
-			}
-			if r != "" {
-				return r
-			}
+		if incompleteReason == "max_output_tokens" || incompleteReason == "max_tokens" {
+			return "max_tokens"
+		}
+		if incompleteReason != "" {
+			return incompleteReason
 		}
 		return "incomplete"
 	default:
-		if resp.Status != "" {
-			return resp.Status
+		if status != "" {
+			return status
 		}
 		if hasTool {
 			return "tool_use"
