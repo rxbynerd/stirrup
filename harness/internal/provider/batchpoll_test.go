@@ -1864,6 +1864,304 @@ func TestBatchAdapter_OpenAIStdio_CancellingSurfaces(t *testing.T) {
 	}
 }
 
+// waitForOpenAICancelCount blocks (up to timeout) until cancelCalls
+// reaches want. Mirrors pollServer.waitForCancelCount but reaches into
+// openaiBatchFixture.cancelCalls under the existing mutex.
+func waitForOpenAICancelCount(t *testing.T, f *openaiBatchFixture, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		f.mu.Lock()
+		got := f.cancelCalls
+		f.mu.Unlock()
+		if got >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIResult_TimeoutFiringAlignedToDeadline
+// covers the sleep>remaining clamp at resultOpenAI: with maxWait set
+// to ~3× initialInterval, the third sleep would (uncapped) exceed the
+// remaining budget. The loop must clamp it and fire errBatchExpired
+// within slack of the documented cap rather than one interval past it.
+func TestHarnessPollingBatch_OpenAIResult_TimeoutFiringAlignedToDeadline(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{`{"id":"batch_xyz","status":"in_progress"}`}
+	f := newOpenAIBatchFixture(t, polls, "", "")
+	defer f.Close()
+
+	prevInterval := setBatchPollInitialInterval(10 * time.Millisecond)
+	defer setBatchPollInitialInterval(prevInterval)
+	prevJitter := setBatchPollJitterDisabled(true)
+	defer setBatchPollJitterDisabled(prevJitter)
+
+	const maxWait = 30 * time.Millisecond
+	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+		ProviderType: "openai-compatible",
+		APIKeyRef:    "secret://test",
+		CredSource:   src,
+		BaseURL:      f.URL,
+		MaxWait:      maxWait,
+	})
+
+	start := time.Now()
+	_, err := c.Result(context.Background(), "batch_xyz")
+	elapsed := time.Since(start)
+
+	if err == nil || !errors.Is(err, errBatchExpired) {
+		t.Fatalf("expected errBatchExpired, got: %v", err)
+	}
+	if elapsed > maxWait+50*time.Millisecond {
+		t.Errorf("timeout fired %s past maxWait; want <= maxWait + 50ms", elapsed-maxWait)
+	}
+	// best-effort cancel must hit the OpenAI cancel URL shape, not the
+	// Anthropic one.
+	waitForOpenAICancelCount(t, f, 1, time.Second)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cancelCalls != 1 {
+		t.Errorf("cancelCalls on timeout: got %d, want 1", f.cancelCalls)
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIBackoffCapped covers the cap-clamp
+// after the second doubling: with initialInterval > cap/2, the second
+// doubling would exceed the cap and must be clamped.
+func TestHarnessPollingBatch_OpenAIBackoffCapped(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+
+	var (
+		mu        sync.Mutex
+		callTimes []time.Time
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/batches/") &&
+			!strings.HasSuffix(r.URL.Path, "/cancel"):
+			mu.Lock()
+			callTimes = append(callTimes, time.Now())
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"in_progress"}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		}
+	}))
+	defer srv.Close()
+
+	prevCap := swapBatchPollMaxInterval(5 * time.Millisecond)
+	defer swapBatchPollMaxInterval(prevCap)
+	prevInterval := setBatchPollInitialInterval(3 * time.Millisecond)
+	defer setBatchPollInitialInterval(prevInterval)
+	prevJitter := setBatchPollJitterDisabled(true)
+	defer setBatchPollJitterDisabled(prevJitter)
+
+	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+		ProviderType: "openai-compatible",
+		APIKeyRef:    "secret://test",
+		CredSource:   src,
+		BaseURL:      srv.URL,
+		MaxWait:      40 * time.Millisecond,
+	})
+
+	_, _ = c.Result(context.Background(), "batch_xyz")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(callTimes) < 4 {
+		t.Fatalf("expected >=4 poll calls within the 40ms budget, got %d", len(callTimes))
+	}
+	const slack = 20 * time.Millisecond
+	for i := 2; i < len(callTimes); i++ {
+		gap := callTimes[i].Sub(callTimes[i-1])
+		if gap > 5*time.Millisecond+slack {
+			t.Errorf("poll interval %d exceeded cap+slack: got %s", i, gap)
+		}
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll covers
+// the errors.Is(ctx-error) branch for the OpenAI variant: cancel the
+// parent ctx after the poll handler has accepted the request but
+// before it writes a response, forcing the request context to be
+// cancelled mid-flight. Result must return promptly with
+// context.Canceled and the detached bestEffortCancel must reach the
+// OpenAI cancel URL (not the Anthropic one).
+func TestHarnessPollingBatch_OpenAIResult_CtxCancelledDuringPoll(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pollEntered := make(chan struct{}, 1)
+	var (
+		mu          sync.Mutex
+		cancelPaths []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/batches/") &&
+			!strings.HasSuffix(r.URL.Path, "/cancel"):
+			select {
+			case pollEntered <- struct{}{}:
+			default:
+			}
+			<-r.Context().Done()
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			mu.Lock()
+			cancelPaths = append(cancelPaths, r.URL.Path)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, srv, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Result(ctx, "batch_xyz")
+		done <- err
+	}()
+
+	select {
+	case <-pollEntered:
+	case <-time.After(time.Second):
+		t.Fatal("poll handler never entered")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Result did not return after ctx cancel during poll")
+	}
+
+	// bestEffortCancel detaches via context.Background; wait briefly.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		hit := len(cancelPaths) > 0
+		mu.Unlock()
+		if hit {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(cancelPaths) != 1 {
+		t.Fatalf("expected exactly 1 cancel hit, got %d (paths=%v)", len(cancelPaths), cancelPaths)
+	}
+	if !strings.HasPrefix(cancelPaths[0], "/batches/") {
+		t.Errorf("cancel URL: got %q; OpenAI cancel must hit /batches/{id}/cancel (not /v1/messages/batches/...)", cancelPaths[0])
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL pins
+// that the cancel fired on timeout addresses the OpenAI URL shape, not
+// the Anthropic one — mirrors the Anthropic CancelURLEscaped test for
+// the OpenAI path.
+func TestHarnessPollingBatch_OpenAIResult_TimeoutFiresOpenAICancelURL(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+
+	var (
+		mu          sync.Mutex
+		cancelPaths []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/batches/") &&
+			!strings.HasSuffix(r.URL.Path, "/cancel"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"in_progress"}`)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			mu.Lock()
+			cancelPaths = append(cancelPaths, r.URL.Path)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, srv, src, "openai-compatible", 30*time.Millisecond)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	if err == nil || !errors.Is(err, errBatchExpired) {
+		t.Fatalf("expected errBatchExpired, got: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		hit := len(cancelPaths) > 0
+		mu.Unlock()
+		if hit {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(cancelPaths) == 0 {
+		t.Fatal("expected bestEffortCancel to fire and reach the server")
+	}
+	if !strings.HasPrefix(cancelPaths[0], "/batches/") || !strings.HasSuffix(cancelPaths[0], "/cancel") {
+		t.Errorf("cancel URL %q; OpenAI cancel must address /batches/{id}/cancel", cancelPaths[0])
+	}
+	if strings.Contains(cancelPaths[0], "/v1/messages/") {
+		t.Errorf("cancel URL %q contains Anthropic path prefix", cancelPaths[0])
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIResult_UnknownStatus pins the default
+// arm in resultOpenAI: a status string not in the documented vocabulary
+// must not exit the loop. The poll continues until the deadline fires.
+func TestHarnessPollingBatch_OpenAIResult_UnknownStatus(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{`{"id":"batch_xyz","status":"unicorn"}`}
+	f := newOpenAIBatchFixture(t, polls, "", "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", 30*time.Millisecond)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	// Unknown status continues to poll; the loop must exit via the
+	// wall-clock deadline (errBatchExpired) rather than a typed error
+	// on the first unrecognised status.
+	if err == nil || !errors.Is(err, errBatchExpired) {
+		t.Fatalf("expected errBatchExpired (loop continues on unknown status), got: %v", err)
+	}
+	// At least one poll fired — the loop did enter the switch's default
+	// arm before the deadline closed.
+	_, _, polls2, _, _ := f.snapshot()
+	if polls2 < 1 {
+		t.Errorf("expected >=1 poll on unknown status, got %d", polls2)
+	}
+}
+
 // TestHarnessPollingBatch_OpenAIBatchIDPathEscaped confirms a batchID
 // containing path-sensitive characters is escaped into a single path
 // segment in both the poll and the cancel URL — mirrors the Anthropic
