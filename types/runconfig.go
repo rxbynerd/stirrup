@@ -2109,6 +2109,19 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 	if config.Transport.Type == "stdio" && !batch.HarnessSidePolling {
 		*errs = append(*errs, "batch with transport=stdio requires harnessSidePolling=true")
 	}
+	// v1 limitation: harnessPollingBatchClient hardcodes x-api-key auth.
+	// anthropic-wif requires Authorization: Bearer (see anthropic.go's
+	// AuthMode switch) and that auth mode is not yet threaded through
+	// NewHarnessPollingBatchClient. Reject the combination here so the
+	// operator hits a clear validation error rather than a silent 401
+	// on the first poll. TODO(batch-phase-6): lift this restriction by
+	// threading AuthMode through harnessPollingBatchClient (follow-up
+	// filed: "lift anthropic-wif + stdio batch restriction").
+	if batch.HarnessSidePolling &&
+		config.Provider.Credential != nil &&
+		config.Provider.Credential.Type == "anthropic-wif" {
+		*errs = append(*errs, "batch.harnessSidePolling does not support anthropic-wif credentials in v1 (the polling client uses x-api-key auth); follow-up: thread AuthMode through harnessPollingBatchClient")
+	}
 	if batch.MaxWaitSeconds != nil {
 		if *batch.MaxWaitSeconds <= 0 || *batch.MaxWaitSeconds > DefaultBatchMaxWaitSeconds {
 			*errs = append(*errs, "batch.maxWaitSeconds must be in range (0, 86400]")
