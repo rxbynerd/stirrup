@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"math"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -451,7 +453,7 @@ func TestMineFailureTasks_FiltersNonSuccess(t *testing.T) {
 		},
 	}
 
-	tasks := mineFailureTasks(recordings, 0)
+	tasks := mineFailureTasksFiltered(recordings, 0, false)
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2", len(tasks))
 	}
@@ -484,7 +486,7 @@ func TestMineFailureTasks_RespectsLimit(t *testing.T) {
 		{RunID: "r3", Config: types.RunConfig{Prompt: "c"}, FinalOutcome: types.RunTrace{Outcome: "error"}},
 	}
 
-	tasks := mineFailureTasks(recordings, 2)
+	tasks := mineFailureTasksFiltered(recordings, 2, false)
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2", len(tasks))
 	}
@@ -495,9 +497,221 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "success"}},
 	}
 
-	tasks := mineFailureTasks(recordings, 0)
+	tasks := mineFailureTasksFiltered(recordings, 0, false)
 	if len(tasks) != 0 {
 		t.Fatalf("got %d tasks, want 0", len(tasks))
+	}
+}
+
+// makeBatchRecording is the test helper for #138's --include-batch
+// branch: a recording whose RunConfig.Provider has Batch.Enabled=true.
+// Centralised so the BatchProviderConfig construction is not
+// scattered across multiple test cases.
+func makeBatchRecording(runID, outcome, prompt string) types.RunRecording {
+	return types.RunRecording{
+		RunID: runID,
+		Config: types.RunConfig{
+			Prompt: prompt,
+			Mode:   "execution",
+			Provider: types.ProviderConfig{
+				Type:  "anthropic",
+				Batch: &types.BatchProviderConfig{Enabled: true},
+			},
+		},
+		FinalOutcome: types.RunTrace{ID: runID, Outcome: outcome},
+	}
+}
+
+// TestMineFailureTasksFiltered_ExcludesBatchByDefault pins the
+// default behaviour of --include-batch=false (the spec'd default):
+// batch failures stay out of the mined suite because their failure
+// modes are dominated by provider-side queue dynamics, not the
+// agent prompts mine-failures exists to surface (#138).
+func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
+	recordings := []types.RunRecording{
+		{
+			RunID:        "stream-fail",
+			Config:       types.RunConfig{Prompt: "streaming failure", Mode: "execution"},
+			FinalOutcome: types.RunTrace{ID: "stream-fail", Outcome: "error"},
+		},
+		makeBatchRecording("batch-fail", "error", "batch failure"),
+	}
+
+	tasks := mineFailureTasksFiltered(recordings, 0, false)
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1 (batch failure must be excluded)", len(tasks))
+	}
+	if tasks[0].Prompt != "streaming failure" {
+		t.Errorf("task[0].Prompt = %q, want streaming failure", tasks[0].Prompt)
+	}
+}
+
+// TestMineFailureTasksFiltered_IncludesBatchWhenRequested covers the
+// --include-batch=true escape hatch. Operators investigating batch-
+// specific failure modes (e.g. timeout taxonomies, provider-side
+// rejection patterns) need to be able to opt into the wider window.
+func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
+	recordings := []types.RunRecording{
+		{
+			RunID:        "stream-fail",
+			Config:       types.RunConfig{Prompt: "streaming failure", Mode: "execution"},
+			FinalOutcome: types.RunTrace{ID: "stream-fail", Outcome: "error"},
+		},
+		makeBatchRecording("batch-fail", "error", "batch failure"),
+	}
+
+	tasks := mineFailureTasksFiltered(recordings, 0, true)
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2 (both failures included)", len(tasks))
+	}
+}
+
+// writeMineFailuresFixture stores one streaming and one batch failure
+// recording into a fresh lakehouse rooted at dir. Centralised so the
+// two cmdMineFailures CLI-dispatch tests share an identical input
+// surface and any divergence between default vs --include-batch is
+// attributable to the flag, not the fixture.
+func writeMineFailuresFixture(t *testing.T, dir string) {
+	t.Helper()
+	store, err := lakehouse.NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	recordings := []types.RunRecording{
+		{
+			RunID: "stream-fail",
+			Config: types.RunConfig{
+				Prompt: "streaming failure prompt",
+				Mode:   "execution",
+			},
+			FinalOutcome: types.RunTrace{ID: "stream-fail", Outcome: "error"},
+		},
+		makeBatchRecording("batch-fail", "error", "batch failure prompt"),
+	}
+	for _, rec := range recordings {
+		if err := store.StoreRecording(context.Background(), rec); err != nil {
+			t.Fatalf("StoreRecording %s: %v", rec.RunID, err)
+		}
+	}
+}
+
+// TestRun_MineFailures_DefaultExcludesBatch pins the CLI default at
+// the dispatch layer: invoking `eval mine-failures` without
+// --include-batch must drop batch failures from the emitted suite.
+// The unit tests on mineFailureTasksFiltered cover the helper, but
+// only this test exercises the FlagSet registration, the default
+// value, and the *includeBatch dereference into the helper — a
+// regression that inverted the flag default or wired !*includeBatch
+// would slip past every helper-level test (#138 spec B3).
+func TestRun_MineFailures_DefaultExcludesBatch(t *testing.T) {
+	dir := t.TempDir()
+	writeMineFailuresFixture(t, dir)
+	outPath := filepath.Join(dir, "mined.hcl")
+
+	code := run([]string{
+		"mine-failures",
+		"--lakehouse", dir,
+		"--output", outPath,
+	}, io.Discard)
+	if code != 0 {
+		t.Fatalf("run() exit code = %d, want 0", code)
+	}
+
+	got, err := loadSuite(outPath)
+	if err != nil {
+		t.Fatalf("loadSuite: %v", err)
+	}
+	if len(got.Tasks) != 1 {
+		t.Fatalf("default suite has %d tasks, want 1 (batch must be excluded)", len(got.Tasks))
+	}
+	if got.Tasks[0].Prompt != "streaming failure prompt" {
+		t.Errorf("task[0].Prompt = %q, want %q", got.Tasks[0].Prompt, "streaming failure prompt")
+	}
+}
+
+// TestRun_MineFailures_IncludeBatchFlag pins the --include-batch
+// escape hatch at the dispatch layer: the flag must opt batch
+// failures back into the emitted suite alongside streaming ones.
+// Operators investigating batch-specific failure modes rely on this
+// flag, so a regression that ignored it or hardcoded the helper's
+// includeBatch argument to false would silently break the
+// documented opt-in (#138 spec B3).
+func TestRun_MineFailures_IncludeBatchFlag(t *testing.T) {
+	dir := t.TempDir()
+	writeMineFailuresFixture(t, dir)
+	outPath := filepath.Join(dir, "mined.hcl")
+
+	code := run([]string{
+		"mine-failures",
+		"--lakehouse", dir,
+		"--output", outPath,
+		"--include-batch",
+	}, io.Discard)
+	if code != 0 {
+		t.Fatalf("run() exit code = %d, want 0", code)
+	}
+
+	got, err := loadSuite(outPath)
+	if err != nil {
+		t.Fatalf("loadSuite: %v", err)
+	}
+	if len(got.Tasks) != 2 {
+		t.Fatalf("--include-batch suite has %d tasks, want 2 (both failures included)", len(got.Tasks))
+	}
+	// Both prompts must be present; recording-iteration order in
+	// QueryRecordings is StartedAt-descending (zero-time here, so
+	// implementation-defined), so assert on set membership rather
+	// than ordering.
+	prompts := map[string]bool{}
+	for _, task := range got.Tasks {
+		prompts[task.Prompt] = true
+	}
+	for _, want := range []string{"streaming failure prompt", "batch failure prompt"} {
+		if !prompts[want] {
+			t.Errorf("--include-batch suite missing prompt %q (got %v)", want, prompts)
+		}
+	}
+}
+
+// TestIsBatchRecording pins the classifier so a future refactor of
+// the predicate fails this test rather than silently shifting the
+// mine-failures default-include surface. Mirrors
+// lakehouse.TestIsBatchRun — both must move together.
+func TestIsBatchRecording(t *testing.T) {
+	cases := []struct {
+		name string
+		rec  types.RunRecording
+		want bool
+	}{
+		{"no-provider", types.RunRecording{}, false},
+		{
+			"provider-without-batch",
+			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{Type: "anthropic"}}},
+			false,
+		},
+		{
+			"batch-disabled",
+			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{
+				Batch: &types.BatchProviderConfig{Enabled: false},
+			}}},
+			false,
+		},
+		{
+			"batch-enabled",
+			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{
+				Batch: &types.BatchProviderConfig{Enabled: true},
+			}}},
+			true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBatchRecording(tc.rec); got != tc.want {
+				t.Errorf("isBatchRecording = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -759,20 +973,24 @@ func TestPrintComparisonSummary_EmptyVariants(t *testing.T) {
 
 func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 	current := types.TraceMetrics{
-		Count:       10,
-		PassRate:    0.80,
-		MeanTurns:   5.0,
-		MeanTokens:  1000,
-		P50Duration: 200,
-		P95Duration: 500,
+		Count:            10,
+		PassRate:         0.80,
+		MeanTurns:        5.0,
+		MeanTokens:       1000,
+		P50Duration:      200,
+		P95Duration:      500,
+		BatchP50Duration: 12000,
+		BatchP95Duration: 30000,
 	}
 	baseline := types.TraceMetrics{
-		Count:       10,
-		PassRate:    0.90,
-		MeanTurns:   4.0,
-		MeanTokens:  900,
-		P50Duration: 180,
-		P95Duration: 450,
+		Count:            10,
+		PassRate:         0.90,
+		MeanTurns:        4.0,
+		MeanTokens:       900,
+		P50Duration:      180,
+		P95Duration:      450,
+		BatchP50Duration: 9000,
+		BatchP95Duration: 24000,
 	}
 
 	report := buildDriftReport(current, baseline)
@@ -782,5 +1000,25 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 	}
 	if math.Abs(report.Deltas.MeanTurnsDelta-1.0) > 0.001 {
 		t.Errorf("MeanTurnsDelta = %f, want 1.0", report.Deltas.MeanTurnsDelta)
+	}
+	// Pin the full delta surface: a sign-flip bug (baseline - current
+	// rather than current - baseline) would not be caught by the
+	// pass-rate or mean-turns assertions alone, since the streaming
+	// and batch percentile deltas were entirely unasserted prior to
+	// #138 review B4.
+	if math.Abs(report.Deltas.MeanTokensDelta-100) > 0.001 {
+		t.Errorf("MeanTokensDelta = %f, want 100", report.Deltas.MeanTokensDelta)
+	}
+	if math.Abs(report.Deltas.P50DurationDelta-20) > 0.001 {
+		t.Errorf("P50DurationDelta = %f, want 20", report.Deltas.P50DurationDelta)
+	}
+	if math.Abs(report.Deltas.P95DurationDelta-50) > 0.001 {
+		t.Errorf("P95DurationDelta = %f, want 50", report.Deltas.P95DurationDelta)
+	}
+	if math.Abs(report.Deltas.BatchP50DurationDelta-3000) > 0.001 {
+		t.Errorf("BatchP50DurationDelta = %f, want 3000", report.Deltas.BatchP50DurationDelta)
+	}
+	if math.Abs(report.Deltas.BatchP95DurationDelta-6000) > 0.001 {
+		t.Errorf("BatchP95DurationDelta = %f, want 6000", report.Deltas.BatchP95DurationDelta)
 	}
 }

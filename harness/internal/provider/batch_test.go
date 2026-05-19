@@ -292,6 +292,87 @@ func TestBatchAdapter_Stream_SubmitError(t *testing.T) {
 	}
 }
 
+// TestBatchAdapter_LastBatchID_EmptyBeforeSubmit pins the contract
+// documented on LastBatchID(): readers (the agentic loop in #138)
+// must see an empty string when no batch has been submitted yet, so
+// a streaming-only fallback path can detect the absence cleanly.
+func TestBatchAdapter_LastBatchID_EmptyBeforeSubmit(t *testing.T) {
+	a := batchAdapter(t, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, nil)
+	if got := a.LastBatchID(); got != "" {
+		t.Errorf("LastBatchID before Submit = %q, want empty", got)
+	}
+}
+
+// TestBatchAdapter_LastBatchID_PopulatedAfterSubmit confirms the
+// adapter surfaces the provider-assigned batch identifier returned
+// from Submit so the agentic loop can attach it to the TurnTrace.
+// Both the control-plane handle ("batch-N") and the polling client's
+// "msgbatch_..." flow through this single accessor unchanged.
+func TestBatchAdapter_LastBatchID_PopulatedAfterSubmit(t *testing.T) {
+	response := json.RawMessage(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"output_tokens":1}}`)
+	client := &fakeBatchClient{
+		submitFn: func(_ []BatchEntry) (string, error) { return "msgbatch_abc123", nil },
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return map[string]*BatchResult{"stirrup-run-test-turn-1": {Response: response}}, nil
+		},
+	}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
+
+	ch, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_ = drain(t, ch)
+
+	if got := a.LastBatchID(); got != "msgbatch_abc123" {
+		t.Errorf("LastBatchID after Submit = %q, want %q", got, "msgbatch_abc123")
+	}
+}
+
+// TestBatchAdapter_LastBatchID_UnchangedOnSubmitError pins the
+// rationale called out in the field doc: a failed Submit leaves the
+// previous batch identifier in place rather than clobbering with "".
+// A loop that reads LastBatchID() on a fallback path then still
+// references the most recent successful submission, not a transient
+// failure that produced no provider-side batch.
+func TestBatchAdapter_LastBatchID_UnchangedOnSubmitError(t *testing.T) {
+	response := json.RawMessage(`{"content":[],"stop_reason":"end_turn","usage":{"output_tokens":0}}`)
+	calls := 0
+	client := &fakeBatchClient{
+		submitFn: func(_ []BatchEntry) (string, error) {
+			calls++
+			if calls == 1 {
+				return "msgbatch_first", nil
+			}
+			return "", errors.New("transient submit failure")
+		},
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return map[string]*BatchResult{"stirrup-run-test-turn-1": {Response: response}}, nil
+		},
+	}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
+
+	ch, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_ = drain(t, ch)
+	if got := a.LastBatchID(); got != "msgbatch_first" {
+		t.Fatalf("LastBatchID after first Submit = %q, want msgbatch_first", got)
+	}
+
+	// Second Stream Submit returns an error; LastBatchID must still
+	// hold the previous successful value.
+	ch2, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream 2: %v", err)
+	}
+	_ = drain(t, ch2)
+	if got := a.LastBatchID(); got != "msgbatch_first" {
+		t.Errorf("LastBatchID after failed Submit = %q, want msgbatch_first (unchanged)", got)
+	}
+}
+
 func TestBatchAdapter_Stream_ResultError(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
@@ -400,6 +481,86 @@ func TestBatchAdapter_Stream_TimeoutFallback(t *testing.T) {
 	}
 	if events[1].Type != "message_complete" {
 		t.Errorf("event 1: %+v", events[1])
+	}
+}
+
+// TestFabricateAnthropicStream_MalformedToolInput pins the
+// tool_use input decode error path in fabricateAnthropicStream
+// directly. The wider fabricateStream wrapper takes the error
+// arm only after this layer has returned a non-nil error; testing
+// the inner function isolates the failure to the input decode
+// without depending on the wrapper's plumbing.
+func TestFabricateAnthropicStream_MalformedToolInput(t *testing.T) {
+	// Note: the tool_use Input field is json.RawMessage, so a
+	// truncated object literal inside the message body forces the
+	// unmarshal of Input itself to fail.
+	response := []byte(`{
+		"content": [
+			{"type": "tool_use", "id": "tu_bad", "name": "read_file", "input": {"not-json`)
+
+	ch := make(chan types.StreamEvent, 4)
+	err := fabricateAnthropicStream(ch, response)
+	if err == nil {
+		t.Fatal("expected error for malformed tool_use input, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("error chain = %q, want it to mention 'decode'", err.Error())
+	}
+}
+
+// TestFabricateStream_AnthropicDecodeError covers the
+// fabricateStream wrapper's error relay arm for the anthropic case:
+// when fabricateAnthropicStream returns a non-nil error, the
+// wrapper must emit a single error StreamEvent rather than swallow
+// it (the agentic loop is the only consumer and expects all
+// failures on-channel).
+func TestFabricateStream_AnthropicDecodeError(t *testing.T) {
+	// A response whose tool_use input field is a truncated JSON
+	// value triggers fabricateAnthropicStream's decode error path,
+	// which fabricateStream must relay to the channel.
+	response := []byte(`{
+		"content": [
+			{"type": "tool_use", "id": "tu_bad", "name": "read_file", "input": {"path": "/etc/hosts`)
+
+	ch := make(chan types.StreamEvent, 4)
+	fabricateStream(ch, response, "anthropic")
+	close(ch)
+
+	var sawError bool
+	for ev := range ch {
+		if ev.Type == "error" && ev.Error != nil && strings.Contains(ev.Error.Error(), "decode") {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Error("expected a decode error StreamEvent from fabricateStream")
+	}
+}
+
+// TestBatchAdapter_Stream_ResultNonTransientError covers the
+// awaitAndFabricate default error arm: a Result error that is
+// neither errBatchExpired nor a context error must surface as a
+// single "batch result:" StreamEvent. Without this guard, a
+// provider-side rejection (rate limit, invalid model) could be
+// swallowed or misclassified as a timeout.
+func TestBatchAdapter_Stream_ResultNonTransientError(t *testing.T) {
+	client := &fakeBatchClient{
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return nil, fmt.Errorf("provider-side rejection")
+		},
+	}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
+	ch, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := drain(t, ch)
+	if len(events) != 1 || events[0].Type != "error" {
+		t.Fatalf("expected single error event, got %+v", events)
+	}
+	msg := events[0].Error.Error()
+	if !strings.Contains(msg, "batch result:") || !strings.Contains(msg, "provider-side rejection") {
+		t.Errorf("error chain = %q, want both 'batch result:' and 'provider-side rejection'", msg)
 	}
 }
 

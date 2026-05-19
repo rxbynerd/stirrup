@@ -56,6 +56,15 @@ type VerificationResult struct {
 	Details  map[string]any `json:"details,omitempty"`
 }
 
+// TurnMode* are the documented values of TurnTrace.Mode. Empty
+// string ("") means streaming for backward compatibility with
+// pre-phase-5 traces (#138) and for error turns that fail before a
+// concrete provider is resolved.
+const (
+	TurnModeStreaming = "streaming"
+	TurnModeBatch     = "batch"
+)
+
 // TurnTrace captures telemetry for a single agentic loop turn.
 type TurnTrace struct {
 	Turn       int        `json:"turn"`
@@ -71,6 +80,21 @@ type TurnTrace struct {
 	// ParentRunID is the run ID of the sub-agent's parent. Populated only
 	// for forwarded sub-agent events.
 	ParentRunID string `json:"parentRunId,omitempty"`
+	// Mode is "streaming" or "batch". Empty string deserialises from
+	// traces that predate this field; downstream consumers treat empty
+	// as streaming for backward compatibility (#138).
+	Mode string `json:"mode,omitempty"`
+	// BatchID is the provider-assigned batch identifier for batch turns.
+	// Empty for streaming turns. Allows cross-referencing a TurnTrace
+	// with the provider's batch console / API.
+	BatchID string `json:"batchId,omitempty"`
+}
+
+// IsBatch reports whether the turn was submitted via async batch. An
+// empty Mode is treated as streaming for backward compatibility with
+// traces that predate the Mode field (phase 5, #138).
+func (t TurnTrace) IsBatch() bool {
+	return t.Mode == TurnModeBatch
 }
 
 // ToolCallTrace records telemetry for a single tool call.

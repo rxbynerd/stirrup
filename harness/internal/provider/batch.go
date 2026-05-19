@@ -149,6 +149,12 @@ type BatchAdapter struct {
 	provType  string
 	runID     string
 	turnCount atomic.Int64
+	// lastBatchID stores the provider-assigned batch identifier from the
+	// most recent successful Submit. The agentic loop reads it via
+	// LastBatchID() after streamEventsToResult returns to populate
+	// TurnTrace.BatchID (#138). Stored as atomic.Value so concurrent
+	// turns (none in v1, defence in depth) do not race the read.
+	lastBatchID atomic.Value // string
 }
 
 // NewBatchAdapter constructs a BatchAdapter. cfg.MaxWaitSeconds is read
@@ -196,10 +202,33 @@ func (a *BatchAdapter) Stream(ctx context.Context, params types.StreamParams) (<
 		close(ch)
 		return ch, nil
 	}
+	// Publish the batch identifier so the agentic loop can read it via
+	// LastBatchID() once streamEventsToResult drains the channel and
+	// populate TurnTrace.BatchID. Stored on Submit success — not after
+	// Result — so the loop sees the ID even on a downstream fabrication
+	// or fallback path. The control-plane client returns its own
+	// correlation handle ("batch-N"); the polling client returns the
+	// provider-assigned ID ("msgbatch_..."). Both are useful for
+	// cross-referencing the turn from outside the harness.
+	a.lastBatchID.Store(batchID)
 
 	ch := make(chan types.StreamEvent, 64)
 	go a.awaitAndFabricate(ctx, ch, params, customID, batchID)
 	return ch, nil
+}
+
+// LastBatchID returns the provider-assigned identifier of the most
+// recent successfully-submitted batch. Empty before the first Submit
+// and remains the previous value if a later Submit fails. The agentic
+// loop calls it after streamEventsToResult to attach the ID to the
+// turn's TurnTrace (#138).
+func (a *BatchAdapter) LastBatchID() string {
+	v := a.lastBatchID.Load()
+	if v == nil {
+		return ""
+	}
+	id, _ := v.(string)
+	return id
 }
 
 // marshalRequestBody projects params into the wire body for the
