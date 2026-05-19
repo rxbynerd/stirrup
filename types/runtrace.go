@@ -71,6 +71,14 @@ type TurnTrace struct {
 	// ParentRunID is the run ID of the sub-agent's parent. Populated only
 	// for forwarded sub-agent events.
 	ParentRunID string `json:"parentRunId,omitempty"`
+	// Mode is "streaming" or "batch". Empty string deserialises from
+	// traces that predate this field; downstream consumers treat empty
+	// as streaming for backward compatibility (#138).
+	Mode string `json:"mode,omitempty"`
+	// BatchID is the provider-assigned batch identifier for batch turns.
+	// Empty for streaming turns. Allows cross-referencing a TurnTrace
+	// with the provider's batch console / API.
+	BatchID string `json:"batchId,omitempty"`
 }
 
 // ToolCallTrace records telemetry for a single tool call.
