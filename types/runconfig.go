@@ -365,6 +365,17 @@ func (rc RunConfig) Redact() RunConfig {
 		retry := *redacted.Provider.Retry
 		redacted.Provider.Retry = &retry
 	}
+	// Mirror the Retry deep-copy for Provider.Batch. The aliasing risk
+	// is concrete: validateBatchConfig mutates Batch.MaxWaitSeconds in
+	// place to apply the default, and the phase-2 BatchAdapter (#135)
+	// is expected to hold a reference to the Redact()-derived snapshot
+	// across the run. Without the deep copy, a later default-apply
+	// write would reach the redacted copy through the shared pointer
+	// and break the snapshot contract.
+	if redacted.Provider.Batch != nil {
+		batch := *redacted.Provider.Batch
+		redacted.Provider.Batch = &batch
+	}
 	if len(redacted.Providers) > 0 {
 		providers := make(map[string]ProviderConfig, len(redacted.Providers))
 		for name, provider := range redacted.Providers {
@@ -374,6 +385,10 @@ func (rc RunConfig) Redact() RunConfig {
 			if provider.Retry != nil {
 				retry := *provider.Retry
 				provider.Retry = &retry
+			}
+			if provider.Batch != nil {
+				batch := *provider.Batch
+				provider.Batch = &batch
 			}
 			providers[name] = provider
 		}
@@ -1424,6 +1439,13 @@ type ModePreset struct {
 // happen anyway). Also applies ProviderRetryConfig defaults to
 // Provider.Retry and each entry in Providers so adapters never have
 // to nil-check the per-call retry policy.
+//
+// Note: ValidateRunConfig mutates its argument in place to apply
+// per-provider defaults (Provider.Retry fields, Provider.Batch.MaxWaitSeconds
+// when Batch.Enabled=true, CodeScanner type). Callers that need an
+// unmodified copy must clone before calling. Redact() deep-copies the
+// affected pointer fields so a snapshot taken before validation does
+// not alias the live config.
 func ValidateRunConfig(config *RunConfig) error {
 	applyCodeScannerDefault(config)
 	retryDefaulted := applyProviderRetryDefaults(config)
@@ -1926,11 +1948,14 @@ func fmtProviderRetryValue(value int, isDefault bool) string {
 // validateBatchConfig enforces the cross-field invariants on
 // ProviderConfig.Batch and applies the MaxWaitSeconds default. Batch
 // only applies to the top-level Provider in v1; entries in
-// Providers[] are streaming-only and any Batch field on them is
-// ignored. The validator mutates *config when Batch.Enabled and
-// MaxWaitSeconds is unset — downstream consumers should always see
-// a populated value so the adapter wiring (phase 2) can avoid
-// nil-checking on the hot path.
+// Providers[] are streaming-only and validateProviderConfigs rejects
+// any non-nil Batch on a map entry. The validator mutates *config when
+// Batch.Enabled and MaxWaitSeconds is unset — downstream consumers
+// should always see a populated value so the adapter wiring (phase 2)
+// can avoid nil-checking on the hot path. The MaxWaitSeconds default
+// is intentionally withheld when Enabled=false: phase-2 callers rely
+// on nil to distinguish "operator did not configure this field" from
+// "default applied", and the field is meaningless when batch is off.
 func validateBatchConfig(config *RunConfig, errs *[]string) {
 	batch := config.Provider.Batch
 	if batch == nil {
@@ -1951,7 +1976,13 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 		return
 	}
 
-	if !validBatchProviderTypes[config.Provider.Type] {
+	// Skip the batch provider-type check when the underlying provider
+	// type is itself invalid: validateRequiredType has already
+	// appended a "provider type is required" / "unsupported provider
+	// type" error, and the secondary message ("batch is not supported
+	// for provider type \"\"") would just mislead the operator about
+	// the root cause.
+	if validProviderTypes[config.Provider.Type] && !validBatchProviderTypes[config.Provider.Type] {
 		*errs = append(*errs, fmt.Sprintf("batch is not supported for provider type %q in v1", config.Provider.Type))
 	}
 	switch config.Mode {
@@ -1971,15 +2002,26 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 		}
 	} else {
 		// Default applied in-place so phase-2 adapter wiring can rely
-		// on a populated value without re-reading the default.
+		// on a populated value without re-reading the default. Only
+		// runs on the Enabled=true branch (see comment above the func)
+		// so a disabled batch block keeps MaxWaitSeconds nil and the
+		// "operator did not configure" signal survives.
 		def := DefaultBatchMaxWaitSeconds
 		batch.MaxWaitSeconds = &def
 	}
 	if config.MaxTurns > batchTurnsLatencyWarnThreshold {
+		// Layering note: this warn is in types/ for spec-faithfulness
+		// (gh-134 requires the same mechanism as rule_of_two_warning).
+		// Follow-up: move to harness/internal/core/factory.go via a
+		// ValidateRunConfigResult or companion ValidateRunConfigWarnings
+		// function so callers (tests, eval runner, library embedders)
+		// stop having to manipulate slog.Default to observe or suppress
+		// the warning.
 		slog.Warn(
-			fmt.Sprintf("batch.enabled with maxTurns>%d may incur up to %dh wall-clock latency",
-				batchTurnsLatencyWarnThreshold, config.MaxTurns*24),
+			"batch with maxTurns above the latency-warning threshold may incur extended wall-clock latency",
 			"maxTurns", config.MaxTurns,
+			"thresholdTurns", batchTurnsLatencyWarnThreshold,
+			"estimatedMaxHours", config.MaxTurns*24,
 		)
 	}
 }
@@ -2012,6 +2054,19 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		validateAzureWIFCrossField(path, provider, errs)
 		retryPath := fmt.Sprintf("%s.retry", path)
 		validateProviderRetryConfig(retryPath, provider.Retry, retryDefaulted[retryPath], errs)
+		// Batch is a top-level-only concept in v1: the spec wires
+		// per-turn batching against RunConfig.Provider, and a Batch
+		// block on a named entry would silently parse, store, and have
+		// no behavioural effect. Reject any non-nil Batch (not just
+		// Enabled=true) so a partially-filled block ("operator added
+		// the key but left enabled=false") also fails loudly — the
+		// foot-gun is real and the strict error is cheap.
+		if provider.Batch != nil {
+			*errs = append(*errs, fmt.Sprintf(
+				"providers[%s].batch is not supported in v1; batch applies only to the top-level provider",
+				name,
+			))
+		}
 	}
 
 	// Per-provider model-name validation for Vertex AI Gemini. The
