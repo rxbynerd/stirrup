@@ -19,6 +19,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 const (
@@ -160,15 +161,25 @@ type HarnessBatchClientOptions struct {
 	BaseURL string
 
 	// APIKeyHeader overrides the OpenAI auth header for Azure-style
-	// gateways (e.g. "api-key"). Empty preserves the
-	// "Authorization: Bearer <key>" default. Ignored when ProviderType
-	// is "anthropic".
+	// gateways. Empty preserves the "Authorization: Bearer <key>"
+	// default. Example non-default value: "api-key" (Azure OpenAI
+	// Service). See setOpenAIAuthHeader in openai.go for the
+	// implementation. Ignored when ProviderType is "anthropic".
 	APIKeyHeader string
 
 	// MaxWait is the wall-clock cap on a single Result call. An
 	// expiration returns an error wrapping errBatchExpired so
 	// BatchAdapter's FallbackOnTimeout branch routes correctly.
+	// Zero or negative values fall back to
+	// types.DefaultBatchMaxWaitSeconds.
 	MaxWait time.Duration
+
+	// Logger is the run-scoped slog logger used for cancel-path
+	// warnings, credential-resolution failures, and unrecognised
+	// status warnings. Nil falls back to slog.Default(); the factory
+	// injects the run-scoped logger so events flow through the
+	// ScrubHandler with the runID attribute attached.
+	Logger *slog.Logger
 }
 
 // NewHarnessPollingBatchClient constructs a polling client for the
@@ -179,8 +190,18 @@ type HarnessBatchClientOptions struct {
 //
 // opts.APIKeyRef is captured for diagnostic provenance; the credential
 // resolver consumes the underlying secret reference via CredSource.
-// opts.MaxWait is the wall-clock cap on a single Result call.
+// opts.MaxWait is the wall-clock cap on a single Result call; zero or
+// negative falls back to types.DefaultBatchMaxWaitSeconds. opts.Logger
+// is the run-scoped slog logger; nil falls back to slog.Default().
+//
+// Panics if opts.CredSource is nil — the field is required and a
+// deferred nil deref on the first HTTP request is harder to diagnose
+// than a clear constructor-time panic. The panic form matches the
+// harness convention for nil required dependencies (see retry.go).
 func NewHarnessPollingBatchClient(opts HarnessBatchClientOptions) *harnessPollingBatchClient {
+	if opts.CredSource == nil {
+		panic("HarnessBatchClientOptions.CredSource must not be nil")
+	}
 	baseURL := opts.BaseURL
 	if baseURL == "" {
 		switch opts.ProviderType {
@@ -193,6 +214,14 @@ func NewHarnessPollingBatchClient(opts HarnessBatchClientOptions) *harnessPollin
 	// Trim trailing slash so URL joining stays consistent regardless of
 	// whether the operator supplied a base with or without one.
 	baseURL = strings.TrimRight(baseURL, "/")
+	maxWait := opts.MaxWait
+	if maxWait <= 0 {
+		maxWait = time.Duration(types.DefaultBatchMaxWaitSeconds) * time.Second
+	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &harnessPollingBatchClient{
 		httpClient: &http.Client{
 			// 30s aligns with CLAUDE.md's non-streaming HTTP timeout
@@ -211,8 +240,8 @@ func NewHarnessPollingBatchClient(opts HarnessBatchClientOptions) *harnessPollin
 		apiKeyRef:    opts.APIKeyRef,
 		baseURL:      baseURL,
 		apiKeyHeader: opts.APIKeyHeader,
-		maxWait:      opts.MaxWait,
-		logger:       slog.Default(),
+		maxWait:      maxWait,
+		logger:       logger,
 	}
 }
 
@@ -632,14 +661,17 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 	}
 }
 
-// applyAuthHeaders pins the auth and Content-Type headers appropriate
-// to the configured provider. Centralising the dispatch keeps the
-// per-request call sites from drifting (e.g. forgetting the
-// anthropic-version header on a future endpoint).
+// applyAuthHeaders pins the auth-related headers appropriate to the
+// configured provider. Anthropic's setAuthHeaders also sets
+// Content-Type to application/json because all three Anthropic batch
+// endpoints (submit, poll, cancel) consume JSON bodies; the OpenAI
+// branch deliberately does NOT set Content-Type here so multipart
+// uploaders can attach their boundary-bearing Content-Type without
+// being clobbered. JSON-body OpenAI callers set Content-Type at the
+// call site.
 func (c *harnessPollingBatchClient) applyAuthHeaders(req *http.Request, apiKey string) {
 	switch c.providerType {
 	case "openai-compatible", "openai-responses":
-		req.Header.Set("Content-Type", "application/json")
 		setOpenAIAuthHeader(req, apiKey, c.apiKeyHeader)
 	default:
 		setAuthHeaders(req, apiKey)
@@ -850,6 +882,7 @@ func (c *harnessPollingBatchClient) submitOpenAI(ctx context.Context, entry Batc
 	if err != nil {
 		return "", fmt.Errorf("build openai batch create request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 	c.applyAuthHeaders(req, apiKey)
 
 	resp, err := c.httpClient.Do(req)
@@ -904,11 +937,12 @@ func (c *harnessPollingBatchClient) uploadOpenAIBatchFile(ctx context.Context, j
 	if err != nil {
 		return "", fmt.Errorf("build openai file upload request: %w", err)
 	}
-	// Note: do NOT call applyAuthHeaders here — it sets Content-Type to
-	// application/json, which would clobber the multipart boundary the
-	// writer emits via FormDataContentType.
+	// Content-Type carries the multipart boundary the writer emits; set
+	// it before applyAuthHeaders. (applyAuthHeaders no longer touches
+	// Content-Type on the OpenAI branch precisely so this call site can
+	// participate in the same auth dispatch as the JSON-body callers.)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	setOpenAIAuthHeader(req, apiKey, c.apiKeyHeader)
+	c.applyAuthHeaders(req, apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
