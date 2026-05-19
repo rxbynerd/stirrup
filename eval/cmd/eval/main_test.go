@@ -501,6 +501,129 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 	}
 }
 
+// makeBatchRecording is the test helper for #138's --include-batch
+// branch: a recording whose RunConfig.Provider has Batch.Enabled=true.
+// Centralised so the BatchProviderConfig construction is not
+// scattered across multiple test cases.
+func makeBatchRecording(runID, outcome, prompt string) types.RunRecording {
+	return types.RunRecording{
+		RunID: runID,
+		Config: types.RunConfig{
+			Prompt: prompt,
+			Mode:   "execution",
+			Provider: types.ProviderConfig{
+				Type:  "anthropic",
+				Batch: &types.BatchProviderConfig{Enabled: true},
+			},
+		},
+		FinalOutcome: types.RunTrace{ID: runID, Outcome: outcome},
+	}
+}
+
+// TestMineFailureTasksFiltered_ExcludesBatchByDefault pins the
+// default behaviour of --include-batch=false (the spec'd default):
+// batch failures stay out of the mined suite because their failure
+// modes are dominated by provider-side queue dynamics, not the
+// agent prompts mine-failures exists to surface (#138).
+func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
+	recordings := []types.RunRecording{
+		{
+			RunID:        "stream-fail",
+			Config:       types.RunConfig{Prompt: "streaming failure", Mode: "execution"},
+			FinalOutcome: types.RunTrace{ID: "stream-fail", Outcome: "error"},
+		},
+		makeBatchRecording("batch-fail", "error", "batch failure"),
+	}
+
+	tasks := mineFailureTasksFiltered(recordings, 0, false)
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1 (batch failure must be excluded)", len(tasks))
+	}
+	if tasks[0].Prompt != "streaming failure" {
+		t.Errorf("task[0].Prompt = %q, want streaming failure", tasks[0].Prompt)
+	}
+}
+
+// TestMineFailureTasksFiltered_IncludesBatchWhenRequested covers the
+// --include-batch=true escape hatch. Operators investigating batch-
+// specific failure modes (e.g. timeout taxonomies, provider-side
+// rejection patterns) need to be able to opt into the wider window.
+func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
+	recordings := []types.RunRecording{
+		{
+			RunID:        "stream-fail",
+			Config:       types.RunConfig{Prompt: "streaming failure", Mode: "execution"},
+			FinalOutcome: types.RunTrace{ID: "stream-fail", Outcome: "error"},
+		},
+		makeBatchRecording("batch-fail", "error", "batch failure"),
+	}
+
+	tasks := mineFailureTasksFiltered(recordings, 0, true)
+	if len(tasks) != 2 {
+		t.Fatalf("got %d tasks, want 2 (both failures included)", len(tasks))
+	}
+}
+
+// TestMineFailureTasksFiltered_BackwardCompatibleWrapper guarantees
+// that the legacy mineFailureTasks entrypoint preserves the new
+// default (batch excluded). A caller that bypasses the CLI flag
+// parsing path (programmatic embedders, library consumers) gets the
+// same behaviour as the documented default.
+func TestMineFailureTasksFiltered_BackwardCompatibleWrapper(t *testing.T) {
+	recordings := []types.RunRecording{
+		{
+			RunID:        "stream-fail",
+			Config:       types.RunConfig{Prompt: "streaming failure"},
+			FinalOutcome: types.RunTrace{Outcome: "error"},
+		},
+		makeBatchRecording("batch-fail", "error", "batch failure"),
+	}
+	tasks := mineFailureTasks(recordings, 0)
+	if len(tasks) != 1 {
+		t.Fatalf("mineFailureTasks default = %d tasks, want 1 (batch excluded)", len(tasks))
+	}
+}
+
+// TestIsBatchRecording pins the classifier so a future refactor of
+// the predicate fails this test rather than silently shifting the
+// mine-failures default-include surface. Mirrors
+// lakehouse.TestIsBatchRun — both must move together.
+func TestIsBatchRecording(t *testing.T) {
+	cases := []struct {
+		name string
+		rec  types.RunRecording
+		want bool
+	}{
+		{"no-provider", types.RunRecording{}, false},
+		{
+			"provider-without-batch",
+			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{Type: "anthropic"}}},
+			false,
+		},
+		{
+			"batch-disabled",
+			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{
+				Batch: &types.BatchProviderConfig{Enabled: false},
+			}}},
+			false,
+		},
+		{
+			"batch-enabled",
+			types.RunRecording{Config: types.RunConfig{Provider: types.ProviderConfig{
+				Batch: &types.BatchProviderConfig{Enabled: true},
+			}}},
+			true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBatchRecording(tc.rec); got != tc.want {
+				t.Errorf("isBatchRecording = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // --- writeSuiteHCL tests ---
 
 // TestWriteSuiteHCL_RoundTrip ensures the HCL emitted by mine-failures

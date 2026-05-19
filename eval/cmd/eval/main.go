@@ -366,6 +366,7 @@ func cmdMineFailures(args []string) {
 	afterStr := fs.String("after", "", "Filter traces after this date (RFC3339 or YYYY-MM-DD)")
 	limit := fs.Int("limit", 0, "Maximum number of failures to mine")
 	output := fs.String("output", "", "Write EvalSuite HCL to this file (.hcl recommended)")
+	includeBatch := fs.Bool("include-batch", false, "Include batch runs in the mined failure set. By default, batch runs (provider.batch.enabled=true) are excluded because their wall-clock duration inflates apparent stall metrics.")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -397,7 +398,7 @@ func cmdMineFailures(args []string) {
 		log.Fatalf("querying recordings: %v", err)
 	}
 
-	tasks := mineFailureTasks(recordings, *limit)
+	tasks := mineFailureTasksFiltered(recordings, *limit, *includeBatch)
 
 	suite := types.EvalSuite{
 		ID:          fmt.Sprintf("mined-failures-%d", time.Now().Unix()),
@@ -558,12 +559,29 @@ func cmdDrift(args []string) {
 	}
 }
 
-// mineFailureTasks filters recordings for non-success outcomes and converts
-// them into EvalTasks with a default test-command judge.
+// mineFailureTasks is the includeBatch=false specialisation of
+// mineFailureTasksFiltered. Retained as the documented default
+// (callers that already passed limit-only call sites do not need to
+// thread a new boolean) and to keep the existing test surface stable.
 func mineFailureTasks(recordings []types.RunRecording, limit int) []types.EvalTask {
+	return mineFailureTasksFiltered(recordings, limit, false)
+}
+
+// mineFailureTasksFiltered filters recordings for non-success outcomes
+// and converts them into EvalTasks with a default test-command judge.
+// When includeBatch is false (the documented default), recordings
+// whose RunConfig opted into batch provider submission are skipped:
+// their wall-clock duration is dominated by provider-side queue time,
+// not the harness's stall pattern, so including them inflates apparent
+// stall metrics and obscures the prompt patterns mine-failures is here
+// to surface (#138).
+func mineFailureTasksFiltered(recordings []types.RunRecording, limit int, includeBatch bool) []types.EvalTask {
 	var tasks []types.EvalTask
 	for _, rec := range recordings {
 		if rec.FinalOutcome.Outcome == "success" {
+			continue
+		}
+		if !includeBatch && isBatchRecording(rec) {
 			continue
 		}
 		task := types.EvalTask{
@@ -582,6 +600,15 @@ func mineFailureTasks(recordings []types.RunRecording, limit int) []types.EvalTa
 		}
 	}
 	return tasks
+}
+
+// isBatchRecording mirrors lakehouse.isBatchRun (declared private to
+// that package) so mine-failures can apply the same classifier
+// without the eval CLI taking a dependency on lakehouse internals.
+// Both functions key on Config.Provider.Batch.Enabled — if that
+// predicate changes, both call sites must be updated together.
+func isBatchRecording(rec types.RunRecording) bool {
+	return rec.Config.Provider.Batch != nil && rec.Config.Provider.Batch.Enabled
 }
 
 // buildDriftReport computes deltas between current and baseline metrics.
