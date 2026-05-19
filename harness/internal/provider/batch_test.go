@@ -323,6 +323,61 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 // streaming-incidental coverage (only completed-with-tool, expired,
 // max_output_tokens) to all eight documented branches plus the
 // non-empty-unknown fallthrough.
+// TestBatchAdapter_marshalRequestBody_OpenAICompatible pins the
+// openai-compatible arm of marshalRequestBody — previously at 0%
+// coverage. Asserts the marshalled JSON is the Chat Completions wire
+// body shape with stream=false.
+func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+	body, err := a.marshalRequestBody(types.StreamParams{
+		Model:     "gpt-4o-mini",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+	})
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode marshalled body: %v", err)
+	}
+	if _, ok := raw["model"]; !ok {
+		t.Errorf("marshalled body missing model: %s", body)
+	}
+	if _, ok := raw["stream"]; !ok {
+		t.Errorf("openai-compatible body must carry stream=false: %s", body)
+	} else if string(raw["stream"]) != "false" {
+		t.Errorf("openai-compatible body must carry stream=false; got %s", raw["stream"])
+	}
+}
+
+// TestBatchAdapter_marshalRequestBody_OpenAIResponses pins the
+// openai-responses arm of marshalRequestBody — previously at 0%
+// coverage. Asserts the marshalled JSON is the Responses wire body
+// shape: model present, stream key absent (omitempty stripping in
+// buildResponsesRequest).
+func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
+	body, err := a.marshalRequestBody(types.StreamParams{
+		Model:     "gpt-4o-mini",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+	})
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode marshalled body: %v", err)
+	}
+	if _, ok := raw["model"]; !ok {
+		t.Errorf("marshalled body missing model: %s", body)
+	}
+	if _, ok := raw["stream"]; ok {
+		t.Errorf("openai-responses body must not carry stream key (omitempty), got: %s", body)
+	}
+}
+
 func TestDeriveOpenAIResponsesStopReason(t *testing.T) {
 	mkIncomplete := func(reason string) *struct {
 		Reason string `json:"reason"`
