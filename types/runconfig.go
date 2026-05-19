@@ -3,6 +3,7 @@ package types
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -1618,14 +1619,21 @@ func ValidateRunConfig(config *RunConfig) error {
 
 	// temperature must lie inside the union of provider ranges. Negative
 	// values are nonsensical (all providers reject them); >2 is outside
-	// every provider's documented ceiling.
+	// every provider's documented ceiling. NaN/Inf must be rejected
+	// before the ordered comparisons: IEEE 754 NaN compares false against
+	// both bounds, so without an explicit finite-number guard a
+	// `--temperature=NaN` would slip past validation and reach providers.
 	if config.Temperature != nil {
 		t := *config.Temperature
-		if t < 0 {
-			errs = append(errs, "temperature must be >= 0.0")
-		}
-		if t > maxTemperature {
-			errs = append(errs, fmt.Sprintf("temperature must be <= %.1f", maxTemperature))
+		if math.IsNaN(t) || math.IsInf(t, 0) {
+			errs = append(errs, "temperature must be a finite number")
+		} else {
+			if t < 0 {
+				errs = append(errs, "temperature must be >= 0.0")
+			}
+			if t > maxTemperature {
+				errs = append(errs, fmt.Sprintf("temperature must be <= %.1f", maxTemperature))
+			}
 		}
 	}
 

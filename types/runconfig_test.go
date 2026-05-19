@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 )
@@ -559,6 +560,34 @@ func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
 	err = ValidateRunConfig(c)
 	if err == nil || !strings.Contains(err.Error(), "temperature") {
 		t.Fatalf("expected temperature error for value > 2.0, got: %v", err)
+	}
+
+	// Non-finite values must be rejected explicitly. IEEE 754 NaN
+	// compares false against both bounds, so without a finite-number
+	// guard `--temperature=NaN` (strconv.ParseFloat accepts "NaN")
+	// would slip past the range checks and reach the provider. +Inf
+	// is caught by the > maxTemperature comparison today, but the
+	// finite-number guard is the contract — assert it directly so a
+	// later refactor cannot regress it.
+	nan := math.NaN()
+	c.Temperature = &nan
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "finite") {
+		t.Fatalf("expected finite-number temperature error for NaN, got: %v", err)
+	}
+
+	posInf := math.Inf(1)
+	c.Temperature = &posInf
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "finite") {
+		t.Fatalf("expected finite-number temperature error for +Inf, got: %v", err)
+	}
+
+	negInf := math.Inf(-1)
+	c.Temperature = &negInf
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "finite") {
+		t.Fatalf("expected finite-number temperature error for -Inf, got: %v", err)
 	}
 
 	// In-range and boundary values must validate cleanly. 0.0 is the
