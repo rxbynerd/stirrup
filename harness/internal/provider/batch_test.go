@@ -360,7 +360,7 @@ func TestBatchAdapter_Stream_CtxCancel(t *testing.T) {
 func TestBatchAdapter_Stream_TimeoutWithoutFallback(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
-			return nil, errors.New("controlPlaneBatchClient: batch_expired: timed out after 1s")
+			return nil, fmt.Errorf("%w: simulated", errBatchExpired)
 		},
 	}
 	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true, FallbackOnTimeout: false}, nil)
@@ -369,15 +369,15 @@ func TestBatchAdapter_Stream_TimeoutWithoutFallback(t *testing.T) {
 	if len(events) != 1 || events[0].Type != "error" {
 		t.Fatalf("expected single error event, got %+v", events)
 	}
-	if !strings.Contains(events[0].Error.Error(), "timed out") {
-		t.Errorf("expected 'timed out' in error, got %q", events[0].Error)
+	if !errors.Is(events[0].Error, errBatchExpired) {
+		t.Errorf("expected errBatchExpired in chain, got %v", events[0].Error)
 	}
 }
 
 func TestBatchAdapter_Stream_TimeoutFallback(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
-			return nil, errors.New("controlPlaneBatchClient: batch_expired: timed out after 1s")
+			return nil, fmt.Errorf("%w: simulated", errBatchExpired)
 		},
 	}
 	inner := &stubProvider{
@@ -434,12 +434,24 @@ type mockBatchTransport struct {
 	mu       sync.Mutex
 	emitted  []types.HarnessEvent
 	handlers []func(types.ControlEvent)
+	// emitErr, when non-nil and emitErrTypes is empty, causes every
+	// Emit call to fail with that error. When emitErrTypes is populated,
+	// only matching event types fail; others succeed. This lets a test
+	// drive submission failures while still observing later cancel
+	// emits, etc.
+	emitErr      error
+	emitErrTypes map[string]bool
 }
 
 func (m *mockBatchTransport) Emit(event types.HarnessEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.emitted = append(m.emitted, event)
+	if m.emitErr != nil {
+		if len(m.emitErrTypes) == 0 || m.emitErrTypes[event.Type] {
+			return m.emitErr
+		}
+	}
 	return nil
 }
 
@@ -481,7 +493,7 @@ func (m *mockBatchTransport) emittedSnapshot() []types.HarnessEvent {
 
 func TestControlPlaneBatchClient_SubmitAndResult(t *testing.T) {
 	tr := &mockBatchTransport{}
-	c := NewControlPlaneBatchClient(tr, 5*time.Second)
+	c := NewControlPlaneBatchClient(tr, 5*time.Second, false)
 
 	entry := BatchEntry{
 		CustomID: "run-test-turn-1",
@@ -542,7 +554,7 @@ func TestControlPlaneBatchClient_SubmitAndResult(t *testing.T) {
 
 func TestControlPlaneBatchClient_SubmitMultiEntryRejected(t *testing.T) {
 	tr := &mockBatchTransport{}
-	c := NewControlPlaneBatchClient(tr, time.Second)
+	c := NewControlPlaneBatchClient(tr, time.Second, false)
 	_, err := c.Submit(context.Background(), []BatchEntry{{}, {}})
 	if err == nil || !strings.Contains(err.Error(), "expected exactly 1 entry") {
 		t.Errorf("expected single-entry contract error, got: %v", err)
@@ -551,7 +563,7 @@ func TestControlPlaneBatchClient_SubmitMultiEntryRejected(t *testing.T) {
 
 func TestControlPlaneBatchClient_Result_Timeout(t *testing.T) {
 	tr := &mockBatchTransport{}
-	c := NewControlPlaneBatchClient(tr, 50*time.Millisecond)
+	c := NewControlPlaneBatchClient(tr, 50*time.Millisecond, false)
 
 	batchID, err := c.Submit(context.Background(), []BatchEntry{{
 		CustomID: "run-test-turn-1",
@@ -566,14 +578,14 @@ func TestControlPlaneBatchClient_Result_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if !strings.Contains(err.Error(), "batch_expired") {
-		t.Errorf("expected batch_expired in error, got %q", err.Error())
+	if !errors.Is(err, errBatchExpired) {
+		t.Errorf("expected errBatchExpired in chain, got %v", err)
 	}
 }
 
 func TestControlPlaneBatchClient_Result_ContextCancel(t *testing.T) {
 	tr := &mockBatchTransport{}
-	c := NewControlPlaneBatchClient(tr, time.Hour)
+	c := NewControlPlaneBatchClient(tr, time.Hour, false)
 
 	batchID, err := c.Submit(context.Background(), []BatchEntry{{
 		CustomID: "run-test-turn-1",
@@ -600,7 +612,7 @@ func TestControlPlaneBatchClient_BatchWaitingHeartbeat(t *testing.T) {
 	t.Cleanup(func() { setBatchWaitingHeartbeatInterval(prev) })
 
 	tr := &mockBatchTransport{}
-	c := NewControlPlaneBatchClient(tr, time.Second)
+	c := NewControlPlaneBatchClient(tr, time.Second, false)
 
 	batchID, err := c.Submit(context.Background(), []BatchEntry{{
 		CustomID: "run-test-turn-1",
@@ -643,7 +655,7 @@ func TestControlPlaneBatchClient_BatchWaitingHeartbeat(t *testing.T) {
 
 func TestControlPlaneBatchClient_IgnoresUnrelatedControlEvents(t *testing.T) {
 	tr := &mockBatchTransport{}
-	c := NewControlPlaneBatchClient(tr, time.Second)
+	c := NewControlPlaneBatchClient(tr, time.Second, false)
 
 	batchID, err := c.Submit(context.Background(), []BatchEntry{{
 		CustomID: "run-test-turn-1",
@@ -675,5 +687,219 @@ func TestControlPlaneBatchClient_IgnoresUnrelatedControlEvents(t *testing.T) {
 	}
 	if got.Err == nil || got.Err.Type != "invalid_request_error" {
 		t.Errorf("expected synthetic invalid_request_error, got %+v", got.Err)
+	}
+}
+
+// TestControlPlaneBatchClient_DeliverBeforeResult exercises the B1
+// race: handleControl delivers a batch_result before Result is even
+// called. With the fix, Result must return the buffered value rather
+// than spuriously surfacing "no pending submission".
+func TestControlPlaneBatchClient_DeliverBeforeResult(t *testing.T) {
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, time.Second, false)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	// Deliver the result before Result is called; the buffered channel
+	// holds the value until Result drains it.
+	tr.deliver(types.ControlEvent{
+		Type:      "batch_result",
+		RequestID: batchID,
+		Content:   `{"response":{"content":[],"stop_reason":"end_turn","usage":{"output_tokens":0}}}`,
+	})
+
+	results, err := c.Result(context.Background(), batchID)
+	if err != nil {
+		t.Fatalf("Result after early delivery: %v", err)
+	}
+	got, ok := results["run-test-turn-1"]
+	if !ok || got == nil {
+		t.Fatalf("expected entry keyed by custom_id, got %+v", results)
+	}
+	if got.Err != nil {
+		t.Errorf("expected success, got err %+v", got.Err)
+	}
+
+	// Cleanup proof: a second Result returns "no pending submission".
+	if _, err := c.Result(context.Background(), batchID); err == nil ||
+		!strings.Contains(err.Error(), "no pending submission") {
+		t.Errorf("expected 'no pending submission' on second Result, got %v", err)
+	}
+}
+
+// TestControlPlaneBatchClient_CancelBundle_TimeoutEmits asserts B3: a
+// timeout exit emits a batch_cancel_request when cancelBundleOnExit=true.
+func TestControlPlaneBatchClient_CancelBundle_TimeoutEmits(t *testing.T) {
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, 30*time.Millisecond, true)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	if _, err := c.Result(context.Background(), batchID); !errors.Is(err, errBatchExpired) {
+		t.Fatalf("expected errBatchExpired, got %v", err)
+	}
+
+	var cancel int
+	for _, ev := range tr.emittedSnapshot() {
+		if ev.Type == "batch_cancel_request" && ev.RequestID == batchID {
+			cancel++
+		}
+	}
+	if cancel != 1 {
+		t.Errorf("expected exactly 1 batch_cancel_request, got %d (emitted=%+v)", cancel, tr.emittedSnapshot())
+	}
+}
+
+// TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits asserts B3 on
+// the ctx-cancel arm.
+func TestControlPlaneBatchClient_CancelBundle_CtxCancelEmits(t *testing.T) {
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, time.Hour, true)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(15 * time.Millisecond)
+		cancel()
+	}()
+	if _, err := c.Result(ctx, batchID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	var cancelEvents int
+	for _, ev := range tr.emittedSnapshot() {
+		if ev.Type == "batch_cancel_request" && ev.RequestID == batchID {
+			cancelEvents++
+		}
+	}
+	if cancelEvents != 1 {
+		t.Errorf("expected exactly 1 batch_cancel_request, got %d", cancelEvents)
+	}
+}
+
+// TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit asserts B3:
+// when cancelBundleOnExit=false, the cancel/timeout arms emit nothing
+// beyond the original batch_submission.
+func TestControlPlaneBatchClient_CancelBundle_DisabledNoEmit(t *testing.T) {
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, time.Hour, false)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.Result(ctx, batchID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	for _, ev := range tr.emittedSnapshot() {
+		if ev.Type == "batch_cancel_request" {
+			t.Errorf("unexpected batch_cancel_request emitted with cancelBundleOnExit=false: %+v", ev)
+		}
+	}
+}
+
+// TestDecodeBatchResult_MalformedJSON (B6) asserts a non-JSON content
+// surfaces as a synthetic invalid_request_error rather than panicking.
+func TestDecodeBatchResult_MalformedJSON(t *testing.T) {
+	got := decodeBatchResult(types.ControlEvent{
+		Type:      "batch_result",
+		RequestID: "batch-1",
+		Content:   "{not-json",
+	})
+	if got == nil || got.Err == nil {
+		t.Fatalf("expected synthetic error, got %+v", got)
+	}
+	if got.Err.Type != "invalid_request_error" {
+		t.Errorf("type: got %q, want invalid_request_error", got.Err.Type)
+	}
+	if !strings.Contains(got.Err.Message, "decode batch_result") {
+		t.Errorf("message: got %q, want substring 'decode batch_result'", got.Err.Message)
+	}
+}
+
+// TestDecodeBatchResult_SizeCap (B6) asserts a Content payload above
+// maxBatchResponseBytes surfaces as a synthetic invalid_request_error
+// without attempting to decode the oversized blob.
+func TestDecodeBatchResult_SizeCap(t *testing.T) {
+	oversized := strings.Repeat("a", maxBatchResponseBytes+1)
+	got := decodeBatchResult(types.ControlEvent{
+		Type:      "batch_result",
+		RequestID: "batch-1",
+		Content:   oversized,
+	})
+	if got == nil || got.Err == nil {
+		t.Fatalf("expected synthetic error, got %+v", got)
+	}
+	if got.Err.Type != "invalid_request_error" {
+		t.Errorf("type: got %q, want invalid_request_error", got.Err.Type)
+	}
+	if !strings.Contains(got.Err.Message, "exceeds") {
+		t.Errorf("message: got %q, want substring 'exceeds'", got.Err.Message)
+	}
+}
+
+// TestControlPlaneBatchClient_SubmitEmitFailureCleansUp (B7) drives an
+// Emit failure on batch_submission and asserts the pending entry was
+// dropped (no leak; subsequent Result reports "no pending submission").
+func TestControlPlaneBatchClient_SubmitEmitFailureCleansUp(t *testing.T) {
+	tr := &mockBatchTransport{
+		emitErr:      errors.New("simulated emit failure"),
+		emitErrTypes: map[string]bool{"batch_submission": true},
+	}
+	c := NewControlPlaneBatchClient(tr, time.Second, false)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err == nil {
+		t.Fatal("expected emit error from Submit")
+	}
+	if !strings.Contains(err.Error(), "simulated emit failure") {
+		t.Errorf("expected wrapped emit error, got %v", err)
+	}
+	if batchID != "" {
+		t.Errorf("Submit returned non-empty batchID on failure: %q", batchID)
+	}
+	emitted := tr.emittedSnapshot()
+	if len(emitted) != 1 || emitted[0].Type != "batch_submission" {
+		t.Fatalf("expected single batch_submission emit, got %+v", emitted)
+	}
+	requestID := emitted[0].RequestID
+
+	if _, err := c.Result(context.Background(), requestID); err == nil ||
+		!strings.Contains(err.Error(), "no pending submission") {
+		t.Errorf("expected 'no pending submission' after Submit failure, got %v", err)
 	}
 }

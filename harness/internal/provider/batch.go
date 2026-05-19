@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -272,14 +271,21 @@ func (a *BatchAdapter) pumpInner(ctx context.Context, ch chan<- types.StreamEven
 	}
 }
 
-// isBatchTimeout reports whether err is a wall-clock batch_expired
-// timeout from the BatchClient. The client surfaces this by returning an
-// error whose message contains "batch_expired".
+// errBatchExpired is the sentinel returned by BatchClient.Result when the
+// harness-side wall-clock cap fires before a batch_result arrives.
+// BatchAdapter checks for it via isBatchTimeout to decide between an
+// error event and the FallbackOnTimeout streaming path. The wire-level
+// vocabulary (BatchResultError.Type == "batch_expired") is independent
+// of this Go-side sentinel.
+var errBatchExpired = errors.New("batch expired")
+
+// isBatchTimeout reports whether err wraps errBatchExpired — i.e. the
+// BatchClient reported its wall-clock cap fired before the batch
+// resolved. Both control-plane and (phase-4) polling clients wrap the
+// same sentinel so the BatchAdapter timeout-fallback branch is provider-
+// independent.
 func isBatchTimeout(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "batch_expired")
+	return errors.Is(err, errBatchExpired)
 }
 
 // fabricateStream decodes a batch response and emits the StreamEvent
@@ -383,8 +389,9 @@ func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMess
 // the correlator's pending-map pattern locally rather than reusing
 // transport.Correlator (which exposes only the emit-and-await shape).
 type controlPlaneBatchClient struct {
-	transport transport.Transport
-	maxWait   time.Duration
+	transport          transport.Transport
+	maxWait            time.Duration
+	cancelBundleOnExit bool
 
 	mu       sync.Mutex
 	nextID   int
@@ -396,12 +403,17 @@ type controlPlaneBatchClient struct {
 // provider-side batch lifecycle to the control plane via the gRPC
 // transport. maxWait is the wall-clock cap on Result; the BatchAdapter
 // also applies this via cfg.MaxWaitSeconds (defence in depth).
-func NewControlPlaneBatchClient(t transport.Transport, maxWait time.Duration) *controlPlaneBatchClient {
+// cancelBundleOnExit, when true, causes the client to emit a
+// batch_cancel_request HarnessEvent on ctx-cancel or wall-clock-cap exit
+// from Result so the control plane can cancel the matching provider-side
+// batch entry (Provider.Batch.CancelBundleOnRunCancel).
+func NewControlPlaneBatchClient(t transport.Transport, maxWait time.Duration, cancelBundleOnExit bool) *controlPlaneBatchClient {
 	c := &controlPlaneBatchClient{
-		transport: t,
-		maxWait:   maxWait,
-		pending:   make(map[string]chan *BatchResult),
-		customID:  make(map[string]string),
+		transport:          t,
+		maxWait:            maxWait,
+		cancelBundleOnExit: cancelBundleOnExit,
+		pending:            make(map[string]chan *BatchResult),
+		customID:           make(map[string]string),
 	}
 	t.OnControl(c.handleControl)
 	return c
@@ -410,6 +422,12 @@ func NewControlPlaneBatchClient(t transport.Transport, maxWait time.Duration) *c
 // handleControl routes batch_result ControlEvents to the pending Result
 // caller. Mirrors transport.Correlator.deliver, but specialised for the
 // BatchResult payload so we can keep the channel typed.
+//
+// Result owns deletion from both c.pending and c.customID on every exit
+// path; handleControl never deletes. The non-blocking send below covers
+// the case where Result has already abandoned the entry (timeout, ctx
+// cancel) — releasePending will have removed the map entry so the next
+// lookup is safely absent.
 func (c *controlPlaneBatchClient) handleControl(event types.ControlEvent) {
 	if event.Type != eventBatchResult || event.RequestID == "" {
 		return
@@ -418,27 +436,43 @@ func (c *controlPlaneBatchClient) handleControl(event types.ControlEvent) {
 
 	c.mu.Lock()
 	ch, ok := c.pending[event.RequestID]
-	if ok {
-		delete(c.pending, event.RequestID)
-	}
 	c.mu.Unlock()
 
 	if !ok {
 		return
 	}
-	// Channel has capacity 1 and we just removed it from the pending map
-	// under the lock, so the send cannot block.
-	ch <- result
+	select {
+	case ch <- result:
+	default:
+		// Result already drained or abandoned this entry; map cleanup
+		// runs on the Result side via releasePending.
+	}
 }
 
+// maxBatchResponseBytes caps the size of a batch_result Content payload
+// the harness will decode. The cap exists as a defence-in-depth measure:
+// the control plane is partially trusted, and an unbounded payload here
+// would let a misbehaving plane allocate arbitrary harness-side memory
+// (CWE-400). 4 MiB is comfortably above the largest plausible Anthropic
+// Messages-API response while still bounded.
+const maxBatchResponseBytes = 4 * 1024 * 1024
+
 // decodeBatchResult turns a batch_result ControlEvent's content into a
-// *BatchResult. An empty content or malformed JSON surfaces as a
-// BatchResult.Err so the BatchAdapter sees a non-nil entry even when the
-// control plane mis-frames the event.
+// *BatchResult. An empty content, oversize payload, or malformed JSON
+// surfaces as a BatchResult.Err so the BatchAdapter sees a non-nil entry
+// even when the control plane mis-frames the event.
 func decodeBatchResult(event types.ControlEvent) *BatchResult {
 	if event.Content == "" {
 		return &BatchResult{
 			Err: &BatchResultError{Type: "invalid_request_error", Message: "batch_result missing content"},
+		}
+	}
+	if len(event.Content) > maxBatchResponseBytes {
+		return &BatchResult{
+			Err: &BatchResultError{
+				Type:    "invalid_request_error",
+				Message: fmt.Sprintf("batch_result content exceeds %d-byte limit", maxBatchResponseBytes),
+			},
 		}
 	}
 	var result BatchResult
@@ -517,19 +551,35 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 
 	select {
 	case result := <-ch:
-		// handleControl already removed the entry from pending; just
-		// drop the customID side-table now that the wait is done.
-		c.mu.Lock()
-		delete(c.customID, batchID)
-		c.mu.Unlock()
+		// Result owns map cleanup on every exit path; releasePending
+		// drops both c.pending and c.customID atomically.
+		c.releasePending(batchID)
 		return map[string]*BatchResult{customID: result}, nil
 	case <-timer.C:
 		c.releasePending(batchID)
-		return nil, fmt.Errorf("controlPlaneBatchClient: batch_expired: timed out after %s waiting for batch_result (batchID=%s)", timeout, batchID)
+		c.maybeEmitCancelRequest(batchID)
+		return nil, fmt.Errorf("%w: timed out after %s (batchID=%s)", errBatchExpired, timeout, batchID)
 	case <-ctx.Done():
 		c.releasePending(batchID)
+		c.maybeEmitCancelRequest(batchID)
 		return nil, fmt.Errorf("controlPlaneBatchClient: cancelled: %w", ctx.Err())
 	}
+}
+
+// maybeEmitCancelRequest emits a batch_cancel_request HarnessEvent for the
+// given submission when the client was constructed with
+// cancelBundleOnExit=true. Errors from Emit are intentionally ignored:
+// the transport is already breaking, and surfacing a secondary error
+// here would obscure the primary timeout/cancel surface returned by
+// Result. Fire-and-forget mirrors the heartbeat goroutine.
+func (c *controlPlaneBatchClient) maybeEmitCancelRequest(requestID string) {
+	if !c.cancelBundleOnExit {
+		return
+	}
+	_ = c.transport.Emit(types.HarnessEvent{
+		Type:      eventBatchCancelRequest,
+		RequestID: requestID,
+	})
 }
 
 // releasePending removes a pending entry. Safe to call when the entry has
