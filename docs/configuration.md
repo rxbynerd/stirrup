@@ -57,6 +57,7 @@ the same flags grouped by concern.
 | `--workspace`, `-w` | cwd | Workspace directory. |
 | `--max-turns` | `20` | Hard-capped at 100. |
 | `--timeout` | `600` | Wall-clock seconds; capped at 3600. |
+| `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
 ### Provider
@@ -226,8 +227,20 @@ be unbounded:
 | `followUpGrace` | 3600 s |
 | `maxTokenBudget` | 50 M |
 | `maxCostBudget` | $100 |
+| `temperature` | `0.0` ≤ `t` ≤ `2.0` |
 
 Read-only modes additionally require the tool list to be set.
+
+`temperature` accepts the union of provider-side ranges (Anthropic
+`[0, 1]`, OpenAI / Gemini `[0, 2]`). A value inside the union may
+still be rejected by the chosen provider's narrower range; the
+adapter surfaces that rejection at request time rather than at
+validation, so a single config can target multiple providers. Nil /
+omitted means "use the harness default" (currently `0.1`); the
+agentic loop forwards a non-nil value verbatim, including explicit
+`0.0` for greedy decoding. Reasoning models that reject `temperature`
+on the wire are handled separately by the provider adapter — the
+field on the run config still represents intent.
 
 ## RunConfig examples
 
