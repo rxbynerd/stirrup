@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -520,6 +522,131 @@ func TestHarnessPollingBatch_JitterStaysWithinBounds(t *testing.T) {
 		if got < low || got > high {
 			t.Fatalf("iter %d: jitter produced %v outside [%v, %v]", i, got, low, high)
 		}
+	}
+}
+
+// -----------------------------------------------------------------------------
+// URL escaping
+// -----------------------------------------------------------------------------
+
+// TestHarnessPollingBatch_BatchIDPathEscaped confirms a batchID containing
+// path-sensitive characters is escaped into a single path segment before
+// being concatenated into the poll / cancel URLs. A bare concatenation
+// would let an attacker-supplied (or upstream-mangled) batchID navigate
+// to an unintended endpoint; the gemini.go adapter applies the same
+// defence at every path component and the polling client mirrors it.
+func TestHarnessPollingBatch_BatchIDPathEscaped(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	const sneakyID = "batch_../etc/passwd?x=1"
+	wantPathSegment := url.PathEscape(sneakyID)
+
+	type observed struct {
+		mu         sync.Mutex
+		pollPaths  []string
+		cancelHits int
+	}
+	obs := &observed{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		obs.mu.Lock()
+		defer obs.mu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/v1/messages/batches/") && !strings.HasSuffix(r.URL.EscapedPath(), "/cancel"):
+			obs.pollPaths = append(obs.pollPaths, r.URL.EscapedPath())
+			// First poll returns "ended" with an empty results_url so
+			// Result errors out before fetchResults is exercised — we
+			// only care about the URL escaping here.
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"id":%q,"processing_status":"ended"}`, sneakyID)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.EscapedPath(), "/cancel"):
+			obs.cancelHits++
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.EscapedPath())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, teardown := newTestPollingClient(t, srv, src, time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), sneakyID)
+	if err == nil {
+		t.Fatal("expected results_url-missing error, got nil")
+	}
+
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	if len(obs.pollPaths) == 0 {
+		t.Fatal("expected at least one poll request")
+	}
+	wantPath := "/v1/messages/batches/" + wantPathSegment
+	if obs.pollPaths[0] != wantPath {
+		t.Errorf("poll path: got %q, want %q", obs.pollPaths[0], wantPath)
+	}
+}
+
+// TestHarnessPollingBatch_CancelURLEscaped confirms the cancel POST also
+// escapes batchID into a single path segment.
+func TestHarnessPollingBatch_CancelURLEscaped(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-ant-test"}
+
+	const sneakyID = "batch_inject/cancel?x=y"
+	wantSegment := url.PathEscape(sneakyID)
+	wantCancelPath := "/v1/messages/batches/" + wantSegment + "/cancel"
+
+	var (
+		mu          sync.Mutex
+		cancelPaths []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/v1/messages/batches/"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"id":%q,"processing_status":"in_progress"}`, sneakyID)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.EscapedPath(), "/cancel"):
+			mu.Lock()
+			cancelPaths = append(cancelPaths, r.URL.EscapedPath())
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.EscapedPath())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, teardown := newTestPollingClient(t, srv, src, 30*time.Millisecond)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), sneakyID)
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+
+	// bestEffortCancel is now async (B3); wait briefly for it to fire.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		hit := len(cancelPaths) > 0
+		mu.Unlock()
+		if hit {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(cancelPaths) == 0 {
+		t.Fatal("expected bestEffortCancel to fire and reach the server")
+	}
+	if cancelPaths[0] != wantCancelPath {
+		t.Errorf("cancel path: got %q, want %q", cancelPaths[0], wantCancelPath)
 	}
 }
 
