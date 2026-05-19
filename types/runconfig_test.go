@@ -1,7 +1,10 @@
 package types
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -4547,5 +4550,566 @@ func TestValidateRunConfig_ToolDispatchRejectsOutOfRange(t *testing.T) {
 				t.Errorf("expected error to call out the accepted zero sentinel '0 (use default)', got: %v", err)
 			}
 		})
+	}
+}
+
+// --- BatchProviderConfig ---
+
+// batchValidConfig is the baseline for the batch suite: a non-execution
+// mode that accepts batch (research) with stdio transport plus the
+// harness-side polling flag set, no DynamicContext (so the Rule of Two
+// stays satisfied), and a read-only tool list. Each sub-test mutates a
+// single field to exercise one invariant in isolation.
+func batchValidConfig() *RunConfig {
+	timeout := 60
+	return &RunConfig{
+		Mode:             "research",
+		Provider:         ProviderConfig{Type: "anthropic"},
+		MaxTurns:         3,
+		Timeout:          &timeout,
+		PermissionPolicy: PermissionPolicyConfig{Type: "deny-side-effects"},
+		Transport:        TransportConfig{Type: "stdio"},
+		Tools:            ToolsConfig{BuiltIn: []string{"read_file"}},
+	}
+}
+
+func TestValidateRunConfig_Batch_NilLeavesConfigUntouched(t *testing.T) {
+	c := batchValidConfig()
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("baseline batch config must validate, got: %v", err)
+	}
+	if c.Provider.Batch != nil {
+		t.Errorf("nil Batch must not be materialised by validation, got %+v", c.Provider.Batch)
+	}
+}
+
+func TestValidateRunConfig_Batch_UnsupportedProviderType(t *testing.T) {
+	for _, tc := range []struct {
+		providerType string
+		wantErr      bool
+	}{
+		{"anthropic", false},
+		{"openai-compatible", false},
+		{"openai-responses", false},
+		{"bedrock", true},
+		{"gemini", true},
+	} {
+		t.Run(tc.providerType, func(t *testing.T) {
+			c := batchValidConfig()
+			c.Provider.Type = tc.providerType
+			// Bedrock and gemini need extra fields to clear unrelated
+			// validation; supply just enough to isolate the batch check.
+			if tc.providerType == "bedrock" {
+				c.Provider.Region = "us-east-1"
+				c.Provider.Credential = &CredentialConfig{Type: "aws-default"}
+			}
+			if tc.providerType == "gemini" {
+				c.Provider.GCPProject = "example-project"
+				c.Provider.GCPLocation = "global"
+				c.Provider.Credential = &CredentialConfig{Type: "gcp-default"}
+			}
+			c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for batch with provider type %q", tc.providerType)
+				}
+				if !strings.Contains(err.Error(), "batch is not supported for provider type") {
+					t.Errorf("error should mention unsupported batch provider type, got: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("provider %q must accept batch, got: %v", tc.providerType, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_Batch_RejectsExecutionMode(t *testing.T) {
+	c := batchValidConfig()
+	c.Mode = "execution"
+	c.PermissionPolicy = PermissionPolicyConfig{Type: "allow-all"}
+	c.Provider.Batch = &BatchProviderConfig{
+		Enabled:               true,
+		HarnessSidePolling:    true,
+		AllowInteractiveModes: true, // must not bypass the execution check
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for batch with mode=execution")
+	}
+	if !strings.Contains(err.Error(), "batch cannot be used with mode=execution") {
+		t.Errorf("error should mention mode=execution rejection, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Batch_InteractiveModesRequireOptIn(t *testing.T) {
+	for _, mode := range []string{"planning", "review"} {
+		t.Run(mode+"_without_opt_in", func(t *testing.T) {
+			c := batchValidConfig()
+			c.Mode = mode
+			c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for batch in mode=%s without allowInteractiveModes", mode)
+			}
+			want := fmt.Sprintf("batch requires allowInteractiveModes=true for mode=%s", mode)
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error should mention %q, got: %v", want, err)
+			}
+		})
+		t.Run(mode+"_with_opt_in_passes", func(t *testing.T) {
+			c := batchValidConfig()
+			c.Mode = mode
+			c.Provider.Batch = &BatchProviderConfig{
+				Enabled:               true,
+				HarnessSidePolling:    true,
+				AllowInteractiveModes: true,
+			}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("batch with allowInteractiveModes=true must accept mode=%s, got: %v", mode, err)
+			}
+		})
+	}
+	t.Run("research_does_not_require_opt_in", func(t *testing.T) {
+		// Sanity check: the opt-in only gates "planning" and "review".
+		// Other read-only modes ("research", "toil") accept batch without it.
+		c := batchValidConfig()
+		c.Mode = "research"
+		c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("mode=research must accept batch without allowInteractiveModes, got: %v", err)
+		}
+	})
+}
+
+func TestValidateRunConfig_Batch_StdioRequiresHarnessSidePolling(t *testing.T) {
+	c := batchValidConfig()
+	c.Transport = TransportConfig{Type: "stdio"}
+	c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: false}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for batch with transport=stdio and HarnessSidePolling=false")
+	}
+	if !strings.Contains(err.Error(), "batch with transport=stdio requires harnessSidePolling=true") {
+		t.Errorf("error should mention stdio + harnessSidePolling, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Batch_HarnessSidePollingRejectedWithGRPC(t *testing.T) {
+	c := batchValidConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	// HarnessSidePolling is rejected with grpc transport even when
+	// Batch.Enabled is false — a stale flag combination must not be
+	// silently retained.
+	c.Provider.Batch = &BatchProviderConfig{Enabled: false, HarnessSidePolling: true}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for batch.harnessSidePolling with transport=grpc")
+	}
+	if !strings.Contains(err.Error(), "batch.harnessSidePolling must not be set with transport=grpc") {
+		t.Errorf("error should mention harnessSidePolling + grpc, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Batch_CancelBundleRejectedWithStdio(t *testing.T) {
+	c := batchValidConfig()
+	c.Transport = TransportConfig{Type: "stdio"}
+	// As with HarnessSidePolling, CancelBundleOnRunCancel is rejected
+	// even when Batch.Enabled is false.
+	c.Provider.Batch = &BatchProviderConfig{Enabled: false, CancelBundleOnRunCancel: true}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for batch.cancelBundleOnRunCancel with transport=stdio")
+	}
+	if !strings.Contains(err.Error(), "batch.cancelBundleOnRunCancel requires transport=grpc") {
+		t.Errorf("error should mention cancelBundleOnRunCancel + grpc, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Batch_MaxWaitSecondsRange(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		seconds int
+		wantErr bool
+	}{
+		{"one_passes", 1, false},
+		{"max_passes", 86400, false},
+		{"zero_fails", 0, true},
+		{"over_max_fails", 86401, true},
+		{"negative_fails", -1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := batchValidConfig()
+			seconds := tc.seconds
+			c.Provider.Batch = &BatchProviderConfig{
+				Enabled:            true,
+				HarnessSidePolling: true,
+				MaxWaitSeconds:     &seconds,
+			}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for maxWaitSeconds=%d", tc.seconds)
+				}
+				if !strings.Contains(err.Error(), "batch.maxWaitSeconds must be in range (0, 86400]") {
+					t.Errorf("error should mention maxWaitSeconds range, got: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("maxWaitSeconds=%d should validate, got: %v", tc.seconds, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_Batch_MaxWaitSecondsNilApplyDefault(t *testing.T) {
+	c := batchValidConfig()
+	c.Provider.Batch = &BatchProviderConfig{
+		Enabled:            true,
+		HarnessSidePolling: true,
+		// MaxWaitSeconds intentionally nil.
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("batch default-apply path must validate, got: %v", err)
+	}
+	if c.Provider.Batch.MaxWaitSeconds == nil {
+		t.Fatal("ValidateRunConfig should populate Batch.MaxWaitSeconds when nil and Enabled")
+	}
+	if got := *c.Provider.Batch.MaxWaitSeconds; got != DefaultBatchMaxWaitSeconds {
+		t.Errorf("default MaxWaitSeconds = %d, want %d", got, DefaultBatchMaxWaitSeconds)
+	}
+}
+
+func TestValidateRunConfig_Batch_MaxWaitSecondsNotDefaultedWhenDisabled(t *testing.T) {
+	// The default applies only to Enabled=true configs; a disabled batch
+	// block keeps MaxWaitSeconds nil so a phase-2 consumer can still
+	// distinguish "operator did not set this" from "default applied".
+	c := batchValidConfig()
+	c.Provider.Batch = &BatchProviderConfig{Enabled: false}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("disabled batch must validate, got: %v", err)
+	}
+	if c.Provider.Batch.MaxWaitSeconds != nil {
+		t.Errorf("MaxWaitSeconds must not be populated when Enabled=false, got %v", *c.Provider.Batch.MaxWaitSeconds)
+	}
+}
+
+func TestValidateRunConfig_Batch_MaxTurnsLatencyWarning(t *testing.T) {
+	// Route slog through a buffer so we can assert the WARN line emitted
+	// by validateBatchConfig appears for maxTurns above the threshold
+	// and is absent at or below it. Pattern mirrors otel_http_test.go.
+	//
+	// The assertion deliberately pins the static message + structured
+	// attrs rather than substring-matching a formatted hours figure.
+	// validateBatchConfig moved to a static slog.Warn message during
+	// the phase-1 remediation so log consumers can parse the threshold
+	// and max-hours values from structured fields instead of having to
+	// re-multiply maxTurns * 24 from a free-text string.
+	const wantMsg = "batch with maxTurns above the latency-warning threshold may incur extended wall-clock latency"
+	for _, tc := range []struct {
+		name     string
+		maxTurns int
+		wantWarn bool
+	}{
+		{"at_threshold_no_warn", 5, false},
+		{"above_threshold_warns", 6, true},
+		{"well_above_threshold_warns", 50, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			originalLogger := slog.Default()
+			t.Cleanup(func() { slog.SetDefault(originalLogger) })
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+			c := batchValidConfig()
+			c.MaxTurns = tc.maxTurns
+			c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("batch warning path must not produce a hard error, got: %v", err)
+			}
+
+			logs := logBuf.String()
+			if tc.wantWarn {
+				if !strings.Contains(logs, "level=WARN") {
+					t.Errorf("expected slog WARN, got: %s", logs)
+				}
+				if !strings.Contains(logs, wantMsg) {
+					t.Errorf("expected static warning message %q, got: %s", wantMsg, logs)
+				}
+				wantMaxTurns := fmt.Sprintf("maxTurns=%d", tc.maxTurns)
+				if !strings.Contains(logs, wantMaxTurns) {
+					t.Errorf("expected %q attr in warning, got: %s", wantMaxTurns, logs)
+				}
+				wantThreshold := fmt.Sprintf("thresholdTurns=%d", batchTurnsLatencyWarnThreshold)
+				if !strings.Contains(logs, wantThreshold) {
+					t.Errorf("expected %q attr in warning, got: %s", wantThreshold, logs)
+				}
+				wantHours := fmt.Sprintf("estimatedMaxHours=%d", tc.maxTurns*24)
+				if !strings.Contains(logs, wantHours) {
+					t.Errorf("expected %q attr in warning, got: %s", wantHours, logs)
+				}
+			} else if strings.Contains(logs, wantMsg) {
+				t.Errorf("did not expect warning at maxTurns=%d, got: %s", tc.maxTurns, logs)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_Batch_HappyPathAllFieldsSet(t *testing.T) {
+	// Exercise every BatchProviderConfig field at a non-zero value to
+	// pin that the happy-path combination validates cleanly. Uses gRPC
+	// transport so HarnessSidePolling stays false and
+	// CancelBundleOnRunCancel can be true at the same time.
+	c := batchValidConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	maxWait := 3600
+	c.Provider.Batch = &BatchProviderConfig{
+		Enabled:                 true,
+		MaxWaitSeconds:          &maxWait,
+		HarnessSidePolling:      false,
+		FallbackOnTimeout:       true,
+		CancelBundleOnRunCancel: true,
+		AllowInteractiveModes:   true,
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("fully-populated batch config must validate, got: %v", err)
+	}
+	if got := *c.Provider.Batch.MaxWaitSeconds; got != 3600 {
+		t.Errorf("MaxWaitSeconds must not be overwritten when caller supplied a value, got %d", got)
+	}
+}
+
+// TestValidateRunConfig_Batch_ProvidersMapRejected pins the phase-1
+// review fix for the silent-accept gap: ValidateRunConfig now rejects
+// any non-nil Batch on a named providers map entry. Batch is a
+// top-level-only concept in v1, but the validator previously parsed
+// the field on map entries, stored it, and silently ignored it at
+// runtime. The strict rejection (any non-nil, not just Enabled=true)
+// matches the project's "clean is preferred" pre-1.0 posture and the
+// reviewer convergence on a hard error.
+func TestValidateRunConfig_Batch_ProvidersMapRejected(t *testing.T) {
+	t.Run("enabled_batch_on_named_entry_fails", func(t *testing.T) {
+		c := batchValidConfig()
+		c.Providers = map[string]ProviderConfig{
+			"secondary": {
+				Type:  "anthropic",
+				Batch: &BatchProviderConfig{Enabled: true, HarnessSidePolling: true},
+			},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for providers[secondary].batch")
+		}
+		want := `providers[secondary].batch is not supported in v1; batch applies only to the top-level provider`
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention providers map rejection, got: %v", err)
+		}
+	})
+	t.Run("disabled_but_present_batch_on_named_entry_also_fails", func(t *testing.T) {
+		// The strict rule rejects any non-nil Batch (not just
+		// Enabled=true). An operator who adds a batch block with
+		// enabled=false has still tripped the foot-gun: they expect
+		// the named-entry batch knobs to mean something, and v1
+		// promises they don't.
+		c := batchValidConfig()
+		c.Providers = map[string]ProviderConfig{
+			"secondary": {
+				Type:  "anthropic",
+				Batch: &BatchProviderConfig{Enabled: false},
+			},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for providers[secondary].batch with Enabled=false")
+		}
+		if !strings.Contains(err.Error(), "providers[secondary].batch is not supported in v1") {
+			t.Errorf("error should mention providers map rejection, got: %v", err)
+		}
+	})
+}
+
+// TestValidateRunConfig_Batch_EmptyProviderTypeSuppressesBatchTypeError
+// pins the phase-1 fix for the spurious double-error when batch is
+// enabled but the provider type is empty. Before the fix the operator
+// got both "provider type is required" (correct) and "batch is not
+// supported for provider type \"\"" (misleading — the root cause is
+// the missing type, not batch compatibility).
+func TestValidateRunConfig_Batch_EmptyProviderTypeSuppressesBatchTypeError(t *testing.T) {
+	c := batchValidConfig()
+	c.Provider.Type = ""
+	c.Provider.Batch = &BatchProviderConfig{Enabled: true, HarnessSidePolling: true}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for empty provider type")
+	}
+	if !strings.Contains(err.Error(), "provider type is required") {
+		t.Errorf("error should mention required provider type, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "batch is not supported for provider type") {
+		t.Errorf("batch-type error should be suppressed when provider type is invalid, got: %v", err)
+	}
+}
+
+// TestBatchProviderConfig_JSONRoundTrip pins the *int with omitempty
+// invariant on BatchProviderConfig.MaxWaitSeconds. Phase-2 consumers
+// rely on the nil/non-nil distinction to tell "operator did not
+// configure this field" from "default applied" — a JSON marshal +
+// unmarshal cycle must preserve both states. The disabled-but-present
+// case (Batch != nil with Enabled=false) is the second invariant: the
+// `omitempty` is on the containing pointer field, not the inner
+// struct, so a present block must survive even when every inner field
+// is the zero value.
+func TestBatchProviderConfig_JSONRoundTrip(t *testing.T) {
+	t.Run("enabled_with_max_wait_seconds_round_trips", func(t *testing.T) {
+		maxWait := 3600
+		pc := ProviderConfig{
+			Type: "anthropic",
+			Batch: &BatchProviderConfig{
+				Enabled:                 true,
+				MaxWaitSeconds:          &maxWait,
+				HarnessSidePolling:      true,
+				FallbackOnTimeout:       true,
+				CancelBundleOnRunCancel: false,
+				AllowInteractiveModes:   true,
+			},
+		}
+		data, err := json.Marshal(pc)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got ProviderConfig
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got.Batch == nil {
+			t.Fatal("Batch must survive JSON round-trip as non-nil")
+		}
+		if !got.Batch.Enabled {
+			t.Errorf("Batch.Enabled: got false, want true")
+		}
+		if got.Batch.MaxWaitSeconds == nil {
+			t.Fatal("MaxWaitSeconds must survive as non-nil pointer")
+		}
+		if *got.Batch.MaxWaitSeconds != 3600 {
+			t.Errorf("MaxWaitSeconds: got %d, want 3600", *got.Batch.MaxWaitSeconds)
+		}
+		if !got.Batch.HarnessSidePolling {
+			t.Errorf("HarnessSidePolling: got false, want true")
+		}
+		if !got.Batch.FallbackOnTimeout {
+			t.Errorf("FallbackOnTimeout: got false, want true")
+		}
+		if got.Batch.CancelBundleOnRunCancel {
+			t.Errorf("CancelBundleOnRunCancel: got true, want false")
+		}
+		if !got.Batch.AllowInteractiveModes {
+			t.Errorf("AllowInteractiveModes: got false, want true")
+		}
+	})
+
+	t.Run("disabled_but_present_block_survives_round_trip", func(t *testing.T) {
+		// `omitempty` is on ProviderConfig.Batch (the *pointer), not on
+		// the inner BatchProviderConfig fields. Marshaling a non-nil
+		// pointer to a zero-valued struct must emit a "batch" key the
+		// unmarshaler sees, otherwise phase-2 callers cannot tell "no
+		// batch key in JSON" from "batch present but disabled".
+		pc := ProviderConfig{
+			Type:  "anthropic",
+			Batch: &BatchProviderConfig{Enabled: false},
+		}
+		data, err := json.Marshal(pc)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(data), `"batch"`) {
+			t.Errorf("expected batch key in JSON, got: %s", data)
+		}
+		var got ProviderConfig
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got.Batch == nil {
+			t.Fatal("disabled-but-present batch must survive as non-nil pointer")
+		}
+		if got.Batch.Enabled {
+			t.Errorf("Enabled: got true, want false")
+		}
+		if got.Batch.MaxWaitSeconds != nil {
+			t.Errorf("MaxWaitSeconds: got %v, want nil", *got.Batch.MaxWaitSeconds)
+		}
+	})
+
+	t.Run("absent_batch_unmarshals_as_nil", func(t *testing.T) {
+		// Cross-check: the omitempty pointer on a nil Batch must drop
+		// the key entirely on marshal, and an absent key must unmarshal
+		// to nil. This is the third state phase-2 consumers care about.
+		pc := ProviderConfig{Type: "anthropic"}
+		data, err := json.Marshal(pc)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(data), `"batch"`) {
+			t.Errorf("expected no batch key when Batch is nil, got: %s", data)
+		}
+		var got ProviderConfig
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got.Batch != nil {
+			t.Errorf("expected nil Batch when JSON has no batch key, got: %+v", got.Batch)
+		}
+	})
+}
+
+// TestRedact_ProviderBatchNotAliased pins the phase-1 review fix for
+// the Redact() deep-copy gap on Provider.Batch. validateBatchConfig
+// mutates Batch.MaxWaitSeconds in place to apply the default; if
+// Redact() shares the pointer with the live config, a subsequent
+// default-apply write reaches the redacted snapshot through the
+// shared pointer and breaks the contract that Redact() produces a
+// stable copy. The aliasing risk also applies to entries in the
+// Providers map.
+func TestRedact_ProviderBatchNotAliased(t *testing.T) {
+	maxWait := 3600
+	otherMaxWait := 1800
+	rc := RunConfig{
+		Provider: ProviderConfig{
+			Type:  "anthropic",
+			Batch: &BatchProviderConfig{Enabled: true, MaxWaitSeconds: &maxWait, HarnessSidePolling: true},
+		},
+		Providers: map[string]ProviderConfig{
+			"secondary": {
+				Type:  "anthropic",
+				Batch: &BatchProviderConfig{Enabled: true, MaxWaitSeconds: &otherMaxWait},
+			},
+		},
+	}
+	redacted := rc.Redact()
+
+	if redacted.Provider.Batch == nil {
+		t.Fatal("top-level Batch dropped by Redact")
+	}
+	if redacted.Provider.Batch == rc.Provider.Batch {
+		t.Fatal("top-level Batch pointer aliased — Redact must deep-copy")
+	}
+	redacted.Provider.Batch.Enabled = false
+	if !rc.Provider.Batch.Enabled {
+		t.Error("mutating redacted Provider.Batch.Enabled leaked to original")
+	}
+
+	redactedSecondary := redacted.Providers["secondary"]
+	originalSecondary := rc.Providers["secondary"]
+	if redactedSecondary.Batch == nil {
+		t.Fatal("named-provider Batch dropped by Redact")
+	}
+	if redactedSecondary.Batch == originalSecondary.Batch {
+		t.Fatal("named-provider Batch pointer aliased — Redact must deep-copy")
+	}
+	redactedSecondary.Batch.Enabled = false
+	if !rc.Providers["secondary"].Batch.Enabled {
+		t.Error("mutating redacted named-provider Batch.Enabled leaked to original")
 	}
 }

@@ -2,6 +2,7 @@ package types
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -58,6 +59,19 @@ const (
 	// provider/transport beyond what the rest of the harness is sized
 	// for.
 	MaxToolDispatchMaxParallel = 16
+
+	// DefaultBatchMaxWaitSeconds is the harness-side default wall-clock
+	// cap on a batch wait (24 h), matching the Anthropic and OpenAI
+	// provider-side SLA for batch completion. Applied by ValidateRunConfig
+	// when Batch.Enabled and Batch.MaxWaitSeconds == nil.
+	DefaultBatchMaxWaitSeconds = 86400
+
+	// batchTurnsLatencyWarnThreshold is the maxTurns ceiling above which
+	// ValidateRunConfig emits a slog WARN: each turn can take up to 24 h
+	// of wall-clock waiting on the provider, so a run with many turns can
+	// spend weeks in flight. The threshold is the operator's reasonable
+	// upper bound before the latency exposure deserves a heads-up.
+	batchTurnsLatencyWarnThreshold = 5
 )
 
 // RunConfig fully describes a single harness run. It is the composition root:
@@ -387,6 +401,17 @@ func (rc RunConfig) Redact() RunConfig {
 		retry := *redacted.Provider.Retry
 		redacted.Provider.Retry = &retry
 	}
+	// Mirror the Retry deep-copy for Provider.Batch. The aliasing risk
+	// is concrete: validateBatchConfig mutates Batch.MaxWaitSeconds in
+	// place to apply the default, and the phase-2 BatchAdapter (#135)
+	// is expected to hold a reference to the Redact()-derived snapshot
+	// across the run. Without the deep copy, a later default-apply
+	// write would reach the redacted copy through the shared pointer
+	// and break the snapshot contract.
+	if redacted.Provider.Batch != nil {
+		batch := *redacted.Provider.Batch
+		redacted.Provider.Batch = &batch
+	}
 	if len(redacted.Providers) > 0 {
 		providers := make(map[string]ProviderConfig, len(redacted.Providers))
 		for name, provider := range redacted.Providers {
@@ -396,6 +421,10 @@ func (rc RunConfig) Redact() RunConfig {
 			if provider.Retry != nil {
 				retry := *provider.Retry
 				provider.Retry = &retry
+			}
+			if provider.Batch != nil {
+				batch := *provider.Batch
+				provider.Batch = &batch
 			}
 			providers[name] = provider
 		}
@@ -512,6 +541,43 @@ type ProviderConfig struct {
 	// ValidateRunConfig so downstream consumers always see a populated
 	// value.
 	Retry *ProviderRetryConfig `json:"retry,omitempty"`
+
+	// Batch enables async batch submission for every provider turn in this
+	// run. Only the top-level RunConfig.Provider entry is consulted in v1;
+	// entries in RunConfig.Providers are streaming-only. See
+	// BatchProviderConfig for the supported provider types and the
+	// transport / mode cross-field invariants enforced by ValidateRunConfig.
+	Batch *BatchProviderConfig `json:"batch,omitempty"`
+}
+
+// BatchProviderConfig controls async batch submission for a provider turn.
+// Only Anthropic and OpenAI providers support batch in v1. Setting Enabled=true
+// with an unsupported provider type is a validation error.
+type BatchProviderConfig struct {
+	// Enabled opts this run into async batch submission for every provider turn.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// MaxWaitSeconds is the harness-side wall-clock cap on the batch wait,
+	// in seconds. Defaults to 86400 (24 h, matching the provider SLA) when
+	// nil and Enabled=true. Must be in the range (0, 86400].
+	MaxWaitSeconds *int `json:"maxWaitSeconds,omitempty"`
+
+	// HarnessSidePolling enables direct HTTP polling from the harness
+	// process (required when transport.type == "stdio"). Mutually exclusive
+	// with transport.type == "grpc".
+	HarnessSidePolling bool `json:"harnessSidePolling,omitempty"`
+
+	// FallbackOnTimeout switches to the streaming adapter for a turn when
+	// the harness-side MaxWaitSeconds fires. Defaults to false.
+	FallbackOnTimeout bool `json:"fallbackOnTimeout,omitempty"`
+
+	// CancelBundleOnRunCancel causes a single run's cancel to cancel the
+	// entire bundled provider batch (gRPC transport only). Defaults to false.
+	CancelBundleOnRunCancel bool `json:"cancelBundleOnRunCancel,omitempty"`
+
+	// AllowInteractiveModes permits batch.enabled with mode == "planning" or
+	// mode == "review". Has no effect on mode == "execution" (always rejected).
+	AllowInteractiveModes bool `json:"allowInteractiveModes,omitempty"`
 }
 
 // ProviderRetryConfig bounds the retry behaviour an adapter applies to a
@@ -912,6 +978,18 @@ var validProviderTypes = map[string]bool{
 	"openai-compatible": true,
 	"openai-responses":  true,
 	"gemini":            true,
+}
+
+// validBatchProviderTypes is the closed set of provider types whose adapters
+// implement the async batch submission path in v1. Anthropic via the
+// /v1/messages/batches endpoint; OpenAI Chat Completions and Responses via
+// /v1/batches. Bedrock and Gemini are out of scope for v1 (Bedrock batch is
+// S3-mediated and reuses none of the streaming adapter shape; Vertex AI has
+// no equivalent endpoint).
+var validBatchProviderTypes = map[string]bool{
+	"anthropic":         true,
+	"openai-compatible": true,
+	"openai-responses":  true,
 }
 
 // gcpProjectIDPattern matches the GCP project ID rules: starts with a
@@ -1409,6 +1487,13 @@ type ModePreset struct {
 // happen anyway). Also applies ProviderRetryConfig defaults to
 // Provider.Retry and each entry in Providers so adapters never have
 // to nil-check the per-call retry policy.
+//
+// Note: ValidateRunConfig mutates its argument in place to apply
+// per-provider defaults (Provider.Retry fields, Provider.Batch.MaxWaitSeconds
+// when Batch.Enabled=true, CodeScanner type). Callers that need an
+// unmodified copy must clone before calling. Redact() deep-copies the
+// affected pointer fields so a snapshot taken before validation does
+// not alias the live config.
 func ValidateRunConfig(config *RunConfig) error {
 	applyCodeScannerDefault(config)
 	retryDefaulted := applyProviderRetryDefaults(config)
@@ -1511,6 +1596,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateGuardRailConfig(config.GuardRail, "guardRail", false, &errs)
 	validateObservabilityConfig(config.Observability, &errs)
 	validateToolDispatchConfig(config.ToolDispatch, &errs)
+	validateBatchConfig(config, &errs)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
@@ -1929,6 +2015,87 @@ func fmtProviderRetryValue(value int, isDefault bool) string {
 	return fmt.Sprintf("%d", value)
 }
 
+// validateBatchConfig enforces the cross-field invariants on
+// ProviderConfig.Batch and applies the MaxWaitSeconds default. Batch
+// only applies to the top-level Provider in v1; entries in
+// Providers[] are streaming-only and validateProviderConfigs rejects
+// any non-nil Batch on a map entry. The validator mutates *config when
+// Batch.Enabled and MaxWaitSeconds is unset — downstream consumers
+// should always see a populated value so the adapter wiring (phase 2)
+// can avoid nil-checking on the hot path. The MaxWaitSeconds default
+// is intentionally withheld when Enabled=false: phase-2 callers rely
+// on nil to distinguish "operator did not configure this field" from
+// "default applied", and the field is meaningless when batch is off.
+func validateBatchConfig(config *RunConfig, errs *[]string) {
+	batch := config.Provider.Batch
+	if batch == nil {
+		return
+	}
+
+	// HarnessSidePolling and CancelBundleOnRunCancel constrain the
+	// transport regardless of Enabled, so a future-disabled config does
+	// not silently retain a contradictory flag combination.
+	if batch.HarnessSidePolling && config.Transport.Type == "grpc" {
+		*errs = append(*errs, "batch.harnessSidePolling must not be set with transport=grpc")
+	}
+	if batch.CancelBundleOnRunCancel && config.Transport.Type == "stdio" {
+		*errs = append(*errs, "batch.cancelBundleOnRunCancel requires transport=grpc")
+	}
+
+	if !batch.Enabled {
+		return
+	}
+
+	// Skip the batch provider-type check when the underlying provider
+	// type is itself invalid: validateRequiredType has already
+	// appended a "provider type is required" / "unsupported provider
+	// type" error, and the secondary message ("batch is not supported
+	// for provider type \"\"") would just mislead the operator about
+	// the root cause.
+	if validProviderTypes[config.Provider.Type] && !validBatchProviderTypes[config.Provider.Type] {
+		*errs = append(*errs, fmt.Sprintf("batch is not supported for provider type %q in v1", config.Provider.Type))
+	}
+	switch config.Mode {
+	case "execution":
+		*errs = append(*errs, "batch cannot be used with mode=execution")
+	case "planning", "review":
+		if !batch.AllowInteractiveModes {
+			*errs = append(*errs, fmt.Sprintf("batch requires allowInteractiveModes=true for mode=%s", config.Mode))
+		}
+	}
+	if config.Transport.Type == "stdio" && !batch.HarnessSidePolling {
+		*errs = append(*errs, "batch with transport=stdio requires harnessSidePolling=true")
+	}
+	if batch.MaxWaitSeconds != nil {
+		if *batch.MaxWaitSeconds <= 0 || *batch.MaxWaitSeconds > DefaultBatchMaxWaitSeconds {
+			*errs = append(*errs, "batch.maxWaitSeconds must be in range (0, 86400]")
+		}
+	} else {
+		// Default applied in-place so phase-2 adapter wiring can rely
+		// on a populated value without re-reading the default. Only
+		// runs on the Enabled=true branch (see comment above the func)
+		// so a disabled batch block keeps MaxWaitSeconds nil and the
+		// "operator did not configure" signal survives.
+		def := DefaultBatchMaxWaitSeconds
+		batch.MaxWaitSeconds = &def
+	}
+	if config.MaxTurns > batchTurnsLatencyWarnThreshold {
+		// Layering note: this warn is in types/ for spec-faithfulness
+		// (gh-134 requires the same mechanism as rule_of_two_warning).
+		// Follow-up: move to harness/internal/core/factory.go via a
+		// ValidateRunConfigResult or companion ValidateRunConfigWarnings
+		// function so callers (tests, eval runner, library embedders)
+		// stop having to manipulate slog.Default to observe or suppress
+		// the warning.
+		slog.Warn(
+			"batch with maxTurns above the latency-warning threshold may incur extended wall-clock latency",
+			"maxTurns", config.MaxTurns,
+			"thresholdTurns", batchTurnsLatencyWarnThreshold,
+			"estimatedMaxHours", config.MaxTurns*24,
+		)
+	}
+}
+
 func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]providerRetryDefaulted, errs *[]string) {
 	knownProviders := map[string]bool{}
 	if config.Provider.Type != "" {
@@ -1957,6 +2124,19 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		validateAzureWIFCrossField(path, provider, errs)
 		retryPath := fmt.Sprintf("%s.retry", path)
 		validateProviderRetryConfig(retryPath, provider.Retry, retryDefaulted[retryPath], errs)
+		// Batch is a top-level-only concept in v1: the spec wires
+		// per-turn batching against RunConfig.Provider, and a Batch
+		// block on a named entry would silently parse, store, and have
+		// no behavioural effect. Reject any non-nil Batch (not just
+		// Enabled=true) so a partially-filled block ("operator added
+		// the key but left enabled=false") also fails loudly — the
+		// foot-gun is real and the strict error is cheap.
+		if provider.Batch != nil {
+			*errs = append(*errs, fmt.Sprintf(
+				"providers[%s].batch is not supported in v1; batch applies only to the top-level provider",
+				name,
+			))
+		}
 	}
 
 	// Per-provider model-name validation for Vertex AI Gemini. The

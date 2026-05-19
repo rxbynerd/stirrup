@@ -689,6 +689,50 @@ message ProviderConfig {
   // downstream consumers always see a populated value). Adapters that
   // honour this knob currently include the openai-compatible adapter.
   optional ProviderRetryConfig retry = 13;
+
+  // Optional. Opts the run into async batch submission for every
+  // provider turn (anthropic, openai-compatible, openai-responses only).
+  // Only the top-level RunConfig.provider entry is consulted in v1;
+  // entries in RunConfig.providers map are streaming-only and any batch
+  // field on them is rejected by ValidateRunConfig. See
+  // BatchProviderConfig for the mode / transport cross-field invariants.
+  // Next available field number: 15.
+  BatchProviderConfig batch = 14;
+}
+
+// BatchProviderConfig controls async batch submission for a provider
+// turn. Mirrors types.BatchProviderConfig field-for-field. Only Anthropic
+// and OpenAI providers support batch in v1; ValidateRunConfig rejects
+// enabled=true with an unsupported provider type.
+message BatchProviderConfig {
+  // Opts this run into async batch submission for every provider turn.
+  bool enabled = 1;
+
+  // Harness-side wall-clock cap on the batch wait, in seconds. Declared
+  // `optional` so an unset value is wire-distinguishable from explicit
+  // zero: ValidateRunConfig fills the default (86400) only when nil and
+  // enabled=true, so a phase-2 adapter can still tell "operator did not
+  // configure this" from "default applied". Must be in (0, 86400] when
+  // set.
+  optional int32 max_wait_seconds = 2;
+
+  // Enables direct HTTP polling from the harness process. Required when
+  // transport.type == "stdio"; rejected with transport.type == "grpc".
+  bool harness_side_polling = 3;
+
+  // Switches to the streaming adapter for a turn when the harness-side
+  // max_wait_seconds fires. Defaults to false.
+  bool fallback_on_timeout = 4;
+
+  // When a single run is cancelled, cancel the entire bundled provider
+  // batch (gRPC transport only). Defaults to false. Rejected with
+  // transport.type == "stdio".
+  bool cancel_bundle_on_run_cancel = 5;
+
+  // Permits batch.enabled with mode == "planning" or mode == "review".
+  // Has no effect on mode == "execution" (always rejected) or on other
+  // read-only modes ("research", "toil") which accept batch without it.
+  bool allow_interactive_modes = 6;
 }
 
 // CredentialConfig selects the credential acquisition method for a provider.

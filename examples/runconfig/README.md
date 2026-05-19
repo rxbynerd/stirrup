@@ -77,10 +77,39 @@ active and Rule of Two is enforced.
   },
 
   // Provider + credentials. apiKeyRef is a secret:// reference, never
-  // a raw key.
+  // a raw key. The optional `batch` block opts the run into async
+  // batch submission for every provider turn (anthropic,
+  // openai-compatible, openai-responses only); enabled=false here
+  // means streaming, the default. See BatchProviderConfig for the
+  // mode / transport invariants enforced by ValidateRunConfig.
+  //
+  // Field-level notes for batch:
+  //   - `maxWaitSeconds` is optional. When `enabled: true` and the
+  //     field is omitted, ValidateRunConfig fills it with 86400
+  //     (the 24 h provider SLA). The full.json example sets it
+  //     explicitly only because every field is shown for
+  //     completeness; operators may omit it.
+  //   - `harnessSidePolling` is required with `transport: "stdio"`
+  //     and rejected with `transport: "grpc"`.
+  //   - `cancelBundleOnRunCancel` is the mirror constraint: gRPC-only
+  //     and rejected with stdio.
+  //   - `allowInteractiveModes` opts in to batch with
+  //     `mode: "planning"` / `mode: "review"`; `mode: "execution"`
+  //     always rejects batch regardless of this flag.
+  // The full operator walkthrough lands in docs/sandbox.md (phase 3).
+  // Batch on a named providers map entry is a hard error in v1; only
+  // the top-level provider's batch block is consulted.
   "provider": {
     "type": "anthropic",
-    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY",
+    "batch": {
+      "enabled": false,
+      "maxWaitSeconds": 86400,
+      "harnessSidePolling": false,
+      "fallbackOnTimeout": false,
+      "cancelBundleOnRunCancel": false,
+      "allowInteractiveModes": false
+    }
   },
 
   // Dynamic router: cheap for short turns, expensive past the
