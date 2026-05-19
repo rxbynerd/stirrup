@@ -108,11 +108,18 @@ type BatchResultError struct {
 // HarnessEvent's Input field. The control plane uses it to construct the
 // provider-side batch entry.
 type BatchSubmission struct {
+	// SchemaVersion identifies the payload shape so the control plane
+	// can route legacy submissions without ambiguity. Submit always
+	// emits 1 in phase 2; increment when adding fields that consumers
+	// must know about (phase 6 may bump to 2 for OpenAI base_url /
+	// endpoint routing).
+	SchemaVersion int `json:"schema_version"`
+
 	// ProviderType is the provider shape the Body conforms to.
 	// "anthropic" | "openai-compatible" | "openai-responses".
 	ProviderType string `json:"provider_type"`
 
-	// CustomID is the entry's correlation handle ("<runID>-turn-<n>").
+	// CustomID is the entry's correlation handle ("stirrup-<runID>-turn-<n>").
 	// The control plane includes it on the provider-side batch entry so
 	// the returned batch_result.content can carry it back unchanged.
 	CustomID string `json:"custom_id"`
@@ -122,6 +129,10 @@ type BatchSubmission struct {
 	// or /v1/responses.
 	Body json.RawMessage `json:"body"`
 }
+
+// batchSubmissionSchemaVersion is the current BatchSubmission payload
+// shape version. See the field doc on BatchSubmission.SchemaVersion.
+const batchSubmissionSchemaVersion = 1
 
 // BatchAdapter wraps a streaming ProviderAdapter and fakes the streaming
 // channel from a completed batch response. The streaming inner is retained
@@ -248,9 +259,7 @@ func (a *BatchAdapter) awaitAndFabricate(
 		return
 	}
 
-	if err := fabricateStream(ch, entry.Response, a.provType); err != nil {
-		ch <- types.StreamEvent{Type: "error", Error: err}
-	}
+	fabricateStream(ch, entry.Response, a.provType)
 }
 
 // pumpInner relays events from the streaming fallback into the
@@ -290,20 +299,27 @@ func isBatchTimeout(err error) bool {
 
 // fabricateStream decodes a batch response and emits the StreamEvent
 // sequence the streaming adapter would have produced for the same body.
-// Only Anthropic is implemented in phase 2; OpenAI variants emit a single
-// error event so the OpenAI batch path lands cleanly in phase 6 (#139).
-func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, provType string) error {
+// Only Anthropic is implemented in phase 2; OpenAI variants and any
+// unsupported provider type emit a single error event so the caller
+// (awaitAndFabricate) does not have to track a separate error return —
+// mirrors the ProviderAdapter.Stream convention where all failures
+// surface as in-channel error events.
+func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, provType string) {
 	switch provType {
 	case "anthropic":
-		return fabricateAnthropicStream(ch, response)
+		if err := fabricateAnthropicStream(ch, response); err != nil {
+			ch <- types.StreamEvent{Type: "error", Error: err}
+		}
 	case "openai-compatible", "openai-responses":
 		ch <- types.StreamEvent{
 			Type:  "error",
 			Error: errors.New("OpenAI batch fabrication not yet implemented"),
 		}
-		return nil
 	default:
-		return fmt.Errorf("fabricateStream: unsupported provider type %q", provType)
+		ch <- types.StreamEvent{
+			Type:  "error",
+			Error: fmt.Errorf("fabricateStream: unsupported provider type %q", provType),
+		}
 	}
 }
 
@@ -330,6 +346,11 @@ type anthropicBatchContentBlock struct {
 // produces in anthropic.go: one text_delta per text content block, one
 // tool_call per tool_use block, then a single message_complete carrying
 // the assembled content blocks plus stop_reason / output_tokens.
+//
+// Emits one text_delta per text content block (not per token) — the
+// assembled ContentBlock in message_complete matches streamEventsToResult's
+// reconstruction so a fabricated stream is observationally
+// indistinguishable from the live SSE path for the agentic loop.
 func fabricateAnthropicStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
 	var resp anthropicBatchResponse
 	if err := json.Unmarshal(response, &resp); err != nil {
@@ -393,8 +414,12 @@ type controlPlaneBatchClient struct {
 	maxWait            time.Duration
 	cancelBundleOnExit bool
 
-	mu       sync.Mutex
-	nextID   int
+	mu     sync.Mutex
+	nextID int
+	// pending and customID are keyed by requestID. The client always
+	// submits size-1 batches (see Submit); the map[customID]→*BatchResult
+	// shape returned by Result is for forward compatibility with phase-4
+	// multi-entry batches (harnessPollingBatchClient, #137).
 	pending  map[string]chan *BatchResult
 	customID map[string]string // requestID -> originating entry CustomID
 }
@@ -497,9 +522,10 @@ func (c *controlPlaneBatchClient) Submit(ctx context.Context, entries []BatchEnt
 	entry := entries[0]
 
 	payload := BatchSubmission{
-		ProviderType: entry.Provider,
-		CustomID:     entry.CustomID,
-		Body:         entry.Body,
+		SchemaVersion: batchSubmissionSchemaVersion,
+		ProviderType:  entry.Provider,
+		CustomID:      entry.CustomID,
+		Body:          entry.Body,
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -544,7 +570,12 @@ func (c *controlPlaneBatchClient) Result(ctx context.Context, batchID string) (m
 
 	timeout := c.maxWait
 	if timeout <= 0 {
-		timeout = transport.DefaultCorrelatorTimeout
+		// The harness-side default for batch waits is the same as the
+		// validator's documented MaxWaitSeconds default (24 h); reusing
+		// transport.DefaultCorrelatorTimeout here was a copy-paste from
+		// the askupstream pattern and would silently expire long batches
+		// after the much shorter correlator default.
+		timeout = time.Duration(types.DefaultBatchMaxWaitSeconds) * time.Second
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()

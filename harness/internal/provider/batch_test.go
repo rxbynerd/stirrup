@@ -109,9 +109,7 @@ func TestFabricateStream_AnthropicTextAndToolUse(t *testing.T) {
 	}`)
 
 	ch := make(chan types.StreamEvent, 8)
-	if err := fabricateStream(ch, response, "anthropic"); err != nil {
-		t.Fatalf("fabricateStream: %v", err)
-	}
+	fabricateStream(ch, response, "anthropic")
 	close(ch)
 
 	var got []types.StreamEvent
@@ -154,9 +152,7 @@ func TestFabricateStream_OpenAINotImplemented(t *testing.T) {
 	for _, provType := range []string{"openai-compatible", "openai-responses"} {
 		t.Run(provType, func(t *testing.T) {
 			ch := make(chan types.StreamEvent, 1)
-			if err := fabricateStream(ch, []byte(`{}`), provType); err != nil {
-				t.Fatalf("fabricateStream: %v", err)
-			}
+			fabricateStream(ch, []byte(`{}`), provType)
 			close(ch)
 
 			got := <-ch
@@ -170,14 +166,16 @@ func TestFabricateStream_OpenAINotImplemented(t *testing.T) {
 	}
 }
 
-func TestFabricateStream_UnsupportedProviderReturnsError(t *testing.T) {
+func TestFabricateStream_UnsupportedProviderEmitsError(t *testing.T) {
 	ch := make(chan types.StreamEvent, 1)
-	err := fabricateStream(ch, []byte(`{}`), "bedrock")
-	if err == nil {
-		t.Fatal("expected error for unsupported provider type")
+	fabricateStream(ch, []byte(`{}`), "bedrock")
+	close(ch)
+	got := <-ch
+	if got.Type != "error" {
+		t.Errorf("got type %q, want error", got.Type)
 	}
-	if !strings.Contains(err.Error(), "unsupported provider type") {
-		t.Errorf("got %v, want error mentioning unsupported provider type", err)
+	if got.Error == nil || !strings.Contains(got.Error.Error(), "unsupported provider type") {
+		t.Errorf("expected unsupported-provider error, got %v", got.Error)
 	}
 }
 
@@ -550,6 +548,14 @@ func TestControlPlaneBatchClient_SubmitAndResult(t *testing.T) {
 	if !strings.Contains(string(got.Response), `"text":"hi"`) {
 		t.Errorf("unexpected response: %s", got.Response)
 	}
+
+	// Cleanup proof (R10): a second Result on the same batchID surfaces
+	// "no pending submission", confirming the success path called
+	// releasePending and dropped both maps.
+	if _, err := c.Result(context.Background(), batchID); err == nil ||
+		!strings.Contains(err.Error(), "no pending submission") {
+		t.Errorf("expected 'no pending submission' on second Result, got %v", err)
+	}
 }
 
 func TestControlPlaneBatchClient_SubmitMultiEntryRejected(t *testing.T) {
@@ -901,5 +907,233 @@ func TestControlPlaneBatchClient_SubmitEmitFailureCleansUp(t *testing.T) {
 	if _, err := c.Result(context.Background(), requestID); err == nil ||
 		!strings.Contains(err.Error(), "no pending submission") {
 		t.Errorf("expected 'no pending submission' after Submit failure, got %v", err)
+	}
+}
+
+// TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel (R3) asserts the
+// heartbeat goroutine terminates promptly when its context is cancelled
+// before any tick has fired.
+func TestControlPlaneBatchClient_HeartbeatExitsOnCtxCancel(t *testing.T) {
+	// Use a long interval so the ticker cannot fire during the test
+	// window; the goroutine should exit via the ctx.Done() arm.
+	prev := setBatchWaitingHeartbeatInterval(time.Hour)
+	t.Cleanup(func() { setBatchWaitingHeartbeatInterval(prev) })
+
+	tr := &mockBatchTransport{}
+	c := NewControlPlaneBatchClient(tr, time.Hour, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	batchID, err := c.Submit(ctx, []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	cancel()
+	c.releasePending(batchID)
+
+	// Settle. With the long interval, no batch_waiting events should
+	// have been emitted; only the original batch_submission is on the
+	// wire.
+	time.Sleep(20 * time.Millisecond)
+	for _, ev := range tr.emittedSnapshot() {
+		if ev.Type == "batch_waiting" {
+			t.Errorf("unexpected batch_waiting emitted before ticker fired: %+v", ev)
+		}
+	}
+}
+
+// TestBatchAdapter_Stream_TimeoutFallback_InnerStreamError (R5) asserts
+// that when FallbackOnTimeout fires and the inner adapter itself
+// returns an error, the BatchAdapter surfaces a single error event.
+func TestBatchAdapter_Stream_TimeoutFallback_InnerStreamError(t *testing.T) {
+	client := &fakeBatchClient{
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return nil, fmt.Errorf("%w: simulated", errBatchExpired)
+		},
+	}
+	inner := &erroringProvider{err: errors.New("upstream provider down")}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true, FallbackOnTimeout: true}, inner)
+
+	ch, _ := a.Stream(context.Background(), anthropicParams())
+	events := drain(t, ch)
+
+	if len(events) != 1 || events[0].Type != "error" {
+		t.Fatalf("expected single error event, got %+v", events)
+	}
+	if !strings.Contains(events[0].Error.Error(), "batch fallback to streaming failed") {
+		t.Errorf("expected fallback-failure error, got %v", events[0].Error)
+	}
+}
+
+// erroringProvider is a ProviderAdapter that always fails on Stream.
+type erroringProvider struct{ err error }
+
+func (e *erroringProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	return nil, e.err
+}
+
+// TestBatchAdapter_Stream_TimeoutFallback_CtxCancelDuringRelay (R5)
+// asserts the channel closes cleanly when ctx is cancelled mid-relay.
+func TestBatchAdapter_Stream_TimeoutFallback_CtxCancelDuringRelay(t *testing.T) {
+	client := &fakeBatchClient{
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return nil, fmt.Errorf("%w: simulated", errBatchExpired)
+		},
+	}
+	inner := &blockingProvider{first: types.StreamEvent{Type: "text_delta", Text: "first"}, release: make(chan struct{})}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true, FallbackOnTimeout: true}, inner)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, _ := a.Stream(ctx, anthropicParams())
+
+	// Read the first event from the relay, then cancel.
+	deadline := time.After(2 * time.Second)
+	select {
+	case ev, ok := <-ch:
+		if !ok {
+			t.Fatal("channel closed before first event")
+		}
+		if ev.Type != "text_delta" || ev.Text != "first" {
+			t.Fatalf("unexpected first event: %+v", ev)
+		}
+	case <-deadline:
+		t.Fatal("timed out waiting for first event from inner")
+	}
+
+	cancel()
+	close(inner.release)
+
+	// Channel must close cleanly (no goroutine leak). The relay races
+	// the second send against ctx.Done() per event — Go's select is
+	// non-deterministic so the second event may or may not land before
+	// pumpInner notices the cancellation. Either way, the channel must
+	// close without wedging.
+	deadline = time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return // success: closed cleanly
+			}
+		case <-deadline:
+			t.Fatal("channel did not close after ctx cancel")
+		}
+	}
+}
+
+// blockingProvider emits `first`, then waits for release to close
+// before emitting a second event and closing the channel. Used to drive
+// the ctx-cancel-during-relay path.
+type blockingProvider struct {
+	first   types.StreamEvent
+	release chan struct{}
+}
+
+func (b *blockingProvider) Stream(_ context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
+	ch := make(chan types.StreamEvent, 1)
+	go func() {
+		defer close(ch)
+		ch <- b.first
+		<-b.release
+		ch <- types.StreamEvent{Type: "text_delta", Text: "second"}
+	}()
+	return ch, nil
+}
+
+// TestBatchAdapter_Stream_OpenAIVariantsEmitNotImplemented (R6) pins
+// the phase-6 OpenAI integration point: both openai-compatible and
+// openai-responses provType values surface a single
+// "not yet implemented" error event from the marshal/fabricate path.
+func TestBatchAdapter_Stream_OpenAIVariantsEmitNotImplemented(t *testing.T) {
+	for _, provType := range []string{"openai-compatible", "openai-responses"} {
+		t.Run(provType, func(t *testing.T) {
+			response := json.RawMessage(`{}`)
+			client := &fakeBatchClient{
+				resultFn: func(_ string) (map[string]*BatchResult, error) {
+					return map[string]*BatchResult{
+						"stirrup-run-test-turn-1": {Response: response},
+					}, nil
+				},
+			}
+			a := NewBatchAdapter(nil, client, &types.BatchProviderConfig{Enabled: true}, provType, "run-test")
+			ch, err := a.Stream(context.Background(), anthropicParams())
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			events := drain(t, ch)
+			if len(events) != 1 || events[0].Type != "error" {
+				t.Fatalf("expected single error event, got %+v", events)
+			}
+			if !strings.Contains(events[0].Error.Error(), "OpenAI batch fabrication not yet implemented") {
+				t.Errorf("expected 'not yet implemented' error, got %v", events[0].Error)
+			}
+		})
+	}
+}
+
+// TestFabricateStream_AnthropicParityWithReference (R8) compares the
+// fabricator's output against a hand-rolled reference sequence for a
+// single text + tool_use fixture. Guards against drift between the SSE
+// consumer (consumeSSE in anthropic.go) and the batch fabricator.
+func TestFabricateStream_AnthropicParityWithReference(t *testing.T) {
+	response := []byte(`{
+		"content": [
+			{"type": "text", "text": "hi"},
+			{"type": "tool_use", "id": "tu_a", "name": "read_file", "input": {"path": "/etc/hosts"}}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"output_tokens": 5}
+	}`)
+
+	ch := make(chan types.StreamEvent, 8)
+	if err := fabricateAnthropicStream(ch, response); err != nil {
+		t.Fatalf("fabricateAnthropicStream: %v", err)
+	}
+	close(ch)
+
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+
+	// Reference sequence: one text_delta per text block, one tool_call
+	// per tool_use block, then a single message_complete carrying the
+	// assembled content blocks.
+	want := []types.StreamEvent{
+		{Type: "text_delta", Text: "hi"},
+		{Type: "tool_call", ID: "tu_a", Name: "read_file", Input: map[string]any{"path": "/etc/hosts"}},
+		{Type: "message_complete", StopReason: "tool_use", OutputTokens: 5, Content: []types.ContentBlock{
+			{Type: "text", Text: "hi"},
+			{Type: "tool_use", ID: "tu_a", Name: "read_file", Input: json.RawMessage(`{"path": "/etc/hosts"}`)},
+		}},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event count: got %d, want %d (%+v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Type != want[i].Type {
+			t.Errorf("event %d: type %q, want %q", i, got[i].Type, want[i].Type)
+		}
+		if got[i].Text != want[i].Text {
+			t.Errorf("event %d: text %q, want %q", i, got[i].Text, want[i].Text)
+		}
+		if got[i].ID != want[i].ID || got[i].Name != want[i].Name {
+			t.Errorf("event %d: id/name %q/%q, want %q/%q", i, got[i].ID, got[i].Name, want[i].ID, want[i].Name)
+		}
+		if want[i].StopReason != "" && got[i].StopReason != want[i].StopReason {
+			t.Errorf("event %d: stop_reason %q, want %q", i, got[i].StopReason, want[i].StopReason)
+		}
+		if want[i].OutputTokens != 0 && got[i].OutputTokens != want[i].OutputTokens {
+			t.Errorf("event %d: output_tokens %d, want %d", i, got[i].OutputTokens, want[i].OutputTokens)
+		}
+		// Tool input check (event index 1).
+		if want[i].Type == "tool_call" {
+			if got[i].Input["path"] != want[i].Input["path"] {
+				t.Errorf("event %d: tool input path %v, want %v", i, got[i].Input, want[i].Input)
+			}
+		}
 	}
 }
