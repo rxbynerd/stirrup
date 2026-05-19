@@ -636,6 +636,9 @@ func newTestHarnessCommand() *cobra.Command {
 	// --export-workspace-to.
 	f.String("export-workspace-to", "", "")
 	f.Bool("export-workspace-required", false, "")
+	// Batch flag (issue #136). Registered here so the override tests
+	// can exercise the applyOverrides path that handles --batch.
+	f.Bool("batch", false, "")
 	return cmd
 }
 

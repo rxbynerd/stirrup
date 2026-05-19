@@ -220,6 +220,15 @@ type harnessCLIOptions struct {
 	// script that knows whether the artifact is load-bearing.
 	WorkspaceExportTo       string
 	WorkspaceExportRequired bool
+
+	// Batch opts the run into async batch submission (issue #136).
+	// The flag carries only the Enabled bit; operators wanting any of
+	// the other BatchProviderConfig fields (MaxWaitSeconds,
+	// HarnessSidePolling, FallbackOnTimeout, CancelBundleOnRunCancel,
+	// AllowInteractiveModes) must use --config. Validation of the
+	// batch shape — transport, mode, provider type — runs in
+	// ValidateRunConfig and is shared with the --config path.
+	Batch bool
 }
 
 // buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
@@ -428,6 +437,18 @@ func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 	// matching the partial-override pattern used by GuardRail above.
 	if err := applyProviderRetryOverrides(&config.Provider, opts); err != nil {
 		return nil, err
+	}
+
+	// Batch (issue #136). --batch carries only the Enabled bit; every
+	// other BatchProviderConfig field stays at its zero value because
+	// the flag-only path has no --config to merge against. Operators
+	// who need MaxWaitSeconds, HarnessSidePolling, FallbackOnTimeout,
+	// CancelBundleOnRunCancel, or AllowInteractiveModes must use
+	// --config — flag syntax cannot cleanly express the cross-field
+	// invariants the validator enforces. ValidateRunConfig defaults
+	// MaxWaitSeconds to 24 h when Enabled and the slot is nil.
+	if opts.Batch {
+		config.Provider.Batch = &types.BatchProviderConfig{Enabled: true}
 	}
 
 	applyModeDefaults(config)
@@ -707,6 +728,13 @@ func init() {
 	// types.ValidateRunConfig which already accepts only gs:// URIs.
 	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at end-of-run (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
 	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
+
+	// Batch (issue #136). Carries only the Enabled bit; the other
+	// BatchProviderConfig knobs (maxWaitSeconds, harnessSidePolling,
+	// fallbackOnTimeout, cancelBundleOnRunCancel, allowInteractiveModes)
+	// must come from --config because flag syntax cannot cleanly express
+	// the cross-field invariants validated together.
+	f.Bool("batch", false, "Use async batch submission for provider turns (50% cost reduction, up to 24h latency). Requires transport=grpc or --config with harnessSidePolling=true for stdio. See docs/sandbox.md.")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -1033,6 +1061,32 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	if err := applyProviderRetryFlagOverrides(cmd, &cfg.Provider); err != nil {
 		return err
 	}
+
+	// Batch (issue #136). --batch only flips the Enabled bit; every
+	// other Batch field (MaxWaitSeconds, HarnessSidePolling,
+	// FallbackOnTimeout, CancelBundleOnRunCancel,
+	// AllowInteractiveModes) must come from --config because flag
+	// syntax cannot express their cross-field invariants. When the
+	// file already supplied a Batch block, preserve its other fields
+	// so an operator can keep e.g. harnessSidePolling=true from the
+	// file and only flip enabled=true at the CLI. When the file
+	// omitted Batch entirely, allocate a fresh block with only
+	// Enabled set.
+	if changed("batch") {
+		enabled, _ := f.GetBool("batch")
+		if enabled {
+			if cfg.Provider.Batch == nil {
+				cfg.Provider.Batch = &types.BatchProviderConfig{Enabled: true}
+			} else {
+				cfg.Provider.Batch.Enabled = true
+			}
+		} else if cfg.Provider.Batch != nil {
+			// Explicit --batch=false clears Enabled on a file-supplied
+			// block but preserves the rest, mirroring the "set field to
+			// zero" precedent in --code-scanner / --guardrail above.
+			cfg.Provider.Batch.Enabled = false
+		}
+	}
 	return nil
 }
 
@@ -1230,6 +1284,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	providerRetryWallClockBudget, _ := f.GetDuration("provider-retry-wall-clock")
 	workspaceExportTo, _ := f.GetString("export-workspace-to")
 	workspaceExportRequired, _ := f.GetBool("export-workspace-required")
+	batch, _ := f.GetBool("batch")
 
 	var queryParams map[string]string
 	for _, entry := range queryParamRaw {
@@ -1304,6 +1359,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
 		WorkspaceExportTo:            workspaceExportTo,
 		WorkspaceExportRequired:      workspaceExportRequired,
+		Batch:                        batch,
 	})
 	if err != nil {
 		return err
