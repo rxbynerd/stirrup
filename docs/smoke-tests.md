@@ -565,7 +565,288 @@ with `AccessDeniedException`, not at config load.
 
 ## Vertex AI Gemini
 
-Documented under sister issue #162.
+The Vertex AI Gemini smoke workflow lives at
+[`.github/workflows/smoke-vertex-gemini.yml`](../.github/workflows/smoke-vertex-gemini.yml).
+It targets `gemini-2.5-flash-lite` on Vertex AI via GCP Workload
+Identity Federation. The harness exchanges the GitHub Actions OIDC
+JWT for a federated Google access token at `sts.googleapis.com`,
+impersonates the target service account through
+`iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/{SA}:generateAccessToken`,
+then presents the resulting bearer token on Vertex AI's
+`:streamGenerateContent` calls — no service-account JSON,
+`GOOGLE_APPLICATION_CREDENTIALS`, or static GCP credential of any
+kind appears in the workflow's scope.
+
+The federation primitive is documented under
+[`docs/credential-federation.md`](credential-federation.md) as
+*Cross-cloud → Vertex AI Gemini via Workload Identity Federation*.
+As with Azure and Bedrock, the harness does not expose first-class
+CLI flags for the Vertex token source; the smoke workflow drives the
+credential shape entirely through
+[`examples/runconfig/vertex-gemini-wif-smoke.json`](../examples/runconfig/vertex-gemini-wif-smoke.json),
+which pins the project, project number, audience, service account,
+model, and the `github-actions-oidc` token source.
+
+### Design choice: stirrup's WIF source vs. `google-github-actions/auth`
+
+Two ways to plumb GHA OIDC → GCP for a smoke test exist:
+
+- **Stirrup's `gcp-workload-identity-federation` source.** The
+  harness performs the STS exchange itself via the configured
+  `tokenSource: github-actions-oidc` + `audience` +
+  `serviceAccount`. The workflow contains no GCP-specific tooling
+  and the federation code path under test is identical to what an
+  operator in production deploys.
+- **`google-github-actions/auth@v3`.** The action performs the STS
+  exchange and exports `GOOGLE_APPLICATION_CREDENTIALS` (a
+  workload-identity credential file). The harness then uses
+  `gcp-default` (Application Default Credentials) — no
+  stirrup-side federation code is exercised.
+
+The shipped workflow uses the first option, deliberately. A smoke
+test exists to prove stirrup's federation code path works against
+live GCP; the second option turns the run into a Vertex-adapter-only
+smoke and silently bypasses the federation layer that production
+deployments depend on. The action remains a useful debugging
+fallback when a smoke run fails — swapping it in disambiguates
+*stirrup federation broken* from *GCP-side IAM broken* — but the
+committed workflow exercises stirrup end-to-end. The same trade-off
+applies to `smoke-bedrock.yml` vs. `aws-actions/configure-aws-credentials`.
+
+### Provisioned state (rubynerd-net project)
+
+The setup below is **already complete on the rubynerd-net GCP
+project**, reusing the shared `stirrup-gha` Workload Identity Pool
+that `stirrup-publisher` already authenticates against for GAR
+pushes. An operator dispatching this smoke run from `main` against
+the existing fixture needs no `gcloud` provisioning. The walkthrough
+exists as a reusable playbook for other projects adopting the same
+shape.
+
+| Field | Value |
+|---|---|
+| GCP project ID | `rubynerd-net` |
+| GCP project number | `163317929648` |
+| Workload Identity Pool | `stirrup-gha` (display name *Stirrup GitHub Actions*) |
+| WIF provider | `stirrup-gha-provider` |
+| Provider issuer URI | `https://token.actions.githubusercontent.com` |
+| Provider attribute mapping | `google.subject=assertion.sub, attribute.repository=assertion.repository, attribute.ref=assertion.ref` |
+| Provider attribute condition | `assertion.repository == 'rxbynerd/stirrup' && (assertion.ref == 'refs/heads/main' \|\| assertion.ref.startsWith('refs/tags/v'))` |
+| Federated principalSet | `principalSet://iam.googleapis.com/projects/163317929648/locations/global/workloadIdentityPools/stirrup-gha/attribute.repository/rxbynerd/stirrup` |
+| WIF audience string | `//iam.googleapis.com/projects/163317929648/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider` |
+| Service account | `stirrup-testing@rubynerd-net.iam.gserviceaccount.com` |
+| SA project role | `roles/aiplatform.user` on `rubynerd-net` |
+| SA federation binding | `roles/iam.workloadIdentityUser` on the federated principalSet above |
+| APIs enabled | `iam.googleapis.com`, `aiplatform.googleapis.com`, `sts.googleapis.com`, `iamcredentials.googleapis.com` |
+| Model exercised | `gemini-2.5-flash-lite` |
+
+### Deviations from the reusable walkthrough
+
+The reusable walkthrough below describes a greenfield project
+(`stirrup-smoke`) with a dedicated pool (`stirrup-smoke`) and a
+provider hardened with numeric-claim-ID attribute matching for
+typosquatting defence. The `rubynerd-net` provisioning diverges in
+three places to reuse existing infrastructure:
+
+- **Pool name** is `stirrup-gha`, **not** `stirrup-smoke`. The pool
+  is shared with `stirrup-publisher` (GAR pushes from `ci.yml`,
+  `release.yml`, `smoke-gar-publish.yml`); spinning up a second pool
+  just for the Vertex smoke would have doubled the operator surface
+  with no security gain.
+- **Provider name** is `stirrup-gha-provider`, **not**
+  `github-actions`. Same rationale as the pool name.
+- **Service-account name** is `stirrup-testing`, **not**
+  `stirrup-smoke`. The SA is dedicated to Vertex AI smoke testing
+  and does not share roles with `stirrup-publisher`; the principle
+  of least privilege is preserved at the SA level even though the
+  pool is shared.
+- The provider uses **name-based** attribute matching
+  (`assertion.repository == 'rxbynerd/stirrup'`), **not** the
+  numeric-claim-ID typosquatting defence described in step 4 below.
+  This matches `stirrup-publisher`'s existing behaviour on the same
+  pool. Hardening to numeric IDs is a cross-cutting change that
+  touches every workflow on the pool (`ci.yml`, `release.yml`,
+  `smoke-gar-publish.yml`, plus this smoke test) and is tracked
+  separately — out of scope for this smoke test. Greenfield
+  deployments should follow step 4's numeric-ID recipe.
+- The attribute condition restricts dispatch to **`refs/heads/main`
+  and `refs/tags/v*` only**. A `workflow_dispatch` triggered against
+  a feature branch will fail at the STS token exchange with
+  `unauthorized_client: The given credential is rejected by the
+  attribute condition.`. This is the same constraint documented at
+  the top of `smoke-gar-publish.yml` for the same pool; fix-forward
+  to `main` (or cut a `v*` tag) to validate WIF-path changes.
+
+### Reusable setup walkthrough
+
+For any other GCP project adopting the same shape (greenfield
+deployment with the recommended numeric-ID attribute matching):
+
+#### 1. Provision a GCP project and enable APIs
+
+```sh
+PROJECT_ID=stirrup-smoke
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+
+gcloud services enable \
+  iam.googleapis.com \
+  aiplatform.googleapis.com \
+  sts.googleapis.com \
+  iamcredentials.googleapis.com \
+  --project="$PROJECT_ID"
+```
+
+Both `PROJECT_ID` and `PROJECT_NUMBER` are non-secret per Google's
+WIF docs and safe to commit into the fixture file.
+
+#### 2. Create a Workload Identity Pool
+
+```sh
+gcloud iam workload-identity-pools create stirrup-smoke \
+  --location=global \
+  --display-name="Stirrup smoke test" \
+  --project="$PROJECT_ID"
+```
+
+Pool IDs must be 4–32 lowercase alphanumeric characters with
+internal hyphens. The pool's full resource name is
+`projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/stirrup-smoke`.
+
+#### 3. Create a GHA OIDC provider in the pool
+
+```sh
+REPO_ID=$(gh api repos/rxbynerd/stirrup --jq .id)
+OWNER_ID=$(gh api repos/rxbynerd/stirrup --jq .owner.id)
+
+gcloud iam workload-identity-pools providers create-oidc github-actions \
+  --location=global \
+  --workload-identity-pool=stirrup-smoke \
+  --issuer-uri=https://token.actions.githubusercontent.com \
+  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner,attribute.repository_id=assertion.repository_id,attribute.repository_owner_id=assertion.repository_owner_id,attribute.ref=assertion.ref" \
+  --attribute-condition="assertion.repository_owner_id == '${OWNER_ID}' && assertion.repository_id == '${REPO_ID}'" \
+  --project="$PROJECT_ID"
+```
+
+##### Gotcha: numeric-claim-ID attribute matching as typosquatting defence
+
+The `repository_owner_id` and `repository_id` numeric-claim
+condition above is Google's recommended defence against an attacker
+registering `<owner>-2/<repo>` (or any name-collision squat) after
+the original repository is renamed, deleted, or transferred.
+Name-based attribute conditions (`assertion.repository ==
+'rxbynerd/stirrup'`) are vulnerable to this squat — GitHub
+recycles repository names but does **not** recycle numeric IDs, so
+pinning to the immutable numeric pair fully closes the window.
+This is the recommended shape for any greenfield WIF provider that
+trusts GitHub Actions OIDC tokens.
+
+##### Gotcha: `workflow_dispatch` uses the branch-ref subject form
+
+Like Azure and AWS, a `workflow_dispatch`-triggered run does **not**
+mint a token with a distinct `workflow_dispatch` subject form.
+GHA's OIDC `sub` claim takes the **branch-ref form** of the
+dispatching branch, e.g.
+`repo:rxbynerd/stirrup:ref:refs/heads/main`. An attribute condition
+written to expect `repo:rxbynerd/stirrup:workflow_dispatch` will
+fail STS every time with `unauthorized_client: The given credential
+is rejected by the attribute condition.`. The numeric-claim
+condition above sidesteps the issue entirely because it does not
+key off `sub`.
+
+#### 4. Create the target service account
+
+```sh
+gcloud iam service-accounts create stirrup-smoke \
+  --display-name="Stirrup smoke test SA" \
+  --project="$PROJECT_ID"
+```
+
+#### 5. Grant the federated principal `workloadIdentityUser` on the SA
+
+```sh
+gcloud iam service-accounts add-iam-policy-binding \
+  "stirrup-smoke@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/stirrup-smoke/attribute.repository/rxbynerd/stirrup" \
+  --project="$PROJECT_ID"
+```
+
+This binding is what authorises the federated GHA principal to
+impersonate the target SA. Without it, the
+`iamcredentials.generateAccessToken` call after the STS exchange
+fails with `IAM_PERMISSION_DENIED`.
+
+#### 6. Grant the SA Vertex AI usage
+
+```sh
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:stirrup-smoke@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role=roles/aiplatform.user
+```
+
+`roles/aiplatform.user` is the minimal role for
+`:streamGenerateContent`. Direct WIF (no impersonation) requires
+this same role granted directly to the federated principalSet,
+which works for some Vertex APIs but is unreliable for
+`streamGenerateContent`. SA impersonation has a 1-hour token
+lifetime (vs. 10 minutes for direct WIF) and full Vertex API
+support — recommended even when the federated principal could
+hold the grant directly.
+
+#### 7. Wire the project, audience, and SA into the fixture
+
+Edit `examples/runconfig/vertex-gemini-wif-smoke.json` and
+substitute the new `gcpProject`, the audience string (both
+`provider.credential.audience` **and**
+`provider.credential.tokenSource.audience`), and the SA email. The
+values committed today are bound to the rubynerd-net project; an
+external adopter forks the fixture (or maintains a project-specific
+overlay).
+
+##### Gotcha: the audience double slash is required
+
+The WIF audience starts with **two slashes**
+(`//iam.googleapis.com/...`), not one. A single-slash or missing
+slash fails the STS exchange with an opaque
+`400 INVALID_ARGUMENT` from `sts.googleapis.com/v1/token`. The
+loader validates the shape against `types.GCPWIFAudiencePatternString`
+at config-load time so this catches a typo before the harness ever
+talks to STS, but if the fixture is hand-edited it is the first
+thing to check on a 400.
+
+##### Gotcha: the two audience strings must match
+
+The fixture sets `audience` in **two** places:
+`provider.credential.audience` (which the harness sends in the STS
+exchange's `audience` parameter) and
+`provider.credential.tokenSource.audience` (which the harness
+passes to GHA when requesting the OIDC JWT). The two **must** be
+identical. GHA embeds the `audience` parameter into the OIDC
+token's `aud` claim, and STS rejects exchanges where the token's
+`aud` does not match the WIF provider's expected audience.
+
+### Reading the fixture
+
+The shipped smoke fixture pins these load-bearing fields:
+
+| Field | Value | Rationale |
+|---|---|---|
+| `provider.type` | `gemini` | The harness's first-class Vertex AI Gemini adapter (`:streamGenerateContent`). |
+| `provider.gcpProject` | `rubynerd-net` | Project hosting the SA and the Vertex AI grant. Non-secret per Google's docs. |
+| `provider.gcpLocation` | `global` | Multi-region endpoint (`aiplatform.googleapis.com`). Swap to e.g. `us-central1` if the chosen model is region-restricted; document the change. |
+| `provider.credential.type` | `gcp-workload-identity-federation` | Triggers the STS exchange + optional SA impersonation. |
+| `provider.credential.audience` | `//iam.googleapis.com/projects/163317929648/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider` | The shared `stirrup-gha` pool's `stirrup-gha-provider` audience. Double slash required. |
+| `provider.credential.serviceAccount` | `stirrup-testing@rubynerd-net.iam.gserviceaccount.com` | The dedicated Vertex smoke SA. Recommended (not optional) — impersonation has a 1-hour token lifetime and full Vertex API support. |
+| `provider.credential.tokenSource.type` | `github-actions-oidc` | Reads the GHA-injected `ACTIONS_ID_TOKEN_REQUEST_URL` + token. |
+| `provider.credential.tokenSource.audience` | (same as `provider.credential.audience`) | GHA embeds this into the OIDC token's `aud` claim; STS rejects mismatches. |
+| `modelRouter.model` | `gemini-2.5-flash-lite` | Current cheap-tier Gemini Flash model. Google rotates Gemini Flash model IDs more aggressively than Anthropic does — re-pin against the [Vertex Generative AI release notes](https://cloud.google.com/vertex-ai/generative-ai/docs/release-notes) when refreshing. |
+
+The harness will load the fixture so long as the JSON validates
+structurally and `ValidateRunConfig` passes; live GCP state (API
+enablement, pool / provider / SA existence, IAM bindings) is only
+exercised at the first provider call. A missing role binding
+surfaces as the workflow's *Run smoke test* step failing at the
+STS or `iamcredentials` exchange, not at config load.
 
 ## See also
 
