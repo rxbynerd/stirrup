@@ -2425,50 +2425,71 @@ func TestBuildLoopWithTransport_BatchAdapterWiredOnStdio(t *testing.T) {
 	}
 }
 
-// TestBuildLoopWithTransport_BatchRejectedOnStdioForNonAnthropic guards
-// the phase-4 invariant that stdio batch is Anthropic-only in v1. The
-// validator accepts openai-{compatible,responses} batch in general
-// (phase 6 will add the fabrication path); the factory rejects the
-// combination here so the operator hits a clear build-time error
-// rather than a confusing "not yet implemented" on the first turn.
-func TestBuildLoopWithTransport_BatchRejectedOnStdioForNonAnthropic(t *testing.T) {
+// TestBuildLoopWithTransport_BatchOnStdioAcceptsOpenAI pins the phase-6
+// (#139) relaxation of the stdio-batch dispatch: openai-compatible and
+// openai-responses are now valid provider types alongside anthropic.
+// The factory must build the loop successfully (the BatchAdapter +
+// harnessPollingBatchClient wiring is exercised by the
+// harness/internal/provider tests).
+func TestBuildLoopWithTransport_BatchOnStdioAcceptsOpenAI(t *testing.T) {
 	t.Setenv("TEST_OPENAI_KEY", "test-key")
 
-	timeout := 30
-	config := &types.RunConfig{
-		RunID:            "factory-test-batch-stdio-openai",
-		Mode:             "planning",
-		Prompt:           "hello",
-		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: "https://api.openai.com/v1"},
-		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "gpt-4o"},
-		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
-		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
-		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
-		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
-		Verifier:         types.VerifierConfig{Type: "none"},
-		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
-		GitStrategy:      types.GitStrategyConfig{Type: "none"},
-		Transport:        types.TransportConfig{Type: "stdio"},
-		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
-		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
-		RuleOfTwo:        disableRuleOfTwo(),
-		MaxTurns:         2,
-		Timeout:          &timeout,
-	}
-	config.Provider.Batch = &types.BatchProviderConfig{
-		Enabled:               true,
-		MaxWaitSeconds:        intPtr(86400),
-		HarnessSidePolling:    true,
-		AllowInteractiveModes: true,
-	}
+	for _, provType := range []string{"openai-compatible", "openai-responses"} {
+		t.Run(provType, func(t *testing.T) {
+			timeout := 30
+			config := &types.RunConfig{
+				RunID:            "factory-test-batch-stdio-" + provType,
+				Mode:             "planning",
+				Prompt:           "hello",
+				Provider:         types.ProviderConfig{Type: provType, APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: "https://api.openai.com/v1"},
+				ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: provType, Model: "gpt-4o"},
+				PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+				ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+				Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+				EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+				Verifier:         types.VerifierConfig{Type: "none"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+				GitStrategy:      types.GitStrategyConfig{Type: "none"},
+				Transport:        types.TransportConfig{Type: "stdio"},
+				TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+				Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+				RuleOfTwo:        disableRuleOfTwo(),
+				MaxTurns:         2,
+				Timeout:          &timeout,
+			}
+			config.Provider.Batch = &types.BatchProviderConfig{
+				Enabled:               true,
+				MaxWaitSeconds:        intPtr(86400),
+				HarnessSidePolling:    true,
+				AllowInteractiveModes: true,
+			}
 
-	injected := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
-	_, err := BuildLoopWithTransport(context.Background(), config, injected)
-	if err == nil {
-		t.Fatal("expected error for stdio batch with openai-compatible, got nil")
-	}
-	if !strings.Contains(err.Error(), "anthropic") || !strings.Contains(err.Error(), "phase 6") {
-		t.Errorf("expected anthropic/phase-6 diagnostic, got: %v", err)
+			injected := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+			loop, err := BuildLoopWithTransport(context.Background(), config, injected)
+			if err != nil {
+				t.Fatalf("BuildLoopWithTransport: %v", err)
+			}
+			if loop == nil {
+				t.Fatal("expected non-nil loop")
+			}
+
+			// loop.Provider must be the BatchAdapter wrapper for the
+			// stdio batch path; the providers map entry for this
+			// provider type must point at the same wrapper so a
+			// model-router that picks the default provider by type
+			// routes through batching rather than bypassing it.
+			ba, ok := loop.Provider.(*provider.BatchAdapter)
+			if !ok {
+				t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+			}
+			mapped, ok := loop.Providers[config.Provider.Type]
+			if !ok {
+				t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
+			}
+			if mapped != ba {
+				t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
+			}
+		})
 	}
 }
 

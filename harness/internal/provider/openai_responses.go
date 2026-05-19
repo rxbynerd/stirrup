@@ -1022,9 +1022,11 @@ func flushPendingCalls(calls map[string]*responsesCallState, emit func(types.Str
 	return true
 }
 
-// deriveStopReason maps a Responses API response object to stirrup's stop
-// reason vocabulary. Tool calls take precedence over plain end_turn so the
-// agentic loop knows to dispatch tools before treating the turn as final.
+// deriveStopReason adapts the streaming Responses response shape to
+// the shared deriveResponsesStopReason helper. Computes the
+// hasTool / incomplete-reason inputs from resp and dispatches; the
+// branch logic lives in batch.go so a new status arm is applied to
+// the batch fabrication path simultaneously.
 func deriveStopReason(resp responsesResponse) string {
 	hasTool := false
 	for _, item := range resp.Output {
@@ -1033,30 +1035,9 @@ func deriveStopReason(resp responsesResponse) string {
 			break
 		}
 	}
-	switch resp.Status {
-	case "completed":
-		if hasTool {
-			return "tool_use"
-		}
-		return "end_turn"
-	case "incomplete":
-		if resp.IncompleteDetails != nil {
-			r := resp.IncompleteDetails.Reason
-			if r == "max_output_tokens" || r == "max_tokens" {
-				return "max_tokens"
-			}
-			if r != "" {
-				return r
-			}
-		}
-		return "incomplete"
-	default:
-		if resp.Status != "" {
-			return resp.Status
-		}
-		if hasTool {
-			return "tool_use"
-		}
-		return "end_turn"
+	incompleteReason := ""
+	if resp.IncompleteDetails != nil {
+		incompleteReason = resp.IncompleteDetails.Reason
 	}
+	return deriveResponsesStopReason(resp.Status, incompleteReason, hasTool)
 }

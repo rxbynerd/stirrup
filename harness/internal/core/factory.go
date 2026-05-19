@@ -358,8 +358,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// Two batch client implementations exist:
 	//   - controlPlaneBatchClient (transport=grpc): the control plane
 	//     owns the provider-side batch lifecycle.
-	//   - harnessPollingBatchClient (transport=stdio, Anthropic only in
-	//     v1): the harness polls the provider's batch API directly.
+	//   - harnessPollingBatchClient (transport=stdio): the harness polls
+	//     the provider's batch API directly. Supports Anthropic and the
+	//     two OpenAI dialects as of phase 6 (#139).
 	//
 	// ValidateRunConfig already enforces the transport/HarnessSidePolling
 	// pairing — the stdio branch trusts that contract.
@@ -379,16 +380,19 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		case "grpc":
 			batchClient = provider.NewControlPlaneBatchClient(tp, maxWait, config.Provider.Batch.CancelBundleOnRunCancel)
 		case "stdio":
-			// Phase 4 supports Anthropic only over stdio. The
-			// validator allows openai-{compatible,responses} batch in
-			// general (phase 6 will add the fabrication path); reject
-			// here so a misconfigured operator hits a clear error at
-			// build time rather than a confusing "OpenAI batch
-			// fabrication not yet implemented" at the first turn.
-			if config.Provider.Type != "anthropic" {
+			// Phase 6 (#139) extends the stdio polling path to OpenAI
+			// Chat Completions and Responses. Bedrock and Gemini are
+			// still out of scope (validBatchProviderTypes rejects them
+			// in ValidateRunConfig); defence-in-depth this dispatch
+			// matches that closed set so a misconfigured run fails at
+			// build time rather than the first turn.
+			switch config.Provider.Type {
+			case "anthropic", "openai-compatible", "openai-responses":
+				// supported
+			default:
 				cleanup()
 				return nil, fmt.Errorf(
-					"batch with transport=stdio currently supports only provider type=anthropic (got %q); phase 6 will add openai support",
+					"batch with transport=stdio does not support provider type %q",
 					config.Provider.Type,
 				)
 			}
@@ -403,7 +407,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 				cleanup()
 				return nil, fmt.Errorf("build batch credential source: %w", err)
 			}
-			batchClient = provider.NewHarnessPollingBatchClient(config.Provider.APIKeyRef, credSrc, maxWait)
+			batchClient = provider.NewHarnessPollingBatchClient(provider.HarnessBatchClientOptions{
+				ProviderType: config.Provider.Type,
+				APIKeyRef:    config.Provider.APIKeyRef,
+				CredSource:   credSrc,
+				BaseURL:      config.Provider.BaseURL,
+				APIKeyHeader: config.Provider.APIKeyHeader,
+				MaxWait:      maxWait,
+				Logger:       logger,
+			})
 		default:
 			// validateBatchConfig already rejects any transport that
 			// isn't grpc or stdio (transport.type itself is closed-set
