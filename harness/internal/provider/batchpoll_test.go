@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // fakeCredentialSource is a controllable credential.Source for the
@@ -1492,16 +1493,20 @@ func TestHarnessPollingBatch_OpenAIResult_Cancelled(t *testing.T) {
 	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
 	defer teardown()
 
+	const customID = "stirrup-run-1-turn-1"
+	if _, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
 	results, err := c.Result(context.Background(), "batch_xyz")
 	if err != nil {
 		t.Fatalf("Result: %v", err)
 	}
-	// synthesizeOpenAIFailure keys the entry under the batchID as a
-	// fallback so the BatchAdapter surfaces the error type rather than
-	// an opaque "missing entry" message.
-	entry, ok := results["batch_xyz"]
+	// synthesizeOpenAIFailure keys the entry under the originating
+	// customID so the BatchAdapter's customID lookup surfaces the
+	// typed BatchResultError rather than an opaque "missing entry".
+	entry, ok := results[customID]
 	if !ok {
-		t.Fatalf("expected synthesised entry keyed by batchID, got %v", keysOf(results))
+		t.Fatalf("expected synthesised entry keyed by customID, got %v", keysOf(results))
 	}
 	if entry.Err == nil || entry.Err.Type != "batch_cancelled" {
 		t.Errorf("Err: %+v", entry.Err)
@@ -1626,9 +1631,11 @@ func TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer(t *testing.T) {
 }
 
 // TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile confirms a
-// batch_failed status without an error_file_id surfaces as a generic
-// server error rather than a panic / nil deref. The top-level
-// errors.data message is preferred when present.
+// batch_failed status without an error_file_id surfaces as a typed
+// server_error BatchResultError keyed under the originating customID
+// (not a generic error string) so the BatchAdapter's customID lookup
+// surfaces the typed entry. The top-level errors.data message is used
+// when present.
 func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
 	src := &fakeCredentialSource{token: "sk-test"}
 	polls := []string{
@@ -1640,9 +1647,110 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
 	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
 	defer teardown()
 
-	_, err := c.Result(context.Background(), "batch_xyz")
-	if err == nil || !strings.Contains(err.Error(), "malformed input file") {
-		t.Fatalf("expected top-level failure error, got: %v", err)
+	const customID = "stirrup-run-1-turn-1"
+	if _, err := c.Submit(context.Background(), openaiSubmitEntries(customID, "openai-compatible")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	results, err := c.Result(context.Background(), "batch_xyz")
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	entry, ok := results[customID]
+	if !ok {
+		t.Fatalf("expected synthesised entry keyed by customID, got %v", keysOf(results))
+	}
+	if entry.Err == nil || entry.Err.Type != "server_error" {
+		t.Fatalf("Err: %+v", entry.Err)
+	}
+	if !strings.Contains(entry.Err.Message, "malformed input file") {
+		t.Errorf("Err.Message: %q", entry.Err.Message)
+	}
+}
+
+// TestBatchAdapter_OpenAIStdio_CancelledSurfaces drives a full
+// BatchAdapter.Stream → harnessPollingBatchClient integration where the
+// fake OpenAI server returns "cancelled" on poll. The first
+// StreamEvent.Error must contain "[batch_cancelled]" — the typed
+// BatchResultError fan-in — not "missing entry" (the symptom of a
+// customID/batchID key mismatch the phase-6 review caught).
+func TestBatchAdapter_OpenAIStdio_CancelledSurfaces(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{`{"id":"batch_xyz","status":"cancelled"}`}
+	f := newOpenAIBatchFixture(t, polls, "", "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	adapter := NewBatchAdapter(nil, c, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+
+	params := types.StreamParams{
+		Model:     "gpt-4o-mini",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+	}
+	ch, err := adapter.Stream(context.Background(), params)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := drain(t, ch)
+
+	var sawError bool
+	for _, ev := range events {
+		if ev.Type == "error" && ev.Error != nil {
+			sawError = true
+			msg := ev.Error.Error()
+			if !strings.Contains(msg, "batch_cancelled") {
+				t.Errorf("error did not surface batch_cancelled: %q", msg)
+			}
+			if strings.Contains(msg, "missing entry") {
+				t.Errorf("error surfaced 'missing entry' (customID/batchID key mismatch regression): %q", msg)
+			}
+		}
+	}
+	if !sawError {
+		t.Fatalf("expected an error StreamEvent; got %d events: %+v", len(events), events)
+	}
+}
+
+// TestBatchAdapter_OpenAIStdio_CancellingSurfaces mirrors the
+// cancelled test for the "cancelling" intermediate status (which
+// shares the cancelled case arm). Pins the integration so a future
+// regression splitting the two arms still fails loudly.
+func TestBatchAdapter_OpenAIStdio_CancellingSurfaces(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{`{"id":"batch_xyz","status":"cancelling"}`}
+	f := newOpenAIBatchFixture(t, polls, "", "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	adapter := NewBatchAdapter(nil, c, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+
+	params := types.StreamParams{
+		Model:     "gpt-4o-mini",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+	}
+	ch, err := adapter.Stream(context.Background(), params)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := drain(t, ch)
+
+	var sawError bool
+	for _, ev := range events {
+		if ev.Type == "error" && ev.Error != nil {
+			sawError = true
+			msg := ev.Error.Error()
+			if !strings.Contains(msg, "batch_cancelled") {
+				t.Errorf("error did not surface batch_cancelled: %q", msg)
+			}
+		}
+	}
+	if !sawError {
+		t.Fatalf("expected an error StreamEvent; got %d events", len(events))
 	}
 }
 
