@@ -2308,6 +2308,116 @@ func TestBuildProvider_OpenAIResponsesNilBearerErrors(t *testing.T) {
 	}
 }
 
+// --- BatchAdapter wiring (phase 2 / #135) ---
+
+// intPtr returns a pointer to v. Local helper to avoid pulling in a
+// dependency just for a one-off literal pointer.
+func intPtr(v int) *int { return &v }
+
+// TestBuildLoopWithTransport_BatchAdapterWiredWhenEnabled asserts the
+// gRPC + batch.enabled wiring path in the factory: the top-level provider
+// and the entry in the providers map are both replaced with a
+// *provider.BatchAdapter. Without the map replacement, model-router
+// lookups by provider type would silently bypass batching.
+func TestBuildLoopWithTransport_BatchAdapterWiredWhenEnabled(t *testing.T) {
+	t.Setenv("TEST_ANTHROPIC_KEY", "test-key")
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-batch",
+		Mode:             "planning",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://TEST_ANTHROPIC_KEY"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		Transport:        types.TransportConfig{Type: "grpc"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+	config.Provider.Batch = &types.BatchProviderConfig{
+		Enabled:               true,
+		MaxWaitSeconds:        intPtr(86400),
+		AllowInteractiveModes: true,
+	}
+
+	// Inject a transport so buildTransport (gRPC) does not try to dial.
+	injected := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, injected)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	ba, ok := loop.Provider.(*provider.BatchAdapter)
+	if !ok {
+		t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+	}
+	mapped, ok := loop.Providers[config.Provider.Type]
+	if !ok {
+		t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
+	}
+	if mapped != ba {
+		t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
+	}
+}
+
+// TestBuildLoopWithTransport_BatchAdapterNotWiredOnStdio is the
+// near-miss case. transport=stdio with HarnessSidePolling=true passes
+// validation (the harness polling client lands in phase 4) but the
+// factory has no wire for it yet, so loop.Provider must remain the raw
+// streaming adapter. This assertion will be inverted when phase 4 lands.
+func TestBuildLoopWithTransport_BatchAdapterNotWiredOnStdio(t *testing.T) {
+	t.Setenv("TEST_ANTHROPIC_KEY", "test-key")
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-batch-stdio",
+		Mode:             "planning",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://TEST_ANTHROPIC_KEY"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		Transport:        types.TransportConfig{Type: "stdio"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+	config.Provider.Batch = &types.BatchProviderConfig{
+		Enabled:               true,
+		MaxWaitSeconds:        intPtr(86400),
+		HarnessSidePolling:    true,
+		AllowInteractiveModes: true,
+	}
+
+	injected := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, injected)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	if _, ok := loop.Provider.(*provider.BatchAdapter); ok {
+		t.Fatalf("loop.Provider is *BatchAdapter on stdio; phase 4 wiring landed earlier than expected — invert this assertion")
+	}
+}
+
 // --- stubSecretStore ---
 
 type stubSecretStore struct {
