@@ -397,6 +397,20 @@ message RunConfig {
   // outside [0, 16] are rejected by ValidateRunConfig.
   ToolDispatchConfig tool_dispatch = 30;
 
+  // Optional. Sampling temperature forwarded to the provider on every
+  // turn. Unset means "use the harness default" (currently 0.1, a low
+  // value that biases for determinism on coding tasks). A set value is
+  // forwarded verbatim, including an explicit 0.0 for greedy decoding.
+  //
+  // Validated against the union of provider ranges (Anthropic [0, 1],
+  // OpenAI / Gemini [0, 2]) → [0.0, 2.0]. A value inside the union may
+  // still be rejected by the chosen provider's narrower range; the
+  // adapter surfaces that rejection at request time. Declared `optional`
+  // so unset is wire-distinguishable from explicit 0.0 (proto3's scalar
+  // default would otherwise silently coerce greedy decoding to the
+  // harness default).
+  optional double temperature = 31;
+
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
