@@ -114,15 +114,19 @@ jobs:
     name: Publish Container
     runs-on: ubuntu-latest
     needs: verify
-    # Belt-and-braces fork guard: the WIF provider's attribute condition
-    # already pins assertion.repository == 'rxbynerd/stirrup', but adding
-    # the repository check here means a future change to the trigger
-    # condition (e.g. running on forked main branches) cannot accidentally
-    # surface a silent WIF auth failure on someone else's fork.
+    # Belt-and-braces fork guard mirroring the publish jobs elsewhere.
+    # ci.yml's publish-container is GHCR-only; the GAR dual-publish
+    # path lives in release.yml::publish-container. Dev images
+    # (:latest, :main, :sha-<7>) are deliberately kept out of GAR
+    # because containerscanning.googleapis.com (enabled project-wide
+    # per docs/container-publishing.md) auto-scans on every GAR push
+    # and bills per scan — sending one scan per main commit is the
+    # line item that made the GCP bill exceed token spend. Releases
+    # still dual-publish, and free continuous CVE re-evaluation
+    # against loaded SBOMs continues for everything already in GAR.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
     permissions:
       contents: read
-      id-token: write
       packages: write
     steps:
       - name: Check out repository
@@ -153,60 +157,23 @@ jobs:
       # SHA-pinned to v4.0.0. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/docker/setup-buildx-action/git/refs/tags/v4.0.0`,
       # which also matches the v4 floating tag's current target). Pinned
-      # for the same reason as gcp-auth: this action runs inside the
-      # job that holds a live GAR access token; a retargeted floating
-      # tag could exfiltrate it.
+      # for the same reason as login-action: runs inside the
+      # credentialled push job and a retargeted floating tag could
+      # exfiltrate the GHCR token in env.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
 
       # SHA-pinned to v4.1.0. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/docker/login-action/git/refs/tags/v4.1.0`,
       # which also matches the v4 floating tag's current target). This
-      # action receives the GHCR/GAR credentials as `password:` —
-      # downstream consumer of the token gcp-auth mints; pinning to an
-      # immutable commit is non-negotiable here too.
+      # action receives the GHCR credentials as `password:`; pinning
+      # to an immutable commit is non-negotiable here.
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/google-github-actions/auth/git/refs/tags/v3.0.0`,
-      # which also matches the v3 floating tag's current target). This
-      # action mints a Google access token from the GHA OIDC JWT and is
-      # the trust hinge for GAR push — pinning to an immutable commit is
-      # non-negotiable.
-      #
-      # `service_account` + `token_format: access_token` instructs the
-      # action to exchange the federated GHA OIDC JWT for a short-lived
-      # OAuth2 access token via service-account impersonation. The SA
-      # `vars.GAR_PUBLISHER_SA` holds the GAR-push role bindings; the
-      # GitHub principalSet only holds `roles/iam.workloadIdentityUser`
-      # on the SA (the impersonation grant). This is the canonical
-      # google-github-actions/auth pattern — see
-      # `docs/container-publishing.md` for the migration rationale
-      # (issue #167).
-      - name: Authenticate to Google Cloud (WIF + SA impersonation)
-        id: gcp-auth
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GAR_PUBLISHER_SA }}
-          token_format: access_token
-
-      - name: Log in to Google Artifact Registry
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
-        with:
-          registry: ${{ vars.GAR_LOCATION }}-docker.pkg.dev
-          # GAR demands the literal string "oauth2accesstoken" as the
-          # username when the password is a short-lived access token.
-          # Substituting a service-account email here fails opaquely —
-          # do not "fix" this to something more meaningful.
-          username: oauth2accesstoken
-          password: ${{ steps.gcp-auth.outputs.access_token }}
 
       # SHA-pinned to v6.0.0. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/docker/metadata-action/git/refs/tags/v6.0.0`,
@@ -220,7 +187,6 @@ jobs:
         with:
           images: |
             ghcr.io/rxbynerd/stirrup
-            ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
