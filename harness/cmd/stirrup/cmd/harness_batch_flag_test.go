@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -181,7 +182,7 @@ func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 		"docs/sandbox.md",
 	}
 	for _, want := range wantSubstrings {
-		if !contains(usage, want) {
+		if !strings.Contains(usage, want) {
 			t.Errorf("--batch usage text missing %q; got: %s", want, usage)
 		}
 	}
@@ -190,21 +191,35 @@ func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 	}
 }
 
-// contains is a small substring helper kept local to avoid pulling in
-// the strings import dance the other tests work through; the existing
-// harness_test.go already imports strings, but this file is otherwise
-// import-light, so a tiny helper keeps the diff focused.
-func contains(haystack, needle string) bool {
-	if len(needle) == 0 {
-		return true
+// TestApplyOverrides_BatchFlagExplicitFalseClears pins the third arm
+// of the --batch override block: when --batch=false is explicitly
+// passed on top of a file that supplied Batch.Enabled=true, Enabled
+// flips to false but the surrounding struct (and HarnessSidePolling
+// and other fields) survives. This mirrors the "set field to zero"
+// precedent the comment in harness.go calls out and keeps a
+// subsequent --batch=true re-enable ergonomic without --config.
+func TestApplyOverrides_BatchFlagExplicitFalseClears(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Provider.Batch = &types.BatchProviderConfig{
+		Enabled:            true,
+		HarnessSidePolling: true,
 	}
-	if len(needle) > len(haystack) {
-		return false
+
+	if err := cmd.Flags().Set("batch", "false"); err != nil {
+		t.Fatalf("set --batch=false: %v", err)
 	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
 	}
-	return false
+
+	if cfg.Provider.Batch == nil {
+		t.Fatal("expected Provider.Batch to remain non-nil after --batch=false")
+	}
+	if cfg.Provider.Batch.Enabled {
+		t.Errorf("Provider.Batch.Enabled = true, want false after --batch=false")
+	}
+	if !cfg.Provider.Batch.HarnessSidePolling {
+		t.Errorf("Provider.Batch.HarnessSidePolling: file value should survive --batch=false, got false")
+	}
 }

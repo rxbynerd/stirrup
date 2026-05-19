@@ -1081,9 +1081,13 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 				cfg.Provider.Batch.Enabled = true
 			}
 		} else if cfg.Provider.Batch != nil {
-			// Explicit --batch=false clears Enabled on a file-supplied
-			// block but preserves the rest, mirroring the "set field to
-			// zero" precedent in --code-scanner / --guardrail above.
+			// Explicit --batch=false clears Enabled but preserves the
+			// surrounding struct. The divergence from --code-scanner ""
+			// and --guardrail "" (which nil the entire sub-config) is
+			// deliberate: keeping HarnessSidePolling and other fields
+			// intact means a follow-up --batch=true re-enables without
+			// the operator having to re-supply --config, which matches
+			// the mode-toggle workflow the flag is built for.
 			cfg.Provider.Batch.Enabled = false
 		}
 	}
