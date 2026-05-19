@@ -14,6 +14,17 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// Event-type discriminators for the batch wire protocol. HarnessEvents
+// flow harness → control plane; the single ControlEvent type flows
+// control plane → harness. The strings are part of the wire contract
+// (see types/events.go HarnessEvent.Type / ControlEvent.Type docs).
+const (
+	eventBatchSubmission    = "batch_submission"
+	eventBatchWaiting       = "batch_waiting"
+	eventBatchCancelRequest = "batch_cancel_request"
+	eventBatchResult        = "batch_result"
+)
+
 // batchWaitingHeartbeatIntervalNs holds the cadence (in nanoseconds) at
 // which the controlPlaneBatchClient emits batch_waiting HarnessEvents
 // while a batch submission is in flight. Stored as an atomic so tests
@@ -400,7 +411,7 @@ func NewControlPlaneBatchClient(t transport.Transport, maxWait time.Duration) *c
 // caller. Mirrors transport.Correlator.deliver, but specialised for the
 // BatchResult payload so we can keep the channel typed.
 func (c *controlPlaneBatchClient) handleControl(event types.ControlEvent) {
-	if event.Type != "batch_result" || event.RequestID == "" {
+	if event.Type != eventBatchResult || event.RequestID == "" {
 		return
 	}
 	result := decodeBatchResult(event)
@@ -470,7 +481,7 @@ func (c *controlPlaneBatchClient) Submit(ctx context.Context, entries []BatchEnt
 	c.mu.Unlock()
 
 	if err := c.transport.Emit(types.HarnessEvent{
-		Type:      "batch_submission",
+		Type:      eventBatchSubmission,
 		RequestID: requestID,
 		Input:     payloadBytes,
 	}); err != nil {
@@ -561,7 +572,7 @@ func (c *controlPlaneBatchClient) heartbeat(ctx context.Context, requestID strin
 				return
 			}
 			_ = c.transport.Emit(types.HarnessEvent{
-				Type:      "batch_waiting",
+				Type:      eventBatchWaiting,
 				RequestID: requestID,
 			})
 		}
