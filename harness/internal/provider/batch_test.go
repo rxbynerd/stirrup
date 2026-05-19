@@ -292,6 +292,87 @@ func TestBatchAdapter_Stream_SubmitError(t *testing.T) {
 	}
 }
 
+// TestBatchAdapter_LastBatchID_EmptyBeforeSubmit pins the contract
+// documented on LastBatchID(): readers (the agentic loop in #138)
+// must see an empty string when no batch has been submitted yet, so
+// a streaming-only fallback path can detect the absence cleanly.
+func TestBatchAdapter_LastBatchID_EmptyBeforeSubmit(t *testing.T) {
+	a := batchAdapter(t, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, nil)
+	if got := a.LastBatchID(); got != "" {
+		t.Errorf("LastBatchID before Submit = %q, want empty", got)
+	}
+}
+
+// TestBatchAdapter_LastBatchID_PopulatedAfterSubmit confirms the
+// adapter surfaces the provider-assigned batch identifier returned
+// from Submit so the agentic loop can attach it to the TurnTrace.
+// Both the control-plane handle ("batch-N") and the polling client's
+// "msgbatch_..." flow through this single accessor unchanged.
+func TestBatchAdapter_LastBatchID_PopulatedAfterSubmit(t *testing.T) {
+	response := json.RawMessage(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"output_tokens":1}}`)
+	client := &fakeBatchClient{
+		submitFn: func(_ []BatchEntry) (string, error) { return "msgbatch_abc123", nil },
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return map[string]*BatchResult{"stirrup-run-test-turn-1": {Response: response}}, nil
+		},
+	}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
+
+	ch, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_ = drain(t, ch)
+
+	if got := a.LastBatchID(); got != "msgbatch_abc123" {
+		t.Errorf("LastBatchID after Submit = %q, want %q", got, "msgbatch_abc123")
+	}
+}
+
+// TestBatchAdapter_LastBatchID_UnchangedOnSubmitError pins the
+// rationale called out in the field doc: a failed Submit leaves the
+// previous batch identifier in place rather than clobbering with "".
+// A loop that reads LastBatchID() on a fallback path then still
+// references the most recent successful submission, not a transient
+// failure that produced no provider-side batch.
+func TestBatchAdapter_LastBatchID_UnchangedOnSubmitError(t *testing.T) {
+	response := json.RawMessage(`{"content":[],"stop_reason":"end_turn","usage":{"output_tokens":0}}`)
+	calls := 0
+	client := &fakeBatchClient{
+		submitFn: func(_ []BatchEntry) (string, error) {
+			calls++
+			if calls == 1 {
+				return "msgbatch_first", nil
+			}
+			return "", errors.New("transient submit failure")
+		},
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return map[string]*BatchResult{"stirrup-run-test-turn-1": {Response: response}}, nil
+		},
+	}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
+
+	ch, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_ = drain(t, ch)
+	if got := a.LastBatchID(); got != "msgbatch_first" {
+		t.Fatalf("LastBatchID after first Submit = %q, want msgbatch_first", got)
+	}
+
+	// Second Stream Submit returns an error; LastBatchID must still
+	// hold the previous successful value.
+	ch2, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream 2: %v", err)
+	}
+	_ = drain(t, ch2)
+	if got := a.LastBatchID(); got != "msgbatch_first" {
+		t.Errorf("LastBatchID after failed Submit = %q, want msgbatch_first (unchanged)", got)
+	}
+}
+
 func TestBatchAdapter_Stream_ResultError(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
