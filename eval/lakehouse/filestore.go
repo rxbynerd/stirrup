@@ -194,11 +194,11 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 	}
 
 	var (
-		passCount        int
-		totalTurns       int
-		totalTokens      int
-		streamingDur     []float64
-		batchDur         []float64
+		passCount    int
+		totalTurns   int
+		totalTokens  int
+		streamingDur []float64
+		batchDur     []float64
 	)
 
 	for _, t := range traces {
