@@ -333,21 +333,24 @@ func isBatchTimeout(err error) bool {
 
 // fabricateStream decodes a batch response and emits the StreamEvent
 // sequence the streaming adapter would have produced for the same body.
-// Only Anthropic is implemented in phase 2; OpenAI variants and any
-// unsupported provider type emit a single error event so the caller
-// (awaitAndFabricate) does not have to track a separate error return —
-// mirrors the ProviderAdapter.Stream convention where all failures
-// surface as in-channel error events.
+// Anthropic, OpenAI Chat Completions, and OpenAI Responses are all
+// supported as of phase 6 (#139). Unsupported provider types emit a
+// single error event so the caller (awaitAndFabricate) does not have to
+// track a separate error return — mirrors the ProviderAdapter.Stream
+// convention where all failures surface as in-channel error events.
 func fabricateStream(ch chan<- types.StreamEvent, response json.RawMessage, provType string) {
 	switch provType {
 	case "anthropic":
 		if err := fabricateAnthropicStream(ch, response); err != nil {
 			ch <- types.StreamEvent{Type: "error", Error: err}
 		}
-	case "openai-compatible", "openai-responses":
-		ch <- types.StreamEvent{
-			Type:  "error",
-			Error: errors.New("OpenAI batch fabrication not yet implemented"),
+	case "openai-compatible":
+		if err := fabricateOpenAIChatStream(ch, response); err != nil {
+			ch <- types.StreamEvent{Type: "error", Error: err}
+		}
+	case "openai-responses":
+		if err := fabricateOpenAIResponsesStream(ch, response); err != nil {
+			ch <- types.StreamEvent{Type: "error", Error: err}
 		}
 	default:
 		ch <- types.StreamEvent{
@@ -691,5 +694,212 @@ func (c *controlPlaneBatchClient) heartbeat(ctx context.Context, requestID strin
 				RequestID: requestID,
 			})
 		}
+	}
+}
+
+// openaiChatBatchResponse mirrors the OpenAI Chat Completions response
+// body returned inside an /v1/files batch output line's "response.body"
+// field. Only the fields the fabrication path consumes are decoded.
+type openaiChatBatchResponse struct {
+	Choices []openaiChatBatchChoice `json:"choices"`
+	Usage   *struct {
+		PromptTokens     int `json:"prompt_tokens,omitempty"`
+		CompletionTokens int `json:"completion_tokens,omitempty"`
+	} `json:"usage,omitempty"`
+}
+
+type openaiChatBatchChoice struct {
+	Index        int                    `json:"index"`
+	Message      openaiChatBatchMessage `json:"message"`
+	FinishReason string                 `json:"finish_reason"`
+}
+
+type openaiChatBatchMessage struct {
+	Role      string                    `json:"role,omitempty"`
+	Content   *string                   `json:"content,omitempty"`
+	ToolCalls []openaiChatBatchToolCall `json:"tool_calls,omitempty"`
+}
+
+type openaiChatBatchToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// fabricateOpenAIChatStream mirrors the SSE event sequence consumeSSE
+// produces in openai.go: one text_delta for any non-empty assistant
+// content, one tool_call per tool_calls entry (in upstream order), then
+// a single message_complete carrying the mapped finish_reason and the
+// usage.completion_tokens count.
+//
+// The streaming consumeSSE does not populate StreamEvent.Content on
+// message_complete (it accumulates tool calls in a side map keyed by
+// index rather than building a ContentBlock list). To stay
+// observationally equivalent the fabricated message_complete leaves
+// Content nil as well.
+func fabricateOpenAIChatStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
+	var resp openaiChatBatchResponse
+	if err := json.Unmarshal(response, &resp); err != nil {
+		return fmt.Errorf("fabricate openai chat stream: decode response: %w", err)
+	}
+	if len(resp.Choices) == 0 {
+		return fmt.Errorf("fabricate openai chat stream: response has no choices")
+	}
+	choice := resp.Choices[0]
+
+	if choice.Message.Content != nil && *choice.Message.Content != "" {
+		ch <- types.StreamEvent{Type: "text_delta", Text: *choice.Message.Content}
+	}
+	for _, tc := range choice.Message.ToolCalls {
+		var input map[string]any
+		if tc.Function.Arguments != "" {
+			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
+				return fmt.Errorf("fabricate openai chat stream: decode tool arguments: %w", err)
+			}
+		}
+		ch <- types.StreamEvent{
+			Type:  "tool_call",
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: input,
+		}
+	}
+
+	ev := types.StreamEvent{
+		Type:       "message_complete",
+		StopReason: mapFinishReason(choice.FinishReason),
+	}
+	if resp.Usage != nil {
+		ev.OutputTokens = resp.Usage.CompletionTokens
+	}
+	ch <- ev
+	return nil
+}
+
+// openaiResponsesBatchResponse mirrors the Responses-API response body
+// returned inside an /v1/files batch output line for the Responses
+// endpoint. The shape matches the response.completed envelope the
+// streaming SSE adapter consumes via response.output[] items + usage.
+type openaiResponsesBatchResponse struct {
+	Status            string `json:"status"`
+	IncompleteDetails *struct {
+		Reason string `json:"reason"`
+	} `json:"incomplete_details,omitempty"`
+	Output []openaiResponsesBatchOutputItem `json:"output,omitempty"`
+	Usage  *struct {
+		InputTokens  int `json:"input_tokens,omitempty"`
+		OutputTokens int `json:"output_tokens,omitempty"`
+	} `json:"usage,omitempty"`
+}
+
+// openaiResponsesBatchOutputItem is one item in the response.output
+// array. Type discriminates: "message" carries assistant text inside
+// content[]; "function_call" carries a single call's id/name/arguments
+// flat on the item.
+type openaiResponsesBatchOutputItem struct {
+	Type      string                             `json:"type"`
+	ID        string                             `json:"id,omitempty"`
+	CallID    string                             `json:"call_id,omitempty"`
+	Name      string                             `json:"name,omitempty"`
+	Arguments string                             `json:"arguments,omitempty"`
+	Content   []openaiResponsesBatchContentBlock `json:"content,omitempty"`
+}
+
+type openaiResponsesBatchContentBlock struct {
+	Type string `json:"type"` // "output_text" | "refusal" | ...
+	Text string `json:"text,omitempty"`
+}
+
+// fabricateOpenAIResponsesStream mirrors the SSE event sequence the
+// Responses adapter's consumeSSE produces on a completed response: one
+// text_delta per assistant output_text content block, one tool_call per
+// function_call output item (in upstream order, matching the streaming
+// adapter's output_idx-stable sort because the JSON array preserves
+// document order), then a single message_complete carrying the derived
+// stop reason and usage.output_tokens.
+//
+// The Responses batch endpoint's response shape (the body inside an
+// output file line's "response.body" field) is the same response object
+// the streaming endpoint delivers via response.completed.response, so
+// the fabrication reuses the structural projection here rather than the
+// SSE event walk in openai_responses.go.
+func fabricateOpenAIResponsesStream(ch chan<- types.StreamEvent, response json.RawMessage) error {
+	var resp openaiResponsesBatchResponse
+	if err := json.Unmarshal(response, &resp); err != nil {
+		return fmt.Errorf("fabricate openai responses stream: decode response: %w", err)
+	}
+
+	hasTool := false
+	for _, item := range resp.Output {
+		switch item.Type {
+		case "message":
+			for _, block := range item.Content {
+				if block.Type == "output_text" && block.Text != "" {
+					ch <- types.StreamEvent{Type: "text_delta", Text: block.Text}
+				}
+			}
+		case "function_call":
+			hasTool = true
+			var input map[string]any
+			if item.Arguments != "" {
+				if err := json.Unmarshal([]byte(item.Arguments), &input); err != nil {
+					return fmt.Errorf("fabricate openai responses stream: decode tool arguments: %w", err)
+				}
+			}
+			ch <- types.StreamEvent{
+				Type:  "tool_call",
+				ID:    item.CallID,
+				Name:  item.Name,
+				Input: input,
+			}
+		}
+	}
+
+	stop := deriveOpenAIResponsesStopReason(resp, hasTool)
+	ev := types.StreamEvent{
+		Type:       "message_complete",
+		StopReason: stop,
+	}
+	if resp.Usage != nil {
+		ev.OutputTokens = resp.Usage.OutputTokens
+	}
+	ch <- ev
+	return nil
+}
+
+// deriveOpenAIResponsesStopReason mirrors openai_responses.go's
+// deriveStopReason for the batch response shape. Tool calls take
+// precedence over plain end_turn so the agentic loop dispatches tools
+// before treating the turn as final. The status / incomplete_details
+// reason vocabulary mirrors the streaming path.
+func deriveOpenAIResponsesStopReason(resp openaiResponsesBatchResponse, hasTool bool) string {
+	switch resp.Status {
+	case "completed":
+		if hasTool {
+			return "tool_use"
+		}
+		return "end_turn"
+	case "incomplete":
+		if resp.IncompleteDetails != nil {
+			r := resp.IncompleteDetails.Reason
+			if r == "max_output_tokens" || r == "max_tokens" {
+				return "max_tokens"
+			}
+			if r != "" {
+				return r
+			}
+		}
+		return "incomplete"
+	default:
+		if resp.Status != "" {
+			return resp.Status
+		}
+		if hasTool {
+			return "tool_use"
+		}
+		return "end_turn"
 	}
 }
