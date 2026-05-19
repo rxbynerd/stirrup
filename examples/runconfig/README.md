@@ -74,10 +74,22 @@ active and Rule of Two is enforced.
   },
 
   // Provider + credentials. apiKeyRef is a secret:// reference, never
-  // a raw key.
+  // a raw key. The optional `batch` block opts the run into async
+  // batch submission for every provider turn (anthropic,
+  // openai-compatible, openai-responses only); enabled=false here
+  // means streaming, the default. See BatchProviderConfig for the
+  // mode / transport invariants enforced by ValidateRunConfig.
   "provider": {
     "type": "anthropic",
-    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY",
+    "batch": {
+      "enabled": false,
+      "maxWaitSeconds": 86400,
+      "harnessSidePolling": false,
+      "fallbackOnTimeout": false,
+      "cancelBundleOnRunCancel": false,
+      "allowInteractiveModes": false
+    }
   },
 
   // Dynamic router: cheap for short turns, expensive past the

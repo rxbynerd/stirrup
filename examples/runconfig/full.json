@@ -9,7 +9,15 @@
   },
   "provider": {
     "type": "anthropic",
-    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY",
+    "batch": {
+      "enabled": false,
+      "maxWaitSeconds": 86400,
+      "harnessSidePolling": false,
+      "fallbackOnTimeout": false,
+      "cancelBundleOnRunCancel": false,
+      "allowInteractiveModes": false
+    }
   },
   "modelRouter": {
     "type": "dynamic",
