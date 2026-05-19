@@ -726,6 +726,31 @@ func TestIsBatchRun(t *testing.T) {
 	}
 }
 
+// TestComputeMetrics_SingleTrace covers the percentile single-element
+// branch (the n==1 short-circuit). Every existing bucketing test
+// uses 3+ element datasets, so the early return that prevents an
+// out-of-range index on a one-trace window was untested. Pin both
+// P50 and P95 to the lone trace's duration — interpolation must
+// degenerate to the only available value.
+func TestComputeMetrics_SingleTrace(t *testing.T) {
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	traces := []types.RunTrace{
+		makeTrace("only", "success", "execution", "claude-sonnet-4-6", base, 750, 1, types.TokenUsage{}),
+	}
+
+	m := computeMetrics(traces)
+
+	if m.Count != 1 {
+		t.Errorf("Count = %d, want 1", m.Count)
+	}
+	if !approxEqual(m.P50Duration, 750, 0.001) {
+		t.Errorf("P50Duration = %v, want 750 (single-element branch)", m.P50Duration)
+	}
+	if !approxEqual(m.P95Duration, 750, 0.001) {
+		t.Errorf("P95Duration = %v, want 750 (single-element branch)", m.P95Duration)
+	}
+}
+
 func TestClose(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)

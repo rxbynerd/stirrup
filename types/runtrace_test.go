@@ -70,6 +70,25 @@ func TestTurnTrace_StreamingOmitsBatchFields(t *testing.T) {
 	}
 }
 
+// TestTurnTrace_EmptyModeOmittedFromJSON pins the omitempty contract
+// on TurnTrace.Mode directly. The companion
+// TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode test exercises
+// the reader side; this test exercises the writer side. Without
+// omitempty, a freshly-zeroed TurnTrace would carry "mode":"" on
+// the wire and any consumer schema-matching on key presence would
+// treat the new field as load-bearing for every trace, regressing
+// the pre-#138 wire shape.
+func TestTurnTrace_EmptyModeOmittedFromJSON(t *testing.T) {
+	tt := TurnTrace{} // Mode is the empty string by default.
+	data, err := json.Marshal(tt)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"mode"`) {
+		t.Errorf("empty Mode must be omitted; JSON = %s", data)
+	}
+}
+
 // TestTurnTrace_IsBatch pins the empty-mode-means-streaming contract
 // as a method rather than a per-call-site string compare. Empty must
 // resolve to false (legacy / pre-resolution failure path), "streaming"
