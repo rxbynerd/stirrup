@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -91,17 +92,18 @@ func swapBatchPollMaxInterval(d time.Duration) time.Duration {
 }
 
 // harnessPollingBatchClient implements BatchClient by talking directly to
-// the Anthropic Message Batches API over HTTP. Used when the harness runs
-// in stdio mode (no control plane is available to own the batch lifecycle)
-// and the operator opts in via Batch.HarnessSidePolling=true.
+// the provider's batch HTTP API. Used when the harness runs in stdio mode
+// (no control plane is available to own the batch lifecycle) and the
+// operator opts in via Batch.HarnessSidePolling=true.
 //
-// v1 supports Anthropic only — OpenAI Chat Completions and Responses
-// batch are scheduled for phase 6 (#139). The factory rejects any
-// stdio-batch config whose provider type is not "anthropic" before
-// reaching here.
+// Supported provider types are dispatched in Submit/Result based on
+// providerType: "anthropic" uses the Messages Batches API; the
+// "openai-compatible" and "openai-responses" types use the OpenAI Batch
+// API (two-step file upload + batch creation, /v1/files + /v1/batches).
 type harnessPollingBatchClient struct {
-	httpClient *http.Client
-	credSource credential.Source
+	httpClient   *http.Client
+	credSource   credential.Source
+	providerType string
 	// apiKeyRef is the secret:// reference string captured for diagnostic
 	// provenance — logged as the keyRef attribute in bestEffortCancel's
 	// failure warns. The resolver consumes the underlying secret value
@@ -109,26 +111,74 @@ type harnessPollingBatchClient struct {
 	// Redact() strips secret references from any persisted trace.
 	apiKeyRef string
 	baseURL   string
-	maxWait   time.Duration
-	logger    *slog.Logger
+	// apiKeyHeader overrides the OpenAI auth header. Empty means
+	// "Authorization: Bearer <key>" (OpenAI default). Setting it to
+	// "api-key" routes through the Azure-style header path. Ignored on
+	// the Anthropic branch — that branch always uses x-api-key.
+	apiKeyHeader string
+	maxWait      time.Duration
+	logger       *slog.Logger
+}
+
+// HarnessBatchClientOptions configures NewHarnessPollingBatchClient. The
+// struct form keeps the constructor signature stable as new provider
+// branches are wired in: callers fill the fields they need and the rest
+// get zero-value defaults appropriate to the provider type.
+type HarnessBatchClientOptions struct {
+	// ProviderType selects the wire dialect. One of "anthropic" |
+	// "openai-compatible" | "openai-responses". Required.
+	ProviderType string
+
+	// APIKeyRef is the secret:// reference; captured for diagnostic
+	// provenance and logged as the keyRef attribute in cancel-path
+	// warnings. The actual key value is fetched through CredSource.
+	APIKeyRef string
+
+	// CredSource resolves the bearer credential on every HTTP request.
+	// Per-request resolution keeps the client compatible with future
+	// rotating sources (today's StaticSource caches internally so the
+	// per-call cost is a function pointer dereference).
+	CredSource credential.Source
+
+	// BaseURL overrides the per-provider default API root. Empty falls
+	// back to the documented production URL for the chosen provider
+	// (api.anthropic.com or api.openai.com/v1).
+	BaseURL string
+
+	// APIKeyHeader overrides the OpenAI auth header for Azure-style
+	// gateways (e.g. "api-key"). Empty preserves the
+	// "Authorization: Bearer <key>" default. Ignored when ProviderType
+	// is "anthropic".
+	APIKeyHeader string
+
+	// MaxWait is the wall-clock cap on a single Result call. An
+	// expiration returns an error wrapping errBatchExpired so
+	// BatchAdapter's FallbackOnTimeout branch routes correctly.
+	MaxWait time.Duration
 }
 
 // NewHarnessPollingBatchClient constructs a polling client for the
-// Anthropic Message Batches API. credSource is invoked once per HTTP
-// request (Submit and each poll tick) so a refresh-aware source —
-// today only static, in future possibly an OAuth source — stays fresh
-// across long waits.
+// provider batch API matching opts.ProviderType. The opts.CredSource
+// closure is invoked once per HTTP request (Submit and each poll tick)
+// so a refresh-aware source — today only static, in future possibly an
+// OAuth source — stays fresh across long waits.
 //
-// apiKeyRef is captured for diagnostic provenance; the credential
-// resolver consumes the underlying secret reference via credSource.
-// maxWait is the wall-clock cap on a single Result call; expiration
-// returns an error wrapping errBatchExpired so BatchAdapter's
-// timeout-fallback branch routes correctly.
-func NewHarnessPollingBatchClient(
-	apiKeyRef string,
-	credSource credential.Source,
-	maxWait time.Duration,
-) *harnessPollingBatchClient {
+// opts.APIKeyRef is captured for diagnostic provenance; the credential
+// resolver consumes the underlying secret reference via CredSource.
+// opts.MaxWait is the wall-clock cap on a single Result call.
+func NewHarnessPollingBatchClient(opts HarnessBatchClientOptions) *harnessPollingBatchClient {
+	baseURL := opts.BaseURL
+	if baseURL == "" {
+		switch opts.ProviderType {
+		case "openai-compatible", "openai-responses":
+			baseURL = openaiDefaultBaseURL
+		default:
+			baseURL = anthropicBatchAPIBaseURL
+		}
+	}
+	// Trim trailing slash so URL joining stays consistent regardless of
+	// whether the operator supplied a base with or without one.
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &harnessPollingBatchClient{
 		httpClient: &http.Client{
 			// 30s aligns with CLAUDE.md's non-streaming HTTP timeout
@@ -142,11 +192,13 @@ func NewHarnessPollingBatchClient(
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
-		credSource: credSource,
-		apiKeyRef:  apiKeyRef,
-		baseURL:    anthropicBatchAPIBaseURL,
-		maxWait:    maxWait,
-		logger:     slog.Default(),
+		credSource:   opts.CredSource,
+		providerType: opts.ProviderType,
+		apiKeyRef:    opts.APIKeyRef,
+		baseURL:      baseURL,
+		apiKeyHeader: opts.APIKeyHeader,
+		maxWait:      opts.MaxWait,
+		logger:       slog.Default(),
 	}
 }
 
@@ -223,16 +275,31 @@ type anthropicBatchResultErr struct {
 	Message string `json:"message,omitempty"`
 }
 
-// Submit POSTs a single-entry batch to /v1/messages/batches. The phase-4
-// contract matches the phase-2 controlPlaneBatchClient: exactly one
-// entry per call. Multi-entry submission is reserved for the future
-// OpenAI file-upload flow (phase 6).
+// Submit routes the single-entry batch to the configured provider's
+// submission endpoint. The single-entry contract matches the phase-2
+// controlPlaneBatchClient (the BatchAdapter always submits one entry
+// per turn); the slice shape is preserved so a future caller batching
+// multiple turns has somewhere to grow.
 func (c *harnessPollingBatchClient) Submit(ctx context.Context, entries []BatchEntry) (string, error) {
 	if len(entries) != 1 {
 		return "", fmt.Errorf("harnessPollingBatchClient: expected exactly 1 entry, got %d", len(entries))
 	}
-	entry := entries[0]
+	switch c.providerType {
+	case "openai-compatible", "openai-responses":
+		return c.submitOpenAI(ctx, entries[0])
+	case "anthropic", "":
+		// Empty providerType is treated as "anthropic" for backwards
+		// compatibility with any caller that bypasses the validator and
+		// constructs the client without setting it.
+		return c.submitAnthropic(ctx, entries[0])
+	default:
+		return "", fmt.Errorf("harnessPollingBatchClient: unsupported provider type %q", c.providerType)
+	}
+}
 
+// submitAnthropic POSTs a size-1 batch to /v1/messages/batches and
+// returns the assigned batch id (msgbatch_...).
+func (c *harnessPollingBatchClient) submitAnthropic(ctx context.Context, entry BatchEntry) (string, error) {
 	body := anthropicBatchSubmitRequest{
 		Requests: []anthropicBatchSubmitEntry{{
 			CustomID: entry.CustomID,
@@ -277,15 +344,28 @@ func (c *harnessPollingBatchClient) Submit(ctx context.Context, entries []BatchE
 	return obj.ID, nil
 }
 
-// Result polls /v1/messages/batches/{batchID} until the batch resolves,
-// maxWait fires, or ctx is cancelled. On either of the latter two an
-// errBatchExpired-wrapped error is returned (timeout) or ctx.Err()
-// (cancel) — the BatchAdapter discriminates via errors.Is(err,
-// errBatchExpired) so the wrapping is load-bearing for the
-// FallbackOnTimeout branch. A best-effort cancel call is issued on
+// Result polls the configured provider's batch endpoint until the batch
+// resolves, maxWait fires, or ctx is cancelled. On either of the latter
+// two an errBatchExpired-wrapped error is returned (timeout) or
+// ctx.Err() (cancel) — the BatchAdapter discriminates via
+// errors.Is(err, errBatchExpired) so the wrapping is load-bearing for
+// the FallbackOnTimeout branch. A best-effort cancel call is issued on
 // both exit paths so the operator is not billed for a batch nobody
 // will read.
 func (c *harnessPollingBatchClient) Result(ctx context.Context, batchID string) (map[string]*BatchResult, error) {
+	switch c.providerType {
+	case "openai-compatible", "openai-responses":
+		return c.resultOpenAI(ctx, batchID)
+	case "anthropic", "":
+		return c.resultAnthropic(ctx, batchID)
+	default:
+		return nil, fmt.Errorf("harnessPollingBatchClient: unsupported provider type %q", c.providerType)
+	}
+}
+
+// resultAnthropic polls /v1/messages/batches/{batchID} until the
+// Anthropic batch resolves and fetches the JSONL results document.
+func (c *harnessPollingBatchClient) resultAnthropic(ctx context.Context, batchID string) (map[string]*BatchResult, error) {
 	deadline := time.Now().Add(c.maxWait)
 	interval := getBatchPollInitialInterval()
 
@@ -487,11 +567,11 @@ func mapBatchResultLine(line anthropicBatchResultLine) *BatchResult {
 	}
 }
 
-// bestEffortCancel issues a POST /v1/messages/batches/{id}/cancel with
-// a short, independent deadline so the cancel does not inherit a
-// just-cancelled parent ctx. Errors are logged at warn and swallowed:
-// surfacing them would mask the timeout / cancel that triggered the
-// cancel call in the first place.
+// bestEffortCancel issues a provider-specific cancel POST with a short,
+// independent deadline so the cancel does not inherit a just-cancelled
+// parent ctx. Errors are logged at warn and swallowed: surfacing them
+// would mask the timeout / cancel that triggered the cancel call in
+// the first place.
 func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), batchCancelTimeout)
 	defer cancel()
@@ -504,7 +584,13 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 		return
 	}
 
-	cancelURL := c.baseURL + "/v1/messages/batches/" + url.PathEscape(batchID) + "/cancel"
+	var cancelURL string
+	switch c.providerType {
+	case "openai-compatible", "openai-responses":
+		cancelURL = c.baseURL + "/batches/" + url.PathEscape(batchID) + "/cancel"
+	default:
+		cancelURL = c.baseURL + "/v1/messages/batches/" + url.PathEscape(batchID) + "/cancel"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cancelURL, nil)
 	if err != nil {
 		if c.logger != nil {
@@ -512,7 +598,7 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 		}
 		return
 	}
-	setAuthHeaders(req, apiKey)
+	c.applyAuthHeaders(req, apiKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -529,6 +615,20 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && c.logger != nil {
 		c.logger.Warn("batch cancel: unexpected status", "batchID", batchID, "status", resp.StatusCode, "keyRef", c.apiKeyRef)
+	}
+}
+
+// applyAuthHeaders pins the auth and Content-Type headers appropriate
+// to the configured provider. Centralising the dispatch keeps the
+// per-request call sites from drifting (e.g. forgetting the
+// anthropic-version header on a future endpoint).
+func (c *harnessPollingBatchClient) applyAuthHeaders(req *http.Request, apiKey string) {
+	switch c.providerType {
+	case "openai-compatible", "openai-responses":
+		req.Header.Set("Content-Type", "application/json")
+		setOpenAIAuthHeader(req, apiKey, c.apiKeyHeader)
+	default:
+		setAuthHeaders(req, apiKey)
 	}
 }
 
@@ -597,4 +697,480 @@ func jitter(d time.Duration) time.Duration {
 	// ±20%: pick a delta in [-0.2d, +0.2d].
 	delta := time.Duration(rand.Int63n(int64(d)/5*2+1)) - d/5
 	return d + delta
+}
+
+// -----------------------------------------------------------------------------
+// OpenAI batch path
+// -----------------------------------------------------------------------------
+
+// openaiBatchObject mirrors the relevant fields of an OpenAI batch
+// object as returned by POST /v1/batches and GET /v1/batches/{id}.
+// Statuses progress: validating → in_progress → finalizing → completed
+// (or failed / expired / cancelling / cancelled). Only the fields the
+// polling loop consumes are decoded; the API returns more.
+type openaiBatchObject struct {
+	ID            string             `json:"id"`
+	Status        string             `json:"status"`
+	OutputFileID  string             `json:"output_file_id,omitempty"`
+	ErrorFileID   string             `json:"error_file_id,omitempty"`
+	Errors        *openaiBatchErrors `json:"errors,omitempty"`
+	RequestCounts *struct {
+		Total     int `json:"total"`
+		Completed int `json:"completed"`
+		Failed    int `json:"failed"`
+	} `json:"request_counts,omitempty"`
+}
+
+// openaiBatchErrors is the inline errors object returned on top-level
+// batch failures (distinct from per-entry errors carried in
+// error_file_id). The object's "data" array holds free-form error
+// records; we extract the first message for surfacing in the
+// BatchResultError on a generic failure.
+type openaiBatchErrors struct {
+	Data []struct {
+		Code    string `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+		Line    *int   `json:"line,omitempty"`
+	} `json:"data,omitempty"`
+}
+
+// openaiBatchInputLine is one line of the JSONL document uploaded to
+// /v1/files with purpose=batch. The "url" field is the endpoint each
+// entry's request will be dispatched to (/v1/chat/completions or
+// /v1/responses); "body" carries the same wire body the streaming
+// adapter would have POSTed.
+type openaiBatchInputLine struct {
+	CustomID string          `json:"custom_id"`
+	Method   string          `json:"method"`
+	URL      string          `json:"url"`
+	Body     json.RawMessage `json:"body"`
+}
+
+// openaiBatchOutputLine is one line of the JSONL document downloaded
+// from /v1/files/{output_file_id}/content. Each entry's "response"
+// field carries the same shape the streaming adapter would have read
+// from the HTTP response body — fabricateStream consumes
+// response.body verbatim.
+type openaiBatchOutputLine struct {
+	CustomID string `json:"custom_id"`
+	Response *struct {
+		StatusCode int             `json:"status_code"`
+		Body       json.RawMessage `json:"body"`
+	} `json:"response,omitempty"`
+	Error *struct {
+		Code    string `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	} `json:"error,omitempty"`
+}
+
+// openaiBatchCreateRequest is the JSON body POSTed to /v1/batches once
+// the input file is uploaded.
+type openaiBatchCreateRequest struct {
+	InputFileID      string `json:"input_file_id"`
+	Endpoint         string `json:"endpoint"`
+	CompletionWindow string `json:"completion_window"`
+}
+
+// openaiFileObject mirrors the relevant fields of the /v1/files upload
+// response and the polled file-status object.
+type openaiFileObject struct {
+	ID string `json:"id"`
+}
+
+// openaiEndpointFor maps the harness-side provider type to the OpenAI
+// batch endpoint string. Centralised so submit and result decoders
+// agree on which URL each entry targets.
+func openaiEndpointFor(providerType string) string {
+	if providerType == "openai-responses" {
+		return "/v1/responses"
+	}
+	return "/v1/chat/completions"
+}
+
+// submitOpenAI runs the two-step OpenAI batch flow: upload the entry
+// as a single-line JSONL file to /v1/files (purpose=batch), then
+// POST /v1/batches referencing the uploaded file. Returns the
+// assigned batch id (batch_...).
+func (c *harnessPollingBatchClient) submitOpenAI(ctx context.Context, entry BatchEntry) (string, error) {
+	// Step 1: upload the JSONL input file.
+	inputLine := openaiBatchInputLine{
+		CustomID: entry.CustomID,
+		Method:   "POST",
+		URL:      openaiEndpointFor(c.providerType),
+		Body:     entry.Body,
+	}
+	lineBytes, err := json.Marshal(inputLine)
+	if err != nil {
+		return "", fmt.Errorf("marshal openai batch input line: %w", err)
+	}
+	jsonlPayload := append(lineBytes, '\n')
+
+	fileID, err := c.uploadOpenAIBatchFile(ctx, jsonlPayload)
+	if err != nil {
+		return "", err
+	}
+
+	// Step 2: create the batch referencing the uploaded file.
+	createBody := openaiBatchCreateRequest{
+		InputFileID:      fileID,
+		Endpoint:         openaiEndpointFor(c.providerType),
+		CompletionWindow: "24h",
+	}
+	createPayload, err := json.Marshal(createBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal openai batch create body: %w", err)
+	}
+
+	apiKey, err := c.resolveAPIKey(ctx)
+	if err != nil {
+		return "", err
+	}
+	createURL := c.baseURL + "/batches"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, createURL, bytes.NewReader(createPayload))
+	if err != nil {
+		return "", fmt.Errorf("build openai batch create request: %w", err)
+	}
+	c.applyAuthHeaders(req, apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("submit openai batch: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("openai batch create returned status %d: %s", resp.StatusCode, errBody)
+	}
+
+	var obj openaiBatchObject
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBatchResponseBytes)).Decode(&obj); err != nil {
+		return "", fmt.Errorf("decode openai batch create response: %w", err)
+	}
+	if obj.ID == "" {
+		return "", fmt.Errorf("openai batch create response missing id")
+	}
+	return obj.ID, nil
+}
+
+// uploadOpenAIBatchFile POSTs the JSONL payload as a multipart upload
+// to /v1/files with purpose=batch and returns the assigned file id.
+// The Content-Type (including the boundary) is written by mime/multipart;
+// the caller must not override it.
+func (c *harnessPollingBatchClient) uploadOpenAIBatchFile(ctx context.Context, jsonl []byte) (string, error) {
+	apiKey, err := c.resolveAPIKey(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("purpose", "batch"); err != nil {
+		return "", fmt.Errorf("write purpose field: %w", err)
+	}
+	filePart, err := writer.CreateFormFile("file", "batch.jsonl")
+	if err != nil {
+		return "", fmt.Errorf("create file part: %w", err)
+	}
+	if _, err := filePart.Write(jsonl); err != nil {
+		return "", fmt.Errorf("write file part: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	uploadURL := c.baseURL + "/files"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &body)
+	if err != nil {
+		return "", fmt.Errorf("build openai file upload request: %w", err)
+	}
+	// Note: do NOT call applyAuthHeaders here — it sets Content-Type to
+	// application/json, which would clobber the multipart boundary the
+	// writer emits via FormDataContentType.
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	setOpenAIAuthHeader(req, apiKey, c.apiKeyHeader)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload openai batch file: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("openai file upload returned status %d: %s", resp.StatusCode, errBody)
+	}
+
+	var obj openaiFileObject
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBatchResponseBytes)).Decode(&obj); err != nil {
+		return "", fmt.Errorf("decode openai file upload response: %w", err)
+	}
+	if obj.ID == "" {
+		return "", fmt.Errorf("openai file upload response missing id")
+	}
+	return obj.ID, nil
+}
+
+// resultOpenAI polls GET /v1/batches/{batchID} until the batch
+// terminal status is observed, maxWait fires, or ctx is cancelled.
+// On completion the output file's JSONL is fetched and the line
+// matching the submitted custom_id is projected onto BatchResult.
+func (c *harnessPollingBatchClient) resultOpenAI(ctx context.Context, batchID string) (map[string]*BatchResult, error) {
+	deadline := time.Now().Add(c.maxWait)
+	interval := getBatchPollInitialInterval()
+
+	for {
+		obj, err := c.pollOnceOpenAI(ctx, batchID)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				go c.bestEffortCancel(batchID)
+				return nil, err
+			}
+			return nil, err
+		}
+
+		switch obj.Status {
+		case "completed":
+			if obj.OutputFileID == "" {
+				return nil, fmt.Errorf("openai batch %s completed without output_file_id", batchID)
+			}
+			return c.fetchOpenAIResults(ctx, obj.OutputFileID, batchID)
+		case "failed":
+			// Per-entry errors live in error_file_id when the API
+			// could route the failure to a specific submission; the
+			// top-level errors.data field is reserved for batch-wide
+			// failures (e.g. malformed input file). Either way the
+			// caller receives a single BatchResult mapped to the
+			// originating custom_id so the BatchAdapter has something
+			// to dispatch.
+			return c.fetchOpenAIFailure(ctx, *obj, batchID)
+		case "expired":
+			return nil, fmt.Errorf("%w: openai batch %s expired upstream", errBatchExpired, batchID)
+		case "cancelled", "cancelling":
+			return c.synthesizeOpenAIFailure(batchID, "batch_cancelled", "openai batch was cancelled upstream"), nil
+		case "validating", "in_progress", "finalizing":
+			// Documented intermediate statuses; continue polling.
+		default:
+			if c.logger != nil {
+				c.logger.Warn(
+					"batch poll: unrecognised openai status; continuing to poll",
+					"batchID", batchID,
+					"status", obj.Status,
+				)
+			}
+		}
+
+		sleep := jitter(interval)
+		if remaining := time.Until(deadline); remaining <= 0 {
+			go c.bestEffortCancel(batchID)
+			return nil, fmt.Errorf("%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID)
+		} else if sleep > remaining {
+			sleep = remaining
+		}
+
+		select {
+		case <-ctx.Done():
+			go c.bestEffortCancel(batchID)
+			return nil, ctx.Err()
+		case <-time.After(sleep):
+		}
+
+		interval *= 2
+		if maxInterval := getBatchPollMaxInterval(); interval > maxInterval {
+			interval = maxInterval
+		}
+		if time.Now().After(deadline) {
+			go c.bestEffortCancel(batchID)
+			return nil, fmt.Errorf("%w: harness polling timeout after %s (batchID=%s)", errBatchExpired, c.maxWait, batchID)
+		}
+	}
+}
+
+// pollOnceOpenAI issues a single GET /v1/batches/{id}.
+func (c *harnessPollingBatchClient) pollOnceOpenAI(ctx context.Context, batchID string) (*openaiBatchObject, error) {
+	apiKey, err := c.resolveAPIKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	pollURL := c.baseURL + "/batches/" + url.PathEscape(batchID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build openai batch poll request: %w", err)
+	}
+	c.applyAuthHeaders(req, apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("poll openai batch: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("openai batch poll returned status %d: %s", resp.StatusCode, errBody)
+	}
+
+	var obj openaiBatchObject
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxBatchResponseBytes)).Decode(&obj); err != nil {
+		return nil, fmt.Errorf("decode openai batch poll response: %w", err)
+	}
+	return &obj, nil
+}
+
+// fetchOpenAIResults GETs the JSONL document at
+// /v1/files/{output_file_id}/content and projects each line onto a
+// BatchResult keyed by custom_id. A per-entry error in the line maps
+// to BatchResultError; a successful line surfaces response.body as
+// the BatchResult.Response (the same JSON the streaming adapter
+// would have read from /v1/chat/completions or /v1/responses).
+func (c *harnessPollingBatchClient) fetchOpenAIResults(ctx context.Context, fileID, batchID string) (map[string]*BatchResult, error) {
+	body, err := c.downloadOpenAIFile(ctx, fileID)
+	if err != nil {
+		return nil, fmt.Errorf("openai batch %s: fetch output file: %w", batchID, err)
+	}
+	defer func() { _ = body.Close() }()
+
+	out := make(map[string]*BatchResult)
+	scanner := bufio.NewScanner(io.LimitReader(body, maxBatchResponseBytes))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxBatchResponseBytes)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry openaiBatchOutputLine
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil, fmt.Errorf("decode openai batch output line: %w", err)
+		}
+		out[entry.CustomID] = mapOpenAIOutputLine(entry)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read openai batch output: %w", err)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("openai batch %s output document is empty", batchID)
+	}
+	return out, nil
+}
+
+// mapOpenAIOutputLine projects an /v1/files content line onto the
+// harness-side BatchResult shape. A non-2xx response.status_code or
+// a populated top-level error block surfaces as a server_error.
+func mapOpenAIOutputLine(line openaiBatchOutputLine) *BatchResult {
+	if line.Error != nil && line.Error.Message != "" {
+		return &BatchResult{Err: &BatchResultError{Type: "server_error", Message: line.Error.Message}}
+	}
+	if line.Response == nil {
+		return &BatchResult{Err: &BatchResultError{Type: "server_error", Message: "openai batch output line carried no response"}}
+	}
+	if line.Response.StatusCode != 0 && (line.Response.StatusCode < 200 || line.Response.StatusCode >= 300) {
+		return &BatchResult{Err: &BatchResultError{
+			Type:    "server_error",
+			Message: fmt.Sprintf("openai batch entry returned status %d", line.Response.StatusCode),
+		}}
+	}
+	return &BatchResult{Response: line.Response.Body}
+}
+
+// fetchOpenAIFailure handles the "failed" terminal status. When
+// error_file_id is set we surface the first per-entry error; when only
+// the top-level errors object is populated we surface its first
+// message. The polling client always submits one entry, so a single
+// BatchResult keyed by the resubmission's custom_id would require the
+// caller's custom_id — which we do not retain here. To keep the
+// BatchAdapter happy (it looks up by custom_id from the originating
+// submission) we synthesise a server_error keyed empty; the
+// BatchAdapter currently rejects this with "missing entry", which is
+// the correct surface for an opaque top-level failure. Per-entry
+// errors keyed by the failing custom_id ARE returned in the typical
+// case.
+func (c *harnessPollingBatchClient) fetchOpenAIFailure(ctx context.Context, obj openaiBatchObject, batchID string) (map[string]*BatchResult, error) {
+	if obj.ErrorFileID != "" {
+		body, err := c.downloadOpenAIFile(ctx, obj.ErrorFileID)
+		if err != nil {
+			return nil, fmt.Errorf("openai batch %s failed; fetch error file: %w", batchID, err)
+		}
+		defer func() { _ = body.Close() }()
+
+		out := make(map[string]*BatchResult)
+		scanner := bufio.NewScanner(io.LimitReader(body, maxBatchResponseBytes))
+		scanner.Buffer(make([]byte, 0, 64*1024), maxBatchResponseBytes)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			var entry openaiBatchOutputLine
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				return nil, fmt.Errorf("decode openai batch error line: %w", err)
+			}
+			out[entry.CustomID] = mapOpenAIOutputLine(entry)
+		}
+		if err := scanner.Err(); err != nil {
+			return nil, fmt.Errorf("read openai batch error file: %w", err)
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+
+	// No per-entry error file (or it was empty). Fall back to the
+	// top-level errors object.
+	msg := "openai batch failed upstream"
+	if obj.Errors != nil && len(obj.Errors.Data) > 0 && obj.Errors.Data[0].Message != "" {
+		msg = obj.Errors.Data[0].Message
+	}
+	return nil, fmt.Errorf("openai batch %s failed: %s", batchID, msg)
+}
+
+// synthesizeOpenAIFailure produces a single-entry map for a terminal
+// failure status that does not carry a per-entry error file
+// (cancelled / cancelling). The BatchAdapter's lookup keys on the
+// originating custom_id, which the polling client does not retain
+// across the Submit/Result boundary; an empty-keyed map surfaces as
+// the documented "missing entry" error in BatchAdapter, which is
+// the right error class for an opaque batch-wide cancel.
+func (c *harnessPollingBatchClient) synthesizeOpenAIFailure(batchID, errType, message string) map[string]*BatchResult {
+	if c.logger != nil {
+		c.logger.Info(
+			"openai batch terminal failure",
+			"batchID", batchID,
+			"type", errType,
+			"message", message,
+		)
+	}
+	// Use the batchID as the key as a fallback so the map is non-empty
+	// and the BatchAdapter surfaces the error type rather than an
+	// opaque "missing entry" message.
+	return map[string]*BatchResult{
+		batchID: {Err: &BatchResultError{Type: errType, Message: message}},
+	}
+}
+
+// downloadOpenAIFile GETs /v1/files/{fileID}/content with auth headers
+// and returns the body for streaming JSONL decode. The caller is
+// responsible for closing the returned ReadCloser.
+func (c *harnessPollingBatchClient) downloadOpenAIFile(ctx context.Context, fileID string) (io.ReadCloser, error) {
+	apiKey, err := c.resolveAPIKey(ctx)
+	if err != nil {
+		return nil, err
+	}
+	dlURL := c.baseURL + "/files/" + url.PathEscape(fileID) + "/content"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build openai file download request: %w", err)
+	}
+	c.applyAuthHeaders(req, apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download openai file: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("openai file download returned status %d: %s", resp.StatusCode, errBody)
+	}
+	return resp.Body, nil
 }

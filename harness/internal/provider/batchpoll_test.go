@@ -57,7 +57,12 @@ func newTestPollingClient(t *testing.T, srv *httptest.Server, src credential.Sou
 	t.Helper()
 	prevInterval := setBatchPollInitialInterval(2 * time.Millisecond)
 	prevJitter := setBatchPollJitterDisabled(true)
-	c := NewHarnessPollingBatchClient("secret://test", src, maxWait)
+	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+		ProviderType: "anthropic",
+		APIKeyRef:    "secret://test",
+		CredSource:   src,
+		MaxWait:      maxWait,
+	})
 	c.baseURL = srv.URL
 	teardown := func() {
 		setBatchPollInitialInterval(prevInterval)
@@ -1108,7 +1113,12 @@ func TestHarnessPollingBatch_BackoffCapped(t *testing.T) {
 	prevJitter := setBatchPollJitterDisabled(true)
 	defer setBatchPollJitterDisabled(prevJitter)
 
-	c := NewHarnessPollingBatchClient("secret://test", src, 40*time.Millisecond)
+	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+		ProviderType: "anthropic",
+		APIKeyRef:    "secret://test",
+		CredSource:   src,
+		MaxWait:      40 * time.Millisecond,
+	})
 	c.baseURL = srv.URL
 
 	_, _ = c.Result(context.Background(), "batch_xyz")
@@ -1147,7 +1157,12 @@ func TestHarnessPollingBatch_TimeoutFiringAlignedToDeadline(t *testing.T) {
 	defer setBatchPollJitterDisabled(prevJitter)
 
 	maxWait := 30 * time.Millisecond
-	c := NewHarnessPollingBatchClient("secret://test", src, maxWait)
+	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+		ProviderType: "anthropic",
+		APIKeyRef:    "secret://test",
+		CredSource:   src,
+		MaxWait:      maxWait,
+	})
 	c.baseURL = ps.URL
 
 	start := time.Now()
@@ -1174,4 +1189,508 @@ func keysOf[T any](m map[string]T) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// -----------------------------------------------------------------------------
+// OpenAI Submit / Result
+// -----------------------------------------------------------------------------
+
+// newTestOpenAIPollingClient builds a polling client configured for the
+// OpenAI provider type, pointed at srv (which must serve /files,
+// /batches, /batches/{id}, /batches/{id}/cancel, and /files/{id}/content).
+// Returns the client plus a teardown restoring the package-level
+// poll-interval and jitter knobs.
+func newTestOpenAIPollingClient(t *testing.T, srv *httptest.Server, src credential.Source, providerType string, maxWait time.Duration) (*harnessPollingBatchClient, func()) {
+	t.Helper()
+	prevInterval := setBatchPollInitialInterval(2 * time.Millisecond)
+	prevJitter := setBatchPollJitterDisabled(true)
+	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+		ProviderType: providerType,
+		APIKeyRef:    "secret://test",
+		CredSource:   src,
+		BaseURL:      srv.URL,
+		MaxWait:      maxWait,
+	})
+	teardown := func() {
+		setBatchPollInitialInterval(prevInterval)
+		setBatchPollJitterDisabled(prevJitter)
+	}
+	return c, teardown
+}
+
+// openaiSubmitEntries builds a one-entry batch with an OpenAI chat
+// completions body — the same shape buildOpenAIRequest emits.
+func openaiSubmitEntries(customID, providerType string) []BatchEntry {
+	body := `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"max_completion_tokens":256,"stream":false}`
+	return []BatchEntry{{
+		CustomID: customID,
+		Provider: providerType,
+		Body:     json.RawMessage(body),
+	}}
+}
+
+// openaiBatchFixture is a stateful test fixture for the OpenAI two-step
+// batch flow. The handler routes /files (upload), /batches (create),
+// /batches/{id} (poll), /batches/{id}/cancel (cancel), and
+// /files/{id}/content (download).
+type openaiBatchFixture struct {
+	*httptest.Server
+
+	pollResponses []string // sequence of polled batch object bodies
+	outputBody    string   // JSONL served on /files/{output_file_id}/content
+	errorBody     string   // JSONL served on /files/{error_file_id}/content
+
+	mu            sync.Mutex
+	uploadCalls   int
+	uploadedFiles [][]byte // body of each uploaded file
+	createCalls   int
+	createBodies  [][]byte
+	pollCalls     int
+	cancelCalls   int
+	downloadCalls int
+	downloadedIDs []string
+}
+
+func (f *openaiBatchFixture) snapshot() (int, int, int, int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.uploadCalls, f.createCalls, f.pollCalls, f.cancelCalls, f.downloadCalls
+}
+
+func newOpenAIBatchFixture(t *testing.T, polls []string, outputBody, errorBody string) *openaiBatchFixture {
+	t.Helper()
+	f := &openaiBatchFixture{
+		pollResponses: polls,
+		outputBody:    outputBody,
+		errorBody:     errorBody,
+	}
+	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/files":
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+			f.mu.Lock()
+			f.uploadCalls++
+			f.uploadedFiles = append(f.uploadedFiles, body)
+			f.mu.Unlock()
+			ct := r.Header.Get("Content-Type")
+			if !strings.HasPrefix(ct, "multipart/form-data") {
+				t.Errorf("upload Content-Type: got %q, want multipart/form-data", ct)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"file_abc","object":"file"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/batches":
+			body, _ := io.ReadAll(io.LimitReader(r.Body, 4096))
+			f.mu.Lock()
+			f.createCalls++
+			f.createBodies = append(f.createBodies, body)
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"validating"}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/batches/") &&
+			!strings.HasSuffix(r.URL.Path, "/cancel"):
+			f.mu.Lock()
+			idx := f.pollCalls
+			if idx >= len(f.pollResponses) {
+				idx = len(f.pollResponses) - 1
+			}
+			f.pollCalls++
+			body := f.pollResponses[idx]
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, body)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
+			f.mu.Lock()
+			f.cancelCalls++
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/files/") &&
+			strings.HasSuffix(r.URL.Path, "/content"):
+			// Path: /files/{id}/content
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/files/"), "/content")
+			f.mu.Lock()
+			f.downloadCalls++
+			f.downloadedIDs = append(f.downloadedIDs, id)
+			body := f.outputBody
+			if strings.HasPrefix(id, "errfile") || strings.Contains(id, "error") {
+				body = f.errorBody
+			}
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, body)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	return f
+}
+
+func TestHarnessPollingBatch_OpenAISubmit_HappyPath(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	f := newOpenAIBatchFixture(t, nil, "", "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	id, err := c.Submit(context.Background(), openaiSubmitEntries("stirrup-run-1-turn-1", "openai-compatible"))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if id != "batch_xyz" {
+		t.Errorf("batchID: got %q, want batch_xyz", id)
+	}
+
+	uploads, creates, _, _, _ := f.snapshot()
+	if uploads != 1 || creates != 1 {
+		t.Fatalf("expected 1 upload + 1 create, got %d + %d", uploads, creates)
+	}
+
+	// The uploaded multipart body must contain a JSONL line carrying
+	// the submitted custom_id, the chat-completions endpoint, and the
+	// passthrough body.
+	f.mu.Lock()
+	uploaded := string(f.uploadedFiles[0])
+	createBody := string(f.createBodies[0])
+	f.mu.Unlock()
+
+	if !strings.Contains(uploaded, `"custom_id":"stirrup-run-1-turn-1"`) {
+		t.Errorf("uploaded jsonl missing custom_id: %s", uploaded)
+	}
+	if !strings.Contains(uploaded, `"url":"/v1/chat/completions"`) {
+		t.Errorf("uploaded jsonl missing chat endpoint: %s", uploaded)
+	}
+	if !strings.Contains(uploaded, `"method":"POST"`) {
+		t.Errorf("uploaded jsonl missing method=POST: %s", uploaded)
+	}
+
+	// The create body must reference file_abc and request the
+	// chat-completions endpoint with the 24h completion window.
+	if !strings.Contains(createBody, `"input_file_id":"file_abc"`) {
+		t.Errorf("create body missing input_file_id: %s", createBody)
+	}
+	if !strings.Contains(createBody, `"endpoint":"/v1/chat/completions"`) {
+		t.Errorf("create body missing endpoint: %s", createBody)
+	}
+	if !strings.Contains(createBody, `"completion_window":"24h"`) {
+		t.Errorf("create body missing completion_window: %s", createBody)
+	}
+}
+
+func TestHarnessPollingBatch_OpenAIResponses_Submit_HappyPath(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	f := newOpenAIBatchFixture(t, nil, "", "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-responses", time.Second)
+	defer teardown()
+
+	if _, err := c.Submit(context.Background(), openaiSubmitEntries("stirrup-run-1-turn-1", "openai-responses")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	f.mu.Lock()
+	uploaded := string(f.uploadedFiles[0])
+	createBody := string(f.createBodies[0])
+	f.mu.Unlock()
+
+	if !strings.Contains(uploaded, `"url":"/v1/responses"`) {
+		t.Errorf("uploaded jsonl url: %s", uploaded)
+	}
+	if !strings.Contains(createBody, `"endpoint":"/v1/responses"`) {
+		t.Errorf("create body endpoint: %s", createBody)
+	}
+}
+
+func TestHarnessPollingBatch_OpenAIResult_Completed(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{
+		`{"id":"batch_xyz","status":"validating"}`,
+		`{"id":"batch_xyz","status":"in_progress"}`,
+		`{"id":"batch_xyz","status":"completed","output_file_id":"file_out"}`,
+	}
+	outputBody := `{"custom_id":"stirrup-run-1-turn-1","response":{"status_code":200,"body":{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}}}` + "\n"
+	f := newOpenAIBatchFixture(t, polls, outputBody, "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	results, err := c.Result(context.Background(), "batch_xyz")
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	entry, ok := results["stirrup-run-1-turn-1"]
+	if !ok {
+		t.Fatalf("missing entry; got keys %v", keysOf(results))
+	}
+	if entry.Err != nil {
+		t.Fatalf("entry.Err: %+v", entry.Err)
+	}
+	if !strings.Contains(string(entry.Response), `"content":"hi"`) {
+		t.Errorf("response body: %s", entry.Response)
+	}
+	if _, _, polled, cancels, downloads := f.snapshot(); polled < 3 || downloads != 1 || cancels != 0 {
+		t.Errorf("polls=%d downloads=%d cancels=%d (want polls>=3, downloads=1, cancels=0)", polled, downloads, cancels)
+	}
+}
+
+func TestHarnessPollingBatch_OpenAIResult_Failed_WithErrorFile(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{
+		`{"id":"batch_xyz","status":"in_progress"}`,
+		`{"id":"batch_xyz","status":"failed","error_file_id":"errfile_1"}`,
+	}
+	errorBody := `{"custom_id":"stirrup-run-1-turn-1","error":{"code":"server_error","message":"upstream meltdown"}}` + "\n"
+	f := newOpenAIBatchFixture(t, polls, "", errorBody)
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	results, err := c.Result(context.Background(), "batch_xyz")
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	entry, ok := results["stirrup-run-1-turn-1"]
+	if !ok {
+		t.Fatalf("missing entry; got keys %v", keysOf(results))
+	}
+	if entry.Err == nil || entry.Err.Type != "server_error" {
+		t.Errorf("Err: %+v", entry.Err)
+	}
+	if !strings.Contains(entry.Err.Message, "upstream meltdown") {
+		t.Errorf("Err.Message: %q", entry.Err.Message)
+	}
+}
+
+func TestHarnessPollingBatch_OpenAIResult_Expired(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{`{"id":"batch_xyz","status":"expired"}`}
+	f := newOpenAIBatchFixture(t, polls, "", "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	if err == nil {
+		t.Fatal("expected expiration error, got nil")
+	}
+	if !errors.Is(err, errBatchExpired) {
+		t.Errorf("expected wrapped errBatchExpired, got: %v", err)
+	}
+}
+
+func TestHarnessPollingBatch_OpenAIResult_Cancelled(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{`{"id":"batch_xyz","status":"cancelled"}`}
+	f := newOpenAIBatchFixture(t, polls, "", "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	results, err := c.Result(context.Background(), "batch_xyz")
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	// synthesizeOpenAIFailure keys the entry under the batchID as a
+	// fallback so the BatchAdapter surfaces the error type rather than
+	// an opaque "missing entry" message.
+	entry, ok := results["batch_xyz"]
+	if !ok {
+		t.Fatalf("expected synthesised entry keyed by batchID, got %v", keysOf(results))
+	}
+	if entry.Err == nil || entry.Err.Type != "batch_cancelled" {
+		t.Errorf("Err: %+v", entry.Err)
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader confirms that
+// when APIKeyHeader is set on the options struct, the polling client
+// uses the custom header for every HTTP request (upload, create, poll,
+// cancel, download) instead of Authorization: Bearer.
+func TestHarnessPollingBatch_OpenAIAuthMode_APIKeyHeader(t *testing.T) {
+	src := &fakeCredentialSource{token: "azure-key"}
+
+	var (
+		mu           sync.Mutex
+		bearerSeen   bool
+		apiKeyHeader string
+		seenAPIKey   bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.Header.Get("Authorization") != "" {
+			bearerSeen = true
+		}
+		if v := r.Header.Get("api-key"); v != "" {
+			seenAPIKey = true
+			apiKeyHeader = v
+		}
+		mu.Unlock()
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/files":
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"file_abc"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/batches":
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"validating"}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	prevInterval := setBatchPollInitialInterval(2 * time.Millisecond)
+	defer setBatchPollInitialInterval(prevInterval)
+	prevJitter := setBatchPollJitterDisabled(true)
+	defer setBatchPollJitterDisabled(prevJitter)
+
+	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+		ProviderType: "openai-compatible",
+		APIKeyRef:    "secret://test",
+		CredSource:   src,
+		BaseURL:      srv.URL,
+		APIKeyHeader: "api-key",
+		MaxWait:      time.Second,
+	})
+
+	if _, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if bearerSeen {
+		t.Errorf("expected no Authorization header when APIKeyHeader is set")
+	}
+	if !seenAPIKey {
+		t.Errorf("expected api-key header to be set")
+	}
+	if apiKeyHeader != "azure-key" {
+		t.Errorf("api-key value: got %q, want azure-key", apiKeyHeader)
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer confirms the
+// inverse: when APIKeyHeader is empty (the default), the client falls
+// back to Authorization: Bearer.
+func TestHarnessPollingBatch_OpenAIAuthMode_DefaultBearer(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+
+	var (
+		mu      sync.Mutex
+		authHdr string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if v := r.Header.Get("Authorization"); v != "" {
+			authHdr = v
+		}
+		mu.Unlock()
+
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/files":
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"file_abc"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/batches":
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"batch_xyz","status":"validating"}`)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewHarnessPollingBatchClient(HarnessBatchClientOptions{
+		ProviderType: "openai-compatible",
+		APIKeyRef:    "secret://test",
+		CredSource:   src,
+		BaseURL:      srv.URL,
+		MaxWait:      time.Second,
+	})
+
+	if _, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible")); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if authHdr != "Bearer sk-test" {
+		t.Errorf("Authorization: got %q, want %q", authHdr, "Bearer sk-test")
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile confirms a
+// batch_failed status without an error_file_id surfaces as a generic
+// server error rather than a panic / nil deref. The top-level
+// errors.data message is preferred when present.
+func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	polls := []string{
+		`{"id":"batch_xyz","status":"failed","errors":{"data":[{"code":"bad_input","message":"malformed input file"}]}}`,
+	}
+	f := newOpenAIBatchFixture(t, polls, "", "")
+	defer f.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, f.Server, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), "batch_xyz")
+	if err == nil || !strings.Contains(err.Error(), "malformed input file") {
+		t.Fatalf("expected top-level failure error, got: %v", err)
+	}
+}
+
+// TestHarnessPollingBatch_OpenAIBatchIDPathEscaped confirms a batchID
+// containing path-sensitive characters is escaped into a single path
+// segment in both the poll and the cancel URL — mirrors the Anthropic
+// path-escaping defence.
+func TestHarnessPollingBatch_OpenAIBatchIDPathEscaped(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+
+	const sneakyID = "batch_../etc/passwd?x=1"
+	wantSegment := url.PathEscape(sneakyID)
+
+	var (
+		mu        sync.Mutex
+		pollPaths []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/batches/") &&
+			!strings.HasSuffix(r.URL.EscapedPath(), "/cancel"):
+			mu.Lock()
+			pollPaths = append(pollPaths, r.URL.EscapedPath())
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"id":%q,"status":"completed"}`, sneakyID)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.EscapedPath())
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, srv, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	_, err := c.Result(context.Background(), sneakyID)
+	if err == nil {
+		t.Fatal("expected output_file_id-missing error, got nil")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pollPaths) == 0 {
+		t.Fatal("expected at least one poll request")
+	}
+	wantPath := "/batches/" + wantSegment
+	if pollPaths[0] != wantPath {
+		t.Errorf("poll path: got %q, want %q", pollPaths[0], wantPath)
+	}
 }
