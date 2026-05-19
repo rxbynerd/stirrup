@@ -370,7 +370,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			maxWaitSec = *config.Provider.Batch.MaxWaitSeconds
 		}
 		maxWait := time.Duration(maxWaitSec) * time.Second
-		batchClient := provider.NewControlPlaneBatchClient(tp, maxWait)
+		batchClient := provider.NewControlPlaneBatchClient(tp, maxWait, config.Provider.Batch.CancelBundleOnRunCancel)
 		prov = provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, config.RunID)
 		// Replace the entry in the providers map so model-router lookups
 		// route to the batched wrapper rather than the raw streaming
