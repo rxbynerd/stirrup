@@ -2472,6 +2472,23 @@ func TestBuildLoopWithTransport_BatchOnStdioAcceptsOpenAI(t *testing.T) {
 			if loop == nil {
 				t.Fatal("expected non-nil loop")
 			}
+
+			// loop.Provider must be the BatchAdapter wrapper for the
+			// stdio batch path; the providers map entry for this
+			// provider type must point at the same wrapper so a
+			// model-router that picks the default provider by type
+			// routes through batching rather than bypassing it.
+			ba, ok := loop.Provider.(*provider.BatchAdapter)
+			if !ok {
+				t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+			}
+			mapped, ok := loop.Providers[config.Provider.Type]
+			if !ok {
+				t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
+			}
+			if mapped != ba {
+				t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
+			}
 		})
 	}
 }

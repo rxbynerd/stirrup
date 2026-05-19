@@ -414,6 +414,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 				BaseURL:      config.Provider.BaseURL,
 				APIKeyHeader: config.Provider.APIKeyHeader,
 				MaxWait:      maxWait,
+				Logger:       logger,
 			})
 		default:
 			// validateBatchConfig already rejects any transport that
