@@ -194,10 +194,11 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 	}
 
 	var (
-		passCount   int
-		totalTurns  int
-		totalTokens int
-		durations   []float64
+		passCount        int
+		totalTurns       int
+		totalTokens      int
+		streamingDur     []float64
+		batchDur         []float64
 	)
 
 	for _, t := range traces {
@@ -213,19 +214,36 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 		// aggregate without having to revisit this filter contract.
 		_ = parentOnlyToolCalls(t)
 		durationMs := float64(t.CompletedAt.Sub(t.StartedAt).Milliseconds())
-		durations = append(durations, durationMs)
+		if isBatchRun(t) {
+			batchDur = append(batchDur, durationMs)
+		} else {
+			streamingDur = append(streamingDur, durationMs)
+		}
 	}
 
-	sort.Float64s(durations)
+	sort.Float64s(streamingDur)
+	sort.Float64s(batchDur)
 
 	return types.TraceMetrics{
-		Count:       n,
-		PassRate:    float64(passCount) / float64(n),
-		MeanTurns:   float64(totalTurns) / float64(n),
-		MeanTokens:  float64(totalTokens) / float64(n),
-		P50Duration: percentile(durations, 0.50),
-		P95Duration: percentile(durations, 0.95),
+		Count:            n,
+		PassRate:         float64(passCount) / float64(n),
+		MeanTurns:        float64(totalTurns) / float64(n),
+		MeanTokens:       float64(totalTokens) / float64(n),
+		P50Duration:      percentile(streamingDur, 0.50),
+		P95Duration:      percentile(streamingDur, 0.95),
+		BatchP50Duration: percentile(batchDur, 0.50),
+		BatchP95Duration: percentile(batchDur, 0.95),
 	}
+}
+
+// isBatchRun reports whether a trace's RunConfig opted into batch
+// provider submission. A nil Batch or Batch.Enabled=false counts as
+// streaming so legacy traces (predating the batch field) and
+// streaming-only runs fall into the streaming bucket. Eval drift
+// detection compares streaming-vs-streaming and batch-vs-batch on
+// the strength of this classifier (#138).
+func isBatchRun(t types.RunTrace) bool {
+	return t.Config.Provider.Batch != nil && t.Config.Provider.Batch.Enabled
 }
 
 // parentOnlyToolCalls returns the subset of trace.ToolCalls that

@@ -609,16 +609,22 @@ func mineFailureTasks(recordings []types.RunRecording, limit int) []types.EvalTa
 }
 
 // buildDriftReport computes deltas between current and baseline metrics.
+// The streaming and batch duration percentiles are differenced
+// separately so a drift signal compares like-for-like (#138) and a
+// run mix shift (more batch traffic) does not register as a
+// streaming-latency regression.
 func buildDriftReport(current, baseline types.TraceMetrics) types.DriftReport {
 	return types.DriftReport{
 		Current:  current,
 		Baseline: baseline,
 		Deltas: types.DriftDeltas{
-			PassRateDelta:    current.PassRate - baseline.PassRate,
-			MeanTurnsDelta:   current.MeanTurns - baseline.MeanTurns,
-			MeanTokensDelta:  current.MeanTokens - baseline.MeanTokens,
-			P50DurationDelta: current.P50Duration - baseline.P50Duration,
-			P95DurationDelta: current.P95Duration - baseline.P95Duration,
+			PassRateDelta:         current.PassRate - baseline.PassRate,
+			MeanTurnsDelta:        current.MeanTurns - baseline.MeanTurns,
+			MeanTokensDelta:       current.MeanTokens - baseline.MeanTokens,
+			P50DurationDelta:      current.P50Duration - baseline.P50Duration,
+			P95DurationDelta:      current.P95Duration - baseline.P95Duration,
+			BatchP50DurationDelta: current.BatchP50Duration - baseline.BatchP50Duration,
+			BatchP95DurationDelta: current.BatchP95Duration - baseline.BatchP95Duration,
 		},
 	}
 }
