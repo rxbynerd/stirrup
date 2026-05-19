@@ -41,13 +41,13 @@ type batchModeAdapter interface {
 
 // turnModeInfo derives the TurnTrace.Mode / BatchID pair for the
 // selected provider. A nil or non-batch adapter resolves to
-// ("streaming", "") so streaming-only paths take no extra branches at
-// the construction site.
+// (TurnModeStreaming, "") so streaming-only paths take no extra
+// branches at the construction site.
 func turnModeInfo(selected any) (mode, batchID string) {
 	if ba, ok := selected.(batchModeAdapter); ok {
-		return "batch", ba.LastBatchID()
+		return types.TurnModeBatch, ba.LastBatchID()
 	}
-	return "streaming", ""
+	return types.TurnModeStreaming, ""
 }
 
 const (
@@ -560,22 +560,29 @@ func (l *AgenticLoop) runInnerLoop(
 		if selection.Provider != "" && len(l.Providers) > 0 {
 			prov, ok := l.Providers[selection.Provider]
 			if !ok {
+				// Pre-resolution: no concrete provider selected yet, so
+				// Mode is honestly unknown. Empty string is the wire
+				// encoding the TurnTrace.Mode godoc reserves for this
+				// case; downstream consumers (lakehouse, mine-failures)
+				// already treat empty as streaming for legacy traces
+				// and route this turn through the same fallback.
 				l.Trace.RecordTurn(types.TurnTrace{
 					Turn:       turn,
 					StopReason: "error",
 					DurationMs: time.Since(turnStart).Milliseconds(),
-					Mode:       "streaming",
+					Mode:       "",
 				})
 				return messages, "error"
 			}
 			selectedProvider = prov
 		}
 		if selectedProvider == nil {
+			// See comment above: pre-resolution Mode is honestly empty.
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
 				StopReason: "error",
 				DurationMs: time.Since(turnStart).Milliseconds(),
-				Mode:       "streaming",
+				Mode:       "",
 			})
 			return messages, "error"
 		}

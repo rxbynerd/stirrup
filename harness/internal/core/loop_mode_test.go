@@ -16,6 +16,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -46,12 +47,12 @@ func (f *fakeBatchAdapter) LastBatchID() string { return f.batchID }
 
 // TestTurnModeInfo_StreamingDefault is the direct unit test for the
 // helper: a vanilla ProviderAdapter (no LastBatchID method) must
-// resolve to ("streaming", "") so the streaming-only call sites take
-// no extra branches.
+// resolve to (TurnModeStreaming, "") so the streaming-only call
+// sites take no extra branches.
 func TestTurnModeInfo_StreamingDefault(t *testing.T) {
 	mode, batchID := turnModeInfo(&mockProvider{})
-	if mode != "streaming" {
-		t.Errorf("mode = %q, want %q", mode, "streaming")
+	if mode != types.TurnModeStreaming {
+		t.Errorf("mode = %q, want %q", mode, types.TurnModeStreaming)
 	}
 	if batchID != "" {
 		t.Errorf("batchID = %q, want empty", batchID)
@@ -64,8 +65,8 @@ func TestTurnModeInfo_StreamingDefault(t *testing.T) {
 // what lets the loop avoid importing internal/provider directly.
 func TestTurnModeInfo_BatchAdapterPopulatesBatchID(t *testing.T) {
 	mode, batchID := turnModeInfo(&fakeBatchAdapter{batchID: "msgbatch_xyz"})
-	if mode != "batch" {
-		t.Errorf("mode = %q, want %q", mode, "batch")
+	if mode != types.TurnModeBatch {
+		t.Errorf("mode = %q, want %q", mode, types.TurnModeBatch)
 	}
 	if batchID != "msgbatch_xyz" {
 		t.Errorf("batchID = %q, want %q", batchID, "msgbatch_xyz")
@@ -78,8 +79,8 @@ func TestTurnModeInfo_BatchAdapterPopulatesBatchID(t *testing.T) {
 // the loop can reach.
 func TestTurnModeInfo_NilSelectedProvider(t *testing.T) {
 	mode, batchID := turnModeInfo(nil)
-	if mode != "streaming" || batchID != "" {
-		t.Errorf("nil selectedProvider: mode=%q batchID=%q, want streaming/\"\"", mode, batchID)
+	if mode != types.TurnModeStreaming || batchID != "" {
+		t.Errorf("nil selectedProvider: mode=%q batchID=%q, want %q/\"\"", mode, batchID, types.TurnModeStreaming)
 	}
 }
 
@@ -145,8 +146,8 @@ func TestLoop_BatchAdapter_RecordsBatchMode(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("expected 1 turn recorded, got %d", len(turns))
 	}
-	if turns[0].Mode != "batch" {
-		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, "batch")
+	if turns[0].Mode != types.TurnModeBatch {
+		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, types.TurnModeBatch)
 	}
 	if turns[0].BatchID != "msgbatch_test123" {
 		t.Errorf("turn[0].BatchID = %q, want %q", turns[0].BatchID, "msgbatch_test123")
@@ -177,8 +178,8 @@ func TestLoop_StreamingProvider_RecordsStreamingMode(t *testing.T) {
 	if len(turns) != 1 {
 		t.Fatalf("expected 1 turn recorded, got %d", len(turns))
 	}
-	if turns[0].Mode != "streaming" {
-		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, "streaming")
+	if turns[0].Mode != types.TurnModeStreaming {
+		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, types.TurnModeStreaming)
 	}
 	if turns[0].BatchID != "" {
 		t.Errorf("turn[0].BatchID = %q, want empty", turns[0].BatchID)
@@ -200,6 +201,58 @@ func (f *failingBatchAdapter) Stream(_ context.Context, _ types.StreamParams) (<
 }
 
 func (f *failingBatchAdapter) LastBatchID() string { return f.batchID }
+
+// TestLoop_ProviderNotFound_RecordsEmptyMode pins the B1 contract:
+// the pre-resolution error path emitted when the router selects a
+// provider that is absent from l.Providers must record Mode="", not
+// Mode="streaming". The honest empty value preserves the
+// streaming/batch distinction for any future analysis that buckets
+// on resolved-mode failures, while lakehouse/mine-failures already
+// treat empty as streaming for legacy traces (#138).
+func TestLoop_ProviderNotFound_RecordsEmptyMode(t *testing.T) {
+	recorder := &recordingTraceEmitter{}
+	loop := &AgenticLoop{
+		// l.Provider is intentionally nil and l.Providers contains a
+		// single entry under a different key than the router selects
+		// ("anthropic"), so the !ok branch in the loop fires before
+		// any provider is resolved.
+		Providers: map[string]provider.ProviderAdapter{
+			"other": &mockProvider{},
+		},
+		Router:      router.NewStaticRouter("anthropic", "claude-sonnet-4-6"),
+		Prompt:      prompt.NewDefaultPromptBuilder(),
+		Context:     contextpkg.NewSlidingWindowStrategy(),
+		Tools:       tool.NewRegistry(),
+		Executor:    nil,
+		Edit:        edit.NewWholeFileStrategy(),
+		Verifier:    verifier.NewNoneVerifier(),
+		Permissions: permission.NewAllowAll(),
+		Git:         git.NewNoneGitStrategy(),
+		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
+		Trace:       recorder,
+		Tracer:      noop.NewTracerProvider().Tracer(""),
+		Metrics:     observability.NewNoopMetrics(),
+		Logger:      slog.Default(),
+	}
+
+	if _, err := loop.Run(context.Background(), buildTestConfig()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	turns, _ := recorder.snapshot()
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn recorded, got %d", len(turns))
+	}
+	if turns[0].StopReason != "error" {
+		t.Errorf("turn[0].StopReason = %q, want %q", turns[0].StopReason, "error")
+	}
+	// The crux: pre-resolution Mode is empty, not "streaming". A
+	// regression that hardcodes "streaming" here would misfile the
+	// failure into the streaming latency bucket of a batch-enabled run.
+	if turns[0].Mode != "" {
+		t.Errorf("turn[0].Mode = %q, want empty (pre-resolution error)", turns[0].Mode)
+	}
+}
 
 func TestLoop_BatchAdapter_StreamError_StillRecordsBatchID(t *testing.T) {
 	prov := &failingBatchAdapter{batchID: "msgbatch_failed_run"}
@@ -233,8 +286,8 @@ func TestLoop_BatchAdapter_StreamError_StillRecordsBatchID(t *testing.T) {
 	if turns[0].StopReason != "error" {
 		t.Errorf("turn[0].StopReason = %q, want %q", turns[0].StopReason, "error")
 	}
-	if turns[0].Mode != "batch" {
-		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, "batch")
+	if turns[0].Mode != types.TurnModeBatch {
+		t.Errorf("turn[0].Mode = %q, want %q", turns[0].Mode, types.TurnModeBatch)
 	}
 	if turns[0].BatchID != "msgbatch_failed_run" {
 		t.Errorf("turn[0].BatchID = %q, want %q (failure paths must retain batch id)", turns[0].BatchID, "msgbatch_failed_run")
