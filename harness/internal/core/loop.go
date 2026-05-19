@@ -29,6 +29,27 @@ import (
 // unrecognised cause).
 const outcomeCtxDone = "_ctx_done"
 
+// batchModeAdapter is the duck-typed view of a batch-wrapping
+// ProviderAdapter the loop type-asserts against to populate
+// TurnTrace.Mode / BatchID (#138). The loop avoids importing
+// internal/provider here so the loop-as-pure-interfaces invariant
+// (CLAUDE.md) is preserved; any future wrapper that surfaces a batch
+// identifier need only implement this single method.
+type batchModeAdapter interface {
+	LastBatchID() string
+}
+
+// turnModeInfo derives the TurnTrace.Mode / BatchID pair for the
+// selected provider. A nil or non-batch adapter resolves to
+// ("streaming", "") so streaming-only paths take no extra branches at
+// the construction site.
+func turnModeInfo(selected any) (mode, batchID string) {
+	if ba, ok := selected.(batchModeAdapter); ok {
+		return "batch", ba.LastBatchID()
+	}
+	return "streaming", ""
+}
+
 const (
 	// maxVerificationRetries is the maximum number of times the verifier can
 	// request a retry before the run is terminated with verification_failed.
@@ -543,6 +564,7 @@ func (l *AgenticLoop) runInnerLoop(
 					Turn:       turn,
 					StopReason: "error",
 					DurationMs: time.Since(turnStart).Milliseconds(),
+					Mode:       "streaming",
 				})
 				return messages, "error"
 			}
@@ -553,6 +575,7 @@ func (l *AgenticLoop) runInnerLoop(
 				Turn:       turn,
 				StopReason: "error",
 				DurationMs: time.Since(turnStart).Milliseconds(),
+				Mode:       "streaming",
 			})
 			return messages, "error"
 		}
@@ -624,10 +647,13 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			// Rollback: don't append anything on error.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
+			turnMode, turnBatchID := turnModeInfo(selectedProvider)
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
 				StopReason: "error",
 				DurationMs: time.Since(turnStart).Milliseconds(),
+				Mode:       turnMode,
+				BatchID:    turnBatchID,
 			})
 			// If the provider call failed because the run context was
 			// cancelled, surface that so the outer loop can classify the
@@ -666,10 +692,13 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			// Rollback on stream error — don't append partial content.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
+			turnMode, turnBatchID := turnModeInfo(selectedProvider)
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
 				StopReason: "error",
 				DurationMs: turnDuration.Milliseconds(),
+				Mode:       turnMode,
+				BatchID:    turnBatchID,
 			})
 			// Distinguish stream-abort-due-to-ctx from other stream errors
 			// so the outer loop can classify the outcome correctly.
@@ -694,6 +723,7 @@ func (l *AgenticLoop) runInnerLoop(
 		tokenTracker.RecordTurn(inputTokenEstimate, sr.OutputTokens)
 
 		// Record turn in trace.
+		turnMode, turnBatchID := turnModeInfo(selectedProvider)
 		l.Trace.RecordTurn(types.TurnTrace{
 			Turn: turn,
 			Tokens: types.TokenUsage{
@@ -702,6 +732,8 @@ func (l *AgenticLoop) runInnerLoop(
 			},
 			StopReason: sr.StopReason,
 			DurationMs: turnDuration.Milliseconds(),
+			Mode:       turnMode,
+			BatchID:    turnBatchID,
 		})
 
 		modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
