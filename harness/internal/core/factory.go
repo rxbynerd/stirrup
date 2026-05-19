@@ -350,6 +350,36 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
+	// 14b. Optional BatchAdapter wrapping. Only the top-level provider is
+	// wrapped — entries in config.Providers are streaming-only in v1, per
+	// the BatchProviderConfig docstring. The streaming inner is retained
+	// so cfg.FallbackOnTimeout can delegate to it without a second build.
+	//
+	// The stdio polling client (#137) is not wired here: the validator
+	// already requires HarnessSidePolling=true for stdio, but the polling
+	// adapter itself does not exist yet. When transport.type=="stdio"
+	// and batch.enabled is set, the loop runs as a streaming turn until
+	// phase 4 lands the polling branch.
+	if config.Provider.Batch != nil && config.Provider.Batch.Enabled && config.Transport.Type == "grpc" {
+		// MaxWaitSeconds is filled with the documented default
+		// (86_400) by ValidateRunConfig when batch.enabled is true, so
+		// the nil check below is defence-in-depth for callers bypassing
+		// the validator.
+		maxWaitSec := 86_400
+		if config.Provider.Batch.MaxWaitSeconds != nil {
+			maxWaitSec = *config.Provider.Batch.MaxWaitSeconds
+		}
+		maxWait := time.Duration(maxWaitSec) * time.Second
+		batchClient := provider.NewControlPlaneBatchClient(tp, maxWait)
+		prov = provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, config.RunID)
+		// Replace the entry in the providers map so model-router lookups
+		// route to the batched wrapper rather than the raw streaming
+		// adapter (#194-style cross-routing risk: a router that picks
+		// the default provider by type would otherwise bypass batching
+		// entirely).
+		providers[config.Provider.Type] = prov
+	}
+
 	loop := &AgenticLoop{
 		Provider:     prov,
 		Providers:    providers,
