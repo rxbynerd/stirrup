@@ -1084,6 +1084,11 @@ func (c *harnessPollingBatchClient) fetchOpenAIResults(ctx context.Context, file
 // mapOpenAIOutputLine projects an /v1/files content line onto the
 // harness-side BatchResult shape. A non-2xx response.status_code or
 // a populated top-level error block surfaces as a server_error.
+//
+// status_code == 0 (the JSON zero value, i.e. the field was absent or
+// malformed) is treated as a server_error rather than silently
+// fabricating a stream from an unverified body — OpenAI always sets
+// status_code on a valid output line.
 func mapOpenAIOutputLine(line openaiBatchOutputLine) *BatchResult {
 	if line.Error != nil && line.Error.Message != "" {
 		return &BatchResult{Err: &BatchResultError{Type: "server_error", Message: line.Error.Message}}
@@ -1091,7 +1096,7 @@ func mapOpenAIOutputLine(line openaiBatchOutputLine) *BatchResult {
 	if line.Response == nil {
 		return &BatchResult{Err: &BatchResultError{Type: "server_error", Message: "openai batch output line carried no response"}}
 	}
-	if line.Response.StatusCode != 0 && (line.Response.StatusCode < 200 || line.Response.StatusCode >= 300) {
+	if line.Response.StatusCode < 200 || line.Response.StatusCode >= 300 {
 		return &BatchResult{Err: &BatchResultError{
 			Type:    "server_error",
 			Message: fmt.Sprintf("openai batch entry returned status %d", line.Response.StatusCode),
