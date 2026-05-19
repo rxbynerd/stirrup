@@ -1667,6 +1667,79 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
 	}
 }
 
+// TestMapOpenAIOutputLine pins the mapOpenAIOutputLine projection
+// from /v1/files content line → BatchResult across all branches. The
+// status_code==0 row in particular guards against a silent success
+// fabrication when the field is absent / malformed (phase-6 review
+// caught the legacy guard masking this).
+func TestMapOpenAIOutputLine(t *testing.T) {
+	statusBody := func(code int, body string) *struct {
+		StatusCode int             `json:"status_code"`
+		Body       json.RawMessage `json:"body"`
+	} {
+		return &struct {
+			StatusCode int             `json:"status_code"`
+			Body       json.RawMessage `json:"body"`
+		}{StatusCode: code, Body: json.RawMessage(body)}
+	}
+
+	tests := []struct {
+		name    string
+		line    openaiBatchOutputLine
+		wantErr string // empty => expect success
+		wantOK  bool
+	}{
+		{
+			name: "top-level-error populated",
+			line: openaiBatchOutputLine{
+				CustomID: "id1",
+				Error: &struct {
+					Code    string `json:"code,omitempty"`
+					Message string `json:"message,omitempty"`
+				}{Code: "rate_limit", Message: "throttled"},
+			},
+			wantErr: "server_error",
+		},
+		{
+			name:    "nil response",
+			line:    openaiBatchOutputLine{CustomID: "id1", Response: nil},
+			wantErr: "server_error",
+		},
+		{
+			name:    "status_code 200 success",
+			line:    openaiBatchOutputLine{CustomID: "id1", Response: statusBody(200, `{"choices":[]}`)},
+			wantOK:  true,
+		},
+		{
+			name:    "status_code 422 server_error",
+			line:    openaiBatchOutputLine{CustomID: "id1", Response: statusBody(422, `{"error":"invalid"}`)},
+			wantErr: "server_error",
+		},
+		{
+			name:    "status_code 0 absent field → server_error",
+			line:    openaiBatchOutputLine{CustomID: "id1", Response: statusBody(0, `{"choices":[]}`)},
+			wantErr: "server_error",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mapOpenAIOutputLine(tc.line)
+			if tc.wantOK {
+				if got.Err != nil {
+					t.Errorf("expected success, got Err=%+v", got.Err)
+				}
+				if got.Response == nil {
+					t.Errorf("expected non-nil Response")
+				}
+				return
+			}
+			if got.Err == nil || got.Err.Type != tc.wantErr {
+				t.Errorf("Err.Type: got %+v, want %q", got.Err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestBatchAdapter_OpenAIStdio_CancelledSurfaces drives a full
 // BatchAdapter.Stream → harnessPollingBatchClient integration where the
 // fake OpenAI server returns "cancelled" on poll. The first
