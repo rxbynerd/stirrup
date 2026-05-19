@@ -355,12 +355,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// the BatchProviderConfig docstring. The streaming inner is retained
 	// so cfg.FallbackOnTimeout can delegate to it without a second build.
 	//
-	// The stdio polling client (#137) is not wired here: the validator
-	// already requires HarnessSidePolling=true for stdio, but the polling
-	// adapter itself does not exist yet. When transport.type=="stdio"
-	// and batch.enabled is set, the loop runs as a streaming turn until
-	// phase 4 lands the polling branch.
-	if config.Provider.Batch != nil && config.Provider.Batch.Enabled && config.Transport.Type == "grpc" {
+	// Two batch client implementations exist:
+	//   - controlPlaneBatchClient (transport=grpc): the control plane
+	//     owns the provider-side batch lifecycle.
+	//   - harnessPollingBatchClient (transport=stdio, Anthropic only in
+	//     v1): the harness polls the provider's batch API directly.
+	//
+	// ValidateRunConfig already enforces the transport/HarnessSidePolling
+	// pairing — the stdio branch trusts that contract.
+	if config.Provider.Batch != nil && config.Provider.Batch.Enabled {
 		// MaxWaitSeconds is filled with the documented default
 		// (86_400) by ValidateRunConfig when batch.enabled is true, so
 		// the nil check below is defence-in-depth for callers bypassing
@@ -370,7 +373,45 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			maxWaitSec = *config.Provider.Batch.MaxWaitSeconds
 		}
 		maxWait := time.Duration(maxWaitSec) * time.Second
-		batchClient := provider.NewControlPlaneBatchClient(tp, maxWait, config.Provider.Batch.CancelBundleOnRunCancel)
+
+		var batchClient provider.BatchClient
+		switch config.Transport.Type {
+		case "grpc":
+			batchClient = provider.NewControlPlaneBatchClient(tp, maxWait, config.Provider.Batch.CancelBundleOnRunCancel)
+		case "stdio":
+			// Phase 4 supports Anthropic only over stdio. The
+			// validator allows openai-{compatible,responses} batch in
+			// general (phase 6 will add the fabrication path); reject
+			// here so a misconfigured operator hits a clear error at
+			// build time rather than a confusing "OpenAI batch
+			// fabrication not yet implemented" at the first turn.
+			if config.Provider.Type != "anthropic" {
+				cleanup()
+				return nil, fmt.Errorf(
+					"batch with transport=stdio currently supports only provider type=anthropic (got %q); phase 6 will add openai support",
+					config.Provider.Type,
+				)
+			}
+			// The credential source is rebuilt here (rather than
+			// captured from buildProviders) because buildProviders
+			// resolves the source once and hands the BearerToken
+			// closure to the adapter; the polling client needs the
+			// Source itself so each poll can re-resolve credentials
+			// for forward compatibility with rotating sources.
+			credSrc, err := credential.BuildSource(config.Provider, secrets)
+			if err != nil {
+				cleanup()
+				return nil, fmt.Errorf("build batch credential source: %w", err)
+			}
+			batchClient = provider.NewHarnessPollingBatchClient(config.Provider.APIKeyRef, credSrc, maxWait)
+		default:
+			// validateBatchConfig already rejects any transport that
+			// isn't grpc or stdio (transport.type itself is closed-set
+			// validated), but defend in depth.
+			cleanup()
+			return nil, fmt.Errorf("batch is not supported for transport type %q", config.Transport.Type)
+		}
+
 		prov = provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, config.RunID)
 		// Replace the entry in the providers map so model-router lookups
 		// route to the batched wrapper rather than the raw streaming
