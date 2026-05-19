@@ -25,6 +25,14 @@ const (
 	// maxTokenBudget is the maximum allowed token budget.
 	maxTokenBudget = 50_000_000
 
+	// maxTemperature is the upper bound on RunConfig.Temperature.
+	// Chosen as the union of provider-side ranges: Anthropic accepts
+	// [0, 1], OpenAI and Gemini accept [0, 2]. Values inside the union
+	// validate cleanly here so a single config can target multiple
+	// providers; the adapter still surfaces the provider's own rejection
+	// when a value lands above that provider's narrower range.
+	maxTemperature = 2.0
+
 	// maxSessionNameLength is the maximum allowed length, in bytes, of
 	// SessionName. Capped to keep log lines, OTel attribute values, and
 	// trace JSON predictable; well above any genuine human-readable label.
@@ -108,6 +116,23 @@ type RunConfig struct {
 	MaxTokenBudget *int     `json:"maxTokenBudget,omitempty"`
 	MaxCostBudget  *float64 `json:"maxCostBudget,omitempty"`
 	Timeout        *int     `json:"timeout,omitempty"`
+
+	// Temperature is the sampling temperature forwarded to the provider
+	// on every turn. Nil means "use the harness default" (0.1 — a low
+	// value that biases for determinism on coding tasks). A non-nil value
+	// is forwarded verbatim, including an explicit 0.0 for greedy
+	// decoding; this is the only way to override the default downwards.
+	//
+	// Validated against [0.0, maxTemperature]. The union of provider
+	// ranges (Anthropic [0, 1], OpenAI/Gemini [0, 2]) means a value
+	// inside the union may still be rejected by the chosen provider's
+	// own API; the adapter surfaces that rejection at request time
+	// rather than at validation.
+	//
+	// Reasoning models that reject temperature on the wire are a
+	// separate concern: the provider adapter is responsible for
+	// stripping the field when the selected model requires it.
+	Temperature *float64 `json:"temperature,omitempty"`
 
 	// FollowUpGrace is the number of seconds to keep the transport open after
 	// the primary run completes, waiting for follow-up user_response events.
@@ -1589,6 +1614,19 @@ func ValidateRunConfig(config *RunConfig) error {
 	// maxTokenBudget must be bounded
 	if config.MaxTokenBudget != nil && *config.MaxTokenBudget > maxTokenBudget {
 		errs = append(errs, fmt.Sprintf("maxTokenBudget must be <= %d", maxTokenBudget))
+	}
+
+	// temperature must lie inside the union of provider ranges. Negative
+	// values are nonsensical (all providers reject them); >2 is outside
+	// every provider's documented ceiling.
+	if config.Temperature != nil {
+		t := *config.Temperature
+		if t < 0 {
+			errs = append(errs, "temperature must be >= 0.0")
+		}
+		if t > maxTemperature {
+			errs = append(errs, fmt.Sprintf("temperature must be <= %.1f", maxTemperature))
+		}
 	}
 
 	validateRuleOfTwo(config, &errs)
