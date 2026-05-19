@@ -559,14 +559,6 @@ func cmdDrift(args []string) {
 	}
 }
 
-// mineFailureTasks is the includeBatch=false specialisation of
-// mineFailureTasksFiltered. Retained as the documented default
-// (callers that already passed limit-only call sites do not need to
-// thread a new boolean) and to keep the existing test surface stable.
-func mineFailureTasks(recordings []types.RunRecording, limit int) []types.EvalTask {
-	return mineFailureTasksFiltered(recordings, limit, false)
-}
-
 // mineFailureTasksFiltered filters recordings for non-success outcomes
 // and converts them into EvalTasks with a default test-command judge.
 // When includeBatch is false (the documented default), recordings

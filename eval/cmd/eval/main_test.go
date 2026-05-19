@@ -451,7 +451,7 @@ func TestMineFailureTasks_FiltersNonSuccess(t *testing.T) {
 		},
 	}
 
-	tasks := mineFailureTasks(recordings, 0)
+	tasks := mineFailureTasksFiltered(recordings, 0, false)
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2", len(tasks))
 	}
@@ -484,7 +484,7 @@ func TestMineFailureTasks_RespectsLimit(t *testing.T) {
 		{RunID: "r3", Config: types.RunConfig{Prompt: "c"}, FinalOutcome: types.RunTrace{Outcome: "error"}},
 	}
 
-	tasks := mineFailureTasks(recordings, 2)
+	tasks := mineFailureTasksFiltered(recordings, 2, false)
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2", len(tasks))
 	}
@@ -495,7 +495,7 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "success"}},
 	}
 
-	tasks := mineFailureTasks(recordings, 0)
+	tasks := mineFailureTasksFiltered(recordings, 0, false)
 	if len(tasks) != 0 {
 		t.Fatalf("got %d tasks, want 0", len(tasks))
 	}
@@ -561,26 +561,6 @@ func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
 	tasks := mineFailureTasksFiltered(recordings, 0, true)
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2 (both failures included)", len(tasks))
-	}
-}
-
-// TestMineFailureTasksFiltered_BackwardCompatibleWrapper guarantees
-// that the legacy mineFailureTasks entrypoint preserves the new
-// default (batch excluded). A caller that bypasses the CLI flag
-// parsing path (programmatic embedders, library consumers) gets the
-// same behaviour as the documented default.
-func TestMineFailureTasksFiltered_BackwardCompatibleWrapper(t *testing.T) {
-	recordings := []types.RunRecording{
-		{
-			RunID:        "stream-fail",
-			Config:       types.RunConfig{Prompt: "streaming failure"},
-			FinalOutcome: types.RunTrace{Outcome: "error"},
-		},
-		makeBatchRecording("batch-fail", "error", "batch failure"),
-	}
-	tasks := mineFailureTasks(recordings, 0)
-	if len(tasks) != 1 {
-		t.Fatalf("mineFailureTasks default = %d tasks, want 1 (batch excluded)", len(tasks))
 	}
 }
 
