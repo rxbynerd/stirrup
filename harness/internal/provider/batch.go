@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -286,9 +287,12 @@ func (a *BatchAdapter) awaitAndFabricate(
 		// Prefix the error type so reviewers (and the eventual outcome
 		// mapper in #138) can distinguish batch-side failure categories
 		// from inner provider errors without parsing the wrapped chain.
+		// Scrub the message at this single fan-in point so a provider
+		// returning a credential-shaped string in its error body cannot
+		// propagate verbatim into transport warnings / OTel spans.
 		ch <- types.StreamEvent{
 			Type:  "error",
-			Error: fmt.Errorf("[%s] %s", entry.Err.Type, entry.Err.Message),
+			Error: fmt.Errorf("[%s] %s", entry.Err.Type, security.Scrub(entry.Err.Message)),
 		}
 		return
 	}

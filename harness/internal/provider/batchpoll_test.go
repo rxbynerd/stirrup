@@ -1667,6 +1667,43 @@ func TestHarnessPollingBatch_OpenAIResult_Failed_NoErrorFile(t *testing.T) {
 	}
 }
 
+// TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody pins the
+// security.Scrub fan-in on the four OpenAI error sites: a 422 from
+// /batches whose body echoes a secret-shaped string must redact the
+// secret in the returned error rather than letting the raw bytes flow
+// to OTel spans / transport warnings.
+func TestHarnessPollingBatch_OpenAIBatchCreate_ScrubsErrorBody(t *testing.T) {
+	src := &fakeCredentialSource{token: "sk-test"}
+	const secret = "sk-ant-abc123_DEF-456"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/files":
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"id":"file_abc"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/batches":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = fmt.Fprintf(w, `{"error":{"message":"bad: %s"}}`, secret)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	c, teardown := newTestOpenAIPollingClient(t, srv, src, "openai-compatible", time.Second)
+	defer teardown()
+
+	_, err := c.Submit(context.Background(), openaiSubmitEntries("id1", "openai-compatible"))
+	if err == nil {
+		t.Fatal("expected error from 422 response, got nil")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("error must not contain raw secret; got: %s", err.Error())
+	}
+	if !strings.Contains(err.Error(), "[REDACTED]") {
+		t.Errorf("error must contain [REDACTED] sentinel; got: %s", err.Error())
+	}
+}
+
 // TestMapOpenAIOutputLine pins the mapOpenAIOutputLine projection
 // from /v1/files content line → BatchResult across all branches. The
 // status_code==0 row in particular guards against a silent success

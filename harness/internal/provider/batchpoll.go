@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
 const (
@@ -859,7 +860,7 @@ func (c *harnessPollingBatchClient) submitOpenAI(ctx context.Context, entry Batc
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("openai batch create returned status %d: %s", resp.StatusCode, errBody)
+		return "", fmt.Errorf("openai batch create returned status %d: %s", resp.StatusCode, security.Scrub(string(errBody)))
 	}
 
 	var obj openaiBatchObject
@@ -917,7 +918,7 @@ func (c *harnessPollingBatchClient) uploadOpenAIBatchFile(ctx context.Context, j
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("openai file upload returned status %d: %s", resp.StatusCode, errBody)
+		return "", fmt.Errorf("openai file upload returned status %d: %s", resp.StatusCode, security.Scrub(string(errBody)))
 	}
 
 	var obj openaiFileObject
@@ -1035,7 +1036,7 @@ func (c *harnessPollingBatchClient) pollOnceOpenAI(ctx context.Context, batchID 
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("openai batch poll returned status %d: %s", resp.StatusCode, errBody)
+		return nil, fmt.Errorf("openai batch poll returned status %d: %s", resp.StatusCode, security.Scrub(string(errBody)))
 	}
 
 	var obj openaiBatchObject
@@ -1203,7 +1204,7 @@ func (c *harnessPollingBatchClient) downloadOpenAIFile(ctx context.Context, file
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
-		return nil, fmt.Errorf("openai file download returned status %d: %s", resp.StatusCode, errBody)
+		return nil, fmt.Errorf("openai file download returned status %d: %s", resp.StatusCode, security.Scrub(string(errBody)))
 	}
 	return resp.Body, nil
 }
