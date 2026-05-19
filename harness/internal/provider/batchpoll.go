@@ -118,6 +118,19 @@ type harnessPollingBatchClient struct {
 	apiKeyHeader string
 	maxWait      time.Duration
 	logger       *slog.Logger
+
+	// lastSubmittedCustomID retains the customID supplied to the most
+	// recent Submit so resultOpenAI can key terminal-status / top-level-
+	// failure BatchResults under the originating customID. The OpenAI
+	// poll/result endpoints address by batchID (no customID round-trip)
+	// and the BatchAdapter looks up by customID; without this bridge,
+	// cancelled / failed-without-error-file outcomes surface as the
+	// opaque "missing entry" error rather than the typed BatchResultError.
+	// Safe for the single-in-flight contract: harnessPollingBatchClient is
+	// constructed per-run and Submit accepts exactly one entry; future
+	// multi-entry support will need a batchID → customID map keyed off
+	// the upload payload (deferred to phase 7 follow-up).
+	lastSubmittedCustomID atomic.Value // string
 }
 
 // HarnessBatchClientOptions configures NewHarnessPollingBatchClient. The
@@ -792,6 +805,12 @@ func openaiEndpointFor(providerType string) string {
 // POST /v1/batches referencing the uploaded file. Returns the
 // assigned batch id (batch_...).
 func (c *harnessPollingBatchClient) submitOpenAI(ctx context.Context, entry BatchEntry) (string, error) {
+	// Record the customID so resultOpenAI can key terminal-status /
+	// top-level-failure BatchResults under it (the OpenAI batch poll
+	// endpoints carry only the batchID; the BatchAdapter looks up by
+	// customID — see the lastSubmittedCustomID field doc).
+	c.lastSubmittedCustomID.Store(entry.CustomID)
+
 	// Step 1: upload the JSONL input file.
 	inputLine := openaiBatchInputLine{
 		CustomID: entry.CustomID,
@@ -915,7 +934,15 @@ func (c *harnessPollingBatchClient) uploadOpenAIBatchFile(ctx context.Context, j
 // terminal status is observed, maxWait fires, or ctx is cancelled.
 // On completion the output file's JSONL is fetched and the line
 // matching the submitted custom_id is projected onto BatchResult.
+//
+// The customID parameter is read from the most recent successful
+// submitOpenAI (stored on the client via lastSubmittedCustomID). It is
+// used to key terminal-status results (cancelled / cancelling) and
+// top-level failure fallbacks so the BatchAdapter's customID lookup
+// surfaces the typed BatchResultError rather than the opaque
+// "missing entry" message.
 func (c *harnessPollingBatchClient) resultOpenAI(ctx context.Context, batchID string) (map[string]*BatchResult, error) {
+	customID, _ := c.lastSubmittedCustomID.Load().(string)
 	deadline := time.Now().Add(c.maxWait)
 	interval := getBatchPollInitialInterval()
 
@@ -940,14 +967,14 @@ func (c *harnessPollingBatchClient) resultOpenAI(ctx context.Context, batchID st
 			// could route the failure to a specific submission; the
 			// top-level errors.data field is reserved for batch-wide
 			// failures (e.g. malformed input file). Either way the
-			// caller receives a single BatchResult mapped to the
-			// originating custom_id so the BatchAdapter has something
-			// to dispatch.
-			return c.fetchOpenAIFailure(ctx, *obj, batchID)
+			// caller receives a single BatchResult keyed by the
+			// originating customID so the BatchAdapter's lookup
+			// surfaces the typed BatchResultError.
+			return c.fetchOpenAIFailure(ctx, *obj, batchID, customID)
 		case "expired":
 			return nil, fmt.Errorf("%w: openai batch %s expired upstream", errBatchExpired, batchID)
 		case "cancelled", "cancelling":
-			return c.synthesizeOpenAIFailure(batchID, "batch_cancelled", "openai batch was cancelled upstream"), nil
+			return c.synthesizeOpenAIFailure(batchID, customID, "batch_cancelled", "openai batch was cancelled upstream"), nil
 		case "validating", "in_progress", "finalizing":
 			// Documented intermediate statuses; continue polling.
 		default:
@@ -1074,18 +1101,13 @@ func mapOpenAIOutputLine(line openaiBatchOutputLine) *BatchResult {
 }
 
 // fetchOpenAIFailure handles the "failed" terminal status. When
-// error_file_id is set we surface the first per-entry error; when only
-// the top-level errors object is populated we surface its first
-// message. The polling client always submits one entry, so a single
-// BatchResult keyed by the resubmission's custom_id would require the
-// caller's custom_id — which we do not retain here. To keep the
-// BatchAdapter happy (it looks up by custom_id from the originating
-// submission) we synthesise a server_error keyed empty; the
-// BatchAdapter currently rejects this with "missing entry", which is
-// the correct surface for an opaque top-level failure. Per-entry
-// errors keyed by the failing custom_id ARE returned in the typical
-// case.
-func (c *harnessPollingBatchClient) fetchOpenAIFailure(ctx context.Context, obj openaiBatchObject, batchID string) (map[string]*BatchResult, error) {
+// error_file_id is set we surface the first per-entry error keyed by
+// the failing custom_id. When only the top-level errors object is
+// populated (e.g. malformed input file rejected before per-entry
+// dispatch), we synthesise a server_error keyed under the originating
+// customID so the BatchAdapter's lookup surfaces the typed
+// BatchResultError rather than the opaque "missing entry" error.
+func (c *harnessPollingBatchClient) fetchOpenAIFailure(ctx context.Context, obj openaiBatchObject, batchID, customID string) (map[string]*BatchResult, error) {
 	if obj.ErrorFileID != "" {
 		body, err := c.downloadOpenAIFile(ctx, obj.ErrorFileID)
 		if err != nil {
@@ -1116,35 +1138,41 @@ func (c *harnessPollingBatchClient) fetchOpenAIFailure(ctx context.Context, obj 
 	}
 
 	// No per-entry error file (or it was empty). Fall back to the
-	// top-level errors object.
-	msg := "openai batch failed upstream"
+	// top-level errors object and surface as a synthesised server_error
+	// keyed under the originating customID so BatchAdapter sees a typed
+	// entry rather than an opaque "missing entry" error.
+	msg := fmt.Sprintf("openai batch %s failed upstream", batchID)
 	if obj.Errors != nil && len(obj.Errors.Data) > 0 && obj.Errors.Data[0].Message != "" {
 		msg = obj.Errors.Data[0].Message
 	}
-	return nil, fmt.Errorf("openai batch %s failed: %s", batchID, msg)
+	return c.synthesizeOpenAIFailure(batchID, customID, "server_error", msg), nil
 }
 
 // synthesizeOpenAIFailure produces a single-entry map for a terminal
-// failure status that does not carry a per-entry error file
-// (cancelled / cancelling). The BatchAdapter's lookup keys on the
-// originating custom_id, which the polling client does not retain
-// across the Submit/Result boundary; an empty-keyed map surfaces as
-// the documented "missing entry" error in BatchAdapter, which is
-// the right error class for an opaque batch-wide cancel.
-func (c *harnessPollingBatchClient) synthesizeOpenAIFailure(batchID, errType, message string) map[string]*BatchResult {
+// failure status that does not carry a per-entry error file (cancelled
+// / cancelling, or a "failed" top-level error with no error_file_id).
+// The result is keyed under the originating customID (captured from the
+// last successful Submit) so the BatchAdapter's customID lookup
+// surfaces the typed BatchResultError. If customID is empty (a
+// pathological Result-without-prior-Submit call), the batchID is used
+// as a fallback so the map is non-empty and the BatchAdapter still
+// returns a typed error instead of "missing entry".
+func (c *harnessPollingBatchClient) synthesizeOpenAIFailure(batchID, customID, errType, message string) map[string]*BatchResult {
 	if c.logger != nil {
-		c.logger.Info(
+		c.logger.Warn(
 			"openai batch terminal failure",
 			"batchID", batchID,
+			"customID", customID,
 			"type", errType,
 			"message", message,
 		)
 	}
-	// Use the batchID as the key as a fallback so the map is non-empty
-	// and the BatchAdapter surfaces the error type rather than an
-	// opaque "missing entry" message.
+	key := customID
+	if key == "" {
+		key = batchID
+	}
 	return map[string]*BatchResult{
-		batchID: {Err: &BatchResultError{Type: errType, Message: message}},
+		key: {Err: &BatchResultError{Type: errType, Message: message}},
 	}
 }
 
