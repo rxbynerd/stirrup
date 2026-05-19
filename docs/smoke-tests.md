@@ -319,7 +319,249 @@ surfaces only at first provider call — not at config load.
 
 ## AWS Bedrock
 
-Documented under sister issue #161.
+The AWS Bedrock smoke workflow lives at
+[`.github/workflows/smoke-bedrock.yml`](../.github/workflows/smoke-bedrock.yml).
+It targets `us.anthropic.claude-haiku-4-5-20251001-v1:0` (the
+cross-region inference profile for Haiku 4.5) on Bedrock via STS
+`AssumeRoleWithWebIdentity`. The harness exchanges the GitHub Actions
+OIDC JWT for short-lived AWS credentials at
+`sts.amazonaws.com`, then signs Bedrock `ConverseStream` requests with
+those credentials — no `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+IAM user / static AWS credential of any kind appears in the workflow's
+scope.
+
+The federation primitive is documented under
+[`docs/credential-federation.md`](credential-federation.md) as
+*Cross-cloud → Bedrock via STS web-identity*. As with Azure, the
+harness does not expose first-class CLI flags for the Bedrock token
+source; the smoke workflow drives the credential shape entirely through
+[`examples/runconfig/bedrock-wif-smoke.json`](../examples/runconfig/bedrock-wif-smoke.json),
+which pins the role ARN, region, model ID, audience, and the
+`github-actions-oidc` token source.
+
+### Design choice: stirrup's `web-identity` vs. `aws-actions/configure-aws-credentials`
+
+Two ways to plumb GHA OIDC → AWS for a smoke test exist:
+
+- **Stirrup's `web-identity` source.** The harness performs the STS
+  exchange itself via the configured `tokenSource:
+  github-actions-oidc` + `roleArn`. The workflow contains no
+  AWS-specific tooling and the federation code path under test is
+  identical to what an operator in production deploys.
+- **`aws-actions/configure-aws-credentials@v4`.** The action performs
+  the STS exchange and exports
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` to
+  the runner env. The harness then uses `aws-default` (the SDK
+  default chain) — no stirrup-side federation code is exercised.
+
+The shipped workflow uses the first option, deliberately. A smoke test
+exists to prove stirrup's federation code path works against live AWS;
+the second option turns the run into a Bedrock-adapter-only smoke and
+silently bypasses the federation layer that production deployments
+depend on. The action remains a useful debugging fallback when a smoke
+run fails — swapping it in disambiguates *stirrup federation broken*
+from *AWS-side IAM broken* — but the committed workflow exercises
+stirrup end-to-end.
+
+### Provisioned state (stirrup sandbox account)
+
+The setup below is **already complete on the stirrup sandbox AWS
+account `786874932855`**. An operator dispatching this smoke run from
+`main` against the existing fixture needs no `aws` provisioning. The
+walkthrough exists as a reusable playbook for other accounts adopting
+the same shape.
+
+| Field | Value |
+|---|---|
+| AWS account ID | `786874932855` |
+| Region (source) | `us-west-2` |
+| Model (cross-region inference profile) | `us.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| IAM OIDC provider | `arn:aws:iam::786874932855:oidc-provider/token.actions.githubusercontent.com` |
+| Role ARN | `arn:aws:iam::786874932855:role/stirrup-smoke-bedrock` |
+| Trust `sub` claim | `repo:rxbynerd/stirrup:ref:refs/heads/main` |
+| Trust `aud` claim | `sts.amazonaws.com` |
+| Role inline policy | `BedrockInvokeHaiku45` — Invoke/ConverseStream on the `us.` inference-profile ARN plus the foundation-model ARNs in `us-west-2`, `us-east-1`, `us-east-2` |
+| Bedrock model access (Haiku 4.5, `us-west-2`) | enabled |
+
+The role's trust policy is pinned to `refs/heads/main`. Dispatching the
+workflow from a feature branch, a PR, or a fork will fail at the STS
+exchange — this is intentional, and the failure mode is loud (the
+harness surfaces the STS error verbatim in the trace).
+
+### Reusable setup walkthrough
+
+For any other AWS account adopting the same shape:
+
+#### 1. Confirm Bedrock model access
+
+Anthropic models on Bedrock require explicit access enablement per
+region (AWS Console → Bedrock → Model access). Smoke runs against an
+unenabled region return `AccessDeniedException` from
+`ConverseStream`. Verify with:
+
+```sh
+aws bedrock get-foundation-model-availability \
+  --region us-west-2 \
+  --model-id anthropic.claude-haiku-4-5-20251001-v1:0
+```
+
+The response should show `authorizationStatus: AUTHORIZED` and
+`entitlementAvailability: AVAILABLE`. If not, enable the model in the
+target region's Bedrock console before continuing.
+
+#### 2. Create an IAM OIDC provider for GitHub Actions
+
+```sh
+aws iam create-open-id-connect-provider \
+  --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com
+```
+
+##### Gotcha: thumbprints are no longer required
+
+Many older Terraform/CDK modules ship hardcoded GitHub thumbprints on
+their `aws_iam_openid_connect_provider` resources. These are
+**harmless leftovers from older AWS guidance and do not need
+refreshing**. AWS now verifies the JWKS endpoint's TLS certificate
+against its trusted root CA library, so the
+`--thumbprint-list` flag is optional and the value (when supplied) is
+not consulted at token-verification time. A dropped thumbprint is not
+a security regression.
+
+#### 3. Create the IAM role with a federated trust policy
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:aws:iam::786874932855:oidc-provider/token.actions.githubusercontent.com"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": "repo:rxbynerd/stirrup:ref:refs/heads/main"
+      }
+    }
+  }]
+}
+```
+
+```sh
+aws iam create-role \
+  --role-name stirrup-smoke-bedrock \
+  --assume-role-policy-document file://trust-policy.json
+```
+
+##### Gotcha: `workflow_dispatch` uses the branch-ref subject form
+
+A `workflow_dispatch`-triggered run does **not** mint a token with a
+distinct `workflow_dispatch` subject form. The `sub` claim takes the
+**branch-ref form** of the dispatching branch, e.g.
+`repo:rxbynerd/stirrup:ref:refs/heads/main`. A trust policy whose
+`sub` condition reads `repo:rxbynerd/stirrup:workflow_dispatch` will
+fail token exchange every time with
+`AccessDenied: Not authorized to perform sts:AssumeRoleWithWebIdentity`.
+
+If smoke runs from pull requests are needed in future, add a second
+trust statement whose `sub` reads `repo:rxbynerd/stirrup:pull_request`
+(underscore — older AWS docs occasionally show `pull-request` with a
+hyphen which is wrong). The shipped trust policy is `main`-only;
+dispatching from a feature branch requires merging to `main` first.
+
+#### 4. Attach a Bedrock invoke policy
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream",
+      "bedrock:Converse",
+      "bedrock:ConverseStream"
+    ],
+    "Resource": [
+      "arn:aws:bedrock:us-west-2:786874932855:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+      "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0"
+    ]
+  }]
+}
+```
+
+```sh
+aws iam put-role-policy \
+  --role-name stirrup-smoke-bedrock \
+  --policy-name BedrockInvokeHaiku45 \
+  --policy-document file://bedrock-policy.json
+```
+
+##### Gotcha: cross-region inference requires *both* ARN shapes
+
+The `us.` prefix on a Bedrock model ID denotes a **cross-region
+inference profile**, not a model. The source region (the `--region`
+on the API call, and the region in the inference-profile ARN's
+account-qualified portion) is `us-west-2`, but the request may
+execute in any of `us-west-2`, `us-east-1`, or `us-east-2` depending
+on Bedrock's load-balancing decision at request time.
+
+The IAM policy must grant the action on **both**:
+
+1. The inference-profile ARN itself
+   (`arn:aws:bedrock:us-west-2:786874932855:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`).
+2. The destination foundation-model ARNs in every region the profile
+   may route to
+   (`arn:aws:bedrock:{us-west-2|us-east-1|us-east-2}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`).
+
+Omitting the destination foundation-model ARNs is the most common
+cause of `us.`-prefixed-model `AccessDenied` responses — IAM
+evaluates permissions against the destination region the request is
+routed to, not the source region the caller specified. The error
+surfaces as a 403 from Bedrock with a region in the message that
+differs from the configured `provider.region` — a strong signal that
+the destination-region grant is what's missing.
+
+#### 5. Allow IAM propagation
+
+IAM role and policy changes propagate across the AWS control plane
+in well under 30 seconds in practice, but the documented upper bound
+is several minutes. Allow ~60 seconds between
+`create-role`/`put-role-policy` and the first dispatch.
+
+#### 6. Wire the role ARN into the fixture
+
+Edit `examples/runconfig/bedrock-wif-smoke.json` and substitute the
+new account ID into `provider.credential.roleArn` (and into
+`provider.region` if a different source region is chosen). The values
+committed today are bound to the stirrup sandbox account; an external
+adopter forks the fixture (or maintains an account-specific overlay).
+
+### Reading the fixture
+
+The shipped smoke fixture pins these load-bearing fields:
+
+| Field | Value | Rationale |
+|---|---|---|
+| `provider.type` | `bedrock` | The harness's first-class Bedrock adapter (`ConverseStream`). |
+| `provider.region` | `us-west-2` | Historically the most reliable Bedrock region for new Anthropic launches; the source region the inference profile is queried from. `us-east-1` and `us-east-2` are also valid destinations for the `us.` profile but the *source* region must match the inference-profile ARN. |
+| `provider.credential.type` | `web-identity` | Triggers the `sts:AssumeRoleWithWebIdentity` exchange. |
+| `provider.credential.roleArn` | `arn:aws:iam::786874932855:role/stirrup-smoke-bedrock` | The role whose trust policy is pinned to `refs/heads/main` and whose inline policy grants Bedrock invoke on the Haiku 4.5 inference profile. |
+| `provider.credential.sessionName` | `stirrup-smoke` | Human-readable session label surfaced in CloudTrail and the role-session ARN. Bounded length / printable-ASCII per stirrup's `validateSessionName`. |
+| `provider.credential.tokenSource.type` | `github-actions-oidc` | Reads the GHA-injected `ACTIONS_ID_TOKEN_REQUEST_URL` + token. |
+| `provider.credential.tokenSource.audience` | `sts.amazonaws.com` | What AWS expects on the OIDC token's `aud` claim, matching the IAM OIDC provider's client-id list and the trust policy's audience condition. |
+| `modelRouter.model` | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | The `us.` cross-region inference profile for Haiku 4.5 — the cheapest current Anthropic model on Bedrock. The `us.` prefix decouples the source region from the destination region the request actually executes in. |
+
+The harness will load the fixture so long as the JSON validates
+structurally and `ValidateRunConfig` passes; live Bedrock state
+(model access, IAM trust, inference-profile availability) is only
+exercised at the first provider call. A missing model-access
+enablement surfaces as the workflow's "Run smoke test" step failing
+with `AccessDeniedException`, not at config load.
 
 ## Vertex AI Gemini
 

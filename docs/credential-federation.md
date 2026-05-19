@@ -245,6 +245,14 @@ projected token file all work as the subject token to
 }
 ```
 
+For a fully-wired end-to-end example — including the IAM OIDC
+provider, role trust policy, Bedrock invoke policy, and the
+cross-region inference IAM gotcha — see the *AWS Bedrock* section of
+[`docs/smoke-tests.md`](smoke-tests.md#aws-bedrock). That walkthrough
+is the canonical operator playbook for a working GHA → STS → Bedrock
+pipeline; the snippet above is intended only as a configuration
+reference.
+
 ## GCP-native paths
 
 When the runtime is itself on GCP, prefer the GCP-native sources over
