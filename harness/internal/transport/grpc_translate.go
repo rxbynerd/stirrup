@@ -90,6 +90,9 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.MaxCostBudget != nil {
 		rc.MaxCostBudget = pc.MaxCostBudget
 	}
+	if pc.Temperature != nil {
+		rc.Temperature = pc.Temperature
+	}
 	if pc.Timeout != nil {
 		v := int(*pc.Timeout)
 		rc.Timeout = &v
