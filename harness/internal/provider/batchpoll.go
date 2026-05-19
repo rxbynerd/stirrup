@@ -108,9 +108,9 @@ type harnessPollingBatchClient struct {
 	// via credSource; the reference string itself is safe to log because
 	// Redact() strips secret references from any persisted trace.
 	apiKeyRef string
-	baseURL    string
-	maxWait    time.Duration
-	logger     *slog.Logger
+	baseURL   string
+	maxWait   time.Duration
+	logger    *slog.Logger
 }
 
 // NewHarnessPollingBatchClient constructs a polling client for the
