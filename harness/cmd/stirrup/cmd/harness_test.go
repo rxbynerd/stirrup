@@ -1816,6 +1816,89 @@ func TestApplyOverrides_TemperatureChangedDisambiguatesZero(t *testing.T) {
 	})
 }
 
+// TestBuildHarnessRunConfig_Temperature pins the temperature propagation
+// inside buildHarnessRunConfig itself. The applyOverrides tests cover the
+// --config-path branch, but buildHarnessRunConfig has its own three-line
+// "if opts.Temperature != nil { copy }" block on the flag-only path —
+// a regression there (e.g. unconditional assignment, or always
+// dereferencing) would be invisible to the applyOverrides suite because
+// the two code paths never intersect. Mirrors the shape of
+// TestBuildHarnessRunConfig_SessionNamePropagates.
+func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
+	base := func() harnessCLIOptions {
+		return harnessCLIOptions{
+			RunID:         "test-run",
+			Mode:          "execution",
+			Prompt:        "test",
+			ProviderType:  "anthropic",
+			APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+			Model:         "claude-sonnet-4-6",
+			MaxTurns:      20,
+			Timeout:       600,
+			TransportType: "stdio",
+			LogLevel:      "info",
+		}
+	}
+
+	t.Run("nil opts.Temperature stays nil on the config", func(t *testing.T) {
+		opts := base()
+		opts.Temperature = nil
+		cfg, err := buildHarnessRunConfig(opts)
+		if err != nil {
+			t.Fatalf("buildHarnessRunConfig: %v", err)
+		}
+		if cfg.Temperature != nil {
+			t.Errorf("nil opts.Temperature must yield nil cfg.Temperature, got %v", *cfg.Temperature)
+		}
+	})
+
+	t.Run("explicit zero propagates as *0.0", func(t *testing.T) {
+		opts := base()
+		opts.Temperature = types.Float64Ptr(0.0)
+		cfg, err := buildHarnessRunConfig(opts)
+		if err != nil {
+			t.Fatalf("buildHarnessRunConfig: %v", err)
+		}
+		if cfg.Temperature == nil {
+			t.Fatalf("explicit *float64(0.0) must yield non-nil cfg.Temperature")
+		}
+		if *cfg.Temperature != 0.0 {
+			t.Errorf("cfg.Temperature: got %v, want 0.0", *cfg.Temperature)
+		}
+	})
+
+	t.Run("non-zero value propagates", func(t *testing.T) {
+		opts := base()
+		opts.Temperature = types.Float64Ptr(0.7)
+		cfg, err := buildHarnessRunConfig(opts)
+		if err != nil {
+			t.Fatalf("buildHarnessRunConfig: %v", err)
+		}
+		if cfg.Temperature == nil {
+			t.Fatalf("non-nil opts.Temperature must yield non-nil cfg.Temperature")
+		}
+		if *cfg.Temperature != 0.7 {
+			t.Errorf("cfg.Temperature: got %v, want 0.7", *cfg.Temperature)
+		}
+	})
+
+	t.Run("opts.Temperature is copied, not aliased", func(t *testing.T) {
+		opts := base()
+		opts.Temperature = types.Float64Ptr(0.4)
+		cfg, err := buildHarnessRunConfig(opts)
+		if err != nil {
+			t.Fatalf("buildHarnessRunConfig: %v", err)
+		}
+		// Mutating opts.Temperature post-build must not bleed through
+		// into the constructed RunConfig — the harness contract is that
+		// buildHarnessRunConfig snapshots the value.
+		*opts.Temperature = 1.5
+		if cfg.Temperature == nil || *cfg.Temperature != 0.4 {
+			t.Errorf("cfg.Temperature should be a copy snapshot of 0.4, got %v", cfg.Temperature)
+		}
+	})
+}
+
 // TestRunHarness_ConfigPathFollowupGraceFromEnv verifies that the
 // STIRRUP_FOLLOWUP_GRACE environment variable populates FollowUpGrace in
 // the --config code path when the file omits the field. This mirrors the
