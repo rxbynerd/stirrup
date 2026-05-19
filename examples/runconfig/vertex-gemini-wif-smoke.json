@@ -1,0 +1,66 @@
+{
+  "runId": "vertex-gemini-wif-smoke",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "gemini",
+    "gcpProject": "rubynerd-net",
+    "gcpLocation": "global",
+    "credential": {
+      "type": "gcp-workload-identity-federation",
+      "audience": "//iam.googleapis.com/projects/163317929648/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider",
+      "serviceAccount": "stirrup-testing@rubynerd-net.iam.gserviceaccount.com",
+      "tokenSource": {
+        "type": "github-actions-oidc",
+        "audience": "//iam.googleapis.com/projects/163317929648/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider"
+      }
+    }
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "gemini",
+    "model": "gemini-2.5-flash-lite"
+  },
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 200000
+  },
+  "executor": {
+    "type": "local",
+    "workspace": "/tmp/stirrup-workspace"
+  },
+  "editStrategy": {
+    "type": "multi"
+  },
+  "verifier": {
+    "type": "none"
+  },
+  "permissionPolicy": {
+    "type": "allow-all"
+  },
+  "gitStrategy": {
+    "type": "none"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "traceEmitter": {
+    "type": "jsonl",
+    "filePath": "/tmp/stirrup.trace.jsonl"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory",
+      "search_files",
+      "edit_file",
+      "run_command"
+    ]
+  },
+  "maxTurns": 20,
+  "timeout": 600,
+  "logLevel": "info"
+}
