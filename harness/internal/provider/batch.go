@@ -159,7 +159,7 @@ func NewBatchAdapter(
 // streaming adapter would have produced for the same response.
 func (a *BatchAdapter) Stream(ctx context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
 	turn := a.turnCount.Add(1)
-	customID := fmt.Sprintf("%s-turn-%d", a.runID, turn)
+	customID := fmt.Sprintf("stirrup-%s-turn-%d", a.runID, turn)
 
 	body, err := a.marshalRequestBody(params)
 	if err != nil {
