@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -220,8 +221,8 @@ func (c *harnessPollingBatchClient) Submit(ctx context.Context, entries []BatchE
 		return "", err
 	}
 
-	url := c.baseURL + "/v1/messages/batches"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	submitURL := c.baseURL + "/v1/messages/batches"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, submitURL, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("build batch submit request: %w", err)
 	}
@@ -326,8 +327,8 @@ func (c *harnessPollingBatchClient) pollOnce(ctx context.Context, batchID string
 		return nil, err
 	}
 
-	url := c.baseURL + "/v1/messages/batches/" + batchID
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	pollURL := c.baseURL + "/v1/messages/batches/" + url.PathEscape(batchID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build batch poll request: %w", err)
 	}
@@ -448,8 +449,8 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 		return
 	}
 
-	url := c.baseURL + "/v1/messages/batches/" + batchID + "/cancel"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	cancelURL := c.baseURL + "/v1/messages/batches/" + url.PathEscape(batchID) + "/cancel"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cancelURL, nil)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Warn("batch cancel: build request", "batchID", batchID, "error", err)
