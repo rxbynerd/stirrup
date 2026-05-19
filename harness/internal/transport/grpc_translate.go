@@ -300,6 +300,31 @@ func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 			WallClockBudgetMs: int(pc.Retry.GetWallClockBudgetMs()),
 		}
 	}
+	if pc.Batch != nil {
+		// Nil-guarded for the same reason as Retry above: a wire-absent
+		// batch block must produce a nil types.BatchProviderConfig so
+		// ValidateRunConfig's per-mode invariants stay quiet and the
+		// run executes as a streaming turn. Allocating a zero value
+		// here would also collapse the "operator did not configure"
+		// vs. "explicit Enabled=false" distinction the phase-2 adapter
+		// wiring (#135) depends on. MaxWaitSeconds is wire-`optional`
+		// so the int32 pointer is unset when absent; preserve the
+		// nil/non-nil distinction in the *int translation so the
+		// validator's default-apply path still owns "filled by harness"
+		// vs. "explicit value".
+		batch := &types.BatchProviderConfig{
+			Enabled:                 pc.Batch.GetEnabled(),
+			HarnessSidePolling:      pc.Batch.GetHarnessSidePolling(),
+			FallbackOnTimeout:       pc.Batch.GetFallbackOnTimeout(),
+			CancelBundleOnRunCancel: pc.Batch.GetCancelBundleOnRunCancel(),
+			AllowInteractiveModes:   pc.Batch.GetAllowInteractiveModes(),
+		}
+		if pc.Batch.MaxWaitSeconds != nil {
+			v := int(*pc.Batch.MaxWaitSeconds)
+			batch.MaxWaitSeconds = &v
+		}
+		cfg.Batch = batch
+	}
 	return cfg
 }
 

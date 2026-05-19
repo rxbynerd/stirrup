@@ -625,3 +625,113 @@ func TestRunConfigFromProto_ProviderRetryConfigPreserved(t *testing.T) {
 		}
 	})
 }
+
+// TestRunConfigFromProto_BatchProviderConfigPreserved pins the phase-1
+// review fix for the silent K8s-job batch drop: the proto's
+// ProviderConfig.batch (field 14) must round-trip into the internal
+// types.ProviderConfig.Batch with every field preserved and the
+// nil/non-nil distinction on MaxWaitSeconds intact. Without the
+// translation block any TaskAssignment with batch.enabled=true was
+// silently degraded to a streaming run with no log entry — the same
+// failure mode that caused gh-95, gh-117, gh-118, and gh-100.
+func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
+	t.Run("non-nil batch round-trips all six fields", func(t *testing.T) {
+		var maxWait int32 = 3600
+		// Use protobuf marshal/unmarshal so we exercise the actual wire
+		// format and not just an in-memory pointer copy. The phase-1
+		// reviewer specifically called out that the gap is on the gRPC
+		// path, so the test should cover Marshal -> Unmarshal as well as
+		// the Go-side translate call.
+		original := &pb.RunConfig{
+			Provider: &pb.ProviderConfig{
+				Type: "anthropic",
+				Batch: &pb.BatchProviderConfig{
+					Enabled:                 true,
+					MaxWaitSeconds:          &maxWait,
+					HarnessSidePolling:      true,
+					FallbackOnTimeout:       true,
+					CancelBundleOnRunCancel: true,
+					AllowInteractiveModes:   true,
+				},
+			},
+		}
+
+		bytes, err := proto.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.RunConfig
+		if err := proto.Unmarshal(bytes, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		rc := runConfigFromProto(&decoded)
+
+		if rc.Provider.Batch == nil {
+			t.Fatal("Batch dropped during proto translation")
+		}
+		if !rc.Provider.Batch.Enabled {
+			t.Errorf("Batch.Enabled: got false, want true")
+		}
+		if rc.Provider.Batch.MaxWaitSeconds == nil {
+			t.Fatal("Batch.MaxWaitSeconds: got nil, want non-nil pointer")
+		}
+		if got := *rc.Provider.Batch.MaxWaitSeconds; got != 3600 {
+			t.Errorf("Batch.MaxWaitSeconds: got %d, want 3600", got)
+		}
+		if !rc.Provider.Batch.HarnessSidePolling {
+			t.Errorf("Batch.HarnessSidePolling: got false, want true")
+		}
+		if !rc.Provider.Batch.FallbackOnTimeout {
+			t.Errorf("Batch.FallbackOnTimeout: got false, want true")
+		}
+		if !rc.Provider.Batch.CancelBundleOnRunCancel {
+			t.Errorf("Batch.CancelBundleOnRunCancel: got false, want true")
+		}
+		if !rc.Provider.Batch.AllowInteractiveModes {
+			t.Errorf("Batch.AllowInteractiveModes: got false, want true")
+		}
+	})
+
+	t.Run("nil batch stays nil on the Go side", func(t *testing.T) {
+		pc := &pb.RunConfig{
+			Provider: &pb.ProviderConfig{Type: "anthropic"},
+		}
+
+		rc := runConfigFromProto(pc)
+
+		if rc.Provider.Batch != nil {
+			t.Fatalf("expected nil Batch when proto omits the field, got %+v", rc.Provider.Batch)
+		}
+	})
+
+	t.Run("batch present with MaxWaitSeconds unset preserves nil", func(t *testing.T) {
+		// The wire's `optional int32` distinguishes unset from explicit
+		// zero. ValidateRunConfig depends on the nil to apply the
+		// default; an always-allocated *int would erase that and pin
+		// MaxWaitSeconds at 0, which the validator then rejects as
+		// "must be in range (0, 86400]".
+		original := &pb.RunConfig{
+			Provider: &pb.ProviderConfig{
+				Type:  "anthropic",
+				Batch: &pb.BatchProviderConfig{Enabled: true},
+			},
+		}
+		bytes, err := proto.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.RunConfig
+		if err := proto.Unmarshal(bytes, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		rc := runConfigFromProto(&decoded)
+		if rc.Provider.Batch == nil {
+			t.Fatal("expected non-nil Batch when proto sub-message is present")
+		}
+		if rc.Provider.Batch.MaxWaitSeconds != nil {
+			t.Errorf("MaxWaitSeconds should be nil when proto field is unset; got %v", *rc.Provider.Batch.MaxWaitSeconds)
+		}
+	})
+}
