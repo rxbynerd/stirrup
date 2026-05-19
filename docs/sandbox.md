@@ -34,16 +34,16 @@ enforces the safe-by-default posture:
   combination invites stale-workspace and resource-hold footguns.
 - **`planning`** and **`review`** are rejected unless the operator
   sets `provider.batch.allowInteractiveModes=true`. These modes are
-  interactive by design (a human reviewer expects fast feedback on a
-  plan or a code review) and the opt-in exists so an operator who
-  has deliberately chosen async planning has to acknowledge the
-  footgun.
+  interactive by design — they optimise for fast feedback on plans
+  and code reviews rather than the 24-hour wait that batch implies —
+  and the opt-in exists so an operator who has deliberately chosen
+  async planning has to acknowledge the footgun.
 - **`research`** and **`toil`** are accepted unconditionally — they
   are the modes the feature was built for.
 
 ### How to enable
 
-The CLI flag is the simplest path:
+The CLI flag is the recommended path:
 
 ```sh
 stirrup harness --batch --mode research --prompt "..."
@@ -72,10 +72,10 @@ to wait on. The phase-2 `controlPlaneBatchClient` is the default for
 gRPC operators.
 
 Stdio operators must set `provider.batch.harnessSidePolling=true` in
-their `--config`. In this mode the harness polls the provider HTTP
-endpoint directly from the run process — there is no control plane
-to amortise across, so every run holds its own connection open for
-the duration of its batch. The harness-side polling client is
+their `--config`. In this mode polling executes within the harness
+process itself rather than via the control plane — there is no
+control plane to amortise across, so every run holds its own
+connection open for the duration of its batch. The harness-side polling client is
 experimental in v1 and ships only for the Anthropic provider; OpenAI
 support lands in phase 6 (issue #139), and Bedrock is deferred (see
 below).
@@ -110,12 +110,12 @@ the harness holding stale credentials when the batch completes.
 
 ### `MaxTurns` × 24h warning
 
-The default `MaxTurns` cap is 20. Paired with the 24h-per-turn batch
-SLA, that produces a worst-case wall-clock of 480 hours per run.
+The default `MaxTurns` cap is 20. With the 20-turn default, a batch
+run can take up to 20 × 24 = 480 hours (20 days) in the worst case.
 `ValidateRunConfig` emits a `slog` WARN (not an error) when
-`provider.batch.enabled` and `maxTurns > 5`, so operators see the
-warning at run start without the validator hard-rejecting an
-intentional choice. The threshold is advisory: production batch
+`provider.batch.enabled` is set with `maxTurns > 5`, so operators
+see the warning at run start without the validator hard-rejecting
+an intentional choice. The threshold is advisory: production batch
 runs should set `maxTurns <= 5` unless the operator has a specific
 reason to accept the extended worst-case.
 
@@ -134,7 +134,7 @@ Mid-batch run cancellation behaves differently per transport:
   prefer cancel-on-drop) opt in via the flag in `--config`.
 - **stdio polling** — the harness best-efforts a cancel call against
   the provider before exiting. The call is fire-and-forget; a failed
-  cancel does not block the run's exit. This path ships with phase 4
+  cancel does not block the run's exit. This path lands in phase 4
   (issue #137).
 
 ### Bedrock
@@ -142,7 +142,7 @@ Mid-batch run cancellation behaves differently per transport:
 Bedrock batch via `CreateModelInvocationJob` is **out of scope in
 v1**. The wire shape and capability surface diverge from the
 Anthropic / OpenAI batch endpoints far enough that a separate
-adapter design is needed; phase 6 (issue #139) evaluates feasibility
+adapter design is needed; phase 6 ([issue #139](https://github.com/rxbynerd/stirrup/issues/139)) evaluates feasibility
 and either lands the adapter or files a deferral issue. Until then,
 `provider.type=bedrock` with `provider.batch.enabled=true` fails
 validation with `batch is not supported for provider type "bedrock"
