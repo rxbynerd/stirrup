@@ -1,0 +1,70 @@
+name: Smoke Test - AWS Bedrock WIF
+
+# End-to-end smoke test for AWS Bedrock via STS AssumeRoleWithWebIdentity.
+# Manually dispatched. Exchanges the GitHub Actions OIDC token for
+# temporary AWS credentials via the IAM role pinned in the fixture, then
+# runs the harness against Bedrock with no static AWS credentials in
+# scope. AWS account ID and role ARN are non-secret per AWS docs and
+# live committed in the referenced --config fixture; the role's trust
+# policy is what gates access.
+#
+# Refs #161 / #132
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-bedrock-wif:
+    name: AWS Bedrock WIF Smoke Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            harness/go.mod
+            types/go.mod
+            eval/go.mod
+
+      - name: Build stirrup binary
+        working-directory: harness
+        run: go build -o ../stirrup ./cmd/stirrup
+
+      - name: Create workspace
+        run: mkdir -p workspace
+
+      - name: Run smoke test
+        run: |
+          ./stirrup harness \
+            --config examples/runconfig/bedrock-wif-smoke.json \
+            --workspace workspace \
+            --trace trace.jsonl \
+            --max-turns 5 \
+            --prompt "Write the string 'smoke test passed' to a file called hello.txt"
+
+      - name: Verify trace outcome
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -s trace.jsonl ] || { echo "trace.jsonl is missing or empty" >&2; exit 1; }
+          jq -e '.outcome == "success"' trace.jsonl
+
+      - name: Verify workspace output
+        run: |
+          test -f workspace/hello.txt || { echo "hello.txt was not created" >&2; exit 1; }
+          grep -qF 'smoke test passed' workspace/hello.txt || { echo "hello.txt does not contain expected string" >&2; cat workspace/hello.txt >&2; exit 1; }
+
+      - name: Upload trace
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-trace-bedrock-wif
+          path: trace.jsonl
+          retention-days: 7

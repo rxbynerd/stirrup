@@ -242,6 +242,15 @@ The `tokenSource.audience` here is the audience claim *requested* on
 the OIDC token — it must match the `audiences[0]` value of the
 federated identity credential on the Azure side.
 
+For a fully-wired, end-to-end CI workflow that exercises this exact
+shape against a live Azure OpenAI deployment (no static API key in
+scope), see the **Azure OpenAI** section of
+[`docs/smoke-tests.md`](./smoke-tests.md), which walks through the
+matching App Registration, federated identity credential, RBAC, and
+fixture wiring — plus the two operator gotchas that bite first-time
+adopters (the 5-minute RBAC propagation lag and the
+`workflow_dispatch` `sub`-claim format).
+
 ## Sovereign cloud deployments
 
 The default token endpoint

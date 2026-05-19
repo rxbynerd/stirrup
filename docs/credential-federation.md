@@ -220,6 +220,16 @@ extra impersonation hop so the federated principal can hold only
 `iam.serviceAccountTokenCreator` on the target SA, and the target SA
 holds the actual Vertex grants.
 
+For a fully-wired end-to-end example — including the Workload
+Identity Pool, OIDC provider with attribute condition, SA
+impersonation grant, Vertex AI role binding, the audience
+double-slash gotcha, and the dispatch-from-`main` restriction — see
+the *Vertex AI Gemini* section of
+[`docs/smoke-tests.md`](smoke-tests.md#vertex-ai-gemini). That
+walkthrough is the canonical operator playbook for a working
+GHA → STS → Vertex AI pipeline; the snippets above are intended
+only as configuration references.
+
 ## Cross-cloud → Bedrock via STS web-identity
 
 The same pattern applies for AWS Bedrock from a non-AWS runtime, using
@@ -244,6 +254,14 @@ projected token file all work as the subject token to
   }
 }
 ```
+
+For a fully-wired end-to-end example — including the IAM OIDC
+provider, role trust policy, Bedrock invoke policy, and the
+cross-region inference IAM gotcha — see the *AWS Bedrock* section of
+[`docs/smoke-tests.md`](smoke-tests.md#aws-bedrock). That walkthrough
+is the canonical operator playbook for a working GHA → STS → Bedrock
+pipeline; the snippet above is intended only as a configuration
+reference.
 
 ## GCP-native paths
 

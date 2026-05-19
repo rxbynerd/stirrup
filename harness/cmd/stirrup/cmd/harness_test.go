@@ -1261,6 +1261,152 @@ func TestExampleAzureOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates pins the
+// pre-wired smoke-test fixture consumed by
+// .github/workflows/smoke-azure-openai.yml. Unlike the generic
+// github-actions example, this fixture hardcodes the stirrup test
+// tenant's tenant/client IDs and pins the provider to
+// openai-responses with the AI Foundry (cognitiveservices.azure.com)
+// host. Drift in any of those fields breaks the live CI smoke run
+// silently — the workflow only fails on a real Azure API call.
+func TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "azure-openai-wif-smoke.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai-wif-smoke.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/azure-openai-wif-smoke.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "openai-responses" {
+		t.Errorf("Provider.Type = %q, want openai-responses", cfg.Provider.Type)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "azure-workload-identity" {
+		t.Errorf("Credential.Type = %q, want azure-workload-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != "api://AzureADTokenExchange" {
+		t.Errorf("audience = %q, want api://AzureADTokenExchange", cfg.Provider.Credential.TokenSource.Audience)
+	}
+	if cfg.Provider.BaseURL != "https://stirrup-eval-resource.cognitiveservices.azure.com/openai/v1" {
+		t.Errorf("Provider.BaseURL = %q, want the stirrup test tenant cognitiveservices.azure.com host", cfg.Provider.BaseURL)
+	}
+	if cfg.ModelRouter.Model != "gpt-5.4-nano" {
+		t.Errorf("ModelRouter.Model = %q, want gpt-5.4-nano", cfg.ModelRouter.Model)
+	}
+}
+
+// TestExampleBedrockWIFSmokeJSONLoadsAndValidates pins the pre-wired
+// smoke-test fixture consumed by .github/workflows/smoke-bedrock.yml.
+// The fixture hardcodes the stirrup sandbox AWS account's role ARN
+// (the 12-digit account ID is non-secret per AWS docs — the role's
+// trust policy is what gates access) and pins us-west-2 as the source
+// region alongside the us. cross-region inference profile for Haiku 4.5.
+// Drift in any of those fields breaks the live CI smoke run silently —
+// the workflow only fails on a real Bedrock API call.
+func TestExampleBedrockWIFSmokeJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "bedrock-wif-smoke.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/bedrock-wif-smoke.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/bedrock-wif-smoke.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "bedrock" {
+		t.Errorf("Provider.Type = %q, want bedrock", cfg.Provider.Type)
+	}
+	if cfg.Provider.Region != "us-west-2" {
+		t.Errorf("Provider.Region = %q, want us-west-2", cfg.Provider.Region)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "web-identity" {
+		t.Errorf("Credential.Type = %q, want web-identity", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.RoleARN != "arn:aws:iam::786874932855:role/stirrup-smoke-bedrock" {
+		t.Errorf("Credential.RoleARN = %q, want the stirrup sandbox role ARN", cfg.Provider.Credential.RoleARN)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != "sts.amazonaws.com" {
+		t.Errorf("audience = %q, want sts.amazonaws.com", cfg.Provider.Credential.TokenSource.Audience)
+	}
+	if cfg.ModelRouter.Model != "us.anthropic.claude-haiku-4-5-20251001-v1:0" {
+		t.Errorf("ModelRouter.Model = %q, want the Haiku 4.5 us. cross-region inference profile", cfg.ModelRouter.Model)
+	}
+}
+
+// TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates pins the pre-wired
+// smoke-test fixture consumed by .github/workflows/smoke-vertex-gemini.yml.
+// Unlike the generic vertex-gemini-wif example (which surfaces an
+// aws-irsa token source against placeholder identifiers), this fixture
+// hardcodes the rubynerd-net project + project-number + the shared
+// stirrup-gha WIF pool's audience + the dedicated stirrup-testing SA.
+// The double-slash audience is required (single-slash fails STS with an
+// opaque 400 INVALID_ARGUMENT) and the two audience strings must match
+// because the GHA OIDC `aud` claim must equal the WIF provider's
+// expected audience for the exchange to succeed. Drift in any of these
+// fields breaks the live CI smoke run silently — the workflow only
+// fails on a real Vertex API call.
+func TestExampleVertexGeminiWIFSmokeJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "vertex-gemini-wif-smoke.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/vertex-gemini-wif-smoke.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/vertex-gemini-wif-smoke.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Type != "gemini" {
+		t.Errorf("Provider.Type = %q, want gemini", cfg.Provider.Type)
+	}
+	if cfg.Provider.GCPProject != "rubynerd-net" {
+		t.Errorf("Provider.GCPProject = %q, want rubynerd-net", cfg.Provider.GCPProject)
+	}
+	if cfg.Provider.GCPLocation != "global" {
+		t.Errorf("Provider.GCPLocation = %q, want global", cfg.Provider.GCPLocation)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "gcp-workload-identity-federation" {
+		t.Errorf("Credential.Type = %q, want gcp-workload-identity-federation", cfg.Provider.Credential.Type)
+	}
+	const wantAudience = "//iam.googleapis.com/projects/163317929648/locations/global/workloadIdentityPools/stirrup-gha/providers/stirrup-gha-provider"
+	if cfg.Provider.Credential.Audience != wantAudience {
+		t.Errorf("Credential.Audience = %q, want the stirrup-gha provider audience", cfg.Provider.Credential.Audience)
+	}
+	if cfg.Provider.Credential.ServiceAccount != "stirrup-testing@rubynerd-net.iam.gserviceaccount.com" {
+		t.Errorf("Credential.ServiceAccount = %q, want the stirrup-testing SA", cfg.Provider.Credential.ServiceAccount)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != wantAudience {
+		t.Errorf("TokenSource.Audience = %q, want the same WIF audience as Credential.Audience (GHA aud claim must match provider expectation)", cfg.Provider.Credential.TokenSource.Audience)
+	}
+	if cfg.ModelRouter.Model != "gemini-2.5-flash-lite" {
+		t.Errorf("ModelRouter.Model = %q, want gemini-2.5-flash-lite", cfg.ModelRouter.Model)
+	}
+}
+
 // TestExampleCloudRunVertexGeminiJSONLoadsAndValidates pins the shipped
 // Cloud Run fixture: the file must round-trip through loadRunConfigFile,
 // pass ValidateRunConfig, and exercise the three new surface areas that

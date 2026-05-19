@@ -1,0 +1,65 @@
+{
+  "runId": "bedrock-wif-smoke",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "bedrock",
+    "region": "us-west-2",
+    "credential": {
+      "type": "web-identity",
+      "roleArn": "arn:aws:iam::786874932855:role/stirrup-smoke-bedrock",
+      "sessionName": "stirrup-smoke",
+      "tokenSource": {
+        "type": "github-actions-oidc",
+        "audience": "sts.amazonaws.com"
+      }
+    }
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "bedrock",
+    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 200000
+  },
+  "executor": {
+    "type": "local",
+    "workspace": "/tmp/stirrup-workspace"
+  },
+  "editStrategy": {
+    "type": "multi"
+  },
+  "verifier": {
+    "type": "none"
+  },
+  "permissionPolicy": {
+    "type": "allow-all"
+  },
+  "gitStrategy": {
+    "type": "none"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "traceEmitter": {
+    "type": "jsonl",
+    "filePath": "/tmp/stirrup.trace.jsonl"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory",
+      "search_files",
+      "edit_file",
+      "run_command"
+    ]
+  },
+  "maxTurns": 20,
+  "timeout": 600,
+  "logLevel": "info"
+}

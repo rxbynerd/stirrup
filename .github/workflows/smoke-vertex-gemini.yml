@@ -1,0 +1,79 @@
+name: Smoke Test - Vertex AI Gemini WIF
+
+# End-to-end smoke test for Google Vertex AI via GCP Workload Identity
+# Federation. Manually dispatched. Exchanges the GitHub Actions OIDC
+# token for a federated GCP access token at sts.googleapis.com,
+# impersonates the target service account via iamcredentials, then
+# runs the harness against Vertex AI's Gemini API with no static
+# service-account key in scope. Project ID, project number, pool /
+# provider / SA names are non-secret per Google's WIF docs and live
+# committed in the referenced --config fixture.
+#
+# The WIF provider's attributeCondition restricts token issuance to
+# `refs/heads/main` and `refs/tags/v*`. A dispatch from a feature
+# branch will fail at the STS exchange with `unauthorized_client:
+# The given credential is rejected by the attribute condition.`.
+# This is the same constraint enforced on the shared `stirrup-gha`
+# pool by `smoke-gar-publish.yml`; see its header comment for the
+# fix-forward rationale.
+#
+# Refs #162 / #132
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-vertex-gemini-wif:
+    name: Vertex AI Gemini WIF Smoke Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            harness/go.mod
+            types/go.mod
+            eval/go.mod
+
+      - name: Build stirrup binary
+        working-directory: harness
+        run: go build -o ../stirrup ./cmd/stirrup
+
+      - name: Create workspace
+        run: mkdir -p workspace
+
+      - name: Run smoke test
+        run: |
+          ./stirrup harness \
+            --config examples/runconfig/vertex-gemini-wif-smoke.json \
+            --workspace workspace \
+            --trace trace.jsonl \
+            --max-turns 5 \
+            --prompt "Write the string 'smoke test passed' to a file called hello.txt"
+
+      - name: Verify trace outcome
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -s trace.jsonl ] || { echo "trace.jsonl is missing or empty" >&2; exit 1; }
+          jq -e '.outcome == "success"' trace.jsonl
+
+      - name: Verify workspace output
+        run: |
+          test -f workspace/hello.txt || { echo "hello.txt was not created" >&2; exit 1; }
+          grep -qF 'smoke test passed' workspace/hello.txt || { echo "hello.txt does not contain expected string" >&2; cat workspace/hello.txt >&2; exit 1; }
+
+      - name: Upload trace
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-trace-vertex-gemini-wif
+          path: trace.jsonl
+          retention-days: 7
