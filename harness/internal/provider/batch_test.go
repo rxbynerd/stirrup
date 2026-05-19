@@ -208,7 +208,7 @@ func TestBatchAdapter_Stream_HappyPath(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(batchID string) (map[string]*BatchResult, error) {
 			return map[string]*BatchResult{
-				"run-test-turn-1": {Response: response},
+				"stirrup-run-test-turn-1": {Response: response},
 			}, nil
 		},
 	}
@@ -235,8 +235,8 @@ func TestBatchAdapter_Stream_HappyPath(t *testing.T) {
 	if len(client.submitted) != 1 || len(client.submitted[0]) != 1 {
 		t.Fatalf("expected one single-entry submit, got %+v", client.submitted)
 	}
-	if client.submitted[0][0].CustomID != "run-test-turn-1" {
-		t.Errorf("custom_id: got %q, want run-test-turn-1", client.submitted[0][0].CustomID)
+	if client.submitted[0][0].CustomID != "stirrup-run-test-turn-1" {
+		t.Errorf("custom_id: got %q, want stirrup-run-test-turn-1", client.submitted[0][0].CustomID)
 	}
 	if client.submitted[0][0].Provider != "anthropic" {
 		t.Errorf("provider: got %q, want anthropic", client.submitted[0][0].Provider)
@@ -267,7 +267,7 @@ func TestBatchAdapter_Stream_TurnCounterIncrements(t *testing.T) {
 		t.Fatalf("expected 3 submits, got %d", len(client.submitted))
 	}
 	for i, batch := range client.submitted {
-		want := fmt.Sprintf("run-test-turn-%d", i+1)
+		want := fmt.Sprintf("stirrup-run-test-turn-%d", i+1)
 		if batch[0].CustomID != want {
 			t.Errorf("submit %d: custom_id %q, want %q", i, batch[0].CustomID, want)
 		}
@@ -298,7 +298,7 @@ func TestBatchAdapter_Stream_ResultError(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
 			return map[string]*BatchResult{
-				"run-test-turn-1": {Err: &BatchResultError{Type: "batch_cancelled", Message: "user aborted"}},
+				"stirrup-run-test-turn-1": {Err: &BatchResultError{Type: "batch_cancelled", Message: "user aborted"}},
 			}, nil
 		},
 	}
