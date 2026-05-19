@@ -220,6 +220,13 @@ type harnessCLIOptions struct {
 	// script that knows whether the artifact is load-bearing.
 	WorkspaceExportTo       string
 	WorkspaceExportRequired bool
+
+	// ToolDispatchMaxParallel sets the parallel async-tool dispatch
+	// fan-out (issue #184). Zero defers to the library default
+	// (DefaultToolDispatchMaxParallel) by leaving config.ToolDispatch
+	// nil so the loop reads the effective value via
+	// EffectiveToolDispatchMaxParallel.
+	ToolDispatchMaxParallel int
 }
 
 // buildHarnessRunConfig assembles the RunConfig used by `stirrup harness`.
@@ -428,6 +435,15 @@ func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 	// matching the partial-override pattern used by GuardRail above.
 	if err := applyProviderRetryOverrides(&config.Provider, opts); err != nil {
 		return nil, err
+	}
+
+	// Parallel-dispatch knob (issue #184). Only construct the sub-config
+	// when the operator opted in; leaving it nil lets the loop reach for
+	// types.DefaultToolDispatchMaxParallel via
+	// EffectiveToolDispatchMaxParallel without persisting an opinion
+	// that the operator did not voice.
+	if opts.ToolDispatchMaxParallel > 0 {
+		config.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: opts.ToolDispatchMaxParallel}
 	}
 
 	applyModeDefaults(config)
@@ -707,6 +723,13 @@ func init() {
 	// types.ValidateRunConfig which already accepts only gs:// URIs.
 	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at end-of-run (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
 	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
+
+	// Parallel async-tool dispatch (issue #184). Default 0 means "use
+	// the library default" so a flag-only run without
+	// --max-tool-parallel leaves config.ToolDispatch nil and the loop
+	// reads types.DefaultToolDispatchMaxParallel via
+	// EffectiveToolDispatchMaxParallel.
+	f.Int("max-tool-parallel", 0, "Maximum number of async tool calls dispatched concurrently in a single turn. Range: 1-16. 0 uses the library default (4).")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -1023,6 +1046,22 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		cfg.Executor.WorkspaceExportTo, _ = f.GetString("export-workspace-to")
 	}
 
+	// Parallel async-tool dispatch (issue #184). Explicit zero clears
+	// the field so the loop falls back to DefaultToolDispatchMaxParallel;
+	// any positive value pins MaxParallel on cfg.ToolDispatch without
+	// disturbing other fields a future revision might introduce.
+	if changed("max-tool-parallel") {
+		mp, _ := f.GetInt("max-tool-parallel")
+		if mp > 0 {
+			if cfg.ToolDispatch == nil {
+				cfg.ToolDispatch = &types.ToolDispatchConfig{}
+			}
+			cfg.ToolDispatch.MaxParallel = mp
+		} else {
+			cfg.ToolDispatch = nil
+		}
+	}
+
 	// Provider retry policy (issue #197). Each flag overrides its slot
 	// on cfg.Provider.Retry independently so an operator can pin a
 	// single value (e.g. just --provider-retry-max-attempts=5) without
@@ -1230,6 +1269,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	providerRetryWallClockBudget, _ := f.GetDuration("provider-retry-wall-clock")
 	workspaceExportTo, _ := f.GetString("export-workspace-to")
 	workspaceExportRequired, _ := f.GetBool("export-workspace-required")
+	toolDispatchMaxParallel, _ := f.GetInt("max-tool-parallel")
 
 	var queryParams map[string]string
 	for _, entry := range queryParamRaw {
@@ -1304,6 +1344,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
 		WorkspaceExportTo:            workspaceExportTo,
 		WorkspaceExportRequired:      workspaceExportRequired,
+		ToolDispatchMaxParallel:      toolDispatchMaxParallel,
 	})
 	if err != nil {
 		return err

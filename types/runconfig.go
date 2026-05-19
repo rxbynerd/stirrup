@@ -45,6 +45,19 @@ const (
 	maxProviderRetryMaxAttempts       = 5
 	maxProviderRetryMaxDelayMs        = 60000
 	maxProviderRetryWallClockBudgetMs = 300000
+
+	// DefaultToolDispatchMaxParallel is the fan-out applied when
+	// ToolDispatchConfig is omitted or MaxParallel is zero. Chosen as a
+	// balance between latency and over-subscription on the deep-research
+	// multi-step-synthesis tier.
+	DefaultToolDispatchMaxParallel = 4
+
+	// MaxToolDispatchMaxParallel is the hard ceiling on
+	// ToolDispatchConfig.MaxParallel enforced by ValidateRunConfig. Caps
+	// runaway concurrency so a misconfigured run cannot saturate the
+	// provider/transport beyond what the rest of the harness is sized
+	// for.
+	MaxToolDispatchMaxParallel = 16
 )
 
 // RunConfig fully describes a single harness run. It is the composition root:
@@ -144,6 +157,17 @@ type RunConfig struct {
 	// explode. When unset the resource builder falls back to environment
 	// variables and finally to safe defaults ("local" / "stirrup").
 	Observability ObservabilityConfig `json:"observability,omitempty"`
+
+	// ToolDispatch tunes the parallel async-tool dispatch loop (knob
+	// applies to all AsyncHandler-backed tools, not just spawn_agent).
+	// Nil (or a zero MaxParallel) selects DefaultToolDispatchMaxParallel;
+	// see EffectiveToolDispatchMaxParallel for the resolution helper
+	// used by the loop. The field is a pointer so an absent value on the
+	// wire is distinguishable from an explicit zero — both are legal and
+	// resolve to the default, but keeping the distinction lets future
+	// fields (per-tool overrides, semaphore strategy) land without a
+	// breaking change.
+	ToolDispatch *ToolDispatchConfig `json:"toolDispatch,omitempty"`
 }
 
 // ObservabilityConfig carries operator-supplied labels that are promoted to
@@ -208,6 +232,18 @@ func (rc *RunConfig) DynamicContextValues() map[string]string {
 		out[k] = e.Value
 	}
 	return out
+}
+
+// EffectiveToolDispatchMaxParallel returns the fan-out the async-tool
+// dispatch loop should apply. Returns DefaultToolDispatchMaxParallel
+// when ToolDispatch is nil or MaxParallel is zero; otherwise returns
+// MaxParallel verbatim (ValidateRunConfig has already bounded it to
+// [1, MaxToolDispatchMaxParallel]).
+func (rc *RunConfig) EffectiveToolDispatchMaxParallel() int {
+	if rc == nil || rc.ToolDispatch == nil || rc.ToolDispatch.MaxParallel == 0 {
+		return DefaultToolDispatchMaxParallel
+	}
+	return rc.ToolDispatch.MaxParallel
 }
 
 // RuleOfTwoConfig configures the Rule-of-Two structural invariant. The
@@ -702,6 +738,18 @@ type ResourceLimits struct {
 	MemoryMB int     `json:"memoryMb"`
 	DiskMB   int     `json:"diskMb"`
 	PIDs     int     `json:"pids"`
+}
+
+// ToolDispatchConfig tunes the parallel async-tool dispatch loop. The
+// loop fans out async tool calls (any AsyncHandler-backed tool) emitted
+// within a single assistant turn under a semaphore so a multi-worker
+// deep-research query does not serialise on the slowest worker.
+// MaxParallel == 0 (or a nil ToolDispatch) resolves to
+// DefaultToolDispatchMaxParallel via EffectiveToolDispatchMaxParallel;
+// values outside [1, MaxToolDispatchMaxParallel] are rejected by
+// ValidateRunConfig.
+type ToolDispatchConfig struct {
+	MaxParallel int `json:"maxParallel,omitempty"`
 }
 
 // EditStrategyConfig selects the edit strategy implementation.
@@ -1462,6 +1510,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateCodeScannerConfig(config.CodeScanner, &errs)
 	validateGuardRailConfig(config.GuardRail, "guardRail", false, &errs)
 	validateObservabilityConfig(config.Observability, &errs)
+	validateToolDispatchConfig(config.ToolDispatch, &errs)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
@@ -1786,6 +1835,26 @@ func validateCodeScannerConfig(cfg *CodeScannerConfig, errs *[]string) {
 				*errs = append(*errs, fmt.Sprintf("codeScanner.scanners[%d] %q is not a valid scanner type", i, name))
 			}
 		}
+	}
+}
+
+// validateToolDispatchConfig bounds ToolDispatch.MaxParallel to the
+// hard ceiling MaxToolDispatchMaxParallel. A nil ToolDispatch is legal
+// — the loop reads the effective value via
+// EffectiveToolDispatchMaxParallel and falls back to
+// DefaultToolDispatchMaxParallel. An explicit zero is also legal and
+// resolves to the default, so unmarshalled wire payloads with an empty
+// ToolDispatch sub-message survive validation.
+func validateToolDispatchConfig(cfg *ToolDispatchConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if cfg.MaxParallel < 0 || cfg.MaxParallel > MaxToolDispatchMaxParallel {
+		// The accepted-zero sentinel is called out in the message so an
+		// operator who hits this validation error for, say, -1 does not
+		// have to infer from "between 1 and 16" whether 0 is also
+		// rejected. Zero IS legal and resolves to the library default.
+		*errs = append(*errs, fmt.Sprintf("toolDispatch.maxParallel must be 0 (use default) or between 1 and %d", MaxToolDispatchMaxParallel))
 	}
 }
 

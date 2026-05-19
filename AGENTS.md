@@ -20,7 +20,7 @@ stirrup/
       cmd/job.go
     harnessapi/              # Public embedding API
     internal/
-      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, stall detection
+      core/                  # AgenticLoop, factory, token tracking, sub-agent spawning, parallel tool dispatch, stall detection
       credential/            # Cross-cloud credential federation
       provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI)
       router/                # ModelRouter: static, per-mode, dynamic
