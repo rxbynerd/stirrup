@@ -603,6 +603,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.String("transport", "stdio", "")
 	f.String("transport-addr", "", "")
 	f.Int("followup-grace", 0, "")
+	f.Float64("temperature", 0, "")
 	f.String("log-level", "info", "")
 	f.String("prompt", "", "")
 	f.String("prompt-file", "", "")
@@ -1753,6 +1754,149 @@ func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
 	if cfg.FollowUpGrace != nil {
 		t.Errorf("explicit --followup-grace=0 should clear FollowUpGrace, got %v", *cfg.FollowUpGrace)
 	}
+}
+
+// TestApplyOverrides_TemperatureChangedDisambiguatesZero exercises the
+// unset-vs-explicit-zero distinction for --temperature. The flag store
+// is a plain Float64, so cobra cannot represent "absence" — the
+// override path must rely on flags.Changed() instead, or every run
+// that omits the flag silently rewrites a file-provided non-zero
+// value to greedy decoding.
+func TestApplyOverrides_TemperatureChangedDisambiguatesZero(t *testing.T) {
+	t.Run("unset leaves file value alone", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		want := 0.5
+		cfg.Temperature = &want
+		// Do NOT set --temperature on the command line.
+
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.Temperature == nil || *cfg.Temperature != want {
+			t.Errorf("unset --temperature must preserve file value 0.5, got %v", cfg.Temperature)
+		}
+	})
+
+	t.Run("explicit zero is greedy override", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		filed := 0.5
+		cfg.Temperature = &filed
+
+		if err := cmd.Flags().Set("temperature", "0"); err != nil {
+			t.Fatalf("set temperature: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.Temperature == nil {
+			t.Fatalf("explicit --temperature=0 should set greedy decoding, got nil")
+		}
+		if *cfg.Temperature != 0 {
+			t.Errorf("--temperature=0 should set 0.0, got %v", *cfg.Temperature)
+		}
+	})
+
+	t.Run("explicit non-zero overrides file value", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		filed := 0.5
+		cfg.Temperature = &filed
+
+		if err := cmd.Flags().Set("temperature", "1.2"); err != nil {
+			t.Fatalf("set temperature: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.Temperature == nil || *cfg.Temperature != 1.2 {
+			t.Errorf("--temperature=1.2 override failed, got %v", cfg.Temperature)
+		}
+	})
+}
+
+// TestBuildHarnessRunConfig_Temperature pins the temperature propagation
+// inside buildHarnessRunConfig itself. The applyOverrides tests cover the
+// --config-path branch, but buildHarnessRunConfig has its own three-line
+// "if opts.Temperature != nil { copy }" block on the flag-only path —
+// a regression there (e.g. unconditional assignment, or always
+// dereferencing) would be invisible to the applyOverrides suite because
+// the two code paths never intersect. Mirrors the shape of
+// TestBuildHarnessRunConfig_SessionNamePropagates.
+func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
+	base := func() harnessCLIOptions {
+		return harnessCLIOptions{
+			RunID:         "test-run",
+			Mode:          "execution",
+			Prompt:        "test",
+			ProviderType:  "anthropic",
+			APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+			Model:         "claude-sonnet-4-6",
+			MaxTurns:      20,
+			Timeout:       600,
+			TransportType: "stdio",
+			LogLevel:      "info",
+		}
+	}
+
+	t.Run("nil opts.Temperature stays nil on the config", func(t *testing.T) {
+		opts := base()
+		opts.Temperature = nil
+		cfg, err := buildHarnessRunConfig(opts)
+		if err != nil {
+			t.Fatalf("buildHarnessRunConfig: %v", err)
+		}
+		if cfg.Temperature != nil {
+			t.Errorf("nil opts.Temperature must yield nil cfg.Temperature, got %v", *cfg.Temperature)
+		}
+	})
+
+	t.Run("explicit zero propagates as *0.0", func(t *testing.T) {
+		opts := base()
+		opts.Temperature = types.Float64Ptr(0.0)
+		cfg, err := buildHarnessRunConfig(opts)
+		if err != nil {
+			t.Fatalf("buildHarnessRunConfig: %v", err)
+		}
+		if cfg.Temperature == nil {
+			t.Fatalf("explicit *float64(0.0) must yield non-nil cfg.Temperature")
+		}
+		if *cfg.Temperature != 0.0 {
+			t.Errorf("cfg.Temperature: got %v, want 0.0", *cfg.Temperature)
+		}
+	})
+
+	t.Run("non-zero value propagates", func(t *testing.T) {
+		opts := base()
+		opts.Temperature = types.Float64Ptr(0.7)
+		cfg, err := buildHarnessRunConfig(opts)
+		if err != nil {
+			t.Fatalf("buildHarnessRunConfig: %v", err)
+		}
+		if cfg.Temperature == nil {
+			t.Fatalf("non-nil opts.Temperature must yield non-nil cfg.Temperature")
+		}
+		if *cfg.Temperature != 0.7 {
+			t.Errorf("cfg.Temperature: got %v, want 0.7", *cfg.Temperature)
+		}
+	})
+
+	t.Run("opts.Temperature is copied, not aliased", func(t *testing.T) {
+		opts := base()
+		opts.Temperature = types.Float64Ptr(0.4)
+		cfg, err := buildHarnessRunConfig(opts)
+		if err != nil {
+			t.Fatalf("buildHarnessRunConfig: %v", err)
+		}
+		// Mutating opts.Temperature post-build must not bleed through
+		// into the constructed RunConfig — the harness contract is that
+		// buildHarnessRunConfig snapshots the value.
+		*opts.Temperature = 1.5
+		if cfg.Temperature == nil || *cfg.Temperature != 0.4 {
+			t.Errorf("cfg.Temperature should be a copy snapshot of 0.4, got %v", cfg.Temperature)
+		}
+	})
 }
 
 // TestRunHarness_ConfigPathFollowupGraceFromEnv verifies that the

@@ -121,6 +121,14 @@ type harnessCLIOptions struct {
 	FollowUpGrace int
 	LogLevel      string
 
+	// Temperature overrides the loop's default sampling temperature.
+	// Nil means "do not override" (the harness default applies). A
+	// pointer is used so an explicit --temperature=0 (greedy decoding)
+	// is distinguishable from the flag being absent — cobra's Float64
+	// store is a plain float64, so the disambiguation has to happen at
+	// the flags.Changed() check site upstream.
+	Temperature *float64
+
 	// Vertex AI Gemini provider fields. Only meaningful when
 	// ProviderType == "gemini"; ValidateRunConfig rejects them on
 	// every other provider type, so the flag-only path safely
@@ -335,6 +343,10 @@ func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 		grace := opts.FollowUpGrace
 		config.FollowUpGrace = &grace
 	}
+	if opts.Temperature != nil {
+		t := *opts.Temperature
+		config.Temperature = &t
+	}
 
 	// Vertex AI Gemini fields. The validator rejects these on every
 	// other provider type, so the flag-only path scopes them to gemini
@@ -495,6 +507,24 @@ func applyProviderRetryOverrides(pc *types.ProviderConfig, opts harnessCLIOption
 		pc.Retry.WallClockBudgetMs = wallMs
 	}
 	return nil
+}
+
+// optionalFloat64Flag returns a heap-allocated copy of the named Float64
+// flag's value iff the operator set it on the command line, and nil
+// otherwise. cobra's Float64 store cannot represent absence — both an
+// unset flag and an explicit --foo=0 read back as 0.0 — so the
+// Changed() bit is the only safe way to preserve "use the default"
+// versus "the operator chose 0". Used by --temperature on both the
+// --config-path (applyOverrides) and the flag-only (runHarness) entry
+// points; centralising the pattern keeps the two paths from drifting
+// when a future env-var fallback (e.g. STIRRUP_TEMPERATURE) lands.
+func optionalFloat64Flag(cmd *cobra.Command, name string) *float64 {
+	f := cmd.Flags()
+	if !f.Changed(name) {
+		return nil
+	}
+	v, _ := f.GetFloat64(name)
+	return &v
 }
 
 // retryDurationToMs converts a positive Duration to whole milliseconds
@@ -664,6 +694,7 @@ func init() {
 	f.String("transport", "stdio", "Transport type: stdio, grpc")
 	f.String("transport-addr", "", "gRPC target address (required when transport is grpc)")
 	f.Int("followup-grace", 0, "Seconds to keep gRPC transport open for follow-up requests (0 = disabled; env: STIRRUP_FOLLOWUP_GRACE)")
+	f.Float64("temperature", 0, "Sampling temperature forwarded to the provider on every turn. Range 0.0-2.0 (union of provider ranges). Unset leaves the harness default (0.1); explicit 0 sets greedy decoding.")
 	f.String("log-level", "info", "Log level: debug, info, warn, error")
 	f.String("prompt", "", "User prompt (can also be passed as a positional argument; falls back to --prompt-file then STIRRUP_PROMPT env var, then a prompt field in --config)")
 	f.String("prompt-file", "", "Path to a file whose contents become the prompt. Read from CWD when relative. Trailing newlines are trimmed; the file is capped at 10 MiB and must be non-empty. Lower precedence than --prompt and the positional argument; higher than STIRRUP_PROMPT.")
@@ -796,6 +827,14 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		} else {
 			cfg.FollowUpGrace = nil
 		}
+	}
+	// optionalFloat64Flag distinguishes an explicit --temperature=0
+	// (greedy decoding) from the flag being absent: cobra's Float64
+	// store coerces both to 0.0, so without the Changed() check every
+	// run that omitted --temperature would silently rewrite a
+	// file-provided non-zero value to greedy decoding.
+	if t := optionalFloat64Flag(cmd, "temperature"); t != nil {
+		cfg.Temperature = t
 	}
 	if changed("log-level") {
 		cfg.LogLevel, _ = f.GetString("log-level")
@@ -1292,6 +1331,14 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Distinguish --temperature unset from --temperature=0. The
+	// cobra Float64 store has no way to express absence, so the
+	// flag's Changed() bit is the only safe way to preserve
+	// "use harness default" when the flag is omitted. Shared with
+	// applyOverrides via optionalFloat64Flag to keep the two paths
+	// from drifting.
+	temperature := optionalFloat64Flag(cmd, "temperature")
+
 	config, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:                        generateRunID(),
 		Mode:                         mode,
@@ -1321,6 +1368,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		TransportType:                transportType,
 		TransportAddr:                transportAddr,
 		FollowUpGrace:                followUpGrace,
+		Temperature:                  temperature,
 		LogLevel:                     logLevel,
 		ExecutorType:                 executorType,
 		EditStrategyType:             editStrategyType,

@@ -757,3 +757,37 @@ func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
 		}
 	})
 }
+
+// TestRunConfigFromProto_TemperatureRoundTrip pins the pointer-vs-nil
+// distinction across the wire boundary for RunConfig.Temperature
+// (issue #217). The control plane must be able to (a) leave the field
+// unset and inherit the harness default, (b) request a non-zero
+// temperature, and (c) request greedy decoding by sending an explicit
+// 0.0. Without the optional-double field on the proto side, case (c)
+// is wire-indistinguishable from case (a) — exactly the failure mode
+// the proto's `optional` keyword exists to prevent.
+func TestRunConfigFromProto_TemperatureRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		set  *float64
+	}{
+		{name: "nil_unset", set: nil},
+		{name: "explicit_zero_greedy", set: proto.Float64(0.0)},
+		{name: "mid_range", set: proto.Float64(0.7)},
+		{name: "above_anthropic_ceiling", set: proto.Float64(1.5)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := &pb.RunConfig{Temperature: tc.set}
+			rc := runConfigFromProto(pc)
+			switch {
+			case tc.set == nil && rc.Temperature != nil:
+				t.Fatalf("nil-on-wire translated to non-nil internal: got %v", *rc.Temperature)
+			case tc.set != nil && rc.Temperature == nil:
+				t.Fatalf("set-on-wire (%v) dropped to nil internal", *tc.set)
+			case tc.set != nil && *rc.Temperature != *tc.set:
+				t.Errorf("Temperature: got %v, want %v", *rc.Temperature, *tc.set)
+			}
+		})
+	}
+}

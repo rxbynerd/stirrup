@@ -42,6 +42,13 @@ const (
 	// model's response within the context window.
 	defaultReserveForResponse = 64_000
 
+	// defaultTemperature is the sampling temperature applied to every
+	// provider call when RunConfig.Temperature is nil. A low value
+	// biases for determinism on coding tasks — the historical
+	// hardcoded value, preserved as the harness default so unset
+	// configs see no behaviour change.
+	defaultTemperature = 0.1
+
 	// tokenEstimationDivisor is the approximate character-to-token ratio
 	// used by token estimation functions (≈4 characters per token).
 	tokenEstimationDivisor = 4
@@ -563,13 +570,24 @@ func (l *AgenticLoop) runInnerLoop(
 			),
 		)
 
+		// Resolve sampling temperature. Forward an explicit override
+		// verbatim (including 0.0 for greedy decoding); fall back to
+		// the harness default when the config left it nil. The
+		// invariant — loop must never silently forward a nil
+		// temperature to providers that would otherwise fall through
+		// to their own (higher) service defaults — is preserved by
+		// the fallback branch.
+		temperature := config.Temperature
+		if temperature == nil {
+			temperature = types.Float64Ptr(defaultTemperature)
+		}
 		ch, err := selectedProvider.Stream(spanCtx, types.StreamParams{
 			Model:       selection.Model,
 			System:      systemPrompt,
 			Messages:    preparedMessages,
 			Tools:       l.Tools.List(),
 			MaxTokens:   defaultReserveForResponse,
-			Temperature: types.Float64Ptr(0.1),
+			Temperature: temperature,
 		})
 		if err != nil {
 			// Scrub the status string before it lands on the OTel span.

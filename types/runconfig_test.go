@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 )
@@ -540,6 +541,75 @@ func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 	c.MaxTokenBudget = nil
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("expected no error for nil budget fields, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
+	// Out-of-range: negative.
+	c := validConfig()
+	neg := -0.01
+	c.Temperature = &neg
+	err := ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "temperature") {
+		t.Fatalf("expected temperature error for negative value, got: %v", err)
+	}
+
+	// Out-of-range: above ceiling.
+	high := 2.01
+	c.Temperature = &high
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "temperature") {
+		t.Fatalf("expected temperature error for value > 2.0, got: %v", err)
+	}
+
+	// Non-finite values must be rejected explicitly. IEEE 754 NaN
+	// compares false against both bounds, so without a finite-number
+	// guard `--temperature=NaN` (strconv.ParseFloat accepts "NaN")
+	// would slip past the range checks and reach the provider. +Inf
+	// is caught by the > maxTemperature comparison today, but the
+	// finite-number guard is the contract — assert it directly so a
+	// later refactor cannot regress it.
+	nan := math.NaN()
+	c.Temperature = &nan
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "finite") {
+		t.Fatalf("expected finite-number temperature error for NaN, got: %v", err)
+	}
+
+	posInf := math.Inf(1)
+	c.Temperature = &posInf
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "finite") {
+		t.Fatalf("expected finite-number temperature error for +Inf, got: %v", err)
+	}
+
+	negInf := math.Inf(-1)
+	c.Temperature = &negInf
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "finite") {
+		t.Fatalf("expected finite-number temperature error for -Inf, got: %v", err)
+	}
+
+	// In-range and boundary values must validate cleanly. 0.0 is the
+	// greedy-decoding case the spec calls out explicitly; 1.0 is the
+	// Anthropic ceiling; 2.0 is the OpenAI/Gemini ceiling.
+	for _, v := range []float64{0.0, 1.0, 2.0} {
+		t.Run(fmt.Sprintf("v=%v", v), func(t *testing.T) {
+			c := validConfig()
+			x := v
+			c.Temperature = &x
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for temperature=%v, got: %v", v, err)
+			}
+		})
+	}
+
+	// Nil temperature falls back to the harness default and must
+	// validate cleanly. The "no temperature override" baseline.
+	c = validConfig()
+	c.Temperature = nil
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected no error for nil temperature, got: %v", err)
 	}
 }
 

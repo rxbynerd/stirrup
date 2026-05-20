@@ -588,7 +588,20 @@ type RunConfig struct {
 	// library default (currently 4 concurrent calls per turn). Neither
 	// means "disable concurrency". The hard ceiling is 16; values
 	// outside [0, 16] are rejected by ValidateRunConfig.
-	ToolDispatch  *ToolDispatchConfig `protobuf:"bytes,30,opt,name=tool_dispatch,json=toolDispatch,proto3" json:"tool_dispatch,omitempty"`
+	ToolDispatch *ToolDispatchConfig `protobuf:"bytes,30,opt,name=tool_dispatch,json=toolDispatch,proto3" json:"tool_dispatch,omitempty"`
+	// Optional. Sampling temperature forwarded to the provider on every
+	// turn. Unset means "use the harness default" (currently 0.1, a low
+	// value that biases for determinism on coding tasks). A set value is
+	// forwarded verbatim, including an explicit 0.0 for greedy decoding.
+	//
+	// Validated against the union of provider ranges (Anthropic [0, 1],
+	// OpenAI / Gemini [0, 2]) → [0.0, 2.0]. A value inside the union may
+	// still be rejected by the chosen provider's narrower range; the
+	// adapter surfaces that rejection at request time. Declared `optional`
+	// so unset is wire-distinguishable from explicit 0.0 (proto3's scalar
+	// default would otherwise silently coerce greedy decoding to the
+	// harness default).
+	Temperature   *float64 `protobuf:"fixed64,31,opt,name=temperature,proto3,oneof" json:"temperature,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -831,6 +844,13 @@ func (x *RunConfig) GetToolDispatch() *ToolDispatchConfig {
 		return x.ToolDispatch
 	}
 	return nil
+}
+
+func (x *RunConfig) GetTemperature() float64 {
+	if x != nil && x.Temperature != nil {
+		return *x.Temperature
+	}
+	return 0
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -3521,7 +3541,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\acontent\x18\a \x01(\tR\acontent\x12;\n" +
 	"\bis_error\x18\b \x01(\v2 .stirrup.harness.v1.OptionalBoolR\aisError\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xb0\x10\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xe7\x10\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -3554,7 +3574,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\n" +
 	"guard_rail\x18\x1c \x01(\v2#.stirrup.harness.v1.GuardRailConfigR\tguardRail\x12M\n" +
 	"\robservability\x18\x1d \x01(\v2'.stirrup.harness.v1.ObservabilityConfigR\robservability\x12K\n" +
-	"\rtool_dispatch\x18\x1e \x01(\v2&.stirrup.harness.v1.ToolDispatchConfigR\ftoolDispatch\x1aj\n" +
+	"\rtool_dispatch\x18\x1e \x01(\v2&.stirrup.harness.v1.ToolDispatchConfigR\ftoolDispatch\x12%\n" +
+	"\vtemperature\x18\x1f \x01(\x01H\x06R\vtemperature\x88\x01\x01\x1aj\n" +
 	"\x13DynamicContextEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12=\n" +
 	"\x05value\x18\x02 \x01(\v2'.stirrup.harness.v1.DynamicContextValueR\x05value:\x028\x01\x1a`\n" +
@@ -3567,7 +3588,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\b_timeoutB\x12\n" +
 	"\x10_follow_up_graceB\x0f\n" +
 	"\r_session_nameB\x11\n" +
-	"\x0f_sensitive_data\"I\n" +
+	"\x0f_sensitive_dataB\x0e\n" +
+	"\f_temperature\"I\n" +
 	"\x13DynamicContextValue\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12\x1c\n" +
 	"\tsensitive\x18\x02 \x01(\bR\tsensitive\"7\n" +
