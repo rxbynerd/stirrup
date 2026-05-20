@@ -56,7 +56,12 @@ gcloud services enable \
 
 `containerscanning.googleapis.com` is what activates *automatic*
 vulnerability scanning on push; once enabled, scanning is triggered
-on every new image without further configuration.
+on every new image without further configuration — and bills per
+scan. Cost-control implication: dev images from `ci.yml` are
+deliberately published only to GHCR (not GAR) so the auto-scan
+cost surface is bounded to release tags. See
+[Phase 3 — Vulnerability gating on releases](#phase-3--vulnerability-gating-on-releases)
+below for the gate flow and the on-demand dispatch wrapper.
 
 ### 2. Create the Artifact Registry Docker repository
 
@@ -241,11 +246,16 @@ how `google-github-actions/auth` documents the pattern.
 | `GAR_REPOSITORY` | Repository name within Artifact Registry (e.g. `stirrup`). |
 | `GAR_IMAGE` | Image name within the repository (e.g. `stirrup`). The final image path is `<GAR_LOCATION>-docker.pkg.dev/<GCP_PROJECT_ID>/<GAR_REPOSITORY>/<GAR_IMAGE>`. |
 
-`ci.yml::publish-container` and `release.yml::publish-container` both
-read these variables. If any of them are unset, the workflow steps
-that depend on them will fail at run time with a clear "registry
-hostname empty" or "workload identity provider empty" error — there
-is no silent fallback to a different identity.
+`release.yml::publish-container` reads these variables for the
+release-time GHCR + GAR dual-publish. `ci.yml::publish-container`
+no longer reads them: dev images on main go to GHCR only (so
+auto-scan cost on GAR is bounded to releases), and the GAR-side
+auth + login steps have been removed from the ci job. The smoke
+workflows (`smoke-gar-publish.yml`,`smoke-cloud-run-job.yml`) and
+`release.yml` are now the only callers. If any variable is unset,
+those workflows will fail at run time with a clear "registry
+hostname empty" or "workload identity provider empty" error —
+there is no silent fallback to a different identity.
 
 ### Why short-lived service-account impersonation
 
@@ -269,8 +279,9 @@ reference:
 
 ## Verification
 
-After the first `main` push merges with the new workflow, confirm the
-dual-publish worked end to end.
+After the first tagged release merges with the publish workflow,
+confirm the dual-publish worked end to end. (A push to `main` no
+longer touches GAR — only release tags do.)
 
 ### 0. (Optional) Run the smoke workflow on `main`
 
@@ -297,9 +308,12 @@ gcloud artifacts docker images list \
   --project=rubynerd-net
 ```
 
-You should see entries for `:latest`, `:main`, and `:sha-<7>`, each
-with a populated `DIGEST` column. Multi-arch builds show one entry
-per manifest list, not per platform.
+After a tagged release, expect entries for `:latest`, `:vX.Y.Z`,
+and (on non-prerelease tags) `:X.Y`, each with a populated
+`DIGEST` column. Multi-arch builds show one entry per manifest
+list, not per platform. The pre-2026-05 `:main` / `:sha-<7>` dev
+tags are no longer pushed to GAR — those live on GHCR
+(`ghcr.io/rxbynerd/stirrup`) only.
 
 ### 2. Confirm both registries serve the same digest
 
@@ -471,6 +485,13 @@ small follow-up PR so that the calibration window can produce real
 data about scanner timing and false-positive rates against actual
 release images.
 
+The job body lives in `.github/workflows/_vuln-scan.yml`
+(reusable, `workflow_call`). Both the release-time caller and the
+ad-hoc `vuln-scan.yml` dispatcher share the same polling, query,
+normalisation, summary, and issue-filing logic — see
+[On-demand vulnerability scans](#on-demand-vulnerability-scans)
+below for the dispatcher's use case.
+
 ### What the gate does
 
 1. Re-authenticates to GCP via WIF + SA impersonation (per-job OIDC
@@ -502,13 +523,17 @@ release images.
 
 The job is deliberately **not** in `release.needs`, so the warn
 posture is structural rather than just behavioural — even an
-accidental `exit 1` from a step would not block the release. When
-the calibration window closes, the promote-to-block change is two
-edits:
+accidental `exit 1` from the reusable workflow's `Gate result`
+step would not block the release today. When the calibration
+window closes, the promote-to-block change is two edits:
 
-1. Flip the final calibration-log step to `exit 1` on the
-   `would block` branch.
+1. Flip `mode: warn` to `mode: block` in
+   `release.yml::vulnerability-gate`'s `with:` block.
 2. Add `vulnerability-gate` to `release.needs`.
+
+The `Gate result` step in `_vuln-scan.yml` already honours
+`block` mode (exits 1 on CRITICAL+fixable when the override is
+inactive), so the caller flip is sufficient.
 
 Until then, the release pipeline ships regardless of what the gate
 finds. The tracking issue is the audit trail.
@@ -617,6 +642,50 @@ doc surfaces it.
 
 `issues: write` is GitHub-side, not GCP-side; the existing PAT-free
 posture is unchanged.
+
+### On-demand vulnerability scans
+
+`.github/workflows/vuln-scan.yml` is a `workflow_dispatch`
+wrapper around `_vuln-scan.yml`. Use it to re-query Artifact
+Analysis findings for any digest already in GAR without cutting a
+new release tag — typical triggers:
+
+- A fresh CVE drops against a base image that a still-supported
+  release ships. Re-query to see whether the existing image is
+  now flagged.
+- A vendor announces a vulnerability in a Go module the harness
+  embeds; the operator wants to confirm whether the latest
+  released image picks it up.
+- Investigating a specific digest reported by an external scanner
+  for cross-validation.
+
+Dispatch from `main` or an existing `v*` tag (the WIF provider's
+attribute-condition pins `assertion.ref` to those two refs;
+feature-branch dispatches fail at the auth step with a clean
+WIF error — the documented security boundary working as
+designed):
+
+```sh
+gh workflow run vuln-scan.yml --ref main \
+  -f image_uri='europe-west4-docker.pkg.dev/rubynerd-net/stirrup/stirrup@sha256:...' \
+  -f tag='v1.2.3' \
+  -f mode='warn'
+```
+
+The dispatcher accepts the same `mode` input as the release
+caller. `block` is useful for one-off strict checks where a
+CRITICAL+fixable finding should produce a red Actions UI marker
+without touching `release.yml`. The
+`STIRRUP_RELEASE_VULN_OVERRIDE` variable is matched literally
+against `inputs.tag`; ad-hoc dispatches with arbitrary labels do
+not collide with a release-tag override.
+
+The dispatcher does **not** trigger a scan. Scans are triggered
+by GAR's auto-scan on push (Phase 1 enabled
+`containerscanning.googleapis.com`); the dispatcher only queries
+already-completed results. Re-evaluation against the loaded
+SBOMs happens periodically inside Container Analysis at no
+additional billable scan cost.
 
 ## Rolling the WIF provider
 

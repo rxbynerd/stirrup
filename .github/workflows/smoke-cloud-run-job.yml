@@ -41,6 +41,16 @@ name: Smoke Test - Cloud Run Job
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          GAR image tag to deploy. Defaults to `latest`, which after
+          the dev-push removal (see ci.yml) resolves to the most
+          recent non-prerelease release. Pass a specific `vX.Y.Z` or
+          `vX.Y.Z-rcN` to smoke a prerelease.
+        required: false
+        default: latest
+        type: string
 
 jobs:
   smoke-cloud-run-job:
@@ -81,10 +91,11 @@ jobs:
           GAR_LOCATION: ${{ vars.GAR_LOCATION }}
           GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
           GAR_IMAGE: ${{ vars.GAR_IMAGE }}
+          IMAGE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           gcloud run jobs deploy smoke-stirrup-cloud-run \
-            --image="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/${GAR_IMAGE}:latest" \
+            --image="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/${GAR_IMAGE}:${IMAGE_TAG}" \
             --region="${GAR_LOCATION}" \
             --service-account="stirrup-job@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
             --task-timeout=300 \
