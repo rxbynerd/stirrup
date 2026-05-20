@@ -93,6 +93,17 @@ func Float64Ptr(v float64) *float64 {
 //     tool defers its result; correlated by RequestID with the incoming
 //     "tool_result_response" ControlEvent. Carries ToolUseID, ToolName and
 //     Input so the control plane can correlate to the original tool_call.
+//   - "batch_submission"     — emitted by the gRPC BatchAdapter for a turn
+//     it wants the control plane to dispatch as a batch entry; Input carries
+//     the provider-shaped request body, RequestID correlates the matching
+//     "batch_result" ControlEvent.
+//   - "batch_waiting"        — periodic heartbeat from the BatchAdapter
+//     while a "batch_submission" is in flight; RequestID echoes the
+//     originating submission so the control plane can keep its slot alive.
+//   - "batch_cancel_request" — emitted by the BatchAdapter when the run
+//     cancels or its wall-clock cap fires and the operator opted into
+//     CancelBundleOnRunCancel; RequestID echoes the submission so the
+//     control plane can cancel the matching provider-side batch entry.
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
@@ -121,6 +132,10 @@ type HarnessEvent struct {
 //     for an async tool. RequestID echoes the originating request; Content
 //     carries the result payload; IsError, when set, marks the result as a
 //     tool failure (the model sees IsError=true on the ToolResult).
+//   - "batch_result"          — completes a "batch_submission" HarnessEvent.
+//     RequestID echoes the originating submission; Content carries the JSON
+//     BatchResult (provider response on success, BatchResultError on failure)
+//     consumed by harness/internal/provider.decodeBatchResult.
 type ControlEvent struct {
 	Type         string     `json:"type"`
 	Task         *RunConfig `json:"task,omitempty"`

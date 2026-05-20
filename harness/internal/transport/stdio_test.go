@@ -146,6 +146,66 @@ func TestStdioTransport_EmitFiresSecretRedactedInOutput(t *testing.T) {
 	}
 }
 
+// TestStdioTransport_RoundTripsBatchEventTypes confirms the stdio
+// transport carries the phase-2 batch event-type discriminators through
+// without dropping or remapping them. The transport is pass-through on
+// Type (no allowlist), so the test guards against a future regression
+// that would add one.
+func TestStdioTransport_RoundTripsBatchEventTypes(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewStdioTransport(&buf, strings.NewReader(""))
+
+	outbound := []types.HarnessEvent{
+		{Type: "batch_submission", RequestID: "batch-1", Input: []byte(`{"provider_type":"anthropic"}`)},
+		{Type: "batch_waiting", RequestID: "batch-1"},
+		{Type: "batch_cancel_request", RequestID: "batch-1"},
+	}
+	for _, ev := range outbound {
+		if err := tr.Emit(ev); err != nil {
+			t.Fatalf("Emit %s: %v", ev.Type, err)
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != len(outbound) {
+		t.Fatalf("expected %d lines, got %d: %q", len(outbound), len(lines), buf.String())
+	}
+	for i, line := range lines {
+		var got types.HarnessEvent
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatalf("unmarshal line %d: %v", i, err)
+		}
+		if got.Type != outbound[i].Type {
+			t.Errorf("line %d: got type %q, want %q", i, got.Type, outbound[i].Type)
+		}
+		if got.RequestID != outbound[i].RequestID {
+			t.Errorf("line %d: got requestID %q, want %q", i, got.RequestID, outbound[i].RequestID)
+		}
+	}
+
+	// Inbound batch_result via the read path.
+	inbound := `{"type":"batch_result","requestId":"batch-1","content":"{\"response\":null,\"err\":{\"type\":\"batch_expired\"}}"}` + "\n"
+	tr2 := NewStdioTransport(&bytes.Buffer{}, strings.NewReader(inbound))
+	received := make(chan types.ControlEvent, 1)
+	tr2.OnControl(func(event types.ControlEvent) {
+		received <- event
+	})
+	select {
+	case ev := <-received:
+		if ev.Type != "batch_result" {
+			t.Errorf("got type %q, want batch_result", ev.Type)
+		}
+		if ev.RequestID != "batch-1" {
+			t.Errorf("got requestID %q, want batch-1", ev.RequestID)
+		}
+		if ev.Content == "" {
+			t.Error("expected non-empty content on batch_result")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for batch_result control event")
+	}
+}
+
 func TestStdioTransport_EmitNoEventWhenNoSecret(t *testing.T) {
 	var buf bytes.Buffer
 	tr := NewStdioTransport(&buf, strings.NewReader(""))
