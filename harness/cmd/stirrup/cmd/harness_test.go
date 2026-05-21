@@ -574,79 +574,17 @@ func TestLoadRunConfigFile_InvalidJSON(t *testing.T) {
 
 // newTestHarnessCommand builds a cobra command with the same flag surface
 // as the real harnessCmd. Used to exercise applyOverrides under realistic
-// conditions where Changed() reflects only what the test sets.
+// conditions where Changed() reflects only what the test sets. Delegates
+// the RunConfig-producing flag surface to addRunConfigFlags so a flag
+// added to the shared registry is automatically picked up here — this
+// is the same factory the run-config subcommand uses.
 func newTestHarnessCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "harness"}
+	addRunConfigFlags(cmd)
 	f := cmd.Flags()
-	f.String("config", "", "")
-	f.StringP("mode", "m", "planning", "")
-	f.String("model", "claude-sonnet-4-6", "")
-	f.String("provider", "anthropic", "")
-	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "")
-	f.String("base-url", "", "")
-	f.String("api-key-header", "", "")
-	f.StringArray("query-param", nil, "")
-	f.String("gcp-project", "", "")
-	f.String("gcp-location", "global", "")
-	f.String("gcp-credentials-file", "", "")
-	f.String("anthropic-federation-rule-id", "", "")
-	f.String("anthropic-organization-id", "", "")
-	f.String("anthropic-service-account-id", "", "")
-	f.String("anthropic-workspace-id", "", "")
-	f.Bool("anthropic-from-github-actions", false, "")
-	f.String("azure-tenant-id", "", "")
-	f.String("azure-client-id", "", "")
-	f.String("azure-scope", "https://cognitiveservices.azure.com/.default", "")
-	f.StringP("workspace", "w", "", "")
-	f.Int("max-turns", 20, "")
-	f.Int("timeout", 600, "")
-	f.String("trace", "", "")
-	f.String("transport", "stdio", "")
-	f.String("transport-addr", "", "")
-	f.Int("followup-grace", 0, "")
-	f.Float64("temperature", 0, "")
-	f.String("log-level", "info", "")
-	f.String("prompt", "", "")
-	f.String("prompt-file", "", "")
-	f.String("name", "", "")
-	f.String("executor", "local", "")
-	f.String("edit-strategy", "multi", "")
-	f.String("verifier", "none", "")
-	f.String("git-strategy", "none", "")
-	f.String("trace-emitter", "jsonl", "")
-	f.String("otel-endpoint", "", "")
-	f.String("otel-protocol", "", "")
-	f.String("container-runtime", "", "")
-	f.String("permission-policy-file", "", "")
-	f.String("code-scanner", "", "")
-	f.String("guardrail", "", "")
-	f.String("guardrail-endpoint", "", "")
-	f.String("guardrail-model", "", "")
-	f.Bool("guardrail-fail-open", false, "")
-	f.String("deployment-environment", "", "")
-	f.String("service-namespace", "", "")
-	// Provider retry policy flags (issue #197). Registered here so
-	// f.Changed("...") can fire in TestApplyOverrides_ProviderRetry*
-	// tests — without these registrations applyProviderRetryFlagOverrides
-	// hits its early-return guard unconditionally.
-	f.Int("provider-retry-max-attempts", 0, "")
-	f.Duration("provider-retry-initial-delay", 0, "")
-	f.Duration("provider-retry-max-delay", 0, "")
-	f.Duration("provider-retry-wall-clock", 0, "")
-	// Workspace export flags (issue #164). Registered here so the
-	// override tests can exercise the applyOverrides path that handles
-	// --export-workspace-to.
-	f.String("export-workspace-to", "", "")
+	// Harness-only behaviour flags that do not round-trip through
+	// RunConfig. Mirrors the registration in harness.go init().
 	f.Bool("export-workspace-required", false, "")
-	// Parallel async-tool dispatch flag (issue #184). Registered here so
-	// TestApplyOverrides_MaxToolParallel* tests can exercise the override
-	// path.
-	f.Int("max-tool-parallel", 0, "")
-	// Batch flag (issue #136). Registered here so the override tests
-	// can exercise the applyOverrides path that handles --batch.
-	f.Bool("batch", false, "")
-	// --output-runconfig (issue #240). Registered here so runHarness
-	// can read the flag when its dry-run capture path runs in tests.
 	f.String("output-runconfig", "", "")
 	return cmd
 }

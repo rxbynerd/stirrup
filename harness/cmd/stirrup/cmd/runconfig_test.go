@@ -28,52 +28,24 @@ func newTestRunConfigCommand() *cobra.Command {
 	return cmd
 }
 
-// runRunConfigForTest invokes runRunConfig with the given args, a
-// stdin reader, and a stdout writer. The real runRunConfig writes to
-// os.Stdout via writeRunConfigJSON; the test bypasses that by
-// replacing os.Stdout for the duration of the call. (Cobra does not
-// expose an os.Stdout-injection seam without re-plumbing every
-// downstream helper, so a swap is the smallest change.)
+// runRunConfigForTest invokes the run-config command through its real
+// runRunConfigWithIO entry point so the cobra flag-reading wiring
+// (validate, redact, compact) is exercised end-to-end. The previous
+// implementation replicated the function body inline, which left the
+// production glue at 0% coverage.
 func runRunConfigForTest(t *testing.T, args []string, stdin string) (string, error) {
 	t.Helper()
 	cmd := newTestRunConfigCommand()
 	if err := cmd.ParseFlags(args); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
-
-	// Build the config ourselves rather than calling runRunConfig:
-	// runRunConfig reads os.Stdin (which we cannot easily replace
-	// across goroutines / cobra layers) and writes to os.Stdout (which
-	// we can but would need to be process-global). This pathway
-	// exercises the same BuildRunConfig + writeRunConfigJSON code the
-	// command does, just with the stdin source threaded explicitly.
-	configPath, _ := cmd.Flags().GetString("config")
-	resolve := ResolveBase
-	if v, _ := cmd.Flags().GetBool("validate"); v {
-		resolve = ResolveAll
-	}
 	var reader io.Reader
 	if stdin != "" {
 		reader = strings.NewReader(stdin)
 	}
-	cfg, err := BuildRunConfig(RunConfigSources{
-		Stdin:      reader,
-		ConfigPath: configPath,
-		Cmd:        cmd,
-		Args:       cmd.Flags().Args(),
-		Resolve:    resolve,
-	})
-	if err != nil {
-		return "", err
-	}
-	if redact, _ := cmd.Flags().GetBool("redact"); redact {
-		r := cfg.Redact()
-		cfg = &r
-	}
-	compact, _ := cmd.Flags().GetBool("compact")
 	var buf bytes.Buffer
-	if werr := writeRunConfigJSON(&buf, cfg, compact); werr != nil {
-		return "", werr
+	if err := runRunConfigWithIO(cmd, cmd.Flags().Args(), reader, &buf); err != nil {
+		return "", err
 	}
 	return buf.String(), nil
 }
@@ -239,5 +211,141 @@ func TestRunRunConfig_RoundTripFromExample(t *testing.T) {
 	}
 	if pass1 != pass2 {
 		t.Errorf("normalisation pass is not idempotent")
+	}
+}
+
+// TestRunRunConfig_WrapperThreadsOSIO pins MF-3's residual line: the
+// runRunConfig cobra RunE thunk threads os.Stdin / os.Stdout into the
+// testable runRunConfigWithIO helper. Without this assertion the
+// one-liner thunk stays at 0% coverage and a future regression that
+// swaps the wiring (e.g. passes nil for stdout) would land silently.
+func TestRunRunConfig_WrapperThreadsOSIO(t *testing.T) {
+	cmd := newTestRunConfigCommand()
+	if err := cmd.ParseFlags([]string{"--mode", "planning"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = origStdout
+		_ = r.Close()
+	}()
+
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+
+	if err := runRunConfig(cmd, cmd.Flags().Args()); err != nil {
+		_ = w.Close()
+		<-done
+		t.Fatalf("runRunConfig: %v", err)
+	}
+	_ = w.Close()
+	out := <-done
+
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("os.Stdout should receive parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.Mode != "planning" {
+		t.Errorf("Mode = %q, want planning", cfg.Mode)
+	}
+}
+
+// TestRunRunConfigWithIO_TableDriven pins MF-3: every cobra
+// flag-reading branch inside runRunConfigWithIO (validate, redact,
+// compact, plain) reaches a passing assertion through the real entry
+// point. Before the WithIO refactor, runRunConfigForTest replicated
+// the function body inline, so a `f.GetBool("compact")` rename would
+// have passed every test. The table exercises one branch per row.
+func TestRunRunConfigWithIO_TableDriven(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		stdin   string
+		wantErr bool
+		check   func(t *testing.T, out string)
+	}{
+		{
+			name: "flag-only emits indented JSON",
+			args: []string{"--mode", "planning", "--prompt", "x"},
+			check: func(t *testing.T, out string) {
+				if !strings.Contains(out, "\n  ") {
+					t.Errorf("default output should be indented, got: %s", out)
+				}
+				var cfg types.RunConfig
+				if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+					t.Fatalf("unparseable JSON: %v\n%s", err, out)
+				}
+				if cfg.Mode != "planning" {
+					t.Errorf("Mode = %q, want planning", cfg.Mode)
+				}
+			},
+		},
+		{
+			name: "compact produces single-line JSON",
+			args: []string{"--compact", "--mode", "planning"},
+			check: func(t *testing.T, out string) {
+				body := strings.TrimRight(out, "\n")
+				if strings.Contains(body, "\n") {
+					t.Errorf("--compact output should be single-line, got: %q", out)
+				}
+				var cfg types.RunConfig
+				if err := json.Unmarshal([]byte(body), &cfg); err != nil {
+					t.Fatalf("compact output not parseable: %v\n%s", err, out)
+				}
+			},
+		},
+		{
+			name: "redact rewrites secret references",
+			args: []string{"--redact", "--mode", "planning", "--api-key-ref", "secret://CUSTOM_KEY"},
+			check: func(t *testing.T, out string) {
+				if !strings.Contains(out, "secret://[REDACTED]") {
+					t.Errorf("--redact should produce REDACTED placeholder, got: %s", out)
+				}
+				if strings.Contains(out, "CUSTOM_KEY") {
+					t.Errorf("--redact should scrub the original secret reference, got: %s", out)
+				}
+			},
+		},
+		{
+			name:    "validate rejects invalid config",
+			args:    []string{"--validate", "--mode", "execution", "--provider", "bedrock", "--prompt", "x"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newTestRunConfigCommand()
+			if err := cmd.ParseFlags(tc.args); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
+			}
+			var reader io.Reader
+			if tc.stdin != "" {
+				reader = strings.NewReader(tc.stdin)
+			}
+			var buf bytes.Buffer
+			err := runRunConfigWithIO(cmd, cmd.Flags().Args(), reader, &buf)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil; output: %s", buf.String())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("runRunConfigWithIO: %v", err)
+			}
+			if tc.check != nil {
+				tc.check(t, buf.String())
+			}
+		})
 	}
 }

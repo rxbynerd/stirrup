@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -50,6 +51,16 @@ func init() {
 }
 
 func runRunConfig(cmd *cobra.Command, args []string) error {
+	return runRunConfigWithIO(cmd, args, os.Stdin, os.Stdout)
+}
+
+// runRunConfigWithIO is the testable seam for runRunConfig: it accepts
+// explicit stdin and stdout so tests can drive the cobra flag-reading
+// wiring (validate, redact, compact) through the real entry point
+// instead of replicating the function body. The cobra RunE signature
+// reaches it via runRunConfig, which threads os.Stdin / os.Stdout for
+// the production binary.
+func runRunConfigWithIO(cmd *cobra.Command, args []string, stdin io.Reader, stdout io.Writer) error {
 	f := cmd.Flags()
 	configPath, _ := f.GetString("config")
 	resolve := ResolveBase
@@ -58,7 +69,7 @@ func runRunConfig(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg, err := BuildRunConfig(RunConfigSources{
-		Stdin:      os.Stdin,
+		Stdin:      stdin,
 		ConfigPath: configPath,
 		Cmd:        cmd,
 		Args:       args,
@@ -74,5 +85,5 @@ func runRunConfig(cmd *cobra.Command, args []string) error {
 	}
 
 	compact, _ := f.GetBool("compact")
-	return writeRunConfigJSON(os.Stdout, cfg, compact)
+	return writeRunConfigJSON(stdout, cfg, compact)
 }
