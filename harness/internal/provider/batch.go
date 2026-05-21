@@ -54,6 +54,10 @@ type BatchClient interface {
 	// batchID that can be passed to Result. The batchID is the harness's
 	// correlation handle; the provider-side batch identifier may differ
 	// and is carried inside the eventual BatchResult.
+	//
+	// In v1, callers must pass exactly one entry; implementations reject
+	// len(entries) != 1. The slice shape is reserved for OpenAI's
+	// multi-entry file-upload path (phase 6, #139).
 	Submit(ctx context.Context, entries []BatchEntry) (batchID string, err error)
 
 	// Result blocks until the batch identified by batchID resolves (or
@@ -65,7 +69,8 @@ type BatchClient interface {
 // BatchEntry is a single submission within a batch.
 type BatchEntry struct {
 	// CustomID is the per-entry correlation handle echoed back in the
-	// batch_result. The BatchAdapter uses the shape "<runID>-turn-<n>".
+	// batch_result. The BatchAdapter uses the shape "stirrup-<runID>-turn-<n>"
+	// (see BatchAdapter.Stream).
 	CustomID string `json:"custom_id"`
 
 	// Provider names the upstream API shape the Body conforms to.

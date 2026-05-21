@@ -75,13 +75,34 @@ const (
 //	  - (no additional fields) Sent every 30 seconds during execution to
 //	    signal liveness. The control plane should treat absence of heartbeats
 //	    as a potential hang.
+//
+//	"batch_submission"
+//	  - request_id: correlation ID; the control plane must echo this in
+//	                the corresponding batch_result ControlEvent.
+//	  - input:      JSON-encoded BatchSubmission payload (provider_type,
+//	                custom_id, body). The body is the marshalled provider
+//	                request the streaming adapter would have POSTed.
+//
+//	"batch_waiting"
+//	  - request_id: the originating batch_submission request_id.
+//	  (Heartbeat-style event emitted every 5 minutes during the wait so
+//	  the control plane can distinguish "still pending" from a stalled
+//	  harness. Reuses the run-level heartbeat as a liveness signal of
+//	  last resort.)
+//
+//	"batch_cancel_request"
+//	  - request_id: the originating batch_submission request_id.
+//	  (Best-effort signal; the control plane should call the provider's
+//	  batch-cancel endpoint. The harness does not retry or block on a
+//	  response — cancellation is fire-and-forget.)
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
 	// Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
 	//
 	//	"warning", "heartbeat", "ready", "permission_request",
-	//	"tool_result_request".
+	//	"tool_result_request", "batch_submission", "batch_waiting",
+	//	"batch_cancel_request".
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Incremental text fragment from the model. Set on "text_delta" events.
 	Text string `protobuf:"bytes,2,opt,name=text,proto3" json:"text,omitempty"`
@@ -280,12 +301,20 @@ func (x *HarnessEvent) GetHarnessVersion() string {
 //	    final "done" HarnessEvent carries stop_reason="cancelled". If the
 //	    harness is in the follow-up grace window (no active run), the
 //	    stream closes promptly without an additional "done" event.
+//
+//	"batch_result"
+//	  - request_id: must match a previously received batch_submission
+//	                HarnessEvent.request_id.
+//	  - content:    JSON-encoded BatchResult payload (response or err).
+//	  - is_error:   true for non-success result types (batch_expired,
+//	                batch_cancelled, invalid_request_error, server_error).
 type ControlEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
 	// Valid values: "task_assignment", "user_response", "cancel",
 	//
-	//	"permission_response", "tool_result_response".
+	//	"permission_response", "tool_result_response",
+	//	"batch_result".
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// The run configuration. Set on "task_assignment" events only. This is the
 	// composition root that drives all harness behaviour for the run.

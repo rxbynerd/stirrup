@@ -2064,14 +2064,11 @@ func fmtProviderRetryValue(value int, isDefault bool) string {
 // validateBatchConfig enforces the cross-field invariants on
 // ProviderConfig.Batch and applies the MaxWaitSeconds default. Batch
 // only applies to the top-level Provider in v1; entries in
-// Providers[] are streaming-only and validateProviderConfigs rejects
-// any non-nil Batch on a map entry. The validator mutates *config when
-// Batch.Enabled and MaxWaitSeconds is unset — downstream consumers
-// should always see a populated value so the adapter wiring (phase 2)
-// can avoid nil-checking on the hot path. The MaxWaitSeconds default
-// is intentionally withheld when Enabled=false: phase-2 callers rely
-// on nil to distinguish "operator did not configure this field" from
-// "default applied", and the field is meaningless when batch is off.
+// Providers[] are streaming-only and any Batch field on them is
+// ignored. The validator mutates *config when Batch.Enabled and
+// MaxWaitSeconds is unset — downstream consumers should always see
+// a populated value so the adapter wiring (phase 2) can avoid
+// nil-checking on the hot path.
 func validateBatchConfig(config *RunConfig, errs *[]string) {
 	batch := config.Provider.Batch
 	if batch == nil {
@@ -2111,6 +2108,19 @@ func validateBatchConfig(config *RunConfig, errs *[]string) {
 	}
 	if config.Transport.Type == "stdio" && !batch.HarnessSidePolling {
 		*errs = append(*errs, "batch with transport=stdio requires harnessSidePolling=true")
+	}
+	// v1 limitation: harnessPollingBatchClient hardcodes x-api-key auth.
+	// anthropic-wif requires Authorization: Bearer (see anthropic.go's
+	// AuthMode switch) and that auth mode is not yet threaded through
+	// NewHarnessPollingBatchClient. Reject the combination here so the
+	// operator hits a clear validation error rather than a silent 401
+	// on the first poll. TODO(batch-phase-6): lift this restriction by
+	// threading AuthMode through harnessPollingBatchClient (follow-up
+	// filed: "lift anthropic-wif + stdio batch restriction").
+	if batch.HarnessSidePolling &&
+		config.Provider.Credential != nil &&
+		config.Provider.Credential.Type == "anthropic-wif" {
+		*errs = append(*errs, "batch.harnessSidePolling does not support anthropic-wif credentials in v1 (the polling client uses x-api-key auth); follow-up: thread AuthMode through harnessPollingBatchClient")
 	}
 	if batch.MaxWaitSeconds != nil {
 		if *batch.MaxWaitSeconds <= 0 || *batch.MaxWaitSeconds > DefaultBatchMaxWaitSeconds {

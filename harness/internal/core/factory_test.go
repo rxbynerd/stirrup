@@ -2370,12 +2370,14 @@ func TestBuildLoopWithTransport_BatchAdapterWiredWhenEnabled(t *testing.T) {
 	}
 }
 
-// TestBuildLoopWithTransport_BatchAdapterNotWiredOnStdio is the
-// near-miss case. transport=stdio with HarnessSidePolling=true passes
-// validation (the harness polling client lands in phase 4) but the
-// factory has no wire for it yet, so loop.Provider must remain the raw
-// streaming adapter. This assertion will be inverted when phase 4 lands.
-func TestBuildLoopWithTransport_BatchAdapterNotWiredOnStdio(t *testing.T) {
+// TestBuildLoopWithTransport_BatchAdapterWiredOnStdio asserts the
+// phase-4 polling client wiring: transport=stdio with
+// HarnessSidePolling=true now wraps the streaming adapter in a
+// *BatchAdapter (backed by *harnessPollingBatchClient — the BatchClient
+// concrete type is unexported so we only assert the outer wrapper).
+// The providers map is updated in lockstep so the model router does
+// not bypass batching.
+func TestBuildLoopWithTransport_BatchAdapterWiredOnStdio(t *testing.T) {
 	t.Setenv("TEST_ANTHROPIC_KEY", "test-key")
 
 	timeout := 30
@@ -2413,8 +2415,60 @@ func TestBuildLoopWithTransport_BatchAdapterNotWiredOnStdio(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	if _, ok := loop.Provider.(*provider.BatchAdapter); ok {
-		t.Fatalf("loop.Provider is *BatchAdapter on stdio; phase 4 wiring landed earlier than expected — invert this assertion")
+	ba, ok := loop.Provider.(*provider.BatchAdapter)
+	if !ok {
+		t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+	}
+	mapped := loop.Providers[config.Provider.Type]
+	if mapped != ba {
+		t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
+	}
+}
+
+// TestBuildLoopWithTransport_BatchRejectedOnStdioForNonAnthropic guards
+// the phase-4 invariant that stdio batch is Anthropic-only in v1. The
+// validator accepts openai-{compatible,responses} batch in general
+// (phase 6 will add the fabrication path); the factory rejects the
+// combination here so the operator hits a clear build-time error
+// rather than a confusing "not yet implemented" on the first turn.
+func TestBuildLoopWithTransport_BatchRejectedOnStdioForNonAnthropic(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-batch-stdio-openai",
+		Mode:             "planning",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: "https://api.openai.com/v1"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "gpt-4o"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		Transport:        types.TransportConfig{Type: "stdio"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+	config.Provider.Batch = &types.BatchProviderConfig{
+		Enabled:               true,
+		MaxWaitSeconds:        intPtr(86400),
+		HarnessSidePolling:    true,
+		AllowInteractiveModes: true,
+	}
+
+	injected := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	_, err := BuildLoopWithTransport(context.Background(), config, injected)
+	if err == nil {
+		t.Fatal("expected error for stdio batch with openai-compatible, got nil")
+	}
+	if !strings.Contains(err.Error(), "anthropic") || !strings.Contains(err.Error(), "phase 6") {
+		t.Errorf("expected anthropic/phase-6 diagnostic, got: %v", err)
 	}
 }
 
