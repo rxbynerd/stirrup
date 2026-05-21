@@ -81,6 +81,21 @@ Requires `ANTHROPIC_API_KEY` environment variable for the default Anthropic prov
 | `--transport-addr` | (none) | gRPC target address, required when transport is grpc |
 | `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups (env: `STIRRUP_FOLLOWUP_GRACE`) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
+| `--config` | (none) | JSON `RunConfig` path. Use `-` for stdin; auto-detected on a non-TTY pipe. |
+| `--output-runconfig` | (none) | Write the resolved `RunConfig` JSON to `<path>` (or `-` for stdout) and exit without running. Dry-run capture for replay or post-mortem. |
+
+### CLI Flags (`stirrup run-config`)
+
+Emits a fully-resolved `RunConfig` JSON document without invoking the
+loop. Accepts every `RunConfig`-producing flag from `stirrup harness`
+plus a base via stdin or `--config <path>`. See
+[`docs/configuration.md`](docs/configuration.md#building-runconfigs-interactively).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--validate` | `false` | Run `types.ValidateRunConfig` and exit non-zero on failure. |
+| `--compact` | `false` | Single-line JSON instead of indented (2-space). |
+| `--redact` | `false` | Apply `RunConfig.Redact()` before emit (rewrites `secret://` references). |
 
 ## Architecture
 

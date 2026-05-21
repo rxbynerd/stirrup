@@ -54,6 +54,26 @@ OPENAI_KEY="$(op read "op://Private/qeu6gafabhkpsm6hhzattx6p4m/credential")" ./s
 
 ```
 
+### Composing configs in a pipeline
+
+For development workflows that build up a `RunConfig` incrementally,
+`stirrup run-config` emits the resolved JSON document without
+invoking the loop, and `stirrup harness` reads a base config from
+stdin so each stage layers one more adjustment before the final stage
+runs the agent:
+
+```sh
+stirrup run-config --model claude-opus-4-7 \
+  | stirrup run-config --max-turns 100 \
+  | stirrup run-config --mode execution --executor container \
+  | stirrup harness --prompt "refactor module X"
+```
+
+`stirrup harness --output-runconfig <path>` captures the exact
+config a flag-only invocation *would* have used — useful for
+post-mortem replays or pinning a stable configuration. See
+[`docs/configuration.md`](docs/configuration.md#building-runconfigs-interactively).
+
 ### In GitHub Actions
 
 See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.yml) for an example of using `stirrup harness` in a GitHub Actions workflow via [Anthropic Workload Identity Federation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation).

@@ -3,6 +3,13 @@
 This directory contains example `RunConfig` JSON files for the
 `stirrup harness --config <path>` flag.
 
+To produce one of these from scratch — either from a flag-only
+invocation or by composing several `run-config` stages — see
+`stirrup run-config --help` and the pipeline pattern documented in
+[`docs/configuration.md`](../../docs/configuration.md#building-runconfigs-interactively).
+The same file format is consumed by `--config` and emitted by
+`run-config`, so a captured config round-trips into a replay run.
+
 ## Source of truth
 
 The canonical schema for these files is the protobuf definition at

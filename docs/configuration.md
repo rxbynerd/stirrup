@@ -21,20 +21,83 @@ fails fast with a clear error rather than being silently dropped.
 
 ## Precedence
 
-When both `--config` and explicit flags are passed, the order of
-precedence is:
+When `--config`, piped stdin, or explicit flags are passed, the order
+of precedence is:
 
-1. **File** — `--config` populates the full `RunConfig`.
+1. **Base config** — either `--config <path>` (file) or stdin
+   (`--config -`, or auto-detected on a non-TTY pipe). Mutually
+   exclusive: passing both is a hard error so the operator never
+   has to guess which source won.
 2. **Explicit flags** — flags whose `cmd.Flags().Changed(...)` bit is
-   set replace the corresponding file-provided field.
+   set replace the corresponding base field.
 3. **Defaults** — flags left at their default value do **not**
-   override the file. This is what makes `--config` ergonomic: you
-   do not have to clear every default to keep the file's intent.
+   override the base. This is what makes `--config` ergonomic:
+   defaults can stay defaults while the file's intent is preserved.
 
 The positional `prompt` argument is a fallback only. It fills the
-prompt slot when the file omits it and `--prompt` is not set, but
-neither the file's `prompt` nor an explicit `--prompt` is overridden
+prompt slot when the base omits it and `--prompt` is not set, but
+neither the base's `prompt` nor an explicit `--prompt` is overridden
 by a positional.
+
+## Building RunConfigs interactively
+
+For development workflows that compose a `RunConfig` incrementally —
+or just to capture what a flag-only invocation *would* have run — the
+harness ships two surfaces that complement `--config <path>`:
+
+- `stirrup run-config` emits a fully-resolved `RunConfig` JSON
+  document to stdout without invoking the agentic loop. Every
+  RunConfig-producing flag from `stirrup harness` is honoured; a
+  base config can arrive via stdin (the pipeline pattern) or
+  `--config <path>`.
+- `stirrup harness --output-runconfig <path>` writes the resolved
+  RunConfig as JSON to `<path>` (use `-` for stdout) and exits
+  without running. The captured document is exactly what would have
+  been handed to the loop, so it can be checked into source control
+  for replay or compared with `diff` between runs.
+
+The two surfaces together support a UNIX-style pipeline where each
+stage layers one more adjustment before the final stage runs the
+agent:
+
+```sh
+stirrup run-config --model claude-opus-4-7 \
+  | stirrup run-config --max-turns 100 \
+  | stirrup run-config --mode execution --executor container \
+  | stirrup harness --prompt "refactor X"
+```
+
+`stirrup run-config` exposes three subcommand-specific flags:
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--validate` | `false` | Run `types.ValidateRunConfig` on the resolved document and exit non-zero on failure. Without this flag, partial / chained configs are emitted as-is so a downstream stage can complete them. |
+| `--compact` | `false` | Emit single-line JSON instead of indented (2-space). |
+| `--redact` | `false` | Apply `RunConfig.Redact()` before emit. Rewrites `secret://` references to `secret://[REDACTED]`. The result is share-safe but no longer runnable as-is — operators who need a runnable replay should omit the flag. |
+
+`stirrup harness --output-runconfig` always emits the unredacted form
+because its purpose is exact replay; pipe through
+`stirrup run-config --redact` when a share-safe artifact is wanted.
+
+### Reading from stdin
+
+`stirrup harness` accepts a base `RunConfig` from stdin in two shapes:
+
+- **`--config -`** is the explicit, scripted opt-in. It always
+  reads stdin and fails loudly if stdin is a terminal or carries no
+  data.
+- **Auto-detection on a non-TTY pipe** triggers when `--config` is
+  unset and stdin is a named pipe (`|`) or a regular-file
+  redirection (`< config.json`). Other non-TTY shapes — including
+  `< /dev/null` and the stdin handed to tests by `go test` — fall
+  through to flag-only construction so the harness does not trap
+  noninteractive automation.
+
+Piping a config into `stirrup harness` consumes stdin at startup,
+before transport initialisation, so the stdio transport sees EOF for
+any subsequent control-event input. This matches the batch shape the
+pipeline pattern targets — operators who need interactive control
+should use `--transport grpc`.
 
 ## CLI flags
 

@@ -138,7 +138,10 @@ Quick map for "I need to change X" lookups:
 | Result sink (RunResult payload) | `harness/internal/resultsink/` |
 | Workspace GCS export | `harness/internal/workspaceexport/` |
 | `RunConfig` validation | `types/runconfig.go` |
-| CLI flag definitions | `harness/cmd/stirrup/cmd/harness.go` |
+| CLI flag definitions (shared between `harness` and `run-config`) | `harness/cmd/stirrup/cmd/runconfigflags.go` |
+| CLI flag definitions (`harness`-only behaviour: `--export-workspace-required`, `--output-runconfig`) | `harness/cmd/stirrup/cmd/harness.go` |
+| Resolved-config builder (file/stdin/flags → RunConfig) | `harness/cmd/stirrup/cmd/runconfigbuilder.go` |
+| `stirrup run-config` subcommand | `harness/cmd/stirrup/cmd/runconfig.go` |
 | gRPC schema | `proto/harness/v1/harness.proto` (then `buf generate`) |
 | Eval suite parser | `eval/spec/` |
 | Eval CLI subcommands | `eval/cmd/eval/main.go` |
