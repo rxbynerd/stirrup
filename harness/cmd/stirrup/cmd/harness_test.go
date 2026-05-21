@@ -4384,3 +4384,226 @@ func TestRunHarness_OutputRunConfigReplaysIdentically(t *testing.T) {
 		t.Logf("RunIDs happen to match (clock resolution); harmless")
 	}
 }
+
+// withPipedStdin swaps os.Stdin for a pipe whose read end the helper
+// returns to the caller; the supplied content is written to the
+// write end and the writer is closed so EOF reaches the reader. The
+// returned cleanup is registered with t.Cleanup so tests do not need
+// to thread the restore call themselves. Used by the MF-2 stdin
+// integration tests to drive runHarness without launching a subprocess.
+func withPipedStdin(t *testing.T, content string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = orig
+		_ = r.Close()
+	})
+	if _, err := w.Write([]byte(content)); err != nil {
+		_ = w.Close()
+		t.Fatalf("write to pipe: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+}
+
+// captureStdout swaps os.Stdout for a pipe and returns a function the
+// caller invokes once the test action has completed to retrieve the
+// captured bytes. Used by MF-2 tests that drive runHarness via
+// --output-runconfig=- (the dry-run capture sentinel) so the test can
+// observe the resolved RunConfig without invoking the provider.
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+	return func() string {
+		os.Stdout = orig
+		_ = w.Close()
+		out := <-done
+		_ = r.Close()
+		return out
+	}
+}
+
+// minimalStdinRunConfig is the smallest RunConfig the runHarness stdin
+// integration tests pipe through os.Stdin. ResolveAll still runs after
+// the read so every required field for the validator must be set —
+// the minimalRunConfigJSON helper in runconfigbuilder_test.go is the
+// ResolveBase shape, which omits Tools.BuiltIn / PermissionPolicy
+// values ResolveAll would reject on the execution path.
+func minimalStdinRunConfig(t *testing.T) string {
+	t.Helper()
+	timeout := 300
+	cfg := types.RunConfig{
+		RunID:  "from-stdin",
+		Mode:   "planning",
+		Prompt: "prompt from stdin",
+		Provider: types.ProviderConfig{
+			Type:      "anthropic",
+			APIKeyRef: "secret://STDIN_KEY",
+		},
+		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+		Executor:        types.ExecutorConfig{Type: "local"},
+		EditStrategy:    types.EditStrategyConfig{Type: "multi"},
+		Verifier:        types.VerifierConfig{Type: "none"},
+		GitStrategy:     types.GitStrategyConfig{Type: "none"},
+		Transport:       types.TransportConfig{Type: "stdio"},
+		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl"},
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type: "deny-side-effects",
+		},
+		Tools: types.ToolsConfig{
+			BuiltIn: types.DefaultReadOnlyBuiltInTools(),
+		},
+		MaxTurns: 10,
+		Timeout:  &timeout,
+		LogLevel: "info",
+	}
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
+}
+
+// TestRunHarness_StdinExplicitDashReadsConfig pins MF-2 scenario 1:
+// `stirrup harness --config -` consumes a piped RunConfig from
+// os.Stdin and resolves through ResolveAll into a writable capture.
+// --output-runconfig=- short-circuits the provider invocation so the
+// test can assert on the resolved shape without booting the loop.
+func TestRunHarness_StdinExplicitDashReadsConfig(t *testing.T) {
+	withPipedStdin(t, minimalStdinRunConfig(t))
+	getOut := captureStdout(t)
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", "-"); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	runErr := runHarness(cmd, nil)
+	out := getOut()
+
+	if runErr != nil {
+		t.Fatalf("runHarness with --config -: %v\nstdout: %s", runErr, out)
+	}
+
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.Prompt != "prompt from stdin" {
+		t.Errorf("Prompt = %q, want %q", cfg.Prompt, "prompt from stdin")
+	}
+	if cfg.Provider.APIKeyRef != "secret://STDIN_KEY" {
+		t.Errorf("APIKeyRef = %q, want secret://STDIN_KEY", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestRunHarness_StdinAutoDetectsPipe pins MF-2 scenario 2: a piped
+// stdin (no --config flag) is auto-detected and treated as the base
+// RunConfig. The shape mirrors the canonical `run-config | harness`
+// pipeline.
+func TestRunHarness_StdinAutoDetectsPipe(t *testing.T) {
+	withPipedStdin(t, minimalStdinRunConfig(t))
+	getOut := captureStdout(t)
+
+	cmd := newTestHarnessCommand()
+	// Deliberately no --config flag set. The pipe's named-pipe mode
+	// bit triggers isStdinPiped, which makes BuildRunConfig consume
+	// stdin as the base.
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	runErr := runHarness(cmd, nil)
+	out := getOut()
+
+	if runErr != nil {
+		t.Fatalf("runHarness with auto-stdin: %v\nstdout: %s", runErr, out)
+	}
+
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.Prompt != "prompt from stdin" {
+		t.Errorf("auto-detected stdin Prompt = %q, want %q", cfg.Prompt, "prompt from stdin")
+	}
+}
+
+// TestRunHarness_StdinAndConfigFileAreAmbiguous pins MF-2 scenario 3:
+// `--config <path>` alongside a non-TTY stdin must fail loudly. Silent
+// precedence would surprise pipeline authors debugging which source
+// landed which field.
+func TestRunHarness_StdinAndConfigFileAreAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(path, []byte(minimalStdinRunConfig(t)), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	withPipedStdin(t, minimalStdinRunConfig(t))
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", path); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected runHarness to reject --config <path> + piped stdin")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error should describe ambiguity, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error should mention config path, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stdin") {
+		t.Errorf("error should mention stdin, got: %v", err)
+	}
+}
+
+// TestRunHarness_StdinDashWithoutPipeErrors pins MF-2 scenario 4:
+// `--config -` with no piped stdin (the TTY / `go test` char-device
+// shape) returns a non-nil error with a clear "no piped input"
+// message rather than blocking on a phantom read.
+func TestRunHarness_StdinDashWithoutPipeErrors(t *testing.T) {
+	// Deliberately do NOT swap os.Stdin — the `go test` default is a
+	// char device that isStdinPiped rejects.
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", "-"); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected runHarness to reject --config - with no piped stdin")
+	}
+	if !strings.Contains(err.Error(), "--config -") {
+		t.Errorf("error should cite --config -, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "terminal") && !strings.Contains(err.Error(), "piped") {
+		t.Errorf("error should explain the missing pipe, got: %v", err)
+	}
+}
