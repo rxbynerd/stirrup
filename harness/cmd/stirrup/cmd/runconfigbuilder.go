@@ -110,6 +110,12 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		return nil, err
 	}
 
+	// Anthropic Workload Identity Federation overrides (issue #117).
+	// Encapsulated for readability; the helper handles the four ID
+	// fields, the inferred credential.type, the token-source inference
+	// chain, and the apiKeyRef mutual-exclusion guard. The single call
+	// site here keeps the slog.Warn diagnostics inside the helper from
+	// firing twice per invocation.
 	if err := applyAnthropicWIFOverrides(sources.Cmd, cfg); err != nil {
 		return nil, err
 	}

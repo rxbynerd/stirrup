@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -474,5 +475,76 @@ func TestWriteRunConfigJSON_RoundTrip(t *testing.T) {
 	}
 	if !strings.HasSuffix(buf.String(), "\n") {
 		t.Errorf("compact output should still end with a trailing newline")
+	}
+}
+
+// TestBuildRunConfig_AnthropicWIFWarnFiresOnce pins MF-1: BuildRunConfig
+// must invoke applyAnthropicWIFOverrides exactly once. The pre-fix code
+// invoked it both inside applyOverrides AND directly in BuildRunConfig,
+// so the "config already specifies tokenSource" diagnostic was emitted
+// twice per invocation. This test captures slog output and asserts the
+// warning appears once.
+func TestBuildRunConfig_AnthropicWIFWarnFiresOnce(t *testing.T) {
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	// Base config carries an explicit credential.tokenSource so the
+	// helper's "operator opt-in ignored because file already set source"
+	// warning path fires.
+	base := types.RunConfig{
+		RunID:  "from-file",
+		Mode:   "execution",
+		Prompt: "test prompt",
+		Provider: types.ProviderConfig{
+			Type: "anthropic",
+			Credential: &types.CredentialConfig{
+				Type:             "anthropic-wif",
+				FederationRuleID: "fdrl_filerule",
+				OrganizationID:   "11111111-1111-1111-1111-111111111111",
+				ServiceAccountID: "svac_filesa",
+				TokenSource: &types.TokenSourceConfig{
+					Type: "file",
+					Path: "/var/run/file/jwt",
+				},
+			},
+		},
+		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+		Executor:        types.ExecutorConfig{Type: "local"},
+		EditStrategy:    types.EditStrategyConfig{Type: "multi"},
+		Verifier:        types.VerifierConfig{Type: "none"},
+		GitStrategy:     types.GitStrategyConfig{Type: "none"},
+		Transport:       types.TransportConfig{Type: "stdio"},
+		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl"},
+		MaxTurns:        10,
+		LogLevel:        "info",
+	}
+	t300 := 300
+	base.Timeout = &t300
+	body, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal base: %v", err)
+	}
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("anthropic-from-github-actions", "true"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	_, err = BuildRunConfig(RunConfigSources{
+		Stdin:   bytes.NewReader(body),
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+
+	count := strings.Count(logBuf.String(), "--anthropic-from-github-actions ignored")
+	if count != 1 {
+		t.Errorf("WIF warn should fire exactly once, got %d:\n%s", count, logBuf.String())
 	}
 }

@@ -846,13 +846,10 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 	}
 
-	// Anthropic Workload Identity Federation overrides (issue #117).
-	// Encapsulated for readability; the helper handles the four ID
-	// fields, the inferred credential.type, the token-source inference
-	// chain, and the apiKeyRef mutual-exclusion guard.
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		return err
-	}
+	// Anthropic WIF folding lives in BuildRunConfig as a single
+	// post-override step (see runconfigbuilder.go). Calling it again
+	// here would double-invoke its slog.Warn diagnostics and silently
+	// double-count any future non-idempotent additions.
 
 	// Azure Entra ID Workload Identity Federation (issue #118). The three
 	// --azure-* flags compose: --azure-tenant-id alone is enough to imply
