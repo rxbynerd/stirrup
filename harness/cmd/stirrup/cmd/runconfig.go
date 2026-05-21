@@ -1,0 +1,78 @@
+package cmd
+
+import (
+	"os"
+
+	"github.com/spf13/cobra"
+)
+
+var runConfigCmd = &cobra.Command{
+	Use:   "run-config [flags]",
+	Short: "Emit a resolved RunConfig as JSON",
+	Long: `Produce a fully-resolved RunConfig JSON document and print it to stdout.
+Does NOT run the agentic loop. Composable via UNIX pipes: stdin is
+treated as a base RunConfig, then explicit flags override individual
+fields, mirroring how ` + "`stirrup harness --config <file>`" + ` already works.
+
+Resolution order (lowest -> highest precedence):
+  1. Defaults (flag DefValues, mode-derived defaults when --validate)
+  2. Base RunConfig from stdin OR --config <path> (mutually exclusive)
+  3. Explicit flags (those whose Changed() bit is set)
+
+Flags: identical to ` + "`stirrup harness`" + ` for every RunConfig-producing
+flag. CLI-only behaviour flags (--export-workspace-required,
+--output-runconfig) are excluded because they do not map to
+RunConfig fields.
+
+Output:
+  - Default: pretty-printed JSON (2-space indent) to stdout
+  - --compact: single-line JSON
+  - --redact: apply RunConfig.Redact() before emit (rewrites
+    secret:// references to secret://[REDACTED] — produces a copy
+    safe to commit / share, but not runnable as-is)`,
+	Args: cobra.NoArgs,
+	RunE: runRunConfig,
+}
+
+func init() {
+	rootCmd.AddCommand(runConfigCmd)
+
+	addRunConfigFlags(runConfigCmd)
+
+	// Subcommand-only flags. None of these map to RunConfig fields;
+	// they control how the resolved document is processed before
+	// emission, so they live on run-config rather than the shared
+	// helper.
+	f := runConfigCmd.Flags()
+	f.Bool("validate", false, "Run types.ValidateRunConfig on the resolved RunConfig and exit non-zero on failure. Without this flag, partial / chained configs are emitted as-is so they can be completed downstream.")
+	f.Bool("compact", false, "Emit single-line JSON instead of indented (2-space) JSON.")
+	f.Bool("redact", false, "Apply RunConfig.Redact() before emit. Rewrites secret:// references to secret://[REDACTED] for share-safe artifacts; the result is no longer runnable as-is.")
+}
+
+func runRunConfig(cmd *cobra.Command, args []string) error {
+	f := cmd.Flags()
+	configPath, _ := f.GetString("config")
+	resolve := ResolveBase
+	if validate, _ := f.GetBool("validate"); validate {
+		resolve = ResolveAll
+	}
+
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Stdin:      os.Stdin,
+		ConfigPath: configPath,
+		Cmd:        cmd,
+		Args:       args,
+		Resolve:    resolve,
+	})
+	if err != nil {
+		return err
+	}
+
+	if redact, _ := f.GetBool("redact"); redact {
+		r := cfg.Redact()
+		cfg = &r
+	}
+
+	compact, _ := f.GetBool("compact")
+	return writeRunConfigJSON(os.Stdout, cfg, compact)
+}
