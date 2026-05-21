@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -546,5 +547,181 @@ func TestBuildRunConfig_AnthropicWIFWarnFiresOnce(t *testing.T) {
 	count := strings.Count(logBuf.String(), "--anthropic-from-github-actions ignored")
 	if count != 1 {
 		t.Errorf("WIF warn should fire exactly once, got %d:\n%s", count, logBuf.String())
+	}
+}
+
+// failWriter returns an error on the Nth write (1-based). Used to
+// exercise writeRunConfigJSON's two distinct Write call sites.
+type failWriter struct {
+	calls    int
+	failOn   int
+	failWith error
+}
+
+func (w *failWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls == w.failOn {
+		return 0, w.failWith
+	}
+	return len(p), nil
+}
+
+// TestWriteRunConfigJSON_WriteError pins SF-5: writeRunConfigJSON must
+// surface a write error from either of its two Write call sites
+// (payload bytes and trailing newline) rather than silently producing
+// a half-written capture file.
+func TestWriteRunConfigJSON_WriteError(t *testing.T) {
+	cfg := &types.RunConfig{
+		RunID:        "x",
+		Mode:         "planning",
+		Provider:     types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
+		ModelRouter:  types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		Transport:    types.TransportConfig{Type: "stdio"},
+		Executor:     types.ExecutorConfig{Type: "local"},
+		EditStrategy: types.EditStrategyConfig{Type: "multi"},
+		MaxTurns:     5,
+	}
+
+	t.Run("first write (payload) fails", func(t *testing.T) {
+		w := &failWriter{failOn: 1, failWith: io.ErrClosedPipe}
+		err := writeRunConfigJSON(w, cfg, false)
+		if err == nil {
+			t.Fatal("expected write error to propagate")
+		}
+		if !strings.Contains(err.Error(), "write RunConfig") {
+			t.Errorf("error should describe the write failure, got: %v", err)
+		}
+	})
+
+	t.Run("second write (newline) fails", func(t *testing.T) {
+		w := &failWriter{failOn: 2, failWith: io.ErrClosedPipe}
+		err := writeRunConfigJSON(w, cfg, false)
+		if err == nil {
+			t.Fatal("expected newline write error to propagate")
+		}
+		if !strings.Contains(err.Error(), "write RunConfig") {
+			t.Errorf("error should describe the newline write failure, got: %v", err)
+		}
+	})
+}
+
+// TestIsStdinPiped_NamedPipeReturnsTrue pins SF-4: an os.Pipe reader,
+// whose Stat() reports os.ModeNamedPipe, must be treated as piped.
+func TestIsStdinPiped_NamedPipeReturnsTrue(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = r.Close()
+		_ = w.Close()
+	})
+	if !isStdinPiped(r) {
+		t.Error("named pipe should be detected as piped")
+	}
+}
+
+// TestIsStdinPiped_RegularFileReturnsTrue pins SF-4: a redirected
+// regular file (`< config.json`) must be treated as piped.
+func TestIsStdinPiped_RegularFileReturnsTrue(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "in-*.json")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if !isStdinPiped(f) {
+		t.Error("regular file should be detected as piped")
+	}
+}
+
+// TestIsStdinPiped_StatErrorReturnsFalse pins SF-4: a closed file fd
+// whose Stat() errors must be treated as non-piped (the conservative
+// default — better to fall through to flag-only than to attempt a
+// read on an unusable fd).
+func TestIsStdinPiped_StatErrorReturnsFalse(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "stat-err-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if isStdinPiped(f) {
+		t.Error("closed file (Stat errors) should not be treated as piped")
+	}
+}
+
+// TestIsStdinPiped_CharDeviceReturnsFalse pins SF-4 and the documented
+// `go test` deviation: a character device (the shape `go test` hands
+// its children as stdin) must NOT be treated as piped. Removing this
+// branch would re-introduce false-positive activation in every
+// harness_test.go fixture.
+func TestIsStdinPiped_CharDeviceReturnsFalse(t *testing.T) {
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatalf("open /dev/null: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if isStdinPiped(f) {
+		t.Error("character device (/dev/null) should not be treated as piped")
+	}
+}
+
+// TestBuildRunConfig_ApplyOverridesError pins SF-6: a malformed
+// --query-param entry surfaces through BuildRunConfig as a non-nil
+// error. Before, applyOverrides was only tested directly; this
+// exercises the error-propagation arm of BuildRunConfig itself.
+func TestBuildRunConfig_ApplyOverridesError(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("query-param", "no-equals-sign"); err != nil {
+		t.Fatalf("set query-param: %v", err)
+	}
+	_, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err == nil {
+		t.Fatal("expected malformed --query-param to surface as error")
+	}
+	if !strings.Contains(err.Error(), "query-param") {
+		t.Errorf("error should mention query-param, got: %v", err)
+	}
+}
+
+// TestBuildRunConfig_WIFOverridesError pins SF-6: a WIF flag set
+// alongside an explicit --api-key-ref surfaces through BuildRunConfig
+// as a non-nil error.
+func TestBuildRunConfig_WIFOverridesError(t *testing.T) {
+	for _, name := range []string{
+		"ANTHROPIC_FEDERATION_RULE_ID",
+		"ANTHROPIC_ORGANIZATION_ID",
+		"ANTHROPIC_SERVICE_ACCOUNT_ID",
+		"ANTHROPIC_WORKSPACE_ID",
+		"ANTHROPIC_IDENTITY_TOKEN_FILE",
+		"ANTHROPIC_IDENTITY_TOKEN",
+	} {
+		t.Setenv(name, "")
+	}
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("anthropic-federation-rule-id", "fdrl_rule")
+	mustSet("anthropic-organization-id", "11111111-1111-1111-1111-111111111111")
+	mustSet("anthropic-service-account-id", "svac_sa")
+	mustSet("api-key-ref", "secret://EXPLICIT_KEY")
+
+	_, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err == nil {
+		t.Fatal("expected WIF + explicit api-key-ref to surface as error")
+	}
+	if !strings.Contains(err.Error(), "api-key-ref") {
+		t.Errorf("error should mention api-key-ref, got: %v", err)
 	}
 }
