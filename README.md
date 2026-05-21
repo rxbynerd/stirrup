@@ -71,7 +71,7 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 | LLM-based safety classifier (`GuardRail`) | [`docs/guardrails.md`](docs/guardrails.md) |
 | Eval framework (`stirrup-eval`) | [`docs/eval.md`](docs/eval.md) |
 | Provider adapters | [`docs/providers.md`](docs/providers.md) |
-| Sandbox modes (async batch submission) | [`docs/sandbox.md`](docs/sandbox.md) |
+| Batch mode | [`docs/sandbox.md`](docs/batch.md) |
 | Cross-cloud credential federation | [`docs/credential-federation.md`](docs/credential-federation.md) |
 | Anthropic Workload Identity Federation | [`docs/anthropic-wif.md`](docs/anthropic-wif.md) |
 | Azure Workload Identity Federation | [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md) |

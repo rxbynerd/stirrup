@@ -1,11 +1,3 @@
-# Sandbox modes
-
-This document describes operator-facing modes and configurations that
-adjust how the harness executes provider turns, including async batch
-submission. Each mode here is opt-in: the harness defaults stream
-every turn synchronously over the same transport that delivers
-`ToolCallResult` and `Status` events.
-
 ## Batch provider mode
 
 ### What it is
