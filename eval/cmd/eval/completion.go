@@ -223,8 +223,15 @@ function __stirrup_eval_using_subcommand
 end
 
 `)
+	// Subcommand and mode values are wrapped in fish single-quotes
+	// before being passed to `complete -a`. Fish single-quote literals
+	// interpret no escape sequences, so a future value that contains a
+	// space or fish-special character (`$`, `*`, `~`) cannot break the
+	// generated script. Today every value sourced from
+	// evalCompletionSubcommands and types.ValidRunModeValues() is a safe
+	// bare word; the quoting is defensive against future additions.
 	for _, sub := range evalCompletionSubcommands {
-		fmt.Fprintf(&b, "complete -c stirrup-eval -n __stirrup_eval_no_subcommand -a %s\n", sub)
+		fmt.Fprintf(&b, "complete -c stirrup-eval -n __stirrup_eval_no_subcommand -a '%s'\n", sub)
 	}
 	b.WriteString("\n")
 	for _, sub := range evalCompletionSubcommands {
@@ -237,7 +244,7 @@ end
 	b.WriteString("\n")
 	for _, sub := range []string{"baseline", "drift", "compare-to-production"} {
 		for _, m := range evalCompletionRunModes {
-			fmt.Fprintf(&b, "complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -l mode -a %s\n", sub, m)
+			fmt.Fprintf(&b, "complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -l mode -a '%s'\n", sub, m)
 		}
 	}
 	_, err := io.WriteString(w, b.String())

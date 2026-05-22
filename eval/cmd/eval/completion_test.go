@@ -119,6 +119,33 @@ func TestEvalCompletionScripts_MentionEverySubcommand(t *testing.T) {
 	}
 }
 
+// TestEvalCompletionFishScript_QuotesValues pins the fish-script
+// quoting contract for subcommand and mode values. Fish single-quote
+// literals interpret no escape sequences, so wrapping the format
+// argument keeps the generated script safe even if a future value
+// contains a space or fish-special character. A regression that drops
+// the surrounding single quotes would re-introduce the latent
+// injection path described in the SF-3 finding.
+func TestEvalCompletionFishScript_QuotesValues(t *testing.T) {
+	var buf bytes.Buffer
+	if err := emitEvalCompletion("fish", &buf); err != nil {
+		t.Fatalf("emit fish: %v", err)
+	}
+	body := buf.String()
+	for _, sub := range evalCompletionSubcommands {
+		needle := "complete -c stirrup-eval -n __stirrup_eval_no_subcommand -a '" + sub + "'"
+		if !strings.Contains(body, needle) {
+			t.Errorf("fish script missing single-quoted subcommand line for %q (looking for %q)", sub, needle)
+		}
+	}
+	for _, m := range types.ValidRunModeValues() {
+		needle := "-l mode -a '" + m + "'"
+		if !strings.Contains(body, needle) {
+			t.Errorf("fish script missing single-quoted mode line for %q (looking for %q)", m, needle)
+		}
+	}
+}
+
 // TestEvalCompletionFlagMap_TracksDispatcher pins the static flag map
 // against the real subcommand surface. A new subcommand wired into
 // run() but forgotten in evalCompletionFlags would silently ship with
