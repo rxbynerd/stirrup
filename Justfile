@@ -16,6 +16,26 @@ proto:
 buf-lint:
     buf lint
 
+# Regenerate types/runconfig_docs.go from the doc comments in
+# types/runconfig.go. The lookup table backs `stirrup config explain`
+# (#247) and must be checked in. Run this after editing any doc
+# comment on a RunConfig field.
+gen-docs:
+    go run scripts/gen-runconfig-docs.go
+
+# Verify types/runconfig_docs.go is up to date. Regenerates the file
+# and exits non-zero if the working tree changes — the same drift
+# guard pattern as `just proto` / `buf generate` in CI.
+verify-docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    go run scripts/gen-runconfig-docs.go
+    if ! git diff --exit-code -- types/runconfig_docs.go; then
+        echo "FAIL: types/runconfig_docs.go is stale - run \`just gen-docs\` and commit the result." >&2
+        exit 1
+    fi
+    echo "ok: types/runconfig_docs.go is up to date"
+
 docker:
     docker build -t stirrup .
 
