@@ -1421,7 +1421,7 @@ func TestCmdIngest_RequiresLakehouse(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
-	if !strings.Contains(stderr.String(), "--lakehouse is required") {
+	if !strings.Contains(stderr.String(), "-lakehouse is required") {
 		t.Errorf("stderr missing required-flag message: %q", stderr.String())
 	}
 }
@@ -1438,7 +1438,10 @@ func TestCmdIngest_RequiresTrace(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
-	if !strings.Contains(stderr.String(), "--trace is required") {
+	// Assert on the full message prefix rather than the trailing
+	// substring; this catches a regression that flipped the wording
+	// from "at least one" to something less explicit.
+	if !strings.Contains(stderr.String(), "ingest: at least one -trace is required") {
 		t.Errorf("stderr missing required-flag message: %q", stderr.String())
 	}
 }

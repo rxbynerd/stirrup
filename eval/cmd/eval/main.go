@@ -847,11 +847,11 @@ func cmdIngest(args []string, stdin io.Reader, stderr io.Writer) int {
 	}
 
 	if len(traces) == 0 {
-		errLine("ingest: at least one --trace is required")
+		errLine("ingest: at least one -trace is required")
 		return 1
 	}
 	if *lakehousePath == "" {
-		errLine("ingest: --lakehouse is required")
+		errLine("ingest: -lakehouse is required")
 		return 1
 	}
 
