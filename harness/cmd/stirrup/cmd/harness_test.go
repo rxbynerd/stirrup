@@ -5019,6 +5019,45 @@ func TestEmitRunOutput_EmptyModeMatchesText(t *testing.T) {
 	}
 }
 
+// TestPrintRunSummary_NilTraceDoesNotPanic pins the nil guard added in
+// M1. A nil RunTrace would otherwise dereference at the Outcome field
+// and crash the process before any structured output is emitted —
+// buildRunResult already returns a documented "internal-error"
+// sentinel for the same condition, and printRunSummary now mirrors
+// that defensive shape on stderr.
+func TestPrintRunSummary_NilTraceDoesNotPanic(t *testing.T) {
+	stderrDone := captureStderr(t)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("printRunSummary(nil) panicked: %v", r)
+		}
+	}()
+	printRunSummary(nil)
+	stderr := stderrDone()
+	if !strings.Contains(stderr, "no trace") {
+		t.Errorf("stderr should describe the nil-trace condition, got: %q", stderr)
+	}
+}
+
+// TestEmitRunOutput_TextWithNilTracePrintsNoTrace pins the
+// emitRunOutput dispatch path under --output=text when the loop
+// produced no trace at all. The text branch must surface the nil-trace
+// diagnostic on stderr rather than panicking.
+func TestEmitRunOutput_TextWithNilTracePrintsNoTrace(t *testing.T) {
+	cfg := &types.RunConfig{}
+	stderrDone := captureStderr(t)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("emitRunOutput with nil trace panicked: %v", r)
+		}
+	}()
+	emitRunOutput(context.Background(), cfg, nil, "text")
+	stderr := stderrDone()
+	if !strings.Contains(stderr, "no trace") {
+		t.Errorf("stderr should describe nil-trace condition, got: %q", stderr)
+	}
+}
+
 // TestValidateOutputMode_AcceptsClosedSet pins the closed three-value
 // set surfaced via --output. A new value would need a corresponding
 // branch in emitRunOutput; this test forces the two to evolve

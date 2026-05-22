@@ -37,8 +37,17 @@ func generateRunID() string {
 	return fmt.Sprintf("run-%d", time.Now().UnixNano())
 }
 
-// printRunSummary writes a brief run summary to stderr.
+// printRunSummary writes a brief run summary to stderr. Mirrors the nil
+// guard in buildRunResult: a nil RunTrace means the loop produced no
+// trace at all, and dereferencing the fields below would panic before
+// any structured output is emitted. The "no trace" line is the
+// stderr-side counterpart to the "internal-error" sentinel buildRunResult
+// returns so operators see a diagnostic on whichever surface they watch.
 func printRunSummary(runTrace *types.RunTrace) {
+	if runTrace == nil {
+		fmt.Fprintf(os.Stderr, "\n--- Run complete (no trace) ---\n")
+		return
+	}
 	fmt.Fprintf(os.Stderr, "\n--- Run complete ---\n")
 	fmt.Fprintf(os.Stderr, "Outcome: %s\n", runTrace.Outcome)
 	fmt.Fprintf(os.Stderr, "Turns: %d\n", runTrace.Turns)
