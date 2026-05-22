@@ -155,18 +155,58 @@ func TestEvalCompletionFishScript_QuotesValues(t *testing.T) {
 // flag from evalCompletionFlags["ingest"] would still leave the
 // subcommand name in the rendered script, so the existing test would
 // pass while real shell completion silently broke.
+//
+// Bash and zsh are checked against the rendered ingest case-arm
+// rather than the unqualified substring `"trace"` — the looser check
+// passed against unrelated hardcoded path-completion arms even if
+// evalCompletionFlags["ingest"] was emptied. Fish and PowerShell
+// emit per-subcommand completer blocks that contain the flag in
+// their own form.
 func TestEvalCompletionScripts_IncludeIngestTrace(t *testing.T) {
-	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
+	expectations := map[string]string{
+		"bash":       `ingest) flags="-trace -lakehouse"`,
+		"zsh":        `ingest) flags=(-trace -lakehouse)`,
+		"fish":       `'__stirrup_eval_using_subcommand ingest' -l trace`,
+		"powershell": `'ingest' = @('-trace', '-lakehouse')`,
+	}
+	for shell, marker := range expectations {
 		t.Run(shell, func(t *testing.T) {
 			var buf bytes.Buffer
 			if err := emitEvalCompletion(shell, &buf); err != nil {
 				t.Fatalf("emit %s: %v", shell, err)
 			}
 			body := buf.String()
+			if !strings.Contains(body, marker) {
+				t.Errorf("%s script missing ingest marker %q in:\n%s", shell, marker, body)
+			}
 			if !strings.Contains(body, "trace") {
-				t.Errorf("%s script does not mention --trace flag", shell)
+				t.Errorf("%s script does not mention -trace flag", shell)
 			}
 		})
+	}
+}
+
+// TestEvalCompletionFlagMap_IngestFlagsPresent pins the static-map
+// invariant directly. A regression that emptied
+// evalCompletionFlags["ingest"] would not break the rendered-script
+// substring tests if `trace` still appeared elsewhere in the
+// template; asserting against the map source removes that
+// possibility entirely.
+func TestEvalCompletionFlagMap_IngestFlagsPresent(t *testing.T) {
+	flags, ok := evalCompletionFlags["ingest"]
+	if !ok {
+		t.Fatal("evalCompletionFlags[\"ingest\"] missing")
+	}
+	want := map[string]bool{"trace": false, "lakehouse": false}
+	for _, f := range flags {
+		if _, expected := want[f]; expected {
+			want[f] = true
+		}
+	}
+	for f, seen := range want {
+		if !seen {
+			t.Errorf("evalCompletionFlags[\"ingest\"] missing %q; got %v", f, flags)
+		}
 	}
 }
 
