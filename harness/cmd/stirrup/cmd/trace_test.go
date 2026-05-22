@@ -511,6 +511,199 @@ func (b *safeBuf) String() string {
 	return b.buf.String()
 }
 
+func TestOutcomeColor(t *testing.T) {
+	cases := []struct {
+		outcome string
+		want    string
+	}{
+		{"success", ansiGreen},
+		{"error", ansiRed},
+		{"verification_failed", ansiRed},
+		{"verification_error", ansiRed},
+		{"tool_failures", ansiRed},
+		{"max_turns", ansiYellow},
+		{"max_tokens", ansiYellow},
+		{"budget_exceeded", ansiYellow},
+		{"stalled", ansiYellow},
+		{"timeout", ansiYellow},
+		{"cancelled", ansiGrey},
+		{"", ansiBlue},
+		{"some_unknown_outcome", ansiBlue},
+	}
+	for _, c := range cases {
+		got := outcomeColor(c.outcome)
+		if got != c.want {
+			t.Errorf("outcomeColor(%q) = %q, want %q", c.outcome, got, c.want)
+		}
+	}
+}
+
+func TestParseJQValue(t *testing.T) {
+	cases := []struct {
+		in        string
+		want      any
+		wantError bool
+	}{
+		{`"hello"`, "hello", false},
+		{`"with \"quotes\""`, `with "quotes"`, false},
+		{"true", true, false},
+		{"false", false, false},
+		{"null", nil, false},
+		{"42", float64(42), false},
+		{"3.14", float64(3.14), false},
+		{"-7", float64(-7), false},
+		{"", nil, true},
+		{`"unclosed`, nil, true},
+		{"not_a_value", nil, true},
+	}
+	for _, c := range cases {
+		got, err := parseJQValue(c.in)
+		if c.wantError {
+			if err == nil {
+				t.Errorf("parseJQValue(%q): expected error, got %v", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseJQValue(%q): unexpected error %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("parseJQValue(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestWalkPath(t *testing.T) {
+	doc := map[string]any{
+		"name": "stirrup",
+		"toolCalls": []any{
+			map[string]any{"name": "edit_file"},
+			map[string]any{"name": "run_command"},
+		},
+		"count": float64(3),
+	}
+
+	cases := []struct {
+		name string
+		path []pathSeg
+		want any
+		ok   bool
+	}{
+		{
+			name: "object key",
+			path: []pathSeg{{key: "name"}},
+			want: "stirrup", ok: true,
+		},
+		{
+			name: "array indexed element",
+			path: []pathSeg{{key: "toolCalls"}, {key: "0", idx: 0, num: true}, {key: "name"}},
+			want: "edit_file", ok: true,
+		},
+		{
+			name: "non-numeric segment on array",
+			path: []pathSeg{{key: "toolCalls"}, {key: "first"}},
+			ok:   false,
+		},
+		{
+			name: "out-of-bounds index",
+			path: []pathSeg{{key: "toolCalls"}, {key: "9", idx: 9, num: true}},
+			ok:   false,
+		},
+		{
+			name: "scalar default arm",
+			path: []pathSeg{{key: "name"}, {key: "any"}},
+			ok:   false,
+		},
+		{
+			name: "missing object key",
+			path: []pathSeg{{key: "missing"}},
+			ok:   false,
+		},
+	}
+	for _, c := range cases {
+		got, ok := walkPath(doc, c.path)
+		if ok != c.ok {
+			t.Errorf("%s: ok = %v, want %v", c.name, ok, c.ok)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRunTraceGrepWith_JQNumericAndBool(t *testing.T) {
+	// Exercise jsonEqual's float64 and bool arms via the predicate
+	// path, plus jq paths that resolve to those JSON types.
+	traces := []types.RunTrace{
+		{ID: "run-1", Turns: 3, Outcome: "success", ToolCalls: []types.ToolCallSummary{{Name: "edit_file", Success: true}}},
+		{ID: "run-2", Turns: 0, Outcome: "max_turns", ToolCalls: []types.ToolCallSummary{{Name: "run_command", Success: false}}},
+	}
+	path := writeTraceFile(t, traces)
+
+	// .turns == 3 reaches the float64 equality arm.
+	pred, err := compileJQ(".turns == 3")
+	if err != nil {
+		t.Fatalf("compileJQ: %v", err)
+	}
+	var out bytes.Buffer
+	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `"id":"run-1"`) {
+		t.Errorf(".turns == 3 should match run-1: %q", got)
+	}
+	if strings.Contains(got, `"id":"run-2"`) {
+		t.Errorf(".turns == 3 must not match run-2 (turns=0): %q", got)
+	}
+
+	// .toolCalls.0.success == true reaches the bool equality arm.
+	pred2, err := compileJQ(".toolCalls.0.success == true")
+	if err != nil {
+		t.Fatalf("compileJQ bool: %v", err)
+	}
+	out.Reset()
+	if err := runTraceGrepWith(context.Background(), path, &out, "", pred2, false); err != nil {
+		t.Fatalf("grep bool: %v", err)
+	}
+	got = out.String()
+	if !strings.Contains(got, `"id":"run-1"`) {
+		t.Errorf("bool predicate should match run-1: %q", got)
+	}
+	if strings.Contains(got, `"id":"run-2"`) {
+		t.Errorf("bool predicate must not match run-2 (success=false): %q", got)
+	}
+}
+
+func TestRunTraceStatsWith_PrefersConfigRunID(t *testing.T) {
+	// When RunConfig.RunID is set, stats must surface it rather than
+	// RunTrace.ID. Two records with the same event ID but distinct
+	// config IDs would otherwise lose the operator-supplied label.
+	traces := []types.RunTrace{{
+		ID:        "event-1",
+		Config:    types.RunConfig{RunID: "operator-supplied-id"},
+		Outcome:   "success",
+		StartedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),
+	}}
+	path := writeTraceFile(t, traces)
+	var out bytes.Buffer
+	if err := runTraceStatsWith(path, &out, "json", 5); err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	var stats TraceStats
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if stats.RunID != "operator-supplied-id" {
+		t.Errorf("RunID = %q, want operator-supplied-id (RunConfig.RunID takes precedence over RunTrace.ID)", stats.RunID)
+	}
+}
+
 func TestTraceTail_FollowReadsAppended(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "live.jsonl")

@@ -135,7 +135,14 @@ func newTraceStats() *TraceStats {
 
 func (s *TraceStats) absorb(t *types.RunTrace) {
 	s.Records++
-	if s.RunID == "" {
+	// Prefer RunConfig.RunID (the operator-supplied identifier the spec
+	// calls out) and fall back to RunTrace.ID (the wire-level event id)
+	// when the config did not carry one. The two are identical for most
+	// runs, but a run with an explicit RunConfig.RunID must surface
+	// that value in stats.
+	if t.Config.RunID != "" {
+		s.RunID = t.Config.RunID
+	} else if s.RunID == "" {
 		s.RunID = t.ID
 	}
 
