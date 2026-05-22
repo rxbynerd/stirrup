@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -69,36 +70,32 @@ func runTraceShowWith(path string, out io.Writer, mode colorMode) error {
 	return nil
 }
 
-// renderRunTrace pretty-prints a single RunTrace block.
+// renderRunTrace pretty-prints a single RunTrace block. The output is
+// assembled into a single strings.Builder and flushed at the end so a
+// short write on the underlying writer surfaces as one error rather
+// than leaving a half-rendered record in the user's terminal.
 func renderRunTrace(out io.Writer, t *types.RunTrace, color bool) error {
-	header := colorize(color, ansiBold+ansiCyan, fmt.Sprintf("=== run %s ===", strOrDash(t.ID)))
-	if _, err := fmt.Fprintln(out, header); err != nil {
-		return err
-	}
+	var b strings.Builder
 
-	meta := fmt.Sprintf("  started:  %s\n  finished: %s\n  duration: %s\n  outcome:  %s\n  turns:    %d\n  tokens:   in=%d out=%d",
-		formatTime(t.StartedAt),
-		formatTime(t.CompletedAt),
-		t.CompletedAt.Sub(t.StartedAt).Round(time.Millisecond),
-		colorize(color, outcomeColor(t.Outcome), strOrDash(t.Outcome)),
-		t.Turns,
-		t.TokenUsage.Input,
-		t.TokenUsage.Output,
-	)
-	if _, err := fmt.Fprintln(out, meta); err != nil {
-		return err
-	}
+	b.WriteString(colorize(color, ansiBold+ansiCyan, fmt.Sprintf("=== run %s ===", strOrDash(t.ID))))
+	b.WriteByte('\n')
+
+	fmt.Fprintf(&b, "  started:  %s\n", formatTime(t.StartedAt))
+	fmt.Fprintf(&b, "  finished: %s\n", formatTime(t.CompletedAt))
+	fmt.Fprintf(&b, "  duration: %s\n", t.CompletedAt.Sub(t.StartedAt).Round(time.Millisecond))
+	fmt.Fprintf(&b, "  outcome:  %s\n", colorize(color, outcomeColor(t.Outcome), strOrDash(t.Outcome)))
+	fmt.Fprintf(&b, "  turns:    %d\n", t.Turns)
+	fmt.Fprintf(&b, "  tokens:   in=%d out=%d\n", t.TokenUsage.Input, t.TokenUsage.Output)
 
 	if t.Config.RunID != "" {
-		fmt.Fprintf(out, "  runId:    %s\n", t.Config.RunID)
+		fmt.Fprintf(&b, "  runId:    %s\n", t.Config.RunID)
 	}
 
-	// Tool calls in arrival order — the trace stores them in the
-	// order they were recorded, which is also chronological.
 	if len(t.ToolCalls) > 0 {
-		fmt.Fprintln(out, colorize(color, ansiBold, "  tool calls:"))
+		b.WriteString(colorize(color, ansiBold, "  tool calls:"))
+		b.WriteByte('\n')
 		for i, tc := range t.ToolCalls {
-			line := fmt.Sprintf("    %3d. %s  %s  %dms  in=%dB out=%dB",
+			fmt.Fprintf(&b, "    %3d. %s  %s  %dms  in=%dB out=%dB",
 				i+1,
 				colorize(color, toolCallColor(tc.Success), tc.Name),
 				toolStatus(tc, color),
@@ -107,29 +104,27 @@ func renderRunTrace(out io.Writer, t *types.RunTrace, color bool) error {
 				tc.OutputSize,
 			)
 			if tc.ErrorReason != "" {
-				line += "  " + colorize(color, ansiRed, "err="+tc.ErrorReason)
+				b.WriteString("  " + colorize(color, ansiRed, "err="+tc.ErrorReason))
 			}
 			if tc.RunID != "" {
-				line += colorize(color, ansiGrey, fmt.Sprintf("  [subagent %s]", tc.RunID))
+				b.WriteString(colorize(color, ansiGrey, fmt.Sprintf("  [subagent %s]", tc.RunID)))
 			}
-			fmt.Fprintln(out, line)
+			b.WriteByte('\n')
 		}
 	}
 
 	if len(t.VerificationResults) > 0 {
-		fmt.Fprintln(out, colorize(color, ansiBold, "  verification:"))
+		b.WriteString(colorize(color, ansiBold, "  verification:"))
+		b.WriteByte('\n')
 		for i, vr := range t.VerificationResults {
 			passed := colorize(color, ansiRed, "FAIL")
 			if vr.Passed {
 				passed = colorize(color, ansiGreen, "PASS")
 			}
-			fmt.Fprintf(out, "    %3d. %s  %s\n", i+1, passed, vr.Feedback)
+			fmt.Fprintf(&b, "    %3d. %s  %s\n", i+1, passed, vr.Feedback)
 		}
 	}
 
-	// Aggregate tool-name counts so a long tool stream is summarised
-	// before the wall of per-call detail goes by — useful when piping
-	// to less.
 	if len(t.ToolCalls) > 1 {
 		counts := map[string]int{}
 		for _, tc := range t.ToolCalls {
@@ -140,13 +135,15 @@ func renderRunTrace(out io.Writer, t *types.RunTrace, color bool) error {
 			names = append(names, n)
 		}
 		sort.Strings(names)
-		fmt.Fprintln(out, colorize(color, ansiGrey, "  tool counts:"))
+		b.WriteString(colorize(color, ansiGrey, "  tool counts:"))
+		b.WriteByte('\n')
 		for _, n := range names {
-			fmt.Fprintf(out, "    %-32s %d\n", n, counts[n])
+			fmt.Fprintf(&b, "    %-32s %d\n", n, counts[n])
 		}
 	}
 
-	_, err := fmt.Fprintln(out)
+	b.WriteByte('\n')
+	_, err := io.WriteString(out, b.String())
 	return err
 }
 
@@ -196,4 +193,3 @@ func formatTime(t time.Time) string {
 	}
 	return t.Format(time.RFC3339)
 }
-

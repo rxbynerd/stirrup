@@ -91,26 +91,26 @@ func runTraceStatsWith(path string, out io.Writer, format string, top int) error
 // between online dashboards and offline trace inspection uses one
 // vocabulary.
 type TraceStats struct {
-	RunID                string             `json:"runId,omitempty"`
-	HarnessVersion       string             `json:"harnessVersion,omitempty"`
-	Records              int                `json:"records"`
-	TotalTurns           int                `json:"totalTurns"`
-	TokensInput          int                `json:"tokensInput"`
-	TokensOutput         int                `json:"tokensOutput"`
-	ToolCalls            int                `json:"toolCalls"`
-	ToolErrors           int                `json:"toolErrors"`
-	ToolCallsByName      map[string]int     `json:"toolCallsByName,omitempty"`
-	ToolErrorsByName     map[string]int     `json:"toolErrorsByName,omitempty"`
-	SubAgentToolCalls    int                `json:"subAgentToolCalls,omitempty"`
-	VerificationsRun     int                `json:"verificationsRun,omitempty"`
-	VerificationsPassed  int                `json:"verificationsPassed,omitempty"`
-	VerificationsFailed  int                `json:"verificationsFailed,omitempty"`
-	Outcomes             map[string]int     `json:"outcomes,omitempty"`
-	LongestToolCallMs    int64              `json:"longestToolCallMs"`
-	TotalWallClockMs     int64              `json:"totalWallClockMs"`
-	SlowestToolCalls     []SlowToolCallStat `json:"slowestToolCalls,omitempty"`
-	EarliestStart        time.Time          `json:"earliestStart,omitempty"`
-	LatestCompletion     time.Time          `json:"latestCompletion,omitempty"`
+	RunID               string             `json:"runId,omitempty"`
+	HarnessVersion      string             `json:"harnessVersion,omitempty"`
+	Records             int                `json:"records"`
+	TotalTurns          int                `json:"totalTurns"`
+	TokensInput         int                `json:"tokensInput"`
+	TokensOutput        int                `json:"tokensOutput"`
+	ToolCalls           int                `json:"toolCalls"`
+	ToolErrors          int                `json:"toolErrors"`
+	ToolCallsByName     map[string]int     `json:"toolCallsByName,omitempty"`
+	ToolErrorsByName    map[string]int     `json:"toolErrorsByName,omitempty"`
+	SubAgentToolCalls   int                `json:"subAgentToolCalls,omitempty"`
+	VerificationsRun    int                `json:"verificationsRun,omitempty"`
+	VerificationsPassed int                `json:"verificationsPassed,omitempty"`
+	VerificationsFailed int                `json:"verificationsFailed,omitempty"`
+	Outcomes            map[string]int     `json:"outcomes,omitempty"`
+	LongestToolCallMs   int64              `json:"longestToolCallMs"`
+	TotalWallClockMs    int64              `json:"totalWallClockMs"`
+	SlowestToolCalls    []SlowToolCallStat `json:"slowestToolCalls,omitempty"`
+	EarliestStart       time.Time          `json:"earliestStart,omitempty"`
+	LatestCompletion    time.Time          `json:"latestCompletion,omitempty"`
 
 	// slowest is an unsorted scratch slice used during aggregation;
 	// finalize() promotes it onto SlowestToolCalls.
@@ -212,51 +212,53 @@ func writeStatsText(out io.Writer, s *TraceStats, top int) error {
 	if top <= 0 {
 		top = 10
 	}
-	fmt.Fprintf(out, "trace stats\n")
+
+	var b strings.Builder
+	b.WriteString("trace stats\n")
 	if s.RunID != "" {
-		fmt.Fprintf(out, "  runId:            %s\n", s.RunID)
+		fmt.Fprintf(&b, "  runId:            %s\n", s.RunID)
 	}
 	if s.HarnessVersion != "" {
-		fmt.Fprintf(out, "  harness version:  %s\n", s.HarnessVersion)
+		fmt.Fprintf(&b, "  harness version:  %s\n", s.HarnessVersion)
 	}
-	fmt.Fprintf(out, "  records:          %d\n", s.Records)
-	fmt.Fprintf(out, "  total turns:      %d\n", s.TotalTurns)
-	fmt.Fprintf(out, "  tokens in / out:  %d / %d\n", s.TokensInput, s.TokensOutput)
-	fmt.Fprintf(out, "  tool calls:       %d (errors: %d)\n", s.ToolCalls, s.ToolErrors)
+	fmt.Fprintf(&b, "  records:          %d\n", s.Records)
+	fmt.Fprintf(&b, "  total turns:      %d\n", s.TotalTurns)
+	fmt.Fprintf(&b, "  tokens in / out:  %d / %d\n", s.TokensInput, s.TokensOutput)
+	fmt.Fprintf(&b, "  tool calls:       %d (errors: %d)\n", s.ToolCalls, s.ToolErrors)
 	if s.SubAgentToolCalls > 0 {
-		fmt.Fprintf(out, "  sub-agent calls:  %d (of total tool calls)\n", s.SubAgentToolCalls)
+		fmt.Fprintf(&b, "  sub-agent calls:  %d (of total tool calls)\n", s.SubAgentToolCalls)
 	}
 	if s.VerificationsRun > 0 {
-		fmt.Fprintf(out, "  verifications:    %d run (passed: %d, failed: %d)\n",
+		fmt.Fprintf(&b, "  verifications:    %d run (passed: %d, failed: %d)\n",
 			s.VerificationsRun, s.VerificationsPassed, s.VerificationsFailed)
 	}
-	fmt.Fprintf(out, "  longest call ms:  %d\n", s.LongestToolCallMs)
+	fmt.Fprintf(&b, "  longest call ms:  %d\n", s.LongestToolCallMs)
 	if s.TotalWallClockMs > 0 {
-		fmt.Fprintf(out, "  wall clock:       %s\n", time.Duration(s.TotalWallClockMs)*time.Millisecond)
+		fmt.Fprintf(&b, "  wall clock:       %s\n", time.Duration(s.TotalWallClockMs)*time.Millisecond)
 	}
 
 	if len(s.ToolCallsByName) > 0 {
 		names := sortedMapKeys(s.ToolCallsByName)
-		fmt.Fprintln(out, "  tool counts:")
+		b.WriteString("  tool counts:\n")
 		for _, n := range names {
-			fmt.Fprintf(out, "    %-32s %d", n, s.ToolCallsByName[n])
+			fmt.Fprintf(&b, "    %-32s %d", n, s.ToolCallsByName[n])
 			if e := s.ToolErrorsByName[n]; e > 0 {
-				fmt.Fprintf(out, "  (errors: %d)", e)
+				fmt.Fprintf(&b, "  (errors: %d)", e)
 			}
-			fmt.Fprintln(out)
+			b.WriteByte('\n')
 		}
 	}
 
 	if len(s.Outcomes) > 0 {
 		names := sortedMapKeys(s.Outcomes)
-		fmt.Fprintln(out, "  outcomes:")
+		b.WriteString("  outcomes:\n")
 		for _, n := range names {
-			fmt.Fprintf(out, "    %-32s %d\n", n, s.Outcomes[n])
+			fmt.Fprintf(&b, "    %-32s %d\n", n, s.Outcomes[n])
 		}
 	}
 
 	if len(s.SlowestToolCalls) > 0 {
-		fmt.Fprintln(out, "  slowest tool calls:")
+		b.WriteString("  slowest tool calls:\n")
 		limit := top
 		if limit > len(s.SlowestToolCalls) {
 			limit = len(s.SlowestToolCalls)
@@ -267,11 +269,12 @@ func writeStatsText(out io.Writer, s *TraceStats, top int) error {
 			if !tc.Success {
 				status = "fail"
 			}
-			fmt.Fprintf(out, "    %2d. %-32s %6dms  %s\n", i+1, tc.Name, tc.DurationMs, status)
+			fmt.Fprintf(&b, "    %2d. %-32s %6dms  %s\n", i+1, tc.Name, tc.DurationMs, status)
 		}
 	}
 
-	return nil
+	_, err := io.WriteString(out, b.String())
+	return err
 }
 
 func sortedMapKeys(m map[string]int) []string {
