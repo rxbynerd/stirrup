@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -5084,6 +5085,68 @@ func TestEmitRunOutput_TextWithNilTracePrintsNoTrace(t *testing.T) {
 	stderr := stderrDone()
 	if !strings.Contains(stderr, "no trace") {
 		t.Errorf("stderr should describe nil-trace condition, got: %q", stderr)
+	}
+}
+
+// TestEmitRunOutput_JSONWithNilTraceLogsWarning pins the S3 fix: a
+// nil trace under --output=json produces a structurally valid
+// STIRRUP_RESULT line with Outcome="internal-error", but operators
+// consuming only the JSON stream would otherwise have no diagnostic
+// for the underlying nil-trace condition. The slog.Warn at the top
+// of emitRunOutput surfaces the diagnostic in process logs.
+func TestEmitRunOutput_JSONWithNilTraceLogsWarning(t *testing.T) {
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	cfg := &types.RunConfig{}
+	stdoutDone := captureStdout(t)
+	emitRunOutput(context.Background(), cfg, nil, "json")
+	stdout := stdoutDone()
+
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel even on nil trace, got: %q", stdout)
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
+	var got types.RunResult
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult: %v\npayload: %s", err, payload)
+	}
+	if got.Outcome != "internal-error" {
+		t.Errorf("Outcome = %q, want internal-error", got.Outcome)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "nil RunTrace") {
+		t.Errorf("expected slog.Warn about nil RunTrace, got: %q", logs)
+	}
+}
+
+// TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText pins the
+// S2 fix: an unrecognised mode reached at this layer (the CLI
+// validator catches them earlier, so reaching here means a new caller
+// or a new mode that didn't update both switches) must surface a
+// diagnostic and fall through to the text behaviour rather than
+// silently dropping the summary.
+func TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText(t *testing.T) {
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{}
+
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "yaml")
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("unrecognised mode should fall through to text, stderr: %q", stderr)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "unrecognised mode") {
+		t.Errorf("expected slog.Warn about unrecognised mode, got: %q", logs)
 	}
 }
 

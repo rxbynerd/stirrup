@@ -142,10 +142,14 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 // emitRunOutput dispatches the post-run summary surfaces selected by
 // --output (issue #242). Three modes are supported:
 //
-//   - "text" (or "" for backward compatibility with callers that bypass
-//     the flag — only the job command today): print the human-readable
-//     stderr summary AND emit through the configured resultSink. This
-//     matches the pre-#242 behaviour exactly.
+//   - "text": print the human-readable stderr summary AND emit through
+//     the configured resultSink. This matches the pre-#242 behaviour
+//     exactly. The empty string "" is also accepted and treated as
+//     "text" for backward compatibility — runJob historically called
+//     this path with mode unset, and while runJob today calls
+//     printRunSummary + emitRunResult directly, accepting "" here
+//     keeps the function safe for a future caller that copies the
+//     runWithConfig shape without threading outputMode.
 //   - "json": skip the stderr summary; emit a single STIRRUP_RESULT line
 //     on stdout. When resultSink.type=stdout-json is also configured,
 //     the line is emitted once — the flag wins because it is the more
@@ -160,7 +164,22 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 // All emissions go through buildRunResult so a partial RunResult (e.g.
 // a cancelled run) round-trips identically through every mode. Sink
 // failures are logged via emitRunResult and never fatal.
+//
+// An unrecognised mode reached here is treated as "text" but logs a
+// slog.Warn — runHarness validates the closed set at the CLI layer, so
+// reaching the default arm indicates either a new caller or a new mode
+// that did not update both switches. The warning surfaces the
+// regression in process logs without dropping the run's summary.
 func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace, mode string) {
+	if rt == nil {
+		// buildRunResult maps this case to an "internal-error" RunResult
+		// sentinel. Operators consuming --output=json alone would
+		// otherwise see a structurally valid line with no diagnostic
+		// linking the outcome back to "the loop produced no trace at
+		// all". Emit a slog.Warn so the diagnostic lands in process
+		// logs regardless of which output mode suppresses stderr.
+		slog.Warn("emitRunOutput: nil RunTrace, RunResult will carry the internal-error sentinel", "mode", mode)
+	}
 	switch mode {
 	case "json":
 		// Always emit a STIRRUP_RESULT line to stdout. When the
@@ -184,7 +203,11 @@ func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 			return
 		}
 		emitRunResult(ctx, cfg, rt)
+	case "text", "":
+		printRunSummary(rt)
+		emitRunResult(ctx, cfg, rt)
 	default:
+		slog.Warn("emitRunOutput: unrecognised mode, defaulting to text", "mode", mode)
 		printRunSummary(rt)
 		emitRunResult(ctx, cfg, rt)
 	}
