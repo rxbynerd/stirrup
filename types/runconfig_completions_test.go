@@ -62,11 +62,10 @@ func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 // against the filtered slice form for parity with what cobra emits.
 func TestCompletionValues_TrackValidatorMaps(t *testing.T) {
 	for _, tc := range []struct {
-		name           string
-		backing        map[string]bool
-		got            []string
-		filterEmpty    bool
-		expectedLength int
+		name        string
+		backing     map[string]bool
+		got         []string
+		filterEmpty bool
 	}{
 		{name: "run modes", backing: validRunModes, got: ValidRunModeValues()},
 		{name: "provider types", backing: validProviderTypes, got: ValidProviderTypeValues()},
