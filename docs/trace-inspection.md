@@ -78,6 +78,14 @@ SIGINT (Ctrl-C) terminates the follow loop cleanly. `tail -f -` reads
 from stdin — the follow flag is redundant in that mode because stdin
 already blocks until more bytes are written.
 
+> **Truncation and rotation are not followed.** `tail -f` keeps the
+> same file handle open. If the file is truncated or rotated out
+> from under it, the offset stays past the new EOF and the follow
+> loop appears to stall with no further output and no error.
+> Restart the command to pick up the rotated file. Full
+> `tail --follow=name` semantics (inode-tracking) are out of scope
+> — stirrup's own traces are append-only.
+
 ## `trace stats`
 
 ```sh

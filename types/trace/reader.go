@@ -231,6 +231,14 @@ type TailOptions struct {
 // notification — because the JSONL trace files are append-only and a
 // 100 ms poll is sufficient to keep an operator's `tail -f` view
 // responsive without inflating the dependency tree.
+//
+// Truncation and rotation are NOT followed: Tail keeps the same file
+// handle open across polls, so if the file is truncated or rotated
+// out from under it, the kernel offset stays past the new EOF and
+// the follow loop appears to stall with no further output and no
+// error. Restart the command to pick up the rotated file. Full
+// inode-tracking semantics (`tail --follow=name`) are intentionally
+// out of scope; trace files are written append-only by stirrup.
 func Tail(ctx context.Context, path string, opts TailOptions, handle func(*types.RunTrace) error) error {
 	logger := opts.Logger
 	if logger == nil {
