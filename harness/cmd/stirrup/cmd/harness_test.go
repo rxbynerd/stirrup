@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -5119,6 +5120,106 @@ func TestEmitRunOutput_JSONWithNilTraceLogsWarning(t *testing.T) {
 	logs := logBuf.String()
 	if !strings.Contains(logs, "nil RunTrace") {
 		t.Errorf("expected slog.Warn about nil RunTrace, got: %q", logs)
+	}
+}
+
+// stubResultSink records every Emit invocation so tests can assert
+// that the configured resultSink fires when --output=json or
+// --output=none is paired with a non-stdout sink (the
+// forward-compatibility surface for gcp-pubsub / gcs). Distinct from
+// resultsink.NoneSink because the latter discards silently and gives
+// the test no observable signal.
+type stubResultSink struct {
+	calls []types.RunResult
+}
+
+func (s *stubResultSink) Emit(_ context.Context, r types.RunResult) error {
+	s.calls = append(s.calls, r)
+	return nil
+}
+
+// installStubResultSink rewires the newResultSink seam to return the
+// supplied stub for the duration of the test. Returns nothing because
+// the stub itself is the assertion surface.
+func installStubResultSink(t *testing.T, stub *stubResultSink) {
+	t.Helper()
+	prev := newResultSink
+	t.Cleanup(func() { newResultSink = prev })
+	newResultSink = func(_ *types.ResultSinkConfig) (resultsinkInterface, error) {
+		return stub, nil
+	}
+}
+
+// resultsinkInterface is the local alias of resultsink.ResultSink so
+// the stub does not introduce a direct import on every test file
+// (harness_test.go already pulls in the package via the cfg.ResultSink
+// type, but the stub doesn't use any concrete type from there).
+// Renamed alias keeps newResultSink's signature compatible with the
+// production type without copying it.
+type resultsinkInterface = resultsink.ResultSink
+
+// TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires pins the
+// forward-compatibility surface for a future gcp-pubsub / gcs sink
+// under --output=json. The flag's STIRRUP_RESULT line goes to stdout,
+// and the configured sink (a different channel) also fires. Today the
+// only way to exercise this branch is via the newResultSink seam
+// because resultsink.NewResultSink rejects gcp-pubsub / gcs as
+// "reserved but not yet implemented".
+func TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires(t *testing.T) {
+	stub := &stubResultSink{}
+	installStubResultSink(t, stub)
+
+	rt := outputModeRunTrace()
+	// Type set to a future-shaped value so the conditional in
+	// emitRunOutput skips the stdout-json short-circuit and falls
+	// through to emitRunResult.
+	cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "gcp-pubsub"}}
+
+	stdoutDone := captureStdout(t)
+	emitRunOutput(context.Background(), cfg, rt, "json")
+	stdout := stdoutDone()
+
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Errorf("stdout should still carry STIRRUP_RESULT under --output=json, got: %q", stdout)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("expected configured sink to fire exactly once, got %d calls", len(stub.calls))
+	}
+	if stub.calls[0].RunID != rt.ID {
+		t.Errorf("sink received RunID %q, want %q", stub.calls[0].RunID, rt.ID)
+	}
+}
+
+// TestEmitRunOutput_NoneWithNonStdoutSinkStillFires pins the
+// forward-compatibility surface under --output=none: the stderr
+// summary and stdout STIRRUP_RESULT are both suppressed, but a sink
+// targeting a non-stdout destination still fires because it
+// represents a separate operator-configured channel with its own
+// intent.
+func TestEmitRunOutput_NoneWithNonStdoutSinkStillFires(t *testing.T) {
+	stub := &stubResultSink{}
+	installStubResultSink(t, stub)
+
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "gcp-pubsub"}}
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "none")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if stdout != "" {
+		t.Errorf("stdout should be empty under --output=none, got: %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr should be empty under --output=none, got: %q", stderr)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("expected configured sink to fire exactly once, got %d calls", len(stub.calls))
+	}
+	if stub.calls[0].RunID != rt.ID {
+		t.Errorf("sink received RunID %q, want %q", stub.calls[0].RunID, rt.ID)
 	}
 }
 

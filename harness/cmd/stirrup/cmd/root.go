@@ -121,6 +121,14 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 	return res
 }
 
+// newResultSink is the seam tests use to inject a stub ResultSink so
+// the forward-compatibility branches in emitRunOutput (non-stdout-json
+// sink paths under --output=json and --output=none) can be exercised
+// before the gcp-pubsub / gcs sinks ship. Production code retains the
+// resultsink.NewResultSink factory; tests overwrite the variable for
+// the duration of a test and restore it on cleanup.
+var newResultSink = resultsink.NewResultSink
+
 // emitRunResult builds and emits a RunResult through the configured
 // resultSink. Failures are logged but never fatal — the trace and the
 // stderr summary already carry the run's outcome, so a transient sink
@@ -129,7 +137,7 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 // line is the last thing on stdout (per the issue's Cloud Logging
 // extraction contract).
 func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
-	sink, err := resultsink.NewResultSink(cfg.ResultSink)
+	sink, err := newResultSink(cfg.ResultSink)
 	if err != nil {
 		slog.Warn("build resultSink", "err", err)
 		return
