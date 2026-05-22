@@ -925,7 +925,7 @@ func openTraceReader(path string, stdin io.Reader) (io.Reader, io.Closer, error)
 // permanently exhausts the scanner — recovery requires constructing
 // a new scanner over the same underlying reader, matching the pattern
 // in harness/cmd/stirrup/cmd/trace_grep.go and types/trace/reader.go.
-func ingestReader(ctx context.Context, r io.Reader, source string, store *lakehouse.FileStore, seen map[string]struct{}, stderr io.Writer) (int, int) {
+func ingestReader(ctx context.Context, r io.Reader, source string, store types.TraceLakehouse, seen map[string]struct{}, stderr io.Writer) (int, int) {
 	errLinef := func(format string, args ...any) {
 		_, _ = fmt.Fprintf(stderr, format, args...)
 	}
