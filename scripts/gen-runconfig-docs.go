@@ -524,19 +524,23 @@ func (ins *inspector) walk(s *structInfo, prefix, ownerName string, docs map[str
 }
 
 // defaultForField returns a human-readable hint when a `Default<X>` /
-// `default<X>` constant exists, where `<X>` is one of:
-//
-//   - the field name verbatim (e.g. MaxParallel → DefaultMaxParallel)
-//   - the owner-struct prefix + field name with the trailing "Config"
-//     stripped (e.g. BatchProviderConfig.MaxWaitSeconds →
-//     DefaultBatchMaxWaitSeconds; ToolDispatchConfig.MaxParallel →
-//     DefaultToolDispatchMaxParallel)
-//   - the owner-struct verbatim + field name
+// `default<X>` constant exists, where `<X>` is built from variations
+// of the owner-struct name and the field name. The naming convention
+// in runconfig.go is inconsistent: `MaxParallel` lives under
+// `ToolDispatchConfig` as `DefaultToolDispatchMaxParallel`, while
+// `MaxWaitSeconds` lives under `BatchProviderConfig` as
+// `DefaultBatchMaxWaitSeconds` (only the first word of the owner is
+// re-used). The matcher tries every leading word of the owner name
+// in addition to the verbatim and stripped forms so both conventions
+// are reachable without hand-curation.
 //
 // First match wins. The hint is rendered as "<value> (<const name>)".
 func (ins *inspector) defaultForField(ownerStruct, field string) string {
 	stripped := strings.TrimSuffix(ownerStruct, "Config")
 	candidateBases := []string{field, stripped + field, ownerStruct + field}
+	for _, w := range leadingWords(stripped) {
+		candidateBases = append(candidateBases, w+field)
+	}
 	for _, base := range candidateBases {
 		for _, prefix := range []string{"Default", "default"} {
 			name := prefix + base
@@ -548,14 +552,37 @@ func (ins *inspector) defaultForField(ownerStruct, field string) string {
 	return ""
 }
 
+// leadingWords yields successive leading CamelCase words of s.
+// e.g. "BatchProvider" → ["Batch", "BatchProvider"]; "ToolDispatch" →
+// ["Tool", "ToolDispatch"]. Used to bridge runconfig.go's inconsistent
+// `Default<First-word-only><Field>` naming.
+func leadingWords(s string) []string {
+	var out []string
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			out = append(out, s[:i])
+		}
+	}
+	if len(out) == 0 || out[len(out)-1] != s {
+		out = append(out, s)
+	}
+	return out
+}
+
 // enumForField returns the closed-set values when a `valid<Name>Types`
 // / `valid<Name>Values` / `valid<Name>s` var exists. The owner-struct
 // prefix is consulted before the bare field name so a `Type` field on
 // `ProviderConfig` resolves to `validProviderTypes` rather than the
-// first matching `validXxxTypes` map.
+// first matching `validXxxTypes` map. Leading words of the stripped
+// owner are also tried (e.g. `BatchProvider` → `Batch`) so the
+// inconsistent naming used for the batch-related enums is reachable.
 func (ins *inspector) enumForField(ownerStruct, field string) []string {
 	stripped := strings.TrimSuffix(ownerStruct, "Config")
 	bases := []string{stripped + field, ownerStruct + field, field}
+	for _, w := range leadingWords(stripped) {
+		bases = append(bases, w+field)
+	}
 	for _, base := range bases {
 		for _, suffix := range []string{"Types", "Values", "s", ""} {
 			if v, ok := ins.enums["valid"+base+suffix]; ok {
