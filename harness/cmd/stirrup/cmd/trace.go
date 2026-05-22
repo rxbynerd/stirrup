@@ -61,12 +61,19 @@ func parseColorMode(s string) (colorMode, error) {
 
 // shouldColor reports whether the writer should receive ANSI escapes
 // under the given mode. The auto mode disables colour when the writer
-// is not a TTY (the standard behaviour ls/grep/git diff follow).
+// is not a TTY (the standard behaviour ls/grep/git diff follow) AND
+// honours the NO_COLOR convention (https://no-color.org/) — any
+// non-empty NO_COLOR environment variable suppresses ANSI output.
+// --color=always wins over NO_COLOR by design: an operator who
+// explicitly opts in is not overridden by ambient env.
 func shouldColor(mode colorMode, w io.Writer) bool {
 	switch mode {
 	case colorAlways:
 		return true
 	case colorNever:
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" {
 		return false
 	}
 	f, ok := w.(*os.File)
@@ -101,9 +108,15 @@ func colorize(enabled bool, c, s string) string {
 }
 
 // addColorFlag registers --color on cmd with the canonical
-// auto|always|never enum the family shares.
+// auto|always|never enum the family shares. The shell completion
+// function surfaces the three values to bash/zsh tab completion,
+// matching the convention every other closed-set flag in this
+// package (e.g. --mode, --provider) already follows.
 func addColorFlag(cmd *cobra.Command) {
 	cmd.Flags().String("color", "auto", "Colourise output: auto|always|never. 'auto' enables colour only when stdout is a TTY.")
+	_ = cmd.RegisterFlagCompletionFunc("color", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"auto", "always", "never"}, cobra.ShellCompDirectiveNoFileComp
+	})
 }
 
 // resolveColorMode parses the --color flag value into a colorMode.

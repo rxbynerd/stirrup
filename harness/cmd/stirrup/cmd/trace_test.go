@@ -299,6 +299,66 @@ func TestTraceGrep_StdinPath(t *testing.T) {
 	}
 }
 
+func TestParseColorMode(t *testing.T) {
+	cases := []struct {
+		in        string
+		wantMode  colorMode
+		wantError bool
+	}{
+		{"", colorAuto, false},
+		{"auto", colorAuto, false},
+		{"AUTO", colorAuto, false},
+		{"always", colorAlways, false},
+		{"force", colorAlways, false},
+		{"yes", colorAlways, false},
+		{"never", colorNever, false},
+		{"no", colorNever, false},
+		{"off", colorNever, false},
+		{"rainbow", colorAuto, true},
+		{"  ", colorAuto, true},
+	}
+	for _, c := range cases {
+		got, err := parseColorMode(c.in)
+		if c.wantError {
+			if err == nil {
+				t.Errorf("parseColorMode(%q): expected error, got nil", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseColorMode(%q): unexpected error %v", c.in, err)
+		}
+		if got != c.wantMode {
+			t.Errorf("parseColorMode(%q) = %v, want %v", c.in, got, c.wantMode)
+		}
+	}
+}
+
+func TestShouldColor_NoColorEnvVar(t *testing.T) {
+	// Per https://no-color.org/, any non-empty NO_COLOR must suppress
+	// ANSI output under auto-mode. Use a pipe (one end is an *os.File
+	// that IsTerminal returns true for is impossible to fabricate in
+	// a test without a real TTY) — but the NO_COLOR check sits before
+	// the TTY check, so even an actual TTY-looking file goes false.
+	t.Setenv("NO_COLOR", "1")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = r.Close()
+		_ = w.Close()
+	})
+	if shouldColor(colorAuto, w) {
+		t.Error("shouldColor(colorAuto) with NO_COLOR=1 must be false")
+	}
+	// colorAlways must still win over NO_COLOR — an explicit opt-in
+	// from the operator is not overridden by ambient env.
+	if !shouldColor(colorAlways, w) {
+		t.Error("shouldColor(colorAlways) must remain true even with NO_COLOR set")
+	}
+}
+
 func TestRunTraceGrepWith_OversizedLineSkipped(t *testing.T) {
 	// Write a valid record, then a line larger than MaxLineBytes, then
 	// a second valid record. The oversized line must be silently
