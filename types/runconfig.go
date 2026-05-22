@@ -606,6 +606,15 @@ type BatchProviderConfig struct {
 	AllowInteractiveModes bool `json:"allowInteractiveModes,omitempty"`
 }
 
+// IsBatchEnabled reports whether this provider config opts into async
+// batch submission. Centralises the (Batch != nil && Batch.Enabled)
+// predicate so callers that key on the run's batch posture (lakehouse
+// bucketing, mine-failures filter) share a single source of truth
+// (#138).
+func (p ProviderConfig) IsBatchEnabled() bool {
+	return p.Batch != nil && p.Batch.Enabled
+}
+
 // ProviderRetryConfig bounds the retry behaviour an adapter applies to a
 // single provider call. Defaults are filled in at validation time so a
 // nil pointer never reaches a consumer.

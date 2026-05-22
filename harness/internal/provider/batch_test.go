@@ -148,19 +148,321 @@ func TestFabricateStream_AnthropicTextAndToolUse(t *testing.T) {
 	}
 }
 
-func TestFabricateStream_OpenAINotImplemented(t *testing.T) {
-	for _, provType := range []string{"openai-compatible", "openai-responses"} {
-		t.Run(provType, func(t *testing.T) {
-			ch := make(chan types.StreamEvent, 1)
-			fabricateStream(ch, []byte(`{}`), provType)
-			close(ch)
-
-			got := <-ch
-			if got.Type != "error" {
-				t.Errorf("got type %q, want error", got.Type)
+// TestFabricateStream_OpenAIChatCompletions covers the mapping of an
+// OpenAI Chat Completions response body (the JSON the streaming SSE
+// path consumes via consumeSSE) into the StreamEvent sequence the
+// agentic loop expects. Text content + tool_calls + finish_reason +
+// usage.completion_tokens together exercise the four-event happy path.
+func TestFabricateStream_OpenAIChatCompletions(t *testing.T) {
+	response := []byte(`{
+		"choices": [
+			{
+				"index": 0,
+				"message": {
+					"role": "assistant",
+					"content": "hello world",
+					"tool_calls": [
+						{"id": "call_1", "type": "function",
+						 "function": {"name": "read_file", "arguments": "{\"path\":\"/etc/hosts\"}"}}
+					]
+				},
+				"finish_reason": "tool_calls"
 			}
-			if got.Error == nil || !strings.Contains(got.Error.Error(), "OpenAI batch fabrication not yet implemented") {
-				t.Errorf("expected 'not yet implemented' error, got: %v", got.Error)
+		],
+		"usage": {"prompt_tokens": 5, "completion_tokens": 42}
+	}`)
+
+	ch := make(chan types.StreamEvent, 8)
+	fabricateStream(ch, response, "openai-compatible")
+	close(ch)
+
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 events (text_delta + tool_call + message_complete), got %d: %+v", len(got), got)
+	}
+	if got[0].Type != "text_delta" || got[0].Text != "hello world" {
+		t.Errorf("event 0: %+v", got[0])
+	}
+	if got[1].Type != "tool_call" || got[1].ID != "call_1" || got[1].Name != "read_file" {
+		t.Errorf("event 1: %+v", got[1])
+	}
+	if got[1].Input["path"] != "/etc/hosts" {
+		t.Errorf("event 1 input: %+v", got[1].Input)
+	}
+	if got[2].Type != "message_complete" {
+		t.Fatalf("event 2: %+v", got[2])
+	}
+	// mapFinishReason converts "tool_calls" to "tool_use" — match
+	// the streaming adapter's stop-reason vocabulary.
+	if got[2].StopReason != "tool_use" {
+		t.Errorf("event 2 stop_reason: got %q, want tool_use", got[2].StopReason)
+	}
+	if got[2].OutputTokens != 42 {
+		t.Errorf("event 2 output_tokens: got %d, want 42", got[2].OutputTokens)
+	}
+}
+
+// TestFabricateStream_OpenAIChatCompletions_TextOnly pins the
+// text-only happy path (no tool_calls, finish_reason=stop): one
+// text_delta + one message_complete with stop_reason mapped to
+// end_turn.
+func TestFabricateStream_OpenAIChatCompletions_TextOnly(t *testing.T) {
+	response := []byte(`{
+		"choices": [
+			{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+		],
+		"usage": {"completion_tokens": 1}
+	}`)
+	ch := make(chan types.StreamEvent, 4)
+	fabricateStream(ch, response, "openai-compatible")
+	close(ch)
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+	if len(got) != 2 || got[0].Type != "text_delta" || got[1].Type != "message_complete" {
+		t.Fatalf("unexpected events: %+v", got)
+	}
+	if got[1].StopReason != "end_turn" {
+		t.Errorf("stop_reason: got %q, want end_turn", got[1].StopReason)
+	}
+}
+
+// TestFabricateStream_OpenAIChatCompletions_NoChoices covers the
+// defensive branch when the response body is well-formed JSON but
+// carries no choices array (an upstream contract break). Surfacing
+// the error keeps the failure debuggable instead of silently emitting
+// only a message_complete.
+func TestFabricateStream_OpenAIChatCompletions_NoChoices(t *testing.T) {
+	ch := make(chan types.StreamEvent, 1)
+	fabricateStream(ch, []byte(`{"choices":[]}`), "openai-compatible")
+	close(ch)
+	got := <-ch
+	if got.Type != "error" {
+		t.Fatalf("expected error event, got %+v", got)
+	}
+}
+
+// TestFabricateStream_OpenAIResponses covers the Responses-API
+// response shape: output[] items of type message (with output_text
+// content blocks) and function_call (flat id/name/arguments). The
+// derived stop reason picks tool_use when any function_call item is
+// present, matching openai_responses.go::deriveStopReason.
+func TestFabricateStream_OpenAIResponses(t *testing.T) {
+	response := []byte(`{
+		"status": "completed",
+		"output": [
+			{"type": "message", "id": "msg_1",
+			 "content": [{"type": "output_text", "text": "hi"}]},
+			{"type": "function_call", "id": "fc_1", "call_id": "call_1",
+			 "name": "read_file", "arguments": "{\"path\":\"/etc/hosts\"}"}
+		],
+		"usage": {"input_tokens": 3, "output_tokens": 12}
+	}`)
+
+	ch := make(chan types.StreamEvent, 8)
+	fabricateStream(ch, response, "openai-responses")
+	close(ch)
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 events (text_delta + tool_call + message_complete), got %d: %+v", len(got), got)
+	}
+	if got[0].Type != "text_delta" || got[0].Text != "hi" {
+		t.Errorf("event 0: %+v", got[0])
+	}
+	if got[1].Type != "tool_call" || got[1].ID != "call_1" || got[1].Name != "read_file" {
+		t.Errorf("event 1: %+v", got[1])
+	}
+	if got[1].Input["path"] != "/etc/hosts" {
+		t.Errorf("event 1 input: %+v", got[1].Input)
+	}
+	if got[2].Type != "message_complete" || got[2].StopReason != "tool_use" {
+		t.Errorf("event 2: %+v", got[2])
+	}
+	if got[2].OutputTokens != 12 {
+		t.Errorf("event 2 output_tokens: got %d, want 12", got[2].OutputTokens)
+	}
+}
+
+// TestFabricateStream_OpenAIResponses_Incomplete covers the incomplete
+// branch of deriveOpenAIResponsesStopReason: a status=incomplete
+// response with reason=max_output_tokens maps to the harness-side
+// max_tokens vocabulary so the agentic loop's truncation handling
+// fires.
+func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
+	response := []byte(`{
+		"status": "incomplete",
+		"incomplete_details": {"reason": "max_output_tokens"},
+		"output": [{"type": "message", "content": [{"type": "output_text", "text": "partial"}]}],
+		"usage": {"output_tokens": 64}
+	}`)
+	ch := make(chan types.StreamEvent, 4)
+	fabricateStream(ch, response, "openai-responses")
+	close(ch)
+	var got []types.StreamEvent
+	for ev := range ch {
+		got = append(got, ev)
+	}
+	if len(got) != 2 || got[1].Type != "message_complete" {
+		t.Fatalf("unexpected events: %+v", got)
+	}
+	if got[1].StopReason != "max_tokens" {
+		t.Errorf("stop_reason: got %q, want max_tokens", got[1].StopReason)
+	}
+}
+
+// TestDeriveOpenAIResponsesStopReason pins the full
+// status × incomplete-reason × has-tool matrix for the batch path's
+// deriveOpenAIResponsesStopReason. Lifts coverage from the partial
+// streaming-incidental coverage (only completed-with-tool, expired,
+// max_output_tokens) to all eight documented branches plus the
+// non-empty-unknown fallthrough.
+// TestBatchAdapter_marshalRequestBody_OpenAICompatible pins the
+// openai-compatible arm of marshalRequestBody — previously at 0%
+// coverage. Asserts the marshalled JSON is the Chat Completions wire
+// body shape with stream=false.
+func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+	body, err := a.marshalRequestBody(types.StreamParams{
+		Model:     "gpt-4o-mini",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+	})
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode marshalled body: %v", err)
+	}
+	if _, ok := raw["model"]; !ok {
+		t.Errorf("marshalled body missing model: %s", body)
+	}
+	if _, ok := raw["stream"]; !ok {
+		t.Errorf("openai-compatible body must carry stream=false: %s", body)
+	} else if string(raw["stream"]) != "false" {
+		t.Errorf("openai-compatible body must carry stream=false; got %s", raw["stream"])
+	}
+}
+
+// TestBatchAdapter_marshalRequestBody_OpenAIResponses pins the
+// openai-responses arm of marshalRequestBody — previously at 0%
+// coverage. Asserts the marshalled JSON is the Responses wire body
+// shape: model present, stream key absent (omitempty stripping in
+// buildResponsesRequest).
+func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "run-test")
+	body, err := a.marshalRequestBody(types.StreamParams{
+		Model:     "gpt-4o-mini",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+	})
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode marshalled body: %v", err)
+	}
+	if _, ok := raw["model"]; !ok {
+		t.Errorf("marshalled body missing model: %s", body)
+	}
+	if _, ok := raw["stream"]; ok {
+		t.Errorf("openai-responses body must not carry stream key (omitempty), got: %s", body)
+	}
+}
+
+func TestDeriveOpenAIResponsesStopReason(t *testing.T) {
+	mkIncomplete := func(reason string) *struct {
+		Reason string `json:"reason"`
+	} {
+		return &struct {
+			Reason string `json:"reason"`
+		}{Reason: reason}
+	}
+
+	tests := []struct {
+		name    string
+		resp    openaiResponsesBatchResponse
+		hasTool bool
+		want    string
+	}{
+		{
+			name: "completed/no-tool",
+			resp: openaiResponsesBatchResponse{Status: "completed"},
+			want: "end_turn",
+		},
+		{
+			name:    "completed/with-tool",
+			resp:    openaiResponsesBatchResponse{Status: "completed"},
+			hasTool: true,
+			want:    "tool_use",
+		},
+		{
+			name: "incomplete/max_output_tokens",
+			resp: openaiResponsesBatchResponse{
+				Status:            "incomplete",
+				IncompleteDetails: mkIncomplete("max_output_tokens"),
+			},
+			want: "max_tokens",
+		},
+		{
+			name: "incomplete/max_tokens alias",
+			resp: openaiResponsesBatchResponse{
+				Status:            "incomplete",
+				IncompleteDetails: mkIncomplete("max_tokens"),
+			},
+			want: "max_tokens",
+		},
+		{
+			name: "incomplete/content_filter (non-standard reason verbatim)",
+			resp: openaiResponsesBatchResponse{
+				Status:            "incomplete",
+				IncompleteDetails: mkIncomplete("content_filter"),
+			},
+			want: "content_filter",
+		},
+		{
+			name: "incomplete/nil-details",
+			resp: openaiResponsesBatchResponse{Status: "incomplete"},
+			want: "incomplete",
+		},
+		{
+			name: "incomplete/empty-reason",
+			resp: openaiResponsesBatchResponse{
+				Status:            "incomplete",
+				IncompleteDetails: mkIncomplete(""),
+			},
+			want: "incomplete",
+		},
+		{
+			name: "default/non-empty-unknown status verbatim",
+			resp: openaiResponsesBatchResponse{Status: "failed"},
+			want: "failed",
+		},
+		{
+			name:    "default/empty status with tool",
+			resp:    openaiResponsesBatchResponse{Status: ""},
+			hasTool: true,
+			want:    "tool_use",
+		},
+		{
+			name: "default/empty status no tool",
+			resp: openaiResponsesBatchResponse{Status: ""},
+			want: "end_turn",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := deriveOpenAIResponsesStopReason(tc.resp, tc.hasTool)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -292,6 +594,87 @@ func TestBatchAdapter_Stream_SubmitError(t *testing.T) {
 	}
 }
 
+// TestBatchAdapter_LastBatchID_EmptyBeforeSubmit pins the contract
+// documented on LastBatchID(): readers (the agentic loop in #138)
+// must see an empty string when no batch has been submitted yet, so
+// a streaming-only fallback path can detect the absence cleanly.
+func TestBatchAdapter_LastBatchID_EmptyBeforeSubmit(t *testing.T) {
+	a := batchAdapter(t, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, nil)
+	if got := a.LastBatchID(); got != "" {
+		t.Errorf("LastBatchID before Submit = %q, want empty", got)
+	}
+}
+
+// TestBatchAdapter_LastBatchID_PopulatedAfterSubmit confirms the
+// adapter surfaces the provider-assigned batch identifier returned
+// from Submit so the agentic loop can attach it to the TurnTrace.
+// Both the control-plane handle ("batch-N") and the polling client's
+// "msgbatch_..." flow through this single accessor unchanged.
+func TestBatchAdapter_LastBatchID_PopulatedAfterSubmit(t *testing.T) {
+	response := json.RawMessage(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"output_tokens":1}}`)
+	client := &fakeBatchClient{
+		submitFn: func(_ []BatchEntry) (string, error) { return "msgbatch_abc123", nil },
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return map[string]*BatchResult{"stirrup-run-test-turn-1": {Response: response}}, nil
+		},
+	}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
+
+	ch, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_ = drain(t, ch)
+
+	if got := a.LastBatchID(); got != "msgbatch_abc123" {
+		t.Errorf("LastBatchID after Submit = %q, want %q", got, "msgbatch_abc123")
+	}
+}
+
+// TestBatchAdapter_LastBatchID_UnchangedOnSubmitError pins the
+// rationale called out in the field doc: a failed Submit leaves the
+// previous batch identifier in place rather than clobbering with "".
+// A loop that reads LastBatchID() on a fallback path then still
+// references the most recent successful submission, not a transient
+// failure that produced no provider-side batch.
+func TestBatchAdapter_LastBatchID_UnchangedOnSubmitError(t *testing.T) {
+	response := json.RawMessage(`{"content":[],"stop_reason":"end_turn","usage":{"output_tokens":0}}`)
+	calls := 0
+	client := &fakeBatchClient{
+		submitFn: func(_ []BatchEntry) (string, error) {
+			calls++
+			if calls == 1 {
+				return "msgbatch_first", nil
+			}
+			return "", errors.New("transient submit failure")
+		},
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return map[string]*BatchResult{"stirrup-run-test-turn-1": {Response: response}}, nil
+		},
+	}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
+
+	ch, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_ = drain(t, ch)
+	if got := a.LastBatchID(); got != "msgbatch_first" {
+		t.Fatalf("LastBatchID after first Submit = %q, want msgbatch_first", got)
+	}
+
+	// Second Stream Submit returns an error; LastBatchID must still
+	// hold the previous successful value.
+	ch2, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream 2: %v", err)
+	}
+	_ = drain(t, ch2)
+	if got := a.LastBatchID(); got != "msgbatch_first" {
+		t.Errorf("LastBatchID after failed Submit = %q, want msgbatch_first (unchanged)", got)
+	}
+}
+
 func TestBatchAdapter_Stream_ResultError(t *testing.T) {
 	client := &fakeBatchClient{
 		resultFn: func(_ string) (map[string]*BatchResult, error) {
@@ -400,6 +783,86 @@ func TestBatchAdapter_Stream_TimeoutFallback(t *testing.T) {
 	}
 	if events[1].Type != "message_complete" {
 		t.Errorf("event 1: %+v", events[1])
+	}
+}
+
+// TestFabricateAnthropicStream_MalformedToolInput pins the
+// tool_use input decode error path in fabricateAnthropicStream
+// directly. The wider fabricateStream wrapper takes the error
+// arm only after this layer has returned a non-nil error; testing
+// the inner function isolates the failure to the input decode
+// without depending on the wrapper's plumbing.
+func TestFabricateAnthropicStream_MalformedToolInput(t *testing.T) {
+	// Note: the tool_use Input field is json.RawMessage, so a
+	// truncated object literal inside the message body forces the
+	// unmarshal of Input itself to fail.
+	response := []byte(`{
+		"content": [
+			{"type": "tool_use", "id": "tu_bad", "name": "read_file", "input": {"not-json`)
+
+	ch := make(chan types.StreamEvent, 4)
+	err := fabricateAnthropicStream(ch, response)
+	if err == nil {
+		t.Fatal("expected error for malformed tool_use input, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode") {
+		t.Errorf("error chain = %q, want it to mention 'decode'", err.Error())
+	}
+}
+
+// TestFabricateStream_AnthropicDecodeError covers the
+// fabricateStream wrapper's error relay arm for the anthropic case:
+// when fabricateAnthropicStream returns a non-nil error, the
+// wrapper must emit a single error StreamEvent rather than swallow
+// it (the agentic loop is the only consumer and expects all
+// failures on-channel).
+func TestFabricateStream_AnthropicDecodeError(t *testing.T) {
+	// A response whose tool_use input field is a truncated JSON
+	// value triggers fabricateAnthropicStream's decode error path,
+	// which fabricateStream must relay to the channel.
+	response := []byte(`{
+		"content": [
+			{"type": "tool_use", "id": "tu_bad", "name": "read_file", "input": {"path": "/etc/hosts`)
+
+	ch := make(chan types.StreamEvent, 4)
+	fabricateStream(ch, response, "anthropic")
+	close(ch)
+
+	var sawError bool
+	for ev := range ch {
+		if ev.Type == "error" && ev.Error != nil && strings.Contains(ev.Error.Error(), "decode") {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Error("expected a decode error StreamEvent from fabricateStream")
+	}
+}
+
+// TestBatchAdapter_Stream_ResultNonTransientError covers the
+// awaitAndFabricate default error arm: a Result error that is
+// neither errBatchExpired nor a context error must surface as a
+// single "batch result:" StreamEvent. Without this guard, a
+// provider-side rejection (rate limit, invalid model) could be
+// swallowed or misclassified as a timeout.
+func TestBatchAdapter_Stream_ResultNonTransientError(t *testing.T) {
+	client := &fakeBatchClient{
+		resultFn: func(_ string) (map[string]*BatchResult, error) {
+			return nil, fmt.Errorf("provider-side rejection")
+		},
+	}
+	a := batchAdapter(t, client, &types.BatchProviderConfig{Enabled: true}, nil)
+	ch, err := a.Stream(context.Background(), anthropicParams())
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := drain(t, ch)
+	if len(events) != 1 || events[0].Type != "error" {
+		t.Fatalf("expected single error event, got %+v", events)
+	}
+	msg := events[0].Error.Error()
+	if !strings.Contains(msg, "batch result:") || !strings.Contains(msg, "provider-side rejection") {
+		t.Errorf("error chain = %q, want both 'batch result:' and 'provider-side rejection'", msg)
 	}
 }
 
@@ -1041,37 +1504,6 @@ func (b *blockingProvider) Stream(_ context.Context, _ types.StreamParams) (<-ch
 		ch <- types.StreamEvent{Type: "text_delta", Text: "second"}
 	}()
 	return ch, nil
-}
-
-// TestBatchAdapter_Stream_OpenAIVariantsEmitNotImplemented (R6) pins
-// the phase-6 OpenAI integration point: both openai-compatible and
-// openai-responses provType values surface a single
-// "not yet implemented" error event from the marshal/fabricate path.
-func TestBatchAdapter_Stream_OpenAIVariantsEmitNotImplemented(t *testing.T) {
-	for _, provType := range []string{"openai-compatible", "openai-responses"} {
-		t.Run(provType, func(t *testing.T) {
-			response := json.RawMessage(`{}`)
-			client := &fakeBatchClient{
-				resultFn: func(_ string) (map[string]*BatchResult, error) {
-					return map[string]*BatchResult{
-						"stirrup-run-test-turn-1": {Response: response},
-					}, nil
-				},
-			}
-			a := NewBatchAdapter(nil, client, &types.BatchProviderConfig{Enabled: true}, provType, "run-test")
-			ch, err := a.Stream(context.Background(), anthropicParams())
-			if err != nil {
-				t.Fatalf("Stream: %v", err)
-			}
-			events := drain(t, ch)
-			if len(events) != 1 || events[0].Type != "error" {
-				t.Fatalf("expected single error event, got %+v", events)
-			}
-			if !strings.Contains(events[0].Error.Error(), "OpenAI batch fabrication not yet implemented") {
-				t.Errorf("expected 'not yet implemented' error, got %v", events[0].Error)
-			}
-		})
-	}
 }
 
 // TestFabricateStream_AnthropicParityWithReference (R8) compares the

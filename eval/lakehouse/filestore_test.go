@@ -547,6 +547,210 @@ func TestComputeMetrics_SubAgentToolCallsDoNotInflate(t *testing.T) {
 	}
 }
 
+// makeBatchTrace is makeTrace's twin with Batch enabled on the
+// Provider config. computeMetrics keys the bucketing on
+// Config.Provider.Batch.Enabled, so the helper centralises the
+// classifier wiring rather than scattering BatchProviderConfig
+// constructions across each #138 test case.
+func makeBatchTrace(id, outcome, model string, started time.Time, durationMs int64, turns int, tokens types.TokenUsage) types.RunTrace {
+	tr := makeTrace(id, outcome, "execution", model, started, durationMs, turns, tokens)
+	tr.Config.Provider = types.ProviderConfig{
+		Type:  "anthropic",
+		Batch: &types.BatchProviderConfig{Enabled: true},
+	}
+	return tr
+}
+
+// TestMetrics_BucketsStreamingAndBatchSeparately is the core
+// regression guard for #138: a mixed window of streaming and batch
+// runs must produce two independent duration percentile pairs so
+// batch queue time does not skew the streaming latency signal.
+func TestMetrics_BucketsStreamingAndBatchSeparately(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	ctx := context.Background()
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Streaming: 100ms, 200ms, 300ms — P50 = 200, P95 ≈ 290.
+	// Batch:     1000ms, 5000ms, 10000ms — P50 = 5000, P95 ≈ 9500.
+	traces := []types.RunTrace{
+		makeTrace("s1", "success", "execution", "claude-sonnet-4-6", base, 100, 1, types.TokenUsage{}),
+		makeTrace("s2", "success", "execution", "claude-sonnet-4-6", base.Add(time.Hour), 200, 1, types.TokenUsage{}),
+		makeTrace("s3", "success", "execution", "claude-sonnet-4-6", base.Add(2*time.Hour), 300, 1, types.TokenUsage{}),
+		makeBatchTrace("b1", "success", "claude-sonnet-4-6", base.Add(3*time.Hour), 1000, 1, types.TokenUsage{}),
+		makeBatchTrace("b2", "success", "claude-sonnet-4-6", base.Add(4*time.Hour), 5000, 1, types.TokenUsage{}),
+		makeBatchTrace("b3", "success", "claude-sonnet-4-6", base.Add(5*time.Hour), 10000, 1, types.TokenUsage{}),
+	}
+	for _, tr := range traces {
+		if err := fs.StoreTrace(ctx, tr); err != nil {
+			t.Fatalf("StoreTrace %s: %v", tr.ID, err)
+		}
+	}
+
+	m, err := fs.Metrics(ctx, types.TraceFilter{})
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+
+	if m.Count != 6 {
+		t.Errorf("Count = %d, want 6", m.Count)
+	}
+	if !approxEqual(m.P50Duration, 200, 0.001) {
+		t.Errorf("streaming P50 = %v, want 200", m.P50Duration)
+	}
+	// P95 of [100,200,300] using rank=0.95*2=1.9 -> 200 + 0.9*100 = 290
+	if !approxEqual(m.P95Duration, 290, 0.001) {
+		t.Errorf("streaming P95 = %v, want 290", m.P95Duration)
+	}
+	if !approxEqual(m.BatchP50Duration, 5000, 0.001) {
+		t.Errorf("batch P50 = %v, want 5000", m.BatchP50Duration)
+	}
+	// P95 of [1000,5000,10000] using rank=0.95*2=1.9 -> 5000 + 0.9*5000 = 9500
+	if !approxEqual(m.BatchP95Duration, 9500, 0.001) {
+		t.Errorf("batch P95 = %v, want 9500", m.BatchP95Duration)
+	}
+}
+
+// TestMetrics_BatchBucketsZeroWhenNoBatchTraces pins the zero-value
+// convention called out in the TraceMetrics doc: an empty batch
+// bucket reports 0 (not NaN, not nil-equivalent) so downstream JSON
+// consumers see a stable shape.
+func TestMetrics_BatchBucketsZeroWhenNoBatchTraces(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	seedTraces(t, fs)
+
+	m, err := fs.Metrics(context.Background(), types.TraceFilter{})
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	if m.BatchP50Duration != 0 {
+		t.Errorf("BatchP50Duration = %v, want 0 (no batch traces seeded)", m.BatchP50Duration)
+	}
+	if m.BatchP95Duration != 0 {
+		t.Errorf("BatchP95Duration = %v, want 0 (no batch traces seeded)", m.BatchP95Duration)
+	}
+}
+
+// TestMetrics_LegacyTracesCountAsStreaming pins the backward-compat
+// promise: a RunTrace whose Provider.Batch is nil (or Enabled=false)
+// falls into the streaming bucket. Without this guarantee, lakehouses
+// that migrated from a pre-#138 schema would drop legacy traces out
+// of every duration percentile pair.
+func TestMetrics_LegacyTracesCountAsStreaming(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	ctx := context.Background()
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Legacy: no Provider field populated at all.
+	legacy := types.RunTrace{
+		ID:          "legacy-1",
+		Outcome:     "success",
+		StartedAt:   base,
+		CompletedAt: base.Add(500 * time.Millisecond),
+		Turns:       2,
+	}
+	// Explicit Batch=nil-equivalent: Provider with no Batch.
+	explicitStreaming := makeTrace("stream-1", "success", "execution", "claude-sonnet-4-6", base.Add(time.Hour), 700, 2, types.TokenUsage{})
+	// Batch present but disabled — must still bucket as streaming.
+	disabledBatch := makeTrace("disabled-1", "success", "execution", "claude-sonnet-4-6", base.Add(2*time.Hour), 900, 2, types.TokenUsage{})
+	disabledBatch.Config.Provider = types.ProviderConfig{
+		Type:  "anthropic",
+		Batch: &types.BatchProviderConfig{Enabled: false},
+	}
+	for _, tr := range []types.RunTrace{legacy, explicitStreaming, disabledBatch} {
+		if err := fs.StoreTrace(ctx, tr); err != nil {
+			t.Fatalf("StoreTrace %s: %v", tr.ID, err)
+		}
+	}
+
+	m, err := fs.Metrics(ctx, types.TraceFilter{})
+	if err != nil {
+		t.Fatalf("Metrics: %v", err)
+	}
+	// All three landed in streaming. Median of [500,700,900] = 700.
+	if !approxEqual(m.P50Duration, 700, 0.001) {
+		t.Errorf("streaming P50 = %v, want 700", m.P50Duration)
+	}
+	if m.BatchP50Duration != 0 || m.BatchP95Duration != 0 {
+		t.Errorf("batch buckets non-zero with no enabled-batch traces: P50=%v P95=%v", m.BatchP50Duration, m.BatchP95Duration)
+	}
+}
+
+// TestIsBatchRun exercises the classifier directly so a future
+// refactor that swaps the predicate has a single failure point
+// rather than ricocheting through every bucketing test.
+func TestIsBatchRun(t *testing.T) {
+	cases := []struct {
+		name string
+		t    types.RunTrace
+		want bool
+	}{
+		{"nil-provider", types.RunTrace{}, false},
+		{
+			"provider-without-batch",
+			types.RunTrace{Config: types.RunConfig{Provider: types.ProviderConfig{Type: "anthropic"}}},
+			false,
+		},
+		{
+			"batch-disabled",
+			types.RunTrace{Config: types.RunConfig{Provider: types.ProviderConfig{
+				Batch: &types.BatchProviderConfig{Enabled: false},
+			}}},
+			false,
+		},
+		{
+			"batch-enabled",
+			types.RunTrace{Config: types.RunConfig{Provider: types.ProviderConfig{
+				Batch: &types.BatchProviderConfig{Enabled: true},
+			}}},
+			true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBatchRun(tc.t); got != tc.want {
+				t.Errorf("isBatchRun(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestComputeMetrics_SingleTrace covers the percentile single-element
+// branch (the n==1 short-circuit). Every existing bucketing test
+// uses 3+ element datasets, so the early return that prevents an
+// out-of-range index on a one-trace window was untested. Pin both
+// P50 and P95 to the lone trace's duration — interpolation must
+// degenerate to the only available value.
+func TestComputeMetrics_SingleTrace(t *testing.T) {
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	traces := []types.RunTrace{
+		makeTrace("only", "success", "execution", "claude-sonnet-4-6", base, 750, 1, types.TokenUsage{}),
+	}
+
+	m := computeMetrics(traces)
+
+	if m.Count != 1 {
+		t.Errorf("Count = %d, want 1", m.Count)
+	}
+	if !approxEqual(m.P50Duration, 750, 0.001) {
+		t.Errorf("P50Duration = %v, want 750 (single-element branch)", m.P50Duration)
+	}
+	if !approxEqual(m.P95Duration, 750, 0.001) {
+		t.Errorf("P95Duration = %v, want 750 (single-element branch)", m.P95Duration)
+	}
+}
+
 func TestClose(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)

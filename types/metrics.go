@@ -63,22 +63,39 @@ type DriftReport struct {
 }
 
 // DriftDeltas holds the absolute differences between current and baseline metrics.
+//
+// P50/P95DurationDelta and BatchP50/P95DurationDelta are populated
+// from the streaming-only and batch-only buckets respectively
+// (#138), so a drift threshold check compares like-for-like rather
+// than mixing batch queue time into the streaming latency signal.
 type DriftDeltas struct {
-	PassRateDelta    float64 `json:"passRateDelta"`
-	MeanTurnsDelta   float64 `json:"meanTurnsDelta"`
-	MeanTokensDelta  float64 `json:"meanTokensDelta"`
-	P50DurationDelta float64 `json:"p50DurationDelta"`
-	P95DurationDelta float64 `json:"p95DurationDelta"`
+	PassRateDelta         float64 `json:"passRateDelta"`
+	MeanTurnsDelta        float64 `json:"meanTurnsDelta"`
+	MeanTokensDelta       float64 `json:"meanTokensDelta"`
+	P50DurationDelta      float64 `json:"p50DurationDelta"`
+	P95DurationDelta      float64 `json:"p95DurationDelta"`
+	BatchP50DurationDelta float64 `json:"batchP50DurationDelta"`
+	BatchP95DurationDelta float64 `json:"batchP95DurationDelta"`
 }
 
 // TraceMetrics holds aggregate metrics computed over a set of traces.
+//
+// P50Duration / P95Duration bucket *streaming-only* runs to preserve
+// the pre-batch (#138) interpretation of the metric: a batch run's
+// wall-clock duration is dominated by provider-side queue time, not
+// the harness's stall pattern, so mixing the two distorts the
+// streaming latency signal. BatchP50Duration / BatchP95Duration
+// cover batch runs separately for operators tracking batch throughput.
+// Both pairs are zero (not nil) when their bucket has no entries.
 type TraceMetrics struct {
-	Count       int     `json:"count"`
-	PassRate    float64 `json:"passRate"`
-	MeanTurns   float64 `json:"meanTurns"`
-	MeanTokens  float64 `json:"meanTokens"`
-	P50Duration float64 `json:"p50DurationMs"`
-	P95Duration float64 `json:"p95DurationMs"`
+	Count            int     `json:"count"`
+	PassRate         float64 `json:"passRate"`
+	MeanTurns        float64 `json:"meanTurns"`
+	MeanTokens       float64 `json:"meanTokens"`
+	P50Duration      float64 `json:"p50DurationMs"`
+	P95Duration      float64 `json:"p95DurationMs"`
+	BatchP50Duration float64 `json:"batchP50DurationMs"`
+	BatchP95Duration float64 `json:"batchP95DurationMs"`
 }
 
 // DateRange defines a time window for trace queries.

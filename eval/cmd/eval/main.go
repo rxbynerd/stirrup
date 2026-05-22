@@ -390,6 +390,7 @@ func cmdMineFailures(args []string) {
 	afterStr := fs.String("after", "", "Filter traces after this date (RFC3339 or YYYY-MM-DD)")
 	limit := fs.Int("limit", 0, "Maximum number of failures to mine")
 	output := fs.String("output", "", "Write EvalSuite HCL to this file (.hcl recommended)")
+	includeBatch := fs.Bool("include-batch", false, "By default, batch runs (provider.batch.enabled=true) are excluded from mined failures because their wall-clock duration inflates apparent stall metrics. Pass --include-batch to include them.")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -421,7 +422,7 @@ func cmdMineFailures(args []string) {
 		log.Fatalf("querying recordings: %v", err)
 	}
 
-	tasks := mineFailureTasks(recordings, *limit)
+	tasks := mineFailureTasksFiltered(recordings, *limit, *includeBatch)
 
 	suite := types.EvalSuite{
 		ID:          fmt.Sprintf("mined-failures-%d", time.Now().Unix()),
@@ -582,12 +583,21 @@ func cmdDrift(args []string) {
 	}
 }
 
-// mineFailureTasks filters recordings for non-success outcomes and converts
-// them into EvalTasks with a default test-command judge.
-func mineFailureTasks(recordings []types.RunRecording, limit int) []types.EvalTask {
+// mineFailureTasksFiltered filters recordings for non-success outcomes
+// and converts them into EvalTasks with a default test-command judge.
+// When includeBatch is false (the documented default), recordings
+// whose RunConfig opted into batch provider submission are skipped:
+// their wall-clock duration is dominated by provider-side queue time,
+// not the harness's stall pattern, so including them inflates apparent
+// stall metrics and obscures the prompt patterns mine-failures is here
+// to surface (#138).
+func mineFailureTasksFiltered(recordings []types.RunRecording, limit int, includeBatch bool) []types.EvalTask {
 	var tasks []types.EvalTask
 	for _, rec := range recordings {
 		if rec.FinalOutcome.Outcome == "success" {
+			continue
+		}
+		if !includeBatch && isBatchRecording(rec) {
 			continue
 		}
 		task := types.EvalTask{
@@ -608,17 +618,32 @@ func mineFailureTasks(recordings []types.RunRecording, limit int) []types.EvalTa
 	return tasks
 }
 
+// isBatchRecording is a thin spelling of ProviderConfig.IsBatchEnabled
+// kept here only so existing tests can call it directly. Both this and
+// lakehouse.isBatchRun now route through the canonical
+// ProviderConfig.IsBatchEnabled predicate (#138) so a future change
+// to the batch posture rule lands in one place.
+func isBatchRecording(rec types.RunRecording) bool {
+	return rec.Config.Provider.IsBatchEnabled()
+}
+
 // buildDriftReport computes deltas between current and baseline metrics.
+// The streaming and batch duration percentiles are differenced
+// separately so a drift signal compares like-for-like (#138) and a
+// run mix shift (more batch traffic) does not register as a
+// streaming-latency regression.
 func buildDriftReport(current, baseline types.TraceMetrics) types.DriftReport {
 	return types.DriftReport{
 		Current:  current,
 		Baseline: baseline,
 		Deltas: types.DriftDeltas{
-			PassRateDelta:    current.PassRate - baseline.PassRate,
-			MeanTurnsDelta:   current.MeanTurns - baseline.MeanTurns,
-			MeanTokensDelta:  current.MeanTokens - baseline.MeanTokens,
-			P50DurationDelta: current.P50Duration - baseline.P50Duration,
-			P95DurationDelta: current.P95Duration - baseline.P95Duration,
+			PassRateDelta:         current.PassRate - baseline.PassRate,
+			MeanTurnsDelta:        current.MeanTurns - baseline.MeanTurns,
+			MeanTokensDelta:       current.MeanTokens - baseline.MeanTokens,
+			P50DurationDelta:      current.P50Duration - baseline.P50Duration,
+			P95DurationDelta:      current.P95Duration - baseline.P95Duration,
+			BatchP50DurationDelta: current.BatchP50Duration - baseline.BatchP50Duration,
+			BatchP95DurationDelta: current.BatchP95Duration - baseline.BatchP95Duration,
 		},
 	}
 }
