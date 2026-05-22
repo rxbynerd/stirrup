@@ -725,3 +725,331 @@ func TestBuildRunConfig_WIFOverridesError(t *testing.T) {
 		t.Errorf("error should mention api-key-ref, got: %v", err)
 	}
 }
+
+// TestBuildRunConfig_EnvVarSuppliesBasePath pins the #241 fourth-rank
+// fallback: when --config is absent and stdin is not piped,
+// STIRRUP_CONFIG=<path> loads the file the flag would have loaded.
+// This is the "set once per shell session" ergonomic the env var
+// exists to provide.
+func TestBuildRunConfig_EnvVarSuppliesBasePath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	t.Setenv("STIRRUP_CONFIG", path)
+
+	cmd := newTestHarnessCommand()
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.RunID != "from-file" {
+		t.Errorf("RunID = %q, want from-file (env-var base should load)", cfg.RunID)
+	}
+}
+
+// TestBuildRunConfig_ExplicitConfigBeatsEnvVar pins acceptance
+// criterion 2: when both --config and STIRRUP_CONFIG name a file, the
+// explicit flag wins. The env var must not silently leak its base
+// into a flag-driven invocation, or operators with the env var set
+// in their shell profile cannot override it ad-hoc.
+func TestBuildRunConfig_ExplicitConfigBeatsEnvVar(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, "env.json")
+	flagPath := filepath.Join(dir, "flag.json")
+
+	envCfg := types.RunConfig{
+		RunID:           "from-env",
+		Mode:            "planning",
+		Prompt:          "env prompt",
+		Provider:        types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://ENV_KEY"},
+		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+		Executor:        types.ExecutorConfig{Type: "local"},
+		EditStrategy:    types.EditStrategyConfig{Type: "multi"},
+		Verifier:        types.VerifierConfig{Type: "none"},
+		GitStrategy:     types.GitStrategyConfig{Type: "none"},
+		Transport:       types.TransportConfig{Type: "stdio"},
+		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl"},
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type: "deny-side-effects",
+		},
+		Tools:    types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		MaxTurns: 10,
+		LogLevel: "info",
+	}
+	envBytes, err := json.Marshal(envCfg)
+	if err != nil {
+		t.Fatalf("marshal env cfg: %v", err)
+	}
+	if err := os.WriteFile(envPath, envBytes, 0o600); err != nil {
+		t.Fatalf("write env file: %v", err)
+	}
+	if err := os.WriteFile(flagPath, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
+		t.Fatalf("write flag file: %v", err)
+	}
+	t.Setenv("STIRRUP_CONFIG", envPath)
+
+	cmd := newTestHarnessCommand()
+	cfg, err := BuildRunConfig(RunConfigSources{
+		ConfigPath: flagPath,
+		Cmd:        cmd,
+		Resolve:    ResolveBase,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.RunID != "from-file" {
+		t.Errorf("RunID = %q, want from-file (explicit --config must beat STIRRUP_CONFIG)", cfg.RunID)
+	}
+}
+
+// TestBuildRunConfig_EnvVarDashOptsIntoStdin pins acceptance
+// criterion 3: STIRRUP_CONFIG=- treats the env var as a stdin opt-in,
+// mirroring `--config -`. Combined with a piped stdin, this loads the
+// base from the pipe rather than failing as ambiguous — the env var
+// is opting *into* the stdin path, not naming a separate source.
+func TestBuildRunConfig_EnvVarDashOptsIntoStdin(t *testing.T) {
+	t.Setenv("STIRRUP_CONFIG", "-")
+
+	cmd := newTestHarnessCommand()
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Stdin:   strings.NewReader(minimalRunConfigJSON(t)),
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.RunID != "from-file" {
+		t.Errorf("RunID = %q, want from-file (stdin should load via STIRRUP_CONFIG=-)", cfg.RunID)
+	}
+}
+
+// TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous pins acceptance
+// criterion 4: STIRRUP_CONFIG=<path> plus piped stdin must fail
+// loudly, the same way --config <path> + piped stdin already does.
+// The error must cite both sources — the env var by name and the
+// pipe — so the operator knows which source to remove.
+//
+// Additionally pins B1: no debug log line claiming STIRRUP_CONFIG
+// was the chosen source may fire on the ambiguity path. Emitting
+// such a trace immediately before returning the ambiguity error
+// would directly contradict the error message.
+func TestBuildRunConfig_EnvVarPathPlusStdinIsAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	t.Setenv("STIRRUP_CONFIG", path)
+
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	cmd := newTestHarnessCommand()
+	_, err := BuildRunConfig(RunConfigSources{
+		Stdin:   strings.NewReader(minimalRunConfigJSON(t)),
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err == nil {
+		t.Fatal("expected STIRRUP_CONFIG=<path> + piped stdin to be rejected")
+	}
+	if !strings.Contains(err.Error(), "STIRRUP_CONFIG") {
+		t.Errorf("error should name STIRRUP_CONFIG, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stdin") {
+		t.Errorf("error should cite stdin, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error should cite the env-var path, got: %v", err)
+	}
+	if strings.Contains(logBuf.String(), "STIRRUP_CONFIG") {
+		t.Errorf("ambiguity path must not emit a chosen-source debug trace, got:\n%s", logBuf.String())
+	}
+}
+
+// TestBuildRunConfig_EnvVarDashRequiresStdin pins the mirror of
+// `--config -` without a pipe: STIRRUP_CONFIG=- with a TTY stdin is
+// nonsense (nothing to read). The error must name the env var so the
+// operator knows the env var, not the absent --config flag, is the
+// source of the failure.
+//
+// Pins S2: when sources.Stdin is nil (embedded-API path with no
+// reader threaded through), the error must NOT claim "stdin is a
+// terminal" because that diagnosis is wrong — nil means no reader
+// was provided, not that a TTY is attached.
+func TestBuildRunConfig_EnvVarDashRequiresStdin(t *testing.T) {
+	t.Setenv("STIRRUP_CONFIG", "-")
+
+	cmd := newTestHarnessCommand()
+	_, err := BuildRunConfig(RunConfigSources{
+		Stdin:   nil,
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err == nil {
+		t.Fatal("expected STIRRUP_CONFIG=- with no piped stdin to be rejected")
+	}
+	if !strings.Contains(err.Error(), "STIRRUP_CONFIG=-") {
+		t.Errorf("error should cite STIRRUP_CONFIG=-, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "terminal") {
+		t.Errorf("nil Stdin must not be diagnosed as a terminal, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no stdin reader") {
+		t.Errorf("error should describe the missing reader, got: %v", err)
+	}
+}
+
+// TestBuildRunConfig_EnvVarEmptyIgnored pins that an empty
+// STIRRUP_CONFIG="" behaves identically to an unset env var — the
+// builder falls through to flag-only construction. An empty value
+// must not be treated as a path (loadRunConfigFile would error on
+// the empty string) nor as the stdin opt-in.
+func TestBuildRunConfig_EnvVarEmptyIgnored(t *testing.T) {
+	t.Setenv("STIRRUP_CONFIG", "")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.ParseFlags([]string{
+		"--mode", "execution",
+		"--prompt", "x",
+	}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveAll,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.Mode != "execution" {
+		t.Errorf("Mode = %q, want execution (empty env var should be ignored)", cfg.Mode)
+	}
+}
+
+// TestBuildRunConfig_EnvVarDebugLogged pins the spec's "single
+// slog.Debug line so operators can audit precedence" requirement: when
+// the env var is the chosen source, BuildRunConfig must emit a Debug
+// log entry that mentions STIRRUP_CONFIG and carries the structured
+// "path" field so log consumers can filter on a stable key.
+func TestBuildRunConfig_EnvVarDebugLogged(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	t.Setenv("STIRRUP_CONFIG", path)
+
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	cmd := newTestHarnessCommand()
+	if _, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	}); err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+
+	out := logBuf.String()
+	if !strings.Contains(out, "STIRRUP_CONFIG") {
+		t.Errorf("debug log should mention STIRRUP_CONFIG, got:\n%s", out)
+	}
+	if !strings.Contains(out, "path=") {
+		t.Errorf("debug log should carry structured path field, got:\n%s", out)
+	}
+}
+
+// TestBuildRunConfig_EnvVarDashDebugLogged mirrors the path-branch
+// log assertion for the STIRRUP_CONFIG=- form: the same message and
+// the same structured "path" key (value "-") must fire so log
+// consumers can filter on a single key regardless of which env-var
+// shape the operator chose.
+func TestBuildRunConfig_EnvVarDashDebugLogged(t *testing.T) {
+	t.Setenv("STIRRUP_CONFIG", "-")
+
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	cmd := newTestHarnessCommand()
+	if _, err := BuildRunConfig(RunConfigSources{
+		Stdin:   strings.NewReader(minimalRunConfigJSON(t)),
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	}); err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+
+	out := logBuf.String()
+	if !strings.Contains(out, "STIRRUP_CONFIG") {
+		t.Errorf("debug log should mention STIRRUP_CONFIG, got:\n%s", out)
+	}
+	if !strings.Contains(out, "path=-") {
+		t.Errorf("debug log should carry path=- structured field, got:\n%s", out)
+	}
+}
+
+// TestBuildRunConfig_EnvVarPathNotFound pins S1: when STIRRUP_CONFIG
+// names a file that does not exist, the error must name the env var
+// so the operator can tell whether the bad path came from --config or
+// the env var. Without this wrap an operator with both --config in
+// muscle memory and STIRRUP_CONFIG in their shell profile would chase
+// the wrong source.
+func TestBuildRunConfig_EnvVarPathNotFound(t *testing.T) {
+	t.Setenv("STIRRUP_CONFIG", "/no/such/stirrup/config/file.json")
+
+	cmd := newTestHarnessCommand()
+	_, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err == nil {
+		t.Fatal("expected STIRRUP_CONFIG with non-existent path to fail")
+	}
+	if !strings.Contains(err.Error(), "STIRRUP_CONFIG") {
+		t.Errorf("error should name STIRRUP_CONFIG so operator knows the source, got: %v", err)
+	}
+}
+
+// TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed pins S5: a
+// STIRRUP_CONFIG value with leading or trailing whitespace must be
+// trimmed before use. Shell env-var editors and CI secret stores
+// routinely smuggle in a stray newline or space; the alternative
+// behaviour ("open  /path: no such file" with a spurious leading
+// space) is a worse failure than treating the trimmed value as
+// authoritative. This test pins the trim contract so the choice
+// cannot silently regress.
+func TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(path, []byte(minimalRunConfigJSON(t)), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	t.Setenv("STIRRUP_CONFIG", "  "+path+"\n")
+
+	cmd := newTestHarnessCommand()
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig should trim whitespace and load file, got: %v", err)
+	}
+	if cfg.RunID != "from-file" {
+		t.Errorf("RunID = %q, want from-file (trimmed env path should resolve)", cfg.RunID)
+	}
+}

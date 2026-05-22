@@ -4705,3 +4705,80 @@ type failWriteCloseWriter struct {
 
 func (f *failWriteCloseWriter) Write(p []byte) (int, error) { return 0, f.writeErr }
 func (f *failWriteCloseWriter) Close() error                { return f.closeErr }
+
+// TestRunHarness_EnvVarConfigLoadsBase pins the integration-level
+// guarantee for #241: STIRRUP_CONFIG, set in the environment with no
+// --config flag, must be threaded through runHarness → BuildRunConfig
+// → os.Getenv and consume the named file as the base RunConfig. The
+// unit tests in runconfigbuilder_test.go cover BuildRunConfig directly;
+// this test catches a future refactor of runHarness that drops the
+// delegation (e.g., reverts to an inline config-load path) which would
+// silently break env-var support without any of the unit tests failing.
+//
+// --output-runconfig=- short-circuits the provider invocation and
+// writes the resolved RunConfig to stdout so the assertion observes
+// the merged shape without booting the loop.
+func TestRunHarness_EnvVarConfigLoadsBase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "env-config.json")
+	envCfg := types.RunConfig{
+		RunID:  "from-env-integration",
+		Mode:   "planning",
+		Prompt: "prompt from STIRRUP_CONFIG",
+		Provider: types.ProviderConfig{
+			Type:      "anthropic",
+			APIKeyRef: "secret://ENV_INTEGRATION_KEY",
+		},
+		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+		Executor:        types.ExecutorConfig{Type: "local"},
+		EditStrategy:    types.EditStrategyConfig{Type: "multi"},
+		Verifier:        types.VerifierConfig{Type: "none"},
+		GitStrategy:     types.GitStrategyConfig{Type: "none"},
+		Transport:       types.TransportConfig{Type: "stdio"},
+		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl"},
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type: "deny-side-effects",
+		},
+		Tools: types.ToolsConfig{
+			BuiltIn: types.DefaultReadOnlyBuiltInTools(),
+		},
+		MaxTurns: 10,
+		LogLevel: "info",
+	}
+	timeout := 300
+	envCfg.Timeout = &timeout
+	body, err := json.Marshal(envCfg)
+	if err != nil {
+		t.Fatalf("marshal env cfg: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write env config: %v", err)
+	}
+	t.Setenv("STIRRUP_CONFIG", path)
+
+	getOut := captureStdout(t)
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	runErr := runHarness(cmd, nil)
+	out := getOut()
+
+	if runErr != nil {
+		t.Fatalf("runHarness with STIRRUP_CONFIG: %v\nstdout: %s", runErr, out)
+	}
+
+	var captured types.RunConfig
+	if err := json.Unmarshal([]byte(out), &captured); err != nil {
+		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
+	}
+	if captured.Prompt != "prompt from STIRRUP_CONFIG" {
+		t.Errorf("Prompt = %q, want %q (env-var base should load)", captured.Prompt, "prompt from STIRRUP_CONFIG")
+	}
+	if captured.Provider.APIKeyRef != "secret://ENV_INTEGRATION_KEY" {
+		t.Errorf("APIKeyRef = %q, want secret://ENV_INTEGRATION_KEY", captured.Provider.APIKeyRef)
+	}
+}
