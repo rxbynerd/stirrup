@@ -37,8 +37,37 @@ func generateRunID() string {
 	return fmt.Sprintf("run-%d", time.Now().UnixNano())
 }
 
-// printRunSummary writes a brief run summary to stderr.
+// postRunEmitTimeout bounds the fresh context used for emitRunOutput
+// after the agentic loop returns. The loop's primary context is already
+// cancelled by the time we reach here when a signal triggered the run
+// to stop, so future remote sinks (gcp-pubsub, gcs) would otherwise
+// silently fail to emit their STIRRUP_RESULT — emitRunResult
+// logs-and-discards sink errors, hiding the loss. 10 s is the same
+// shape as the bestEffortCancel deadline in batchpoll.go: enough for a
+// single remote RPC, short enough that operators see process exit
+// without an apparent hang.
+const postRunEmitTimeout = 10 * time.Second
+
+// postRunExportTimeout bounds the fresh context used for
+// exportWorkspace after the agentic loop returns. Larger than
+// postRunEmitTimeout because the upload carries a tarball that can run
+// into the tens of MB; the GCS exporter's per-request HTTP client
+// already enforces a 5-minute upload ceiling, so this context only
+// gates the orchestration around the call. 6 minutes leaves room for
+// the exporter's internal 5 m and a small amount of setup overhead.
+const postRunExportTimeout = 6 * time.Minute
+
+// printRunSummary writes a brief run summary to stderr. Mirrors the nil
+// guard in buildRunResult: a nil RunTrace means the loop produced no
+// trace at all, and dereferencing the fields below would panic before
+// any structured output is emitted. The "no trace" line is the
+// stderr-side counterpart to the "internal-error" sentinel buildRunResult
+// returns so operators see a diagnostic on whichever surface they watch.
 func printRunSummary(runTrace *types.RunTrace) {
+	if runTrace == nil {
+		fmt.Fprintf(os.Stderr, "\n--- Run complete (no trace) ---\n")
+		return
+	}
 	fmt.Fprintf(os.Stderr, "\n--- Run complete ---\n")
 	fmt.Fprintf(os.Stderr, "Outcome: %s\n", runTrace.Outcome)
 	fmt.Fprintf(os.Stderr, "Turns: %d\n", runTrace.Turns)
@@ -92,20 +121,103 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 	return res
 }
 
+// newResultSink is the seam tests use to inject a stub ResultSink so
+// the forward-compatibility branches in emitRunOutput (non-stdout-json
+// sink paths under --output=json and --output=none) can be exercised
+// before the gcp-pubsub / gcs sinks ship. Production code retains the
+// resultsink.NewResultSink factory; tests overwrite the variable for
+// the duration of a test and restore it on cleanup.
+var newResultSink = resultsink.NewResultSink
+
 // emitRunResult builds and emits a RunResult through the configured
 // resultSink. Failures are logged but never fatal — the trace and the
 // stderr summary already carry the run's outcome, so a transient sink
-// error must not mask a successful run. Called from runWithConfig and
-// runJob after the stderr summary so the structured line is the last
-// thing on stdout (per the issue's Cloud Logging extraction contract).
+// error must not mask a successful run. Called from runWithConfig (via
+// emitRunOutput) and runJob after the stderr summary so the structured
+// line is the last thing on stdout (per the issue's Cloud Logging
+// extraction contract).
 func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
-	sink, err := resultsink.NewResultSink(cfg.ResultSink)
+	sink, err := newResultSink(cfg.ResultSink)
 	if err != nil {
 		slog.Warn("build resultSink", "err", err)
 		return
 	}
 	if err := sink.Emit(ctx, buildRunResult(rt)); err != nil {
 		slog.Warn("emit resultSink", "err", err)
+	}
+}
+
+// emitRunOutput dispatches the post-run summary surfaces selected by
+// --output (issue #242). Three modes are supported:
+//
+//   - "text": print the human-readable stderr summary AND emit through
+//     the configured resultSink. This matches the pre-#242 behaviour
+//     exactly. The empty string "" is also accepted and treated as
+//     "text" for backward compatibility — runJob historically called
+//     this path with mode unset, and while runJob today calls
+//     printRunSummary + emitRunResult directly, accepting "" here
+//     keeps the function safe for a future caller that copies the
+//     runWithConfig shape without threading outputMode.
+//   - "json": skip the stderr summary; emit a single STIRRUP_RESULT line
+//     on stdout. When resultSink.type=stdout-json is also configured,
+//     the line is emitted once — the flag wins because it is the more
+//     explicit signal. When the configured sink targets a different
+//     surface (a future gcp-pubsub or gcs adapter), that sink also fires
+//     because it represents a separate channel with its own intent.
+//   - "none": suppress the stderr summary AND any emission that would
+//     write to stdout. The configured sink still fires when it targets a
+//     non-stdout surface, on the same "different channel, different
+//     intent" rationale.
+//
+// All emissions go through buildRunResult so a partial RunResult (e.g.
+// a cancelled run) round-trips identically through every mode. Sink
+// failures are logged via emitRunResult and never fatal.
+//
+// An unrecognised mode reached here is treated as "text" but logs a
+// slog.Warn — runHarness validates the closed set at the CLI layer, so
+// reaching the default arm indicates either a new caller or a new mode
+// that did not update both switches. The warning surfaces the
+// regression in process logs without dropping the run's summary.
+func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace, mode string) {
+	if rt == nil {
+		// buildRunResult maps this case to an "internal-error" RunResult
+		// sentinel. Operators consuming --output=json alone would
+		// otherwise see a structurally valid line with no diagnostic
+		// linking the outcome back to "the loop produced no trace at
+		// all". Emit a slog.Warn so the diagnostic lands in process
+		// logs regardless of which output mode suppresses stderr.
+		slog.Warn("emitRunOutput: nil RunTrace, RunResult will carry the internal-error sentinel", "mode", mode)
+	}
+	switch mode {
+	case "json":
+		// Always emit a STIRRUP_RESULT line to stdout. When the
+		// configured sink is also stdout-json, swap it out for "none"
+		// before delegating so emitRunResult does not produce a second
+		// line. Any non-stdout sink stays untouched (different channel).
+		stdoutSink := resultsink.NewStdoutJSONSink()
+		if err := stdoutSink.Emit(ctx, buildRunResult(rt)); err != nil {
+			slog.Warn("emit --output=json", "err", err)
+		}
+		if cfg.ResultSink == nil || cfg.ResultSink.Type == "stdout-json" {
+			return
+		}
+		emitRunResult(ctx, cfg, rt)
+	case "none":
+		// Skip the stderr summary. The configured sink is invoked only
+		// when it targets a non-stdout destination so --output=none
+		// genuinely suppresses every stdout / stderr summary surface
+		// regardless of which sink the run config selected.
+		if cfg.ResultSink == nil || cfg.ResultSink.Type == "" || cfg.ResultSink.Type == "none" || cfg.ResultSink.Type == "stdout-json" {
+			return
+		}
+		emitRunResult(ctx, cfg, rt)
+	case "text", "":
+		printRunSummary(rt)
+		emitRunResult(ctx, cfg, rt)
+	default:
+		slog.Warn("emitRunOutput: unrecognised mode, defaulting to text", "mode", mode)
+		printRunSummary(rt)
+		emitRunResult(ctx, cfg, rt)
 	}
 }
 

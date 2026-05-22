@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -588,6 +591,7 @@ func newTestHarnessCommand() *cobra.Command {
 	// RunConfig. Mirrors the registration in harness.go init().
 	f.Bool("export-workspace-required", false, "")
 	f.String("output-runconfig", "", "")
+	f.StringP("output", "o", "text", "")
 	return cmd
 }
 
@@ -4780,5 +4784,554 @@ func TestRunHarness_EnvVarConfigLoadsBase(t *testing.T) {
 	}
 	if captured.Provider.APIKeyRef != "secret://ENV_INTEGRATION_KEY" {
 		t.Errorf("APIKeyRef = %q, want secret://ENV_INTEGRATION_KEY", captured.Provider.APIKeyRef)
+	}
+}
+
+// captureStderr mirrors captureStdout for fd 2. Used by the --output
+// flag tests to assert that --output=json / --output=none suppress the
+// human-readable stderr summary that --output=text (the default)
+// continues to print.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+	return func() string {
+		os.Stderr = orig
+		_ = w.Close()
+		out := <-done
+		_ = r.Close()
+		return out
+	}
+}
+
+// outputModeRunTrace builds a fixed RunTrace the emitRunOutput tests
+// reuse so each test exercises the same payload through a different
+// mode. The fields are deliberately non-zero (turn count, token usage,
+// duration) so a buggy mode that drops the payload is detectable.
+func outputModeRunTrace() *types.RunTrace {
+	started := time.Now()
+	return &types.RunTrace{
+		ID:          "run-output-test",
+		StartedAt:   started,
+		CompletedAt: started.Add(2 * time.Second),
+		Turns:       4,
+		Outcome:     "success",
+		TokenUsage:  types.TokenUsage{Input: 1234, Output: 567},
+	}
+}
+
+// TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour pins the
+// acceptance-criterion "--output=text matches today's behaviour
+// exactly": the stderr summary is printed and the configured (default)
+// resultSink — "none" — emits nothing. No STIRRUP_RESULT line should
+// appear on stdout because no sink is configured.
+func TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{} // ResultSink nil ≡ NoneSink
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "text")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("stderr should contain the legacy summary header, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "Outcome: success") {
+		t.Errorf("stderr should contain Outcome line, got: %q", stderr)
+	}
+	if strings.Contains(stdout, "STIRRUP_RESULT") {
+		t.Errorf("stdout should be empty (no stdout-json sink configured), got: %q", stdout)
+	}
+}
+
+// TestEmitRunOutput_JSONEmitsSingleStdoutLine pins the acceptance
+// criterion that --output=json writes exactly one STIRRUP_RESULT line
+// on stdout and prints nothing on stderr (the legacy summary is
+// suppressed). The JSON payload must be parseable as RunResult.
+func TestEmitRunOutput_JSONEmitsSingleStdoutLine(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{} // ResultSink nil ≡ NoneSink
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "json")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("stderr should NOT contain the legacy summary when --output=json, got: %q", stderr)
+	}
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel, got: %q", stdout)
+	}
+	if strings.Count(stdout, "STIRRUP_RESULT ") != 1 {
+		t.Errorf("expected exactly one STIRRUP_RESULT line, got: %q", stdout)
+	}
+	// Strip the sentinel and the trailing newline before parsing.
+	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
+	var got types.RunResult
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult: %v\npayload: %s", err, payload)
+	}
+	if got.RunID != "run-output-test" {
+		t.Errorf("RunResult.RunID = %q, want run-output-test", got.RunID)
+	}
+	if got.Outcome != "success" {
+		t.Errorf("RunResult.Outcome = %q, want success", got.Outcome)
+	}
+	if got.Turns != 4 {
+		t.Errorf("RunResult.Turns = %d, want 4", got.Turns)
+	}
+}
+
+// TestEmitRunOutput_NoneSuppressesBoth pins the acceptance criterion
+// that --output=none produces no post-run summary on either stream.
+// Workspace export, follow-up grace, and exit code are exercised
+// elsewhere — this test scopes to the summary surfaces only.
+func TestEmitRunOutput_NoneSuppressesBoth(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{}
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "none")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if stderr != "" {
+		t.Errorf("stderr should be empty when --output=none, got: %q", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout should be empty when --output=none, got: %q", stdout)
+	}
+}
+
+// TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce pins the
+// deduplication rule from the issue: --output=json and
+// resultSink.type=stdout-json together must produce exactly one
+// STIRRUP_RESULT line, not two. The flag wins because it is the more
+// explicit signal.
+func TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{
+		ResultSink: &types.ResultSinkConfig{Type: "stdout-json"},
+	}
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "json")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("stderr should NOT contain the legacy summary, got: %q", stderr)
+	}
+	if got := strings.Count(stdout, "STIRRUP_RESULT "); got != 1 {
+		t.Errorf("expected exactly one STIRRUP_RESULT line, got %d: %q", got, stdout)
+	}
+}
+
+// TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged pins the legacy
+// behaviour when --output is left at "text" and the operator has
+// configured resultSink.type=stdout-json: the stderr summary prints
+// AND the configured sink emits its STIRRUP_RESULT line. This is the
+// pre-#242 surface the regression-tested acceptance criterion relies
+// on.
+func TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{
+		ResultSink: &types.ResultSinkConfig{Type: "stdout-json"},
+	}
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "text")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("stderr should contain the legacy summary on --output=text, got: %q", stderr)
+	}
+	if got := strings.Count(stdout, "STIRRUP_RESULT "); got != 1 {
+		t.Errorf("expected exactly one STIRRUP_RESULT line from configured sink, got %d: %q", got, stdout)
+	}
+}
+
+// TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome pins the
+// edge case from the issue: a run cancelled mid-flight should produce
+// a partial RunResult with the cancellation outcome rather than
+// nothing. emitRunOutput is the dispatch site; here we hand it a
+// RunTrace whose Outcome is "cancelled" and assert the JSON line
+// surfaces it.
+func TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome(t *testing.T) {
+	started := time.Now()
+	rt := &types.RunTrace{
+		ID:          "run-cancelled",
+		StartedAt:   started,
+		CompletedAt: started.Add(750 * time.Millisecond),
+		Turns:       1,
+		Outcome:     "cancelled",
+	}
+	cfg := &types.RunConfig{}
+
+	stdoutDone := captureStdout(t)
+	emitRunOutput(context.Background(), cfg, rt, "json")
+	stdout := stdoutDone()
+
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel even on cancellation, got: %q", stdout)
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
+	var got types.RunResult
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult on cancellation: %v\npayload: %s", err, payload)
+	}
+	if got.Outcome != "cancelled" {
+		t.Errorf("RunResult.Outcome = %q, want cancelled", got.Outcome)
+	}
+}
+
+// TestEmitRunOutput_EmptyModeMatchesText pins the runJob entry-point's
+// implicit dependency on the default branch: the job command does not
+// thread --output, so it passes outputMode="" and expects the legacy
+// "print summary + emit configured sink" behaviour. This guards
+// against a refactor that would otherwise silently break the job path.
+func TestEmitRunOutput_EmptyModeMatchesText(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{}
+
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "")
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("empty outputMode should default to text behaviour, got stderr: %q", stderr)
+	}
+}
+
+// TestPrintRunSummary_NilTraceDoesNotPanic pins the nil guard added in
+// M1. A nil RunTrace would otherwise dereference at the Outcome field
+// and crash the process before any structured output is emitted —
+// buildRunResult already returns a documented "internal-error"
+// sentinel for the same condition, and printRunSummary now mirrors
+// that defensive shape on stderr.
+func TestPrintRunSummary_NilTraceDoesNotPanic(t *testing.T) {
+	stderrDone := captureStderr(t)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("printRunSummary(nil) panicked: %v", r)
+		}
+	}()
+	printRunSummary(nil)
+	stderr := stderrDone()
+	if !strings.Contains(stderr, "no trace") {
+		t.Errorf("stderr should describe the nil-trace condition, got: %q", stderr)
+	}
+}
+
+// TestEmitRunOutput_CancelledContextStillEmits pins the M2 fix:
+// emitRunOutput must be reachable with a usable context even when the
+// run's primary context has already been cancelled. The synthesizer's
+// concern is that a future remote sink (gcp-pubsub, gcs) honouring
+// ctx would otherwise drop every signal-cancelled run's STIRRUP_RESULT
+// silently. Today the StdoutJSONSink ignores ctx, so this test only
+// guards the dispatch site: passing a pre-cancelled ctx must still
+// produce the STIRRUP_RESULT line under --output=json. The
+// runWithConfig and runJob caller sites have been updated to build a
+// fresh context before invoking emitRunOutput; this test pins the
+// observable behaviour so a regression that re-introduces the
+// cancelled context surfaces in the test suite rather than only
+// when a remote sink ships.
+func TestEmitRunOutput_CancelledContextStillEmits(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	stdoutDone := captureStdout(t)
+	emitRunOutput(ctx, cfg, rt, "json")
+	stdout := stdoutDone()
+
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Fatalf("stdout should start with STIRRUP_RESULT even with cancelled ctx (StdoutJSONSink does not honour ctx), got: %q", stdout)
+	}
+}
+
+// TestEmitRunOutput_TextWithNilTracePrintsNoTrace pins the
+// emitRunOutput dispatch path under --output=text when the loop
+// produced no trace at all. The text branch must surface the nil-trace
+// diagnostic on stderr rather than panicking.
+func TestEmitRunOutput_TextWithNilTracePrintsNoTrace(t *testing.T) {
+	cfg := &types.RunConfig{}
+	stderrDone := captureStderr(t)
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("emitRunOutput with nil trace panicked: %v", r)
+		}
+	}()
+	emitRunOutput(context.Background(), cfg, nil, "text")
+	stderr := stderrDone()
+	if !strings.Contains(stderr, "no trace") {
+		t.Errorf("stderr should describe nil-trace condition, got: %q", stderr)
+	}
+}
+
+// TestEmitRunOutput_JSONWithNilTraceLogsWarning pins the S3 fix: a
+// nil trace under --output=json produces a structurally valid
+// STIRRUP_RESULT line with Outcome="internal-error", but operators
+// consuming only the JSON stream would otherwise have no diagnostic
+// for the underlying nil-trace condition. The slog.Warn at the top
+// of emitRunOutput surfaces the diagnostic in process logs.
+func TestEmitRunOutput_JSONWithNilTraceLogsWarning(t *testing.T) {
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	cfg := &types.RunConfig{}
+	stdoutDone := captureStdout(t)
+	emitRunOutput(context.Background(), cfg, nil, "json")
+	stdout := stdoutDone()
+
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel even on nil trace, got: %q", stdout)
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
+	var got types.RunResult
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult: %v\npayload: %s", err, payload)
+	}
+	if got.Outcome != "internal-error" {
+		t.Errorf("Outcome = %q, want internal-error", got.Outcome)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "nil RunTrace") {
+		t.Errorf("expected slog.Warn about nil RunTrace, got: %q", logs)
+	}
+}
+
+// stubResultSink records every Emit invocation so tests can assert
+// that the configured resultSink fires when --output=json or
+// --output=none is paired with a non-stdout sink (the
+// forward-compatibility surface for gcp-pubsub / gcs). Distinct from
+// resultsink.NoneSink because the latter discards silently and gives
+// the test no observable signal.
+type stubResultSink struct {
+	calls []types.RunResult
+}
+
+func (s *stubResultSink) Emit(_ context.Context, r types.RunResult) error {
+	s.calls = append(s.calls, r)
+	return nil
+}
+
+// installStubResultSink rewires the newResultSink seam to return the
+// supplied stub for the duration of the test. Returns nothing because
+// the stub itself is the assertion surface.
+func installStubResultSink(t *testing.T, stub *stubResultSink) {
+	t.Helper()
+	prev := newResultSink
+	t.Cleanup(func() { newResultSink = prev })
+	newResultSink = func(_ *types.ResultSinkConfig) (resultsinkInterface, error) {
+		return stub, nil
+	}
+}
+
+// resultsinkInterface is the local alias of resultsink.ResultSink so
+// the stub does not introduce a direct import on every test file
+// (harness_test.go already pulls in the package via the cfg.ResultSink
+// type, but the stub doesn't use any concrete type from there).
+// Renamed alias keeps newResultSink's signature compatible with the
+// production type without copying it.
+type resultsinkInterface = resultsink.ResultSink
+
+// TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires pins the
+// forward-compatibility surface for a future gcp-pubsub / gcs sink
+// under --output=json. The flag's STIRRUP_RESULT line goes to stdout,
+// and the configured sink (a different channel) also fires. Today the
+// only way to exercise this branch is via the newResultSink seam
+// because resultsink.NewResultSink rejects gcp-pubsub / gcs as
+// "reserved but not yet implemented".
+func TestEmitRunOutput_JSONWithNonStdoutSinkAlsoFires(t *testing.T) {
+	stub := &stubResultSink{}
+	installStubResultSink(t, stub)
+
+	rt := outputModeRunTrace()
+	// Type set to a future-shaped value so the conditional in
+	// emitRunOutput skips the stdout-json short-circuit and falls
+	// through to emitRunResult.
+	cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "gcp-pubsub"}}
+
+	stdoutDone := captureStdout(t)
+	emitRunOutput(context.Background(), cfg, rt, "json")
+	stdout := stdoutDone()
+
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Errorf("stdout should still carry STIRRUP_RESULT under --output=json, got: %q", stdout)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("expected configured sink to fire exactly once, got %d calls", len(stub.calls))
+	}
+	if stub.calls[0].RunID != rt.ID {
+		t.Errorf("sink received RunID %q, want %q", stub.calls[0].RunID, rt.ID)
+	}
+}
+
+// TestEmitRunOutput_NoneWithNonStdoutSinkStillFires pins the
+// forward-compatibility surface under --output=none: the stderr
+// summary and stdout STIRRUP_RESULT are both suppressed, but a sink
+// targeting a non-stdout destination still fires because it
+// represents a separate operator-configured channel with its own
+// intent.
+func TestEmitRunOutput_NoneWithNonStdoutSinkStillFires(t *testing.T) {
+	stub := &stubResultSink{}
+	installStubResultSink(t, stub)
+
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "gcp-pubsub"}}
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "none")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if stdout != "" {
+		t.Errorf("stdout should be empty under --output=none, got: %q", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("stderr should be empty under --output=none, got: %q", stderr)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("expected configured sink to fire exactly once, got %d calls", len(stub.calls))
+	}
+	if stub.calls[0].RunID != rt.ID {
+		t.Errorf("sink received RunID %q, want %q", stub.calls[0].RunID, rt.ID)
+	}
+}
+
+// TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText pins the
+// S2 fix: an unrecognised mode reached at this layer (the CLI
+// validator catches them earlier, so reaching here means a new caller
+// or a new mode that didn't update both switches) must surface a
+// diagnostic and fall through to the text behaviour rather than
+// silently dropping the summary.
+func TestEmitRunOutput_UnrecognisedModeLogsAndDefaultsToText(t *testing.T) {
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var logBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{}
+
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "yaml")
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("unrecognised mode should fall through to text, stderr: %q", stderr)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "unrecognised mode") {
+		t.Errorf("expected slog.Warn about unrecognised mode, got: %q", logs)
+	}
+}
+
+// TestValidateOutputMode_AcceptsClosedSet pins the closed three-value
+// set surfaced via --output. A new value would need a corresponding
+// branch in emitRunOutput; this test forces the two to evolve
+// together by failing if validateOutputMode silently accepts an
+// unsupported value.
+func TestValidateOutputMode_AcceptsClosedSet(t *testing.T) {
+	for _, mode := range []string{"text", "json", "none"} {
+		if err := validateOutputMode(mode); err != nil {
+			t.Errorf("validateOutputMode(%q) = %v, want nil", mode, err)
+		}
+	}
+}
+
+// TestValidateOutputMode_RejectsUnsupported pins the operator-facing
+// failure mode: a typo at the CLI surfaces as a clear error rather
+// than being silently swallowed and ignored at the dispatch site.
+func TestValidateOutputMode_RejectsUnsupported(t *testing.T) {
+	cases := []string{"", "json5", "yaml", "TEXT", "jsonl"}
+	for _, mode := range cases {
+		if err := validateOutputMode(mode); err == nil {
+			t.Errorf("validateOutputMode(%q) returned nil, want error", mode)
+		}
+	}
+}
+
+// TestRunHarness_OutputFlagRejectsInvalidValue is the end-to-end
+// integration test for the closed-set validation: an invalid --output
+// value must surface as an error from runHarness rather than being
+// silently dropped. Pairs with TestValidateOutputMode_RejectsUnsupported
+// (which pins the helper directly) to catch a regression that would
+// stop calling validateOutputMode at all.
+func TestRunHarness_OutputFlagRejectsInvalidValue(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	if err := cmd.Flags().Set("output", "yaml"); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("runHarness should reject --output=yaml")
+	}
+	if !strings.Contains(err.Error(), "--output") {
+		t.Errorf("error should name --output, got: %v", err)
+	}
+}
+
+// TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig
+// pins the S1 fix: --output must be validated before the
+// --output-runconfig dry-run branch exits, otherwise
+// `stirrup harness --output-runconfig=- --output=yaml` returns 0 and
+// captures a config the operator cannot replay (the bad flag was
+// silently dropped). Pins the ordering so a refactor that moves
+// validateOutputMode below the dry-run branch surfaces here.
+func TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	if err := cmd.Flags().Set("output", "yaml"); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	// Capture stdout so a regression that lets the dry-run branch fire
+	// surfaces as a captured config rather than a silently dropped
+	// failure.
+	getOut := captureStdout(t)
+	err := runHarness(cmd, nil)
+	stdout := getOut()
+	if err == nil {
+		t.Fatal("runHarness should reject --output=yaml even with --output-runconfig=-")
+	}
+	if !strings.Contains(err.Error(), "--output") {
+		t.Errorf("error should name --output, got: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("--output-runconfig=- should not have written to stdout when --output is invalid, got: %q", stdout)
 	}
 }

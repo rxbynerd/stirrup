@@ -132,8 +132,14 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// resultSink emission mirrors the harness command path so a Cloud
 	// Run / Kubernetes job can be configured with
 	// resultSink.type=stdout-json and have its answer scraped from the
-	// pod's stdout regardless of which entrypoint launched it.
-	emitRunResult(ctx, config, runTrace)
+	// pod's stdout regardless of which entrypoint launched it. Uses a
+	// fresh context for the same reason as runWithConfig: ctx may
+	// already be cancelled here when a SIGTERM triggered the job to
+	// stop, and a future remote sink would silently drop the result
+	// line on every cancelled run. See postRunEmitTimeout in root.go.
+	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
+	defer emitCancel()
+	emitRunResult(emitCtx, config, runTrace)
 
 	// Workspace export. The job entrypoint has no equivalent of the
 	// CLI's --export-workspace-required, so the control plane decides
@@ -141,8 +147,11 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// upload failures as non-fatal: an exit-failing job would lose
 	// the run's trace and resultSink before the operator could
 	// correlate it. Operators who need a hard requirement should
-	// guard the URI on the control-plane side.
-	if err := exportWorkspace(ctx, config, false); err != nil {
+	// guard the URI on the control-plane side. Independent post-run
+	// context — see runWithConfig for the same rationale.
+	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
+	defer exportCancel()
+	if err := exportWorkspace(exportCtx, config, false); err != nil {
 		// exportWorkspace returns nil in the non-required path, so
 		// reaching here is impossible given the false above. The
 		// guard keeps the signature compatible if the contract ever
