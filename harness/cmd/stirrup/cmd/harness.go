@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/types"
@@ -1164,15 +1164,19 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		//     failure (bad --config path, malformed JSON, invalid
 		//     mode, missing API key, etc.) keeps its current loud
 		//     error so a CI run still exits non-zero.
-		//   - Only when stdin is a tty: a piped invocation
-		//     (`stirrup harness < /dev/null`, the pipeline
-		//     composition example from #240) is scripted use; the
-		//     grouped help would clutter logs.
+		//   - Only when stderr is a tty. The hint is emitted on
+		//     stderr, so stderr's fd is the correct channel to
+		//     gate on: `stirrup harness 2>/dev/null` (stderr
+		//     discarded) and `stirrup harness 2>&1 | cat` (stderr
+		//     piped) are both scripted shapes that must keep the
+		//     opaque error so CI exits non-zero. Stdin can be
+		//     redirected independently and is not a reliable
+		//     proxy for "operator is watching".
 		//
 		// Whether the help itself contains ANSI is a separate
-		// decision (stderr-tty-ness, honouring NO_COLOR) handled
+		// decision (honouring NO_COLOR, writer identity) handled
 		// inside writeBareHarnessHint.
-		if isPromptRequiredErr(err) && stdinIsTTY() {
+		if isPromptRequiredErr(err) && stderrIsTTY() {
 			writeBareHarnessHint(bareHintStderr)
 			return nil
 		}
@@ -1198,28 +1202,13 @@ func runHarness(cmd *cobra.Command, args []string) error {
 // the os.Stderr fd. Production code keeps the default.
 var bareHintStderr io.Writer = os.Stderr
 
-// stdinIsTTY reports whether stdin is connected to a terminal. The
-// bare-invocation intercept in runHarness gates on this so a scripted
-// invocation (`stirrup harness < /dev/null`, `run-config | harness`)
-// keeps the existing opaque error rather than getting the grouped
-// help — the latter would clutter log aggregators that swallow stderr
-// verbatim. Separate seam from stderrIsTTY because the two channels
-// can be redirected independently.
-var stdinIsTTY = func() bool {
-	return term.IsTerminal(int(os.Stdin.Fd()))
-}
-
-// isPromptRequiredErr matches the sentinel string from
-// resolvePromptForRun. A typed sentinel would be cleaner, but
-// resolvePromptForRun's error returns travel verbatim through
-// harness_test.go's existing fixtures (search for "prompt is
-// required") and through BuildRunConfig's caller chain, so changing
-// the surface would force a wider edit than #249 should carry. The
-// string match is brittle in principle but covered by
-// TestRunHarness_BareInvocation_GroupedHelp below, which fails fast
-// if either side drifts.
+// isPromptRequiredErr reports whether err is the typed sentinel
+// returned by resolvePromptForRun when no prompt source resolved.
+// errors.Is — not a strings.Contains match on the message — keeps
+// the detector immune to future ValidateRunConfig errors that
+// happen to mention "prompt is required" in unrelated contexts.
 func isPromptRequiredErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "prompt is required")
+	return errors.Is(err, errPromptRequired)
 }
 
 // writeBareHarnessHint emits the grouped #249-B example block to w.

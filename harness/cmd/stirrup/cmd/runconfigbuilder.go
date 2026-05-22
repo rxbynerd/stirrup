@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,17 @@ import (
 
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// errPromptRequired is the typed sentinel returned by
+// resolvePromptForRun when none of the prompt sources resolved. The
+// bare-invocation intercept in runHarness uses errors.Is(err,
+// errPromptRequired) to detect this exact failure shape; a
+// strings.Contains match on the message would accidentally trigger
+// on any future ValidateRunConfig error that happens to mention
+// "prompt is required". The error message is wrapped onto this
+// sentinel via fmt.Errorf("%w: …") so existing test fixtures that
+// substring-match .Error() output continue to pass.
+var errPromptRequired = errors.New("prompt is required")
 
 // ResolveMode controls the late-stage mutation BuildRunConfig applies to
 // the merged document. The harness path uses ResolveAll so the loop
@@ -418,9 +430,12 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 
 // resolvePromptForRun fills cfg.Prompt from the lower-precedence sources
 // (--prompt-file, STIRRUP_PROMPT) when the higher-precedence ones
-// (--prompt, positional, base RunConfig.prompt) left it empty. Returns
-// the "prompt is required" error verbatim from the pre-refactor paths
-// so harness_test.go's existing fixtures continue to match the message.
+// (--prompt, positional, base RunConfig.prompt) left it empty. The
+// missing-prompt return wraps errPromptRequired so callers (notably
+// runHarness's bare-invocation intercept) can detect the failure via
+// errors.Is rather than a brittle substring match. The wrapped
+// message preserves the original wording so existing fixtures that
+// substring-match .Error() output continue to pass.
 func resolvePromptForRun(cmd *cobra.Command, cfg *types.RunConfig) error {
 	if cfg.Prompt != "" {
 		return nil
@@ -438,7 +453,7 @@ func resolvePromptForRun(cmd *cobra.Command, cfg *types.RunConfig) error {
 		}
 	}
 	if cfg.Prompt == "" {
-		return fmt.Errorf("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
+		return fmt.Errorf("%w: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config", errPromptRequired)
 	}
 	return nil
 }
