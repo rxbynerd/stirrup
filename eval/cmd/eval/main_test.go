@@ -1271,7 +1271,10 @@ func TestCmdIngest_EmptyFileExitsOne(t *testing.T) {
 
 // TestCmdIngest_AllLinesErrored covers the "every line errored" exit-1
 // branch: a JSONL file containing only malformed lines must exit 1
-// even though the ingest itself completed.
+// even though the ingest itself completed. The stderr summary must
+// still report `ingested 0 traces (N errors)` so an operator parsing
+// the summary sees the zero-ingest signal symmetrically with
+// TestCmdIngest_EmptyFileExitsOne.
 func TestCmdIngest_AllLinesErrored(t *testing.T) {
 	dir := t.TempDir()
 	tracePath := filepath.Join(dir, "garbage.jsonl")
@@ -1285,6 +1288,9 @@ func TestCmdIngest_AllLinesErrored(t *testing.T) {
 	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "ingested 0 traces") {
+		t.Errorf("stderr missing zero-summary: %q", stderr.String())
 	}
 }
 
@@ -1323,15 +1329,80 @@ func TestCmdIngest_MultipleTraceFlags(t *testing.T) {
 // TestCmdIngest_MissingFileIsFatal pins file-not-found as a fatal
 // exit-1 — the operator typo'd a path and a silent skip would mask
 // the typo until the lakehouse failed to produce the expected
-// downstream metrics.
+// downstream metrics. The stderr must name the missing file so the
+// operator can locate the typo without grepping process state.
 func TestCmdIngest_MissingFileIsFatal(t *testing.T) {
 	dir := t.TempDir()
 	lhPath := filepath.Join(dir, "lh")
+	missing := filepath.Join(dir, "nope.jsonl")
 
 	var stderr bytes.Buffer
-	code := cmdIngest([]string{"--trace", filepath.Join(dir, "nope.jsonl"), "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	code := cmdIngest([]string{"--trace", missing, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), missing) {
+		t.Errorf("stderr missing offending path %q: %q", missing, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no such file") {
+		t.Errorf("stderr missing no-such-file phrasing: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_LakehouseOpenFails pins the lakehouse-open-failure
+// branch as a fatal exit-1. NewFileStore fails when MkdirAll cannot
+// create the `traces` subdirectory; placing a regular file at the
+// lakehouse path forces that failure on a POSIX filesystem.
+func TestCmdIngest_LakehouseOpenFails(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	// Block MkdirAll by occupying the lakehouse path with a regular file.
+	if err := os.WriteFile(lhPath, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tracePath, []byte(traceJSONLine(t, types.RunTrace{ID: "ignored", Outcome: "success"})+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "opening lakehouse") {
+		t.Errorf("stderr missing opening-lakehouse message: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_DuplicateIDAcrossFiles pins the cross-file dedupe
+// guarantee. The `seen` map persists across --trace inputs, so a
+// duplicate ID emitted in a second JSONL file must still surface the
+// duplicate warning. Without this test the dedupe behaviour was only
+// exercised within a single file.
+func TestCmdIngest_DuplicateIDAcrossFiles(t *testing.T) {
+	dir := t.TempDir()
+	pathA := filepath.Join(dir, "a.jsonl")
+	pathB := filepath.Join(dir, "b.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	a := traceJSONLine(t, types.RunTrace{ID: "shared", Outcome: "success"})
+	b := traceJSONLine(t, types.RunTrace{ID: "shared", Outcome: "error"})
+	if err := os.WriteFile(pathA, []byte(a+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathB, []byte(b+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", pathA, "--trace", pathB, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "duplicate trace ID \"shared\"") {
+		t.Errorf("stderr missing cross-file duplicate warning: %q", stderr.String())
 	}
 }
 
