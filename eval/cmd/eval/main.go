@@ -5,6 +5,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -40,6 +42,7 @@ Commands:
   baseline               Pull production metrics as experiment baselines
   mine-failures          Turn production failures into eval tasks
   drift                  Detect metric changes over time windows
+  ingest                 Load JSONL trace files into a lakehouse FileStore
   convert                Convert a result.json into another format (e.g. JUnit XML)
   completion             Emit a shell completion script (bash|zsh|fish|powershell)
 
@@ -80,6 +83,8 @@ func run(args []string, stdout io.Writer) int {
 		cmdDrift(args[1:])
 	case "compare-to-production":
 		cmdCompareToProduction(args[1:])
+	case "ingest":
+		return cmdIngest(args[1:], os.Stdin, os.Stderr)
 	case "convert":
 		cmdConvert(args[1:])
 	case "completion":
@@ -782,6 +787,161 @@ func cmdCompareToProduction(args []string) {
 
 	fmt.Fprintln(os.Stderr)
 	printComparisonSummary(os.Stderr, report)
+}
+
+// repeatedString is a flag.Value that collects every occurrence of a
+// repeated string flag (e.g. `--trace a --trace b`) into an ordered
+// slice. The stdlib flag package has no native multi-flag support.
+type repeatedString []string
+
+// String returns the flag's current value as a debug representation.
+// Returning a Go slice literal — rather than e.g. a comma-joined form —
+// keeps round-trips obvious in -help output and stops the value from
+// being mistaken for a single shell-quoted token.
+func (r *repeatedString) String() string {
+	if r == nil {
+		return "[]"
+	}
+	return fmt.Sprintf("%v", []string(*r))
+}
+
+// Set appends a new value rather than overwriting; this is what makes
+// the flag repeatable.
+func (r *repeatedString) Set(v string) error {
+	*r = append(*r, v)
+	return nil
+}
+
+// cmdIngest loads JSONL trace files into a lakehouse FileStore. Each
+// non-empty line is unmarshalled as a types.RunTrace and stored via
+// StoreTrace. Malformed lines and per-line StoreTrace errors are
+// reported to stderr with line context but do not abort the ingest:
+// the goal is to salvage as many traces as possible from a
+// potentially-corrupt JSONL stream produced by an interrupted
+// harness run.
+//
+// Exit codes:
+//   - 0 when at least one trace was successfully ingested.
+//   - 1 when every line errored, the input was empty, or a fatal error
+//     occurred (missing flag, file-not-found, lakehouse open failure).
+func cmdIngest(args []string, stdin io.Reader, stderr io.Writer) int {
+	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var traces repeatedString
+	fs.Var(&traces, "trace", "Path to a JSONL trace file as produced by `stirrup harness --trace`. Repeatable. Use `-` to read from stdin.")
+	lakehousePath := fs.String("lakehouse", "", "Path to lakehouse directory (required)")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	if len(traces) == 0 {
+		fmt.Fprintln(stderr, "ingest: at least one --trace is required")
+		return 1
+	}
+	if *lakehousePath == "" {
+		fmt.Fprintln(stderr, "ingest: --lakehouse is required")
+		return 1
+	}
+
+	store, err := lakehouse.NewFileStore(*lakehousePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "ingest: opening lakehouse: %v\n", err)
+		return 1
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// seen tracks IDs already written across all inputs so duplicates
+	// surface as a stderr warning. FileStore's filename-keyed storage
+	// makes the second write overwrite the first; the warning is the
+	// only signal an operator gets that two distinct lines collapsed.
+	seen := make(map[string]struct{})
+	var ingested, errors int
+
+	for _, path := range traces {
+		r, closer, openErr := openTraceReader(path, stdin)
+		if openErr != nil {
+			fmt.Fprintf(stderr, "ingest: %v\n", openErr)
+			return 1
+		}
+
+		n, e := ingestReader(ctx, r, path, store, seen, stderr)
+		ingested += n
+		errors += e
+
+		if closer != nil {
+			_ = closer.Close()
+		}
+	}
+
+	fmt.Fprintf(stderr, "ingested %d traces (%d errors) into %s\n", ingested, errors, *lakehousePath)
+
+	if ingested == 0 {
+		return 1
+	}
+	return 0
+}
+
+// openTraceReader resolves a --trace path to an io.Reader. The literal
+// `-` selects stdin (and returns a nil closer so the caller does not
+// close os.Stdin). Anything else is opened as a regular file; the
+// caller closes it when done.
+func openTraceReader(path string, stdin io.Reader) (io.Reader, io.Closer, error) {
+	if path == "-" {
+		return stdin, nil, nil
+	}
+	f, err := os.Open(path) //nolint:gosec // operator-supplied path; same trust model as --suite / --results
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, f, nil
+}
+
+// ingestReader streams JSONL lines from r, calling StoreTrace for each
+// successfully parsed RunTrace. The source label is included in
+// per-line error messages so an operator processing many --trace
+// inputs can locate the offending line. Returns (ingested, errors).
+//
+// A bufio.Scanner is intentionally used with an enlarged buffer
+// (16 MiB max token size). RunTrace serialisations regularly exceed
+// the default 64 KiB Scanner limit because RunConfig embeds the full
+// system prompt and tool descriptors; without the raised cap, large
+// traces would surface as a parse error rather than an ingest.
+func ingestReader(ctx context.Context, r io.Reader, source string, store *lakehouse.FileStore, seen map[string]struct{}, stderr io.Writer) (int, int) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	var ingested, errors int
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var trace types.RunTrace
+		if err := json.Unmarshal(line, &trace); err != nil {
+			fmt.Fprintf(stderr, "ingest: %s line %d: parse error: %v\n", source, lineNo, err)
+			errors++
+			continue
+		}
+		if _, dup := seen[trace.ID]; dup && trace.ID != "" {
+			fmt.Fprintf(stderr, "ingest: %s line %d: duplicate trace ID %q (overwriting previous entry)\n", source, lineNo, trace.ID)
+		}
+		if err := store.StoreTrace(ctx, trace); err != nil {
+			fmt.Fprintf(stderr, "ingest: %s line %d: store error: %v\n", source, lineNo, err)
+			errors++
+			continue
+		}
+		seen[trace.ID] = struct{}{}
+		ingested++
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(stderr, "ingest: %s: read error: %v\n", source, err)
+		errors++
+	}
+	return ingested, errors
 }
 
 // buildLabVsProductionReport constructs a LabVsProductionReport from production
