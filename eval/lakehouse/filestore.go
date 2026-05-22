@@ -137,15 +137,62 @@ func (fs *FileStore) Close() error {
 	return nil
 }
 
-// writeJSON marshals v as indented JSON and writes it atomically.
+// writeJSON marshals v as indented JSON and writes it atomically via
+// the write-then-rename pattern. POSIX rename(2) within a single
+// directory is atomic: concurrent readers observe either the old or
+// the new contents, never a torn / zero-byte intermediate state.
+//
+// The temp file is created in the target directory so the rename
+// stays inside one filesystem (cross-mount rename falls back to a
+// non-atomic copy on most kernels). On any failure path the temp
+// file is cleaned up; the caller never sees a leaked .tmp-*.json.
+//
+// This guards against three torn-file scenarios the previous
+// os.WriteFile path could not:
+//
+//   - A reader running concurrent QueryTraces seeing a zero-byte file
+//     between the O_TRUNC and the write.
+//   - A reader seeing a partial JSON document if the writing process
+//     is killed mid-write.
+//   - Two concurrent ingest processes writing the same trace ID
+//     interleaving their bytes into a corrupt document — under
+//     write-then-rename, the last successful rename wins atomically.
+//
+// See #267 for the failure modes and a worked example.
 func (fs *FileStore) writeJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal JSON: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("write file %s: %w", path, err)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*.json")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
 	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	// Match the perm the previous os.WriteFile call used so behaviour
+	// is unchanged from a file-permissions perspective. os.CreateTemp
+	// defaults to 0o600; without this chmod a downstream tool that
+	// reads the file under a different uid would start to see EACCES.
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename temp to %s: %w", path, err)
+	}
+	cleanup = false
 	return nil
 }
 
