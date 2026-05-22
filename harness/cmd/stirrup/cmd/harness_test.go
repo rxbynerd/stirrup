@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -4781,5 +4782,288 @@ func TestRunHarness_EnvVarConfigLoadsBase(t *testing.T) {
 	}
 	if captured.Provider.APIKeyRef != "secret://ENV_INTEGRATION_KEY" {
 		t.Errorf("APIKeyRef = %q, want secret://ENV_INTEGRATION_KEY", captured.Provider.APIKeyRef)
+	}
+}
+
+// captureStderr mirrors captureStdout for fd 2. Used by the --output
+// flag tests to assert that --output=json / --output=none suppress the
+// human-readable stderr summary that --output=text (the default)
+// continues to print.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+	return func() string {
+		os.Stderr = orig
+		_ = w.Close()
+		out := <-done
+		_ = r.Close()
+		return out
+	}
+}
+
+// outputModeRunTrace builds a fixed RunTrace the emitRunOutput tests
+// reuse so each test exercises the same payload through a different
+// mode. The fields are deliberately non-zero (turn count, token usage,
+// duration) so a buggy mode that drops the payload is detectable.
+func outputModeRunTrace() *types.RunTrace {
+	started := time.Now()
+	return &types.RunTrace{
+		ID:          "run-output-test",
+		StartedAt:   started,
+		CompletedAt: started.Add(2 * time.Second),
+		Turns:       4,
+		Outcome:     "success",
+		TokenUsage:  types.TokenUsage{Input: 1234, Output: 567},
+	}
+}
+
+// TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour pins the
+// acceptance-criterion "--output=text matches today's behaviour
+// exactly": the stderr summary is printed and the configured (default)
+// resultSink — "none" — emits nothing. No STIRRUP_RESULT line should
+// appear on stdout because no sink is configured.
+func TestEmitRunOutput_TextDefaultMatchesLegacyBehaviour(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{} // ResultSink nil ≡ NoneSink
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "text")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("stderr should contain the legacy summary header, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "Outcome: success") {
+		t.Errorf("stderr should contain Outcome line, got: %q", stderr)
+	}
+	if strings.Contains(stdout, "STIRRUP_RESULT") {
+		t.Errorf("stdout should be empty (no stdout-json sink configured), got: %q", stdout)
+	}
+}
+
+// TestEmitRunOutput_JSONEmitsSingleStdoutLine pins the acceptance
+// criterion that --output=json writes exactly one STIRRUP_RESULT line
+// on stdout and prints nothing on stderr (the legacy summary is
+// suppressed). The JSON payload must be parseable as RunResult.
+func TestEmitRunOutput_JSONEmitsSingleStdoutLine(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{} // ResultSink nil ≡ NoneSink
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "json")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("stderr should NOT contain the legacy summary when --output=json, got: %q", stderr)
+	}
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel, got: %q", stdout)
+	}
+	if strings.Count(stdout, "STIRRUP_RESULT ") != 1 {
+		t.Errorf("expected exactly one STIRRUP_RESULT line, got: %q", stdout)
+	}
+	// Strip the sentinel and the trailing newline before parsing.
+	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
+	var got types.RunResult
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult: %v\npayload: %s", err, payload)
+	}
+	if got.RunID != "run-output-test" {
+		t.Errorf("RunResult.RunID = %q, want run-output-test", got.RunID)
+	}
+	if got.Outcome != "success" {
+		t.Errorf("RunResult.Outcome = %q, want success", got.Outcome)
+	}
+	if got.Turns != 4 {
+		t.Errorf("RunResult.Turns = %d, want 4", got.Turns)
+	}
+}
+
+// TestEmitRunOutput_NoneSuppressesBoth pins the acceptance criterion
+// that --output=none produces no post-run summary on either stream.
+// Workspace export, follow-up grace, and exit code are exercised
+// elsewhere — this test scopes to the summary surfaces only.
+func TestEmitRunOutput_NoneSuppressesBoth(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{}
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "none")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if stderr != "" {
+		t.Errorf("stderr should be empty when --output=none, got: %q", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("stdout should be empty when --output=none, got: %q", stdout)
+	}
+}
+
+// TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce pins the
+// deduplication rule from the issue: --output=json and
+// resultSink.type=stdout-json together must produce exactly one
+// STIRRUP_RESULT line, not two. The flag wins because it is the more
+// explicit signal.
+func TestEmitRunOutput_JSONWithStdoutJSONSinkEmitsOnce(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{
+		ResultSink: &types.ResultSinkConfig{Type: "stdout-json"},
+	}
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "json")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("stderr should NOT contain the legacy summary, got: %q", stderr)
+	}
+	if got := strings.Count(stdout, "STIRRUP_RESULT "); got != 1 {
+		t.Errorf("expected exactly one STIRRUP_RESULT line, got %d: %q", got, stdout)
+	}
+}
+
+// TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged pins the legacy
+// behaviour when --output is left at "text" and the operator has
+// configured resultSink.type=stdout-json: the stderr summary prints
+// AND the configured sink emits its STIRRUP_RESULT line. This is the
+// pre-#242 surface the regression-tested acceptance criterion relies
+// on.
+func TestEmitRunOutput_TextWithStdoutJSONSinkUnchanged(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{
+		ResultSink: &types.ResultSinkConfig{Type: "stdout-json"},
+	}
+
+	stdoutDone := captureStdout(t)
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "text")
+	stdout := stdoutDone()
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("stderr should contain the legacy summary on --output=text, got: %q", stderr)
+	}
+	if got := strings.Count(stdout, "STIRRUP_RESULT "); got != 1 {
+		t.Errorf("expected exactly one STIRRUP_RESULT line from configured sink, got %d: %q", got, stdout)
+	}
+}
+
+// TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome pins the
+// edge case from the issue: a run cancelled mid-flight should produce
+// a partial RunResult with the cancellation outcome rather than
+// nothing. emitRunOutput is the dispatch site; here we hand it a
+// RunTrace whose Outcome is "cancelled" and assert the JSON line
+// surfaces it.
+func TestEmitRunOutput_JSONPartialTraceEmitsCancellationOutcome(t *testing.T) {
+	started := time.Now()
+	rt := &types.RunTrace{
+		ID:          "run-cancelled",
+		StartedAt:   started,
+		CompletedAt: started.Add(750 * time.Millisecond),
+		Turns:       1,
+		Outcome:     "cancelled",
+	}
+	cfg := &types.RunConfig{}
+
+	stdoutDone := captureStdout(t)
+	emitRunOutput(context.Background(), cfg, rt, "json")
+	stdout := stdoutDone()
+
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Fatalf("stdout should start with STIRRUP_RESULT sentinel even on cancellation, got: %q", stdout)
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(stdout, "STIRRUP_RESULT "))
+	var got types.RunResult
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("STIRRUP_RESULT payload should parse as RunResult on cancellation: %v\npayload: %s", err, payload)
+	}
+	if got.Outcome != "cancelled" {
+		t.Errorf("RunResult.Outcome = %q, want cancelled", got.Outcome)
+	}
+}
+
+// TestEmitRunOutput_EmptyModeMatchesText pins the runJob entry-point's
+// implicit dependency on the default branch: the job command does not
+// thread --output, so it passes outputMode="" and expects the legacy
+// "print summary + emit configured sink" behaviour. This guards
+// against a refactor that would otherwise silently break the job path.
+func TestEmitRunOutput_EmptyModeMatchesText(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{}
+
+	stderrDone := captureStderr(t)
+	emitRunOutput(context.Background(), cfg, rt, "")
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "--- Run complete ---") {
+		t.Errorf("empty outputMode should default to text behaviour, got stderr: %q", stderr)
+	}
+}
+
+// TestValidateOutputMode_AcceptsClosedSet pins the closed three-value
+// set surfaced via --output. A new value would need a corresponding
+// branch in emitRunOutput; this test forces the two to evolve
+// together by failing if validateOutputMode silently accepts an
+// unsupported value.
+func TestValidateOutputMode_AcceptsClosedSet(t *testing.T) {
+	for _, mode := range []string{"text", "json", "none"} {
+		if err := validateOutputMode(mode); err != nil {
+			t.Errorf("validateOutputMode(%q) = %v, want nil", mode, err)
+		}
+	}
+}
+
+// TestValidateOutputMode_RejectsUnsupported pins the operator-facing
+// failure mode: a typo at the CLI surfaces as a clear error rather
+// than being silently swallowed and ignored at the dispatch site.
+func TestValidateOutputMode_RejectsUnsupported(t *testing.T) {
+	cases := []string{"", "json5", "yaml", "TEXT", "jsonl"}
+	for _, mode := range cases {
+		if err := validateOutputMode(mode); err == nil {
+			t.Errorf("validateOutputMode(%q) returned nil, want error", mode)
+		}
+	}
+}
+
+// TestRunHarness_OutputFlagRejectsInvalidValue is the end-to-end
+// integration test for the closed-set validation: an invalid --output
+// value must surface as an error from runHarness rather than being
+// silently dropped. Pairs with TestValidateOutputMode_RejectsUnsupported
+// (which pins the helper directly) to catch a regression that would
+// stop calling validateOutputMode at all.
+func TestRunHarness_OutputFlagRejectsInvalidValue(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	if err := cmd.Flags().Set("output", "yaml"); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("runHarness should reject --output=yaml")
+	}
+	if !strings.Contains(err.Error(), "--output") {
+		t.Errorf("error should name --output, got: %v", err)
 	}
 }
