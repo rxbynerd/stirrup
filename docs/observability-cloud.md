@@ -11,6 +11,10 @@ model — what spans, metrics, and resource attributes Stirrup emits —
 see [`safety-rings.md`](safety-rings.md) and the
 "OpenTelemetry trace emitter" section of the repo-root `CLAUDE.md`.
 
+For operators inspecting the JSONL trace emitter's output (offline
+pretty-print, follow-tail, aggregate stats, JSON-path filtering),
+see [`trace-inspection.md`](trace-inspection.md).
+
 ## Quick choice
 
 | Where do you want telemetry to land? | Use |
