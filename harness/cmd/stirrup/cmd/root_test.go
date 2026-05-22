@@ -145,7 +145,7 @@ func TestExportWorkspace_NoopWhenEmpty(t *testing.T) {
 		called = true
 		return fakeExporter{}, nil
 	}
-	defer func() { newWorkspaceExporter = orig }()
+	t.Cleanup(func() { newWorkspaceExporter = orig })
 
 	cfg := &types.RunConfig{}
 	if err := exportWorkspace(context.Background(), cfg, true); err != nil {
@@ -167,7 +167,7 @@ func TestExportWorkspace_RequiredPropagatesError(t *testing.T) {
 	newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 		return fakeExporter{err: sentinel}, nil
 	}
-	defer func() { newWorkspaceExporter = orig }()
+	t.Cleanup(func() { newWorkspaceExporter = orig })
 
 	cfg := &types.RunConfig{}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
@@ -192,7 +192,7 @@ func TestExportWorkspace_OptionalLogsError(t *testing.T) {
 	newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 		return fakeExporter{err: errors.New("simulated GCS upload failure")}, nil
 	}
-	defer func() { newWorkspaceExporter = orig }()
+	t.Cleanup(func() { newWorkspaceExporter = orig })
 
 	cfg := &types.RunConfig{}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"
@@ -213,7 +213,12 @@ func TestExportWorkspace_OptionalLogsError(t *testing.T) {
 // The hint is deliberately stdout (not stderr) — it is conceptually
 // a --help shorthand, not a diagnostic, so capturing it via
 // `stirrup > usage.txt` should work cleanly. The redirection contract
-// itself is covered by TestRootCmd_BareInvocation_WritesHintToStdout.
+// itself is covered by TestRunRootHint_WritesToConfiguredWriter,
+// which drives the rootHintStdout seam directly because cobra's
+// shared flag-state latching (documented on
+// TestRootCmd_BareInvocation_RunHookWired) makes an
+// Execute()-level assertion unreliable in the same test binary as
+// TestRootCmd_Version.
 func TestRootHintText_PlainAndComplete(t *testing.T) {
 	got := rootHintText()
 	if strings.Contains(got, "\x1b[") {
@@ -286,7 +291,7 @@ func TestExportWorkspace_BuilderErrorRequiredVsOptional(t *testing.T) {
 	newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 		return nil, build
 	}
-	defer func() { newWorkspaceExporter = orig }()
+	t.Cleanup(func() { newWorkspaceExporter = orig })
 
 	cfg := &types.RunConfig{}
 	cfg.Executor.WorkspaceExportTo = "gs://stirrup-results/runs/run-1/workspace.tar.gz"

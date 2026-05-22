@@ -20,7 +20,11 @@ const (
 	ansiBoldStart = "\x1b[1m"
 	ansiBoldEnd   = "\x1b[22m"
 	ansiDimStart  = "\x1b[2m"
-	ansiDimEnd    = "\x1b[22m"
+	// ansiDimEnd is the same sequence as ansiBoldEnd: SGR 22 resets
+	// both bold and dim. The constants are kept separate so a future
+	// extension that needs a distinct dim-off sequence can change one
+	// without breaking the bold bracketing.
+	ansiDimEnd = "\x1b[22m"
 )
 
 // stderrIsTTY reports whether stderr is connected to a terminal. The
