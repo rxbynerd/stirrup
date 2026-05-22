@@ -33,9 +33,10 @@ import (
 // RecordTurn / RecordToolCall call so tests can assert on forwarding
 // behaviour from the NestedJSONLEmitter into the parent's emitter.
 type recordingTraceEmitter struct {
-	mu        sync.Mutex
-	turns     []types.TurnTrace
-	toolCalls []types.ToolCallTrace
+	mu          sync.Mutex
+	turns       []types.TurnTrace
+	turnRecords []types.TurnRecord
+	toolCalls   []types.ToolCallTrace
 }
 
 func (r *recordingTraceEmitter) Start(_ string, _ *types.RunConfig) {}
@@ -44,6 +45,12 @@ func (r *recordingTraceEmitter) RecordTurn(turn types.TurnTrace) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.turns = append(r.turns, turn)
+}
+
+func (r *recordingTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.turnRecords = append(r.turnRecords, turn)
 }
 
 func (r *recordingTraceEmitter) RecordToolCall(call types.ToolCallTrace) {

@@ -90,6 +90,20 @@ func (e *NestedJSONLEmitter) RecordTurn(turn types.TurnTrace) {
 	e.parent.RecordTurn(tagged)
 }
 
+// RecordTurnRecord forwards the child's full transcript turn to the
+// parent emitter. The child's RunRecording is reassembled on the
+// reader side from the streamed events on the parent's file, so a
+// nested run's transcripts land in the same JSONL stream as the
+// parent's. The child does not retain a local copy: TurnRecord is
+// the streaming-only surface, distinct from the summary RunTrace the
+// child's Finish returns.
+func (e *NestedJSONLEmitter) RecordTurnRecord(turn types.TurnRecord) {
+	if e.parent == nil {
+		return
+	}
+	e.parent.RecordTurnRecord(turn)
+}
+
 // RecordToolCall appends to the child's local trace and forwards a
 // tagged copy to the parent emitter.
 func (e *NestedJSONLEmitter) RecordToolCall(call types.ToolCallTrace) {

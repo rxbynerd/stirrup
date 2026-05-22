@@ -152,6 +152,13 @@ func (e *GCSTraceEmitter) RecordTurn(turn types.TurnTrace) {
 	e.turns = append(e.turns, turn)
 }
 
+// RecordTurnRecord is a no-op for GCS. The single-blob upload path
+// is summary-only by design — full transcript recording lives on the
+// JSONLTraceEmitter which streams events to a local file. A future
+// follow-up could ship the streamed events to GCS as a separate object;
+// for v0.1 the summary upload is unchanged.
+func (e *GCSTraceEmitter) RecordTurnRecord(_ types.TurnRecord) {}
+
 // RecordToolCall appends a tool call trace.
 func (e *GCSTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.mu.Lock()

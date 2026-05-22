@@ -13,8 +13,19 @@ type TraceEmitter interface {
 	// Start initialises a new trace with the given run ID and configuration.
 	Start(runID string, config *types.RunConfig)
 
-	// RecordTurn appends a turn trace to the current run.
+	// RecordTurn appends a turn summary to the current run. The summary
+	// carries counters (tokens, duration, stop reason) but no transcript
+	// content; the full ModelInput/ModelOutput/tool I/O lives in
+	// RecordTurnRecord.
 	RecordTurn(turn types.TurnTrace)
+
+	// RecordTurnRecord appends a full transcript record for one turn,
+	// including the messages the model saw, the model's output content
+	// blocks, and the raw inputs/outputs of every tool call dispatched
+	// in that turn. Recording emitters write this as a streamed
+	// `turn_record` event; summary-only emitters (OTel, GCS, the
+	// nested-forwarder) may ignore it.
+	RecordTurnRecord(turn types.TurnRecord)
 
 	// RecordToolCall appends a tool call trace to the current run.
 	RecordToolCall(call types.ToolCallTrace)

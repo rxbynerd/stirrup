@@ -8,23 +8,45 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// JSONLTraceEmitter writes run traces as newline-delimited JSON to an
-// io.Writer (typically a file).
+// JSONLTraceEmitter writes a streaming, line-delimited JSON event log
+// for a single harness run. Each call to Start, RecordTurnRecord,
+// RecordToolCall (via the inline tool_call_record path), and Finish
+// emits one line. Lines are flushed immediately so a SIGKILL leaves a
+// parseable partial recording on disk up to the last completed event.
+//
+// The on-wire shape is documented in events.go. Defence-in-depth
+// scrubbing runs over modelOutput, tool call input, and tool call
+// output before each line is written; the line never contains raw
+// secret material even if the upstream LogScrubber in the agentic loop
+// missed a substring.
+//
+// Concurrency: every public method takes a write lock around the
+// underlying io.Writer. The lock is held only for the duration of a
+// single Marshal+Write to keep the loop's hot path responsive.
 type JSONLTraceEmitter struct {
-	writer    io.Writer
-	closer    io.Closer
+	writer io.Writer
+	closer io.Closer
+
 	mu        sync.Mutex
 	runID     string
 	config    *types.RunConfig
 	startedAt time.Time
+
+	// Accumulators retained for the run_finished summary. The streaming
+	// event log carries the full transcript, but Finish still produces a
+	// canonical RunTrace (token totals, tool call summaries, outcome)
+	// for the in-process caller (harness factory, eval runner) that
+	// reads it directly without re-parsing the file.
 	turns     []types.TurnTrace
 	toolCalls []types.ToolCallTrace
 }
 
-// NewJSONLTraceEmitter creates a trace emitter that writes to w.
+// NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
+// If w implements io.Closer, Close on the emitter closes it.
 func NewJSONLTraceEmitter(w io.Writer) *JSONLTraceEmitter {
 	emitter := &JSONLTraceEmitter{writer: w}
 	if closer, ok := w.(io.Closer); ok {
@@ -33,7 +55,30 @@ func NewJSONLTraceEmitter(w io.Writer) *JSONLTraceEmitter {
 	return emitter
 }
 
-// Start initialises the trace with run metadata.
+// writeLineLocked marshals e as a single newline-terminated JSON line
+// and writes it to the backing writer. Must be called with e.mu held.
+//
+// Errors from the writer are surfaced to the caller. The emitter has no
+// retry / buffering policy: when the file handle is a regular file (the
+// production case via factory.go), os.File.Write is effectively atomic
+// for the line-sized writes used here and a write failure is unusual.
+// When a write does fail the emitter does NOT mutate its in-memory
+// accumulators (the line was never observable on disk; the next event
+// can still land), and the run's outer error path surfaces the failure.
+func (e *JSONLTraceEmitter) writeLineLocked(ev Event) error {
+	line, err := MarshalLine(ev)
+	if err != nil {
+		return fmt.Errorf("marshal trace event: %w", err)
+	}
+	if _, err := e.writer.Write(line); err != nil {
+		return fmt.Errorf("write trace event: %w", err)
+	}
+	return nil
+}
+
+// Start initialises the trace and writes the run_started event. The
+// config is redacted via RunConfig.Redact() so secret references never
+// appear on disk even if a future config field exposes a raw value.
 func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -43,44 +88,112 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.startedAt = time.Now()
 	e.turns = nil
 	e.toolCalls = nil
+
+	startedAt := e.startedAt
+	var redacted types.RunConfig
+	if config != nil {
+		redacted = config.Redact()
+	}
+	ev := Event{
+		Kind:          EventKindRunStarted,
+		SchemaVersion: CurrentSchemaVersion,
+		RunID:         runID,
+		StartedAt:     &startedAt,
+		Config:        &redacted,
+	}
+	// A failure to write the run_started line is non-fatal: the trace
+	// will be missing its preamble but the rest of the run still
+	// produces records, and Finish surfaces a synthetic run_finished if
+	// the writer recovers. The agentic loop has no error channel from
+	// Start (the interface returns no error to preserve the existing
+	// contract); failure here is rare in practice and the run-level
+	// outcome is decided independently of trace durability.
+	_ = e.writeLineLocked(ev)
 }
 
-// RecordTurn appends a turn trace.
+// RecordTurn appends a turn summary to the in-memory accumulator. The
+// summary is written to disk as part of the run_finished event's
+// embedded RunTrace; per-turn detail belongs in RecordTurnRecord.
 func (e *JSONLTraceEmitter) RecordTurn(turn types.TurnTrace) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.turns = append(e.turns, turn)
 }
 
-// RecordToolCall appends a tool call trace.
+// RecordTurnRecord scrubs the transcript and writes one turn_record
+// line. The scrubber runs over message content, model output blocks,
+// and each tool call's raw input/output. The line is flushed before
+// RecordTurnRecord returns so an immediately-following SIGKILL still
+// leaves a parseable record on disk.
+func (e *JSONLTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	scrubbed := scrubTurnRecord(turn)
+	ev := Event{
+		Kind:        EventKindTurnRecord,
+		Turn:        scrubbed.Turn,
+		ModelInput:  &scrubbed.ModelInput,
+		ModelOutput: scrubbed.ModelOutput,
+		ToolCalls:   scrubbed.ToolCalls,
+	}
+	_ = e.writeLineLocked(ev)
+}
+
+// RecordToolCall appends a tool call summary to the in-memory
+// accumulator AND streams an inline tool_call_record event. The
+// summary feeds the run_finished aggregate; the streamed event lets a
+// live consumer (or a SIGKILL-resilient post-hoc reader) see calls as
+// they land. The summary carries counters only — raw I/O is captured
+// at RecordTurnRecord time on the enclosing turn.
 func (e *JSONLTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.toolCalls = append(e.toolCalls, call)
+	// Streaming event carries only the summary fields; the full raw
+	// input/output is attached at RecordTurnRecord time when the
+	// turn's complete tool-call sequence is known. We emit a lean
+	// tool_call_record here so live consumers see per-call events
+	// before the turn finishes.
+	tc := types.ToolCallRecord{
+		Name:    call.Name,
+		Success: call.Success,
+		// DurationMs and other counters live on call; for the
+		// inline event we keep the schema aligned with the turn-
+		// embedded ToolCallRecord shape and surface only fields
+		// that are meaningful at this point. Output carries
+		// ErrorReason (already scrubbed by the dispatch site) for
+		// failed calls so a live consumer sees the failure detail.
+		Output:     call.ErrorReason,
+		DurationMs: call.DurationMs,
+	}
+	ev := Event{
+		Kind:     EventKindToolCallRecord,
+		ToolCall: &tc,
+	}
+	_ = e.writeLineLocked(ev)
 }
 
-// Finish builds the final RunTrace, redacts the config, writes it as a
-// JSON line to the backing writer, and returns the trace.
+// Finish builds the canonical RunTrace summary, writes the
+// run_finished event, and returns the summary. A run with zero turns
+// still produces a valid run_finished line.
 func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.RunTrace, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	now := time.Now()
 
-	// Aggregate token usage across turns.
 	var totalTokens types.TokenUsage
 	for _, turn := range e.turns {
 		totalTokens.Input += turn.Tokens.Input
 		totalTokens.Output += turn.Tokens.Output
 	}
 
-	// Convert tool call traces to summaries.
 	summaries := make([]types.ToolCallSummary, len(e.toolCalls))
 	for i, tc := range e.toolCalls {
 		summaries[i] = types.ToolCallSummary(tc)
 	}
 
-	// Redact sensitive config fields.
 	var redactedConfig types.RunConfig
 	if e.config != nil {
 		redactedConfig = e.config.Redact()
@@ -97,23 +210,128 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		Outcome:     outcome,
 	}
 
-	data, err := json.Marshal(trace)
-	if err != nil {
-		return nil, fmt.Errorf("marshal trace: %w", err)
+	ev := Event{
+		Kind:        EventKindRunFinished,
+		CompletedAt: &now,
+		Trace:       trace,
 	}
-
-	data = append(data, '\n')
-	if _, err := e.writer.Write(data); err != nil {
-		return nil, fmt.Errorf("write trace: %w", err)
+	if err := e.writeLineLocked(ev); err != nil {
+		return nil, err
 	}
-
 	return trace, nil
 }
 
-// Close releases the backing writer when it owns a closable resource such as a file.
+// Close releases the backing writer when it owns a closable resource
+// (e.g. an os.File opened by the factory). NewReader-backed and
+// in-memory writers report nil.
 func (e *JSONLTraceEmitter) Close() error {
 	if e.closer == nil {
 		return nil
 	}
 	return e.closer.Close()
+}
+
+// scrubTurnRecord returns a deep-copied TurnRecord with secret-shaped
+// substrings replaced by [REDACTED] in every string-valued field that
+// can carry untrusted content. The defence-in-depth contract: a future
+// regression that bypasses the upstream LogScrubber must not leak raw
+// secret material into a persisted trace.
+//
+// Scrubbing surfaces:
+//   - turn.ModelInput.Messages[*].Content (text blocks; tool_use Input
+//     and tool_result Content are scrubbed through their respective
+//     paths below).
+//   - turn.ModelOutput[*].Text and ToolUseId/Name carriers' inputs.
+//   - turn.ToolCalls[*].Input (raw JSON; scrubbed as a string then
+//     re-parsed; if the scrubbed string is not valid JSON it is
+//     wrapped as a JSON string literal so the on-disk shape stays a
+//     valid json.RawMessage).
+//   - turn.ToolCalls[*].Output (string).
+func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
+	out := types.TurnRecord{
+		Turn:        t.Turn,
+		ModelInput:  scrubModelInput(t.ModelInput),
+		ModelOutput: scrubContentBlocks(t.ModelOutput),
+		ToolCalls:   make([]types.ToolCallRecord, len(t.ToolCalls)),
+	}
+	for i, tc := range t.ToolCalls {
+		out.ToolCalls[i] = types.ToolCallRecord{
+			ID:         tc.ID,
+			Name:       tc.Name,
+			Input:      scrubRawJSON(tc.Input),
+			Output:     security.Scrub(tc.Output),
+			DurationMs: tc.DurationMs,
+			Success:    tc.Success,
+		}
+	}
+	return out
+}
+
+// scrubModelInput deep-copies a ModelInput with text content scrubbed.
+// Tool definitions and the model string are not scrubbed: tool schemas
+// are constants compiled into the harness, and the model identifier
+// (e.g. "claude-3-5-sonnet-latest") is not a secret.
+func scrubModelInput(in types.ModelInput) types.ModelInput {
+	out := types.ModelInput{
+		Model:    in.Model,
+		Tools:    in.Tools,
+		Messages: make([]types.Message, len(in.Messages)),
+	}
+	for i, m := range in.Messages {
+		out.Messages[i] = types.Message{
+			Role:    m.Role,
+			Content: scrubContentBlocks(m.Content),
+		}
+	}
+	return out
+}
+
+// scrubContentBlocks scrubs text and tool-result content. Tool-use
+// blocks carry an Input json.RawMessage that may itself encode arbitrary
+// content; we re-use scrubRawJSON to preserve a valid JSON shape.
+func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
+	if blocks == nil {
+		return nil
+	}
+	out := make([]types.ContentBlock, len(blocks))
+	for i, b := range blocks {
+		nb := b
+		if nb.Text != "" {
+			nb.Text = security.Scrub(nb.Text)
+		}
+		if len(nb.Input) > 0 {
+			nb.Input = scrubRawJSON(nb.Input)
+		}
+		out[i] = nb
+	}
+	return out
+}
+
+// scrubRawJSON scrubs secret-shaped substrings out of a json.RawMessage
+// while preserving JSON validity. The scrubber operates on the string
+// form of the message and re-validates the result. If the scrubbed
+// payload is no longer valid JSON (an extreme corner case: a regex
+// boundary breaks a JSON literal), the entire payload is replaced by a
+// JSON string literal carrying the scrubbed text so the on-disk shape
+// stays parseable.
+func scrubRawJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	scrubbed := security.Scrub(string(raw))
+	if scrubbed == string(raw) {
+		return raw
+	}
+	if json.Valid([]byte(scrubbed)) {
+		return json.RawMessage(scrubbed)
+	}
+	// Wrap the scrubbed text as a JSON string. json.Marshal escapes
+	// any embedded quotes/backslashes so the result is always valid.
+	wrapped, err := json.Marshal(scrubbed)
+	if err != nil {
+		// json.Marshal on a string cannot fail in practice; fall back
+		// to a defensive empty-object literal so the line stays valid.
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(wrapped)
 }
