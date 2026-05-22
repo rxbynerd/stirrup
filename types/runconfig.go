@@ -90,12 +90,30 @@ const (
 // the CLI builds it from flags/env.
 type RunConfig struct {
 	// Identity
-	RunID       string `json:"runId"`
-	Mode        string `json:"mode"`                  // "execution" | "planning" | "review" | "research" | "toil"
-	SessionName string `json:"sessionName,omitempty"` // human-readable label; never injected into the model's context
+	RunID string `json:"runId"`
 
-	// What to do
-	Prompt         string                         `json:"prompt"`
+	// Mode selects the agent's operating posture. Each mode pairs a
+	// prompt-builder preset with a tool/permission profile: "execution"
+	// is the only mode that may write files or run commands; the
+	// read-only modes ("planning", "review", "research", "toil") are
+	// validated to exclude write_file, edit_file, and run_command and
+	// to use a permission policy other than allow-all.
+	Mode string `json:"mode"`
+
+	// SessionName is a human-readable label for the run. It surfaces
+	// in logs and trace metadata; it is never injected into the
+	// model's context.
+	SessionName string `json:"sessionName,omitempty"`
+
+	// Prompt is the initial user message handed to the agent on the
+	// first turn. Required for every run (the harness has no implicit
+	// default prompt). For multi-line prompts the CLI accepts a
+	// `--prompt-file` path that is read at start-up.
+	Prompt string `json:"prompt"`
+
+	// DynamicContext is a map of named context fragments injected into
+	// the system prompt during prompt assembly. Per-entry Sensitive
+	// metadata participates in the Rule of Two's sensitive-data leg.
 	DynamicContext map[string]DynamicContextValue `json:"dynamicContext,omitempty"`
 
 	// Component selections
@@ -114,11 +132,29 @@ type RunConfig struct {
 	ResultSink       *ResultSinkConfig         `json:"resultSink,omitempty"`
 	Tools            ToolsConfig               `json:"tools"`
 
-	// Limits
-	MaxTurns       int      `json:"maxTurns"`
-	MaxTokenBudget *int     `json:"maxTokenBudget,omitempty"`
-	MaxCostBudget  *float64 `json:"maxCostBudget,omitempty"`
-	Timeout        *int     `json:"timeout,omitempty"`
+	// MaxTurns is the hard ceiling on agentic-loop iterations. The
+	// loop terminates with `max_turns_reached` once the count is hit.
+	// Required (the harness has no implicit default ceiling); a
+	// reasonable starting value is 10-30 for execution runs and lower
+	// for read-only modes. Batch-enabled providers can take up to 24 h
+	// of wall-clock per turn — ValidateRunConfig emits a slog WARN
+	// when MaxTurns exceeds batchTurnsLatencyWarnThreshold.
+	MaxTurns int `json:"maxTurns"`
+
+	// MaxTokenBudget caps the cumulative input+output token spend
+	// across the whole run. Nil disables the cap (provider rate
+	// limits still apply).
+	MaxTokenBudget *int `json:"maxTokenBudget,omitempty"`
+
+	// MaxCostBudget caps the cumulative USD spend across the run,
+	// computed from provider-reported pricing. Nil disables the cap.
+	MaxCostBudget *float64 `json:"maxCostBudget,omitempty"`
+
+	// Timeout is the wall-clock budget for the whole run, in seconds.
+	// Exceeding it cancels the run with `timeout_reached`. Nil leaves
+	// the run open-ended (long-running batch runs commonly rely on
+	// this).
+	Timeout *int `json:"timeout,omitempty"`
 
 	// Temperature is the sampling temperature forwarded to the provider
 	// on every turn. Nil means "use the harness default" (0.1 — a low
