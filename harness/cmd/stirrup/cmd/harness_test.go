@@ -588,6 +588,7 @@ func newTestHarnessCommand() *cobra.Command {
 	// RunConfig. Mirrors the registration in harness.go init().
 	f.Bool("export-workspace-required", false, "")
 	f.String("output-runconfig", "", "")
+	f.StringP("output", "o", "text", "")
 	return cmd
 }
 

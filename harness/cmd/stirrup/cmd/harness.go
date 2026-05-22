@@ -708,12 +708,33 @@ func init() {
 	f := harnessCmd.Flags()
 	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
 	f.String("output-runconfig", "", "Write the resolved RunConfig as JSON to <path> (use '-' for stdout) and exit without running. Useful for capturing the exact config a flag-only invocation would have used. Validation must pass first; the path is not written on a validator error.")
+	f.StringP("output", "o", "text", "Post-run summary format: text (default human-readable summary on stderr), json (structured RunResult JSON on stdout, suppresses stderr summary), none (suppresses both). When json is set together with resultSink.type=stdout-json the line is emitted once (the flag wins); pair json with a trace emitter that does not target stdout (the default jsonl file path is fine).")
 
 	// --output-runconfig accepts a path or "-" for stdout. The .json
 	// hint nudges the shell toward the conventional extension; "-" is
 	// a literal one-character argument no completion engine needs to
 	// suggest, so the file-name completion alone is sufficient.
 	_ = harnessCmd.MarkFlagFilename("output-runconfig", "json")
+
+	// --output is a closed three-value set; pin the completion list so
+	// shells surface the same values the validator enforces.
+	_ = harnessCmd.RegisterFlagCompletionFunc("output", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"text", "json", "none"}, cobra.ShellCompDirectiveNoFileComp
+	})
+}
+
+// validateOutputMode rejects any --output value outside the closed
+// three-value set. The check fires before the agentic loop builds so a
+// typo surfaces with a clear operator-facing error rather than as a
+// missing summary at end-of-run (which would otherwise be silently
+// ignored when the resolved value did not match any branch downstream).
+func validateOutputMode(mode string) error {
+	switch mode {
+	case "text", "json", "none":
+		return nil
+	default:
+		return fmt.Errorf("--output: invalid value %q (expected one of: text, json, none)", mode)
+	}
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -1171,7 +1192,14 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	exportRequired, _ := f.GetBool("export-workspace-required")
-	return runWithConfig(cfg, runOptions{exportWorkspaceRequired: exportRequired})
+	outputMode, _ := f.GetString("output")
+	if err := validateOutputMode(outputMode); err != nil {
+		return err
+	}
+	return runWithConfig(cfg, runOptions{
+		exportWorkspaceRequired: exportRequired,
+		outputMode:              outputMode,
+	})
 }
 
 // writeOutputRunConfig emits the resolved RunConfig as pretty-printed
@@ -1376,12 +1404,15 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 }
 
 // runOptions carries CLI-only behaviour that doesn't fit on RunConfig.
-// Today this is just exportWorkspaceRequired — a flag that controls
-// whether a failed workspace export propagates a non-zero exit code.
-// Threading it through here (rather than embedding it on RunConfig)
-// keeps the wire schema free of CLI-shaped knobs.
+// exportWorkspaceRequired controls whether a failed workspace export
+// propagates a non-zero exit code. outputMode selects the post-run
+// summary surface: "text" prints the human-readable stderr summary,
+// "json" emits a single STIRRUP_RESULT line on stdout, "none"
+// suppresses both. Threading them through here (rather than embedding
+// them on RunConfig) keeps the wire schema free of CLI-shaped knobs.
 type runOptions struct {
 	exportWorkspaceRequired bool
+	outputMode              string
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -1403,13 +1434,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	if err != nil {
 		return fmt.Errorf("running harness: %w", err)
 	}
-	printRunSummary(runTrace)
-	// resultSink emission is the last thing on stdout for the run, so
-	// a Cloud Logging grep / shell pipeline can extract the
-	// "STIRRUP_RESULT <json>" line deterministically. Failures are
-	// logged inside emitRunResult and never fatal — the trace and the
-	// stderr summary already reflect outcome.
-	emitRunResult(ctx, config, runTrace)
+	emitRunOutput(ctx, config, runTrace, opts.outputMode)
 
 	// Workspace export (issue #164). Called after the trace and
 	// resultSink so a failed upload's slog warning lands after the

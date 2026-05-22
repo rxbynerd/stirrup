@@ -95,9 +95,10 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 // emitRunResult builds and emits a RunResult through the configured
 // resultSink. Failures are logged but never fatal — the trace and the
 // stderr summary already carry the run's outcome, so a transient sink
-// error must not mask a successful run. Called from runWithConfig and
-// runJob after the stderr summary so the structured line is the last
-// thing on stdout (per the issue's Cloud Logging extraction contract).
+// error must not mask a successful run. Called from runWithConfig (via
+// emitRunOutput) and runJob after the stderr summary so the structured
+// line is the last thing on stdout (per the issue's Cloud Logging
+// extraction contract).
 func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
 	sink, err := resultsink.NewResultSink(cfg.ResultSink)
 	if err != nil {
@@ -106,6 +107,57 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 	}
 	if err := sink.Emit(ctx, buildRunResult(rt)); err != nil {
 		slog.Warn("emit resultSink", "err", err)
+	}
+}
+
+// emitRunOutput dispatches the post-run summary surfaces selected by
+// --output (issue #242). Three modes are supported:
+//
+//   - "text" (or "" for backward compatibility with callers that bypass
+//     the flag — only the job command today): print the human-readable
+//     stderr summary AND emit through the configured resultSink. This
+//     matches the pre-#242 behaviour exactly.
+//   - "json": skip the stderr summary; emit a single STIRRUP_RESULT line
+//     on stdout. When resultSink.type=stdout-json is also configured,
+//     the line is emitted once — the flag wins because it is the more
+//     explicit signal. When the configured sink targets a different
+//     surface (a future gcp-pubsub or gcs adapter), that sink also fires
+//     because it represents a separate channel with its own intent.
+//   - "none": suppress the stderr summary AND any emission that would
+//     write to stdout. The configured sink still fires when it targets a
+//     non-stdout surface, on the same "different channel, different
+//     intent" rationale.
+//
+// All emissions go through buildRunResult so a partial RunResult (e.g.
+// a cancelled run) round-trips identically through every mode. Sink
+// failures are logged via emitRunResult and never fatal.
+func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace, mode string) {
+	switch mode {
+	case "json":
+		// Always emit a STIRRUP_RESULT line to stdout. When the
+		// configured sink is also stdout-json, swap it out for "none"
+		// before delegating so emitRunResult does not produce a second
+		// line. Any non-stdout sink stays untouched (different channel).
+		stdoutSink := resultsink.NewStdoutJSONSink()
+		if err := stdoutSink.Emit(ctx, buildRunResult(rt)); err != nil {
+			slog.Warn("emit --output=json", "err", err)
+		}
+		if cfg.ResultSink == nil || cfg.ResultSink.Type == "stdout-json" {
+			return
+		}
+		emitRunResult(ctx, cfg, rt)
+	case "none":
+		// Skip the stderr summary. The configured sink is invoked only
+		// when it targets a non-stdout destination so --output=none
+		// genuinely suppresses every stdout / stderr summary surface
+		// regardless of which sink the run config selected.
+		if cfg.ResultSink == nil || cfg.ResultSink.Type == "" || cfg.ResultSink.Type == "none" || cfg.ResultSink.Type == "stdout-json" {
+			return
+		}
+		emitRunResult(ctx, cfg, rt)
+	default:
+		printRunSummary(rt)
+		emitRunResult(ctx, cfg, rt)
 	}
 }
 
