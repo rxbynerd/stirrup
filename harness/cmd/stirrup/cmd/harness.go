@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/types"
@@ -1151,6 +1152,30 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		Resolve:    ResolveAll,
 	})
 	if err != nil {
+		// Intercept the bare-invocation "prompt is required" path
+		// (#249 section B). An operator who typed `stirrup harness`
+		// with no prompt at an interactive terminal wants a
+		// grouped, scannable example block rather than a one-line
+		// nudge to re-run with --help. Two gates protect the
+		// scripted path:
+		//
+		//   - Only the "prompt is required" error from
+		//     resolvePromptForRun: every other validation/IO
+		//     failure (bad --config path, malformed JSON, invalid
+		//     mode, missing API key, etc.) keeps its current loud
+		//     error so a CI run still exits non-zero.
+		//   - Only when stdin is a tty: a piped invocation
+		//     (`stirrup harness < /dev/null`, the pipeline
+		//     composition example from #240) is scripted use; the
+		//     grouped help would clutter logs.
+		//
+		// Whether the help itself contains ANSI is a separate
+		// decision (stderr-tty-ness, honouring NO_COLOR) handled
+		// inside writeBareHarnessHint.
+		if isPromptRequiredErr(err) && stdinIsTTY() {
+			writeBareHarnessHint(bareHintStderr)
+			return nil
+		}
 		return err
 	}
 
@@ -1166,6 +1191,111 @@ func runHarness(cmd *cobra.Command, args []string) error {
 
 	exportRequired, _ := f.GetBool("export-workspace-required")
 	return runWithConfig(cfg, runOptions{exportWorkspaceRequired: exportRequired})
+}
+
+// bareHintStderr is the writer the bare-`stirrup harness` grouped help
+// is emitted to. Indirection so tests can capture without rewriting
+// the os.Stderr fd. Production code keeps the default.
+var bareHintStderr io.Writer = os.Stderr
+
+// stdinIsTTY reports whether stdin is connected to a terminal. The
+// bare-invocation intercept in runHarness gates on this so a scripted
+// invocation (`stirrup harness < /dev/null`, `run-config | harness`)
+// keeps the existing opaque error rather than getting the grouped
+// help — the latter would clutter log aggregators that swallow stderr
+// verbatim. Separate seam from stderrIsTTY because the two channels
+// can be redirected independently.
+var stdinIsTTY = func() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// isPromptRequiredErr matches the sentinel string from
+// resolvePromptForRun. A typed sentinel would be cleaner, but
+// resolvePromptForRun's error returns travel verbatim through
+// harness_test.go's existing fixtures (search for "prompt is
+// required") and through BuildRunConfig's caller chain, so changing
+// the surface would force a wider edit than #249 should carry. The
+// string match is brittle in principle but covered by
+// TestRunHarness_BareInvocation_GroupedHelp below, which fails fast
+// if either side drifts.
+func isPromptRequiredErr(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "prompt is required")
+}
+
+// writeBareHarnessHint emits the grouped #249-B example block to w.
+// Formatting (ANSI vs plain) is decided per-writer via colorEnabled —
+// a non-os.Stderr writer or NO_COLOR=1 forces plain output. The
+// template is a static literal rather than something derived from
+// cobra's flag list because layout control matters more than schema
+// coupling here: the operator scanning this for the first time wants
+// curated groups, not the full 40-flag table that --help already
+// serves.
+func writeBareHarnessHint(w io.Writer) {
+	fmt.Fprint(w, bareHarnessHintText(colorEnabled(w)))
+}
+
+// bareHarnessHintText assembles the grouped help body. Exported as a
+// pure function so tests can drive both colour modes without having
+// to thread a writer through. References to #240 features
+// (`--config -`, `--output-runconfig`, the `run-config` subcommand)
+// are intentional: this branch is rebased on top of the #240 work
+// and the parent branch carries the underlying functionality.
+func bareHarnessHintText(color bool) string {
+	var b strings.Builder
+	b.WriteString(bold(color, "stirrup harness"))
+	b.WriteString(" — run the agentic loop\n\n")
+
+	b.WriteString(bold(color, "USAGE:"))
+	b.WriteString("\n  stirrup harness [flags] [prompt]\n\n")
+
+	b.WriteString(bold(color, "REQUIRED:"))
+	b.WriteString("\n  --prompt ")
+	b.WriteString(dim(color, `"<task>"`))
+	b.WriteString("        Or pass as positional, --prompt-file, or STIRRUP_PROMPT env var.\n\n")
+
+	b.WriteString(bold(color, "RUN SHAPE:"))
+	b.WriteString("\n  --mode ")
+	b.WriteString(dim(color, "planning|execution|review|research|toil"))
+	b.WriteString("   Default: planning (read-only).\n  --max-turns ")
+	b.WriteString(dim(color, "20"))
+	b.WriteString("           Agentic loop turn cap (max 100).\n  --timeout ")
+	b.WriteString(dim(color, "600"))
+	b.WriteString("             Wall-clock seconds (max 3600).\n\n")
+
+	b.WriteString(bold(color, "PROVIDER:"))
+	b.WriteString("\n  --provider ")
+	b.WriteString(dim(color, "anthropic"))
+	b.WriteString("     anthropic | bedrock | gemini | openai-compatible | openai-responses\n  --model ")
+	b.WriteString(dim(color, "claude-sonnet-4-6"))
+	b.WriteString("\n  --api-key-ref ")
+	b.WriteString(dim(color, "secret://ANTHROPIC_API_KEY"))
+	b.WriteString("\n\n")
+
+	b.WriteString(bold(color, "CONFIGURATION:"))
+	b.WriteString("\n  --config ")
+	b.WriteString(dim(color, "path.json"))
+	b.WriteString("       Base config from a file (or `-` for stdin).\n  --output-runconfig ")
+	b.WriteString(dim(color, "out.json"))
+	b.WriteString("    Dry-run: write resolved config and exit.\n\n")
+
+	b.WriteString(bold(color, "EXAMPLES:"))
+	b.WriteString("\n  stirrup harness --prompt ")
+	b.WriteString(dim(color, `"refactor module X"`))
+	b.WriteString("\n  stirrup harness --mode execution --prompt ")
+	b.WriteString(dim(color, `"fix the failing test"`))
+	b.WriteString("\n  stirrup harness --config ")
+	b.WriteString(dim(color, "production.json"))
+	b.WriteString(" --prompt ")
+	b.WriteString(dim(color, `"ship feature Y"`))
+	b.WriteString("\n\n  ")
+	b.WriteString(dim(color, "# Pipeline composition (see #240):"))
+	b.WriteString("\n  stirrup run-config --max-turns 100 | stirrup harness --prompt ")
+	b.WriteString(dim(color, `"Z"`))
+	b.WriteString("\n\n")
+
+	b.WriteString("For the full flag list: stirrup harness --help\n")
+	b.WriteString("Documentation:          https://github.com/rxbynerd/stirrup/tree/main/docs\n")
+	return b.String()
 }
 
 // writeOutputRunConfig emits the resolved RunConfig as pretty-printed
