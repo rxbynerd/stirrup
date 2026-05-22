@@ -362,6 +362,51 @@ passes `ValidateRunConfig` end-to-end.
 For an annotated walkthrough of `full.json` see
 [`examples/runconfig/README.md`](../examples/runconfig/README.md).
 
+## Shell completions
+
+Both `stirrup` and `stirrup-eval` emit completion scripts for `bash`,
+`zsh`, `fish`, and `powershell`. The scripts cover subcommands, flag
+names, the closed-set enum flags (`--mode`, `--provider`, `--executor`,
+`--edit-strategy`, `--verifier`, `--git-strategy`, `--transport`,
+`--trace-emitter`, `--otel-protocol`, `--container-runtime`,
+`--code-scanner`, `--guardrail`), and filesystem completion for the
+path-shaped flags (`--config`, `--workspace`, `--prompt-file`,
+`--gcp-credentials-file`, `--permission-policy-file`, `--trace`,
+`--output-runconfig`).
+
+Closed-set enum completion is sourced from the same maps the validator
+consults, so a value added to `types/runconfig.go` extends the
+completion surface automatically.
+
+### Installation
+
+```sh
+# bash (current session)
+source <(stirrup completion bash)
+source <(stirrup-eval completion bash)
+
+# bash (persistent, Linux)
+stirrup completion bash | sudo tee /etc/bash_completion.d/stirrup >/dev/null
+stirrup-eval completion bash | sudo tee /etc/bash_completion.d/stirrup-eval >/dev/null
+
+# zsh
+stirrup completion zsh > "${fpath[1]}/_stirrup"
+stirrup-eval completion zsh > "${fpath[1]}/_stirrup-eval"
+
+# fish
+stirrup completion fish > ~/.config/fish/completions/stirrup.fish
+stirrup-eval completion fish > ~/.config/fish/completions/stirrup-eval.fish
+
+# powershell
+stirrup completion powershell | Out-String | Invoke-Expression
+stirrup-eval completion powershell | Out-String | Invoke-Expression
+```
+
+On zsh, `compinit` must be initialised before the completion script
+loads — most distributions ship a `~/.zshrc` template that does this;
+operators with a hand-rolled `.zshrc` need an explicit
+`autoload -Uz compinit && compinit` ahead of the `source` line.
+
 ## Eval CLI
 
 ```sh

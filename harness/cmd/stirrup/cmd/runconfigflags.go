@@ -1,6 +1,10 @@
 package cmd
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/spf13/cobra"
+
+	"github.com/rxbynerd/stirrup/types"
+)
 
 // addRunConfigFlags registers every flag that maps to a RunConfig field
 // (or to the prompt-resolution chain that lands on RunConfig.Prompt).
@@ -80,4 +84,65 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.Int("max-tool-parallel", 0, "Maximum number of async tool calls dispatched concurrently in a single turn. Range: 1-16. 0 uses the library default (4).")
 
 	f.Bool("batch", false, "Use async batch submission for provider turns (50% cost reduction, up to 24h latency). Requires transport=grpc or --config with harnessSidePolling=true for stdio. See docs/sandbox.md.")
+
+	addRunConfigFlagCompletions(cmd)
+}
+
+// addRunConfigFlagCompletions wires cobra dynamic-flag completion for
+// every flag declared in addRunConfigFlags. Closed-set enum flags pull
+// their value list from types.Valid*Values() so the completion surface
+// tracks the validator without manual sync. Path-shaped flags advertise
+// file-system completion via MarkFlagFilename / MarkFlagDirname so
+// shells offer directory traversal rather than the generic "any
+// string" prompt.
+//
+// Errors from RegisterFlagCompletionFunc and MarkFlagFilename only
+// surface when the named flag does not exist on the command. Every
+// flag named here is registered above in the same function call, so a
+// non-nil error indicates a typo in this file rather than a runtime
+// condition. Such an error would silently lose the completion mapping
+// for that flag; ignoring it (as is done here) matches cobra's own
+// idiom for completion registration in its example documentation.
+func addRunConfigFlagCompletions(cmd *cobra.Command) {
+	staticValues := func(name string, values []string) {
+		_ = cmd.RegisterFlagCompletionFunc(name, func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+			return values, cobra.ShellCompDirectiveNoFileComp
+		})
+	}
+	staticValues("mode", types.ValidRunModeValues())
+	staticValues("provider", types.ValidProviderTypeValues())
+	staticValues("executor", types.ValidExecutorTypeValues())
+	staticValues("edit-strategy", types.ValidEditStrategyTypeValues())
+	staticValues("verifier", types.ValidVerifierTypeValues())
+	staticValues("git-strategy", types.ValidGitStrategyTypeValues())
+	staticValues("transport", types.ValidTransportTypeValues())
+	staticValues("trace-emitter", types.ValidTraceEmitterTypeValues())
+	staticValues("otel-protocol", types.ValidTraceEmitterProtocolValues())
+	staticValues("container-runtime", types.ValidExecutorRuntimeValues())
+	staticValues("code-scanner", types.ValidCodeScannerTypeValues())
+	staticValues("guardrail", types.ValidGuardRailTypeValues())
+
+	// log-level and api-key-header are not declared as validator-closed
+	// sets in types/runconfig.go, but operators benefit from a hinted
+	// completion. log-level is the conventional slog quartet; api-key-header
+	// pins the two values used today (Authorization, api-key for Azure).
+	staticValues("log-level", []string{"debug", "error", "info", "warn"})
+	staticValues("api-key-header", []string{"Authorization", "api-key"})
+
+	// File and directory flags. JSON-typed paths name a single
+	// extension hint; the prompt-file and policy-file flags accept
+	// any text payload so the extension list stays empty (shells
+	// fall back to "all files"). --workspace is the one directory-
+	// completed flag — operators point it at a checkout, not a file.
+	// --trace is the JSONL trace path; the .jsonl hint nudges the
+	// shell toward the conventional extension without forbidding
+	// .log or .ndjson. --export-workspace-to takes a gs:// URI
+	// rather than a local path, so no completion hint applies and
+	// shells correctly fall through to "no completion".
+	_ = cmd.MarkFlagFilename("config", "json")
+	_ = cmd.MarkFlagFilename("prompt-file")
+	_ = cmd.MarkFlagFilename("gcp-credentials-file", "json")
+	_ = cmd.MarkFlagFilename("permission-policy-file", "cedar")
+	_ = cmd.MarkFlagFilename("trace", "jsonl")
+	_ = cmd.MarkFlagDirname("workspace")
 }
