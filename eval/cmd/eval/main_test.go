@@ -1022,3 +1022,367 @@ func TestBuildDriftReport_ComputesDeltas(t *testing.T) {
 		t.Errorf("BatchP95DurationDelta = %f, want 6000", report.Deltas.BatchP95DurationDelta)
 	}
 }
+
+// --- cmdIngest tests ---
+
+// traceJSONLine serialises a minimal RunTrace as a single JSONL line
+// (no trailing newline). Centralised so tests share a fixture shape;
+// the StoreTrace contract only requires a non-empty ID, so the rest
+// of the RunTrace is intentionally sparse to keep fixtures legible.
+func traceJSONLine(t *testing.T, trace types.RunTrace) string {
+	t.Helper()
+	data, err := json.Marshal(trace)
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	return string(data)
+}
+
+// TestCmdIngest_HappyPath pins the golden ingest contract: a JSONL file
+// containing two valid RunTraces produces two files under
+// <lakehouse>/traces/, the exit code is 0, and the stderr summary
+// reports two ingested with zero errors. A regression that wrote the
+// traces to the wrong directory, or that miscounted ingested vs.
+// errors, would surface here.
+func TestCmdIngest_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	started := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	line1 := traceJSONLine(t, types.RunTrace{
+		ID:          "trace-1",
+		StartedAt:   started,
+		CompletedAt: started.Add(2 * time.Second),
+		Outcome:     "success",
+	})
+	line2 := traceJSONLine(t, types.RunTrace{
+		ID:          "trace-2",
+		StartedAt:   started.Add(time.Minute),
+		CompletedAt: started.Add(time.Minute + 3*time.Second),
+		Outcome:     "error",
+	})
+	jsonl := line1 + "\n" + line2 + "\n"
+	if err := os.WriteFile(tracePath, []byte(jsonl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("cmdIngest exit code = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+
+	for _, id := range []string{"trace-1", "trace-2"} {
+		path := filepath.Join(lhPath, "traces", id+".json")
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected %s to exist: %v", path, err)
+		}
+	}
+	if !strings.Contains(stderr.String(), "ingested 2 traces (0 errors) into "+lhPath) {
+		t.Errorf("stderr summary missing or wrong: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_Idempotent pins the idempotence guarantee: re-ingesting
+// the same trace file produces the same FileStore state. Without
+// last-write-wins overwrite semantics, a second ingest could double-
+// count traces or fail outright; both regressions would be invisible
+// without this test.
+func TestCmdIngest_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	started := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	line := traceJSONLine(t, types.RunTrace{
+		ID:          "trace-idem",
+		StartedAt:   started,
+		CompletedAt: started.Add(time.Second),
+		Outcome:     "success",
+	})
+	if err := os.WriteFile(tracePath, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		var stderr bytes.Buffer
+		code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+		if code != 0 {
+			t.Fatalf("iteration %d: exit code = %d (stderr=%q)", i, code, stderr.String())
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join(lhPath, "traces"))
+	if err != nil {
+		t.Fatalf("read traces dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("got %d trace files, want 1", len(entries))
+	}
+}
+
+// TestCmdIngest_Stdin pins the `-` value as stdin: a piped harness
+// emit (`stirrup harness --trace - | stirrup-eval ingest --trace -`)
+// is the documented composable workflow. A regression that read `-`
+// as a literal filename would fail here.
+func TestCmdIngest_Stdin(t *testing.T) {
+	dir := t.TempDir()
+	lhPath := filepath.Join(dir, "lh")
+
+	line := traceJSONLine(t, types.RunTrace{
+		ID:      "trace-stdin",
+		Outcome: "success",
+	})
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", "-", "--lakehouse", lhPath}, strings.NewReader(line+"\n"), &stderr)
+	if code != 0 {
+		t.Fatalf("cmdIngest exit code = %d (stderr=%q)", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(lhPath, "traces", "trace-stdin.json")); err != nil {
+		t.Errorf("expected stdin trace to be written: %v", err)
+	}
+}
+
+// TestCmdIngest_MalformedLineTolerated pins the partial-salvage
+// contract: a JSONL file with one good line and one corrupt line
+// still ingests the good line, reports the malformed line on
+// stderr with a line number, and exits 0. A naïve implementation
+// that aborts on the first parse error would fail this test.
+func TestCmdIngest_MalformedLineTolerated(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	good := traceJSONLine(t, types.RunTrace{ID: "trace-good", Outcome: "success"})
+	jsonl := "this is not json\n" + good + "\n"
+	if err := os.WriteFile(tracePath, []byte(jsonl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(lhPath, "traces", "trace-good.json")); err != nil {
+		t.Errorf("expected good trace to be written: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "line 1: parse error") {
+		t.Errorf("stderr missing line-1 parse-error message: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ingested 1 traces (1 errors)") {
+		t.Errorf("stderr summary wrong: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_EmptyIDIsPerLineError covers the StoreTrace error
+// surface: a trace with an empty ID is rejected by FileStore, the
+// rejection is reported per-line on stderr, and the ingest does not
+// abort. A regression that elevated a per-line StoreTrace error to
+// a fatal would shrink the salvage guarantee.
+func TestCmdIngest_EmptyIDIsPerLineError(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	empty := traceJSONLine(t, types.RunTrace{ID: "", Outcome: "success"})
+	good := traceJSONLine(t, types.RunTrace{ID: "trace-good", Outcome: "success"})
+	jsonl := empty + "\n" + good + "\n"
+	if err := os.WriteFile(tracePath, []byte(jsonl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "store error") {
+		t.Errorf("stderr missing store-error message: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_DuplicateIDWarns pins the duplicate-ID warning. Two
+// distinct lines with the same trace ID collapse to a single file
+// (FileStore is filename-keyed); the warning is the only operator-
+// visible signal that the collapse happened. Both the warning and
+// the post-overwrite file presence are asserted so a regression that
+// dropped either invariant fails.
+func TestCmdIngest_DuplicateIDWarns(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	a := traceJSONLine(t, types.RunTrace{ID: "dup", Outcome: "success"})
+	b := traceJSONLine(t, types.RunTrace{ID: "dup", Outcome: "error"})
+	if err := os.WriteFile(tracePath, []byte(a+"\n"+b+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "duplicate trace ID \"dup\"") {
+		t.Errorf("stderr missing duplicate-ID warning: %q", stderr.String())
+	}
+
+	entries, err := os.ReadDir(filepath.Join(lhPath, "traces"))
+	if err != nil {
+		t.Fatalf("read traces dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("got %d trace files, want 1 (overwrite expected)", len(entries))
+	}
+}
+
+// TestCmdIngest_EmptyFileExitsOne pins the empty-input contract: a
+// JSONL file with zero lines (or only blanks) ingests nothing and
+// exits 1. The reverse — exit 0 with a "ingested 0" summary — would
+// silently let an empty CI artifact masquerade as success.
+func TestCmdIngest_EmptyFileExitsOne(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "empty.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	if err := os.WriteFile(tracePath, []byte("\n\n  \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ingested 0 traces") {
+		t.Errorf("stderr missing zero-summary: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_AllLinesErrored covers the "every line errored" exit-1
+// branch: a JSONL file containing only malformed lines must exit 1
+// even though the ingest itself completed.
+func TestCmdIngest_AllLinesErrored(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "garbage.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	if err := os.WriteFile(tracePath, []byte("not json\nalso not json\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+}
+
+// TestCmdIngest_MultipleTraceFlags pins repeatable --trace: two
+// separate JSONL files with distinct traces both ingest in one
+// invocation. A regression that overwrote the slice on each Set call
+// would only ingest the last --trace value.
+func TestCmdIngest_MultipleTraceFlags(t *testing.T) {
+	dir := t.TempDir()
+	pathA := filepath.Join(dir, "a.jsonl")
+	pathB := filepath.Join(dir, "b.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	if err := os.WriteFile(pathA, []byte(traceJSONLine(t, types.RunTrace{ID: "from-a", Outcome: "success"})+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathB, []byte(traceJSONLine(t, types.RunTrace{ID: "from-b", Outcome: "success"})+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", pathA, "--trace", pathB, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d (stderr=%q)", code, stderr.String())
+	}
+	for _, id := range []string{"from-a", "from-b"} {
+		if _, err := os.Stat(filepath.Join(lhPath, "traces", id+".json")); err != nil {
+			t.Errorf("expected %s to be ingested: %v", id, err)
+		}
+	}
+	if !strings.Contains(stderr.String(), "ingested 2 traces") {
+		t.Errorf("stderr summary missing combined count: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_MissingFileIsFatal pins file-not-found as a fatal
+// exit-1 — the operator typo'd a path and a silent skip would mask
+// the typo until the lakehouse failed to produce the expected
+// downstream metrics.
+func TestCmdIngest_MissingFileIsFatal(t *testing.T) {
+	dir := t.TempDir()
+	lhPath := filepath.Join(dir, "lh")
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", filepath.Join(dir, "nope.jsonl"), "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stderr=%q)", code, stderr.String())
+	}
+}
+
+// TestCmdIngest_RequiresLakehouse pins the --lakehouse-required guard:
+// omitting the flag must exit 1 with a stderr message. The reverse
+// would either panic on a nil store or silently default to the cwd.
+func TestCmdIngest_RequiresLakehouse(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	if err := os.WriteFile(tracePath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath}, strings.NewReader(""), &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "--lakehouse is required") {
+		t.Errorf("stderr missing required-flag message: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_RequiresTrace pins the symmetric --trace-required
+// guard for the same reason: no --trace flag must exit 1 with a
+// stderr message rather than reading nothing and exiting 0.
+func TestCmdIngest_RequiresTrace(t *testing.T) {
+	dir := t.TempDir()
+	lhPath := filepath.Join(dir, "lh")
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "--trace is required") {
+		t.Errorf("stderr missing required-flag message: %q", stderr.String())
+	}
+}
+
+// TestRun_IngestDispatch pins the dispatcher wiring: invoking
+// `eval ingest` through run() must reach cmdIngest. Without this, a
+// regression that dropped the dispatch arm would only surface in
+// integration tests.
+func TestRun_IngestDispatch(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	line := traceJSONLine(t, types.RunTrace{ID: "dispatched", Outcome: "success"})
+	if err := os.WriteFile(tracePath, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	code := run([]string{"ingest", "--trace", tracePath, "--lakehouse", lhPath}, io.Discard)
+	if code != 0 {
+		t.Fatalf("run(ingest) exit code = %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(lhPath, "traces", "dispatched.json")); err != nil {
+		t.Errorf("expected dispatched trace to be written: %v", err)
+	}
+}

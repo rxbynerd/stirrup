@@ -146,6 +146,30 @@ func TestEvalCompletionFishScript_QuotesValues(t *testing.T) {
 	}
 }
 
+// TestEvalCompletionScripts_IncludeIngestTrace pins ingest's --trace
+// flag in every rendered script. The flag-name appearance is already
+// covered by TestEvalCompletionScripts_MentionEverySubcommand (which
+// iterates the subcommand list), but only this test guards the
+// expectation that `--trace` itself surfaces in the per-shell
+// case-arms or argument completers. A regression that dropped the
+// flag from evalCompletionFlags["ingest"] would still leave the
+// subcommand name in the rendered script, so the existing test would
+// pass while real shell completion silently broke.
+func TestEvalCompletionScripts_IncludeIngestTrace(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
+		t.Run(shell, func(t *testing.T) {
+			var buf bytes.Buffer
+			if err := emitEvalCompletion(shell, &buf); err != nil {
+				t.Fatalf("emit %s: %v", shell, err)
+			}
+			body := buf.String()
+			if !strings.Contains(body, "trace") {
+				t.Errorf("%s script does not mention --trace flag", shell)
+			}
+		})
+	}
+}
+
 // TestEvalCompletionFlagMap_TracksDispatcher pins the static flag map
 // against the real subcommand surface. A new subcommand wired into
 // run() but forgotten in evalCompletionFlags would silently ship with
