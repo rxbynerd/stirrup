@@ -112,7 +112,7 @@ _stirrup_eval() {
     case "$sub" in
 `)
 	for _, sub := range evalCompletionSubcommands {
-		b.WriteString(fmt.Sprintf("        %s) flags=\"%s\" ;;\n", sub, dashPrefix(evalCompletionFlags[sub])))
+		fmt.Fprintf(&b, "        %s) flags=\"%s\" ;;\n", sub, dashPrefix(evalCompletionFlags[sub]))
 	}
 	b.WriteString(`    esac
 
@@ -166,7 +166,7 @@ _stirrup_eval() {
     case "$sub" in
 `)
 	for _, sub := range evalCompletionSubcommands {
-		b.WriteString(fmt.Sprintf("        %s) flags=(%s) ;;\n", sub, zshFlagArray(evalCompletionFlags[sub])))
+		fmt.Fprintf(&b, "        %s) flags=(%s) ;;\n", sub, zshFlagArray(evalCompletionFlags[sub]))
 	}
 	b.WriteString(`    esac
 
@@ -213,20 +213,20 @@ end
 
 `)
 	for _, sub := range evalCompletionSubcommands {
-		b.WriteString(fmt.Sprintf("complete -c stirrup-eval -n __stirrup_eval_no_subcommand -a %s\n", sub))
+		fmt.Fprintf(&b, "complete -c stirrup-eval -n __stirrup_eval_no_subcommand -a %s\n", sub)
 	}
 	b.WriteString("\n")
 	for _, sub := range evalCompletionSubcommands {
 		for _, flag := range evalCompletionFlags[sub] {
-			b.WriteString(fmt.Sprintf("complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -l %s\n", sub, flag))
-			b.WriteString(fmt.Sprintf("complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -o %s\n", sub, flag))
+			fmt.Fprintf(&b, "complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -l %s\n", sub, flag)
+			fmt.Fprintf(&b, "complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -o %s\n", sub, flag)
 		}
 	}
 	// -mode value completion.
 	b.WriteString("\n")
 	for _, sub := range []string{"baseline", "drift", "compare-to-production"} {
 		for _, m := range evalCompletionRunModes {
-			b.WriteString(fmt.Sprintf("complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -l mode -a %s\n", sub, m))
+			fmt.Fprintf(&b, "complete -c stirrup-eval -n '__stirrup_eval_using_subcommand %s' -l mode -a %s\n", sub, m)
 		}
 	}
 	_, err := io.WriteString(w, b.String())
@@ -274,7 +274,7 @@ Register-ArgumentCompleter -Native -CommandName stirrup-eval -ScriptBlock {
 		for _, fl := range evalCompletionFlags[sub] {
 			flagsLit = append(flagsLit, "'-"+fl+"'")
 		}
-		b.WriteString(fmt.Sprintf("        '%s' = @(%s)\n", sub, strings.Join(flagsLit, ", ")))
+		fmt.Fprintf(&b, "        '%s' = @(%s)\n", sub, strings.Join(flagsLit, ", "))
 	}
 	b.WriteString(`    }
     $flags = $flagsBySub[$sub]

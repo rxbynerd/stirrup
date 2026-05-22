@@ -254,4 +254,3 @@ func TestCompletionCmd_MissingShell(t *testing.T) {
 		t.Errorf("error %q does not mention argument count", err)
 	}
 }
-
