@@ -1187,8 +1187,26 @@ func writeOutputRunConfig(path string, cfg *types.RunConfig) error {
 	if err != nil {
 		return fmt.Errorf("opening --output-runconfig %q: %w", path, err)
 	}
-	defer func() { _ = f.Close() }()
-	return writeRunConfigJSON(f, cfg, false)
+	return writeAndCloseRunConfig(f, path, cfg)
+}
+
+// writeAndCloseRunConfig is the testable seam writeOutputRunConfig
+// delegates to once a writer is available. Tests inject a synthetic
+// io.WriteCloser whose Close returns an error to pin the deferred-
+// flush diagnostic path.
+//
+// Linux's buffered file I/O can defer kernel page flushes until
+// Close. A successful writeRunConfigJSON but a failed Close (ENOSPC,
+// EIO, NFS commit failure) would otherwise hand the operator a
+// zero-exit run with a corrupt or empty capture file and no
+// diagnostic. Surface the close error when the prior write
+// succeeded.
+func writeAndCloseRunConfig(wc io.WriteCloser, path string, cfg *types.RunConfig) error {
+	writeErr := writeRunConfigJSON(wc, cfg, false)
+	if cerr := wc.Close(); cerr != nil && writeErr == nil {
+		return fmt.Errorf("closing --output-runconfig %q: %w", path, cerr)
+	}
+	return writeErr
 }
 
 // applyAnthropicWIFOverrides folds the Anthropic-WIF flag surface and

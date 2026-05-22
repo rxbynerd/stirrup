@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1845,9 +1847,14 @@ func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
 }
 
 // TestRunHarness_ConfigPathFollowupGraceFromEnv verifies that the
-// STIRRUP_FOLLOWUP_GRACE environment variable populates FollowUpGrace in
-// the --config code path when the file omits the field. This mirrors the
-// flag-only path's env-var handling so the two paths behave alike.
+// STIRRUP_FOLLOWUP_GRACE environment variable populates FollowUpGrace
+// in the --config code path when the file omits the field. The
+// env-var resolution now lives inside BuildRunConfig's ResolveAll
+// branch (runconfigbuilder.go), so the test drives that path through
+// the shared builder rather than re-implementing the resolution
+// inline. The pre-refactor version called loadRunConfigFile and
+// manually applied the env var — that test would have passed even if
+// BuildRunConfig's branch were deleted.
 func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -1881,21 +1888,17 @@ func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 
 	t.Setenv("STIRRUP_FOLLOWUP_GRACE", "45")
 
-	loaded, err := loadRunConfigFile(path)
+	cmd := newTestHarnessCommand()
+	resolved, err := BuildRunConfig(RunConfigSources{
+		ConfigPath: path,
+		Cmd:        cmd,
+		Resolve:    ResolveAll,
+	})
 	if err != nil {
-		t.Fatalf("loadRunConfigFile: %v", err)
+		t.Fatalf("BuildRunConfig: %v", err)
 	}
-	// Replicate runHarness's --config-path env-var handling. Keeps the
-	// test focused on the env-var resolution logic without booting the
-	// full agentic loop.
-	if loaded.FollowUpGrace == nil {
-		if v := os.Getenv("STIRRUP_FOLLOWUP_GRACE"); v != "" {
-			n := 45
-			loaded.FollowUpGrace = &n
-		}
-	}
-	if loaded.FollowUpGrace == nil || *loaded.FollowUpGrace != 45 {
-		t.Errorf("STIRRUP_FOLLOWUP_GRACE should fill FollowUpGrace when file omits it, got %v", loaded.FollowUpGrace)
+	if resolved.FollowUpGrace == nil || *resolved.FollowUpGrace != 45 {
+		t.Errorf("STIRRUP_FOLLOWUP_GRACE should fill FollowUpGrace when file omits it, got %v", resolved.FollowUpGrace)
 	}
 }
 
@@ -4607,3 +4610,98 @@ func TestRunHarness_StdinDashWithoutPipeErrors(t *testing.T) {
 		t.Errorf("error should explain the missing pipe, got: %v", err)
 	}
 }
+
+// TestRunHarness_OutputRunConfigBadPathErrors pins SF-3: an
+// --output-runconfig path whose parent directory does not exist must
+// surface as a non-nil error mentioning the path. The OpenFile error
+// branch previously had no coverage.
+func TestRunHarness_OutputRunConfigBadPathErrors(t *testing.T) {
+	badPath := filepath.Join(t.TempDir(), "does-not-exist", "out.json")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("output-runconfig", badPath); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected OpenFile error for missing parent directory")
+	}
+	if !strings.Contains(err.Error(), badPath) {
+		t.Errorf("error should mention the bad path %q, got: %v", badPath, err)
+	}
+	if !strings.Contains(err.Error(), "opening") {
+		t.Errorf("error should mention the open failure, got: %v", err)
+	}
+}
+
+// failCloseWriter writes successfully but its Close returns the
+// configured error. Used to drive writeAndCloseRunConfig's
+// deferred-flush diagnostic path without depending on filesystem
+// conditions.
+type failCloseWriter struct {
+	bytes.Buffer
+	closeErr error
+}
+
+func (f *failCloseWriter) Close() error { return f.closeErr }
+
+// TestWriteOutputRunConfig_CloseError pins SF-1: a Close error from
+// the captured-config writer (e.g. ENOSPC manifesting only at kernel
+// flush time) must propagate as a non-nil error wrapping the
+// underlying cause. The pre-fix `defer _ = f.Close()` silently
+// discarded the failure.
+func TestWriteOutputRunConfig_CloseError(t *testing.T) {
+	cfg := &types.RunConfig{
+		RunID:        "x",
+		Mode:         "planning",
+		Provider:     types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
+		ModelRouter:  types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		Transport:    types.TransportConfig{Type: "stdio"},
+		Executor:     types.ExecutorConfig{Type: "local"},
+		EditStrategy: types.EditStrategyConfig{Type: "multi"},
+		MaxTurns:     5,
+	}
+
+	t.Run("close error surfaces", func(t *testing.T) {
+		w := &failCloseWriter{closeErr: io.ErrClosedPipe}
+		err := writeAndCloseRunConfig(w, "/tmp/captured.json", cfg)
+		if err == nil {
+			t.Fatal("expected close error to propagate")
+		}
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("error should wrap io.ErrClosedPipe, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "/tmp/captured.json") {
+			t.Errorf("error should mention path, got: %v", err)
+		}
+	})
+
+	t.Run("write error wins over close error", func(t *testing.T) {
+		// When writeRunConfigJSON has already failed, the prior
+		// error must take precedence — the close error is irrelevant
+		// noise at that point.
+		w := &failWriteCloseWriter{closeErr: io.ErrClosedPipe, writeErr: io.ErrShortWrite}
+		err := writeAndCloseRunConfig(w, "/tmp/captured.json", cfg)
+		if err == nil {
+			t.Fatal("expected write error to propagate")
+		}
+		if !errors.Is(err, io.ErrShortWrite) {
+			t.Errorf("write error should take precedence over close error, got: %v", err)
+		}
+	})
+}
+
+// failWriteCloseWriter fails on Write with writeErr and on Close with
+// closeErr; used to assert the write-error precedence in
+// writeAndCloseRunConfig.
+type failWriteCloseWriter struct {
+	closeErr error
+	writeErr error
+}
+
+func (f *failWriteCloseWriter) Write(p []byte) (int, error) { return 0, f.writeErr }
+func (f *failWriteCloseWriter) Close() error                { return f.closeErr }

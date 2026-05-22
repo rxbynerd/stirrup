@@ -42,20 +42,12 @@ fails fast with a clear error rather than being silently dropped.
 
 ## Precedence
 
-When the user passes both `--config <path>` and individual flags, the
-order of precedence is:
-
-1. **File** — `--config` populates the full `RunConfig`.
-2. **Explicit flags** — flags whose `cmd.Flags().Changed(...)` bit is
-   set replace the corresponding file-provided field.
-3. **Defaults** — flags left at their default value do **not**
-   override the file. This is what makes `--config` ergonomic:
-   defaults can stay defaults while the file's intent is preserved.
-
-The positional `prompt` argument is a fallback only. It fills the
-prompt slot when the file omits it and `--prompt` is not set, but
-neither the file's `prompt` nor an explicit `--prompt` is overridden
-by a positional.
+The canonical resolution table — covering `--config <path>`, piped
+stdin (`--config -` or auto-detected on a non-TTY pipe), explicit
+flag overrides, and the positional prompt fallback — lives in
+[`docs/configuration.md`](../../docs/configuration.md#building-runconfigs-interactively).
+The same section documents the `stirrup run-config | stirrup harness`
+pipeline pattern these examples plug into.
 
 ## Annotated example walkthrough
 
