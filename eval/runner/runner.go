@@ -3,7 +3,6 @@
 package runner
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 	"github.com/rxbynerd/stirrup/eval"
 	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
+	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
 
 // defaultTaskTimeoutSeconds is the per-task timeout the runner falls back
@@ -456,43 +456,18 @@ func cloneRepo(ctx context.Context, repo, ref, targetDir string) error {
 	return nil
 }
 
-// parseTraceFile reads a JSONL trace file and returns the RunTrace from the
-// last line.
+// parseTraceFile reads a JSONL trace file and returns the RunTrace from
+// the last well-formed line. The streaming parser, malformed-line
+// skipping, and 4 MiB per-record cap all live in types/trace so the new
+// `stirrup trace …` subcommands and the eval runner share one
+// implementation.
 func parseTraceFile(path string) (*types.RunTrace, error) {
-	f, err := os.Open(path)
+	r, err := tracereader.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("opening trace file: %w", err)
+		return nil, err
 	}
-	defer func() { _ = f.Close() }()
-
-	var lastLine string
-	scanner := bufio.NewScanner(f)
-	// bufio.Scanner's default 64 KiB line limit is too small for traces
-	// that carry a large tool output in a single JSONL record. A
-	// correct harness run with a multi-hundred-KiB grep result would
-	// otherwise surface as "bufio.Scanner: token too long" and the
-	// task would land as an "error" outcome rather than a real fail.
-	// 4 MiB matches the trace-emitter's own per-record cap.
-	scanner.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line != "" {
-			lastLine = line
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading trace file: %w", err)
-	}
-	if lastLine == "" {
-		return nil, fmt.Errorf("trace file is empty")
-	}
-
-	var trace types.RunTrace
-	if err := json.Unmarshal([]byte(lastLine), &trace); err != nil {
-		return nil, fmt.Errorf("parsing trace JSON: %w", err)
-	}
-
-	return &trace, nil
+	defer func() { _ = r.Close() }()
+	return r.Last()
 }
 
 // errorResult builds a TaskResult with outcome "error".
