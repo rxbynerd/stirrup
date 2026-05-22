@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -23,6 +24,46 @@ var rootCmd = &cobra.Command{
 	Short:   "A coding agent harness",
 	Long:    "Stirrup is a coding agent harness with swappable components that can be composed via RunConfig.",
 	Version: version.Full(),
+	// NoArgs lets cobra continue to error on an unknown subcommand
+	// (e.g. `stirrup hraness`) rather than silently treating the typo
+	// as a positional argument to runRootHint.
+	Args: cobra.NoArgs,
+	Run:  runRootHint,
+}
+
+// rootHintStdout is the writer the bare-invocation hint emits to. The
+// indirection exists so tests can capture the output without re-routing
+// the global os.Stdout fd.
+var rootHintStdout io.Writer = os.Stdout
+
+// runRootHint prints a short plain-text orientation block when the
+// operator runs `stirrup` with no subcommand. Cobra's auto-generated
+// help still serves `--help`; this Run only fires on the bare-args
+// path (#249 section A). The output is deliberately ANSI-free and
+// suitable for piping or logging — a longer formatted version lives
+// behind `stirrup harness` with no prompt.
+//
+// Exit code is 0: a fresh operator running just `stirrup` to see what
+// it is should not get a non-zero status code.
+func runRootHint(_ *cobra.Command, _ []string) {
+	fmt.Fprint(rootHintStdout, rootHintText())
+}
+
+// rootHintText is the bare-`stirrup` hint as a single string. Kept
+// separate from runRootHint so tests can assert on the body without
+// running through cobra. References the two real subcommands plus
+// `--version` / `--help` so an operator who lands here has every
+// onward path in front of them.
+func rootHintText() string {
+	return `stirrup — a coding agent harness
+
+Usage:
+  stirrup harness --prompt "<task>"          Run the agentic loop (interactive use).
+  stirrup job                                Run as a control-plane-driven job.
+
+For full help: stirrup harness --help
+For version:   stirrup --version
+`
 }
 
 // Execute runs the root command. Called from main().
