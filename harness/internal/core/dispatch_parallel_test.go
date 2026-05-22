@@ -156,7 +156,7 @@ func TestParallelDispatch_FiveConcurrent_CompleteInMaxNotSum(t *testing.T) {
 	}
 
 	start := time.Now()
-	results, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
+	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
 	elapsed := time.Since(start)
 
 	if outcome != "" {
@@ -200,7 +200,7 @@ func TestParallelDispatch_OutOfOrderResolution_PreservesCallOrder(t *testing.T) 
 	go fireResponseWhenEmitted(t, tr, calls[1].ID, 0, "payload-for-second")
 	go fireResponseWhenEmitted(t, tr, calls[0].ID, 50*time.Millisecond, "payload-for-first")
 
-	results, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
+	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome: %q", outcome)
 	}
@@ -284,7 +284,7 @@ func TestParallelDispatch_MaxParallelOne_Serialises(t *testing.T) {
 		}()
 	}
 
-	results, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
+	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome: %q", outcome)
 	}
@@ -355,7 +355,7 @@ func TestParallelDispatch_CtxCancellation_DrainsInFlight(t *testing.T) {
 	}()
 
 	start := time.Now()
-	results, outcome := loop.planAndDispatch(ctx, config, calls, &stallDetector{})
+	results, _, outcome := loop.planAndDispatch(ctx, config, calls, &stallDetector{})
 	elapsed := time.Since(start)
 
 	if outcome != "" {
@@ -443,7 +443,7 @@ func TestParallelDispatch_MixedSyncAndAsync_DispatchesSyncInline(t *testing.T) {
 	go fireResponseWhenEmitted(t, tr, calls[1].ID, 0, "async-result-0")
 	go fireResponseWhenEmitted(t, tr, calls[3].ID, 0, "async-result-1")
 
-	results, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
+	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome: %q", outcome)
 	}
@@ -521,7 +521,7 @@ func TestParallelDispatch_PanicInOneHandler_DoesNotStopOthers(t *testing.T) {
 
 	go fireResponseWhenEmitted(t, tr, calls[1].ID, 20*time.Millisecond, "good-result")
 
-	results, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
+	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome: %q", outcome)
 	}
@@ -592,7 +592,7 @@ func TestParallelDispatch_StallDetector_ObservesCallOrder(t *testing.T) {
 	go fireResponseWhenEmitted(t, tr, calls[0].ID, 60*time.Millisecond, "r0")
 
 	stall := &stallDetector{}
-	results, outcome := loop.planAndDispatch(context.Background(), config, calls, stall)
+	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, stall)
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome %q: two identical calls + one different should not trip threshold=3", outcome)
 	}
@@ -645,7 +645,7 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 	go fireResponseWhenEmitted(t, tr, calls[0].ID, 50*time.Millisecond, "r0")
 	go fireResponseWhenEmitted(t, tr, calls[1].ID, 50*time.Millisecond, "r1")
 
-	results, outcome := loop.planAndDispatch(turnCtx, config, calls, &stallDetector{})
+	results, _, outcome := loop.planAndDispatch(turnCtx, config, calls, &stallDetector{})
 	turnSpan.End()
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome: %q", outcome)
@@ -737,7 +737,7 @@ func TestParallelDispatch_StallTrips_ClosesRemainingSpans(t *testing.T) {
 			fmt.Sprintf("result-%d", i))
 	}
 
-	results, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
+	results, _, outcome := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{})
 	if outcome != "stalled" {
 		t.Fatalf("expected outcome 'stalled', got %q", outcome)
 	}
@@ -793,7 +793,7 @@ func TestParallelDispatch_GuardDenyReason_ScrubbedBeforeTrace(t *testing.T) {
 		{ID: "tc_deny", Name: "async_echo", Input: json.RawMessage(`{}`)},
 	}
 
-	results, outcome := loop.planAndDispatch(context.Background(),
+	results, _, outcome := loop.planAndDispatch(context.Background(),
 		configWithMaxParallel(1), calls, &stallDetector{})
 	if outcome != "" {
 		t.Fatalf("unexpected stall outcome: %q", outcome)

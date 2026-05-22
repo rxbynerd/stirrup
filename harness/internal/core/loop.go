@@ -743,6 +743,27 @@ func (l *AgenticLoop) runInnerLoop(
 			BatchID:    turnBatchID,
 		})
 
+		// Snapshot the model input the provider just saw and the
+		// content blocks it produced. The full transcript is captured
+		// as a TurnRecord via RecordTurnRecord; recording emitters
+		// (streaming JSONLTraceEmitter) persist it for downstream
+		// replay / mine-failures, while summary-only emitters
+		// (OTel, GCS) ignore it.
+		//
+		// modelInput.Messages is the exact prepared-message slice the
+		// provider received this turn (pre-tool-result append).
+		// ModelOutput carries the assistant's content blocks. Tool
+		// calls are filled in after planAndDispatch runs below.
+		turnRecord := types.TurnRecord{
+			Turn: turn,
+			ModelInput: types.ModelInput{
+				Messages: preparedMessages,
+				Tools:    toolDefs,
+				Model:    selection.Model,
+			},
+			ModelOutput: sr.Blocks,
+		}
+
 		modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
 		l.Metrics.Turns.Add(ctx, 1, modeAttr)
 		l.Metrics.TokensInput.Add(ctx, int64(inputTokenEstimate), l.metricAttrs())
@@ -761,6 +782,12 @@ func (l *AgenticLoop) runInnerLoop(
 		toolCalls := collectToolCalls(sr.Blocks)
 
 		if sr.StopReason == "end_turn" {
+			// Record the turn transcript with no tool calls before the
+			// success return. Even an end_turn carries a transcript
+			// worth preserving: replay needs the model's final answer,
+			// and mine-failures distinguishes "model declared end_turn
+			// at turn N" from "loop ran out of turns at N".
+			l.Trace.RecordTurnRecord(turnRecord)
 			// PhasePostTurn guard: classify the assistant's final text
 			// before forwarding it. A deny terminates the run with the
 			// "guardrail_blocked" outcome. Spotlight is opt-in for
@@ -798,9 +825,15 @@ func (l *AgenticLoop) runInnerLoop(
 				l.Logger.Warn("provider returned empty stop reason", "turn", turn)
 				return messages, "error"
 			}
+			// Non-tool-use, non-end-turn stop reasons still represent
+			// a completed exchange that replay/mining cares about.
+			l.Trace.RecordTurnRecord(turnRecord)
 			return messages, sr.StopReason
 		}
 		if len(toolCalls) == 0 {
+			// Provider declared tool_use but produced no tool blocks —
+			// degenerate but observable.
+			l.Trace.RecordTurnRecord(turnRecord)
 			return messages, "error"
 		}
 
@@ -810,7 +843,9 @@ func (l *AgenticLoop) runInnerLoop(
 		// config.EffectiveToolDispatchMaxParallel(). planAndDispatch preserves
 		// result order, stall-detector ordering, per-call timeouts, and ctx
 		// cancellation propagation; see harness/internal/core/dispatch.go.
-		toolResults, stallOutcome := l.planAndDispatch(ctx, config, toolCalls, stall)
+		toolResults, toolRecords, stallOutcome := l.planAndDispatch(ctx, config, toolCalls, stall)
+		turnRecord.ToolCalls = toolRecords
+		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
 		if stallOutcome != "" {
 			return messages, stallOutcome

@@ -40,6 +40,9 @@ type pendingCall struct {
 //
 // Returned values:
 //   - toolResults: results indexed by original call order (always len(toolCalls))
+//   - toolRecords: full per-call records (raw Input + Output) for the turn
+//     transcript. Indexed by original call order. Truncated to the same
+//     length as toolResults when the stall detector trips.
 //   - stallOutcome: non-empty when the stall detector tripped; the caller
 //     must append toolResults to the message history and return immediately
 //
@@ -56,7 +59,7 @@ func (l *AgenticLoop) planAndDispatch(
 	config *types.RunConfig,
 	toolCalls []types.ToolCall,
 	stall *stallDetector,
-) ([]types.ToolResult, string) {
+) ([]types.ToolResult, []types.ToolCallRecord, string) {
 	plan := make([]pendingCall, len(toolCalls))
 
 	// Phase 1: open the tool span, run PhasePreTool guard, and resolve the
@@ -195,6 +198,7 @@ func (l *AgenticLoop) planAndDispatch(
 	// (its identical-call heuristic depends on this) and that the
 	// transport observes a deterministic tool_result sequence.
 	toolResults := make([]types.ToolResult, len(toolCalls))
+	toolRecords := make([]types.ToolCallRecord, len(toolCalls))
 	for i := range plan {
 		p := &plan[i]
 		callDuration := time.Since(p.startedAt)
@@ -245,6 +249,21 @@ func (l *AgenticLoop) planAndDispatch(
 			Content:   p.output,
 			IsError:   !p.success,
 		}
+		// Full record carries raw input/output for the turn transcript.
+		// The dispatch site is the only place with both fields in scope:
+		// p.call.Input is the model-supplied raw JSON; p.output is the
+		// post-dispatch result string (either tool output or scrubbed
+		// error reason). Recording is done here so the loop's
+		// RecordTurnRecord call after planAndDispatch returns is a pure
+		// data hand-off.
+		toolRecords[i] = types.ToolCallRecord{
+			ID:         p.call.ID,
+			Name:       p.call.Name,
+			Input:      p.call.Input,
+			Output:     p.output,
+			DurationMs: callDuration.Milliseconds(),
+			Success:    p.success,
+		}
 
 		if err := l.Transport.Emit(types.HarnessEvent{
 			Type:      "tool_result",
@@ -274,9 +293,9 @@ func (l *AgenticLoop) planAndDispatch(
 			// from the loop; preserving that ensures appendToolResults
 			// produces a turn message identical to the sequential
 			// version when a stall trips on the first call.
-			return toolResults[:i+1], outcome
+			return toolResults[:i+1], toolRecords[:i+1], outcome
 		}
 	}
 
-	return toolResults, ""
+	return toolResults, toolRecords, ""
 }
