@@ -157,11 +157,19 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 // annotation is present so a regression that drops a MarkFlagFilename
 // call surfaces as a test failure rather than as a quietly degraded
 // completion experience.
+//
+// The wantNone row for --export-workspace-to is deliberate: that flag
+// takes a gs:// URI rather than a local path, so MarkFlagFilename would
+// be actively wrong (it would advertise filesystem traversal as the
+// natural completion). The negative assertion guards against a future
+// contributor reading the spec, seeing the flag named as "path-shaped",
+// and adding the annotation by mistake.
 func TestFlagCompletion_FileFlags(t *testing.T) {
 	for _, tc := range []struct {
 		flag       string
 		wantExt    []string // empty = any-file completion (annotation present with empty list)
 		wantDir    bool
+		wantNone   bool // assert neither file nor dir completion annotation is set
 		onCommands []*cobra.Command
 	}{
 		{flag: "config", wantExt: []string{"json"}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
@@ -171,12 +179,22 @@ func TestFlagCompletion_FileFlags(t *testing.T) {
 		{flag: "trace", wantExt: []string{"jsonl"}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "workspace", wantDir: true, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "output-runconfig", wantExt: []string{"json"}, onCommands: []*cobra.Command{harnessCmd}},
+		{flag: "export-workspace-to", wantNone: true, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
 			for _, cmd := range tc.onCommands {
 				fl := cmd.Flags().Lookup(tc.flag)
 				if fl == nil {
 					t.Fatalf("flag %s missing on %s", tc.flag, cmd.Use)
+				}
+				if tc.wantNone {
+					if _, ok := fl.Annotations[cobra.BashCompFilenameExt]; ok {
+						t.Errorf("flag %s on %s: unexpected BashCompFilenameExt annotation — flag takes a gs:// URI, not a local path", tc.flag, cmd.Use)
+					}
+					if _, ok := fl.Annotations[cobra.BashCompSubdirsInDir]; ok {
+						t.Errorf("flag %s on %s: unexpected BashCompSubdirsInDir annotation — flag takes a gs:// URI, not a local path", tc.flag, cmd.Use)
+					}
+					continue
 				}
 				if tc.wantDir {
 					if _, ok := fl.Annotations[cobra.BashCompSubdirsInDir]; !ok {
