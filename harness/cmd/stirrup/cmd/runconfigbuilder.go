@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -176,18 +177,19 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	}
 
 	// STIRRUP_CONFIG fills the --config slot only when the flag was not
-	// passed; an explicit --config always wins. Logged once at Debug so
-	// operators can audit precedence at runtime without grepping source.
+	// passed; an explicit --config always wins. Surrounding whitespace
+	// is trimmed because shell env-var editors and CI secret stores
+	// routinely smuggle in a stray newline or space — silently mapping
+	// `STIRRUP_CONFIG=" /path"` to `open  /path: no such file` would be
+	// a worse failure than treating the trimmed value as authoritative.
 	envConfigSourced := false
 	if sources.ConfigPath == "" {
-		if envPath := os.Getenv("STIRRUP_CONFIG"); envPath != "" {
+		if envPath := strings.TrimSpace(os.Getenv("STIRRUP_CONFIG")); envPath != "" {
 			envConfigSourced = true
 			if envPath == "-" {
 				explicitStdin = true
-				slog.Debug("using STIRRUP_CONFIG=- as base RunConfig source (stdin)")
 			} else {
 				filePath = envPath
-				slog.Debug("using STIRRUP_CONFIG as base RunConfig source", "path", envPath)
 			}
 		}
 	}
@@ -203,15 +205,28 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	case explicitStdin:
 		if !stdinPiped {
 			if envConfigSourced {
+				if sources.Stdin == nil {
+					return nil, fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but no stdin reader was provided")
+				}
 				return nil, fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but stdin is a terminal")
 			}
 			return nil, fmt.Errorf("--config - requires piped stdin but stdin is a terminal")
+		}
+		if envConfigSourced {
+			slog.Debug("using STIRRUP_CONFIG as base RunConfig source", "path", "-")
 		}
 		return readRunConfigFromReader(sources.Stdin, "<stdin>")
 	case stdinPiped && filePath == "":
 		return readRunConfigFromReader(sources.Stdin, "<stdin>")
 	case filePath != "":
-		return loadRunConfigFile(filePath)
+		if envConfigSourced {
+			slog.Debug("using STIRRUP_CONFIG as base RunConfig source", "path", filePath)
+		}
+		cfg, err := loadRunConfigFile(filePath)
+		if err != nil && envConfigSourced {
+			return nil, fmt.Errorf("STIRRUP_CONFIG: %w", err)
+		}
+		return cfg, err
 	}
 
 	return buildFlagOnlyRunConfig(sources.Cmd, sources.Args)
