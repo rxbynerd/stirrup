@@ -1557,6 +1557,47 @@ func TestCmdIngest_OversizedLineSkippedAndRecovered(t *testing.T) {
 	}
 }
 
+// TestCmdIngest_RedactsSecretsBeforePersist pins the credential-leak
+// guard: a JSONL line carrying a live `apiKeyRef` must be persisted
+// only after RunConfig.Redact() rewrites the reference. The harness's
+// own emitters call Redact() before serialising, but ingest is
+// designed to consume third-party / older / hand-crafted JSONL where
+// no such guarantee exists. A regression that elided Redact() here
+// would silently land live credentials in the long-lived lakehouse.
+func TestCmdIngest_RedactsSecretsBeforePersist(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "leaky.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	const liveKey = "secret://ANTHROPIC_API_KEY_LIVE_XYZZY"
+	trace := types.RunTrace{
+		ID:      "leaky",
+		Outcome: "success",
+		Config: types.RunConfig{
+			Provider: types.ProviderConfig{APIKeyRef: liveKey},
+		},
+	}
+	if err := os.WriteFile(tracePath, []byte(traceJSONLine(t, trace)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+	stored, err := os.ReadFile(filepath.Join(lhPath, "traces", "leaky.json"))
+	if err != nil {
+		t.Fatalf("read stored trace: %v", err)
+	}
+	if strings.Contains(string(stored), liveKey) {
+		t.Errorf("stored trace contains unredacted apiKeyRef: %s", stored)
+	}
+	if !strings.Contains(string(stored), "[REDACTED]") {
+		t.Errorf("stored trace missing [REDACTED] marker: %s", stored)
+	}
+}
+
 // TestCmdIngest_PathTraversalIDRejected pins the path-traversal guard:
 // a JSONL line whose trace.ID contains `..` segments must be rejected
 // per-line, no file may be written outside the lakehouse root, and

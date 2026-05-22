@@ -994,6 +994,15 @@ func ingestReader(ctx context.Context, r io.Reader, source string, store types.T
 			errCount++
 			continue
 		}
+		// Re-apply Redact() before persisting. Harness-emitted traces
+		// are already redacted, but hand-crafted fixtures, traces from
+		// older or third-party tooling, or JSONL produced by an
+		// operator-side reduction step can carry live `apiKeyRef`
+		// values. The on-disk lakehouse is a long-lived artifact
+		// (potentially shared via NFS or rsynced into a CI cache); a
+		// single unredacted file would leak credentials past the run
+		// that produced it.
+		trace.Config = trace.Config.Redact()
 		if _, dup := seen[trace.ID]; dup {
 			errLinef("ingest: %s line %d: duplicate trace ID %q (overwriting previous entry)\n", source, lineNo, trace.ID)
 		}
