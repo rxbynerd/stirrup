@@ -100,7 +100,7 @@ func TestCompletionCmd_RejectsUnknownShell(t *testing.T) {
 }
 
 // TestFlagCompletion_EnumValues pins the closed-set value completion
-// for every flag registered via registerRunConfigFlagCompletions. Each
+// for every flag registered via addRunConfigFlagCompletions. Each
 // row asserts the completion function returns the same sorted slice
 // that types.Valid*Values() exposes, plus the NoFileComp directive so
 // shells do not also append filesystem entries.

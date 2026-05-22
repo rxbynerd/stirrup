@@ -85,16 +85,16 @@ func addRunConfigFlags(cmd *cobra.Command) {
 
 	f.Bool("batch", false, "Use async batch submission for provider turns (50% cost reduction, up to 24h latency). Requires transport=grpc or --config with harnessSidePolling=true for stdio. See docs/sandbox.md.")
 
-	registerRunConfigFlagCompletions(cmd)
+	addRunConfigFlagCompletions(cmd)
 }
 
-// registerRunConfigFlagCompletions wires cobra dynamic-flag completion
-// for every flag declared in addRunConfigFlags. Closed-set enum flags
-// pull their value list from types.Valid*Values() so the completion
-// surface tracks the validator without manual sync. Path-shaped flags
-// advertise file-system completion via MarkFlagFilename /
-// MarkFlagDirname so shells offer directory traversal rather than the
-// generic "any string" prompt.
+// addRunConfigFlagCompletions wires cobra dynamic-flag completion for
+// every flag declared in addRunConfigFlags. Closed-set enum flags pull
+// their value list from types.Valid*Values() so the completion surface
+// tracks the validator without manual sync. Path-shaped flags advertise
+// file-system completion via MarkFlagFilename / MarkFlagDirname so
+// shells offer directory traversal rather than the generic "any
+// string" prompt.
 //
 // Errors from RegisterFlagCompletionFunc and MarkFlagFilename only
 // surface when the named flag does not exist on the command. Every
@@ -103,7 +103,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 // condition. Such an error would silently lose the completion mapping
 // for that flag; ignoring it (as is done here) matches cobra's own
 // idiom for completion registration in its example documentation.
-func registerRunConfigFlagCompletions(cmd *cobra.Command) {
+func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues := func(name string, values []string) {
 		_ = cmd.RegisterFlagCompletionFunc(name, func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 			return values, cobra.ShellCompDirectiveNoFileComp
