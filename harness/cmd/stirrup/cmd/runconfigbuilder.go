@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 
@@ -76,11 +77,16 @@ type RunConfigSources struct {
 //
 // Resolution order (lowest -> highest precedence):
 //  1. Defaults supplied by flag DefValues.
-//  2. Base RunConfig from --config <path>, --config -, or piped stdin
-//     when ConfigPath is empty and Stdin is non-TTY. The three base
-//     sources are mutually exclusive; passing both --config <path> and
-//     a piped stdin is a hard error so silent precedence surprises
-//     cannot happen in scripted pipelines.
+//  2. Base RunConfig from one of:
+//     a. --config <path> or --config - (explicit flag wins outright).
+//     b. STIRRUP_CONFIG env var (path or "-"; consulted only when the
+//        --config flag was not passed).
+//     c. Piped stdin auto-detected when ConfigPath is empty and Stdin
+//        is non-TTY.
+//     The base sources are mutually exclusive; combining a path-shaped
+//     source (--config or STIRRUP_CONFIG=<path>) with piped stdin is
+//     a hard error so silent precedence surprises cannot happen in
+//     scripted pipelines.
 //  3. Explicit flag overrides via applyOverrides (Changed()-gated, so
 //     a flag at its default value never clobbers a base field).
 //  4. applyAnthropicWIFOverrides (env-var + flag federation folding
@@ -154,6 +160,15 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 // non-TTY stdin is rejected with both sources cited, because the
 // alternative (silent precedence) would surprise pipeline authors
 // debugging which source landed which field.
+//
+// STIRRUP_CONFIG is a fourth-precedence fallback that fills the same
+// slot as --config when the flag was not passed. It accepts the same
+// shape as the flag: a filesystem path, or the literal "-" meaning
+// stdin. Combining STIRRUP_CONFIG=<path> with piped stdin is rejected
+// the same way --config <path> + piped stdin is, and the error cites
+// the env var by name so the operator knows which source to remove.
+// A STIRRUP_CONFIG=- + piped-stdin combination is fine because the
+// env var is opting into the stdin path, not naming a separate base.
 func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	stdinPiped := isStdinPiped(sources.Stdin)
 	explicitStdin := sources.ConfigPath == "-"
@@ -162,13 +177,36 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		filePath = sources.ConfigPath
 	}
 
+	// STIRRUP_CONFIG fills the --config slot only when the flag was not
+	// passed; an explicit --config always wins. Logged once at Debug so
+	// operators can audit precedence at runtime without grepping source.
+	envConfigSourced := false
+	if sources.ConfigPath == "" {
+		if envPath := os.Getenv("STIRRUP_CONFIG"); envPath != "" {
+			envConfigSourced = true
+			if envPath == "-" {
+				explicitStdin = true
+				slog.Debug("using STIRRUP_CONFIG=- as base RunConfig source (stdin)")
+			} else {
+				filePath = envPath
+				slog.Debug("using STIRRUP_CONFIG as base RunConfig source", "path", envPath)
+			}
+		}
+	}
+
 	if filePath != "" && stdinPiped {
+		if envConfigSourced {
+			return nil, fmt.Errorf("ambiguous config sources: both env var STIRRUP_CONFIG=%q and piped stdin specify a base config; pick one", filePath)
+		}
 		return nil, fmt.Errorf("ambiguous config sources: --config %q and piped stdin are both present; pick one", filePath)
 	}
 
 	switch {
 	case explicitStdin:
 		if !stdinPiped {
+			if envConfigSourced {
+				return nil, fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but stdin is a terminal")
+			}
 			return nil, fmt.Errorf("--config - requires piped stdin but stdin is a terminal")
 		}
 		return readRunConfigFromReader(sources.Stdin, "<stdin>")
