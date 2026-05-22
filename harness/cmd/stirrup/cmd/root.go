@@ -46,7 +46,12 @@ var rootHintStdout io.Writer = os.Stdout
 // Exit code is 0: a fresh operator running just `stirrup` to see what
 // it is should not get a non-zero status code.
 func runRootHint(_ *cobra.Command, _ []string) {
-	fmt.Fprint(rootHintStdout, rootHintText())
+	// A write error here is unrecoverable — stdout going away means
+	// the operator never sees the hint regardless. Discard the
+	// return rather than surfacing a non-zero exit, which would
+	// contradict the "bare \`stirrup\` is a help surface, not a
+	// failure" contract from #249.
+	_, _ = fmt.Fprint(rootHintStdout, rootHintText())
 }
 
 // rootHintText is the bare-`stirrup` hint as a single string. Kept

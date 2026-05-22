@@ -3,24 +3,24 @@ package cmd
 import (
 	"io"
 	"os"
-	"strings"
 
 	"golang.org/x/term"
 )
 
 // The ANSI escape constants form a closed set — every helper in this
-// file emits only these sequences, so stripColor can confidently undo
-// the formatting via a fixed series of strings.ReplaceAll calls. A
-// single-pass walk over the byte stream would be more general; the
-// closed-set approach is preferred here because it keeps the test
-// assertions ("no \x1b[ in non-TTY output") exhaustive against a
-// concrete list rather than a regex.
+// file emits only these sequences. The closed-set discipline lets
+// callers and tests assert with confidence that disabling the format
+// path (NO_COLOR, non-TTY writer) yields output free of \x1b[
+// substrings, without having to chase a broader regex.
+//
+// The dual-form bracketing (1m...22m, 2m...22m) was chosen over the
+// universal reset (0m) so a future composition that nests dim inside
+// a bold block does not collapse the outer attribute.
 const (
-	ansiBoldStart  = "\x1b[1m"
-	ansiBoldEnd    = "\x1b[22m"
-	ansiDimStart   = "\x1b[2m"
-	ansiDimEnd     = "\x1b[22m"
-	ansiResetStyle = "\x1b[0m"
+	ansiBoldStart = "\x1b[1m"
+	ansiBoldEnd   = "\x1b[22m"
+	ansiDimStart  = "\x1b[2m"
+	ansiDimEnd    = "\x1b[22m"
 )
 
 // stderrIsTTY reports whether stderr is connected to a terminal. The
@@ -75,18 +75,4 @@ func dim(enabled bool, s string) string {
 		return s
 	}
 	return ansiDimStart + s + ansiDimEnd
-}
-
-// stripANSI removes every ANSI sequence this package can emit. The
-// helper exists so callers that built an already-formatted string can
-// downgrade it to plain text without re-running the format pass — for
-// example, when a test captures a literal string and wants to assert
-// the plain-text shape regardless of TTY detection.
-func stripANSI(s string) string {
-	for _, code := range []string{
-		ansiBoldStart, ansiBoldEnd, ansiDimStart, ansiDimEnd, ansiResetStyle,
-	} {
-		s = strings.ReplaceAll(s, code, "")
-	}
-	return s
 }

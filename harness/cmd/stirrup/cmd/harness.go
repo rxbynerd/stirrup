@@ -1231,7 +1231,11 @@ func isPromptRequiredErr(err error) bool {
 // curated groups, not the full 40-flag table that --help already
 // serves.
 func writeBareHarnessHint(w io.Writer) {
-	fmt.Fprint(w, bareHarnessHintText(colorEnabled(w)))
+	// A write error here is unrecoverable — stderr going away
+	// means the operator never sees the hint. Discard the return
+	// rather than surfacing it, matching runRootHint's contract:
+	// the bare-invocation path is a help surface, not a failure.
+	_, _ = fmt.Fprint(w, bareHarnessHintText(colorEnabled(w)))
 }
 
 // bareHarnessHintText assembles the grouped help body. Exported as a
