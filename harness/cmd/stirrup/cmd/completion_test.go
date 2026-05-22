@@ -55,42 +55,47 @@ func TestCompletionCmd_GeneratesValidShellScripts(t *testing.T) {
 	}
 }
 
-// runCompletion executes `stirrup completion <shell>` against an
-// isolated cobra command tree and returns the captured stdout. The
+// executeRootCmd drives rootCmd with the given args and returns the
+// captured stdout/stderr buffer along with the execution error. The
 // rootCmd singleton owns global state (cobra parses os.Args by default,
-// SetOut() leaks across tests); the helper resets every mutation so a
-// later test in the package sees a clean command.
-func runCompletion(t *testing.T, shell string) *bytes.Buffer {
+// SetOut() leaks across tests); the helper resets every mutation via
+// defer so a later test in the package sees a clean command. Both
+// positive- and negative-path completion tests reach for this helper
+// so the lifecycle lives in exactly one place.
+func executeRootCmd(t *testing.T, args []string) (*bytes.Buffer, error) {
 	t.Helper()
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"completion", shell})
-	defer func() {
-		rootCmd.SetOut(nil)
-		rootCmd.SetErr(nil)
-		rootCmd.SetArgs(nil)
-	}()
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("completion %s: %v", shell, err)
-	}
-	return &buf
-}
-
-// TestCompletionCmd_RejectsUnknownShell pins the cobra ValidArgs
-// guard so an operator typing `stirrup completion ksh` sees a clear
-// error rather than an empty stdout and a zero exit code.
-func TestCompletionCmd_RejectsUnknownShell(t *testing.T) {
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"completion", "ksh"})
+	rootCmd.SetArgs(args)
 	defer func() {
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
 		rootCmd.SetArgs(nil)
 	}()
 	err := rootCmd.Execute()
+	return &buf, err
+}
+
+// runCompletion executes `stirrup completion <shell>` against an
+// isolated cobra command tree and returns the captured stdout. A
+// non-nil execution error is treated as a test failure — this helper
+// is for the happy-path test only; negative-path tests reach for
+// executeRootCmd directly so they can assert on the error.
+func runCompletion(t *testing.T, shell string) *bytes.Buffer {
+	t.Helper()
+	buf, err := executeRootCmd(t, []string{"completion", shell})
+	if err != nil {
+		t.Fatalf("completion %s: %v", shell, err)
+	}
+	return buf
+}
+
+// TestCompletionCmd_RejectsUnknownShell pins the cobra ValidArgs
+// guard so an operator typing `stirrup completion ksh` sees a clear
+// error rather than an empty stdout and a zero exit code.
+func TestCompletionCmd_RejectsUnknownShell(t *testing.T) {
+	_, err := executeRootCmd(t, []string{"completion", "ksh"})
 	if err == nil {
 		t.Fatal("expected error for unknown shell, got nil")
 	}
@@ -260,16 +265,7 @@ func assertStringsEqual(t *testing.T, got, want []string) {
 // `stirrup completion` (no shell argument) fails with a clear
 // "accepts 1 arg(s)" message rather than silently writing nothing.
 func TestCompletionCmd_MissingShell(t *testing.T) {
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"completion"})
-	defer func() {
-		rootCmd.SetOut(nil)
-		rootCmd.SetErr(nil)
-		rootCmd.SetArgs(nil)
-	}()
-	err := rootCmd.Execute()
+	_, err := executeRootCmd(t, []string{"completion"})
 	if err == nil {
 		t.Fatal("expected error for missing shell arg, got nil")
 	}
