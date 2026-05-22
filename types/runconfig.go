@@ -2054,7 +2054,6 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		knownProviders[config.Provider.Type] = true
 	}
 	validateOpenAIAuthFields("provider", config.Provider, errs)
-	validateOpenAIProviderBaseURL("provider", config.Provider, errs)
 	validateGeminiProviderFields("provider", config.Provider, errs)
 	validateAnthropicProviderFields("provider", config.Provider, errs)
 	validateAzureWIFCrossField("provider", config.Provider, errs)
@@ -2072,7 +2071,6 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		path := fmt.Sprintf("providers[%s]", name)
 		validateRequiredType(path, provider.Type, validProviderTypes, errs)
 		validateOpenAIAuthFields(path, provider, errs)
-		validateOpenAIProviderBaseURL(path, provider, errs)
 		validateGeminiProviderFields(path, provider, errs)
 		validateAnthropicProviderFields(path, provider, errs)
 		validateAzureWIFCrossField(path, provider, errs)
@@ -2428,67 +2426,6 @@ func validateTokenSourceConfig(cfg *TokenSourceConfig, path string, errs *[]stri
 			*errs = append(*errs, fmt.Sprintf("%s: github-actions-oidc requires audience", path))
 		}
 	}
-}
-
-// validateOpenAIProviderBaseURL dispatches validateOpenAIBaseURL only
-// for OpenAI-shaped providers (openai-compatible, openai-responses).
-// Other provider types either have no BaseURL field or use their own
-// SDK-supplied default; leaving the check guarded by provider type
-// avoids spurious errors on Anthropic / Bedrock / Gemini configs that
-// happen to carry a stale BaseURL value.
-func validateOpenAIProviderBaseURL(path string, cfg ProviderConfig, errs *[]string) {
-	if cfg.Type != "openai-compatible" && cfg.Type != "openai-responses" {
-		return
-	}
-	validateOpenAIBaseURL(path+".baseUrl", cfg.BaseURL, errs)
-}
-
-// validateOpenAIBaseURL enforces a credential-bearing-origin guard on
-// the operator-supplied BaseURL for OpenAI-shaped providers. The
-// resolved API key is sent on every Submit, every poll tick, every
-// file download, and every cancel POST — an attacker with write access
-// to the config (or a control-plane-delivered RunConfig) could point
-// BaseURL at an attacker-controlled host and exfiltrate the key.
-//
-// HTTPS is required for non-loopback hosts. HTTP is permitted only when
-// the host is loopback so local-gateway / test-server fixtures still
-// work without weakening the production invariant. Empty BaseURL is
-// valid (the constructor falls back to the documented default).
-func validateOpenAIBaseURL(fieldPath, raw string, errs *[]string) {
-	if raw == "" {
-		return
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		*errs = append(*errs, fmt.Sprintf("%s is not a valid URL: %v", fieldPath, err))
-		return
-	}
-	if u.Host == "" {
-		*errs = append(*errs, fmt.Sprintf("%s must include a host", fieldPath))
-		return
-	}
-	if u.Scheme == "https" {
-		return
-	}
-	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
-		return
-	}
-	*errs = append(*errs, fmt.Sprintf(
-		"%s must use https for non-loopback origins (got scheme=%q host=%q)",
-		fieldPath, u.Scheme, u.Hostname(),
-	))
-}
-
-// isLoopbackHost reports whether host is a loopback address. Mirrors
-// the test-relaxation pattern used by the harness-side polling client
-// (harness/internal/provider/batchpoll.go isBaseURLLoopback) so the
-// validator and the runtime agree on which origins may speak HTTP.
-func isLoopbackHost(host string) bool {
-	switch host {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
 }
 
 // validateOpenAIAuthFields enforces the safety invariants on the optional
