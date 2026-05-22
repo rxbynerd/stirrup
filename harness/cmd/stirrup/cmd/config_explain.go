@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -95,10 +96,13 @@ func emitLeafList(w io.Writer, output string) error {
 	if output == "json" {
 		return writeJSON(w, paths)
 	}
+	var buf bytes.Buffer
 	for _, p := range paths {
-		fmt.Fprintln(w, p)
+		buf.WriteString(p)
+		buf.WriteByte('\n')
 	}
-	return nil
+	_, err := w.Write(buf.Bytes())
+	return err
 }
 
 // leafPaths returns the sorted list of every leaf field path in the
@@ -166,19 +170,30 @@ func emitWildcard(w io.Writer, prefix, output string) error {
 	if output == "json" {
 		return writeJSON(w, children)
 	}
+	var buf bytes.Buffer
 	for i, c := range children {
 		if i > 0 {
-			fmt.Fprintln(w)
+			buf.WriteByte('\n')
 		}
-		if err := writeText(w, c); err != nil {
-			return err
-		}
+		renderText(&buf, c)
 	}
-	return nil
+	_, err := w.Write(buf.Bytes())
+	return err
 }
 
-// writeText renders a FieldDoc in the human-readable kubectl-explain
-// shape:
+// writeText renders a FieldDoc to w. The body is built into a buffer
+// first so the rendering helpers can use fmt.Fprintf into a
+// non-failing writer (bytes.Buffer always succeeds), and the single
+// w.Write at the end has the only error that matters.
+func writeText(w io.Writer, fd types.FieldDoc) error {
+	var buf bytes.Buffer
+	renderText(&buf, fd)
+	_, err := w.Write(buf.Bytes())
+	return err
+}
+
+// renderText writes the kubectl-explain-style block for a single
+// FieldDoc into buf:
 //
 //	KIND:    RunConfig
 //	FIELD:   <path>  (<type>)
@@ -192,7 +207,7 @@ func emitWildcard(w io.Writer, prefix, output string) error {
 //
 //	CHILDREN:
 //	  <child>  <type>  <one-line summary>
-func writeText(w io.Writer, fd types.FieldDoc) error {
+func renderText(buf *bytes.Buffer, fd types.FieldDoc) {
 	kind := "RunConfig"
 	if fd.OwnerStruct != "" {
 		kind = fd.OwnerStruct
@@ -203,53 +218,53 @@ func writeText(w io.Writer, fd types.FieldDoc) error {
 	}
 	typeLabel := fd.Type
 	if fd.Optional && !strings.HasPrefix(typeLabel, "*") {
-		// rootDoc, slice/map placeholders carry a non-pointer type.
 		typeLabel = "*" + typeLabel
 	}
-	fmt.Fprintf(w, "KIND:    %s\n", kind)
-	fmt.Fprintf(w, "FIELD:   %s  (%s)\n", pathLabel, typeLabel)
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "DESCRIPTION:")
+	fmt.Fprintf(buf, "KIND:    %s\n", kind)
+	fmt.Fprintf(buf, "FIELD:   %s  (%s)\n", pathLabel, typeLabel)
+	buf.WriteByte('\n')
+	buf.WriteString("DESCRIPTION:\n")
 	if fd.Doc == "" {
-		fmt.Fprintln(w, "  (no inline documentation — see docs/configuration.md)")
+		buf.WriteString("  (no inline documentation - see docs/configuration.md)\n")
 	} else {
 		for _, line := range strings.Split(fd.Doc, "\n") {
-			fmt.Fprintf(w, "  %s\n", strings.TrimRight(line, " \t"))
+			buf.WriteString("  ")
+			buf.WriteString(strings.TrimRight(line, " \t"))
+			buf.WriteByte('\n')
 		}
 	}
 	if fd.Default != "" {
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "DEFAULT: %s\n", fd.Default)
+		buf.WriteByte('\n')
+		fmt.Fprintf(buf, "DEFAULT: %s\n", fd.Default)
 	}
 	if len(fd.Enum) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "VALID VALUES:")
+		buf.WriteByte('\n')
+		buf.WriteString("VALID VALUES:\n")
 		for _, v := range fd.Enum {
-			fmt.Fprintf(w, "  %s\n", v)
+			fmt.Fprintf(buf, "  %s\n", v)
 		}
 	}
 	if len(fd.Children) > 0 {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "CHILDREN:")
-		writeChildren(w, fd)
+		buf.WriteByte('\n')
+		buf.WriteString("CHILDREN:\n")
+		renderChildren(buf, fd)
 	}
 	if fd.ParentPath != "" || fd.Kind == "leaf" {
 		related := relatedPaths(fd)
 		if len(related) > 0 {
-			fmt.Fprintln(w)
-			fmt.Fprintln(w, "RELATED FIELDS:")
+			buf.WriteByte('\n')
+			buf.WriteString("RELATED FIELDS:\n")
 			for _, p := range related {
-				fmt.Fprintf(w, "  %s\n", p)
+				fmt.Fprintf(buf, "  %s\n", p)
 			}
 		}
 	}
-	return nil
 }
 
-// writeChildren emits the CHILDREN block: one line per direct child
+// renderChildren emits the CHILDREN block: one line per direct child
 // with `<name>  <type>  <first sentence of doc>`. Columns are padded
 // to the longest name + longest type for readability.
-func writeChildren(w io.Writer, fd types.FieldDoc) {
+func renderChildren(buf *bytes.Buffer, fd types.FieldDoc) {
 	type row struct{ name, ty, summary string }
 	rows := make([]row, 0, len(fd.Children))
 	maxName, maxType := 0, 0
@@ -272,7 +287,7 @@ func writeChildren(w io.Writer, fd types.FieldDoc) {
 		rows = append(rows, r)
 	}
 	for _, r := range rows {
-		fmt.Fprintf(w, "  %-*s  %-*s  %s\n", maxName, r.name, maxType, r.ty, r.summary)
+		fmt.Fprintf(buf, "  %-*s  %-*s  %s\n", maxName, r.name, maxType, r.ty, r.summary)
 	}
 }
 
