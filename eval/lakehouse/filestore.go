@@ -206,6 +206,14 @@ func (fs *FileStore) readJSON(path string, v any) error {
 }
 
 // matchesTraceFilter returns true if the trace satisfies all non-zero filter fields.
+//
+// TraceFilter.Provider is matched against RunTrace.Config.Provider.Type
+// — the provider implementation selector (e.g. "anthropic", "openai-
+// responses", "gemini") set when the run was launched. Sub-agent runs
+// and model-router runs that switch providers mid-execution carry
+// their parent's Provider.Type at the top level; provider routing
+// changes per-turn live on individual TurnTraces, which this filter
+// does not consult.
 func matchesTraceFilter(trace types.RunTrace, f types.TraceFilter) bool {
 	if f.After != nil && !trace.StartedAt.After(*f.After) {
 		return false
@@ -220,6 +228,9 @@ func matchesTraceFilter(trace types.RunTrace, f types.TraceFilter) bool {
 		return false
 	}
 	if f.Model != "" && trace.Config.ModelRouter.Model != f.Model {
+		return false
+	}
+	if f.Provider != "" && trace.Config.Provider.Type != f.Provider {
 		return false
 	}
 	return true

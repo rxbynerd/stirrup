@@ -331,6 +331,7 @@ func cmdBaseline(args []string) {
 	beforeStr := fs.String("before", "", "Filter traces before this date (RFC3339 or YYYY-MM-DD)")
 	mode := fs.String("mode", "", "Filter by run mode")
 	model := fs.String("model", "", "Filter by model name")
+	provider := fs.String("provider", "", "Filter by provider name (e.g. anthropic, openai-responses, gemini)")
 	output := fs.String("output", "", "Write TraceMetrics JSON to this file")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -347,8 +348,9 @@ func cmdBaseline(args []string) {
 	defer func() { _ = store.Close() }()
 
 	filter := types.TraceFilter{
-		Mode:  *mode,
-		Model: *model,
+		Mode:     *mode,
+		Model:    *model,
+		Provider: *provider,
 	}
 	if *afterStr != "" {
 		t, err := parseDate(*afterStr)
@@ -516,6 +518,7 @@ func cmdDrift(args []string) {
 	compareWindowStr := fs.String("compare-window", "", "Baseline window duration (defaults to -window)")
 	mode := fs.String("mode", "", "Filter by run mode")
 	model := fs.String("model", "", "Filter by model name")
+	provider := fs.String("provider", "", "Filter by provider name (e.g. anthropic, openai-responses, gemini)")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -551,17 +554,19 @@ func cmdDrift(args []string) {
 	baselineStart := currentStart.Add(-compareWindow)
 
 	currentFilter := types.TraceFilter{
-		After:  &currentStart,
-		Before: &now,
-		Mode:   *mode,
-		Model:  *model,
+		After:    &currentStart,
+		Before:   &now,
+		Mode:     *mode,
+		Model:    *model,
+		Provider: *provider,
 	}
 	baselineEnd := currentStart
 	baselineFilter := types.TraceFilter{
-		After:  &baselineStart,
-		Before: &baselineEnd,
-		Mode:   *mode,
-		Model:  *model,
+		After:    &baselineStart,
+		Before:   &baselineEnd,
+		Mode:     *mode,
+		Model:    *model,
+		Provider: *provider,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -710,6 +715,7 @@ func cmdCompareToProduction(args []string) {
 	beforeStr := fs.String("before", "", "Filter production traces before this date (RFC3339 or YYYY-MM-DD)")
 	mode := fs.String("mode", "", "Filter by run mode")
 	model := fs.String("model", "", "Filter by model name")
+	provider := fs.String("provider", "", "Filter by provider name (e.g. anthropic, openai-responses, gemini)")
 	outputPath := fs.String("output", "", "Output path for report JSON")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
@@ -734,8 +740,9 @@ func cmdCompareToProduction(args []string) {
 	defer func() { _ = store.Close() }()
 
 	filter := types.TraceFilter{
-		Mode:  *mode,
-		Model: *model,
+		Mode:     *mode,
+		Model:    *model,
+		Provider: *provider,
 	}
 	if *afterStr != "" {
 		t, err := parseDate(*afterStr)

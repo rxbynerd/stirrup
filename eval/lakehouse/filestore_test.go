@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -257,6 +258,71 @@ func TestQueryTraces_FilterModel(t *testing.T) {
 	}
 	if results[0].ID != "t4" {
 		t.Fatalf("expected t4, got %s", results[0].ID)
+	}
+}
+
+// TestQueryTraces_FilterProvider pins that TraceFilter.Provider is
+// honoured by the FileStore. The field was inert before #142 (the
+// filter type had a Provider slot but matchesTraceFilter never
+// consulted it); a regression would silently let through traces from
+// the wrong provider and quietly skew --sample-by provider in #274.
+func TestQueryTraces_FilterProvider(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	ctx := context.Background()
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	for _, tc := range []struct {
+		id       string
+		provider string
+		model    string
+	}{
+		{"p1", "anthropic", "claude-sonnet-4-6"},
+		{"p2", "anthropic", "claude-haiku-3"},
+		{"p3", "openai-responses", "gpt-4o"},
+		{"p4", "gemini", "gemini-2.5-pro"},
+	} {
+		tr := makeTrace(tc.id, "success", "execution", tc.model, base, 1000, 1, types.TokenUsage{Input: 10, Output: 20})
+		tr.Config.Provider.Type = tc.provider
+		if err := fs.StoreTrace(ctx, tr); err != nil {
+			t.Fatalf("StoreTrace %s: %v", tc.id, err)
+		}
+	}
+
+	cases := []struct {
+		provider string
+		wantIDs  []string
+	}{
+		{"anthropic", []string{"p1", "p2"}},
+		{"openai-responses", []string{"p3"}},
+		{"gemini", []string{"p4"}},
+		{"bedrock", nil},
+	}
+	for _, tc := range cases {
+		got, err := fs.QueryTraces(ctx, types.TraceFilter{Provider: tc.provider})
+		if err != nil {
+			t.Fatalf("QueryTraces %q: %v", tc.provider, err)
+		}
+		gotIDs := make([]string, len(got))
+		for i, tr := range got {
+			gotIDs[i] = tr.ID
+		}
+		sort.Strings(gotIDs)
+		want := append([]string{}, tc.wantIDs...)
+		sort.Strings(want)
+		if len(gotIDs) != len(want) {
+			t.Errorf("provider=%q: got %v, want %v", tc.provider, gotIDs, want)
+			continue
+		}
+		for i := range gotIDs {
+			if gotIDs[i] != want[i] {
+				t.Errorf("provider=%q: got %v, want %v", tc.provider, gotIDs, want)
+				break
+			}
+		}
 	}
 }
 
