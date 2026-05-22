@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -919,16 +920,45 @@ func openTraceReader(path string, stdin io.Reader) (io.Reader, io.Closer, error)
 // (16 MiB max token size). RunTrace serialisations regularly exceed
 // the default 64 KiB Scanner limit because RunConfig embeds the full
 // system prompt and tool descriptors; without the raised cap, large
-// traces would surface as a parse error rather than an ingest.
+// traces would surface as a parse error rather than an ingest. A
+// record that *still* exceeds 16 MiB triggers bufio.ErrTooLong and
+// permanently exhausts the scanner — recovery requires constructing
+// a new scanner over the same underlying reader, matching the pattern
+// in harness/cmd/stirrup/cmd/trace_grep.go and types/trace/reader.go.
 func ingestReader(ctx context.Context, r io.Reader, source string, store *lakehouse.FileStore, seen map[string]struct{}, stderr io.Writer) (int, int) {
 	errLinef := func(format string, args ...any) {
 		_, _ = fmt.Fprintf(stderr, format, args...)
 	}
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	var ingested, errors int
+	newScanner := func() *bufio.Scanner {
+		s := bufio.NewScanner(r)
+		s.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+		return s
+	}
+	scanner := newScanner()
+	var ingested, errCount int
 	lineNo := 0
-	for scanner.Scan() {
+	for {
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				// bufio.ErrTooLong leaves the scanner permanently
+				// exhausted; without resetting it, every subsequent
+				// line on the same source is dropped silently and
+				// the operator sees only the summary count. Reset
+				// against the same underlying reader (the byte
+				// stream is already past the oversized line) and
+				// continue.
+				if errors.Is(err, bufio.ErrTooLong) {
+					lineNo++
+					errLinef("ingest: %s line %d: line exceeds 16 MiB scanner cap; skipping\n", source, lineNo)
+					errCount++
+					scanner = newScanner()
+					continue
+				}
+				errLinef("ingest: %s: read error: %v\n", source, err)
+				errCount++
+			}
+			return ingested, errCount
+		}
 		lineNo++
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -937,12 +967,12 @@ func ingestReader(ctx context.Context, r io.Reader, source string, store *lakeho
 		var trace types.RunTrace
 		if err := json.Unmarshal(line, &trace); err != nil {
 			errLinef("ingest: %s line %d: parse error: %v\n", source, lineNo, err)
-			errors++
+			errCount++
 			continue
 		}
 		if err := lakehouse.ValidateID(trace.ID); err != nil {
 			errLinef("ingest: %s line %d: invalid trace %v\n", source, lineNo, err)
-			errors++
+			errCount++
 			continue
 		}
 		if _, dup := seen[trace.ID]; dup {
@@ -950,17 +980,12 @@ func ingestReader(ctx context.Context, r io.Reader, source string, store *lakeho
 		}
 		if err := store.StoreTrace(ctx, trace); err != nil {
 			errLinef("ingest: %s line %d: store error: %v\n", source, lineNo, err)
-			errors++
+			errCount++
 			continue
 		}
 		seen[trace.ID] = struct{}{}
 		ingested++
 	}
-	if err := scanner.Err(); err != nil {
-		errLinef("ingest: %s: read error: %v\n", source, err)
-		errors++
-	}
-	return ingested, errors
 }
 
 // buildLabVsProductionReport constructs a LabVsProductionReport from production

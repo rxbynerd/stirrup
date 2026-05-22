@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"os"
@@ -16,6 +17,11 @@ import (
 	"github.com/rxbynerd/stirrup/eval/lakehouse"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// errInjectedRead is the sentinel surfaced by the io.Pipe writer in
+// TestCmdIngest_ScannerReadError so the scanner.Err() path is exercised
+// with a non-EOF error.
+var errInjectedRead = errors.New("injected read error")
 
 // --- run() dispatch tests ---
 
@@ -1386,6 +1392,97 @@ func TestRun_IngestDispatch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(lhPath, "traces", "dispatched.json")); err != nil {
 		t.Errorf("expected dispatched trace to be written: %v", err)
+	}
+}
+
+// TestCmdIngest_ScannerReadError pins the scanner-read-error stderr
+// surface. An io.Pipe whose write end closes with a non-EOF error
+// must surface that error on stderr and increment the error count
+// rather than silently exiting 0. The exit code is 1 here because no
+// traces ingest before the read fails.
+func TestCmdIngest_ScannerReadError(t *testing.T) {
+	dir := t.TempDir()
+	lhPath := filepath.Join(dir, "lh")
+
+	pr, pw := io.Pipe()
+	// Close the write end with an injected error; the scanner will
+	// surface it as scanner.Err() != nil at the first Scan() call.
+	go func() {
+		_ = pw.CloseWithError(errInjectedRead)
+	}()
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", "-", "--lakehouse", lhPath}, pr, &stderr)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1 (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "read error") {
+		t.Errorf("stderr missing read-error message: %q", stderr.String())
+	}
+}
+
+// TestCmdIngest_LargeLineSurvivesBuffer pins the enlarged scanner cap
+// as an executable invariant. A RunTrace whose JSON serialisation
+// exceeds the default 64 KiB bufio.Scanner cap (RunConfig embeds the
+// full system prompt) must still ingest. A regression that dropped
+// the scanner.Buffer call would fail here even though smaller fixtures
+// would silently keep passing.
+func TestCmdIngest_LargeLineSurvivesBuffer(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "big.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	// 128 KiB system prompt — well past the 64 KiB default cap, well
+	// inside the 16 MiB cap the ingest configures.
+	bigPrompt := strings.Repeat("x", 128*1024)
+	trace := types.RunTrace{
+		ID:      "big",
+		Outcome: "success",
+		Config:  types.RunConfig{SystemPromptOverride: bigPrompt},
+	}
+	line := traceJSONLine(t, trace)
+	if err := os.WriteFile(tracePath, []byte(line+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(lhPath, "traces", "big.json")); err != nil {
+		t.Errorf("expected large trace to be written: %v", err)
+	}
+}
+
+// TestCmdIngest_OversizedLineSkippedAndRecovered pins the
+// bufio.ErrTooLong recovery contract. A JSONL stream with one line
+// past the 16 MiB scanner cap, followed by a valid line, must report
+// the oversized line on stderr and then ingest the subsequent valid
+// line — the regression before this fix would silently drop every
+// line after the oversized one.
+func TestCmdIngest_OversizedLineSkippedAndRecovered(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "mixed.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	// 17 MiB of payload pushes the line past the 16 MiB scanner cap.
+	oversize := strings.Repeat("a", 17*1024*1024)
+	good := traceJSONLine(t, types.RunTrace{ID: "after-recovery", Outcome: "success"})
+	if err := os.WriteFile(tracePath, []byte(oversize+"\n"+good+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "exceeds 16 MiB") {
+		t.Errorf("stderr missing oversized-line message: %q", stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(lhPath, "traces", "after-recovery.json")); err != nil {
+		t.Errorf("expected post-recovery trace to be written: %v", err)
 	}
 }
 
