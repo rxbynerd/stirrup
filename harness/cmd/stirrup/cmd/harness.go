@@ -708,6 +708,12 @@ func init() {
 	f := harnessCmd.Flags()
 	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
 	f.String("output-runconfig", "", "Write the resolved RunConfig as JSON to <path> (use '-' for stdout) and exit without running. Useful for capturing the exact config a flag-only invocation would have used. Validation must pass first; the path is not written on a validator error.")
+
+	// --output-runconfig accepts a path or "-" for stdout. The .json
+	// hint nudges the shell toward the conventional extension; "-" is
+	// a literal one-character argument no completion engine needs to
+	// suggest, so the file-name completion alone is sufficient.
+	_ = harnessCmd.MarkFlagFilename("output-runconfig", "json")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
