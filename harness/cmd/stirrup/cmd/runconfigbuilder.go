@@ -77,16 +77,14 @@ type RunConfigSources struct {
 //
 // Resolution order (lowest -> highest precedence):
 //  1. Defaults supplied by flag DefValues.
-//  2. Base RunConfig from one of:
-//     a. --config <path> or --config - (explicit flag wins outright).
-//     b. STIRRUP_CONFIG env var (path or "-"; consulted only when the
-//        --config flag was not passed).
-//     c. Piped stdin auto-detected when ConfigPath is empty and Stdin
-//        is non-TTY.
-//     The base sources are mutually exclusive; combining a path-shaped
-//     source (--config or STIRRUP_CONFIG=<path>) with piped stdin is
-//     a hard error so silent precedence surprises cannot happen in
-//     scripted pipelines.
+//  2. Base RunConfig from --config <path>, --config -, the
+//     STIRRUP_CONFIG env var (path or "-", consulted only when the
+//     --config flag was not passed), or piped stdin auto-detected
+//     when ConfigPath is empty and Stdin is non-TTY. The base
+//     sources are mutually exclusive; combining a path-shaped source
+//     (--config or STIRRUP_CONFIG=<path>) with piped stdin is a hard
+//     error so silent precedence surprises cannot happen in scripted
+//     pipelines.
 //  3. Explicit flag overrides via applyOverrides (Changed()-gated, so
 //     a flag at its default value never clobbers a base field).
 //  4. applyAnthropicWIFOverrides (env-var + flag federation folding

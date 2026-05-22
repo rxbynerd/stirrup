@@ -21,23 +21,59 @@ fails fast with a clear error rather than being silently dropped.
 
 ## Precedence
 
-When `--config`, piped stdin, or explicit flags are passed, the order
-of precedence is:
+When `--config`, piped stdin, `STIRRUP_CONFIG`, or explicit flags
+are passed, the order of precedence is:
 
-1. **Base config** — either `--config <path>` (file) or stdin
-   (`--config -`, or auto-detected on a non-TTY pipe). Mutually
-   exclusive: passing both is a hard error so the operator never
-   has to guess which source won.
+1. **Base config** — one of the following, in descending priority:
+
+   | Rank | Source | Notes |
+   |---|---|---|
+   | 1 | `--config <path>` flag | Explicit. Wins outright. |
+   | 2 | `--config -` flag | Reads the base from piped stdin. |
+   | 3 | Auto-detected piped stdin | Triggered when `--config` is absent and stdin is a pipe or a redirected regular file (not a TTY). |
+   | 4 | `STIRRUP_CONFIG` env var | Filesystem path, or the literal `-` to opt into stdin. Consulted only when `--config` is absent. |
+
+   The four sources are mutually exclusive. Combining a path-shaped
+   source (`--config <path>` or `STIRRUP_CONFIG=<path>`) with piped
+   stdin is a hard error so operators never have to guess which
+   source won. `STIRRUP_CONFIG=-` with piped stdin is allowed because
+   the env var is opting into the stdin path, not naming a separate
+   base.
 2. **Explicit flags** — flags whose `cmd.Flags().Changed(...)` bit is
    set replace the corresponding base field.
 3. **Defaults** — flags left at their default value do **not**
    override the base. This is what makes `--config` ergonomic:
    defaults can stay defaults while the file's intent is preserved.
 
+When the env var is the chosen source, the harness emits a single
+`slog.Debug` line naming the path (or `-`) so operators can audit
+precedence at debug log level without grepping the source.
+
 The positional `prompt` argument is a fallback only. It fills the
 prompt slot when the base omits it and `--prompt` is not set, but
 neither the base's `prompt` nor an explicit `--prompt` is overridden
 by a positional.
+
+### `STIRRUP_CONFIG` ergonomics
+
+`STIRRUP_CONFIG` mirrors `KUBECONFIG` and `AWS_CONFIG_FILE`: setting
+it once per shell session removes the need to retype `--config` on
+every invocation, while leaving the flag itself available for ad-hoc
+overrides.
+
+```sh
+export STIRRUP_CONFIG="$HOME/.config/stirrup/default.json"
+
+# Uses the env-var config.
+stirrup harness --prompt "explain this repo"
+
+# Explicit --config wins over the env var for this one invocation.
+stirrup harness --config ./experimental.json --prompt "try the new model"
+
+# Pipe a config in and ignore the env var path; STIRRUP_CONFIG=- opts
+# into stdin without naming a separate source.
+STIRRUP_CONFIG=- some-tool emit-config | stirrup harness --prompt "x"
+```
 
 ## Building RunConfigs interactively
 
