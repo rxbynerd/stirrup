@@ -33,11 +33,18 @@ func init() {
 
 // evalCompletionSubcommands enumerates the top-level subcommands. It
 // is reused across every script so a new subcommand only needs to be
-// added in one place.
+// added in one place. The "completion" entry is included so
+// `stirrup-eval completion <TAB>` itself offers completions — the
+// shell-name suggestions land in the flag-completion path rather than
+// the positional-argument path because the hand-rolled scripts route
+// non-dash tokens through evalCompletionFlags. A structural fix that
+// honours positional arguments would require reshaping every emit*
+// helper; the current routing is a deliberate trade-off.
 var evalCompletionSubcommands = []string{
 	"baseline",
 	"compare",
 	"compare-to-production",
+	"completion",
 	"convert",
 	"drift",
 	"mine-failures",
@@ -47,7 +54,10 @@ var evalCompletionSubcommands = []string{
 // evalCompletionFlags maps each subcommand to the flag names it
 // accepts. The ordering matches the flag declarations in cmdRun /
 // cmdCompare / etc. so a reader can cross-reference at a glance.
-// Flag names omit the leading dash.
+// Flag names omit the leading dash. The "completion" entry holds the
+// supported shell names rather than true flag names — the hand-rolled
+// scripts have no positional-argument completion path, so the shells
+// are surfaced through the flag-name lookup so they remain reachable.
 var evalCompletionFlags = map[string][]string{
 	"run":                   {"suite", "harness", "output", "concurrency", "dry-run", "junit"},
 	"compare":               {"current", "baseline"},
@@ -56,6 +66,7 @@ var evalCompletionFlags = map[string][]string{
 	"drift":                 {"lakehouse", "window", "compare-window", "mode", "model"},
 	"compare-to-production": {"lakehouse", "results", "experiment-id", "after", "before", "mode", "model", "output"},
 	"convert":               {"from", "to-junit"},
+	"completion":            {"bash", "zsh", "fish", "powershell"},
 }
 
 // evalCompletionRunModes is the closed-set value list for the -mode

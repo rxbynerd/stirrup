@@ -104,6 +104,17 @@ func TestEvalCompletionScripts_MentionEverySubcommand(t *testing.T) {
 					t.Errorf("%s script missing mode %q", shell, mode)
 				}
 			}
+			// The completion subcommand routes its shell-name suggestions
+			// through evalCompletionFlags rather than a positional-argument
+			// path, so every supported shell name must surface in the
+			// rendered script. A regression that drops the completion
+			// entry from evalCompletionFlags would silently revert
+			// `stirrup-eval completion <TAB>` to producing no suggestions.
+			for _, sh := range evalCompletionFlags["completion"] {
+				if !strings.Contains(body, sh) {
+					t.Errorf("%s script missing shell name %q for completion subcommand", shell, sh)
+				}
+			}
 		})
 	}
 }
@@ -117,6 +128,7 @@ func TestEvalCompletionFlagMap_TracksDispatcher(t *testing.T) {
 	dispatcherSubs := []string{
 		"run", "compare", "compare-to-production",
 		"baseline", "mine-failures", "drift", "convert",
+		"completion",
 	}
 	if len(evalCompletionSubcommands) != len(dispatcherSubs) {
 		t.Fatalf("len(evalCompletionSubcommands) = %d, dispatcher has %d",
