@@ -14,16 +14,16 @@ func init() {
 
 // stirrup-eval uses the stdlib `flag` package rather than cobra, so the
 // completion scripts below are hand-rolled rather than generated. The
-// flag surface is small (seven subcommands, fewer than thirty distinct
-// flags total) and stable enough that maintaining hand-rolled scripts
-// is cheaper than dragging cobra into the eval module.
+// flag surface is small (eight subcommands, fewer than thirty-five
+// distinct flags total) and stable enough that maintaining hand-rolled
+// scripts is cheaper than dragging cobra into the eval module.
 //
 // Each script offers:
 //   - subcommand completion at position 1 (run, compare, …)
 //   - flag-name completion within a subcommand
 //   - filesystem path completion for path-shaped flags (-suite, -output,
 //     -junit, -harness, -from, -to-junit, -current, -baseline,
-//     -lakehouse, -results)
+//     -lakehouse, -results, -trace)
 //   - dynamic value completion for -mode (the closed set lives in
 //     types/runconfig.go, exposed via types.ValidRunModeValues())
 //
@@ -47,6 +47,7 @@ var evalCompletionSubcommands = []string{
 	"completion",
 	"convert",
 	"drift",
+	"ingest",
 	"mine-failures",
 	"run",
 }
@@ -65,6 +66,7 @@ var evalCompletionFlags = map[string][]string{
 	"mine-failures":         {"lakehouse", "after", "limit", "output"},
 	"drift":                 {"lakehouse", "window", "compare-window", "mode", "model"},
 	"compare-to-production": {"lakehouse", "results", "experiment-id", "after", "before", "mode", "model", "output"},
+	"ingest":                {"trace", "lakehouse"},
 	"convert":               {"from", "to-junit"},
 	"completion":            {"bash", "zsh", "fish", "powershell"},
 }
@@ -131,7 +133,7 @@ _stirrup_eval() {
     case "$prev" in
         -suite|-from) _filedir hcl; return ;;
         -harness) _filedir; return ;;
-        -output|-junit|-to-junit|-current|-baseline|-results) _filedir; return ;;
+        -output|-junit|-to-junit|-current|-baseline|-results|-trace) _filedir; return ;;
         -lakehouse) _filedir -d; return ;;
         -mode)
             COMPREPLY=( $(compgen -W "$modes" -- "$cur") )
@@ -183,7 +185,7 @@ _stirrup_eval() {
 
     case "${words[CURRENT-1]}" in
         -suite|-from) _files -g '*.hcl'; return ;;
-        -harness|-output|-junit|-to-junit|-current|-baseline|-results) _files; return ;;
+        -harness|-output|-junit|-to-junit|-current|-baseline|-results|-trace) _files; return ;;
         -lakehouse) _path_files -/; return ;;
         -mode) _describe 'mode' modes; return ;;
     esac

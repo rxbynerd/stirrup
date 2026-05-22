@@ -154,7 +154,7 @@ func TestEvalCompletionFishScript_QuotesValues(t *testing.T) {
 func TestEvalCompletionFlagMap_TracksDispatcher(t *testing.T) {
 	dispatcherSubs := []string{
 		"run", "compare", "compare-to-production",
-		"baseline", "mine-failures", "drift", "convert",
+		"baseline", "mine-failures", "drift", "ingest", "convert",
 		"completion",
 	}
 	if len(evalCompletionSubcommands) != len(dispatcherSubs) {
