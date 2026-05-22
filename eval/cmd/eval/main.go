@@ -873,6 +873,14 @@ func cmdIngest(args []string, stdin io.Reader, stderr io.Writer) int {
 	var ingested, errors int
 
 	for _, path := range traces {
+		// Cheap between-files cancellation check: a SIGINT mid-ingest
+		// against many --trace inputs reaches an interruption point
+		// here without paying the per-line check cost on the common
+		// case.
+		if err := ctx.Err(); err != nil {
+			errLinef("ingest: cancelled: %v\n", err)
+			break
+		}
 		r, closer, openErr := openTraceReader(path, stdin)
 		if openErr != nil {
 			errLinef("ingest: %v\n", openErr)
@@ -938,6 +946,17 @@ func ingestReader(ctx context.Context, r io.Reader, source string, store types.T
 	var ingested, errCount int
 	lineNo := 0
 	for {
+		// Non-blocking cancellation check between lines. FileStore's
+		// StoreTrace currently ignores its ctx argument (the
+		// `_ context.Context` parameter is a known gap until a remote
+		// store implementation lands), so the loop body itself is
+		// where SIGINT must surface during a multi-GB ingest.
+		select {
+		case <-ctx.Done():
+			errLinef("ingest: %s: cancelled at line %d: %v\n", source, lineNo, ctx.Err())
+			return ingested, errCount
+		default:
+		}
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {
 				// bufio.ErrTooLong leaves the scanner permanently
