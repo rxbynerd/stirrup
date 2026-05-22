@@ -1006,12 +1006,18 @@ func ingestReader(ctx context.Context, r io.Reader, source string, store types.T
 		if _, dup := seen[trace.ID]; dup {
 			errLinef("ingest: %s line %d: duplicate trace ID %q (overwriting previous entry)\n", source, lineNo, trace.ID)
 		}
+		// Mark the ID as seen before the store attempt, not after.
+		// Postponing the assignment to the success branch would mean
+		// a transient StoreTrace failure (e.g. disk-full, then freed)
+		// followed by a duplicate of the same ID later in the stream
+		// would *silently* overwrite the eventual successful write,
+		// because the duplicate check above would not trip.
+		seen[trace.ID] = struct{}{}
 		if err := store.StoreTrace(ctx, trace); err != nil {
 			errLinef("ingest: %s line %d: store error: %v\n", source, lineNo, err)
 			errCount++
 			continue
 		}
-		seen[trace.ID] = struct{}{}
 		ingested++
 	}
 }
