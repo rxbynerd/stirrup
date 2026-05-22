@@ -1,5 +1,7 @@
 package types
 
+//go:generate go run ../scripts/gen-runconfig-docs.go
+
 import (
 	"fmt"
 	"log/slog"
