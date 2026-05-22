@@ -825,6 +825,17 @@ func (r *repeatedString) Set(v string) error {
 //   - 1 when every line errored, the input was empty, or a fatal error
 //     occurred (missing flag, file-not-found, lakehouse open failure).
 func cmdIngest(args []string, stdin io.Reader, stderr io.Writer) int {
+	// errLine and errLinef shorten the per-message stderr write
+	// pattern. Partial-write errors on the operator's terminal (or on
+	// io.Discard in tests) are unrecoverable and not worth threading
+	// back through every call site.
+	errLine := func(s string) {
+		_, _ = fmt.Fprintln(stderr, s)
+	}
+	errLinef := func(format string, args ...any) {
+		_, _ = fmt.Fprintf(stderr, format, args...)
+	}
+
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var traces repeatedString
@@ -835,17 +846,17 @@ func cmdIngest(args []string, stdin io.Reader, stderr io.Writer) int {
 	}
 
 	if len(traces) == 0 {
-		fmt.Fprintln(stderr, "ingest: at least one --trace is required")
+		errLine("ingest: at least one --trace is required")
 		return 1
 	}
 	if *lakehousePath == "" {
-		fmt.Fprintln(stderr, "ingest: --lakehouse is required")
+		errLine("ingest: --lakehouse is required")
 		return 1
 	}
 
 	store, err := lakehouse.NewFileStore(*lakehousePath)
 	if err != nil {
-		fmt.Fprintf(stderr, "ingest: opening lakehouse: %v\n", err)
+		errLinef("ingest: opening lakehouse: %v\n", err)
 		return 1
 	}
 	defer func() { _ = store.Close() }()
@@ -863,7 +874,7 @@ func cmdIngest(args []string, stdin io.Reader, stderr io.Writer) int {
 	for _, path := range traces {
 		r, closer, openErr := openTraceReader(path, stdin)
 		if openErr != nil {
-			fmt.Fprintf(stderr, "ingest: %v\n", openErr)
+			errLinef("ingest: %v\n", openErr)
 			return 1
 		}
 
@@ -876,7 +887,7 @@ func cmdIngest(args []string, stdin io.Reader, stderr io.Writer) int {
 		}
 	}
 
-	fmt.Fprintf(stderr, "ingested %d traces (%d errors) into %s\n", ingested, errors, *lakehousePath)
+	errLinef("ingested %d traces (%d errors) into %s\n", ingested, errors, *lakehousePath)
 
 	if ingested == 0 {
 		return 1
@@ -910,6 +921,9 @@ func openTraceReader(path string, stdin io.Reader) (io.Reader, io.Closer, error)
 // system prompt and tool descriptors; without the raised cap, large
 // traces would surface as a parse error rather than an ingest.
 func ingestReader(ctx context.Context, r io.Reader, source string, store *lakehouse.FileStore, seen map[string]struct{}, stderr io.Writer) (int, int) {
+	errLinef := func(format string, args ...any) {
+		_, _ = fmt.Fprintf(stderr, format, args...)
+	}
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	var ingested, errors int
@@ -922,15 +936,15 @@ func ingestReader(ctx context.Context, r io.Reader, source string, store *lakeho
 		}
 		var trace types.RunTrace
 		if err := json.Unmarshal(line, &trace); err != nil {
-			fmt.Fprintf(stderr, "ingest: %s line %d: parse error: %v\n", source, lineNo, err)
+			errLinef("ingest: %s line %d: parse error: %v\n", source, lineNo, err)
 			errors++
 			continue
 		}
 		if _, dup := seen[trace.ID]; dup && trace.ID != "" {
-			fmt.Fprintf(stderr, "ingest: %s line %d: duplicate trace ID %q (overwriting previous entry)\n", source, lineNo, trace.ID)
+			errLinef("ingest: %s line %d: duplicate trace ID %q (overwriting previous entry)\n", source, lineNo, trace.ID)
 		}
 		if err := store.StoreTrace(ctx, trace); err != nil {
-			fmt.Fprintf(stderr, "ingest: %s line %d: store error: %v\n", source, lineNo, err)
+			errLinef("ingest: %s line %d: store error: %v\n", source, lineNo, err)
 			errors++
 			continue
 		}
@@ -938,7 +952,7 @@ func ingestReader(ctx context.Context, r io.Reader, source string, store *lakeho
 		ingested++
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(stderr, "ingest: %s: read error: %v\n", source, err)
+		errLinef("ingest: %s: read error: %v\n", source, err)
 		errors++
 	}
 	return ingested, errors
