@@ -205,18 +205,18 @@ const (
 // at the fields the reader cares about. Re-defining the shape locally
 // avoids an internal-package import while keeping the decoder lean.
 type streamedEvent struct {
-	Kind          string             `json:"kind"`
-	SchemaVersion string             `json:"schemaVersion,omitempty"`
-	RunID         string             `json:"runId,omitempty"`
-	StartedAt     *time.Time         `json:"startedAt,omitempty"`
-	CompletedAt   *time.Time         `json:"completedAt,omitempty"`
-	Config        *types.RunConfig   `json:"config,omitempty"`
-	Turn          int                `json:"turn,omitempty"`
-	ModelInput    *types.ModelInput  `json:"modelInput,omitempty"`
-	ModelOutput   []types.ContentBlock `json:"modelOutput,omitempty"`
+	Kind          string                 `json:"kind"`
+	SchemaVersion string                 `json:"schemaVersion,omitempty"`
+	RunID         string                 `json:"runId,omitempty"`
+	StartedAt     *time.Time             `json:"startedAt,omitempty"`
+	CompletedAt   *time.Time             `json:"completedAt,omitempty"`
+	Config        *types.RunConfig       `json:"config,omitempty"`
+	Turn          int                    `json:"turn,omitempty"`
+	ModelInput    *types.ModelInput      `json:"modelInput,omitempty"`
+	ModelOutput   []types.ContentBlock   `json:"modelOutput,omitempty"`
 	ToolCalls     []types.ToolCallRecord `json:"toolCalls,omitempty"`
-	ToolCall      *types.ToolCallRecord `json:"toolCall,omitempty"`
-	Trace         *types.RunTrace    `json:"trace,omitempty"`
+	ToolCall      *types.ToolCallRecord  `json:"toolCall,omitempty"`
+	Trace         *types.RunTrace        `json:"trace,omitempty"`
 }
 
 // kindOnly is used to peek at the discriminator without decoding the

@@ -65,20 +65,20 @@ const CurrentSchemaVersion = "1"
 // pointers so a future kind addition does not break older readers: an
 // unrecognised Kind round-trips as opaque bytes.
 type Event struct {
-	Kind          EventKind       `json:"kind"`
-	SchemaVersion string          `json:"schemaVersion,omitempty"`
-	RunID         string          `json:"runId,omitempty"`
-	StartedAt     *time.Time      `json:"startedAt,omitempty"`
-	CompletedAt   *time.Time      `json:"completedAt,omitempty"`
+	Kind          EventKind        `json:"kind"`
+	SchemaVersion string           `json:"schemaVersion,omitempty"`
+	RunID         string           `json:"runId,omitempty"`
+	StartedAt     *time.Time       `json:"startedAt,omitempty"`
+	CompletedAt   *time.Time       `json:"completedAt,omitempty"`
 	Config        *types.RunConfig `json:"config,omitempty"`
 
 	// Turn / ToolCall payload — populated for turn_record and
 	// tool_call_record respectively.
-	Turn          int                  `json:"turn,omitempty"`
-	ModelInput    *types.ModelInput    `json:"modelInput,omitempty"`
-	ModelOutput   []types.ContentBlock `json:"modelOutput,omitempty"`
-	ToolCalls     []types.ToolCallRecord `json:"toolCalls,omitempty"`
-	ToolCall      *types.ToolCallRecord `json:"toolCall,omitempty"`
+	Turn        int                    `json:"turn,omitempty"`
+	ModelInput  *types.ModelInput      `json:"modelInput,omitempty"`
+	ModelOutput []types.ContentBlock   `json:"modelOutput,omitempty"`
+	ToolCalls   []types.ToolCallRecord `json:"toolCalls,omitempty"`
+	ToolCall    *types.ToolCallRecord  `json:"toolCall,omitempty"`
 
 	// Trace summary — populated for run_finished events. Embedding the
 	// full RunTrace here keeps the backward-compat reader's job trivial:

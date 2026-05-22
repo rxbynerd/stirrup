@@ -7,8 +7,39 @@ subcommand family inspects those files first-party so operators do
 not have to reinvent the wheel with `cat`, `jq`, and ad-hoc shell.
 
 This page is the operator walkthrough. For the wire schema, see the
-`types.RunTrace`, `types.TurnTrace`, and `types.ToolCallSummary`
-definitions in [`types/runtrace.go`](../types/runtrace.go).
+`types.RunTrace`, `types.TurnTrace`, `types.TurnRecord`, and
+`types.ToolCallSummary` definitions in
+[`types/runtrace.go`](../types/runtrace.go).
+
+## On-disk shape
+
+A JSONL trace file is a stream of one-line JSON events, each carrying
+a `kind` discriminator. A complete run produces:
+
+```jsonl
+{"kind":"run_started","schemaVersion":"1","runId":"...","config":{...redacted...},"startedAt":"..."}
+{"kind":"turn_record","turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...]}
+{"kind":"tool_call_record","turn":1,"name":"read_file","input":{...},"output":"..."}
+{"kind":"turn_record","turn":2,"modelInput":{...},"modelOutput":[...]}
+{"kind":"run_finished","trace":{...RunTrace summary...},"completedAt":"..."}
+```
+
+`turn_record` carries the full transcript the model saw and produced
+that turn, including raw tool inputs and outputs. `tool_call_record`
+is emitted in addition so a live consumer sees each call as soon as
+it lands. `run_finished` carries the same `RunTrace` summary the
+legacy single-blob format used; `stirrup trace show / stats / grep`
+read it transparently regardless of which on-disk shape produced it.
+
+Lines are flushed after each write, so a `SIGKILL`'d run leaves a
+JSONL file that parses up to the last completed event. A trace that
+predates the streaming format (one single-line `RunTrace` per file)
+is read as if it were a streaming file containing only the
+`run_finished` event.
+
+`stirrup trace show` and the rest of the `stirrup trace` family
+operate on the same `run_finished`-equivalent shape so operator
+workflows are unchanged across the format transition.
 
 ## Quick choice
 

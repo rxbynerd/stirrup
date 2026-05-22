@@ -314,10 +314,10 @@ func TestReader_StreamingFormat_NextYieldsRunFinishedTrace(t *testing.T) {
 // the backward-compatibility AC of #270.
 func TestReader_LegacyAndStreamingParseEquivalent(t *testing.T) {
 	finalOutcome := types.RunTrace{
-		ID:       "run-shared",
-		Turns:    2,
-		Outcome:  "success",
-		Config:   types.RunConfig{RunID: "run-shared"},
+		ID:      "run-shared",
+		Turns:   2,
+		Outcome: "success",
+		Config:  types.RunConfig{RunID: "run-shared"},
 	}
 
 	legacy := append(mustMarshal(t, finalOutcome), '\n')
@@ -361,12 +361,12 @@ func TestReader_LegacyAndStreamingParseEquivalent(t *testing.T) {
 func TestReadRecording_StreamingFormat(t *testing.T) {
 	turns := []types.TurnRecord{
 		{
-			Turn: 1,
-			ModelInput: types.ModelInput{Model: "claude-3-5"},
+			Turn:        1,
+			ModelInput:  types.ModelInput{Model: "claude-3-5"},
 			ModelOutput: []types.ContentBlock{{Type: "text", Text: "first"}},
 		},
 		{
-			Turn: 2,
+			Turn:        2,
 			ModelOutput: []types.ContentBlock{{Type: "text", Text: "second"}},
 		},
 	}
