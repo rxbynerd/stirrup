@@ -4,3 +4,4 @@
 # has all of its files silently ignored by git).
 /stirrup
 /stirrup-eval
+tmp/*
