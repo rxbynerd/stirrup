@@ -157,6 +157,35 @@ The API executor (`executor/api.go`) implements the `Executor` interface for rea
 - **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets and formats human-readable reports.
 - **Lakehouse** (`eval/lakehouse/filestore.go`) — file-backed `TraceLakehouse` adapter for production trace metrics and recordings.
 
+### stirrup-eval subcommand conventions
+
+New subcommands added to `eval/cmd/eval/main.go` (and existing
+subcommands when touched for non-trivial work) should follow the
+testable signature pioneered by `cmdIngest`:
+
+```go
+func cmdXxx(args []string, stdin io.Reader, stderr io.Writer) int
+```
+
+- Return an `int` exit code rather than calling `log.Fatalf` or
+  `os.Exit` directly. The `run()` dispatcher in `main.go` propagates
+  the return value to the process exit code.
+- Take `stdin` and `stderr` as parameters rather than reading from
+  the package-level `os.Stdin` / `os.Stderr` globals. Tests inject
+  `strings.NewReader` and `&bytes.Buffer{}` to exercise the
+  subcommand in-process without shelling out or fighting global
+  state.
+- Per-line errors during streaming inputs (JSONL, NDJSON) are
+  reported to stderr with source/line context and do **not** abort
+  the subcommand; fatal configuration errors (missing required
+  flags, file-open failures on a named path) do abort.
+
+The older subcommands (`cmdRun`, `cmdCompare`, `cmdMineFailures`,
+etc.) still call `log.Fatalf` directly. They are not blocking new
+arrivals from adopting the testable signature — they migrate on
+their next non-trivial touch. Avoid mixing the two patterns within a
+single subcommand.
+
 ### Credential federation
 
 The `credential` package (`credential/`) provides cross-cloud authentication through a two-tier abstraction:

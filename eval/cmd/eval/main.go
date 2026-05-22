@@ -821,10 +821,22 @@ func (r *repeatedString) Set(v string) error {
 // potentially-corrupt JSONL stream produced by an interrupted
 // harness run.
 //
+// File-open failures for a -trace path are fatal and abort the entire
+// ingest; place `-` (stdin) before named paths if partial salvage on
+// open failure is required.
+//
 // Exit codes:
 //   - 0 when at least one trace was successfully ingested.
 //   - 1 when every line errored, the input was empty, or a fatal error
 //     occurred (missing flag, file-not-found, lakehouse open failure).
+//
+// Calling convention: cmdIngest takes (args, stdin, stderr) and
+// returns an int exit code rather than calling log.Fatalf / os.Exit
+// directly. This signature is the testable-subcommand convention new
+// subcommands in this package should follow (see AGENTS.md
+// "stirrup-eval subcommand conventions"); the older subcommands that
+// still call log.Fatalf are not blocking adopters of this pattern
+// from arriving — they are pending migration on their next touch.
 func cmdIngest(args []string, stdin io.Reader, stderr io.Writer) int {
 	// errLine and errLinef shorten the per-message stderr write
 	// pattern. Partial-write errors on the operator's terminal (or on
