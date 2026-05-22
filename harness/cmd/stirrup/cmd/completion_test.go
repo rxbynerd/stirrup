@@ -118,23 +118,31 @@ func TestCompletionCmd_RejectsUnknownShell(t *testing.T) {
 // for either flag from addRunConfigFlagCompletions.
 func TestFlagCompletion_EnumValues(t *testing.T) {
 	for _, tc := range []struct {
-		flag string
-		want []string
+		flag           string
+		want           []string
+		harnessCmdOnly bool // when true, --run-config does not register this flag
 	}{
-		{"mode", types.ValidRunModeValues()},
-		{"provider", types.ValidProviderTypeValues()},
-		{"executor", types.ValidExecutorTypeValues()},
-		{"edit-strategy", types.ValidEditStrategyTypeValues()},
-		{"verifier", types.ValidVerifierTypeValues()},
-		{"git-strategy", types.ValidGitStrategyTypeValues()},
-		{"transport", types.ValidTransportTypeValues()},
-		{"trace-emitter", types.ValidTraceEmitterTypeValues()},
-		{"otel-protocol", types.ValidTraceEmitterProtocolValues()},
-		{"container-runtime", types.ValidExecutorRuntimeValues()},
-		{"code-scanner", types.ValidCodeScannerTypeValues()},
-		{"guardrail", types.ValidGuardRailTypeValues()},
-		{"log-level", []string{"debug", "error", "info", "warn"}},
-		{"api-key-header", []string{"Authorization", "api-key"}},
+		{flag: "mode", want: types.ValidRunModeValues()},
+		{flag: "provider", want: types.ValidProviderTypeValues()},
+		{flag: "executor", want: types.ValidExecutorTypeValues()},
+		{flag: "edit-strategy", want: types.ValidEditStrategyTypeValues()},
+		{flag: "verifier", want: types.ValidVerifierTypeValues()},
+		{flag: "git-strategy", want: types.ValidGitStrategyTypeValues()},
+		{flag: "transport", want: types.ValidTransportTypeValues()},
+		{flag: "trace-emitter", want: types.ValidTraceEmitterTypeValues()},
+		{flag: "otel-protocol", want: types.ValidTraceEmitterProtocolValues()},
+		{flag: "container-runtime", want: types.ValidExecutorRuntimeValues()},
+		{flag: "code-scanner", want: types.ValidCodeScannerTypeValues()},
+		{flag: "guardrail", want: types.ValidGuardRailTypeValues()},
+		{flag: "log-level", want: []string{"debug", "error", "info", "warn"}},
+		{flag: "api-key-header", want: []string{"Authorization", "api-key"}},
+		// --output is harness-only: a closed three-value set surfaced via
+		// a hand-rolled RegisterFlagCompletionFunc rather than a
+		// types.Valid*Values() call. Pin the list here so a future drift
+		// between validateOutputMode and the completion registration
+		// surfaces as a test failure rather than as stale shell
+		// completions offered to operators.
+		{flag: "output", want: []string{"json", "none", "text"}, harnessCmdOnly: true},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
 			got, directive := runFlagCompletion(t, harnessCmd, tc.flag)
@@ -142,6 +150,10 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 				t.Errorf("directive = %v, want NoFileComp", directive)
 			}
 			assertStringsEqual(t, got, tc.want)
+
+			if tc.harnessCmdOnly {
+				return
+			}
 
 			// Same flags are re-registered on run-config via the shared
 			// addRunConfigFlags helper, so the run-config command must
