@@ -241,6 +241,31 @@ func TestTraceGrep_JQPathIntoArray(t *testing.T) {
 	}
 }
 
+func TestRunTraceGrepWith_JQNotEqual(t *testing.T) {
+	traces := []types.RunTrace{
+		{ID: "run-1", Outcome: "success"},
+		{ID: "run-2", Outcome: "error"},
+		{ID: "run-3", Outcome: "max_turns"},
+	}
+	path := writeTraceFile(t, traces)
+
+	pred, err := compileJQ(`.outcome != "success"`)
+	if err != nil {
+		t.Fatalf("compileJQ: %v", err)
+	}
+	var out bytes.Buffer
+	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	got := out.String()
+	if strings.Contains(got, `"id":"run-1"`) {
+		t.Errorf("!= predicate must drop success record: %q", got)
+	}
+	if !strings.Contains(got, `"id":"run-2"`) || !strings.Contains(got, `"id":"run-3"`) {
+		t.Errorf("!= predicate must keep non-success records: %q", got)
+	}
+}
+
 func TestTraceGrep_Invert(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	pred, err := compileJQ(`.outcome == "success"`)
@@ -270,24 +295,40 @@ func TestCompileJQ_Errors(t *testing.T) {
 	}
 }
 
-func TestTraceGrep_StdinPath(t *testing.T) {
-	traces := sampleTraces()
-	data, _ := json.Marshal(traces[0])
-
-	// Redirect os.Stdin to a temp file containing one record.
+// withStdinFromTraces swaps os.Stdin for a temp file containing the
+// JSONL-encoded traces and restores the original on test cleanup.
+// The subcommand stdin paths all go through tracereader.Open("-"),
+// which reads from os.Stdin directly.
+func withStdinFromTraces(t *testing.T, traces []types.RunTrace) {
+	t.Helper()
 	dir := t.TempDir()
 	tmp := filepath.Join(dir, "stdin.jsonl")
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+	var buf bytes.Buffer
+	for _, tr := range traces {
+		data, err := json.Marshal(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(data)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	f, err := os.Open(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = f.Close() }()
 	origStdin := os.Stdin
 	os.Stdin = f
-	defer func() { os.Stdin = origStdin }()
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		_ = f.Close()
+	})
+}
+
+func TestTraceGrep_StdinPath(t *testing.T) {
+	withStdinFromTraces(t, sampleTraces())
 
 	pred, _ := compileJQ(`.id == "run-1"`)
 	var out bytes.Buffer
@@ -296,6 +337,49 @@ func TestTraceGrep_StdinPath(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"id":"run-1"`) {
 		t.Errorf("stdin grep missing match: %q", out.String())
+	}
+}
+
+func TestRunTraceShowWith_StdinPath(t *testing.T) {
+	withStdinFromTraces(t, sampleTraces())
+
+	var out bytes.Buffer
+	if err := runTraceShowWith("-", &out, colorNever); err != nil {
+		t.Fatalf("show -: %v", err)
+	}
+	if !strings.Contains(out.String(), "run-1") {
+		t.Errorf("stdin show missing record: %q", out.String())
+	}
+}
+
+func TestRunTraceStatsWith_StdinPath(t *testing.T) {
+	withStdinFromTraces(t, sampleTraces())
+
+	var out bytes.Buffer
+	if err := runTraceStatsWith("-", &out, "json", 5); err != nil {
+		t.Fatalf("stats -: %v", err)
+	}
+	var stats TraceStats
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats); err != nil {
+		t.Fatalf("decode stats: %v", err)
+	}
+	if stats.RunID != "run-1" {
+		t.Errorf("stdin stats RunID = %q, want run-1", stats.RunID)
+	}
+	if stats.TotalTurns != 3 {
+		t.Errorf("stdin stats TotalTurns = %d, want 3", stats.TotalTurns)
+	}
+}
+
+func TestRunTraceTailWith_StdinPath(t *testing.T) {
+	withStdinFromTraces(t, sampleTraces())
+
+	var out bytes.Buffer
+	if err := runTraceTailWith(context.Background(), "-", &out, colorNever, false, 10*time.Millisecond); err != nil {
+		t.Fatalf("tail -: %v", err)
+	}
+	if !strings.Contains(out.String(), "run-1") {
+		t.Errorf("stdin tail missing record: %q", out.String())
 	}
 }
 
