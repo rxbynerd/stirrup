@@ -30,7 +30,10 @@ verify-docs:
     #!/usr/bin/env bash
     set -euo pipefail
     go run scripts/gen-runconfig-docs.go
-    if ! git diff --exit-code -- types/runconfig_docs.go; then
+    # Compare against HEAD, not the index: `git add` of a stale copy
+    # then `just verify-docs` would otherwise yield a false "ok" when
+    # the regenerated file matches the staged stale version.
+    if ! git diff --exit-code HEAD -- types/runconfig_docs.go; then
         echo "FAIL: types/runconfig_docs.go is stale - run \`just gen-docs\` and commit the result." >&2
         exit 1
     fi

@@ -42,6 +42,21 @@ jobs:
             types/go.mod
             eval/go.mod
 
+      - name: Verify runconfig docs are up to date
+        # Mirrors `just verify-docs`. Inlined rather than invoked via
+        # `just` to match this workflow's convention of running go
+        # tooling without an extra wrapper install step. The recipe is
+        # the source of truth; this step must regenerate to the same
+        # checked-in lookup table.
+        run: |
+          set -euo pipefail
+          go run scripts/gen-runconfig-docs.go
+          if ! git diff --exit-code HEAD -- types/runconfig_docs.go; then
+            echo "FAIL: types/runconfig_docs.go is stale - run \`just gen-docs\` and commit the result." >&2
+            exit 1
+          fi
+          echo "ok: types/runconfig_docs.go is up to date"
+
       - name: Compute version label
         id: ver
         env:
