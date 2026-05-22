@@ -41,6 +41,7 @@ Commands:
   mine-failures          Turn production failures into eval tasks
   drift                  Detect metric changes over time windows
   convert                Convert a result.json into another format (e.g. JUnit XML)
+  completion             Emit a shell completion script (bash|zsh|fish|powershell)
 
 Run "eval <command> -help" for details.
 `
@@ -81,8 +82,31 @@ func run(args []string, stdout io.Writer) int {
 		cmdCompareToProduction(args[1:])
 	case "convert":
 		cmdConvert(args[1:])
+	case "completion":
+		return cmdCompletion(args[1:], stdout)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n%s", args[0], usage)
+		return 1
+	}
+	return 0
+}
+
+// cmdCompletion writes a shell completion script for stirrup-eval to
+// stdout. The supported shells mirror those exposed by `stirrup
+// completion`; the underlying scripts are hand-rolled rather than
+// cobra-generated because the eval module does not depend on cobra
+// (see completion.go for the rationale).
+//
+// Returns the process exit code: 0 on success, 1 on a missing or
+// unsupported shell. A nil-writer error from the emit helper surfaces
+// via stderr and a non-zero exit.
+func cmdCompletion(args []string, stdout io.Writer) int {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "completion requires a shell: bash | zsh | fish | powershell")
+		return 1
+	}
+	if err := emitEvalCompletion(args[0], stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "completion: %v\n", err)
 		return 1
 	}
 	return 0
