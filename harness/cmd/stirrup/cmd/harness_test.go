@@ -5039,6 +5039,35 @@ func TestPrintRunSummary_NilTraceDoesNotPanic(t *testing.T) {
 	}
 }
 
+// TestEmitRunOutput_CancelledContextStillEmits pins the M2 fix:
+// emitRunOutput must be reachable with a usable context even when the
+// run's primary context has already been cancelled. The synthesizer's
+// concern is that a future remote sink (gcp-pubsub, gcs) honouring
+// ctx would otherwise drop every signal-cancelled run's STIRRUP_RESULT
+// silently. Today the StdoutJSONSink ignores ctx, so this test only
+// guards the dispatch site: passing a pre-cancelled ctx must still
+// produce the STIRRUP_RESULT line under --output=json. The
+// runWithConfig and runJob caller sites have been updated to build a
+// fresh context before invoking emitRunOutput; this test pins the
+// observable behaviour so a regression that re-introduces the
+// cancelled context surfaces in the test suite rather than only
+// when a remote sink ships.
+func TestEmitRunOutput_CancelledContextStillEmits(t *testing.T) {
+	rt := outputModeRunTrace()
+	cfg := &types.RunConfig{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	stdoutDone := captureStdout(t)
+	emitRunOutput(ctx, cfg, rt, "json")
+	stdout := stdoutDone()
+
+	if !strings.HasPrefix(stdout, "STIRRUP_RESULT ") {
+		t.Fatalf("stdout should start with STIRRUP_RESULT even with cancelled ctx (StdoutJSONSink does not honour ctx), got: %q", stdout)
+	}
+}
+
 // TestEmitRunOutput_TextWithNilTracePrintsNoTrace pins the
 // emitRunOutput dispatch path under --output=text when the loop
 // produced no trace at all. The text branch must surface the nil-trace

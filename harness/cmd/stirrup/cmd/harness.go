@@ -1434,14 +1434,32 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	if err != nil {
 		return fmt.Errorf("running harness: %w", err)
 	}
-	emitRunOutput(ctx, config, runTrace, opts.outputMode)
+
+	// emitRunOutput must not inherit ctx: by the time we reach here ctx
+	// may already be cancelled (signal handler fired, or the per-run
+	// timeout elapsed). StdoutJSONSink ignores its context today, but
+	// any future sink that respects cancellation — gcp-pubsub, gcs —
+	// would silently fail to emit the structured result on every
+	// cancelled run, and emitRunResult logs-and-discards sink errors.
+	// Use a fresh, short-deadline context for post-run emission so
+	// cancellation does not eat the run's answer. Mirrors the
+	// bestEffortCancel pattern in batchpoll.go.
+	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
+	defer emitCancel()
+	emitRunOutput(emitCtx, config, runTrace, opts.outputMode)
 
 	// Workspace export (issue #164). Called after the trace and
 	// resultSink so a failed upload's slog warning lands after the
 	// run's structured outcome — easier to correlate during
 	// post-mortem. When required, the error here propagates and
-	// becomes the process exit status.
-	if err := exportWorkspace(ctx, config, opts.exportWorkspaceRequired); err != nil {
+	// becomes the process exit status. Uses an independent context for
+	// the same reason as emitRunOutput above — a signal-cancelled run
+	// must still upload its workspace if the operator opted in — with
+	// a longer deadline because the GCS PUT can carry many MB of
+	// tarball.
+	exportCtx, exportCancel := context.WithTimeout(context.Background(), postRunExportTimeout)
+	defer exportCancel()
+	if err := exportWorkspace(exportCtx, config, opts.exportWorkspaceRequired); err != nil {
 		return err
 	}
 

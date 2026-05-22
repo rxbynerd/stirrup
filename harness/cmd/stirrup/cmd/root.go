@@ -37,6 +37,26 @@ func generateRunID() string {
 	return fmt.Sprintf("run-%d", time.Now().UnixNano())
 }
 
+// postRunEmitTimeout bounds the fresh context used for emitRunOutput
+// after the agentic loop returns. The loop's primary context is already
+// cancelled by the time we reach here when a signal triggered the run
+// to stop, so future remote sinks (gcp-pubsub, gcs) would otherwise
+// silently fail to emit their STIRRUP_RESULT — emitRunResult
+// logs-and-discards sink errors, hiding the loss. 10 s is the same
+// shape as the bestEffortCancel deadline in batchpoll.go: enough for a
+// single remote RPC, short enough that operators see process exit
+// without an apparent hang.
+const postRunEmitTimeout = 10 * time.Second
+
+// postRunExportTimeout bounds the fresh context used for
+// exportWorkspace after the agentic loop returns. Larger than
+// postRunEmitTimeout because the upload carries a tarball that can run
+// into the tens of MB; the GCS exporter's per-request HTTP client
+// already enforces a 5-minute upload ceiling, so this context only
+// gates the orchestration around the call. 6 minutes leaves room for
+// the exporter's internal 5 m and a small amount of setup overhead.
+const postRunExportTimeout = 6 * time.Minute
+
 // printRunSummary writes a brief run summary to stderr. Mirrors the nil
 // guard in buildRunResult: a nil RunTrace means the loop produced no
 // trace at all, and dereferencing the fields below would panic before
