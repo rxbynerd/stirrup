@@ -13,6 +13,8 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+
+	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
 
 var traceGrepCmd = &cobra.Command{
@@ -83,11 +85,30 @@ func runTraceGrepWith(ctx context.Context, path string, out io.Writer, pattern s
 		src = f
 	}
 
+	// Scanner caps match types/trace.Reader so a record that fit on
+	// write also fits on read. Sharing the constant prevents grep from
+	// silently diverging from the reader if its cap is ever changed.
 	scanner := bufio.NewScanner(src)
-	scanner.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 0, tracereader.MaxLineBytes/16), tracereader.MaxLineBytes)
 
-	for scanner.Scan() {
+	for {
 		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				// bufio.ErrTooLong is the cap-exceeded signal. Without
+				// resetting the scanner, every subsequent record on
+				// the same source is dropped silently with exit 0.
+				// Reset and continue past the oversized line, matching
+				// the recovery in tracereader.Reader.Next().
+				if errors.Is(err, bufio.ErrTooLong) {
+					scanner = bufio.NewScanner(src)
+					scanner.Buffer(make([]byte, 0, tracereader.MaxLineBytes/16), tracereader.MaxLineBytes)
+					continue
+				}
+				return fmt.Errorf("reading trace file: %w", err)
+			}
 			return nil
 		}
 		line := scanner.Bytes()
@@ -116,10 +137,6 @@ func runTraceGrepWith(ctx context.Context, path string, out io.Writer, pattern s
 			return err
 		}
 	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
-		return fmt.Errorf("reading trace file: %w", err)
-	}
-	return nil
 }
 
 func lineMatches(line []byte, pattern string, pred jqPredicate) (bool, error) {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/types"
+	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
 
 func writeTraceFile(t *testing.T, traces []types.RunTrace) string {
@@ -295,6 +296,44 @@ func TestTraceGrep_StdinPath(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"id":"run-1"`) {
 		t.Errorf("stdin grep missing match: %q", out.String())
+	}
+}
+
+func TestRunTraceGrepWith_OversizedLineSkipped(t *testing.T) {
+	// Write a valid record, then a line larger than MaxLineBytes, then
+	// a second valid record. The oversized line must be silently
+	// skipped and BOTH valid records must appear in the output.
+	traces := sampleTraces()
+	first, _ := json.Marshal(traces[0])
+	second := types.RunTrace{ID: "run-2", Outcome: "success"}
+	secondBytes, _ := json.Marshal(second)
+
+	oversized := bytes.Repeat([]byte("x"), tracereader.MaxLineBytes+128)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oversized.jsonl")
+	var buf bytes.Buffer
+	buf.Write(first)
+	buf.WriteByte('\n')
+	buf.Write(oversized)
+	buf.WriteByte('\n')
+	buf.Write(secondBytes)
+	buf.WriteByte('\n')
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pred, _ := compileJQ("")
+	var out bytes.Buffer
+	if err := runTraceGrepWith(context.Background(), path, &out, "", pred, false); err != nil {
+		t.Fatalf("grep oversized: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `"id":"run-1"`) {
+		t.Errorf("first record missing from output: %q", got)
+	}
+	if !strings.Contains(got, `"id":"run-2"`) {
+		t.Errorf("second record (after oversized line) missing — grep dropped records after the cap: %q", got)
 	}
 }
 
