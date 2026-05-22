@@ -106,7 +106,11 @@ func TestCompletionCmd_RejectsUnknownShell(t *testing.T) {
 // shells do not also append filesystem entries.
 //
 // The values are pulled from the types package directly so a new entry
-// in validRunModes (etc.) shows up here without a manual sync.
+// in validRunModes (etc.) shows up here without a manual sync. The
+// log-level and api-key-header rows carry literal value lists because
+// neither flag is backed by a validator-closed set in types/runconfig.go;
+// the rows guard against a regression that drops the staticValues call
+// for either flag from addRunConfigFlagCompletions.
 func TestFlagCompletion_EnumValues(t *testing.T) {
 	for _, tc := range []struct {
 		flag string
@@ -124,6 +128,8 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 		{"container-runtime", types.ValidExecutorRuntimeValues()},
 		{"code-scanner", types.ValidCodeScannerTypeValues()},
 		{"guardrail", types.ValidGuardRailTypeValues()},
+		{"log-level", []string{"debug", "error", "info", "warn"}},
+		{"api-key-header", []string{"Authorization", "api-key"}},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
 			got, directive := runFlagCompletion(t, harnessCmd, tc.flag)
