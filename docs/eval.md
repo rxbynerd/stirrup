@@ -422,6 +422,53 @@ table of pass rate and turns. Useful for sanity-checking that an eval
 suite's results track production behaviour rather than testing a
 distorted slice of tasks.
 
+### `ingest` — load JSONL traces into the lakehouse
+
+```bash
+./stirrup harness --trace var/traces/run.jsonl \
+  --config configs/run.json
+
+./stirrup-eval ingest \
+  --trace var/traces/run.jsonl \
+  --lakehouse var/lakehouse
+```
+
+Reads one or more JSONL trace files (as emitted by `stirrup harness
+--trace`) and writes each `RunTrace` into the lakehouse via
+`FileStore.StoreTrace`. The lakehouse directory is created if it does
+not exist.
+
+`--trace` is repeatable so a batch of runs can be ingested in one
+invocation; the literal value `-` reads from stdin so a piped harness
+run is composable:
+
+```bash
+./stirrup harness --trace - --config configs/run.json |
+  ./stirrup-eval ingest --trace - --lakehouse var/lakehouse
+```
+
+Malformed lines and per-line `StoreTrace` errors (e.g. a trace with
+an empty `ID`) are reported to stderr with a source and line number
+but do not abort the ingest — the remaining lines are still
+processed. Duplicate IDs across inputs surface as a stderr warning;
+the FileStore overwrites by filename, so the last write wins and
+re-ingesting the same JSONL is idempotent.
+
+A summary line is written to stderr on completion:
+`ingested N traces (M errors) into <lakehouse>`. The exit code is
+`0` when at least one trace was ingested, otherwise `1` (every line
+errored, the input was empty, or a fatal error such as a missing
+file).
+
+| Flag           | Default  | Description                                                              |
+|----------------|----------|--------------------------------------------------------------------------|
+| `--trace`      | required | Path to a JSONL trace file (or `-` for stdin). Repeatable.               |
+| `--lakehouse`  | required | Path to the lakehouse directory. Created if absent.                      |
+
+Recording ingest is out of scope until the live-recording emitter in
+[#248](https://github.com/rxbynerd/stirrup/issues/248) lands; a
+`--recording` flag will be added then.
+
 ---
 
 ## CI integration
