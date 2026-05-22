@@ -276,6 +276,33 @@ Walkthrough: [`azure-workload-identity.md`](azure-workload-identity.md).
 | `--deployment-environment` | (none) | OTel `deployment.environment` resource attribute (e.g. `production`, `staging`). Empty falls through to env `OTEL_DEPLOYMENT_ENVIRONMENT`, then to `local`. |
 | `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
 
+### Run output
+
+At end-of-run the harness emits a post-run summary. The `--output`
+flag selects the surface:
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--output`, `-o` | `text` | One of `text`, `json`, `none`. `text` (default) prints the freeform human-readable summary to stderr. `json` emits a single `STIRRUP_RESULT <json>` line on stdout (parseable as [`types.RunResult`](../types/result.go)) and suppresses the stderr summary. `none` suppresses both surfaces. |
+
+When `--output=json` is set alongside `resultSink.type=stdout-json`,
+the harness emits the `STIRRUP_RESULT` line exactly once — the flag
+wins because it is the more explicit signal. The wire shape is
+identical between the two paths, so consumers do not need to detect
+which surface produced the line.
+
+The exit code reflects the run outcome regardless of `--output`: a
+failed or cancelled run still exits non-zero. A cancellation
+mid-flight emits a partial `RunResult` carrying the cancellation
+outcome rather than nothing, so callers parsing the JSON line always
+see a structured record.
+
+Pair `--output=json` with a trace emitter that does not target
+stdout. The default JSONL trace writes to a file (or to nothing when
+`--trace` is unset), so the stdout channel stays reserved for the
+`STIRRUP_RESULT` line. A future JSONL emitter that writes to stdout
+would conflict with `--output=json`.
+
 ## Component-selection limits
 
 The CLI deliberately exposes only a subset of each component's

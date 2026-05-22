@@ -74,6 +74,15 @@ config a flag-only invocation *would* have used — useful for
 post-mortem replays or pinning a stable configuration. See
 [`docs/configuration.md`](docs/configuration.md#building-runconfigs-interactively).
 
+`stirrup harness --output <text|json|none>` (alias `-o`) selects the
+post-run summary surface. `text` (default) prints today's stderr
+summary, `json` emits a single `STIRRUP_RESULT` line on stdout
+parseable as [`types.RunResult`](types/result.go), and `none`
+suppresses both. The structured shape reuses the existing
+`resultSink.type=stdout-json` payload, so a `--output=json` invocation
+and a `resultSink`-configured run produce the same wire format. See
+[`docs/configuration.md`](docs/configuration.md#run-output).
+
 ### In GitHub Actions
 
 See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.yml) for an example of using `stirrup harness` in a GitHub Actions workflow via [Anthropic Workload Identity Federation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation).
