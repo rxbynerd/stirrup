@@ -5135,3 +5135,39 @@ func TestRunHarness_OutputFlagRejectsInvalidValue(t *testing.T) {
 		t.Errorf("error should name --output, got: %v", err)
 	}
 }
+
+// TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig
+// pins the S1 fix: --output must be validated before the
+// --output-runconfig dry-run branch exits, otherwise
+// `stirrup harness --output-runconfig=- --output=yaml` returns 0 and
+// captures a config the operator cannot replay (the bad flag was
+// silently dropped). Pins the ordering so a refactor that moves
+// validateOutputMode below the dry-run branch surfaces here.
+func TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	if err := cmd.Flags().Set("output", "yaml"); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	// Capture stdout so a regression that lets the dry-run branch fire
+	// surfaces as a captured config rather than a silently dropped
+	// failure.
+	getOut := captureStdout(t)
+	err := runHarness(cmd, nil)
+	stdout := getOut()
+	if err == nil {
+		t.Fatal("runHarness should reject --output=yaml even with --output-runconfig=-")
+	}
+	if !strings.Contains(err.Error(), "--output") {
+		t.Errorf("error should name --output, got: %v", err)
+	}
+	if stdout != "" {
+		t.Errorf("--output-runconfig=- should not have written to stdout when --output is invalid, got: %q", stdout)
+	}
+}

@@ -1170,6 +1170,19 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	f := cmd.Flags()
 	configPath, _ := f.GetString("config")
 
+	// Validate --output before any side effects: BuildRunConfig reads
+	// files and resolves env-var-shaped credentials, and the
+	// --output-runconfig dry-run branch below exits without running
+	// the loop. A bad --output value should not silently coexist with
+	// either path — operators expect closed-set violations to surface
+	// before the harness commits to a config-resolution or capture
+	// outcome. --output is not a RunConfig field, so this check has no
+	// dependency on BuildRunConfig.
+	outputMode, _ := f.GetString("output")
+	if err := validateOutputMode(outputMode); err != nil {
+		return err
+	}
+
 	cfg, err := BuildRunConfig(RunConfigSources{
 		Stdin:      os.Stdin,
 		ConfigPath: configPath,
@@ -1192,10 +1205,6 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	exportRequired, _ := f.GetBool("export-workspace-required")
-	outputMode, _ := f.GetString("output")
-	if err := validateOutputMode(outputMode); err != nil {
-		return err
-	}
 	return runWithConfig(cfg, runOptions{
 		exportWorkspaceRequired: exportRequired,
 		outputMode:              outputMode,
