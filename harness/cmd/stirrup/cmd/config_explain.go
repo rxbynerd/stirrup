@@ -25,7 +25,7 @@ Examples:
   stirrup config explain mode
   stirrup config explain provider.batch.maxWaitSeconds
   stirrup config explain provider.batch
-  stirrup config explain provider.*
+  stirrup config explain "provider.*"
   stirrup config explain --list
   stirrup config explain --root
   stirrup config explain provider.type --output=json
@@ -43,7 +43,25 @@ func init() {
 	f := configExplainCmd.Flags()
 	f.Bool("list", false, "Print every leaf field path on RunConfig, alphabetised, one per line.")
 	f.Bool("root", false, "Print the top-level RunConfig overview.")
-	f.String("output", "text", "Output format: text|json. JSON emits the FieldDoc shape verbatim for machine consumption.")
+	f.String("output", "text", "Output format: text|json. With a field path: FieldDoc object; with --list: []string; with a wildcard suffix: []FieldDoc array.")
+
+	// Closed-set flag completion mirrors runconfigflags.go's
+	// addRunConfigFlagCompletions: registering the value list lets
+	// `stirrup config explain --output <TAB>` complete to text|json.
+	// The positional <field-path> completion is wired via the
+	// ValidArgsFunction below — operators get `--list` parity from
+	// the completion surface itself.
+	_ = configExplainCmd.RegisterFlagCompletionFunc("output", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return []string{"text", "json"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	configExplainCmd.ValidArgsFunction = func(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+		if len(args) > 0 {
+			// Args is MaximumNArgs(1); no completions past the first.
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		return leafPaths(), cobra.ShellCompDirectiveNoFileComp
+	}
 }
 
 func runConfigExplain(cmd *cobra.Command, args []string) error {
@@ -82,6 +100,12 @@ func runConfigExplainWithIO(cmd *cobra.Command, args []string, stdout, stderr io
 	}
 
 	path := args[0]
+	if path == "" {
+		// An explicit empty-string positional is a user mistake, not a
+		// request for the root overview. `--root` is the documented
+		// way to ask for that.
+		return fmt.Errorf("no field at path %q (use --root for the top-level overview)", path)
+	}
 	if strings.HasSuffix(path, ".*") {
 		return emitWildcard(stdout, strings.TrimSuffix(path, ".*"), output)
 	}
@@ -216,10 +240,13 @@ func renderText(buf *bytes.Buffer, fd types.FieldDoc) {
 	if pathLabel == "" {
 		pathLabel = "(root)"
 	}
+	// The generator emits FieldDoc.Type with a leading `*` for every
+	// pointer (Optional) field, so the type label already carries
+	// the nilability marker — no extra prefixing required here. The
+	// types/docsgen TestGenerator_PointerFieldOptional fixture and
+	// TestConfigExplain_OptionalFieldRendersPointerType below pin
+	// that contract.
 	typeLabel := fd.Type
-	if fd.Optional && !strings.HasPrefix(typeLabel, "*") {
-		typeLabel = "*" + typeLabel
-	}
 	fmt.Fprintf(buf, "KIND:    %s\n", kind)
 	fmt.Fprintf(buf, "FIELD:   %s  (%s)\n", pathLabel, typeLabel)
 	buf.WriteByte('\n')
@@ -404,22 +431,11 @@ func levenshtein(a, b string) int {
 			del := prev[j] + 1
 			ins := curr[j-1] + 1
 			sub := prev[j-1] + cost
-			curr[j] = min3(del, ins, sub)
+			curr[j] = min(del, ins, sub)
 		}
 		prev, curr = curr, prev
 	}
 	return prev[lb]
-}
-
-func min3(a, b, c int) int {
-	m := a
-	if b < m {
-		m = b
-	}
-	if c < m {
-		m = c
-	}
-	return m
 }
 
 func writeJSON(w io.Writer, v interface{}) error {

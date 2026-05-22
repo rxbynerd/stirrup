@@ -222,6 +222,105 @@ func TestConfigExplain_InvalidOutput(t *testing.T) {
 	}
 }
 
+// TestConfigExplain_OptionalFieldRendersPointerType pins the
+// "pointer field deref + nilability noted" AC from issue #247.
+// codeScanner is a *CodeScannerConfig — the rendered type column
+// must carry the leading `*` so the operator sees the nilability
+// without having to read the doc comment.
+func TestConfigExplain_OptionalFieldRendersPointerType(t *testing.T) {
+	out, _, err := runExplainForTest(t, []string{"codeScanner"})
+	if err != nil {
+		t.Fatalf("explain codeScanner: %v", err)
+	}
+	if !strings.Contains(out, "*CodeScannerConfig") {
+		t.Errorf("missing pointer-prefixed type label *CodeScannerConfig\n%s", out)
+	}
+}
+
+// TestConfigExplain_ListJSON exercises the JSON arm of emitLeafList.
+// The shape is a sorted string array — verify both properties.
+func TestConfigExplain_ListJSON(t *testing.T) {
+	out, _, err := runExplainForTest(t, []string{"--list", "--output=json"})
+	if err != nil {
+		t.Fatalf("explain --list --output=json: %v", err)
+	}
+	var paths []string
+	if err := json.Unmarshal([]byte(out), &paths); err != nil {
+		t.Fatalf("output is not parseable JSON: %v\n%s", err, out)
+	}
+	if len(paths) < 30 {
+		t.Errorf("expected many leaf paths, got %d", len(paths))
+	}
+	if !sort.StringsAreSorted(paths) {
+		t.Errorf("leaf paths are not sorted: %v", paths)
+	}
+}
+
+// TestConfigExplain_WildcardBadPrefix exercises emitWildcard's
+// missing-prefix arm: a wildcard on a path that does not exist must
+// return an error (with or without a near-match suggestion).
+func TestConfigExplain_WildcardBadPrefix(t *testing.T) {
+	_, _, err := runExplainForTest(t, []string{"zzz.zzz.*"})
+	if err == nil {
+		t.Fatal("expected error for wildcard on unknown prefix")
+	}
+	if !strings.Contains(err.Error(), "no field at path") {
+		t.Errorf("error %q lacks expected prefix", err.Error())
+	}
+}
+
+// TestConfigExplain_WildcardLeafExpandError exercises emitWildcard's
+// "has no children" arm: a wildcard on a leaf path must report that
+// it cannot be expanded rather than silently emitting nothing.
+func TestConfigExplain_WildcardLeafExpandError(t *testing.T) {
+	_, _, err := runExplainForTest(t, []string{"mode.*"})
+	if err == nil {
+		t.Fatal("expected error for wildcard on a leaf")
+	}
+	if !strings.Contains(err.Error(), "has no children") {
+		t.Errorf("error %q lacks 'has no children' message", err.Error())
+	}
+}
+
+// TestConfigExplain_WildcardJSON exercises the JSON arm of
+// emitWildcard. The shape is a sorted []FieldDoc array.
+func TestConfigExplain_WildcardJSON(t *testing.T) {
+	out, _, err := runExplainForTest(t, []string{"--output=json", "provider.batch.*"})
+	if err != nil {
+		t.Fatalf("explain provider.batch.* --output=json: %v", err)
+	}
+	var children []types.FieldDoc
+	if err := json.Unmarshal([]byte(out), &children); err != nil {
+		t.Fatalf("output is not parseable JSON: %v\n%s", err, out)
+	}
+	if len(children) < 5 {
+		t.Errorf("expected >= 5 FieldDoc entries, got %d", len(children))
+	}
+}
+
+// TestConfigExplain_EmptyStringPath exercises nearestPath's early
+// return for an empty query and emitFieldDoc's missing-path arm.
+// `stirrup config explain ""` must error rather than silently print
+// the root overview (use --root for that).
+func TestConfigExplain_EmptyStringPath(t *testing.T) {
+	// Passing "" as the positional arg via runExplainForTest is
+	// awkward because pflag's ParseFlags treats it as the end of
+	// option parsing. Build the call manually to keep the empty
+	// argument explicit.
+	cmd := newTestExplainCommand()
+	if err := cmd.ParseFlags(nil); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := runConfigExplainWithIO(cmd, []string{""}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for empty-string path")
+	}
+	if !strings.Contains(err.Error(), "no field at path") {
+		t.Errorf("error %q lacks expected prefix", err.Error())
+	}
+}
+
 // TestFieldDocs_GeneratedShapeIsCoherent guards the generator output:
 // every entry's ParentPath must itself exist in the map (or be ""),
 // and every Children element must resolve.
