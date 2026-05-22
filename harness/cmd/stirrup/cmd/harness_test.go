@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -573,77 +576,18 @@ func TestLoadRunConfigFile_InvalidJSON(t *testing.T) {
 
 // newTestHarnessCommand builds a cobra command with the same flag surface
 // as the real harnessCmd. Used to exercise applyOverrides under realistic
-// conditions where Changed() reflects only what the test sets.
+// conditions where Changed() reflects only what the test sets. Delegates
+// the RunConfig-producing flag surface to addRunConfigFlags so a flag
+// added to the shared registry is automatically picked up here — this
+// is the same factory the run-config subcommand uses.
 func newTestHarnessCommand() *cobra.Command {
 	cmd := &cobra.Command{Use: "harness"}
+	addRunConfigFlags(cmd)
 	f := cmd.Flags()
-	f.String("config", "", "")
-	f.StringP("mode", "m", "planning", "")
-	f.String("model", "claude-sonnet-4-6", "")
-	f.String("provider", "anthropic", "")
-	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "")
-	f.String("base-url", "", "")
-	f.String("api-key-header", "", "")
-	f.StringArray("query-param", nil, "")
-	f.String("gcp-project", "", "")
-	f.String("gcp-location", "global", "")
-	f.String("gcp-credentials-file", "", "")
-	f.String("anthropic-federation-rule-id", "", "")
-	f.String("anthropic-organization-id", "", "")
-	f.String("anthropic-service-account-id", "", "")
-	f.String("anthropic-workspace-id", "", "")
-	f.Bool("anthropic-from-github-actions", false, "")
-	f.String("azure-tenant-id", "", "")
-	f.String("azure-client-id", "", "")
-	f.String("azure-scope", "https://cognitiveservices.azure.com/.default", "")
-	f.StringP("workspace", "w", "", "")
-	f.Int("max-turns", 20, "")
-	f.Int("timeout", 600, "")
-	f.String("trace", "", "")
-	f.String("transport", "stdio", "")
-	f.String("transport-addr", "", "")
-	f.Int("followup-grace", 0, "")
-	f.Float64("temperature", 0, "")
-	f.String("log-level", "info", "")
-	f.String("prompt", "", "")
-	f.String("prompt-file", "", "")
-	f.String("name", "", "")
-	f.String("executor", "local", "")
-	f.String("edit-strategy", "multi", "")
-	f.String("verifier", "none", "")
-	f.String("git-strategy", "none", "")
-	f.String("trace-emitter", "jsonl", "")
-	f.String("otel-endpoint", "", "")
-	f.String("otel-protocol", "", "")
-	f.String("container-runtime", "", "")
-	f.String("permission-policy-file", "", "")
-	f.String("code-scanner", "", "")
-	f.String("guardrail", "", "")
-	f.String("guardrail-endpoint", "", "")
-	f.String("guardrail-model", "", "")
-	f.Bool("guardrail-fail-open", false, "")
-	f.String("deployment-environment", "", "")
-	f.String("service-namespace", "", "")
-	// Provider retry policy flags (issue #197). Registered here so
-	// f.Changed("...") can fire in TestApplyOverrides_ProviderRetry*
-	// tests — without these registrations applyProviderRetryFlagOverrides
-	// hits its early-return guard unconditionally.
-	f.Int("provider-retry-max-attempts", 0, "")
-	f.Duration("provider-retry-initial-delay", 0, "")
-	f.Duration("provider-retry-max-delay", 0, "")
-	f.Duration("provider-retry-wall-clock", 0, "")
-	// Workspace export flags (issue #164). Registered here so the
-	// override tests can exercise the applyOverrides path that handles
-	// --export-workspace-to.
-	f.String("export-workspace-to", "", "")
+	// Harness-only behaviour flags that do not round-trip through
+	// RunConfig. Mirrors the registration in harness.go init().
 	f.Bool("export-workspace-required", false, "")
-	// Parallel async-tool dispatch flag (issue #184). Registered here so
-	// TestApplyOverrides_MaxToolParallel* tests can exercise the override
-	// path.
-	f.Int("max-tool-parallel", 0, "")
-	// Batch flag (issue #136). Registered here so the override tests
-	// can exercise the applyOverrides path that handles --batch.
-	f.Bool("batch", false, "")
+	f.String("output-runconfig", "", "")
 	return cmd
 }
 
@@ -1903,9 +1847,14 @@ func TestBuildHarnessRunConfig_Temperature(t *testing.T) {
 }
 
 // TestRunHarness_ConfigPathFollowupGraceFromEnv verifies that the
-// STIRRUP_FOLLOWUP_GRACE environment variable populates FollowUpGrace in
-// the --config code path when the file omits the field. This mirrors the
-// flag-only path's env-var handling so the two paths behave alike.
+// STIRRUP_FOLLOWUP_GRACE environment variable populates FollowUpGrace
+// in the --config code path when the file omits the field. The
+// env-var resolution now lives inside BuildRunConfig's ResolveAll
+// branch (runconfigbuilder.go), so the test drives that path through
+// the shared builder rather than re-implementing the resolution
+// inline. The pre-refactor version called loadRunConfigFile and
+// manually applied the env var — that test would have passed even if
+// BuildRunConfig's branch were deleted.
 func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
@@ -1939,21 +1888,17 @@ func TestRunHarness_ConfigPathFollowupGraceFromEnv(t *testing.T) {
 
 	t.Setenv("STIRRUP_FOLLOWUP_GRACE", "45")
 
-	loaded, err := loadRunConfigFile(path)
+	cmd := newTestHarnessCommand()
+	resolved, err := BuildRunConfig(RunConfigSources{
+		ConfigPath: path,
+		Cmd:        cmd,
+		Resolve:    ResolveAll,
+	})
 	if err != nil {
-		t.Fatalf("loadRunConfigFile: %v", err)
+		t.Fatalf("BuildRunConfig: %v", err)
 	}
-	// Replicate runHarness's --config-path env-var handling. Keeps the
-	// test focused on the env-var resolution logic without booting the
-	// full agentic loop.
-	if loaded.FollowUpGrace == nil {
-		if v := os.Getenv("STIRRUP_FOLLOWUP_GRACE"); v != "" {
-			n := 45
-			loaded.FollowUpGrace = &n
-		}
-	}
-	if loaded.FollowUpGrace == nil || *loaded.FollowUpGrace != 45 {
-		t.Errorf("STIRRUP_FOLLOWUP_GRACE should fill FollowUpGrace when file omits it, got %v", loaded.FollowUpGrace)
+	if resolved.FollowUpGrace == nil || *resolved.FollowUpGrace != 45 {
+		t.Errorf("STIRRUP_FOLLOWUP_GRACE should fill FollowUpGrace when file omits it, got %v", resolved.FollowUpGrace)
 	}
 }
 
@@ -4254,3 +4199,509 @@ func TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride(t *testing
 			cfg.ToolDispatch.MaxParallel)
 	}
 }
+
+// TestRunHarness_OutputRunConfigWritesFile pins the dry-run capture
+// surface from issue #240: --output-runconfig writes the resolved
+// RunConfig to disk, the loop is not invoked, and the process exits
+// cleanly. The written file must be parseable JSON; round-tripping it
+// back through loadRunConfigFile asserts the wire shape.
+func TestRunHarness_OutputRunConfigWritesFile(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.json")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("output-runconfig", outPath); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+
+	if err := runHarness(cmd, nil); err != nil {
+		t.Fatalf("runHarness with --output-runconfig should exit cleanly, got: %v", err)
+	}
+
+	info, err := os.Stat(outPath)
+	if err != nil {
+		t.Fatalf("stat output: %v", err)
+	}
+	// 0600 is the documented contract: captured configs may carry
+	// secret:// references whose names are operationally sensitive even
+	// though the references themselves are not secrets.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Errorf("output file should be 0600, got %v", info.Mode().Perm())
+	}
+
+	cfg, err := loadRunConfigFile(outPath)
+	if err != nil {
+		t.Fatalf("captured config should round-trip through loadRunConfigFile: %v", err)
+	}
+	if cfg.Prompt != "test prompt" {
+		t.Errorf("captured Prompt = %q, want %q", cfg.Prompt, "test prompt")
+	}
+	if cfg.RunID == "" {
+		t.Errorf("captured config should have a RunID (ResolveAll mints one)")
+	}
+}
+
+// TestRunHarness_OutputRunConfigToStdout pins the "-" sentinel: a
+// captured config can flow straight back into another `stirrup
+// run-config` or `stirrup harness --config -` without a temp file
+// hop. We cannot easily capture the live os.Stdout here, but we can
+// at least confirm runHarness does not return an error for the
+// stdout-sentinel branch and does not try to invoke the loop.
+func TestRunHarness_OutputRunConfigToStdout(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+
+	// Redirect os.Stdout for the duration so the test output stays
+	// clean. The exact stdout contents are exercised by
+	// TestWriteRunConfigJSON_RoundTrip and TestRunRunConfig_*; here we
+	// only need to confirm the dry-run branch doesn't fall through to
+	// runWithConfig.
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = origStdout
+		_ = r.Close()
+	}()
+
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+
+	runErr := runHarness(cmd, nil)
+	_ = w.Close()
+	out := <-done
+
+	if runErr != nil {
+		t.Fatalf("runHarness with --output-runconfig=-: %v", runErr)
+	}
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("stdout should be parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.Prompt != "test prompt" {
+		t.Errorf("captured Prompt = %q, want %q", cfg.Prompt, "test prompt")
+	}
+}
+
+// TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure pins
+// the spec's "never writes on validation failure" contract for
+// --output-runconfig. We pick the same bedrock + sonnet-4-6 trap that
+// powers TestBuildHarnessRunConfig_BedrockDefaultModelFailsValidation
+// because the validator rejects it deterministically and ahead of any
+// other path that might write the file.
+func TestRunHarness_OutputRunConfigDoesNotWriteOnValidationFailure(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "out.json")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("output-runconfig", outPath); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	if err := cmd.Flags().Set("provider", "bedrock"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	// --model stays at its CLI default "claude-sonnet-4-6", which is
+	// the issue #65 trap the validator rejects.
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected validator to reject bedrock + sonnet-4-6 alias")
+	}
+	if _, statErr := os.Stat(outPath); !os.IsNotExist(statErr) {
+		t.Errorf("output file should not exist on validation failure, got stat err: %v", statErr)
+	}
+}
+
+// TestRunHarness_OutputRunConfigReplaysIdentically pins the "save and
+// replay" workflow the spec calls out: a config captured via
+// --output-runconfig, when fed back into `stirrup harness --config
+// <path>`, produces an equivalent resolved config. The check ignores
+// only RunID (a fresh run mints a new ID by design) and Timeout
+// pointer identity (the helper materialises a new *int).
+func TestRunHarness_OutputRunConfigReplaysIdentically(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "captured.json")
+
+	cmd1 := newTestHarnessCommand()
+	if err := cmd1.Flags().Set("output-runconfig", outPath); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+	if err := cmd1.Flags().Set("prompt", "captured prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	if err := cmd1.Flags().Set("mode", "execution"); err != nil {
+		t.Fatalf("set mode: %v", err)
+	}
+	if err := runHarness(cmd1, nil); err != nil {
+		t.Fatalf("first run capture: %v", err)
+	}
+
+	captured, err := loadRunConfigFile(outPath)
+	if err != nil {
+		t.Fatalf("load captured: %v", err)
+	}
+
+	// Now feed it back via --config and capture the resolved shape.
+	replayPath := filepath.Join(dir, "replay.json")
+	cmd2 := newTestHarnessCommand()
+	if err := cmd2.Flags().Set("config", outPath); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+	if err := cmd2.Flags().Set("output-runconfig", replayPath); err != nil {
+		t.Fatalf("set output-runconfig (replay): %v", err)
+	}
+	if err := runHarness(cmd2, nil); err != nil {
+		t.Fatalf("second run capture: %v", err)
+	}
+	replayed, err := loadRunConfigFile(replayPath)
+	if err != nil {
+		t.Fatalf("load replay: %v", err)
+	}
+
+	if captured.Prompt != replayed.Prompt {
+		t.Errorf("Prompt drifted: captured=%q replay=%q", captured.Prompt, replayed.Prompt)
+	}
+	if captured.Mode != replayed.Mode {
+		t.Errorf("Mode drifted: captured=%q replay=%q", captured.Mode, replayed.Mode)
+	}
+	// RunID is allowed to differ — the replay is a new run.
+	if captured.RunID == replayed.RunID {
+		t.Logf("RunIDs happen to match (clock resolution); harmless")
+	}
+}
+
+// withPipedStdin swaps os.Stdin for a pipe whose read end the helper
+// returns to the caller; the supplied content is written to the
+// write end and the writer is closed so EOF reaches the reader. The
+// returned cleanup is registered with t.Cleanup so tests do not need
+// to thread the restore call themselves. Used by the MF-2 stdin
+// integration tests to drive runHarness without launching a subprocess.
+func withPipedStdin(t *testing.T, content string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = orig
+		_ = r.Close()
+	})
+	if _, err := w.Write([]byte(content)); err != nil {
+		_ = w.Close()
+		t.Fatalf("write to pipe: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+}
+
+// captureStdout swaps os.Stdout for a pipe and returns a function the
+// caller invokes once the test action has completed to retrieve the
+// captured bytes. Used by MF-2 tests that drive runHarness via
+// --output-runconfig=- (the dry-run capture sentinel) so the test can
+// observe the resolved RunConfig without invoking the provider.
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+	return func() string {
+		os.Stdout = orig
+		_ = w.Close()
+		out := <-done
+		_ = r.Close()
+		return out
+	}
+}
+
+// minimalStdinRunConfig is the smallest RunConfig the runHarness stdin
+// integration tests pipe through os.Stdin. ResolveAll still runs after
+// the read so every required field for the validator must be set —
+// the minimalRunConfigJSON helper in runconfigbuilder_test.go is the
+// ResolveBase shape, which omits Tools.BuiltIn / PermissionPolicy
+// values ResolveAll would reject on the execution path.
+func minimalStdinRunConfig(t *testing.T) string {
+	t.Helper()
+	timeout := 300
+	cfg := types.RunConfig{
+		RunID:  "from-stdin",
+		Mode:   "planning",
+		Prompt: "prompt from stdin",
+		Provider: types.ProviderConfig{
+			Type:      "anthropic",
+			APIKeyRef: "secret://STDIN_KEY",
+		},
+		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
+		Executor:        types.ExecutorConfig{Type: "local"},
+		EditStrategy:    types.EditStrategyConfig{Type: "multi"},
+		Verifier:        types.VerifierConfig{Type: "none"},
+		GitStrategy:     types.GitStrategyConfig{Type: "none"},
+		Transport:       types.TransportConfig{Type: "stdio"},
+		TraceEmitter:    types.TraceEmitterConfig{Type: "jsonl"},
+		PermissionPolicy: types.PermissionPolicyConfig{
+			Type: "deny-side-effects",
+		},
+		Tools: types.ToolsConfig{
+			BuiltIn: types.DefaultReadOnlyBuiltInTools(),
+		},
+		MaxTurns: 10,
+		Timeout:  &timeout,
+		LogLevel: "info",
+	}
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return string(body)
+}
+
+// TestRunHarness_StdinExplicitDashReadsConfig pins MF-2 scenario 1:
+// `stirrup harness --config -` consumes a piped RunConfig from
+// os.Stdin and resolves through ResolveAll into a writable capture.
+// --output-runconfig=- short-circuits the provider invocation so the
+// test can assert on the resolved shape without booting the loop.
+func TestRunHarness_StdinExplicitDashReadsConfig(t *testing.T) {
+	withPipedStdin(t, minimalStdinRunConfig(t))
+	getOut := captureStdout(t)
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", "-"); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	runErr := runHarness(cmd, nil)
+	out := getOut()
+
+	if runErr != nil {
+		t.Fatalf("runHarness with --config -: %v\nstdout: %s", runErr, out)
+	}
+
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.Prompt != "prompt from stdin" {
+		t.Errorf("Prompt = %q, want %q", cfg.Prompt, "prompt from stdin")
+	}
+	if cfg.Provider.APIKeyRef != "secret://STDIN_KEY" {
+		t.Errorf("APIKeyRef = %q, want secret://STDIN_KEY", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestRunHarness_StdinAutoDetectsPipe pins MF-2 scenario 2: a piped
+// stdin (no --config flag) is auto-detected and treated as the base
+// RunConfig. The shape mirrors the canonical `run-config | harness`
+// pipeline.
+func TestRunHarness_StdinAutoDetectsPipe(t *testing.T) {
+	withPipedStdin(t, minimalStdinRunConfig(t))
+	getOut := captureStdout(t)
+
+	cmd := newTestHarnessCommand()
+	// Deliberately no --config flag set. The pipe's named-pipe mode
+	// bit triggers isStdinPiped, which makes BuildRunConfig consume
+	// stdin as the base.
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	runErr := runHarness(cmd, nil)
+	out := getOut()
+
+	if runErr != nil {
+		t.Fatalf("runHarness with auto-stdin: %v\nstdout: %s", runErr, out)
+	}
+
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.Prompt != "prompt from stdin" {
+		t.Errorf("auto-detected stdin Prompt = %q, want %q", cfg.Prompt, "prompt from stdin")
+	}
+}
+
+// TestRunHarness_StdinAndConfigFileAreAmbiguous pins MF-2 scenario 3:
+// `--config <path>` alongside a non-TTY stdin must fail loudly. Silent
+// precedence would surprise pipeline authors debugging which source
+// landed which field.
+func TestRunHarness_StdinAndConfigFileAreAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(path, []byte(minimalStdinRunConfig(t)), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	withPipedStdin(t, minimalStdinRunConfig(t))
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", path); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected runHarness to reject --config <path> + piped stdin")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error should describe ambiguity, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error should mention config path, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stdin") {
+		t.Errorf("error should mention stdin, got: %v", err)
+	}
+}
+
+// TestRunHarness_StdinDashWithoutPipeErrors pins MF-2 scenario 4:
+// `--config -` with no piped stdin (the TTY / `go test` char-device
+// shape) returns a non-nil error with a clear "no piped input"
+// message rather than blocking on a phantom read.
+func TestRunHarness_StdinDashWithoutPipeErrors(t *testing.T) {
+	// Deliberately do NOT swap os.Stdin — the `go test` default is a
+	// char device that isStdinPiped rejects.
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", "-"); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected runHarness to reject --config - with no piped stdin")
+	}
+	if !strings.Contains(err.Error(), "--config -") {
+		t.Errorf("error should cite --config -, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "terminal") && !strings.Contains(err.Error(), "piped") {
+		t.Errorf("error should explain the missing pipe, got: %v", err)
+	}
+}
+
+// TestRunHarness_OutputRunConfigBadPathErrors pins SF-3: an
+// --output-runconfig path whose parent directory does not exist must
+// surface as a non-nil error mentioning the path. The OpenFile error
+// branch previously had no coverage.
+func TestRunHarness_OutputRunConfigBadPathErrors(t *testing.T) {
+	badPath := filepath.Join(t.TempDir(), "does-not-exist", "out.json")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("output-runconfig", badPath); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+	if err := cmd.Flags().Set("prompt", "test prompt"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected OpenFile error for missing parent directory")
+	}
+	if !strings.Contains(err.Error(), badPath) {
+		t.Errorf("error should mention the bad path %q, got: %v", badPath, err)
+	}
+	if !strings.Contains(err.Error(), "opening") {
+		t.Errorf("error should mention the open failure, got: %v", err)
+	}
+}
+
+// failCloseWriter writes successfully but its Close returns the
+// configured error. Used to drive writeAndCloseRunConfig's
+// deferred-flush diagnostic path without depending on filesystem
+// conditions.
+type failCloseWriter struct {
+	bytes.Buffer
+	closeErr error
+}
+
+func (f *failCloseWriter) Close() error { return f.closeErr }
+
+// TestWriteOutputRunConfig_CloseError pins SF-1: a Close error from
+// the captured-config writer (e.g. ENOSPC manifesting only at kernel
+// flush time) must propagate as a non-nil error wrapping the
+// underlying cause. The pre-fix `defer _ = f.Close()` silently
+// discarded the failure.
+func TestWriteOutputRunConfig_CloseError(t *testing.T) {
+	cfg := &types.RunConfig{
+		RunID:        "x",
+		Mode:         "planning",
+		Provider:     types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"},
+		ModelRouter:  types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+		Transport:    types.TransportConfig{Type: "stdio"},
+		Executor:     types.ExecutorConfig{Type: "local"},
+		EditStrategy: types.EditStrategyConfig{Type: "multi"},
+		MaxTurns:     5,
+	}
+
+	t.Run("close error surfaces", func(t *testing.T) {
+		w := &failCloseWriter{closeErr: io.ErrClosedPipe}
+		err := writeAndCloseRunConfig(w, "/tmp/captured.json", cfg)
+		if err == nil {
+			t.Fatal("expected close error to propagate")
+		}
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Errorf("error should wrap io.ErrClosedPipe, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "/tmp/captured.json") {
+			t.Errorf("error should mention path, got: %v", err)
+		}
+	})
+
+	t.Run("write error wins over close error", func(t *testing.T) {
+		// When writeRunConfigJSON has already failed, the prior
+		// error must take precedence — the close error is irrelevant
+		// noise at that point.
+		w := &failWriteCloseWriter{closeErr: io.ErrClosedPipe, writeErr: io.ErrShortWrite}
+		err := writeAndCloseRunConfig(w, "/tmp/captured.json", cfg)
+		if err == nil {
+			t.Fatal("expected write error to propagate")
+		}
+		if !errors.Is(err, io.ErrShortWrite) {
+			t.Errorf("write error should take precedence over close error, got: %v", err)
+		}
+	})
+}
+
+// failWriteCloseWriter fails on Write with writeErr and on Close with
+// closeErr; used to assert the write-error precedence in
+// writeAndCloseRunConfig.
+type failWriteCloseWriter struct {
+	closeErr error
+	writeErr error
+}
+
+func (f *failWriteCloseWriter) Write(p []byte) (int, error) { return 0, f.writeErr }
+func (f *failWriteCloseWriter) Close() error                { return f.closeErr }

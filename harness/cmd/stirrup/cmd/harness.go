@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -257,7 +256,27 @@ type harnessCLIOptions struct {
 // would silently truncate to zero). Most validation still happens later
 // in `ValidateRunConfig`; the checks here exist where the truncation
 // would erase operator intent before the validator ever sees it.
+//
+// Internally delegates to buildHarnessRunConfigCore for the field-by-
+// field shape, then runs applyModeDefaults so the returned config is
+// ready for the validator. Splitting the two lets BuildRunConfig hand
+// run-config's ResolveBase path a config without the mode-default
+// mutations applied, matching the spec's "leave the document minimally
+// mutated" contract for chained pipeline stages.
 func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
+	cfg, err := buildHarnessRunConfigCore(opts)
+	if err != nil {
+		return nil, err
+	}
+	applyModeDefaults(cfg)
+	return cfg, nil
+}
+
+// buildHarnessRunConfigCore is buildHarnessRunConfig without the trailing
+// applyModeDefaults call. BuildRunConfig uses this directly so the
+// run-config subcommand's ResolveBase path can emit a minimally-mutated
+// document for downstream pipeline stages.
+func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error) {
 	timeout := opts.Timeout
 
 	executorType := opts.ExecutorType
@@ -479,7 +498,6 @@ func buildHarnessRunConfig(opts harnessCLIOptions) (*types.RunConfig, error) {
 		config.Provider.Batch = &types.BatchProviderConfig{Enabled: true}
 	}
 
-	applyModeDefaults(config)
 	return config, nil
 }
 
@@ -680,115 +698,16 @@ default first-touch posture.`,
 func init() {
 	rootCmd.AddCommand(harnessCmd)
 
+	// All RunConfig-producing flags live in addRunConfigFlags so the
+	// run-config subcommand can register the same set without drifting.
+	// CLI-behaviour flags that do not round-trip through RunConfig
+	// (--export-workspace-required, --output-runconfig) remain on the
+	// harness command directly.
+	addRunConfigFlags(harnessCmd)
+
 	f := harnessCmd.Flags()
-	f.String("config", "", "Path to a JSON RunConfig file (mirrors proto/harness/v1/harness.proto). Explicit flags still override individual fields; unset flags do not.")
-	f.StringP("mode", "m", "planning", "Run mode: execution, planning, review, research, toil. Default is the read-only `planning` mode (no edits, no shell, deny-side-effects policy); pass `--mode execution` for editable runs with shell access.")
-	f.String("model", "claude-sonnet-4-6", "Model to use (sets ModelRouter.Model; for dynamic/per-mode routers in --config files this only sets the default-model field, not the cheap/expensive override)")
-	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, gemini (Vertex AI), openai-compatible (Chat Completions), openai-responses (Responses API). The two OpenAI variants speak different wire formats and must be selected explicitly.")
-	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "Secret reference for API key")
-	f.String("base-url", "", "API base URL for openai-compatible / openai-responses providers (e.g. https://<resource>.openai.azure.com/openai/v1)")
-	f.String("api-key-header", "", "Header name for sending the API key. Empty = Authorization: Bearer (default). Set to \"api-key\" for Azure OpenAI key auth.")
-	f.StringArray("query-param", nil, "Repeatable key=value query parameter appended to every provider request URL (e.g. api-version=preview). Used by the openai-* adapters.")
-	f.String("gcp-project", "", "GCP project ID hosting the Vertex AI usage. Required when --provider=gemini.")
-	f.String("gcp-location", "global", "Vertex AI location: \"global\" or a region (e.g. us-central1). Determines the URL host and project location segment.")
-	f.String("gcp-credentials-file", "", "Path to a Google service account JSON key file. When set, implies credential.type=gcp-service-account.")
-
-	// Anthropic Workload Identity Federation flags (issue #117). Setting
-	// any of the four ID flags implies credential.type=anthropic-wif when
-	// the credential type is otherwise unset; the JWT source is selected
-	// by --anthropic-from-github-actions or the ANTHROPIC_IDENTITY_TOKEN*
-	// env vars (precedence documented in the operator walkthrough).
-	f.String("anthropic-federation-rule-id", "", "Anthropic federation rule ID (`fdrl_...`). Implies `credential.type=anthropic-wif` when set. Env fallback: ANTHROPIC_FEDERATION_RULE_ID.")
-	f.String("anthropic-organization-id", "", "Anthropic organization UUID. Required with WIF. Env fallback: ANTHROPIC_ORGANIZATION_ID.")
-	f.String("anthropic-service-account-id", "", "Anthropic service account ID (`svac_...`). Required with WIF. Env fallback: ANTHROPIC_SERVICE_ACCOUNT_ID.")
-	f.String("anthropic-workspace-id", "", "Anthropic workspace ID (`wrkspc_...`) or `default`. Conditional. Env fallback: ANTHROPIC_WORKSPACE_ID.")
-	f.Bool("anthropic-from-github-actions", false, "Enable GitHub Actions OIDC token source for Anthropic WIF. Reads ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN from the runner environment. Ignored (with a warning) if `--config` already sets `credential.tokenSource`.")
-
-	// Azure Entra ID Workload Identity Federation flags (issue #118).
-	f.String("azure-tenant-id", "", "Azure AD tenant UUID hosting the App Registration. When set, implies credential.type=azure-workload-identity. Use with --provider=openai-compatible or openai-responses against Azure OpenAI / Foundry.")
-	f.String("azure-client-id", "", "App Registration / federated identity credential client ID (UUID). Required with --azure-tenant-id.")
-	f.String("azure-scope", "https://cognitiveservices.azure.com/.default", "OAuth2 scope for the Entra access token. Override only for non-default Azure audiences (custom AAD app registrations, sovereign clouds).")
-	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
-	f.Int("max-turns", 20, "Maximum agentic loop turns")
-	f.Int("timeout", 600, "Wall-clock timeout in seconds")
-	f.String("trace", "", "Path to JSONL trace file (sets --trace-emitter to jsonl unless --trace-emitter is explicitly set)")
-	f.String("transport", "stdio", "Transport type: stdio, grpc")
-	f.String("transport-addr", "", "gRPC target address (required when transport is grpc)")
-	f.Int("followup-grace", 0, "Seconds to keep gRPC transport open for follow-up requests (0 = disabled; env: STIRRUP_FOLLOWUP_GRACE)")
-	f.Float64("temperature", 0, "Sampling temperature forwarded to the provider on every turn. Range 0.0-2.0 (union of provider ranges). Unset leaves the harness default (0.1); explicit 0 sets greedy decoding.")
-	f.String("log-level", "info", "Log level: debug, info, warn, error")
-	f.String("prompt", "", "User prompt (can also be passed as a positional argument; falls back to --prompt-file then STIRRUP_PROMPT env var, then a prompt field in --config)")
-	f.String("prompt-file", "", "Path to a file whose contents become the prompt. Read from CWD when relative. Trailing newlines are trimmed; the file is capped at 10 MiB and must be non-empty. Lower precedence than --prompt and the positional argument; higher than STIRRUP_PROMPT.")
-	f.String("name", "", "Human-readable session label (metadata only, not injected into prompt)")
-
-	// Component-selection flags. Escape hatches for callers who don't want
-	// a full --config file but need to switch a single component. These
-	// are still honoured (as overrides) when --config is set.
-	f.String("executor", "local", "Executor: local, container, api")
-	f.String("edit-strategy", "multi", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config)")
-	f.String("verifier", "none", "Verifier: none, test-runner, llm-judge (composite available only via --config)")
-	f.String("git-strategy", "none", "Git strategy: none, deterministic")
-	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel, gcs")
-	f.String("otel-endpoint", "", "OTLP endpoint for the otel trace emitter (default: localhost:4317 for grpc; full URL ending in the gateway base path for http/protobuf, e.g. https://otlp-gateway-prod-us-east-0.grafana.net/otlp)")
-	f.String("otel-protocol", "", "OTLP wire protocol for the otel trace emitter: \"\" (default — grpc), grpc, http/protobuf. HTTP/JSON is not supported; managed gateways like Grafana Cloud use http/protobuf. See docs/observability-cloud.md.")
-
-	// Safety-ring flags (issue #42). Each maps to a single RunConfig
-	// field; precedence with --config is the same as the rest of the
-	// override surface (file -> flag -> default; unset flags don't
-	// override the file).
-	f.String("container-runtime", "", "OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty means engine default (typically runc). Requires the runtime to be registered with the host Docker/Podman daemon — see docs/safety-rings.md.")
-	f.String("permission-policy-file", "", "Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and --permission-policy is unset elsewhere, also implies permissionPolicy.type=policy-engine. See examples/policies/ for starters.")
-	f.String("code-scanner", "", "CodeScanner type: none, patterns, semgrep, composite. Composite requires --config (codeScanner.scanners). Empty defers to the mode-aware default (patterns for execution, none for read-only modes).")
-
-	// GuardRail flags (issue #43). The composite layering used by the
-	// operator escape hatch requires per-stage phase restrictions, which
-	// flag syntax cannot express; composite stacks therefore round-trip
-	// only through --config (see docs/guardrails.md).
-	f.String("guardrail", "", "GuardRail type: none, granite-guardian, composite, cloud-judge. Composite requires --config (guardRail.stages).")
-	f.String("guardrail-endpoint", "", "Endpoint URL for the granite-guardian or cloud-judge adapter.")
-	f.String("guardrail-model", "", "Model identifier for the GuardRail classifier. Granite-guardian default: ibm-granite/granite-guardian-4.1-8b. Cloud-judge default: claude-haiku-4-5-20251001 (Anthropic API format) — when the primary provider is Bedrock, use the Bedrock-format ID (e.g. us.anthropic.claude-haiku-4-5-20251001-v1:0).")
-	f.Bool("guardrail-fail-open", false, "When true, transport errors / timeouts produce VerdictAllow with a security event rather than blocking. Default false (fail closed).")
-
-	// Observability resource attributes (issue #95). No default at the
-	// flag level — empty values fall through to env-var fallbacks
-	// (OTEL_DEPLOYMENT_ENVIRONMENT, OTEL_SERVICE_NAMESPACE) and finally
-	// to defaults ("local" / "stirrup") at resource construction time.
-	f.String("deployment-environment", "", "OTel deployment.environment resource attribute (e.g. production, staging). Empty falls through to OTEL_DEPLOYMENT_ENVIRONMENT, then to \"local\".")
-	f.String("service-namespace", "", "OTel service.namespace resource attribute (e.g. stirrup-eval, team-a). Empty falls through to OTEL_SERVICE_NAMESPACE, then to \"stirrup\".")
-
-	// Provider retry policy (issue #197). No flag-level default — when
-	// a flag is left unset its corresponding Provider.Retry field stays
-	// at the zero value and ValidateRunConfig fills the documented
-	// default (MaxAttempts=3, InitialDelay=500ms, MaxDelay=16s,
-	// WallClockBudget=90s). Per-named-provider retry policy requires
-	// --config; these flags apply only to the default provider.
-	f.Int("provider-retry-max-attempts", 0, "Maximum HTTP attempts (including the first) for the default provider. 1 disables retry. Hard ceiling: 5. Default (when unset): 3. Currently honoured only by the openai-compatible adapter; the other adapters fall through unconditionally pending their own wire-ups.")
-	f.Duration("provider-retry-initial-delay", 0, "Base delay for exponential backoff before jitter, applied between retries on the default provider. Accepts Go duration syntax (e.g. 500ms, 1s). Default (when unset): 500ms.")
-	f.Duration("provider-retry-max-delay", 0, "Per-attempt sleep ceiling for the default provider (also caps Retry-After hints). Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 60s. Default (when unset): 16s.")
-	f.Duration("provider-retry-wall-clock", 0, "Wall-clock budget for the entire retry sequence on the default provider. Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 300s. Default (when unset): 90s.")
-
-	// Workspace export flags (issue #164). --export-workspace-to mirrors
-	// executor.workspaceExportTo in the RunConfig; an explicit flag
-	// overrides whatever the --config file set. --export-workspace-required
-	// controls error semantics on upload failure (default: log and
-	// continue; required: fail the run). Validation is delegated to
-	// types.ValidateRunConfig which already accepts only gs:// URIs.
-	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at end-of-run (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
 	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
-
-	// Parallel async-tool dispatch (issue #184). Default 0 means "use
-	// the library default" so a flag-only run without
-	// --max-tool-parallel leaves config.ToolDispatch nil and the loop
-	// reads types.DefaultToolDispatchMaxParallel via
-	// EffectiveToolDispatchMaxParallel.
-	f.Int("max-tool-parallel", 0, "Maximum number of async tool calls dispatched concurrently in a single turn. Range: 1-16. 0 uses the library default (4).")
-
-	// Batch (issue #136). Carries only the Enabled bit; the other
-	// BatchProviderConfig knobs (maxWaitSeconds, harnessSidePolling,
-	// fallbackOnTimeout, cancelBundleOnRunCancel, allowInteractiveModes)
-	// must come from --config because flag syntax cannot cleanly express
-	// the cross-field invariants validated together.
-	f.Bool("batch", false, "Use async batch submission for provider turns (50% cost reduction, up to 24h latency). Requires transport=grpc or --config with harnessSidePolling=true for stdio. See docs/sandbox.md.")
+	f.String("output-runconfig", "", "Write the resolved RunConfig as JSON to <path> (use '-' for stdout) and exit without running. Useful for capturing the exact config a flag-only invocation would have used. Validation must pass first; the path is not written on a validator error.")
 }
 
 // applyOverrides mutates cfg in place, replacing fields whose corresponding
@@ -927,13 +846,10 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		}
 	}
 
-	// Anthropic Workload Identity Federation overrides (issue #117).
-	// Encapsulated for readability; the helper handles the four ID
-	// fields, the inferred credential.type, the token-source inference
-	// chain, and the apiKeyRef mutual-exclusion guard.
-	if err := applyAnthropicWIFOverrides(cmd, cfg); err != nil {
-		return err
-	}
+	// Anthropic WIF folding lives in BuildRunConfig as a single
+	// post-override step (see runconfigbuilder.go). Calling it again
+	// here would double-invoke its slog.Warn diagnostics and silently
+	// double-count any future non-idempotent additions.
 
 	// Azure Entra ID Workload Identity Federation (issue #118). The three
 	// --azure-* flags compose: --azure-tenant-id alone is enough to imply
@@ -1227,250 +1143,70 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	f := cmd.Flags()
 	configPath, _ := f.GetString("config")
 
-	// Path 1: --config file is the base; explicitly-set flags override it.
-	if configPath != "" {
-		cfg, err := loadRunConfigFile(configPath)
-		if err != nil {
-			return err
-		}
-		if err := applyOverrides(cmd, cfg, args); err != nil {
-			return err
-		}
-
-		// After overrides, derive any unset mode-driven defaults
-		// (PermissionPolicy, read-only Tools.BuiltIn). Mirrors what
-		// buildHarnessRunConfig does in the flag-only path so the two
-		// code paths produce architecturally consistent configs.
-		applyModeDefaults(cfg)
-
-		// Generate a RunID if the file omitted one. We never let the file
-		// dictate identity, but we do honour an explicit RunID for replay
-		// scenarios.
-		if cfg.RunID == "" {
-			cfg.RunID = generateRunID()
-		}
-		// Resolve env var for follow-up grace if neither flag nor file set it.
-		if cfg.FollowUpGrace == nil {
-			if v := os.Getenv("STIRRUP_FOLLOWUP_GRACE"); v != "" {
-				if n, err := strconv.Atoi(v); err == nil && n > 0 {
-					cfg.FollowUpGrace = &n
-				}
-			}
-		}
-		// --prompt-file and STIRRUP_PROMPT fall in below --prompt /
-		// positional / file-prompt (applyOverrides has already resolved
-		// those three by this point). Inlined rather than extracted into
-		// a resolvePrompt helper per the house-style preference for
-		// minimal-diff changes — the two call sites read the same five
-		// sources in the same order, and a tiny duplication keeps the
-		// resolution chain visible at both decision points.
-		if cfg.Prompt == "" {
-			if promptFile, _ := f.GetString("prompt-file"); promptFile != "" {
-				p, err := readPromptFile(promptFile)
-				if err != nil {
-					return err
-				}
-				cfg.Prompt = p
-			}
-		}
-		if cfg.Prompt == "" {
-			if v := os.Getenv("STIRRUP_PROMPT"); v != "" {
-				cfg.Prompt = v
-			}
-		}
-		if cfg.Prompt == "" {
-			return fmt.Errorf("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
-		}
-		if err := types.ValidateRunConfig(cfg); err != nil {
-			return fmt.Errorf("invalid config from %q: %w", configPath, err)
-		}
-		exportRequired, _ := f.GetBool("export-workspace-required")
-		return runWithConfig(cfg, runOptions{exportWorkspaceRequired: exportRequired})
-	}
-
-	// Path 2: no --config file. Build the RunConfig from flags + defaults.
-	prompt, _ := f.GetString("prompt")
-	if prompt == "" && len(args) > 0 {
-		prompt = args[0]
-	}
-	// --prompt-file and STIRRUP_PROMPT fall in below --prompt and the
-	// positional argument. Inlined rather than extracted into a
-	// resolvePrompt helper per the house-style preference for
-	// minimal-diff changes; the chain is short and reads top-to-bottom
-	// in precedence order, which is easier to audit than a separate
-	// function with its own ordering.
-	if prompt == "" {
-		if promptFile, _ := f.GetString("prompt-file"); promptFile != "" {
-			p, err := readPromptFile(promptFile)
-			if err != nil {
-				return err
-			}
-			prompt = p
-		}
-	}
-	if prompt == "" {
-		if v := os.Getenv("STIRRUP_PROMPT"); v != "" {
-			prompt = v
-		}
-	}
-	if prompt == "" {
-		return fmt.Errorf("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
-	}
-
-	mode, _ := f.GetString("mode")
-	sessionName, _ := f.GetString("name")
-	model, _ := f.GetString("model")
-	providerType, _ := f.GetString("provider")
-	apiKeyRef, _ := f.GetString("api-key-ref")
-	baseURL, _ := f.GetString("base-url")
-	apiKeyHeader, _ := f.GetString("api-key-header")
-	queryParamRaw, _ := f.GetStringArray("query-param")
-	gcpProject, _ := f.GetString("gcp-project")
-	gcpLocation, _ := f.GetString("gcp-location")
-	gcpCredentialsFile, _ := f.GetString("gcp-credentials-file")
-	anthropicFederationRuleID, _ := f.GetString("anthropic-federation-rule-id")
-	anthropicOrganizationID, _ := f.GetString("anthropic-organization-id")
-	anthropicServiceAccountID, _ := f.GetString("anthropic-service-account-id")
-	anthropicWorkspaceID, _ := f.GetString("anthropic-workspace-id")
-	anthropicFromGitHubActions, _ := f.GetBool("anthropic-from-github-actions")
-	azureTenantID, _ := f.GetString("azure-tenant-id")
-	azureClientID, _ := f.GetString("azure-client-id")
-	azureScope, _ := f.GetString("azure-scope")
-	workspace, _ := f.GetString("workspace")
-	maxTurns, _ := f.GetInt("max-turns")
-	timeout, _ := f.GetInt("timeout")
-	tracePath, _ := f.GetString("trace")
-	transportType, _ := f.GetString("transport")
-	transportAddr, _ := f.GetString("transport-addr")
-	followUpGrace, _ := f.GetInt("followup-grace")
-	logLevel, _ := f.GetString("log-level")
-	executorType, _ := f.GetString("executor")
-	editStrategyType, _ := f.GetString("edit-strategy")
-	verifierType, _ := f.GetString("verifier")
-	gitStrategyType, _ := f.GetString("git-strategy")
-	traceEmitterType, _ := f.GetString("trace-emitter")
-	otelEndpoint, _ := f.GetString("otel-endpoint")
-	otelProtocol, _ := f.GetString("otel-protocol")
-	containerRuntime, _ := f.GetString("container-runtime")
-	permissionPolicyFile, _ := f.GetString("permission-policy-file")
-	codeScannerType, _ := f.GetString("code-scanner")
-	guardRailType, _ := f.GetString("guardrail")
-	guardRailEndpoint, _ := f.GetString("guardrail-endpoint")
-	guardRailModel, _ := f.GetString("guardrail-model")
-	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
-	deploymentEnvironment, _ := f.GetString("deployment-environment")
-	serviceNamespace, _ := f.GetString("service-namespace")
-	providerRetryMaxAttempts, _ := f.GetInt("provider-retry-max-attempts")
-	providerRetryInitialDelay, _ := f.GetDuration("provider-retry-initial-delay")
-	providerRetryMaxDelay, _ := f.GetDuration("provider-retry-max-delay")
-	providerRetryWallClockBudget, _ := f.GetDuration("provider-retry-wall-clock")
-	workspaceExportTo, _ := f.GetString("export-workspace-to")
-	workspaceExportRequired, _ := f.GetBool("export-workspace-required")
-	toolDispatchMaxParallel, _ := f.GetInt("max-tool-parallel")
-	batch, _ := f.GetBool("batch")
-
-	var queryParams map[string]string
-	for _, entry := range queryParamRaw {
-		k, v, err := parseQueryParam(entry)
-		if err != nil {
-			return fmt.Errorf("--query-param %q: %w", entry, err)
-		}
-		if queryParams == nil {
-			queryParams = map[string]string{}
-		}
-		queryParams[k] = v
-	}
-
-	// Allow the env var to set the follow-up grace when the flag is not provided.
-	if followUpGrace == 0 {
-		if v := os.Getenv("STIRRUP_FOLLOWUP_GRACE"); v != "" {
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				followUpGrace = n
-			}
-		}
-	}
-
-	// Distinguish --temperature unset from --temperature=0. The
-	// cobra Float64 store has no way to express absence, so the
-	// flag's Changed() bit is the only safe way to preserve
-	// "use harness default" when the flag is omitted. Shared with
-	// applyOverrides via optionalFloat64Flag to keep the two paths
-	// from drifting.
-	temperature := optionalFloat64Flag(cmd, "temperature")
-
-	config, err := buildHarnessRunConfig(harnessCLIOptions{
-		RunID:                        generateRunID(),
-		Mode:                         mode,
-		SessionName:                  sessionName,
-		Prompt:                       prompt,
-		ProviderType:                 providerType,
-		BaseURL:                      baseURL,
-		APIKeyHeader:                 apiKeyHeader,
-		QueryParams:                  queryParams,
-		APIKeyRef:                    apiKeyRef,
-		GCPProject:                   gcpProject,
-		GCPLocation:                  gcpLocation,
-		GCPCredentialsFile:           gcpCredentialsFile,
-		AnthropicFederationRuleID:    anthropicFederationRuleID,
-		AnthropicOrganizationID:      anthropicOrganizationID,
-		AnthropicServiceAccountID:    anthropicServiceAccountID,
-		AnthropicWorkspaceID:         anthropicWorkspaceID,
-		AnthropicFromGitHubActions:   anthropicFromGitHubActions,
-		AzureTenantID:                azureTenantID,
-		AzureClientID:                azureClientID,
-		AzureScope:                   azureScope,
-		Model:                        model,
-		Workspace:                    workspace,
-		MaxTurns:                     maxTurns,
-		Timeout:                      timeout,
-		TracePath:                    tracePath,
-		TransportType:                transportType,
-		TransportAddr:                transportAddr,
-		FollowUpGrace:                followUpGrace,
-		Temperature:                  temperature,
-		LogLevel:                     logLevel,
-		ExecutorType:                 executorType,
-		EditStrategyType:             editStrategyType,
-		VerifierType:                 verifierType,
-		GitStrategyType:              gitStrategyType,
-		TraceEmitterType:             traceEmitterType,
-		OTelEndpoint:                 otelEndpoint,
-		OTelProtocol:                 otelProtocol,
-		ContainerRuntime:             containerRuntime,
-		PermissionPolicyFile:         permissionPolicyFile,
-		CodeScannerType:              codeScannerType,
-		GuardRailType:                guardRailType,
-		GuardRailEndpoint:            guardRailEndpoint,
-		GuardRailModel:               guardRailModel,
-		GuardRailFailOpen:            guardRailFailOpen,
-		DeploymentEnvironment:        deploymentEnvironment,
-		ServiceNamespace:             serviceNamespace,
-		ProviderRetryMaxAttempts:     providerRetryMaxAttempts,
-		ProviderRetryInitialDelay:    providerRetryInitialDelay,
-		ProviderRetryMaxDelay:        providerRetryMaxDelay,
-		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
-		WorkspaceExportTo:            workspaceExportTo,
-		WorkspaceExportRequired:      workspaceExportRequired,
-		ToolDispatchMaxParallel:      toolDispatchMaxParallel,
-		Batch:                        batch,
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Stdin:      os.Stdin,
+		ConfigPath: configPath,
+		Cmd:        cmd,
+		Args:       args,
+		Resolve:    ResolveAll,
 	})
 	if err != nil {
 		return err
 	}
 
-	// Anthropic WIF env-var fallbacks and token-source inference run
-	// after buildHarnessRunConfig so the flag-only path mirrors the
-	// --config path's resolution chain. Errors here surface with the
-	// offending flag name rather than as an opaque ValidateRunConfig
-	// rejection.
-	if err := applyAnthropicWIFOverrides(cmd, config); err != nil {
-		return err
+	// --output-runconfig is a dry-run capture: write the validated
+	// RunConfig to the named path (or stdout) and exit without
+	// invoking the loop. The validator has already run inside
+	// BuildRunConfig, so reaching this branch with an invalid config
+	// is structurally impossible — that is what the spec means by
+	// "never writes on validation failure".
+	if outPath, _ := f.GetString("output-runconfig"); outPath != "" {
+		return writeOutputRunConfig(outPath, cfg)
 	}
 
-	if err := types.ValidateRunConfig(config); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
+	exportRequired, _ := f.GetBool("export-workspace-required")
+	return runWithConfig(cfg, runOptions{exportWorkspaceRequired: exportRequired})
+}
+
+// writeOutputRunConfig emits the resolved RunConfig as pretty-printed
+// JSON to the named path. The special value "-" writes to stdout so
+// `--output-runconfig=-` composes with `stirrup run-config` for
+// pipeline replay. Non-stdout paths open with 0600 — a captured
+// RunConfig may carry secret:// references whose names are operationally
+// sensitive even though the references themselves are not secrets, and
+// the conservative mode matches how the rest of the harness writes
+// operator-facing artifacts (trace files, prompt files).
+func writeOutputRunConfig(path string, cfg *types.RunConfig) error {
+	if path == "-" {
+		return writeRunConfigJSON(os.Stdout, cfg, false)
 	}
-	return runWithConfig(config, runOptions{exportWorkspaceRequired: workspaceExportRequired})
+	// O_TRUNC because a captured config replaces any previous one at
+	// the same path; the alternative ("append") would silently corrupt
+	// a replay file.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("opening --output-runconfig %q: %w", path, err)
+	}
+	return writeAndCloseRunConfig(f, path, cfg)
+}
+
+// writeAndCloseRunConfig is the testable seam writeOutputRunConfig
+// delegates to once a writer is available. Tests inject a synthetic
+// io.WriteCloser whose Close returns an error to pin the deferred-
+// flush diagnostic path.
+//
+// Linux's buffered file I/O can defer kernel page flushes until
+// Close. A successful writeRunConfigJSON but a failed Close (ENOSPC,
+// EIO, NFS commit failure) would otherwise hand the operator a
+// zero-exit run with a corrupt or empty capture file and no
+// diagnostic. Surface the close error when the prior write
+// succeeded.
+func writeAndCloseRunConfig(wc io.WriteCloser, path string, cfg *types.RunConfig) error {
+	writeErr := writeRunConfigJSON(wc, cfg, false)
+	if cerr := wc.Close(); cerr != nil && writeErr == nil {
+		return fmt.Errorf("closing --output-runconfig %q: %w", path, cerr)
+	}
+	return writeErr
 }
 
 // applyAnthropicWIFOverrides folds the Anthropic-WIF flag surface and
