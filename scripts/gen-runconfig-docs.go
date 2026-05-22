@@ -14,13 +14,11 @@
 //   - CI catches drift: `just verify-docs` regenerates and fails on
 //     diff, the same pattern as `just proto`.
 //
-// Scope: this generator walks the struct types declared in
-// types/runconfig.go. It extracts field doc comments, JSON tag names,
-// Go type spellings, default values pulled from named constants whose
-// name matches a struct field, and enum value sets pulled from
-// `var validXxx = map[string]bool{...}` patterns. It deliberately does
-// not try to extract free-form prose from comments above struct types;
-// the field-level comment is the canonical source.
+// Scope: this driver walks the struct types declared in
+// types/runconfig.go. The parsing heuristics live in
+// types/internal/docsgen so `go test ./types/...` can cover them;
+// this file is a thin driver that wires the package up to the
+// runconfig.go source and writes the formatted Go literal.
 //
 // Invocation: `go run scripts/gen-runconfig-docs.go` from the repo
 // root. The `//go:generate` directive in types/runconfig.go points at
@@ -31,103 +29,38 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"go/ast"
 	"go/format"
-	"go/parser"
-	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/rxbynerd/stirrup/types/docsgen"
 )
 
-// FieldDoc mirrors the type emitted into the generated file. Keep in
-// sync with the literal written by emitFile.
-type FieldDoc struct {
-	Path        string
-	Name        string
-	Type        string
-	JSONTag     string
-	Doc         string
-	Default     string
-	Enum        []string
-	Children    []string
-	Kind        string // "struct" | "leaf" | "map" | "slice"
-	Optional    bool   // pointer field
-	ParentPath  string
-	OwnerStruct string
-}
-
-// inspector walks the AST and accumulates everything we need to emit.
-type inspector struct {
-	fset *token.FileSet
-	pkg  *ast.Package
-
-	// structs maps type name → struct doc + fields, in source order.
-	structs map[string]*structInfo
-
-	// enums maps the name of a `var validXxx = map[string]bool{...}`
-	// to the sorted set of its keys (excluding empty strings).
-	enums map[string][]string
-
-	// constInts maps every exported / unexported integer-like const to
-	// its source value, used to surface defaults like
-	// `Default: 86400 (DefaultBatchMaxWaitSeconds)`.
-	constInts map[string]string
-}
-
-type structInfo struct {
-	Name   string
-	Fields []*fieldInfo
-}
-
-type fieldInfo struct {
-	Name     string
-	JSONTag  string
-	Doc      string
-	GoType   string
-	IsPtr    bool
-	IsSlice  bool
-	IsMap    bool
-	ElemType string // map value type or slice elem; "" otherwise
-	MapKey   string // map key type; "" otherwise
-}
-
 func main() {
-	// Locate the source file relative to the working directory or the
-	// directory containing this script. Running from the repo root is
-	// the documented entry point, but `go generate ./types/...` runs
-	// with PWD == ./types, so try both.
 	src, out, err := resolvePaths()
 	if err != nil {
 		fail(err)
 	}
 
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, src, nil, parser.ParseComments)
+	file, _, err := docsgen.ParseFile(src)
 	if err != nil {
-		fail(fmt.Errorf("parse %s: %w", src, err))
+		fail(err)
 	}
 
-	ins := &inspector{
-		fset:      fset,
-		structs:   map[string]*structInfo{},
-		enums:     map[string][]string{},
-		constInts: map[string]string{},
-	}
-	ins.collect(file)
+	ins := docsgen.NewInspector()
+	ins.Collect(file)
 
-	// Walk RunConfig as the entry point and emit the flat field-path
-	// lookup table.
-	root, ok := ins.structs["RunConfig"]
+	root, ok := ins.Structs["RunConfig"]
 	if !ok {
 		fail(fmt.Errorf("RunConfig struct not found in %s", src))
 	}
 
-	docs := map[string]*FieldDoc{}
-	docs[""] = ins.rootDoc(root)
-	ins.walk(root, "", "RunConfig", docs, map[string]bool{"RunConfig": true})
+	docs := map[string]*docsgen.FieldDoc{}
+	docs[""] = ins.RootDoc(root)
+	ins.Walk(root, "", "RunConfig", docs, map[string]bool{"RunConfig": true})
 
 	if err := emitFile(out, docs); err != nil {
 		fail(err)
@@ -154,447 +87,8 @@ func resolvePaths() (src, out string, err error) {
 	return "", "", fmt.Errorf("runconfig.go not found relative to %s", wd)
 }
 
-func (ins *inspector) collect(file *ast.File) {
-	for _, decl := range file.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok {
-			continue
-		}
-		switch gen.Tok {
-		case token.TYPE:
-			ins.collectTypes(gen)
-		case token.VAR:
-			ins.collectVars(gen)
-		case token.CONST:
-			ins.collectConsts(gen)
-		}
-	}
-}
-
-func (ins *inspector) collectTypes(gen *ast.GenDecl) {
-	for _, spec := range gen.Specs {
-		ts, ok := spec.(*ast.TypeSpec)
-		if !ok {
-			continue
-		}
-		st, ok := ts.Type.(*ast.StructType)
-		if !ok {
-			continue
-		}
-		info := &structInfo{Name: ts.Name.Name}
-		for _, f := range st.Fields.List {
-			// Anonymous / embedded fields would need recursing into the
-			// embedded type; the RunConfig hierarchy doesn't use them.
-			// Skip with a noisy assertion: if someone adds an embedded
-			// field later, regenerating will silently drop it.
-			if len(f.Names) == 0 {
-				continue
-			}
-			doc := commentText(f.Doc)
-			if doc == "" {
-				// Trailing line-comments (`Mode string // "execution" | ...`)
-				// are captured by Field.Comment, not Field.Doc. Use them as
-				// a fallback so terse fields still surface useful text.
-				doc = commentText(f.Comment)
-			}
-			for _, name := range f.Names {
-				if !name.IsExported() {
-					continue
-				}
-				fi := &fieldInfo{
-					Name: name.Name,
-					Doc:  doc,
-				}
-				populateType(fi, f.Type)
-				fi.JSONTag = jsonTagName(f.Tag, name.Name)
-				if fi.JSONTag == "-" {
-					continue
-				}
-				info.Fields = append(info.Fields, fi)
-			}
-		}
-		ins.structs[info.Name] = info
-	}
-}
-
-func (ins *inspector) collectVars(gen *ast.GenDecl) {
-	for _, spec := range gen.Specs {
-		vs, ok := spec.(*ast.ValueSpec)
-		if !ok {
-			continue
-		}
-		for i, name := range vs.Names {
-			if i >= len(vs.Values) {
-				continue
-			}
-			// Only collect `valid*` map literals of map[string]bool.
-			if !strings.HasPrefix(name.Name, "valid") {
-				continue
-			}
-			lit, ok := vs.Values[i].(*ast.CompositeLit)
-			if !ok {
-				continue
-			}
-			mt, ok := lit.Type.(*ast.MapType)
-			if !ok {
-				continue
-			}
-			kt, ok := mt.Key.(*ast.Ident)
-			if !ok || kt.Name != "string" {
-				continue
-			}
-			vt, ok := mt.Value.(*ast.Ident)
-			if !ok || vt.Name != "bool" {
-				continue
-			}
-			vals := make([]string, 0, len(lit.Elts))
-			for _, el := range lit.Elts {
-				kv, ok := el.(*ast.KeyValueExpr)
-				if !ok {
-					continue
-				}
-				key, ok := kv.Key.(*ast.BasicLit)
-				if !ok || key.Kind != token.STRING {
-					continue
-				}
-				s, err := strconv.Unquote(key.Value)
-				if err != nil || s == "" {
-					continue
-				}
-				vals = append(vals, s)
-			}
-			sort.Strings(vals)
-			ins.enums[name.Name] = vals
-		}
-	}
-}
-
-func (ins *inspector) collectConsts(gen *ast.GenDecl) {
-	for _, spec := range gen.Specs {
-		vs, ok := spec.(*ast.ValueSpec)
-		if !ok {
-			continue
-		}
-		for i, name := range vs.Names {
-			if i >= len(vs.Values) {
-				continue
-			}
-			lit, ok := vs.Values[i].(*ast.BasicLit)
-			if !ok {
-				continue
-			}
-			if lit.Kind != token.INT && lit.Kind != token.FLOAT {
-				continue
-			}
-			ins.constInts[name.Name] = lit.Value
-		}
-	}
-}
-
-func populateType(fi *fieldInfo, expr ast.Expr) {
-	switch t := expr.(type) {
-	case *ast.StarExpr:
-		fi.IsPtr = true
-		populateType(fi, t.X)
-		// populateType overwrote GoType with the underlying. Re-prefix.
-		fi.GoType = "*" + fi.GoType
-	case *ast.Ident:
-		fi.GoType = t.Name
-	case *ast.SelectorExpr:
-		// e.g. time.Duration
-		if x, ok := t.X.(*ast.Ident); ok {
-			fi.GoType = x.Name + "." + t.Sel.Name
-		} else {
-			fi.GoType = t.Sel.Name
-		}
-	case *ast.ArrayType:
-		fi.IsSlice = true
-		elem := &fieldInfo{}
-		populateType(elem, t.Elt)
-		fi.ElemType = elem.GoType
-		fi.GoType = "[]" + elem.GoType
-	case *ast.MapType:
-		fi.IsMap = true
-		k := &fieldInfo{}
-		v := &fieldInfo{}
-		populateType(k, t.Key)
-		populateType(v, t.Value)
-		fi.MapKey = k.GoType
-		fi.ElemType = v.GoType
-		fi.GoType = "map[" + k.GoType + "]" + v.GoType
-	default:
-		fi.GoType = "unknown"
-	}
-}
-
-func jsonTagName(tag *ast.BasicLit, fallback string) string {
-	if tag == nil {
-		return lowerFirst(fallback)
-	}
-	raw, err := strconv.Unquote(tag.Value)
-	if err != nil {
-		return lowerFirst(fallback)
-	}
-	// crude tag parse — the canonical "json" key is the only one we need.
-	for _, part := range splitTag(raw) {
-		if !strings.HasPrefix(part, "json:") {
-			continue
-		}
-		inner, err := strconv.Unquote(strings.TrimPrefix(part, "json:"))
-		if err != nil {
-			return lowerFirst(fallback)
-		}
-		comma := strings.IndexByte(inner, ',')
-		if comma >= 0 {
-			inner = inner[:comma]
-		}
-		if inner == "" {
-			return lowerFirst(fallback)
-		}
-		return inner
-	}
-	return lowerFirst(fallback)
-}
-
-func splitTag(tag string) []string {
-	var out []string
-	var cur strings.Builder
-	inQuote := false
-	for _, r := range tag {
-		switch {
-		case r == '"':
-			inQuote = !inQuote
-			cur.WriteRune(r)
-		case r == ' ' && !inQuote:
-			if cur.Len() > 0 {
-				out = append(out, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteRune(r)
-		}
-	}
-	if cur.Len() > 0 {
-		out = append(out, cur.String())
-	}
-	return out
-}
-
-func lowerFirst(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToLower(s[:1]) + s[1:]
-}
-
-func commentText(cg *ast.CommentGroup) string {
-	if cg == nil {
-		return ""
-	}
-	// ast.CommentGroup.Text() drops the leading "//" and trailing spaces,
-	// merging consecutive comments into one paragraph-style string.
-	return strings.TrimRight(cg.Text(), "\n")
-}
-
-// rootDoc builds the entry for the empty path (== `--root`). Children
-// are the top-level fields of RunConfig.
-func (ins *inspector) rootDoc(root *structInfo) *FieldDoc {
-	children := make([]string, 0, len(root.Fields))
-	for _, f := range root.Fields {
-		children = append(children, f.JSONTag)
-	}
-	sort.Strings(children)
-	return &FieldDoc{
-		Path:        "",
-		Name:        "RunConfig",
-		Type:        "RunConfig",
-		JSONTag:     "",
-		Doc:         "RunConfig fully describes a single harness run. Use `stirrup config explain <field>` to drill into individual fields.",
-		Kind:        "struct",
-		Children:    children,
-		OwnerStruct: "RunConfig",
-	}
-}
-
-// walk descends through structInfo, emitting one FieldDoc per
-// reachable field path. Pointer fields are dereferenced for display
-// purposes; their underlying struct's children are still walked.
-//
-// Map fields contribute a single placeholder path
-// (`<prefix>.<jsonTag>.<key>`) so an operator can ask
-// `stirrup config explain providers.<name>` to see the per-entry
-// shape.
-func (ins *inspector) walk(s *structInfo, prefix, ownerName string, docs map[string]*FieldDoc, stack map[string]bool) {
-	for _, f := range s.Fields {
-		path := f.JSONTag
-		if prefix != "" {
-			path = prefix + "." + f.JSONTag
-		}
-		fd := &FieldDoc{
-			Path:        path,
-			Name:        f.Name,
-			Type:        f.GoType,
-			JSONTag:     f.JSONTag,
-			Doc:         f.Doc,
-			Optional:    f.IsPtr,
-			ParentPath:  prefix,
-			OwnerStruct: ownerName,
-		}
-
-		// Default / enum hints surfaced via name-matching.
-		if dv := ins.defaultForField(ownerName, f.Name); dv != "" {
-			fd.Default = dv
-		}
-		if enum := ins.enumForField(ownerName, f.Name); enum != nil {
-			fd.Enum = enum
-		}
-
-		// Type-kind classification + child walk. Cycle protection: skip
-		// the recursive descent when the target struct is already in the
-		// active stack (e.g. GuardRailConfig.Stages []GuardRailConfig).
-		// The FieldDoc for the cycling field is still emitted; only the
-		// nested children are pruned.
-		switch {
-		case f.IsMap:
-			fd.Kind = "map"
-			if child, ok := ins.structs[f.ElemType]; ok && !stack[child.Name] {
-				keyPath := path + ".<" + lowerFirst(f.MapKey) + ">"
-				childPaths := make([]string, 0, len(child.Fields))
-				for _, cf := range child.Fields {
-					childPaths = append(childPaths, cf.JSONTag)
-				}
-				sort.Strings(childPaths)
-				docs[keyPath] = &FieldDoc{
-					Path:        keyPath,
-					Name:        child.Name,
-					Type:        child.Name,
-					Doc:         fmt.Sprintf("Per-entry shape of %s.", path),
-					Kind:        "struct",
-					Children:    childPaths,
-					ParentPath:  path,
-					OwnerStruct: child.Name,
-				}
-				stack[child.Name] = true
-				ins.walk(child, keyPath, child.Name, docs, stack)
-				delete(stack, child.Name)
-			}
-		case f.IsSlice:
-			fd.Kind = "slice"
-			if child, ok := ins.structs[f.ElemType]; ok && !stack[child.Name] {
-				idxPath := path + ".[]"
-				childPaths := make([]string, 0, len(child.Fields))
-				for _, cf := range child.Fields {
-					childPaths = append(childPaths, cf.JSONTag)
-				}
-				sort.Strings(childPaths)
-				docs[idxPath] = &FieldDoc{
-					Path:        idxPath,
-					Name:        child.Name,
-					Type:        child.Name,
-					Doc:         fmt.Sprintf("Element shape of %s.", path),
-					Kind:        "struct",
-					Children:    childPaths,
-					ParentPath:  path,
-					OwnerStruct: child.Name,
-				}
-				stack[child.Name] = true
-				ins.walk(child, idxPath, child.Name, docs, stack)
-				delete(stack, child.Name)
-			}
-		default:
-			elem := f.GoType
-			elem = strings.TrimPrefix(elem, "*")
-			if child, ok := ins.structs[elem]; ok && !stack[child.Name] {
-				fd.Kind = "struct"
-				childPaths := make([]string, 0, len(child.Fields))
-				for _, cf := range child.Fields {
-					childPaths = append(childPaths, cf.JSONTag)
-				}
-				sort.Strings(childPaths)
-				fd.Children = childPaths
-				stack[child.Name] = true
-				ins.walk(child, path, child.Name, docs, stack)
-				delete(stack, child.Name)
-			} else {
-				fd.Kind = "leaf"
-			}
-		}
-		docs[path] = fd
-	}
-}
-
-// defaultForField returns a human-readable hint when a `Default<X>` /
-// `default<X>` constant exists, where `<X>` is built from variations
-// of the owner-struct name and the field name. The naming convention
-// in runconfig.go is inconsistent: `MaxParallel` lives under
-// `ToolDispatchConfig` as `DefaultToolDispatchMaxParallel`, while
-// `MaxWaitSeconds` lives under `BatchProviderConfig` as
-// `DefaultBatchMaxWaitSeconds` (only the first word of the owner is
-// re-used). The matcher tries every leading word of the owner name
-// in addition to the verbatim and stripped forms so both conventions
-// are reachable without hand-curation.
-//
-// First match wins. The hint is rendered as "<value> (<const name>)".
-func (ins *inspector) defaultForField(ownerStruct, field string) string {
-	stripped := strings.TrimSuffix(ownerStruct, "Config")
-	candidateBases := []string{field, stripped + field, ownerStruct + field}
-	for _, w := range leadingWords(stripped) {
-		candidateBases = append(candidateBases, w+field)
-	}
-	for _, base := range candidateBases {
-		for _, prefix := range []string{"Default", "default"} {
-			name := prefix + base
-			if v, ok := ins.constInts[name]; ok {
-				return fmt.Sprintf("%s (%s)", v, name)
-			}
-		}
-	}
-	return ""
-}
-
-// leadingWords yields successive leading CamelCase words of s.
-// e.g. "BatchProvider" → ["Batch", "BatchProvider"]; "ToolDispatch" →
-// ["Tool", "ToolDispatch"]. Used to bridge runconfig.go's inconsistent
-// `Default<First-word-only><Field>` naming.
-func leadingWords(s string) []string {
-	var out []string
-	for i := 1; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			out = append(out, s[:i])
-		}
-	}
-	if len(out) == 0 || out[len(out)-1] != s {
-		out = append(out, s)
-	}
-	return out
-}
-
-// enumForField returns the closed-set values when a `valid<Name>Types`
-// / `valid<Name>Values` / `valid<Name>s` var exists. The owner-struct
-// prefix is consulted before the bare field name so a `Type` field on
-// `ProviderConfig` resolves to `validProviderTypes` rather than the
-// first matching `validXxxTypes` map. Leading words of the stripped
-// owner are also tried (e.g. `BatchProvider` → `Batch`) so the
-// inconsistent naming used for the batch-related enums is reachable.
-func (ins *inspector) enumForField(ownerStruct, field string) []string {
-	stripped := strings.TrimSuffix(ownerStruct, "Config")
-	bases := []string{stripped + field, ownerStruct + field, field}
-	for _, w := range leadingWords(stripped) {
-		bases = append(bases, w+field)
-	}
-	for _, base := range bases {
-		for _, suffix := range []string{"Types", "Values", "s", ""} {
-			if v, ok := ins.enums["valid"+base+suffix]; ok {
-				return v
-			}
-		}
-	}
-	return nil
-}
-
 // emitFile renders the lookup table to disk.
-func emitFile(path string, docs map[string]*FieldDoc) error {
+func emitFile(path string, docs map[string]*docsgen.FieldDoc) error {
 	var buf bytes.Buffer
 	buf.WriteString(`// Code generated by scripts/gen-runconfig-docs.go. DO NOT EDIT.
 //
