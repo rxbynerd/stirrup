@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -17,6 +18,31 @@ const (
 	tracesDir     = "traces"
 	recordingsDir = "recordings"
 )
+
+// validIDPattern bounds the set of characters that may appear in a
+// trace ID or recording RunID before that ID becomes part of an
+// on-disk filename. Harness-emitted IDs are of the form `run-<nanos>`
+// or `sub-<nanos>` (and operator-supplied IDs follow the same shape
+// in practice), so restricting to ASCII letters, digits, underscore,
+// and hyphen with a 128-byte upper bound covers every legitimate
+// shape while rejecting `..`, `/`, `\`, null bytes, and any other
+// sequence that could escape the lakehouse root through
+// `filepath.Join` resolution.
+var validIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_\-]{1,128}$`)
+
+// ValidateID rejects identifiers that would be unsafe to use as the
+// basename of an on-disk lakehouse artifact. Exported so callers that
+// route semi-trusted input (e.g. `stirrup-eval ingest`) can fail with
+// a per-record error message before reaching StoreTrace.
+func ValidateID(id string) error {
+	if id == "" {
+		return fmt.Errorf("ID is empty")
+	}
+	if !validIDPattern.MatchString(id) {
+		return fmt.Errorf("ID %q contains characters outside [A-Za-z0-9_-] or exceeds 128 bytes", id)
+	}
+	return nil
+}
 
 // FileStore implements types.TraceLakehouse backed by JSON files on disk.
 // Traces are stored in <root>/traces/<id>.json and recordings in
@@ -36,18 +62,24 @@ func NewFileStore(rootDir string) (*FileStore, error) {
 	return &FileStore{rootDir: rootDir}, nil
 }
 
-// StoreTrace writes a RunTrace as JSON to traces/<id>.json.
+// StoreTrace writes a RunTrace as JSON to traces/<id>.json. The ID is
+// validated as a safe filename component before any filesystem call;
+// `..`, path separators, and unbounded lengths are rejected so a
+// semi-trusted JSONL feed cannot escape the lakehouse root via the
+// filepath.Join `..` resolution.
 func (fs *FileStore) StoreTrace(_ context.Context, trace types.RunTrace) error {
-	if trace.ID == "" {
-		return fmt.Errorf("trace ID is empty")
+	if err := ValidateID(trace.ID); err != nil {
+		return fmt.Errorf("trace %w", err)
 	}
 	return fs.writeJSON(filepath.Join(fs.rootDir, tracesDir, trace.ID+".json"), trace)
 }
 
 // StoreRecording writes a RunRecording as JSON to recordings/<runId>.json.
+// The RunID is validated as a safe filename component for the same
+// reason as StoreTrace; see ValidateID for the bounds.
 func (fs *FileStore) StoreRecording(_ context.Context, recording types.RunRecording) error {
-	if recording.RunID == "" {
-		return fmt.Errorf("recording RunID is empty")
+	if err := ValidateID(recording.RunID); err != nil {
+		return fmt.Errorf("recording Run%w", err)
 	}
 	return fs.writeJSON(filepath.Join(fs.rootDir, recordingsDir, recording.RunID+".json"), recording)
 }

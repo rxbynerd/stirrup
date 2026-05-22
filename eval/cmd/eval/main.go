@@ -940,7 +940,12 @@ func ingestReader(ctx context.Context, r io.Reader, source string, store *lakeho
 			errors++
 			continue
 		}
-		if _, dup := seen[trace.ID]; dup && trace.ID != "" {
+		if err := lakehouse.ValidateID(trace.ID); err != nil {
+			errLinef("ingest: %s line %d: invalid trace %v\n", source, lineNo, err)
+			errors++
+			continue
+		}
+		if _, dup := seen[trace.ID]; dup {
 			errLinef("ingest: %s line %d: duplicate trace ID %q (overwriting previous entry)\n", source, lineNo, trace.ID)
 		}
 		if err := store.StoreTrace(ctx, trace); err != nil {

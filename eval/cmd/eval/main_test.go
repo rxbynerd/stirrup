@@ -1176,11 +1176,13 @@ func TestCmdIngest_MalformedLineTolerated(t *testing.T) {
 	}
 }
 
-// TestCmdIngest_EmptyIDIsPerLineError covers the StoreTrace error
-// surface: a trace with an empty ID is rejected by FileStore, the
-// rejection is reported per-line on stderr, and the ingest does not
-// abort. A regression that elevated a per-line StoreTrace error to
-// a fatal would shrink the salvage guarantee.
+// TestCmdIngest_EmptyIDIsPerLineError covers the per-line ID-validation
+// surface: a trace with an empty ID is rejected before StoreTrace is
+// reached (the ingest now validates IDs as defence-in-depth against the
+// FileStore traversal guard), the rejection is reported per-line on
+// stderr, and the ingest does not abort. A regression that elevated
+// a per-line validation error to a fatal would shrink the salvage
+// guarantee.
 func TestCmdIngest_EmptyIDIsPerLineError(t *testing.T) {
 	dir := t.TempDir()
 	tracePath := filepath.Join(dir, "run.jsonl")
@@ -1198,8 +1200,8 @@ func TestCmdIngest_EmptyIDIsPerLineError(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "store error") {
-		t.Errorf("stderr missing store-error message: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "invalid trace") {
+		t.Errorf("stderr missing invalid-trace message: %q", stderr.String())
 	}
 }
 
@@ -1384,5 +1386,46 @@ func TestRun_IngestDispatch(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(lhPath, "traces", "dispatched.json")); err != nil {
 		t.Errorf("expected dispatched trace to be written: %v", err)
+	}
+}
+
+// TestCmdIngest_PathTraversalIDRejected pins the path-traversal guard:
+// a JSONL line whose trace.ID contains `..` segments must be rejected
+// per-line, no file may be written outside the lakehouse root, and
+// other valid lines in the same input must still ingest. A regression
+// that fed semi-trusted IDs straight to filepath.Join would write
+// JSON to an attacker-chosen location with this PR's ingest surface.
+func TestCmdIngest_PathTraversalIDRejected(t *testing.T) {
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "run.jsonl")
+	lhPath := filepath.Join(dir, "lh")
+
+	// Sentinel file just outside the lakehouse the attacker would
+	// overwrite if filepath.Join resolution were left unchecked.
+	sentinelDir := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(sentinelDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinelPath := filepath.Join(sentinelDir, "evil.json")
+
+	evil := traceJSONLine(t, types.RunTrace{ID: "../../outside/evil", Outcome: "success"})
+	good := traceJSONLine(t, types.RunTrace{ID: "trace-good", Outcome: "success"})
+	if err := os.WriteFile(tracePath, []byte(evil+"\n"+good+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	code := cmdIngest([]string{"--trace", tracePath, "--lakehouse", lhPath}, strings.NewReader(""), &stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr=%q)", code, stderr.String())
+	}
+	if _, err := os.Stat(sentinelPath); !os.IsNotExist(err) {
+		t.Errorf("path traversal wrote outside lakehouse: stat(%s) err=%v (want IsNotExist)", sentinelPath, err)
+	}
+	if _, err := os.Stat(filepath.Join(lhPath, "traces", "trace-good.json")); err != nil {
+		t.Errorf("expected good trace to be written despite the traversal line: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "invalid trace ID") {
+		t.Errorf("stderr missing per-line invalid-ID message: %q", stderr.String())
 	}
 }

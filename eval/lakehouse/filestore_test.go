@@ -115,6 +115,28 @@ func TestStoreRecording_EmptyRunID(t *testing.T) {
 	}
 }
 
+// TestStoreTrace_RejectsTraversalID pins the path-traversal guard:
+// a trace whose ID contains `..` or path separators must be rejected
+// before filepath.Join resolution would escape the lakehouse root.
+// Mirrors the equivalent guard in StoreRecording.
+func TestStoreTrace_RejectsTraversalID(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	defer func() { _ = fs.Close() }()
+
+	for _, id := range []string{"../evil", "../../etc/passwd", "a/b", "a\\b", "with\x00null", "has space"} {
+		if err := fs.StoreTrace(context.Background(), types.RunTrace{ID: id}); err == nil {
+			t.Errorf("StoreTrace(%q) = nil, want validation error", id)
+		}
+		if err := fs.StoreRecording(context.Background(), types.RunRecording{RunID: id}); err == nil {
+			t.Errorf("StoreRecording(%q) = nil, want validation error", id)
+		}
+	}
+}
+
 func TestQueryTraces_EmptyStore(t *testing.T) {
 	dir := t.TempDir()
 	fs, err := NewFileStore(dir)
