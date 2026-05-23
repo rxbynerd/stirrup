@@ -129,6 +129,54 @@ func TestNormalizingAdapter_InboundToolCallReverseTranslated(t *testing.T) {
 	}
 }
 
+func TestNormalizingAdapter_MultipleToolCallsInBatchReverseTranslated(t *testing.T) {
+	// A streamed response can carry several tool_call events in a
+	// single turn (parallel tool use). The wrapper's per-event reverse
+	// translation must apply to every one, not just the first — the
+	// goroutine that drains innerCh loops over the channel but no test
+	// previously scripted more than one tool_call. Gemini's policy is
+	// the strictest, so two MCP-prefixed names with hyphens and dots
+	// force normalisation on the outbound side and assert the inbound
+	// reverse-mapping restores both originals independently and in
+	// order.
+	inner := &fakeAdapter{
+		scripted: []types.StreamEvent{
+			{Type: "text_delta", Text: "running both"},
+			{Type: "tool_call", ID: "call_1", Name: "mcp_jira_create_issue"},
+			{Type: "tool_call", ID: "call_2", Name: "mcp_slack_post_message"},
+			{Type: "message_complete", StopReason: "tool_use"},
+		},
+	}
+	w := NewNormalizingAdapter(inner, "gemini")
+
+	params := types.StreamParams{
+		Tools: []types.ToolDefinition{
+			{Name: "mcp_jira_create-issue", InputSchema: json.RawMessage(`{}`)},
+			{Name: "mcp_slack_post.message", InputSchema: json.RawMessage(`{}`)},
+		},
+	}
+	ch, err := w.Stream(context.Background(), params)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var toolCallNames []string
+	for ev := range ch {
+		if ev.Type == "tool_call" {
+			toolCallNames = append(toolCallNames, ev.Name)
+		}
+	}
+	wantNames := []string{"mcp_jira_create-issue", "mcp_slack_post.message"}
+	if len(toolCallNames) != len(wantNames) {
+		t.Fatalf("got %d tool_call events, want %d (names=%v)", len(toolCallNames), len(wantNames), toolCallNames)
+	}
+	for i, want := range wantNames {
+		if toolCallNames[i] != want {
+			t.Errorf("tool_call[%d].Name = %q, want internal %q", i, toolCallNames[i], want)
+		}
+	}
+}
+
 func TestNormalizingAdapter_MessageHistoryToolUseNamesRewritten(t *testing.T) {
 	// A prior assistant turn produced a tool_use block whose Name
 	// carries the internal (registry) name. On the next turn the
