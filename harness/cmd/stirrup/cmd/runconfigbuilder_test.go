@@ -1053,3 +1053,57 @@ func TestBuildRunConfig_EnvVarLeadingWhitespaceTrimmed(t *testing.T) {
 		t.Errorf("RunID = %q, want from-file (trimmed env path should resolve)", cfg.RunID)
 	}
 }
+
+// TestBuildRunConfig_EmptyEditStrategyResolvesToMulti pins the
+// end-to-end CLI default for the edit strategy. A bare flag-only
+// invocation (no --edit-strategy flag) must land on "multi" after the
+// full Resolve == ResolveAll pipeline, matching direct RunConfig
+// embedding (TestValidateRunConfig_EditStrategyDefaultsToMulti) and the
+// run-config subcommand (TestRunRunConfig_EmptyEditStrategyDefaultsToMulti).
+// Tests fail if CLI and validation defaults ever diverge again.
+func TestBuildRunConfig_EmptyEditStrategyResolvesToMulti(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.ParseFlags([]string{
+		"--mode", "execution",
+		"--prompt", "test",
+	}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveAll,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.EditStrategy.Type != "multi" {
+		t.Errorf("EditStrategy.Type = %q, want multi (CLI default must match validation default)", cfg.EditStrategy.Type)
+	}
+}
+
+// TestBuildRunConfig_ExplicitEditStrategyPreserved confirms the
+// override path: an operator who selects --edit-strategy explicitly
+// still gets their selection rather than being silently rewritten to
+// the validation default.
+func TestBuildRunConfig_ExplicitEditStrategyPreserved(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.ParseFlags([]string{
+		"--mode", "execution",
+		"--prompt", "test",
+		"--edit-strategy", "whole-file",
+	}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveAll,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.EditStrategy.Type != "whole-file" {
+		t.Errorf("EditStrategy.Type = %q, want whole-file (explicit selection must survive defaulting)", cfg.EditStrategy.Type)
+	}
+}

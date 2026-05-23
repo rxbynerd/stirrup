@@ -376,6 +376,12 @@ func TestBuildHarnessRunConfig_ComponentSelections(t *testing.T) {
 // fallback values for component-selection fields. These defaults are the
 // shipped CLI behaviour; tests pin them explicitly so a refactor that
 // changes them by accident fails loudly.
+//
+// EditStrategy.Type is deliberately not asserted here: it is defaulted
+// by types.ValidateRunConfig (via applyEditStrategyDefault), not by the
+// CLI-layer buildHarnessRunConfig path, so empty in / empty out at this
+// layer is the correct behaviour. End-to-end CLI defaulting is covered
+// by TestBuildRunConfig_EmptyEditStrategyResolvesToMulti.
 func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
 		RunID:         "test-run",
@@ -395,9 +401,6 @@ func TestBuildHarnessRunConfig_EmptyComponentDefaults(t *testing.T) {
 	}
 	if cfg.Executor.Type != "local" {
 		t.Errorf("default executor should be 'local', got %q", cfg.Executor.Type)
-	}
-	if cfg.EditStrategy.Type != "multi" {
-		t.Errorf("default edit strategy should be 'multi', got %q", cfg.EditStrategy.Type)
 	}
 	if cfg.Verifier.Type != "none" {
 		t.Errorf("default verifier should be 'none', got %q", cfg.Verifier.Type)

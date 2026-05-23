@@ -283,14 +283,12 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 	if executorType == "" {
 		executorType = "local"
 	}
+	// EditStrategyType intentionally not defaulted here: an empty value
+	// flows into RunConfig.EditStrategy.Type and is filled with "multi"
+	// by types.ValidateRunConfig via applyEditStrategyDefault. Keeping the
+	// default in one place (validation) means CLI, gRPC, and direct
+	// RunConfig embedding all land on the same edit-tool surface.
 	editStrategyType := opts.EditStrategyType
-	if editStrategyType == "" {
-		// "multi" is the default because the multi-strategy edit tool is the
-		// highest-leverage edit configuration for production. Callers asking
-		// for write_file/search_replace/apply_diff are aliased to the
-		// multi-strategy's edit_file tool by core/factory.go::editToolEnabled.
-		editStrategyType = "multi"
-	}
 	verifierType := opts.VerifierType
 	if verifierType == "" {
 		verifierType = "none"
