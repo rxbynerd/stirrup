@@ -959,8 +959,8 @@ func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
 	}
 	loop, reader := buildMetricsHarness(t, []*tool.Tool{panicTool}, nil, nil, tr)
 	cfg := &types.RunConfig{
-		RunID:        "test-run-panic",
-		Mode:         "execution",
+		RunID: "test-run-panic",
+		Mode:  "execution",
 		// The fan-out goroutine is the panic recovery site; ensure
 		// the async branch is taken by MaxParallel >= 1.
 		ToolDispatch: &types.ToolDispatchConfig{MaxParallel: 1},
