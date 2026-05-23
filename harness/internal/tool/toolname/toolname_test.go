@@ -189,6 +189,32 @@ func TestBuild_DuplicateInternalNameRejected(t *testing.T) {
 	}
 }
 
+func TestBuild_IrresolvableCollisionErrors(t *testing.T) {
+	// Force the stillCollides branch in Build: three distinct internal
+	// names that all sanitize to the same single-character form under
+	// MaxLen=1. The first wins the bare name; the second's
+	// disambiguation suffix is the pathological-budget branch in
+	// disambiguate (budget = MaxLen - len(suffix) < 1), which falls
+	// back to a one-character truncated suffix. The third name's
+	// disambiguation truncates to the same one character, so the
+	// post-disambiguation external name collides with what the second
+	// already claimed — the only legitimate way to reach the
+	// stillCollides return at toolname.go:194.
+	//
+	// This is the spec's fail-closed guarantee: irresolvable collisions
+	// must surface as an error before any wire request is issued, so a
+	// silent alias cannot route a tool call to the wrong handler.
+	names := []string{"aa", "ab", "ac"}
+	policy := Policy{MaxLen: 1, AllowHyphen: false, AllowLeadingDigit: true}
+	_, err := Build(names, policy)
+	if err == nil {
+		t.Fatal("expected error for irresolvable collision, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot resolve collision") {
+		t.Errorf("expected stillCollides error wording, got: %v", err)
+	}
+}
+
 func TestBuild_LongNamesGetHashSuffixWhenColliding(t *testing.T) {
 	// Two long names that share a 64-char prefix would collide after
 	// hard truncation; the hash suffix must keep them distinct.
