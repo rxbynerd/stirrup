@@ -259,11 +259,14 @@ func TestNormalizingAdapter_CallerParamsNotMutated(t *testing.T) {
 	}
 }
 
-func TestNormalizingAdapter_CollisionAfterNormalisationFailsClosed(t *testing.T) {
-	// Two distinct internal names that normalise to the same external
-	// name under the Gemini policy. The wrapper must refuse the
-	// stream rather than silently aliasing — silent aliasing would
-	// route an inbound tool_call to the wrong handler.
+func TestNormalizingAdapter_CollisionResolvedByDisambiguation(t *testing.T) {
+	// Two distinct internal names that sanitize to the same external
+	// name under the Gemini policy, but the hash-suffix disambiguation
+	// keeps them distinct. This is the happy path through the
+	// collision branch — the wrapper does not refuse, and the inner
+	// adapter sees two distinct names. The fail-closed path (where
+	// disambiguation itself cannot resolve the collision) is covered
+	// by TestNormalizingAdapter_IrresolvableCollisionFailsClosed.
 	inner := &fakeAdapter{}
 	w := NewNormalizingAdapter(inner, "gemini")
 
@@ -273,9 +276,6 @@ func TestNormalizingAdapter_CollisionAfterNormalisationFailsClosed(t *testing.T)
 			{Name: "mcp_jira.issue", InputSchema: json.RawMessage(`{}`)},
 		},
 	}
-	// Names collide on first sanitization but a hash suffix
-	// disambiguates them. Confirm the stream still works (this is
-	// the deterministic-resolution path, not the unresolvable case).
 	if _, err := w.Stream(context.Background(), params); err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
@@ -283,6 +283,46 @@ func TestNormalizingAdapter_CollisionAfterNormalisationFailsClosed(t *testing.T)
 	b := inner.receivedParams.Tools[1].Name
 	if a == b {
 		t.Fatalf("collision not resolved: both normalised to %q", a)
+	}
+}
+
+func TestNormalizingAdapter_IrresolvableCollisionFailsClosed(t *testing.T) {
+	// Pin the wrapper's fail-closed guarantee end-to-end: when
+	// buildMapping returns a non-nil error, Stream must return that
+	// error wrapped in "tool name normalization: ..." and must not
+	// reach the inner adapter. Without this assertion a refactor that
+	// dropped the early-return at normalizer.go:64-67 would silently
+	// pass a half-built mapping (or no mapping at all) into the wire
+	// path.
+	//
+	// All five production provider policies have MaxLen=64, which keeps
+	// the hash-suffix branch wide enough that two distinct internal
+	// names cannot reach the stillCollides return through Build's
+	// disambiguate path. The reachable adapter-level failure mode is
+	// therefore Build's duplicate-internal-name guard — two tool
+	// definitions that share an identical Name field. The deeper
+	// stillCollides branch is covered at the package level by
+	// TestBuild_IrresolvableCollisionErrors with a synthetic
+	// short-MaxLen policy; this test pins the adapter seam.
+	inner := &fakeAdapter{}
+	w := NewNormalizingAdapter(inner, "gemini")
+
+	params := types.StreamParams{
+		Tools: []types.ToolDefinition{
+			{Name: "duplicate_tool", InputSchema: json.RawMessage(`{}`)},
+			{Name: "duplicate_tool", InputSchema: json.RawMessage(`{}`)},
+		},
+	}
+	_, err := w.Stream(context.Background(), params)
+	if err == nil {
+		t.Fatal("expected error from buildMapping, got nil")
+	}
+	if !strings.Contains(err.Error(), "tool name normalization") {
+		t.Errorf("expected wrapper's fail-closed error wording, got: %v", err)
+	}
+	// Critical: no wire request must have been issued.
+	if inner.receivedParams.Tools != nil || inner.receivedParams.Model != "" {
+		t.Errorf("inner adapter was called despite normalization failure: receivedParams=%+v", inner.receivedParams)
 	}
 }
 
