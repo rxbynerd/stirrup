@@ -133,11 +133,12 @@ type rootSpec struct {
 }
 
 type suiteSpec struct {
-	ID            string         `hcl:"id,label"`
-	Description   string         `hcl:"description,optional"`
-	RunConfigFile string         `hcl:"run_config_file,optional"`
-	RunConfig     *runConfigSpec `hcl:"run_config,block"`
-	Tasks         []taskSpec     `hcl:"task,block"`
+	ID              string         `hcl:"id,label"`
+	Description     string         `hcl:"description,optional"`
+	RunConfigFile   string         `hcl:"run_config_file,optional"`
+	RunConfig       *runConfigSpec `hcl:"run_config,block"`
+	QuarantineFlags []string       `hcl:"quarantine_flags,optional"`
+	Tasks           []taskSpec     `hcl:"task,block"`
 }
 
 type taskSpec struct {
@@ -308,12 +309,21 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		})
 	}
 
+	var quarantineFlags []types.QuarantineFlag
+	if len(s.QuarantineFlags) > 0 {
+		quarantineFlags = make([]types.QuarantineFlag, len(s.QuarantineFlags))
+		for i, f := range s.QuarantineFlags {
+			quarantineFlags[i] = types.QuarantineFlag(f)
+		}
+	}
+
 	return types.EvalSuite{
-		ID:            s.ID,
-		Description:   s.Description,
-		Tasks:         tasks,
-		RunConfigFile: s.RunConfigFile,
-		RunConfig:     suiteRunConfig,
+		ID:              s.ID,
+		Description:     s.Description,
+		Tasks:           tasks,
+		RunConfigFile:   s.RunConfigFile,
+		RunConfig:       suiteRunConfig,
+		QuarantineFlags: quarantineFlags,
 	}, nil
 }
 

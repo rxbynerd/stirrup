@@ -823,6 +823,43 @@ func TestWriteSuiteHCL_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestWriteSuiteHCL_QuarantineFlagsRoundTrip pins #115's wire-format
+// contract: a suite with QuarantineFlags survives HCL serialise +
+// parse with the same flags in the same order. The runner refuses
+// to execute a quarantined suite without --accept-quarantine, so
+// the load path must surface the flags verbatim.
+func TestWriteSuiteHCL_QuarantineFlagsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "quarantined.hcl")
+
+	original := types.EvalSuite{
+		ID:          "quarantined-suite",
+		Description: "mined with QuarantineLargePayload flag",
+		QuarantineFlags: []types.QuarantineFlag{
+			types.QuarantineLargePayload,
+		},
+		Tasks: []types.EvalTask{
+			{
+				ID:     "t1",
+				Mode:   "execution",
+				Prompt: "fix",
+				Judge:  types.EvalJudge{Type: "file-exists", Paths: []string{"x"}},
+			},
+		},
+	}
+
+	if err := writeSuiteHCL(path, original); err != nil {
+		t.Fatalf("writeSuiteHCL: %v", err)
+	}
+	got, err := loadSuite(path)
+	if err != nil {
+		t.Fatalf("loadSuite: %v", err)
+	}
+	if len(got.QuarantineFlags) != 1 || got.QuarantineFlags[0] != types.QuarantineLargePayload {
+		t.Errorf("QuarantineFlags = %v, want [%s]", got.QuarantineFlags, types.QuarantineLargePayload)
+	}
+}
+
 // TestWriteSuiteHCL_EscapesInterpolation ensures hclwrite is escaping
 // HCL-significant sequences (in particular `${...}` interpolation
 // markers) so that user prompts mined out of production traces are
