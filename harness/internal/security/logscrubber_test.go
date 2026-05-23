@@ -2,6 +2,18 @@ package security
 
 import "testing"
 
+func slackTokenFixture() string {
+	return "xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwx"
+}
+
+func stripeLiveKeyFixture() string {
+	return "sk_" + "live_51J1234567890abcdefghijklmnopqrstuvwxyz"
+}
+
+func gcpAPIKeyFixture() string {
+	return "AI" + "zaA2345678901234567890123456789012345"
+}
+
 func TestScrub_AnthropicKey(t *testing.T) {
 	input := "key is sk-ant-abc123_DEF-456"
 	got := Scrub(input)
@@ -35,6 +47,74 @@ func TestScrub_AWSAccessKey(t *testing.T) {
 	want := "[REDACTED]"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestScrub_AWSSecretAccessKey(t *testing.T) {
+	input := "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	got := Scrub(input)
+	want := "[REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestScrub_SlackToken(t *testing.T) {
+	input := "SLACK_BOT_TOKEN=" + slackTokenFixture()
+	got := Scrub(input)
+	want := "SLACK_BOT_TOKEN=[REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestScrub_StripeLiveKey(t *testing.T) {
+	input := "stripe " + stripeLiveKeyFixture()
+	got := Scrub(input)
+	want := "stripe [REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestScrub_GCPAPIKey(t *testing.T) {
+	input := "gcp=" + gcpAPIKeyFixture()
+	got := Scrub(input)
+	want := "gcp=[REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestScrub_AzureStorageKey(t *testing.T) {
+	input := "primary_access_key: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ="
+	got := Scrub(input)
+	want := "[REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestScrub_GenericHexSecret(t *testing.T) {
+	input := "client_secret=0123456789abcdef0123456789abcdef"
+	got := Scrub(input)
+	want := "[REDACTED]"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestScrub_AnchoredPatternsAvoidCommonFalsePositives(t *testing.T) {
+	cases := []string{
+		"sha256=0123456789abcdef0123456789abcdef",
+		"trace_id=0123456789abcdef0123456789abcdef",
+		"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ=",
+	}
+	for _, input := range cases {
+		if got := Scrub(input); got != input {
+			t.Errorf("Scrub(%q) = %q, want unchanged", input, got)
+		}
 	}
 }
 
@@ -262,6 +342,31 @@ func TestScrubWithStats_PatternNames(t *testing.T) {
 			pattern: "aws_access_key_id",
 		},
 		{
+			name:    "aws_secret_access_key",
+			input:   "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			pattern: "aws_secret_access_key",
+		},
+		{
+			name:    "azure_storage_key",
+			input:   "primary_access_key: abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ=",
+			pattern: "azure_storage_key",
+		},
+		{
+			name:    "slack_token",
+			input:   slackTokenFixture(),
+			pattern: "slack_token",
+		},
+		{
+			name:    "stripe_live_key",
+			input:   stripeLiveKeyFixture(),
+			pattern: "stripe_live_key",
+		},
+		{
+			name:    "gcp_api_key",
+			input:   gcpAPIKeyFixture(),
+			pattern: "gcp_api_key",
+		},
+		{
 			name:    "bearer_token",
 			input:   "Bearer eyJhbGciOiJSUzI1NiJ9.abc",
 			pattern: "bearer_token",
@@ -300,6 +405,11 @@ func TestScrubWithStats_PatternNames(t *testing.T) {
 			name:    "gcp_access_token",
 			input:   "ya29.AbCdEfGhIjKl",
 			pattern: "gcp_access_token",
+		},
+		{
+			name:    "generic_hex_secret",
+			input:   "client_secret=0123456789abcdef0123456789abcdef",
+			pattern: "generic_hex_secret",
 		},
 	}
 	for _, tc := range cases {

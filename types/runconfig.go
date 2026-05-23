@@ -413,46 +413,11 @@ type GuardRailConfig struct {
 // image.
 func (rc RunConfig) Redact() RunConfig {
 	redacted := rc
-	if redacted.Provider.APIKeyRef != "" {
-		redacted.Provider.APIKeyRef = "secret://[REDACTED]"
-	}
-	// Deep-copy Provider.Retry so a downstream consumer holding the
-	// redacted config cannot reach back into the live RunConfig via the
-	// shared pointer. Redact() does not mutate Retry today, but every
-	// other pointer field it touches is deep-copied; matching the
-	// established pattern closes the aliasing window before a Wave 2
-	// retry-helper that mutates Retry could silently corrupt the live
-	// config it was handed a "safe copy" of.
-	if redacted.Provider.Retry != nil {
-		retry := *redacted.Provider.Retry
-		redacted.Provider.Retry = &retry
-	}
-	// Mirror the Retry deep-copy for Provider.Batch. The aliasing risk
-	// is concrete: validateBatchConfig mutates Batch.MaxWaitSeconds in
-	// place to apply the default, and the phase-2 BatchAdapter (#135)
-	// is expected to hold a reference to the Redact()-derived snapshot
-	// across the run. Without the deep copy, a later default-apply
-	// write would reach the redacted copy through the shared pointer
-	// and break the snapshot contract.
-	if redacted.Provider.Batch != nil {
-		batch := *redacted.Provider.Batch
-		redacted.Provider.Batch = &batch
-	}
+	redacted.Provider = redactProviderConfig(redacted.Provider)
 	if len(redacted.Providers) > 0 {
 		providers := make(map[string]ProviderConfig, len(redacted.Providers))
 		for name, provider := range redacted.Providers {
-			if provider.APIKeyRef != "" {
-				provider.APIKeyRef = "secret://[REDACTED]"
-			}
-			if provider.Retry != nil {
-				retry := *provider.Retry
-				provider.Retry = &retry
-			}
-			if provider.Batch != nil {
-				batch := *provider.Batch
-				provider.Batch = &batch
-			}
-			providers[name] = provider
+			providers[name] = redactProviderConfig(provider)
 		}
 		redacted.Providers = providers
 	}
@@ -465,6 +430,9 @@ func (rc RunConfig) Redact() RunConfig {
 		servers := make([]MCPServerConfig, len(redacted.Tools.MCPServers))
 		copy(servers, redacted.Tools.MCPServers)
 		for i := range servers {
+			if servers[i].URI != "" {
+				servers[i].URI = redactURLToOrigin(servers[i].URI)
+			}
 			if servers[i].APIKeyRef != "" {
 				servers[i].APIKeyRef = "secret://[REDACTED]"
 			}
@@ -508,6 +476,68 @@ func (rc RunConfig) Redact() RunConfig {
 		redacted.ResultSink = &sink
 	}
 	return redacted
+}
+
+func redactProviderConfig(provider ProviderConfig) ProviderConfig {
+	if provider.APIKeyRef != "" {
+		provider.APIKeyRef = "secret://[REDACTED]"
+	}
+	if provider.BaseURL != "" {
+		provider.BaseURL = redactURLToOrigin(provider.BaseURL)
+	}
+	if provider.APIKeyHeader != "" {
+		provider.APIKeyHeader = "[REDACTED]"
+	}
+	if len(provider.QueryParams) > 0 {
+		provider.QueryParams = redactProviderQueryParams(provider.QueryParams)
+	}
+	// Deep-copy Provider.Retry so a downstream consumer holding the
+	// redacted config cannot reach back into the live RunConfig via the
+	// shared pointer. Redact() does not mutate Retry today, but every
+	// other pointer field it touches is deep-copied; matching the
+	// established pattern closes the aliasing window before a Wave 2
+	// retry-helper that mutates Retry could silently corrupt the live
+	// config it was handed a "safe copy" of.
+	if provider.Retry != nil {
+		retry := *provider.Retry
+		provider.Retry = &retry
+	}
+	// Mirror the Retry deep-copy for Provider.Batch. The aliasing risk
+	// is concrete: validateBatchConfig mutates Batch.MaxWaitSeconds in
+	// place to apply the default, and the phase-2 BatchAdapter (#135)
+	// is expected to hold a reference to the Redact()-derived snapshot
+	// across the run. Without the deep copy, a later default-apply
+	// write would reach the redacted copy through the shared pointer
+	// and break the snapshot contract.
+	if provider.Batch != nil {
+		batch := *provider.Batch
+		provider.Batch = &batch
+	}
+	return provider
+}
+
+func redactURLToOrigin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "[REDACTED]"
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
+}
+
+func redactProviderQueryParams(params map[string]string) map[string]string {
+	out := make(map[string]string, len(params))
+	for key, value := range params {
+		if isRedactSafeProviderQueryParam(key) {
+			out[key] = value
+		} else {
+			out[key] = "[REDACTED]"
+		}
+	}
+	return out
+}
+
+func isRedactSafeProviderQueryParam(key string) bool {
+	return strings.EqualFold(key, "api-version")
 }
 
 // ProviderConfig selects the model provider implementation.

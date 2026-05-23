@@ -23,9 +23,18 @@ var secretPatterns = []namedPattern{
 	{"anthropic_wif_token", regexp.MustCompile(`sk-ant-oat01-[a-zA-Z0-9_-]+`)},
 	{"anthropic_api_key", regexp.MustCompile(`sk-ant-[a-zA-Z0-9_-]+`)},
 	{"openai_api_key", regexp.MustCompile(`sk-[A-Za-z0-9_-]{16,}`)},
+	{"stripe_live_key", regexp.MustCompile(`sk_live_[A-Za-z0-9]{16,}`)},
 	{"github_pat", regexp.MustCompile(`ghp_[a-zA-Z0-9]+`)},
 	{"github_app_token", regexp.MustCompile(`ghs_[a-zA-Z0-9]+`)},
 	{"aws_access_key_id", regexp.MustCompile(`AKIA[A-Z0-9]{16}`)},
+	// AWS secret access keys and Azure storage keys have high-entropy
+	// base64-ish shapes but no distinctive prefix. Keep them anchored to
+	// well-known key/value field names so ordinary hashes, IDs, and trace
+	// fragments are not scrubbed just because they share an alphabet.
+	{"aws_secret_access_key", regexp.MustCompile(`(?i)\baws_secret_access_key\b\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}["']?`)},
+	{"azure_storage_key", regexp.MustCompile(`(?i)\b(?:azure_storage_account_key|storage_account_key|account_key|accountKey|primary_access_key|secondary_access_key)\b\s*[:=]\s*["']?[A-Za-z0-9+/]{40,88}={0,2}["']?`)},
+	{"slack_token", regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{10,}`)},
+	{"gcp_api_key", regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`)},
 	// basic_auth precedes bearer_token so the two HTTP-auth families
 	// scrub independently. Grafana Cloud's documented credential
 	// format is `Basic <base64(instanceID:apiToken)>` (see
@@ -46,6 +55,7 @@ var secretPatterns = []namedPattern{
 	// know stirrup emits — adding more variants here is preferable to a
 	// permissive token catch-all.
 	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)\s*:\s*[A-Za-z0-9._~+/=-]+`)},
+	{"generic_hex_secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|token|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\b\s*[:=]\s*["']?[a-f0-9]{32}["']?`)},
 	// oidc_jwt matches a three-segment JWT whose header begins with
 	// "eyJ" (the base64url prefix of `{"`). Federation flows propagate
 	// runner OIDC tokens, AWS web-identity tokens, and GCP STS subject
