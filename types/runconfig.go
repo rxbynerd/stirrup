@@ -1561,6 +1561,7 @@ type ModePreset struct {
 // not alias the live config.
 func ValidateRunConfig(config *RunConfig) error {
 	applyCodeScannerDefault(config)
+	applyEditStrategyDefault(config)
 	retryDefaulted := applyProviderRetryDefaults(config)
 
 	var errs []string
@@ -1981,6 +1982,20 @@ func applyCodeScannerDefault(config *RunConfig) {
 		return
 	}
 	config.CodeScanner = &CodeScannerConfig{Type: "patterns"}
+}
+
+// applyEditStrategyDefault fills EditStrategy.Type with "multi" when
+// the caller has not set one. "multi" is the canonical default
+// because the multi-strategy edit tool is the highest-leverage edit
+// configuration for production. Defaulting here — rather than at the
+// CLI or factory layer — means every entrypoint (CLI, gRPC, direct
+// RunConfig embedding) lands on the same edit-tool surface for a
+// given config, and read-only mode policy stays consistent across
+// callers.
+func applyEditStrategyDefault(config *RunConfig) {
+	if config.EditStrategy.Type == "" {
+		config.EditStrategy.Type = "multi"
+	}
 }
 
 // validateCodeScannerConfig enforces the closed-set Type and the
