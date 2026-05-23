@@ -41,6 +41,7 @@ Commands:
   mine-failures          Turn production failures into eval tasks
   drift                  Detect metric changes over time windows
   ingest                 Ingest harness JSONL traces into a lakehouse
+  replay                 Re-evaluate recorded runs against suite judges
   convert                Convert a result.json into another format (e.g. JUnit XML)
   completion             Emit a shell completion script (bash|zsh|fish|powershell)
 
@@ -83,6 +84,8 @@ func run(args []string, stdout io.Writer) int {
 		cmdCompareToProduction(args[1:])
 	case "ingest":
 		cmdIngest(args[1:])
+	case "replay":
+		cmdReplay(args[1:])
 	case "convert":
 		cmdConvert(args[1:])
 	case "completion":

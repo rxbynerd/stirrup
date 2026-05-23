@@ -559,11 +559,39 @@ now). Schedule:
 
 ### Iterating on a judge
 
-`eval/runner/replay.go` re-evaluates recorded runs through judges
-without re-running the harness. This is the fast loop for iterating
-on judge criteria — change the regex or composite logic, replay the
-recording set, see whether outcomes match expectations. Pair with
-`compare` to diff judge changes against a baseline.
+```bash
+./stirrup-eval replay \
+  --lakehouse var/lakehouse \
+  --suite eval/suites/some-suite.hcl \
+  --workspace path/to/preserved-workspace \
+  --outcome failed \
+  --output results/replay.json
+```
+
+`stirrup-eval replay` re-evaluates recorded runs through suite
+judges without re-running the harness or hitting any provider.
+This is the fast loop for iterating on judge criteria — change the
+regex or composite logic, replay the recording set, see whether
+outcomes match expectations. Pair with `compare` to diff judge
+changes against a baseline.
+
+Selection of recordings is either explicit (`--recording <runId>`,
+repeatable) or by outcome filter (`--outcome failed`). Each
+recording is paired with a suite task by position (task `i %
+len(tasks)`) — a sole-task suite applies one judge across every
+selected recording, which is the common authoring pattern.
+
+`--workspace` is the directory the judges evaluate against. A
+recording carries the conversation and tool I/O but not the
+post-run file state, so judges that need file state
+(`file-exists`, `file-contains`, `test-command`) require the
+workspace to be preserved separately — `eval run --output ...`
+retains per-task artifacts that suit this. For content-only
+judges, `--workspace` can be empty.
+
+The harness-replay flavour (replaying through a stirrup binary
+configured with ReplayProvider+ReplayExecutor) is a future
+follow-up; v0.1 is judge-only.
 
 ---
 

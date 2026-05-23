@@ -47,7 +47,9 @@ var evalCompletionSubcommands = []string{
 	"completion",
 	"convert",
 	"drift",
+	"ingest",
 	"mine-failures",
+	"replay",
 	"run",
 }
 
@@ -61,10 +63,12 @@ var evalCompletionSubcommands = []string{
 var evalCompletionFlags = map[string][]string{
 	"run":                   {"suite", "harness", "output", "concurrency", "dry-run", "junit"},
 	"compare":               {"current", "baseline"},
-	"baseline":              {"lakehouse", "after", "before", "mode", "model", "output"},
-	"mine-failures":         {"lakehouse", "after", "limit", "output"},
-	"drift":                 {"lakehouse", "window", "compare-window", "mode", "model"},
-	"compare-to-production": {"lakehouse", "results", "experiment-id", "after", "before", "mode", "model", "output"},
+	"baseline":              {"lakehouse", "after", "before", "mode", "model", "provider", "output"},
+	"mine-failures":         {"lakehouse", "after", "limit", "output", "include-batch", "include-inconclusive"},
+	"drift":                 {"lakehouse", "window", "compare-window", "mode", "model", "provider"},
+	"compare-to-production": {"lakehouse", "results", "experiment-id", "after", "before", "mode", "model", "provider", "output"},
+	"ingest":                {"lakehouse", "trace", "skip-partial"},
+	"replay":                {"lakehouse", "suite", "workspace", "output", "recording", "outcome"},
 	"convert":               {"from", "to-junit"},
 	"completion":            {"bash", "zsh", "fish", "powershell"},
 }
