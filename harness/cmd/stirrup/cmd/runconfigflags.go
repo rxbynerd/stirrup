@@ -55,7 +55,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("name", "", "Human-readable session label (metadata only, not injected into prompt)")
 
 	f.String("executor", "local", "Executor: local, container, api")
-	f.String("edit-strategy", "", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config). Empty defers to the RunConfig default (multi).")
+	f.String("edit-strategy", "", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config). Defaults to multi when unset.")
 	f.String("verifier", "none", "Verifier: none, test-runner, llm-judge (composite available only via --config)")
 	f.String("git-strategy", "none", "Git strategy: none, deterministic")
 	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel, gcs")
