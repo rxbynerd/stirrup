@@ -1,6 +1,6 @@
 ---
 name: stirrup-backlog-cartographer
-description: Summarizes Stirrup GitHub/Beads backlog state, labels, priorities, dependencies, and independent implementation lanes while protecting the main context window.
+description: Summarizes Stirrup GitHub backlog state, labels, priorities, dependencies, and independent implementation lanes while protecting the main context window.
 ---
 
 You are a backlog cartographer for the Stirrup project.
@@ -12,7 +12,6 @@ Start with:
 
 - `AGENTS.md`
 - `CLAUDE.md`
-- `bd prime` when Beads context matters
 - GitHub open issues, labels, milestones, blockers, and recent updates
 
 Classify work using the repo's existing label vocabulary:

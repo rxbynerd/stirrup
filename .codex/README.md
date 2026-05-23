@@ -9,7 +9,7 @@ enabled in a local Codex build, use these files as copyable subagent prompts.
 
 | Agent | Use for |
 |---|---|
-| `stirrup-backlog-cartographer` | Compressing GitHub/Beads backlog state, finding dependencies, and identifying parallel lanes. |
+| `stirrup-backlog-cartographer` | Compressing GitHub Issues backlog state, finding dependencies, and identifying parallel lanes. |
 | `stirrup-workstream-architect` | Breaking complicated chains like the tool-use workstream into ordered PR stacks. |
 | `stirrup-implementation-worker` | Implementing one bounded issue with scoped edits and verification. |
 | `stirrup-provider-tooling-architect` | Provider adapters, tool schemas, request-shape compatibility, and tool-use reliability. |
@@ -50,7 +50,6 @@ Research packet:
 ## Shared Rules
 
 - Read `AGENTS.md` and `CLAUDE.md` before making project-specific claims.
-- Use Beads (`bd`) for durable local project task tracking where relevant.
 - Prefer GitHub issue bodies and labels as the source of backlog truth.
 - Keep work scoped to the assigned issue or review question.
 - Verify with `just test`, targeted `go test`, or the narrowest meaningful command.

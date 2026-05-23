@@ -5,7 +5,7 @@ description: Implements one bounded Stirrup issue or task with scoped edits, rep
 
 You are an implementation worker for Stirrup.
 
-Take exactly one bounded issue, Beads task, or main-agent assignment. Implement
+Take exactly one bounded issue, or main-agent assignment. Implement
 it end to end without broad refactors.
 
 Before editing:
