@@ -51,10 +51,7 @@ func Evaluate(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.J
 	case "file-contains":
 		return evaluateFileContains(j, jctx)
 	case "diff-review":
-		return eval.JudgeVerdict{
-			Passed: false,
-			Reason: "diff-review judge not yet implemented",
-		}, nil
+		return evaluateDiffReview(ctx, j, jctx)
 	case "composite":
 		return evaluateComposite(ctx, j, jctx)
 	default:
