@@ -3,6 +3,8 @@ package lakehouse
 import (
 	"context"
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -759,5 +761,94 @@ func TestClose(t *testing.T) {
 	}
 	if err := fs.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+// TestWriteJSON_ConcurrentStoreTraceIsAtomic pins #267's atomicity AC:
+// two goroutines writing the same trace ID concurrently must leave a
+// valid JSON document on disk — never a torn file with a JSON prefix
+// followed by stale trailing bytes.
+//
+// The previous os.WriteFile path failed this because O_TRUNC happens
+// before the write, so a reader interleaved between the truncate and
+// the write would observe a zero-byte file, and two interleaved
+// writers' bytes could mix.
+func TestWriteJSON_ConcurrentStoreTraceIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	defer func() { _ = fs.Close() }()
+
+	id := "run-concurrent"
+	traceA := makeTrace(id, "success", "execution", "claude-3-5-sonnet", time.Now(), 100, 1, types.TokenUsage{Input: 10, Output: 5})
+	traceB := makeTrace(id, "error", "execution", "claude-3-5-sonnet", time.Now(), 200, 2, types.TokenUsage{Input: 20, Output: 8})
+
+	const iters = 50
+	done := make(chan struct{}, 2)
+	go func() {
+		for i := 0; i < iters; i++ {
+			_ = fs.StoreTrace(context.Background(), traceA)
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		for i := 0; i < iters; i++ {
+			_ = fs.StoreTrace(context.Background(), traceB)
+		}
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+
+	// The final file must parse as valid JSON matching one of the two
+	// inputs (the last successful rename wins, but either is valid).
+	got, err := fs.QueryTraces(context.Background(), types.TraceFilter{})
+	if err != nil {
+		t.Fatalf("QueryTraces: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(got))
+	}
+	if got[0].ID != id {
+		t.Errorf("ID: got %q, want %q", got[0].ID, id)
+	}
+	if got[0].Outcome != "success" && got[0].Outcome != "error" {
+		t.Errorf("Outcome: got %q, want success|error", got[0].Outcome)
+	}
+}
+
+// TestWriteJSON_TempFileCleanedOnRenameFailure pins that a failure on
+// the rename path leaves no leaked .tmp-*.json files. The repro uses
+// a target directory the rename cannot succeed against (a path under
+// a removed directory) and asserts the temp file is gone afterwards.
+func TestWriteJSON_TempFileCleanedOnRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	fs, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	defer func() { _ = fs.Close() }()
+
+	// Force a rename failure by passing a path under a non-existent
+	// subdirectory. os.CreateTemp succeeds (it creates inside the
+	// existing root), but the rename to the bad path fails.
+	badPath := filepath.Join(dir, "missing", "out.json")
+	err = fs.writeJSON(badPath, map[string]any{"x": 1})
+	if err == nil {
+		t.Fatal("expected writeJSON to fail; got nil")
+	}
+
+	// Walk the root: no .tmp-*.json should remain.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if len(name) >= 4 && name[:4] == ".tmp" {
+			t.Errorf("leaked temp file: %s", name)
+		}
 	}
 }
