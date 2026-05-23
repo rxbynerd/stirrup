@@ -646,6 +646,8 @@ Active work tracked in GitHub Issues under the `eval` label:
 
 - **Cloud-backed lakehouse adapters** — interface is stable; cloud
   adapters depend on control plane storage choices.
-- **A first mined suite** — CI infrastructure is ready; the
-  `eval/suites/` and `eval/baselines/` directories are seeded by
-  mining production traces from a real repo.
+- **Mined dogfood corpus** — a hand-curated `dogfood-seed.hcl`
+  ships with v0.1 to give the eval-gate non-empty work; the
+  longer-term path swaps it for a mined suite produced by
+  `stirrup-eval mine-failures` against this repo's own
+  recordings. See `eval/suites/README.md` for the promotion path.
