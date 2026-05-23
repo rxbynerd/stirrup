@@ -1549,13 +1549,17 @@ type ModePreset struct {
 // CodeScannerConfig when the caller has left it nil, so downstream
 // consumers always see a populated value: "patterns" for execution
 // mode (active scanning) and "none" for read-only modes (no edits
-// happen anyway). Also applies ProviderRetryConfig defaults to
-// Provider.Retry and each entry in Providers so adapters never have
-// to nil-check the per-call retry policy.
+// happen anyway). It also fills EditStrategy.Type with "multi" when
+// the caller has not selected a strategy, so every entrypoint (CLI,
+// gRPC, direct RunConfig embedding) lands on the same edit-tool
+// surface. ProviderRetryConfig defaults are applied to Provider.Retry
+// and each entry in Providers so adapters never have to nil-check the
+// per-call retry policy.
 //
 // Note: ValidateRunConfig mutates its argument in place to apply
 // per-provider defaults (Provider.Retry fields, Provider.Batch.MaxWaitSeconds
-// when Batch.Enabled=true, CodeScanner type). Callers that need an
+// when Batch.Enabled=true, CodeScanner type, EditStrategy.Type — the
+// last applied by applyEditStrategyDefault). Callers that need an
 // unmodified copy must clone before calling. Redact() deep-copies the
 // affected pointer fields so a snapshot taken before validation does
 // not alias the live config.
