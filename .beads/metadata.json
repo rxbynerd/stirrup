@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "stirrup",
-  "project_id": "4a9d8175-5213-4daa-a62a-52126425fde4"
-}
