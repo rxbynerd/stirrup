@@ -474,6 +474,23 @@ as canonical HCL (parseable by `eval run` directly) and is a starting
 point — judges and prompts typically need editing before the suite is
 committed.
 
+#### Quarantine envelope
+
+Mined suites carry raw conversation content from production runs. If
+the source recordings trip a quarantine classifier — `large_payload`
+today, `unscrubbed_secret_event` and `pii_classification` reserved
+for future control-plane scoring — `mine-failures` refuses to write
+the suite unless `--accept-quarantine` is passed. `eval run` mirrors
+the refusal: a suite whose HCL declares `quarantine_flags = [...]`
+will not execute without the same flag. This puts the operator in
+charge of declaring "this content is safe to exfiltrate" rather than
+silently shipping classified material to contributors.
+
+Committing a flagged suite to a public repo is a code-review smell;
+the `quarantine_flags = [...]` attribute on the suite block makes
+the situation visible in PR review. See #115 for the design
+rationale.
+
 ### `drift` — compare adjacent time windows
 
 ```bash

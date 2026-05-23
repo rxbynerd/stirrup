@@ -61,10 +61,10 @@ var evalCompletionSubcommands = []string{
 // scripts have no positional-argument completion path, so the shells
 // are surfaced through the flag-name lookup so they remain reachable.
 var evalCompletionFlags = map[string][]string{
-	"run":                   {"suite", "harness", "output", "concurrency", "dry-run", "junit"},
+	"run":                   {"suite", "harness", "output", "concurrency", "dry-run", "junit", "accept-quarantine"},
 	"compare":               {"current", "baseline"},
 	"baseline":              {"lakehouse", "after", "before", "mode", "model", "provider", "output"},
-	"mine-failures":         {"lakehouse", "after", "limit", "output", "include-batch", "include-inconclusive"},
+	"mine-failures":         {"lakehouse", "after", "limit", "output", "include-batch", "include-inconclusive", "accept-quarantine"},
 	"drift":                 {"lakehouse", "window", "compare-window", "mode", "model", "provider"},
 	"compare-to-production": {"lakehouse", "results", "experiment-id", "after", "before", "mode", "model", "provider", "output"},
 	"ingest":                {"lakehouse", "trace", "skip-partial"},

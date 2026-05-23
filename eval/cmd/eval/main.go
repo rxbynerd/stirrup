@@ -126,6 +126,7 @@ func cmdRun(args []string) {
 	concurrency := fs.Int("concurrency", 1, "Maximum number of tasks to run in parallel (values <= 0 are treated as 1)")
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks")
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
+	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -137,6 +138,15 @@ func cmdRun(args []string) {
 	suite, err := loadSuite(*suitePath)
 	if err != nil {
 		log.Fatalf("loading suite: %v", err)
+	}
+
+	if len(suite.QuarantineFlags) > 0 {
+		if !*acceptQuarantine {
+			log.Fatalf("refusing to execute quarantined suite %q (flags: %v). Re-run with --accept-quarantine to acknowledge the privacy implications.", suite.ID, suite.QuarantineFlags)
+		}
+		fmt.Fprintf(os.Stderr,
+			"eval run: executing quarantined suite %q with flags %v (operator opted in via --accept-quarantine)\n",
+			suite.ID, suite.QuarantineFlags)
 	}
 
 	if *outputDir == "" {
@@ -400,6 +410,7 @@ func cmdMineFailures(args []string) {
 	output := fs.String("output", "", "Write EvalSuite HCL to this file (.hcl recommended)")
 	includeBatch := fs.Bool("include-batch", false, "By default, batch runs (provider.batch.enabled=true) are excluded from mined failures because their wall-clock duration inflates apparent stall metrics. Pass --include-batch to include them.")
 	includeInconclusive := fs.Bool("include-inconclusive", false, "By default, only EvalOutcome==failed traces are mined. Inconclusive runs (max_turns / budget_exceeded / timeout / max_tokens / stalled / cancelled / verification_error) are typically investigated manually rather than codified as regressions; pass --include-inconclusive to include them anyway.")
+	acceptQuarantine := fs.Bool("accept-quarantine", false, "Mined suites carry raw conversation content from production runs. If the source recordings trip a quarantine classifier (large payloads, future PII / unscrubbed-secret signals), the suite write is refused unless --accept-quarantine is set. See #115 for the design rationale.")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -433,10 +444,27 @@ func cmdMineFailures(args []string) {
 
 	tasks := mineFailureTasksFiltered(recordings, *limit, *includeBatch, *includeInconclusive)
 
+	// Classify the source recordings the miner is about to bake into
+	// the suite. The flags ride on EvalSuite.QuarantineFlags so the
+	// runner can refuse to execute a flagged suite without an
+	// explicit --accept-quarantine, and CI lint can treat a checked-
+	// in flagged suite as a code-review smell.
+	flags := types.ClassifyForQuarantine(recordings)
+	if len(flags) > 0 && !*acceptQuarantine {
+		fmt.Fprintf(os.Stderr,
+			"mine-failures: refusing to write quarantined suite to %s (flags: %v). Re-run with --accept-quarantine to acknowledge the privacy implications.\n",
+			*output, flags)
+		os.Exit(1)
+	}
+	if len(flags) > 0 {
+		fmt.Fprintf(os.Stderr, "mine-failures: quarantine flags present: %v\n", flags)
+	}
+
 	suite := types.EvalSuite{
-		ID:          fmt.Sprintf("mined-failures-%d", time.Now().Unix()),
-		Description: fmt.Sprintf("Failures mined from production (%d of %d recordings)", len(tasks), len(recordings)),
-		Tasks:       tasks,
+		ID:              fmt.Sprintf("mined-failures-%d", time.Now().Unix()),
+		Description:     fmt.Sprintf("Failures mined from production (%d of %d recordings)", len(tasks), len(recordings)),
+		Tasks:           tasks,
+		QuarantineFlags: flags,
 	}
 
 	if *output != "" {
@@ -459,6 +487,13 @@ func writeSuiteHCL(path string, s types.EvalSuite) error {
 	suiteBody := f.Body().AppendNewBlock("suite", []string{s.ID}).Body()
 	if s.Description != "" {
 		suiteBody.SetAttributeValue("description", cty.StringVal(s.Description))
+	}
+	if len(s.QuarantineFlags) > 0 {
+		vals := make([]cty.Value, len(s.QuarantineFlags))
+		for i, f := range s.QuarantineFlags {
+			vals[i] = cty.StringVal(string(f))
+		}
+		suiteBody.SetAttributeValue("quarantine_flags", cty.ListVal(vals))
 	}
 	for _, t := range s.Tasks {
 		taskBody := suiteBody.AppendNewBlock("task", []string{t.ID}).Body()
