@@ -137,3 +137,29 @@ func TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode(t *testing.T) {
 		t.Errorf("legacy trace decode lost data: %+v", tt)
 	}
 }
+
+func TestRunTracePermissionDenialsJSONCompatibility(t *testing.T) {
+	var oldTrace RunTrace
+	if err := json.Unmarshal([]byte(`{"id":"run-1","turns":2}`), &oldTrace); err != nil {
+		t.Fatalf("unmarshal old RunTrace shape: %v", err)
+	}
+	if oldTrace.PermissionDenials != 0 {
+		t.Errorf("missing permissionDenials should decode as zero, got %d", oldTrace.PermissionDenials)
+	}
+
+	zeroBytes, err := json.Marshal(RunTrace{ID: "run-1"})
+	if err != nil {
+		t.Fatalf("marshal zero-denial RunTrace: %v", err)
+	}
+	if strings.Contains(string(zeroBytes), "permissionDenials") {
+		t.Errorf("zero permissionDenials should be omitted for compatibility, got %s", zeroBytes)
+	}
+
+	nonZeroBytes, err := json.Marshal(RunTrace{ID: "run-1", PermissionDenials: 2})
+	if err != nil {
+		t.Fatalf("marshal non-zero-denial RunTrace: %v", err)
+	}
+	if !strings.Contains(string(nonZeroBytes), `"permissionDenials":2`) {
+		t.Errorf("non-zero permissionDenials should be emitted, got %s", nonZeroBytes)
+	}
+}

@@ -74,14 +74,15 @@ type OTelTraceEmitter struct {
 	provider *sdktrace.TracerProvider
 	tracer   oteltrace.Tracer
 
-	mu        sync.Mutex
-	runID     string
-	config    *types.RunConfig
-	startedAt time.Time
-	rootSpan  oteltrace.Span
-	rootCtx   context.Context
-	turns     []types.TurnTrace
-	toolCalls []types.ToolCallTrace
+	mu                sync.Mutex
+	runID             string
+	config            *types.RunConfig
+	startedAt         time.Time
+	rootSpan          oteltrace.Span
+	rootCtx           context.Context
+	turns             []types.TurnTrace
+	toolCalls         []types.ToolCallTrace
+	permissionDenials int
 }
 
 // NewOTelTraceEmitter creates an OTel trace emitter that exports spans to
@@ -261,6 +262,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.startedAt = time.Now()
 	e.turns = nil
 	e.toolCalls = nil
+	e.permissionDenials = 0
 
 	ctx := context.Background()
 	// NOTE: gen_ai.agent.id is intentionally NOT emitted. The OTel GenAI spec
@@ -380,6 +382,13 @@ func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	span.End(oteltrace.WithTimestamp(spanEnd))
 }
 
+// RecordPermissionDenial increments the run-level permission denial count.
+func (e *OTelTraceEmitter) RecordPermissionDenial() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.permissionDenials++
+}
+
 // Finish sets the outcome on the root span, ends it, flushes the exporter,
 // and returns the aggregated RunTrace.
 func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.RunTrace, error) {
@@ -393,6 +402,7 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 		e.rootSpan.SetAttributes(
 			attribute.String("run.outcome", outcome),
 			attribute.Int("run.turns", len(e.turns)),
+			attribute.Int("run.permission_denials", e.permissionDenials),
 		)
 		e.rootSpan.End()
 	}
@@ -431,14 +441,15 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	}
 
 	trace := &types.RunTrace{
-		ID:          e.runID,
-		Config:      redactedConfig,
-		StartedAt:   e.startedAt,
-		CompletedAt: now,
-		Turns:       len(e.turns),
-		TokenUsage:  totalTokens,
-		ToolCalls:   summaries,
-		Outcome:     outcome,
+		ID:                e.runID,
+		Config:            redactedConfig,
+		StartedAt:         e.startedAt,
+		CompletedAt:       now,
+		Turns:             len(e.turns),
+		TokenUsage:        totalTokens,
+		ToolCalls:         summaries,
+		PermissionDenials: e.permissionDenials,
+		Outcome:           outcome,
 	}
 
 	return trace, nil

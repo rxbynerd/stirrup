@@ -99,6 +99,7 @@ type TraceStats struct {
 	TokensOutput        int                `json:"tokensOutput"`
 	ToolCalls           int                `json:"toolCalls"`
 	ToolErrors          int                `json:"toolErrors"`
+	PermissionDenials   int                `json:"permissionDenials"`
 	ToolCallsByName     map[string]int     `json:"toolCallsByName,omitempty"`
 	ToolErrorsByName    map[string]int     `json:"toolErrorsByName,omitempty"`
 	SubAgentToolCalls   int                `json:"subAgentToolCalls,omitempty"`
@@ -149,6 +150,7 @@ func (s *TraceStats) absorb(t *types.RunTrace) {
 	s.TotalTurns += t.Turns
 	s.TokensInput += t.TokenUsage.Input
 	s.TokensOutput += t.TokenUsage.Output
+	s.PermissionDenials += t.PermissionDenials
 
 	for _, tc := range t.ToolCalls {
 		s.ToolCalls++
@@ -232,6 +234,7 @@ func writeStatsText(out io.Writer, s *TraceStats, top int) error {
 	fmt.Fprintf(&b, "  total turns:      %d\n", s.TotalTurns)
 	fmt.Fprintf(&b, "  tokens in / out:  %d / %d\n", s.TokensInput, s.TokensOutput)
 	fmt.Fprintf(&b, "  tool calls:       %d (errors: %d)\n", s.ToolCalls, s.ToolErrors)
+	fmt.Fprintf(&b, "  permission denials: %d\n", s.PermissionDenials)
 	if s.SubAgentToolCalls > 0 {
 		fmt.Fprintf(&b, "  sub-agent calls:  %d (of total tool calls)\n", s.SubAgentToolCalls)
 	}

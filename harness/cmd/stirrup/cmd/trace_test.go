@@ -49,6 +49,7 @@ func sampleTraces() []types.RunTrace {
 			{Name: "run_command", DurationMs: 500, Success: false, ErrorReason: "exit 1"},
 			{Name: "edit_file", DurationMs: 25, Success: true},
 		},
+		PermissionDenials:   2,
 		VerificationResults: []types.VerificationResult{{Passed: true, Feedback: "all green"}},
 		Outcome:             "success",
 	}}
@@ -108,6 +109,9 @@ func TestTraceStats_JSONOutput(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &stats); err != nil {
 		t.Fatalf("decode stats: %v", err)
 	}
+	if !strings.Contains(out.String(), `"permissionDenials":2`) {
+		t.Fatalf("stats JSON missing permissionDenials field: %s", out.String())
+	}
 
 	if stats.TotalTurns != 3 {
 		t.Errorf("TotalTurns = %d, want 3", stats.TotalTurns)
@@ -117,6 +121,9 @@ func TestTraceStats_JSONOutput(t *testing.T) {
 	}
 	if stats.ToolCalls != 3 || stats.ToolErrors != 1 {
 		t.Errorf("ToolCalls/Errors = %d/%d, want 3/1", stats.ToolCalls, stats.ToolErrors)
+	}
+	if stats.PermissionDenials != 2 {
+		t.Errorf("PermissionDenials = %d, want 2", stats.PermissionDenials)
 	}
 	if stats.LongestToolCallMs != 500 {
 		t.Errorf("LongestToolCallMs = %d, want 500", stats.LongestToolCallMs)
@@ -148,7 +155,7 @@ func TestTraceStats_TextOutput(t *testing.T) {
 		t.Fatalf("stats text: %v", err)
 	}
 	s := out.String()
-	for _, want := range []string{"trace stats", "run-1", "total turns:", "tokens in / out:", "edit_file", "outcomes:", "success"} {
+	for _, want := range []string{"trace stats", "run-1", "total turns:", "tokens in / out:", "permission denials:", "2", "edit_file", "outcomes:", "success"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("text stats missing %q\n%s", want, s)
 		}

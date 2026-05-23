@@ -38,12 +38,13 @@ type NestedJSONLEmitter struct {
 	parent      TraceEmitter
 	parentRunID string
 
-	mu        sync.Mutex
-	runID     string
-	config    *types.RunConfig
-	startedAt time.Time
-	turns     []types.TurnTrace
-	toolCalls []types.ToolCallTrace
+	mu                sync.Mutex
+	runID             string
+	config            *types.RunConfig
+	startedAt         time.Time
+	turns             []types.TurnTrace
+	toolCalls         []types.ToolCallTrace
+	permissionDenials int
 }
 
 // NewNestedJSONLEmitter returns an emitter that forwards Turn/ToolCall
@@ -70,6 +71,7 @@ func (e *NestedJSONLEmitter) Start(runID string, config *types.RunConfig) {
 	e.startedAt = time.Now()
 	e.turns = nil
 	e.toolCalls = nil
+	e.permissionDenials = 0
 }
 
 // RecordTurn appends to the child's local trace and forwards a tagged
@@ -120,6 +122,19 @@ func (e *NestedJSONLEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.parent.RecordToolCall(tagged)
 }
 
+// RecordPermissionDenial records the child's local count and forwards the
+// denial into the parent aggregate, matching nested tool-call forwarding.
+func (e *NestedJSONLEmitter) RecordPermissionDenial() {
+	e.mu.Lock()
+	e.permissionDenials++
+	e.mu.Unlock()
+
+	if e.parent == nil {
+		return
+	}
+	e.parent.RecordPermissionDenial()
+}
+
 // Finish builds and returns the child's RunTrace. It does NOT call
 // parent.Finish: the parent's own Run finishes its emitter exactly
 // once when the outer run completes; calling it from a child would
@@ -147,13 +162,14 @@ func (e *NestedJSONLEmitter) Finish(_ context.Context, outcome string) (*types.R
 	}
 
 	return &types.RunTrace{
-		ID:          e.runID,
-		Config:      redactedConfig,
-		StartedAt:   e.startedAt,
-		CompletedAt: now,
-		Turns:       len(e.turns),
-		TokenUsage:  totalTokens,
-		ToolCalls:   summaries,
-		Outcome:     outcome,
+		ID:                e.runID,
+		Config:            redactedConfig,
+		StartedAt:         e.startedAt,
+		CompletedAt:       now,
+		Turns:             len(e.turns),
+		TokenUsage:        totalTokens,
+		ToolCalls:         summaries,
+		PermissionDenials: e.permissionDenials,
+		Outcome:           outcome,
 	}, nil
 }

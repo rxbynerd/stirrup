@@ -12,15 +12,16 @@ import (
 // without writing anywhere. Used to assert forwarding behaviour on the
 // NestedJSONLEmitter without coupling tests to a particular wire format.
 type recordingEmitter struct {
-	mu          sync.Mutex
-	starts      []startCall
-	turns       []types.TurnTrace
-	turnRecords []types.TurnRecord
-	toolCalls   []types.ToolCallTrace
-	finishes    []string
-	finishErr   error
-	finishRet   *types.RunTrace
-	finishCtxs  []context.Context
+	mu                sync.Mutex
+	starts            []startCall
+	turns             []types.TurnTrace
+	turnRecords       []types.TurnRecord
+	toolCalls         []types.ToolCallTrace
+	permissionDenials int
+	finishes          []string
+	finishErr         error
+	finishRet         *types.RunTrace
+	finishCtxs        []context.Context
 }
 
 type startCall struct {
@@ -52,6 +53,12 @@ func (r *recordingEmitter) RecordToolCall(call types.ToolCallTrace) {
 	r.toolCalls = append(r.toolCalls, call)
 }
 
+func (r *recordingEmitter) RecordPermissionDenial() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.permissionDenials++
+}
+
 func (r *recordingEmitter) Finish(ctx context.Context, outcome string) (*types.RunTrace, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -77,12 +84,16 @@ func TestNestedJSONLEmitter_ForwardsTurnsAndToolCalls(t *testing.T) {
 		DurationMs: 5,
 		Success:    true,
 	})
+	child.RecordPermissionDenial()
 
 	if len(parent.turns) != 1 {
 		t.Fatalf("expected 1 forwarded turn, got %d", len(parent.turns))
 	}
 	if len(parent.toolCalls) != 1 {
 		t.Fatalf("expected 1 forwarded tool call, got %d", len(parent.toolCalls))
+	}
+	if parent.permissionDenials != 1 {
+		t.Fatalf("expected 1 forwarded permission denial, got %d", parent.permissionDenials)
 	}
 	if parent.turns[0].RunID != "sub-run-1" {
 		t.Errorf("forwarded turn RunID: got %q, want %q", parent.turns[0].RunID, "sub-run-1")
@@ -154,6 +165,8 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 		DurationMs: 2,
 		Success:    true,
 	})
+	child.RecordPermissionDenial()
+	child.RecordPermissionDenial()
 
 	rt, err := child.Finish(context.Background(), "success")
 	if err != nil {
@@ -174,6 +187,9 @@ func TestNestedJSONLEmitter_FinishReturnsLocalRunTrace(t *testing.T) {
 	if len(rt.ToolCalls) != 1 {
 		t.Errorf("RunTrace.ToolCalls: got %d, want 1", len(rt.ToolCalls))
 	}
+	if rt.PermissionDenials != 2 {
+		t.Errorf("RunTrace.PermissionDenials: got %d, want 2", rt.PermissionDenials)
+	}
 	if rt.Outcome != "success" {
 		t.Errorf("RunTrace.Outcome: got %q, want %q", rt.Outcome, "success")
 	}
@@ -189,6 +205,7 @@ func TestNestedJSONLEmitter_NilParentIsSafe(t *testing.T) {
 	child.Start("sub-run-1", nil)
 	child.RecordTurn(types.TurnTrace{Turn: 0})
 	child.RecordToolCall(types.ToolCallTrace{Name: "t"})
+	child.RecordPermissionDenial()
 	if _, err := child.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish with nil parent: %v", err)
 	}

@@ -27,6 +27,7 @@ type RunTrace struct {
 	Turns               int                  `json:"turns"`
 	TokenUsage          TokenUsage           `json:"tokenUsage"`
 	ToolCalls           []ToolCallSummary    `json:"toolCalls"`
+	PermissionDenials   int                  `json:"permissionDenials,omitempty"`
 	VerificationResults []VerificationResult `json:"verificationResults"`
 	Outcome             string               `json:"outcome"` // "success" | "error" | "max_turns" | "verification_failed" | "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" | "cancelled" | "timeout" | "max_tokens"
 }
