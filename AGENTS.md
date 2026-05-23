@@ -27,6 +27,7 @@ stirrup/
       prompt/                # PromptBuilder: per-mode templates, composed fragments, overrides
       context/               # ContextStrategy: sliding window, summarise, offload-to-file
       tool/                  # ToolRegistry + built-in tools, including spawn_agent
+      tool/toolname/         # Per-provider tool-name normalization + collision detection (#223)
       executor/              # Executor: local, container (Docker/Podman), API (GitHub), replay
       edit/                  # EditStrategy: whole-file, search-replace, udiff, multi-strategy
       verifier/              # Verifier: none, test-runner, composite, llm-judge

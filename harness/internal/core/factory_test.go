@@ -1976,9 +1976,9 @@ func TestBuildLoopWithTransport_OpenAICompatibleAdapterHasLogger(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	adapter, ok := loop.Provider.(*provider.OpenAICompatibleAdapter)
+	adapter, ok := unwrapNormalizer(loop.Provider).(*provider.OpenAICompatibleAdapter)
 	if !ok {
-		t.Fatalf("loop.Provider type = %T, want *provider.OpenAICompatibleAdapter", loop.Provider)
+		t.Fatalf("loop.Provider (after unwrap) type = %T, want *provider.OpenAICompatibleAdapter", unwrapNormalizer(loop.Provider))
 	}
 	if adapter.Logger == nil {
 		t.Error("OpenAICompatibleAdapter.Logger is nil; factory should inject the ScrubHandler-backed logger so retry warnings get scrubbed")
@@ -2314,6 +2314,20 @@ func TestBuildProvider_OpenAIResponsesNilBearerErrors(t *testing.T) {
 // dependency just for a one-off literal pointer.
 func intPtr(v int) *int { return &v }
 
+// unwrapNormalizer peels off the *provider.NormalizingAdapter the
+// factory now applies as the outermost wrap (#223), returning the
+// inner adapter. Tests that assert on a specific concrete adapter
+// type (BatchAdapter, OpenAICompatibleAdapter, …) use this so the
+// assertion still describes the meaningful structural invariant
+// (batch wrapping is present, logger is wired, …) without being
+// coupled to the normalizer's existence.
+func unwrapNormalizer(p provider.ProviderAdapter) provider.ProviderAdapter {
+	if n, ok := p.(*provider.NormalizingAdapter); ok {
+		return n.Unwrap()
+	}
+	return p
+}
+
 // TestBuildLoopWithTransport_BatchAdapterWiredWhenEnabled asserts the
 // gRPC + batch.enabled wiring path in the factory: the top-level provider
 // and the entry in the providers map are both replaced with a
@@ -2357,15 +2371,15 @@ func TestBuildLoopWithTransport_BatchAdapterWiredWhenEnabled(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	ba, ok := loop.Provider.(*provider.BatchAdapter)
+	ba, ok := unwrapNormalizer(loop.Provider).(*provider.BatchAdapter)
 	if !ok {
-		t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+		t.Fatalf("loop.Provider (after unwrap): got %T, want *provider.BatchAdapter", unwrapNormalizer(loop.Provider))
 	}
 	mapped, ok := loop.Providers[config.Provider.Type]
 	if !ok {
 		t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
 	}
-	if mapped != ba {
+	if unwrapNormalizer(mapped) != ba {
 		t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
 	}
 }
@@ -2415,12 +2429,12 @@ func TestBuildLoopWithTransport_BatchAdapterWiredOnStdio(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	ba, ok := loop.Provider.(*provider.BatchAdapter)
+	ba, ok := unwrapNormalizer(loop.Provider).(*provider.BatchAdapter)
 	if !ok {
-		t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+		t.Fatalf("loop.Provider (after unwrap): got %T, want *provider.BatchAdapter", unwrapNormalizer(loop.Provider))
 	}
 	mapped := loop.Providers[config.Provider.Type]
-	if mapped != ba {
+	if unwrapNormalizer(mapped) != ba {
 		t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
 	}
 }
@@ -2474,19 +2488,20 @@ func TestBuildLoopWithTransport_BatchOnStdioAcceptsOpenAI(t *testing.T) {
 			}
 
 			// loop.Provider must be the BatchAdapter wrapper for the
-			// stdio batch path; the providers map entry for this
-			// provider type must point at the same wrapper so a
-			// model-router that picks the default provider by type
-			// routes through batching rather than bypassing it.
-			ba, ok := loop.Provider.(*provider.BatchAdapter)
+			// stdio batch path (unwrapped from the outer NormalizingAdapter
+			// added by #223); the providers map entry for this provider
+			// type must point at the same wrapper so a model-router that
+			// picks the default provider by type routes through batching
+			// rather than bypassing it.
+			ba, ok := unwrapNormalizer(loop.Provider).(*provider.BatchAdapter)
 			if !ok {
-				t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+				t.Fatalf("loop.Provider (after unwrap): got %T, want *provider.BatchAdapter", unwrapNormalizer(loop.Provider))
 			}
 			mapped, ok := loop.Providers[config.Provider.Type]
 			if !ok {
 				t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
 			}
-			if mapped != ba {
+			if unwrapNormalizer(mapped) != ba {
 				t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
 			}
 		})
