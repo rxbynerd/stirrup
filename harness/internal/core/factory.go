@@ -963,6 +963,12 @@ func wireEditMetrics(es edit.EditStrategy, metrics *observability.Metrics) {
 	}
 }
 
+// buildEditStrategy maps the (already-defaulted) EditStrategyConfig to
+// a concrete EditStrategy. types.ValidateRunConfig is the single
+// normalization point that fills an empty Type with "multi", so the
+// empty-string case is never expected here; the default branch routes
+// to MultiStrategy as a defence-in-depth fallback for callers that
+// bypass validation entirely.
 func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	fuzzyThreshold := 0.80
 	if cfg.FuzzyThreshold != nil {
@@ -970,7 +976,7 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	}
 
 	switch cfg.Type {
-	case "whole-file", "":
+	case "whole-file":
 		return edit.NewWholeFileStrategy()
 	case "search-replace":
 		return edit.NewSearchReplaceStrategy()
@@ -979,7 +985,7 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	case "multi":
 		return edit.NewMultiStrategy(fuzzyThreshold)
 	default:
-		return edit.NewWholeFileStrategy()
+		return edit.NewMultiStrategy(fuzzyThreshold)
 	}
 }
 

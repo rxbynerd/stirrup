@@ -303,10 +303,17 @@ func TestBuildEditStrategy_WholeFile(t *testing.T) {
 	}
 }
 
+// TestBuildEditStrategy_Empty pins the defence-in-depth behaviour of
+// buildEditStrategy for callers that bypass types.ValidateRunConfig.
+// The validator fills an empty EditStrategy.Type with "multi" before
+// the factory is reached, so this branch should never trigger in a
+// validated run — but if it does, the factory must not silently fall
+// back to a strategy that exposes a different write-tool surface than
+// every validated entrypoint.
 func TestBuildEditStrategy_Empty(t *testing.T) {
 	es := buildEditStrategy(types.EditStrategyConfig{})
-	if _, ok := es.(*edit.WholeFileStrategy); !ok {
-		t.Fatalf("expected WholeFileStrategy for empty type, got %T", es)
+	if _, ok := es.(*edit.MultiStrategy); !ok {
+		t.Fatalf("expected MultiStrategy for empty type, got %T", es)
 	}
 }
 
@@ -341,8 +348,8 @@ func TestBuildEditStrategy_CustomFuzzyThreshold(t *testing.T) {
 
 func TestBuildEditStrategy_UnknownFallsBack(t *testing.T) {
 	es := buildEditStrategy(types.EditStrategyConfig{Type: "nonexistent"})
-	if _, ok := es.(*edit.WholeFileStrategy); !ok {
-		t.Fatalf("expected WholeFileStrategy for unknown type, got %T", es)
+	if _, ok := es.(*edit.MultiStrategy); !ok {
+		t.Fatalf("expected MultiStrategy for unknown type, got %T", es)
 	}
 }
 
