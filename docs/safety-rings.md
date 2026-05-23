@@ -294,7 +294,7 @@ flowchart TB
   Eval -->|permit + no forbid| Allowed[Allow<br/>policy_decision event]
   Eval -->|no match| Fallback{Fallback policy<br/>policy_decision event in either case}
   Fallback -->|allow-all| AllowedFallback[Allow]
-  Fallback -->|deny-side-effects| MaybeDeny{Workspace mutating<br/>or RequiresApproval?}
+  Fallback -->|deny-side-effects| MaybeDeny{Workspace mutating?}
   MaybeDeny -->|yes| DenyFallback[Deny]
   MaybeDeny -->|no| AllowedFallback
   Fallback -->|ask-upstream| AskOp[Ask operator<br/>via transport correlator]
@@ -654,7 +654,7 @@ RunConfig snippet that validates against `ValidateRunConfig`.
 | **Dev** | Permissive — `allow-all`, no scanner, no network | Local iteration on a trusted machine, fastest feedback |
 | **Defaults** | Recommended baseline — `deny-side-effects`, `patterns` scanner, no network | Most production runs against trusted prompts |
 | **Hardened** | Maximum — `policy-engine`, gVisor, allowlisted egress, composite scanner | High-stakes runs, untrusted inputs, multi-tenant infra |
-| **Read-only** | `ask-upstream`, no edits, no network | Research / planning / review modes |
+| **Read-only** | `deny-side-effects` by default, no edits; `ask-upstream` when approval prompts are required | Research / planning / review modes |
 
 ### Dev — local iteration, no isolation
 
@@ -773,7 +773,7 @@ both pattern and semgrep scanners run on every edit.
   "executor": { "type": "container", "image": "ghcr.io/rxbynerd/stirrup:latest", "runtime": "runc", "network": { "mode": "none" } },
   "editStrategy": { "type": "multi" },
   "verifier": { "type": "none" },
-  "permissionPolicy": { "type": "ask-upstream", "timeout": 60 },
+  "permissionPolicy": { "type": "deny-side-effects" },
   "gitStrategy": { "type": "none" },
   "transport": { "type": "stdio" },
   "traceEmitter": { "type": "jsonl" },
@@ -784,12 +784,16 @@ both pattern and semgrep scanners run on every edit.
 }
 ```
 
-`ask-upstream` + `runc` + `network.mode: none` + no scanner.
+`deny-side-effects` + `runc` + `network.mode: none` + no scanner.
 Read-only modes (`planning`, `review`, `research`, `toil`) cannot
 enable write-capable tools (enforced by `ValidateRunConfig`); the
-scanner is unused because no edits happen. `ask-upstream` is the
-documented Rule-of-Two-compatible policy when `web_fetch` +
-secret-named API key + MCP servers may all be present.
+scanner is unused because no edits happen. Their default permission
+policy is `deny-side-effects`, which blocks workspace mutation but
+allows non-mutating sensitive tools such as `web_fetch` and
+`spawn_agent`. `ask-upstream` is the stricter Rule-of-Two-compatible
+choice when those `RequiresApproval` tools should ask the operator
+before running; use it with `grpc` transport, since `stdio` has no
+upstream control plane to answer permission requests.
 
 The `editStrategy` field is set out of habit but inert here — no
 `edit_file` tool is registered when `tools.builtIn` excludes it, so

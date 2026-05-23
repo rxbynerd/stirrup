@@ -117,14 +117,15 @@ end-of-run. Each turn the loop asks the `ModelRouter` which
 provider+model to use and the `ContextStrategy` for the message
 history (compacting if the budget is tight), then streams the request
 through the chosen `ProviderAdapter`. Tool calls in the response are
-resolved by the `ToolRegistry`; tools flagged `WorkspaceMutating` or
-`RequiresApproval` are gated by the `PermissionPolicy` before
-dispatch, while read-only tools go straight to the `Executor`. The
-`edit_file` tool dispatches through the `EditStrategy`, which uses
-the Executor for file I/O (and is transparently wrapped by the
-post-edit code scanner). At end-of-run the `Verifier` validates
-output. The `Transport` carries events to and from the control plane;
-the `TraceEmitter` records spans and metrics throughout.
+resolved by the `ToolRegistry`; the `PermissionPolicy` interprets each
+tool's `WorkspaceMutating` and `RequiresApproval` flags before
+dispatch. Read-only tools with neither flag go straight to the
+`Executor`. The `edit_file` tool dispatches through the
+`EditStrategy`, which uses the Executor for file I/O (and is
+transparently wrapped by the post-edit code scanner). At end-of-run
+the `Verifier` validates output. The `Transport` carries events to
+and from the control plane; the `TraceEmitter` records spans and
+metrics throughout.
 
 ## Modes
 
@@ -311,8 +312,8 @@ Four implementations gate side-effecting tool calls:
 - **`deny-side-effects`** — workspace-mutating tools (`write_file`,
   `run_command`, `edit_file`) are blocked outright. Read-only tools
   with network or budget exposure (`web_fetch`, `spawn_agent`) are
-  still allowed and gated separately by `ask-upstream`. Default for
-  read-only modes.
+  still allowed; choose `ask-upstream` when those tools should prompt.
+  Default for read-only modes.
 - **`ask-upstream`** — tools whose `RequiresApproval` flag is set
   prompt the control plane via a `permission_request` event before
   dispatch. Only useful with the `grpc` transport; `stdio` has no
@@ -323,8 +324,9 @@ Four implementations gate side-effecting tool calls:
   Starter policies live in [`examples/policies/`](../examples/policies/).
 
 The `policy-engine` policy is one of the five safety rings; see
-[`safety-rings.md`](safety-rings.md) for the operator-facing
-walkthrough.
+[`safety-rings.md`](safety-rings.md) for the safety walkthrough and
+[`configuration.md#tool-permission-flags`](configuration.md#tool-permission-flags)
+for the operator-facing flag matrix.
 
 ## Context strategies
 
