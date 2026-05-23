@@ -401,16 +401,28 @@ func cmdBaseline(args []string) {
 	printMetricsSummary(metrics)
 }
 
-// cmdMineFailures queries production failures and constructs eval tasks from them.
+// cmdMineFailures queries production traces, hydrates recordings
+// opportunistically, and constructs an EvalSuite of regression tasks
+// that capture the failing-turn context an operator needs to write a
+// meaningful test (#274).
+//
+// The data path switches from QueryRecordings to QueryTraces because
+// traces always exist (every harness run emits one) while recordings
+// are opportunistic (only the streaming JSONL emitter writes them).
+// Mining stays useful when no recording is available — the task just
+// carries less context and the description says so.
 func cmdMineFailures(args []string) {
 	fs := flag.NewFlagSet("mine-failures", flag.ExitOnError)
 	lakehousePath := fs.String("lakehouse", "", "Path to lakehouse directory (required)")
 	afterStr := fs.String("after", "", "Filter traces after this date (RFC3339 or YYYY-MM-DD)")
-	limit := fs.Int("limit", 0, "Maximum number of failures to mine")
-	output := fs.String("output", "", "Write EvalSuite HCL to this file (.hcl recommended)")
+	beforeStr := fs.String("before", "", "Filter traces before this date (RFC3339 or YYYY-MM-DD)")
+	outcome := fs.String("outcome", "failed", "Filter by EvalOutcome (passed|failed|inconclusive). Defaults to failed; pass --include-inconclusive to broaden.")
+	limit := fs.Int("limit", 0, "Maximum number of tasks to mine")
+	sampleBy := fs.String("sample-by", "", "Stratify --limit across a dimension: outcome|model|mode|provider. Empty (the default) takes the top --limit by recency.")
+	output := fs.String("output", "", "Write EvalSuite HCL to this file (.hcl recommended). Empty: dry-run to stdout.")
 	includeBatch := fs.Bool("include-batch", false, "By default, batch runs (provider.batch.enabled=true) are excluded from mined failures because their wall-clock duration inflates apparent stall metrics. Pass --include-batch to include them.")
-	includeInconclusive := fs.Bool("include-inconclusive", false, "By default, only EvalOutcome==failed traces are mined. Inconclusive runs (max_turns / budget_exceeded / timeout / max_tokens / stalled / cancelled / verification_error) are typically investigated manually rather than codified as regressions; pass --include-inconclusive to include them anyway.")
-	acceptQuarantine := fs.Bool("accept-quarantine", false, "Mined suites carry raw conversation content from production runs. If the source recordings trip a quarantine classifier (large payloads, future PII / unscrubbed-secret signals), the suite write is refused unless --accept-quarantine is set. See #115 for the design rationale.")
+	includeInconclusive := fs.Bool("include-inconclusive", false, "Include EvalOutcome==inconclusive (max_turns / timeout / etc.) traces in addition to the --outcome target.")
+	acceptQuarantine := fs.Bool("accept-quarantine", false, "Mined suites carry raw conversation content. If the source recordings trip a quarantine classifier, the file write is refused unless --accept-quarantine is set. See #115.")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -433,24 +445,64 @@ func cmdMineFailures(args []string) {
 		}
 		filter.After = &t
 	}
+	if *beforeStr != "" {
+		t, err := parseDate(*beforeStr)
+		if err != nil {
+			log.Fatalf("parsing -before: %v", err)
+		}
+		filter.Before = &t
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	recordings, err := store.QueryRecordings(ctx, filter)
+	traces, err := store.QueryTraces(ctx, filter)
+	if err != nil {
+		log.Fatalf("querying traces: %v", err)
+	}
+
+	// Build a runId -> recording map opportunistically. Recordings are
+	// stored alongside traces in <root>/recordings/<runId>.json; a
+	// QueryRecordings call returns whatever is present. Missing
+	// recordings are absent from the map; the per-trace mining loop
+	// below detects that and emits a thin-trace task.
+	recordings, err := store.QueryRecordings(ctx, types.TraceFilter{})
 	if err != nil {
 		log.Fatalf("querying recordings: %v", err)
 	}
+	recByID := make(map[string]types.RunRecording, len(recordings))
+	for _, rec := range recordings {
+		recByID[rec.RunID] = rec
+	}
 
-	tasks := mineFailureTasksFiltered(recordings, *limit, *includeBatch, *includeInconclusive)
+	// Filter traces by EvalOutcome and the batch / inconclusive
+	// switches, then optionally stratify across --sample-by before
+	// taking the top --limit. Pre-filter so a 50-trace cap on a
+	// 5,000-trace lakehouse doesn't waste the sampler's time on
+	// passing runs.
+	target := types.EvalOutcome(*outcome)
+	filtered := filterTracesForMining(traces, target, *includeInconclusive, *includeBatch)
+	selected := sampleTraces(filtered, *sampleBy, *limit)
 
-	// Classify the source recordings the miner is about to bake into
-	// the suite. The flags ride on EvalSuite.QuarantineFlags so the
-	// runner can refuse to execute a flagged suite without an
-	// explicit --accept-quarantine, and CI lint can treat a checked-
-	// in flagged suite as a code-review smell.
-	flags := types.ClassifyForQuarantine(recordings)
-	if len(flags) > 0 && !*acceptQuarantine {
+	// Build tasks, hydrating from recordings when present.
+	var (
+		hydratedRecordings []types.RunRecording
+		tasks              []types.EvalTask
+	)
+	for _, t := range selected {
+		rec, hasRec := recByID[t.ID]
+		tasks = append(tasks, buildMinedTask(t, rec, hasRec))
+		if hasRec {
+			hydratedRecordings = append(hydratedRecordings, rec)
+		}
+	}
+
+	// Classify the recordings we actually used for hydration. Traces
+	// with no recording cannot trip the classifier (they carry no
+	// transcript content), so the flag set is a function of the
+	// hydrated subset.
+	flags := types.ClassifyForQuarantine(hydratedRecordings)
+	if len(flags) > 0 && *output != "" && !*acceptQuarantine {
 		fmt.Fprintf(os.Stderr,
 			"mine-failures: refusing to write quarantined suite to %s (flags: %v). Re-run with --accept-quarantine to acknowledge the privacy implications.\n",
 			*output, flags)
@@ -462,7 +514,7 @@ func cmdMineFailures(args []string) {
 
 	suite := types.EvalSuite{
 		ID:              fmt.Sprintf("mined-failures-%d", time.Now().Unix()),
-		Description:     fmt.Sprintf("Failures mined from production (%d of %d recordings)", len(tasks), len(recordings)),
+		Description:     fmt.Sprintf("Failures mined from production: %d task(s) from %d candidate trace(s) (%d with recordings)", len(tasks), len(filtered), len(hydratedRecordings)),
 		Tasks:           tasks,
 		QuarantineFlags: flags,
 	}
@@ -472,9 +524,237 @@ func cmdMineFailures(args []string) {
 			log.Fatalf("writing suite: %v", err)
 		}
 		fmt.Fprintf(os.Stderr, "Suite written to %s\n", *output)
+	} else {
+		// Dry-run: print a brief summary to stdout. Operators run
+		// without --output to preview before writing.
+		fmt.Fprintln(os.Stderr, "mine-failures: dry-run (no --output set); preview only:")
+		for _, t := range tasks {
+			fmt.Fprintf(os.Stderr, "  - %s: %s\n", t.ID, oneLine(t.Description))
+		}
 	}
 
-	fmt.Printf("%d failures mined from %d total recordings\n", len(tasks), len(recordings))
+	fmt.Printf("%d task(s) mined from %d candidate trace(s) (%d hydrated with recordings)\n",
+		len(tasks), len(filtered), len(hydratedRecordings))
+}
+
+// filterTracesForMining applies the (outcome, includeInconclusive,
+// includeBatch) predicates to a trace slice. Returns the subset that
+// should feed sampling + task generation.
+func filterTracesForMining(traces []types.RunTrace, target types.EvalOutcome, includeInconclusive, includeBatch bool) []types.RunTrace {
+	out := make([]types.RunTrace, 0, len(traces))
+	for _, t := range traces {
+		got := types.EvalOutcomeFor(t)
+		matches := got == target ||
+			(includeInconclusive && got == types.EvalInconclusive)
+		if !matches {
+			continue
+		}
+		if !includeBatch && t.Config.Provider.IsBatchEnabled() {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// sampleTraces stratifies a candidate slice across the dimension
+// named by sampleBy. Empty sampleBy => take the top limit by
+// recency (the existing behaviour). limit=0 => return all.
+//
+// The proportional allocation uses largest-remainder rounding so a
+// limit smaller than the stratum count still surfaces at least one
+// trace per non-empty stratum (down to the smallest strata, which
+// may yield zero when limit < strata count). The trade-off favours
+// representativeness over strict per-stratum proportionality at the
+// very small end.
+func sampleTraces(traces []types.RunTrace, sampleBy string, limit int) []types.RunTrace {
+	if limit <= 0 || len(traces) <= limit {
+		return traces
+	}
+	if sampleBy == "" {
+		return traces[:limit]
+	}
+
+	type stratum struct {
+		key     string
+		members []types.RunTrace
+	}
+	keys := []string{}
+	byKey := map[string]*stratum{}
+	keyFn := func(t types.RunTrace) string {
+		switch sampleBy {
+		case "outcome":
+			return string(types.EvalOutcomeFor(t))
+		case "model":
+			return t.Config.ModelRouter.Model
+		case "mode":
+			return t.Config.Mode
+		case "provider":
+			return t.Config.Provider.Type
+		default:
+			return ""
+		}
+	}
+	for _, t := range traces {
+		k := keyFn(t)
+		if _, ok := byKey[k]; !ok {
+			byKey[k] = &stratum{key: k}
+			keys = append(keys, k)
+		}
+		byKey[k].members = append(byKey[k].members, t)
+	}
+
+	// Largest-remainder allocation: floor(limit * len(stratum) / total)
+	// for each stratum, then distribute the remaining slots to the
+	// strata with the highest fractional remainders.
+	type alloc struct {
+		key       string
+		quota     int
+		remainder float64
+		members   []types.RunTrace
+	}
+	allocs := make([]alloc, 0, len(keys))
+	total := len(traces)
+	used := 0
+	for _, k := range keys {
+		s := byKey[k]
+		want := float64(limit*len(s.members)) / float64(total)
+		quota := int(want)
+		used += quota
+		allocs = append(allocs, alloc{
+			key:       k,
+			quota:     quota,
+			remainder: want - float64(quota),
+			members:   s.members,
+		})
+	}
+	for used < limit {
+		// Find the stratum with the largest remainder; on ties prefer
+		// the stratum with the lowest current quota (more
+		// representative across small strata), then alphabetically by
+		// key so the result is deterministic.
+		bestIdx := -1
+		for i := range allocs {
+			if allocs[i].quota >= len(allocs[i].members) {
+				continue
+			}
+			if bestIdx == -1 {
+				bestIdx = i
+				continue
+			}
+			cur := allocs[bestIdx]
+			cand := allocs[i]
+			switch {
+			case cand.remainder > cur.remainder:
+				bestIdx = i
+			case cand.remainder == cur.remainder && cand.quota < cur.quota:
+				bestIdx = i
+			case cand.remainder == cur.remainder && cand.quota == cur.quota && cand.key < cur.key:
+				bestIdx = i
+			}
+		}
+		if bestIdx == -1 {
+			break // every stratum capped
+		}
+		allocs[bestIdx].quota++
+		allocs[bestIdx].remainder = 0
+		used++
+	}
+
+	out := make([]types.RunTrace, 0, limit)
+	for _, a := range allocs {
+		n := a.quota
+		if n > len(a.members) {
+			n = len(a.members)
+		}
+		out = append(out, a.members[:n]...)
+	}
+	return out
+}
+
+// buildMinedTask produces an EvalTask from a trace plus an optional
+// recording. When the recording is present, the task Description
+// includes the failing-turn context (last assistant message excerpt
+// and any failing tool call) so the operator reading the suite knows
+// what went wrong without re-running the trace. When only the thin
+// trace is present, the description says so and the operator decides
+// whether to keep the task or refine the prompt manually.
+func buildMinedTask(trace types.RunTrace, rec types.RunRecording, hasRecording bool) types.EvalTask {
+	desc := fmt.Sprintf("Mined from run %s (outcome: %s)", trace.ID, trace.Outcome)
+	if !hasRecording {
+		desc += " — thin trace only, no recording available; refine prompt manually."
+	} else {
+		desc += "\n" + summariseFailingTurn(rec)
+	}
+	return types.EvalTask{
+		ID:          fmt.Sprintf("mined-%s", trace.ID),
+		Description: desc,
+		Prompt:      trace.Config.Prompt,
+		Mode:        trace.Config.Mode,
+		Judge: types.EvalJudge{
+			Type:    "test-command",
+			Command: "go test ./...",
+		},
+	}
+}
+
+// summariseFailingTurn extracts a short, human-readable excerpt of
+// the failing turn from a recording: the last assistant text block
+// (truncated to keep the suite file readable) and the name + status
+// of any failing tool call. Sub-agent activity surfaces as a
+// dedicated line so multi-agent failures don't read as single-turn
+// ones.
+func summariseFailingTurn(rec types.RunRecording) string {
+	if len(rec.Turns) == 0 {
+		return "  recording present but no turns captured."
+	}
+	last := rec.Turns[len(rec.Turns)-1]
+	parts := []string{
+		fmt.Sprintf("  last turn: %d", last.Turn),
+	}
+
+	var assistantText string
+	for _, blk := range last.ModelOutput {
+		if blk.Type == "text" && blk.Text != "" {
+			assistantText = blk.Text
+			break
+		}
+	}
+	if assistantText != "" {
+		parts = append(parts, fmt.Sprintf("  assistant: %s", truncate(oneLine(assistantText), 240)))
+	}
+
+	for _, tc := range last.ToolCalls {
+		if tc.Success {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("  failing tool: %s (output: %s)", tc.Name, truncate(oneLine(tc.Output), 200)))
+	}
+
+	for _, summary := range rec.FinalOutcome.ToolCalls {
+		if summary.ParentRunID != "" || (summary.RunID != "" && summary.RunID != rec.RunID) {
+			parts = append(parts, fmt.Sprintf("  sub-agent tool: %s (run %s, parent %s)", summary.Name, summary.RunID, summary.ParentRunID))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// oneLine collapses internal newlines to spaces so a multi-line
+// excerpt fits onto one line of the suite description without
+// breaking HCL.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// truncate caps s at n runes (NOT bytes) and appends an ellipsis
+// when truncation happens. Used to keep mined task descriptions
+// readable in the HCL output.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // writeSuiteHCL serialises a types.EvalSuite as canonical HCL and writes

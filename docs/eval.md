@@ -463,16 +463,44 @@ rename via #267) so retries do not corrupt the lakehouse.
 ```bash
 ./stirrup-eval mine-failures \
   --lakehouse var/lakehouse \
+  --after 2026-04-01 --before 2026-05-01 \
+  --outcome failed \
   --limit 20 \
-  --output eval/suites/mined.hcl
+  --sample-by outcome \
+  --output eval/suites/mined.hcl \
+  --accept-quarantine
 ```
 
-Queries non-success recordings from the lakehouse and constructs an
-`EvalSuite` from them, defaulting each task to a `test-command` judge
-running `go test ./...`. The resulting suite is written to `--output`
-as canonical HCL (parseable by `eval run` directly) and is a starting
-point — judges and prompts typically need editing before the suite is
-committed.
+Queries production traces from the lakehouse, opportunistically
+hydrates each with its `RunRecording` (when one exists), and
+constructs an `EvalSuite` of regression tasks. Each task defaults
+to a `test-command` judge running `go test ./...`; the
+description carries the failing-turn context (last assistant
+message excerpt and any failing tool call) so a human reading the
+suite knows what went wrong without re-running the trace.
+
+Filters (all optional):
+
+- `--after <date>` / `--before <date>` — window the candidate traces.
+- `--outcome <passed|failed|inconclusive>` — target a specific
+  `EvalOutcome` bucket. Defaults to `failed`.
+- `--include-inconclusive` — broaden to also include
+  `inconclusive` traces (limit-hit or interrupted runs).
+- `--include-batch` — by default, batch runs are excluded because
+  their wall-clock is dominated by provider queue dynamics.
+- `--limit N` — cap the output at N tasks.
+- `--sample-by <outcome|model|mode|provider>` — when more
+  candidates exist than `--limit`, stratify proportionally across
+  the chosen dimension instead of taking the top N by recency.
+  Empty (the default) takes the top N by recency.
+
+When the lakehouse holds no recording for a candidate trace, the
+task is still emitted but its description flags "thin trace only;
+refine prompt manually" — operators decide whether to keep or
+drop it.
+
+Without `--output`, `mine-failures` runs in dry-run mode and
+prints a preview to stderr without writing a suite file.
 
 #### Quarantine envelope
 

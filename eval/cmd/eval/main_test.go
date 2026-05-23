@@ -541,17 +541,22 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 // Centralised so the BatchProviderConfig construction is not
 // scattered across multiple test cases.
 func makeBatchRecording(runID, outcome, prompt string) types.RunRecording {
-	return types.RunRecording{
-		RunID: runID,
-		Config: types.RunConfig{
-			Prompt: prompt,
-			Mode:   "execution",
-			Provider: types.ProviderConfig{
-				Type:  "anthropic",
-				Batch: &types.BatchProviderConfig{Enabled: true},
-			},
+	cfg := types.RunConfig{
+		Prompt: prompt,
+		Mode:   "execution",
+		Provider: types.ProviderConfig{
+			Type:  "anthropic",
+			Batch: &types.BatchProviderConfig{Enabled: true},
 		},
-		FinalOutcome: types.RunTrace{ID: runID, Outcome: outcome},
+	}
+	return types.RunRecording{
+		RunID:  runID,
+		Config: cfg,
+		FinalOutcome: types.RunTrace{
+			ID:      runID,
+			Outcome: outcome,
+			Config:  cfg,
+		},
 	}
 }
 
@@ -619,13 +624,27 @@ func writeMineFailuresFixture(t *testing.T, dir string) {
 				Prompt: "streaming failure prompt",
 				Mode:   "execution",
 			},
-			FinalOutcome: types.RunTrace{ID: "stream-fail", Outcome: "error"},
+			FinalOutcome: types.RunTrace{
+				ID:      "stream-fail",
+				Outcome: "error",
+				Config: types.RunConfig{
+					Prompt: "streaming failure prompt",
+					Mode:   "execution",
+				},
+			},
 		},
 		makeBatchRecording("batch-fail", "error", "batch failure prompt"),
 	}
 	for _, rec := range recordings {
 		if err := store.StoreRecording(context.Background(), rec); err != nil {
 			t.Fatalf("StoreRecording %s: %v", rec.RunID, err)
+		}
+		// As of #274 mine-failures reads QueryTraces first and
+		// hydrates recordings opportunistically — the fixture has
+		// to seed both stores so the new code path sees the
+		// candidates the old recording-only path saw.
+		if err := store.StoreTrace(context.Background(), rec.FinalOutcome); err != nil {
+			t.Fatalf("StoreTrace %s: %v", rec.RunID, err)
 		}
 	}
 }
