@@ -780,3 +780,151 @@ func collectOutcomes(results []eval.TaskResult) []string {
 	}
 	return out
 }
+
+// TestAppendAnthropicWIFArgs pins the on-the-wire flag spellings the
+// runner forwards to `stirrup harness`. The flag names MUST match the
+// harness side (harness/cmd/stirrup/cmd/runconfigflags.go) — a drift
+// here would silently break CI auth, since the harness would treat an
+// unrecognised flag name as a fatal error.
+func TestAppendAnthropicWIFArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		wif  AnthropicWIFConfig
+		want []string
+	}{
+		{
+			name: "empty config emits nothing",
+			wif:  AnthropicWIFConfig{},
+			want: nil,
+		},
+		{
+			name: "full config emits all four flags in canonical order",
+			wif: AnthropicWIFConfig{
+				FederationRuleID:  "fdrl_test",
+				OrganizationID:    "org-uuid",
+				ServiceAccountID:  "svac_test",
+				FromGitHubActions: true,
+			},
+			want: []string{
+				"--anthropic-federation-rule-id", "fdrl_test",
+				"--anthropic-organization-id", "org-uuid",
+				"--anthropic-service-account-id", "svac_test",
+				"--anthropic-from-github-actions",
+			},
+		},
+		{
+			name: "boolean only — exchange-disabled identifiers still forwarded",
+			wif: AnthropicWIFConfig{
+				FromGitHubActions: true,
+			},
+			want: []string{"--anthropic-from-github-actions"},
+		},
+		{
+			name: "partial config forwards what is set (harness produces the error)",
+			wif: AnthropicWIFConfig{
+				FederationRuleID: "fdrl_only",
+			},
+			want: []string{"--anthropic-federation-rule-id", "fdrl_only"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := appendAnthropicWIFArgs(nil, tc.wif)
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d (got %v)", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("arg[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRunSuite_ForwardsAnthropicWIFFlags exercises the runner end-to-end
+// with a fake harness that captures its argv to disk. This is the
+// load-bearing test for issue #293: it pins that a configured
+// AnthropicWIFConfig actually reaches the subprocess argv (and not
+// merely the RunConfig struct). If this test goes green but CI auth
+// fails, the regression is in the harness flag parser, not the runner.
+func TestRunSuite_ForwardsAnthropicWIFFlags(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessDir := t.TempDir()
+	harnessPath := filepath.Join(harnessDir, "fake-harness")
+	argvCapture := filepath.Join(harnessDir, "argv.txt")
+
+	// The fake harness records its argv (one arg per line) to a
+	// predetermined path and writes a minimal success trace so the
+	// runner reaches the artifact-retention path without errors.
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a"; done > %q
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
+fi
+`, argvCapture)
+	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The judge type is irrelevant to this test: the fake harness
+	// captures argv before the runner ever invokes a judge. Using
+	// file-exists against an unused path produces a fail/error
+	// outcome, but the assertion below cares only about the captured
+	// argv.
+	suite := types.EvalSuite{
+		ID: "wif-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "wif-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-wif-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+		AnthropicWIF: AnthropicWIFConfig{
+			FederationRuleID:  "fdrl_01TEST",
+			OrganizationID:    "00000000-0000-0000-0000-000000000000",
+			ServiceAccountID:  "svac_01TEST",
+			FromGitHubActions: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunSuite returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(argvCapture)
+	if err != nil {
+		t.Fatalf("reading captured argv: %v", err)
+	}
+	captured := string(data)
+	wantFragments := []string{
+		"--anthropic-federation-rule-id",
+		"fdrl_01TEST",
+		"--anthropic-organization-id",
+		"00000000-0000-0000-0000-000000000000",
+		"--anthropic-service-account-id",
+		"svac_01TEST",
+		"--anthropic-from-github-actions",
+	}
+	for _, frag := range wantFragments {
+		if !strings.Contains(captured, frag+"\n") {
+			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
+		}
+	}
+}

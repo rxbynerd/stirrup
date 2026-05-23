@@ -127,6 +127,17 @@ func cmdRun(args []string) {
 	dryRun := fs.Bool("dry-run", false, "Validate suite without executing tasks")
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
+	// Anthropic Workload Identity Federation flags. The runner forwards
+	// these verbatim to every `stirrup harness` invocation so the
+	// eval-gate CI job can authenticate via WIF instead of a static
+	// ANTHROPIC_API_KEY. The four identifiers are non-secret per
+	// Anthropic's WIF docs (see #130 and .github/workflows/smoke-anthropic.yml);
+	// the actual OIDC exchange happens inside the harness using the
+	// GitHub Actions runner environment.
+	anthropicFederationRuleID := fs.String("anthropic-federation-rule-id", "", "Anthropic federation rule ID (`fdrl_...`). Forwarded to every harness invocation. Non-secret: identifies the federation rule but cannot itself authenticate.")
+	anthropicOrganizationID := fs.String("anthropic-organization-id", "", "Anthropic organisation UUID. Forwarded to every harness invocation. Required alongside --anthropic-federation-rule-id when WIF is in use.")
+	anthropicServiceAccountID := fs.String("anthropic-service-account-id", "", "Anthropic service account ID (`svac_...`). Forwarded to every harness invocation. Required alongside --anthropic-federation-rule-id when WIF is in use.")
+	anthropicFromGitHubActions := fs.Bool("anthropic-from-github-actions", false, "Forward --anthropic-from-github-actions to every harness invocation. The harness then sources the OIDC token from ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN.")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -165,6 +176,12 @@ func cmdRun(args []string) {
 		OutputDir:   *outputDir,
 		Concurrency: *concurrency,
 		DryRun:      *dryRun,
+		AnthropicWIF: runner.AnthropicWIFConfig{
+			FederationRuleID:  *anthropicFederationRuleID,
+			OrganizationID:    *anthropicOrganizationID,
+			ServiceAccountID:  *anthropicServiceAccountID,
+			FromGitHubActions: *anthropicFromGitHubActions,
+		},
 	})
 	if err != nil {
 		log.Fatalf("running suite: %v", err)
