@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -54,25 +55,61 @@ func NewFileStore(rootDir string) (*FileStore, error) {
 	return &FileStore{rootDir: rootDir}, nil
 }
 
-// StoreTrace writes a RunTrace as JSON to traces/<id>.json.
+// StoreTrace writes a RunTrace as JSON to traces/<id>.json and
+// appends a manifest entry so QueryTraces can answer filter queries
+// without loading every trace file from disk (#275). A manifest
+// append failure is logged but does not propagate — the JSON file
+// is already on disk and the next query path will fall back to a
+// directory rebuild.
 func (fs *FileStore) StoreTrace(_ context.Context, trace types.RunTrace) error {
 	if trace.ID == "" {
 		return fmt.Errorf("trace ID is empty")
 	}
-	return fs.writeJSON(filepath.Join(fs.rootDir, tracesDir, trace.ID+".json"), trace)
+	if err := fs.writeJSON(filepath.Join(fs.rootDir, tracesDir, trace.ID+".json"), trace); err != nil {
+		return err
+	}
+	fs.appendManifest(manifestEntryForTrace(trace))
+	return nil
 }
 
-// StoreRecording writes a RunRecording as JSON to recordings/<runId>.json.
+// StoreRecording writes a RunRecording as JSON to
+// recordings/<runId>.json and appends a manifest entry. See the
+// StoreTrace godoc for the manifest's role.
 func (fs *FileStore) StoreRecording(_ context.Context, recording types.RunRecording) error {
 	if recording.RunID == "" {
 		return fmt.Errorf("recording RunID is empty")
 	}
-	return fs.writeJSON(filepath.Join(fs.rootDir, recordingsDir, recording.RunID+".json"), recording)
+	if err := fs.writeJSON(filepath.Join(fs.rootDir, recordingsDir, recording.RunID+".json"), recording); err != nil {
+		return err
+	}
+	fs.appendManifest(manifestEntryForRecording(recording))
+	return nil
 }
 
-// QueryTraces reads all stored traces, applies the filter, sorts by StartedAt
-// descending, and applies the limit.
+// QueryTraces reads stored traces matching filter and sorts by
+// StartedAt descending.
+//
+// When a manifest is present and parseable, the read path consults
+// it to skip JSON-file loads for entries the filter rejects on
+// pre-decoded fields (Outcome / Mode / Model / Provider). This is
+// the day-to-day-usable performance win promised by #275: a
+// 10,000-trace lakehouse with a narrow filter loads only the
+// matching subset rather than every JSON file. Time-range filters
+// (After / Before) still require the underlying trace's
+// StartedAt to be parsed post-load.
+//
+// A missing or unparseable manifest falls through to a scan of
+// the on-disk trace directory and rebuilds the manifest as a
+// side effect (logged at info level).
 func (fs *FileStore) QueryTraces(_ context.Context, filter types.TraceFilter) ([]types.RunTrace, error) {
+	manifestTraces, _, ok := fs.loadManifestIndex()
+	if !ok {
+		// Rebuild on miss; ignore rebuild errors (a transient FS
+		// failure should not break the query — we fall through to
+		// a full scan below and try again next time).
+		_ = fs.rebuildManifest()
+	}
+
 	entries, err := os.ReadDir(filepath.Join(fs.rootDir, tracesDir))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -85,6 +122,21 @@ func (fs *FileStore) QueryTraces(_ context.Context, filter types.TraceFilter) ([
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
+		}
+		// Skip atomic-write tmp files left behind by a crashed
+		// writer; the rename pattern guarantees these are never
+		// the canonical content.
+		if strings.HasPrefix(entry.Name(), ".tmp") {
+			continue
+		}
+		// Strip ".json" to get the trace ID; the manifest is keyed
+		// by ID and lets us skip pure-field-mismatch entries before
+		// the file system has to read the file.
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		if ok && manifestTraces != nil {
+			if me, found := manifestTraces[id]; found && !matchesManifestEntry(me, filter) {
+				continue
+			}
 		}
 		var trace types.RunTrace
 		if err := fs.readJSON(filepath.Join(fs.rootDir, tracesDir, entry.Name()), &trace); err != nil {
@@ -105,10 +157,22 @@ func (fs *FileStore) QueryTraces(_ context.Context, filter types.TraceFilter) ([
 	return traces, nil
 }
 
-// QueryRecordings reads all stored recordings, applies the filter (using the
-// recording's FinalOutcome fields), sorts by FinalOutcome.StartedAt descending,
-// and applies the limit.
+// QueryRecordings reads stored recordings matching filter and sorts
+// by FinalOutcome.StartedAt descending. Recordings are 10-100x
+// larger than traces (full conversation history + tool I/O) so the
+// manifest-driven short-circuit pays its biggest dividend here:
+// rejecting a recording from a pre-decoded field saves loading the
+// whole transcript.
+//
+// Behaviour mirrors QueryTraces: manifest-driven skip on field
+// mismatch, full-scan fallback when the manifest is missing or
+// corrupt.
 func (fs *FileStore) QueryRecordings(_ context.Context, filter types.TraceFilter) ([]types.RunRecording, error) {
+	_, manifestRecordings, ok := fs.loadManifestIndex()
+	if !ok {
+		_ = fs.rebuildManifest()
+	}
+
 	entries, err := os.ReadDir(filepath.Join(fs.rootDir, recordingsDir))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -121,6 +185,18 @@ func (fs *FileStore) QueryRecordings(_ context.Context, filter types.TraceFilter
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
+		}
+		// Skip atomic-write tmp files left behind by a crashed
+		// writer; the rename pattern guarantees these are never
+		// the canonical content.
+		if strings.HasPrefix(entry.Name(), ".tmp") {
+			continue
+		}
+		runID := strings.TrimSuffix(entry.Name(), ".json")
+		if ok && manifestRecordings != nil {
+			if me, found := manifestRecordings[runID]; found && !matchesManifestEntry(me, filter) {
+				continue
+			}
 		}
 		var rec types.RunRecording
 		if err := fs.readJSON(filepath.Join(fs.rootDir, recordingsDir, entry.Name()), &rec); err != nil {
