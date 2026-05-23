@@ -13,8 +13,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: verify
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # id-token: write is required for Anthropic Workload Identity
+    # Federation: actions/checkout's runner exposes
+    # ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN
+    # only when this permission is granted. The harness then exchanges
+    # the OIDC token for an Anthropic access token using the four
+    # `--anthropic-*` flags forwarded below. No static API key is in
+    # scope. See .github/workflows/smoke-anthropic.yml for the
+    # established WIF pattern and #130 for the original rollout.
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -60,10 +69,49 @@ jobs:
             echo "No eval suites found — skipping eval gate"
           fi
 
-      - name: Run eval suite
+      # Pre-flight credential guard. Without it, a misconfigured
+      # workflow (no static key, WIF wiring accidentally removed)
+      # would silently fail every harness invocation with an auth
+      # error buried in per-task output, and the compare step would
+      # report a 5/5 → 0/5 "regression" that is really an auth gap.
+      # Mirrors the check-suites step's shape so an operator
+      # reviewing the job log sees the same skip-with-warning
+      # pattern for both prerequisites. The WIF posture today is
+      # always-on (the run step forwards the four
+      # --anthropic-* flags unconditionally), so this guard is
+      # mainly defensive against a future regression that strips
+      # the flags or drops `id-token: write`.
+      - name: Check Anthropic credentials
+        id: check-creds
         if: steps.check-suites.outputs.has_suites == 'true'
         shell: bash
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Check whether a real credential source is available.
+          # GitHub Actions sets ACTIONS_ID_TOKEN_REQUEST_URL only when
+          # id-token: write is in scope and the OIDC subsystem is
+          # operational. If neither a static key nor WIF is present,
+          # skip the run steps and emit a warning so the missing
+          # credential is visible in the job log rather than buried as
+          # per-task auth errors.
+          if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "has_credentials=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_credentials=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No Anthropic credentials configured (neither ANTHROPIC_API_KEY nor ACTIONS_ID_TOKEN_REQUEST_URL). Skipping live eval runs."
+          fi
+
+      - name: Run eval suite
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        shell: bash
+        env:
+          # Forwarded for backwards compatibility: if a static key is
+          # ever reintroduced (e.g. a fork that wants to opt out of
+          # WIF), the harness already prefers an explicit
+          # ANTHROPIC_API_KEY over the WIF flags. In the canonical
+          # CI configuration this is empty and the harness uses WIF
+          # exclusively.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           shopt -s nullglob
@@ -73,15 +121,31 @@ jobs:
             name="${name%.*}"
             # JUnit XML is an annotation/artifact only; the eval gate
             # is enforced by the `compare` step below.
+            #
+            # The four --anthropic-* flags are non-secret per
+            # Anthropic's WIF documentation (see
+            # .github/workflows/smoke-anthropic.yml). The harness
+            # exchanges the GitHub Actions OIDC token for an Anthropic
+            # access token inside the subprocess; no static key is in
+            # scope.
             ./stirrup-eval run \
               --suite "$suite" \
               --harness ./stirrup \
               --output "eval/results/${name}" \
-              --junit "eval/results/${name}/junit.xml"
+              --junit "eval/results/${name}/junit.xml" \
+              --anthropic-federation-rule-id fdrl_01QJMFE86qFDdWzQXEekhYjY \
+              --anthropic-organization-id 5848ccdc-495f-490b-9275-2caab9db344d \
+              --anthropic-service-account-id svac_01Tf7i7VwZm6WRAFjNAawPw9 \
+              --anthropic-from-github-actions
           done
 
       - name: Compare against baseline
-        if: steps.check-suites.outputs.has_suites == 'true'
+        # Gated on has_credentials in addition to has_suites: without
+        # credentials the Run eval suite step is skipped, so there is
+        # no result.json to compare. Without this guard the loop body
+        # would skip silently (nullglob), but the explicit gate makes
+        # the dependency between the two steps readable in the job log.
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
         shell: bash
         run: |
           shopt -s nullglob
@@ -103,7 +167,9 @@ jobs:
         # an unrelated failure (e.g. compare step regression exit, future
         # secondary-artifact steps). The eval-gate's pass/fail signal is
         # carried by the compare step's exit code, not artifact presence.
-        if: always() && steps.check-suites.outputs.has_suites == 'true'
+        # Gated on has_credentials so a credentials-skipped run does not
+        # upload an empty artifact directory.
+        if: always() && steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: eval-results

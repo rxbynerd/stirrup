@@ -47,6 +47,59 @@ type RunConfig struct {
 
 	// DryRun if true, validates the suite without executing tasks.
 	DryRun bool
+
+	// AnthropicWIF, when populated, instructs the runner to forward
+	// Anthropic Workload Identity Federation flags to every harness
+	// invocation. The four identifiers are non-secret per Anthropic's
+	// WIF documentation (they identify the federation rule, the
+	// organisation, and the service account, but cannot themselves
+	// authenticate to the API) — see .github/workflows/smoke-anthropic.yml
+	// for the established CI pattern. The harness performs the OIDC
+	// token exchange at runtime using ACTIONS_ID_TOKEN_REQUEST_URL /
+	// ACTIONS_ID_TOKEN_REQUEST_TOKEN from the GitHub Actions runner
+	// environment; no static API key is ever materialised in the
+	// runner's process, the RunConfig, or this struct.
+	AnthropicWIF AnthropicWIFConfig
+}
+
+// AnthropicWIFConfig carries the four CLI flags `stirrup harness`
+// accepts to authenticate via Workload Identity Federation. The values
+// are GitHub Actions OIDC-exchange identifiers, NOT secrets: storing
+// them on RunConfig (rather than fetching them through SecretStore at
+// runtime, which is the pattern reserved for API keys) does not violate
+// the project's "no secrets in RunConfig" invariant. The struct is
+// passthrough-only — the runner forwards values verbatim to the
+// subprocess and performs no exchange of its own.
+type AnthropicWIFConfig struct {
+	// FederationRuleID is the `fdrl_...` identifier of the Anthropic
+	// federation rule bound to this GitHub repository.
+	FederationRuleID string
+
+	// OrganizationID is the Anthropic organisation UUID the federation
+	// rule targets.
+	OrganizationID string
+
+	// ServiceAccountID is the `svac_...` identifier of the Anthropic
+	// service account the WIF exchange produces a token for.
+	ServiceAccountID string
+
+	// FromGitHubActions, when true, instructs the harness to source the
+	// OIDC token from the GitHub Actions runner environment
+	// (ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN).
+	// This is the boolean toggle that flips the harness from "static
+	// key" to "WIF exchange" — the three identifiers above are inert
+	// without it.
+	FromGitHubActions bool
+}
+
+// configured reports whether any WIF field is populated. The runner
+// uses this to decide whether to emit any --anthropic-* flags at all,
+// preserving the legacy invocation shape for suites that do not opt in.
+func (c AnthropicWIFConfig) configured() bool {
+	return c.FederationRuleID != "" ||
+		c.OrganizationID != "" ||
+		c.ServiceAccountID != "" ||
+		c.FromGitHubActions
 }
 
 // RunSuite executes all tasks in a suite and returns the aggregate result.
@@ -157,14 +210,12 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 	jobs := make(chan job)
 
 	var wg sync.WaitGroup
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range concurrency {
+		wg.Go(func() {
 			for j := range jobs {
 				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir, baseline)
 			}
-		}()
+		})
 	}
 
 	// Feed jobs; honour ctx cancellation so we don't deadlock if all workers
@@ -361,6 +412,17 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		args = append(args, "--timeout", fmt.Sprintf("%d", defaultTaskTimeoutSeconds))
 	}
 
+	// Forward Anthropic WIF identifiers verbatim to every harness
+	// invocation. The four flags are non-secret per Anthropic's WIF
+	// documentation; the actual OIDC exchange happens inside the
+	// harness using the GitHub Actions runner environment variables.
+	// Emitting them unconditionally when configured (rather than gated
+	// on configPath, like --trace/--mode/--timeout) is intentional:
+	// credential posture is orthogonal to the suite's --config opt-in,
+	// and a suite that bundles a RunConfig but no provider credential
+	// still needs WIF identifiers passed on the command line.
+	args = appendAnthropicWIFArgs(args, cfg.AnthropicWIF)
+
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
 	cmd.Dir = workspaceDir
 
@@ -410,6 +472,36 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	}
 
 	return buildResult(task.ID, start, trace, verdict)
+}
+
+// appendAnthropicWIFArgs adds the four `stirrup harness` flags that
+// configure Anthropic Workload Identity Federation when the operator
+// has set any of them. Each identifier flag is emitted only when
+// non-empty so a partial configuration (e.g. WIF rule ID without a
+// service account) still reaches the harness, where ValidateRunConfig
+// can produce a single coherent error rather than the runner silently
+// dropping fields. The boolean --anthropic-from-github-actions has no
+// value argument; it is appended when the toggle is set.
+//
+// The flag spellings here MUST match `harness/cmd/stirrup/cmd/runconfigflags.go`
+// exactly — the runner forwards them verbatim to the subprocess.
+func appendAnthropicWIFArgs(args []string, wif AnthropicWIFConfig) []string {
+	if !wif.configured() {
+		return args
+	}
+	if wif.FederationRuleID != "" {
+		args = append(args, "--anthropic-federation-rule-id", wif.FederationRuleID)
+	}
+	if wif.OrganizationID != "" {
+		args = append(args, "--anthropic-organization-id", wif.OrganizationID)
+	}
+	if wif.ServiceAccountID != "" {
+		args = append(args, "--anthropic-service-account-id", wif.ServiceAccountID)
+	}
+	if wif.FromGitHubActions {
+		args = append(args, "--anthropic-from-github-actions")
+	}
+	return args
 }
 
 // retainArtifacts copies the per-task harness output and trace into the
