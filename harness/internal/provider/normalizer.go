@@ -131,6 +131,15 @@ func (a *NormalizingAdapter) LastBatchID() string {
 // buildMapping centralises the policy lookup so tests can construct a
 // NormalizingAdapter against a fake inner adapter and exercise the
 // same translation logic the production wiring uses.
+//
+// BuildSorted (rather than Build) is used so collision-resolution is
+// independent of the input slice's order. The registry's List() is
+// stable today, but a future change to MCP server connection ordering,
+// alias resolution, or a registry rebuild between turns could shift
+// the input order and silently re-assign which colliding tool gets
+// the hash-suffix disambiguation. Sorting first pins the external
+// name for a given internal name to the policy + name set, never to
+// the order they happened to be passed in.
 func (a *NormalizingAdapter) buildMapping(tools []types.ToolDefinition) (*toolname.Mapping, error) {
 	if len(tools) == 0 {
 		return &toolname.Mapping{
@@ -142,7 +151,7 @@ func (a *NormalizingAdapter) buildMapping(tools []types.ToolDefinition) (*toolna
 	for i, t := range tools {
 		names[i] = t.Name
 	}
-	return toolname.Build(names, toolname.PolicyFor(a.providerType))
+	return toolname.BuildSorted(names, toolname.PolicyFor(a.providerType))
 }
 
 // rewriteParams returns a copy of params with tool names normalised on
