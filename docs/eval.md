@@ -284,6 +284,23 @@ traces, and let the `replay` runner re-evaluate old recordings under
 new judge criteria without re-running the harness
 (`eval/runner/replay.go`).
 
+#### Where recordings come from
+
+`TurnRecord` payloads are produced live by the
+`traceEmitter.type=jsonl` emitter in
+`harness/internal/trace/jsonl.go`. The emitter streams one
+`turn_record` event per agentic-loop turn into the configured trace
+file, carrying the full `ModelInput.Messages`, the model's
+`ModelOutput` content blocks, and every tool call's raw
+`Input`/`Output`. `types/trace.Reader.ReadRecording` reassembles a
+`types.RunRecording` from the event stream, including from
+partially-written files left behind by an interrupted run.
+
+Pre-streaming traces (single-blob `RunTrace` lines) parse through the
+same reader as recordings with no transcript turns; replay against
+those files is a degenerate case that succeeds only if the eval suite
+asks for zero turns.
+
 ### Trace lakehouse
 
 The `TraceLakehouse` interface (`types/lakehouse.go`) abstracts

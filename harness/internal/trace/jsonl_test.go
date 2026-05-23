@@ -1,13 +1,55 @@
 package trace
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// readEvents walks a streaming JSONL trace buffer and returns the events
+// in order. Used by the JSONL emitter tests to assert on the on-wire
+// shape without coupling to the reader package (which lives under
+// types/trace and would form a test-only dependency cycle).
+func readEvents(t *testing.T, src []byte) []Event {
+	t.Helper()
+	scanner := bufio.NewScanner(bytes.NewReader(src))
+	scanner.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
+	var events []Event
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev Event
+		if err := json.Unmarshal(line, &ev); err != nil {
+			t.Fatalf("unmarshal event: %v\n%s", err, line)
+		}
+		events = append(events, ev)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan events: %v", err)
+	}
+	return events
+}
+
+// pickEvent returns the first event of the given kind, or fails the
+// test. The streaming emitter writes at most one run_started and one
+// run_finished per run, so "first" is unambiguous for those kinds.
+func pickEvent(t *testing.T, events []Event, kind EventKind) Event {
+	t.Helper()
+	for _, ev := range events {
+		if ev.Kind == kind {
+			return ev
+		}
+	}
+	t.Fatalf("no event of kind %q in stream", kind)
+	return Event{}
+}
 
 func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	var buf bytes.Buffer
@@ -57,7 +99,7 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify trace fields.
+	// Verify the in-memory trace summary.
 	if trace.ID != "run-123" {
 		t.Errorf("ID: got %q, want %q", trace.ID, "run-123")
 	}
@@ -73,29 +115,59 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	if trace.Outcome != "success" {
 		t.Errorf("Outcome: got %q, want %q", trace.Outcome, "success")
 	}
-
-	// Verify config was redacted.
 	if trace.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef should be redacted, got %q", trace.Config.Provider.APIKeyRef)
 	}
 
-	// Verify JSONL output is valid.
-	var written types.RunTrace
-	if err := json.Unmarshal(buf.Bytes(), &written); err != nil {
-		t.Fatalf("unmarshal written trace: %v", err)
+	// Verify the on-disk stream is well-formed and carries the events
+	// the streaming-trace contract promises.
+	events := readEvents(t, buf.Bytes())
+	if len(events) < 4 {
+		t.Fatalf("expected at least 4 events (started, 2 tool_call_record, finished), got %d", len(events))
 	}
-	if written.ID != "run-123" {
-		t.Errorf("written ID: got %q, want %q", written.ID, "run-123")
+
+	started := pickEvent(t, events, EventKindRunStarted)
+	if started.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("run_started schemaVersion: got %q, want %q", started.SchemaVersion, CurrentSchemaVersion)
+	}
+	if started.RunID != "run-123" {
+		t.Errorf("run_started runId: got %q, want run-123", started.RunID)
+	}
+	if started.Config == nil {
+		t.Fatal("run_started missing config")
+	}
+	if started.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
+		t.Errorf("run_started Config.Provider.APIKeyRef not redacted: %q", started.Config.Provider.APIKeyRef)
+	}
+
+	var toolCallEvents int
+	for _, ev := range events {
+		if ev.Kind == EventKindToolCallRecord {
+			toolCallEvents++
+		}
+	}
+	if toolCallEvents != 2 {
+		t.Errorf("tool_call_record events: got %d, want 2", toolCallEvents)
+	}
+
+	finished := pickEvent(t, events, EventKindRunFinished)
+	if finished.Trace == nil {
+		t.Fatal("run_finished missing embedded trace summary")
+	}
+	if finished.Trace.ID != "run-123" {
+		t.Errorf("run_finished trace ID: got %q, want run-123", finished.Trace.ID)
+	}
+	if finished.Trace.Outcome != "success" {
+		t.Errorf("run_finished outcome: got %q, want success", finished.Trace.Outcome)
 	}
 }
 
 // TestJSONLTraceEmitter_SessionNameRoundTrip pins that a SessionName set
-// on the RunConfig flows into the JSONL trace and survives a JSON round
-// trip. The eval lakehouse and replay tooling rely on this — without it,
-// a run labelled --name "nightly-eval" would not be filterable by label
-// in downstream analysis. (Construction-style test rather than booting
-// the full agentic loop, which would require a provider, executor, etc.;
-// the round-trip is the load-bearing property.)
+// on the RunConfig flows into both the run_started event's redacted
+// config and the run_finished event's embedded trace summary. The eval
+// lakehouse and replay tooling rely on this — without it, a run
+// labelled --name "nightly-eval" would not be filterable by label in
+// downstream analysis.
 func TestJSONLTraceEmitter_SessionNameRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf)
@@ -115,18 +187,18 @@ func TestJSONLTraceEmitter_SessionNameRoundTrip(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	// Trace returned in memory should carry SessionName.
 	if tr.Config.SessionName != "nightly-eval" {
 		t.Errorf("returned trace SessionName: got %q, want nightly-eval", tr.Config.SessionName)
 	}
 
-	// And the persisted JSONL line must round-trip the field.
-	var written types.RunTrace
-	if err := json.Unmarshal(buf.Bytes(), &written); err != nil {
-		t.Fatalf("unmarshal JSONL: %v\n%s", err, buf.String())
+	events := readEvents(t, buf.Bytes())
+	started := pickEvent(t, events, EventKindRunStarted)
+	if started.Config == nil || started.Config.SessionName != "nightly-eval" {
+		t.Errorf("run_started SessionName: got %+v, want nightly-eval", started.Config)
 	}
-	if written.Config.SessionName != "nightly-eval" {
-		t.Errorf("written SessionName: got %q, want nightly-eval", written.Config.SessionName)
+	finished := pickEvent(t, events, EventKindRunFinished)
+	if finished.Trace == nil || finished.Trace.Config.SessionName != "nightly-eval" {
+		t.Errorf("run_finished trace SessionName: got %+v, want nightly-eval", finished.Trace)
 	}
 }
 
@@ -148,5 +220,111 @@ func TestJSONLTraceEmitter_EmptyRun(t *testing.T) {
 	}
 	if buf.Len() == 0 {
 		t.Error("expected output to be written")
+	}
+
+	// An empty run still produces a valid two-line stream: run_started
+	// (with a nil config — the trace_emitter accepts a nil config so
+	// callers that fail validation before constructing a full RunConfig
+	// can still record telemetry) followed by run_finished.
+	events := readEvents(t, buf.Bytes())
+	if len(events) != 2 {
+		t.Fatalf("empty run events: got %d, want 2 (started + finished)", len(events))
+	}
+	if events[0].Kind != EventKindRunStarted {
+		t.Errorf("first event: got %q, want run_started", events[0].Kind)
+	}
+	if events[len(events)-1].Kind != EventKindRunFinished {
+		t.Errorf("last event: got %q, want run_finished", events[len(events)-1].Kind)
+	}
+}
+
+// TestJSONLTraceEmitter_RecordTurnRecord_Scrubs pins the defence-in-
+// depth scrubbing contract: a recorded TurnRecord with secret-shaped
+// substrings in the model output, tool input, or tool output never
+// reaches disk in raw form. The scrubber runs before the line is
+// written, so a SIGKILL between RecordTurnRecord and Finish still
+// leaves a scrubbed event on disk.
+func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	emitter.Start("run-scrub", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelInput: types.ModelInput{
+			Model: "claude-3-5-sonnet-latest",
+			Messages: []types.Message{
+				{
+					Role: "user",
+					Content: []types.ContentBlock{
+						{Type: "text", Text: "here is my key sk-ant-api03-redactme please"},
+					},
+				},
+			},
+		},
+		ModelOutput: []types.ContentBlock{
+			{Type: "text", Text: "ack, your bearer Bearer ABCDEFG is unsafe"},
+		},
+		ToolCalls: []types.ToolCallRecord{
+			{
+				Name:   "run_command",
+				Input:  json.RawMessage(`{"cmd":"echo sk-ant-api03-leak-leak"}`),
+				Output: "stdout: sk-ant-api03-leak\nstderr: ok",
+			},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	on_disk := buf.String()
+	// Anchor on a known-distinctive secret prefix: if any substring of
+	// the form sk-ant-api03-... lands on disk verbatim the scrubber is
+	// broken.
+	if strings.Contains(on_disk, "sk-ant-api03-redactme") {
+		t.Errorf("scrubber missed model input secret in on-disk trace:\n%s", on_disk)
+	}
+	if strings.Contains(on_disk, "sk-ant-api03-leak-leak") {
+		t.Errorf("scrubber missed tool input secret in on-disk trace:\n%s", on_disk)
+	}
+	if strings.Contains(on_disk, "Bearer ABCDEFG") {
+		t.Errorf("scrubber missed bearer token in on-disk trace:\n%s", on_disk)
+	}
+	// At least one [REDACTED] marker proves the scrubber ran.
+	if !strings.Contains(on_disk, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] placeholder in scrubbed trace, got:\n%s", on_disk)
+	}
+}
+
+// TestJSONLTraceEmitter_PartialStream pins the SIGKILL-safety property:
+// when a run is interrupted between RecordTurnRecord and Finish, the
+// on-disk file is still parseable up to the last completed event.
+// A bytes.Buffer is used to simulate the file; in production the
+// emitter writes to an os.File whose os.Write calls are line-flushed
+// by the kernel for sub-PIPE_BUF writes.
+func TestJSONLTraceEmitter_PartialStream(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	emitter.Start("run-partial", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelOutput: []types.ContentBlock{
+			{Type: "text", Text: "first turn"},
+		},
+	})
+	// Simulate a SIGKILL: no Finish call.
+	events := readEvents(t, buf.Bytes())
+	if len(events) != 2 {
+		t.Fatalf("partial stream events: got %d, want 2 (started + turn_record)", len(events))
+	}
+	if events[0].Kind != EventKindRunStarted {
+		t.Errorf("first event: got %q, want run_started", events[0].Kind)
+	}
+	if events[1].Kind != EventKindTurnRecord {
+		t.Errorf("second event: got %q, want turn_record", events[1].Kind)
+	}
+	if events[1].Turn != 1 {
+		t.Errorf("turn_record Turn: got %d, want 1", events[1].Turn)
 	}
 }

@@ -346,6 +346,15 @@ func (e *OTelTraceEmitter) RecordTurn(turn types.TurnTrace) {
 	span.End(oteltrace.WithTimestamp(spanEnd))
 }
 
+// RecordTurnRecord is a no-op for OTel. OTel spans capture turn-level
+// counters (tokens, duration, stop reason) and tool spans capture per-
+// call metadata, but full transcript content is not modelled as span
+// attributes — span exporters typically truncate large strings and the
+// GenAI semantic conventions intentionally do not push raw prompt /
+// completion text through trace exporters. Transcript recording lives
+// on the streamed JSONLTraceEmitter.
+func (e *OTelTraceEmitter) RecordTurnRecord(_ types.TurnRecord) {}
+
 // RecordToolCall creates a child span for a tool invocation.
 func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.mu.Lock()

@@ -12,14 +12,15 @@ import (
 // without writing anywhere. Used to assert forwarding behaviour on the
 // NestedJSONLEmitter without coupling tests to a particular wire format.
 type recordingEmitter struct {
-	mu         sync.Mutex
-	starts     []startCall
-	turns      []types.TurnTrace
-	toolCalls  []types.ToolCallTrace
-	finishes   []string
-	finishErr  error
-	finishRet  *types.RunTrace
-	finishCtxs []context.Context
+	mu          sync.Mutex
+	starts      []startCall
+	turns       []types.TurnTrace
+	turnRecords []types.TurnRecord
+	toolCalls   []types.ToolCallTrace
+	finishes    []string
+	finishErr   error
+	finishRet   *types.RunTrace
+	finishCtxs  []context.Context
 }
 
 type startCall struct {
@@ -37,6 +38,12 @@ func (r *recordingEmitter) RecordTurn(turn types.TurnTrace) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.turns = append(r.turns, turn)
+}
+
+func (r *recordingEmitter) RecordTurnRecord(turn types.TurnRecord) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.turnRecords = append(r.turnRecords, turn)
 }
 
 func (r *recordingEmitter) RecordToolCall(call types.ToolCallTrace) {
