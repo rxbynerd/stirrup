@@ -321,6 +321,40 @@ configuration space — the common cases. Anything below requires
 
 The CLI flags for each of these set the *type* selection only.
 
+## Tool permission flags
+
+Tools carry two independent permission flags:
+
+- `WorkspaceMutating` means the tool changes workspace state: files,
+  processes, or other on-disk artefacts. Read-only modes reject these
+  tools structurally before the loop starts.
+- `RequiresApproval` means the operator may want an upstream approval
+  prompt before the tool runs. It includes mutating tools, but also
+  covers non-mutating sensitive tools such as `web_fetch` and
+  `spawn_agent`.
+
+`RequiresApproval` does not by itself mean "always prompt". The active
+`permissionPolicy` decides how to interpret the flag:
+
+| Tool examples | Flags | `allow-all` | `deny-side-effects` | `ask-upstream` |
+|---|---|---|---|---|
+| `read_file`, `list_directory`, `search_files` | neither flag | Allow | Allow | Allow |
+| `web_fetch`, `spawn_agent` | `RequiresApproval` only | Allow | Allow | Prompt |
+| `run_command` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Prompt |
+| `edit_file`, `write_file` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Prompt |
+
+`policy-engine` evaluates the Cedar policy first. When Cedar returns
+no decision, the configured fallback (`deny-side-effects` by default)
+applies exactly the same rules as the corresponding non-Cedar policy.
+For example, a policy engine with `fallback: "deny-side-effects"`
+still allows `web_fetch` and `spawn_agent` unless a Cedar `forbid`
+matches them, because neither tool mutates the workspace.
+
+Choose `ask-upstream` when every `RequiresApproval` tool must prompt.
+Choose `deny-side-effects` when the goal is to block workspace
+mutation while still allowing non-mutating tools that may have network
+or budget exposure.
+
 ## Read-only modes
 
 `planning`, `review`, `research`, and `toil` enforce a structural
@@ -335,11 +369,16 @@ shell capability and the `deny-side-effects` permission policy.
 Operators wanting the editable, shell-capable behaviour opt in
 explicitly with `--mode execution` (or by selecting one of the
 restrictive `permissionPolicy` types in [`safety-rings.md`](safety-rings.md)
-for finer-grained control). The read-only modes differ from each
-other only in prompt template: `planning` for "describe and reason
-before acting" first-touch use, `review` for change-review tasks,
-`research` for investigation across a codebase or the web, and
-`toil` for structured-briefing workflows.
+for finer-grained control). Because read-only enforcement is based on
+`WorkspaceMutating`, a read-only mode can still include non-mutating
+sensitive tools such as `web_fetch`; under the default
+`deny-side-effects` policy those tools run without prompting. Switch
+to `ask-upstream` when those calls should require operator approval.
+
+The read-only modes differ from each other only in prompt template:
+`planning` for "describe and reason before acting" first-touch use,
+`review` for change-review tasks, `research` for investigation across
+a codebase or the web, and `toil` for structured-briefing workflows.
 
 ## Limits and budgets
 
