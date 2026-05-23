@@ -276,11 +276,10 @@ func TestDiffReview_RequiresAPIKey(t *testing.T) {
 	if err := exec.Command("git", "-C", dir, "init", "-q").Run(); err != nil {
 		t.Skipf("git init unavailable: %v", err)
 	}
+	_ = exec.Command("git", "-C", dir, "config", "user.email", "ci@example.test").Run()
+	_ = exec.Command("git", "-C", dir, "config", "user.name", "ci").Run()
 	if err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init", "--quiet").Run(); err != nil {
-		// commit may fail on a system without git user config;
-		// give the test a chance to still exercise the api-key
-		// check by trying without it.
-		t.Logf("git commit failed (continuing): %v", err)
+		t.Skipf("git commit unavailable: %v", err)
 	}
 
 	t.Setenv("ANTHROPIC_API_KEY", "")

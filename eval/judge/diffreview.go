@@ -71,6 +71,11 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 		return eval.JudgeVerdict{}, fmt.Errorf("diff-review judge requires a workspace dir")
 	}
 
+	apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+	if apiKey == "" {
+		return eval.JudgeVerdict{}, fmt.Errorf("diff-review judge: ANTHROPIC_API_KEY not set")
+	}
+
 	diff, err := captureDiff(ctx, jctx.WorkspaceDir)
 	if err != nil {
 		return eval.JudgeVerdict{}, fmt.Errorf("capturing git diff: %w", err)
@@ -80,11 +85,6 @@ func evaluateDiffReview(ctx context.Context, j types.EvalJudge, jctx JudgeContex
 		// trailing portion is missing so it does not silently
 		// review an incomplete diff.
 		diff = diff[:diffReviewMaxDiffBytes] + "\n\n[... diff truncated at " + fmt.Sprintf("%d", diffReviewMaxDiffBytes) + " bytes ...]\n"
-	}
-
-	apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
-	if apiKey == "" {
-		return eval.JudgeVerdict{}, fmt.Errorf("diff-review judge: ANTHROPIC_API_KEY not set")
 	}
 
 	model := diffReviewDefaultModel
