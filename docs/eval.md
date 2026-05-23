@@ -90,8 +90,10 @@ judge {
 
 Each task gets a fresh temporary workspace. If `repo` and `ref` are
 set the runner clones the repo at that ref before invoking the
-harness. Tasks currently execute sequentially even when
-`--concurrency` is passed (`eval/runner/runner.go:31`).
+harness. With `--concurrency > 1`, the runner dispatches tasks
+across a bounded worker pool while preserving suite order in
+`result.json`; each task still gets its own workspace, harness
+subprocess, and trace file (`eval/runner/runner.go::runTasksConcurrently`).
 
 Run output artifacts (`result.json`, the per-task JSON written by
 `eval run`, etc.) are JSON — a separate format used for
@@ -385,7 +387,7 @@ tree gains a `run_config.redacted.json` per task. See
 | `--suite`        | required         | Path to `EvalSuite` HCL file (`.hcl`).                       |
 | `--output`       | current dir      | Directory for `result.json` and per-task artifacts.          |
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
-| `--concurrency`  | `1`              | Requested parallelism. Honoured as `1` until concurrency lands. |
+| `--concurrency`  | `1`              | Number of tasks executed in parallel. Workers preserve suite order in `result.json`. Values larger than the task count cap at `len(tasks)`. Concurrent invocations talking to the same provider hit rate limits faster — pick a value that respects your provider account's per-minute caps. |
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`) and emit a synthetic result. |
 
 Exit code is `0` regardless of pass rate — use `compare` to gate CI.
@@ -535,8 +537,6 @@ recording set, see whether outcomes match expectations. Pair with
 
 Active work tracked in GitHub Issues under the `eval` label:
 
-- **Concurrent task execution** — `--concurrency` is currently
-  accepted but ignored; the runner is sequential.
 - **Cloud-backed lakehouse adapters** — interface is stable; cloud
   adapters depend on control plane storage choices.
 - **A first mined suite** — CI infrastructure is ready; the
