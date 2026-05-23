@@ -162,12 +162,14 @@ _stirrup_eval() {
     local -a subcommands modes
     subcommands=(`)
 	for _, sub := range evalCompletionSubcommands {
-		b.WriteString(" " + sub)
+		b.WriteString(" ")
+		b.WriteString(sub)
 	}
 	b.WriteString(` )
     modes=(`)
 	for _, m := range evalCompletionRunModes {
-		b.WriteString(" " + m)
+		b.WriteString(" ")
+		b.WriteString(m)
 	}
 	b.WriteString(` )
 
@@ -265,7 +267,9 @@ Register-ArgumentCompleter -Native -CommandName stirrup-eval -ScriptBlock {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString("'" + sub + "'")
+		b.WriteString("'")
+		b.WriteString(sub)
+		b.WriteString("'")
 	}
 	b.WriteString(`)
     $modes = @(`)
@@ -273,7 +277,9 @@ Register-ArgumentCompleter -Native -CommandName stirrup-eval -ScriptBlock {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString("'" + m + "'")
+		b.WriteString("'")
+		b.WriteString(m)
+		b.WriteString("'")
 	}
 	b.WriteString(`)
 
