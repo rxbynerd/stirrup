@@ -17,6 +17,14 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// unknownToolMetricName is the sentinel substituted for tool.name on
+// every metric emission when a model-supplied tool_use block references
+// a name the registry cannot resolve. The raw name is unbounded
+// (model-controlled, no schema) and MUST NOT be promoted into a TSDB
+// label — see the substitution site in Phase 3 below for the full
+// rationale (CWE-400, cardinality DoS).
+const unknownToolMetricName = "__unknown__"
+
 // pendingCall is the per-tool-call work item carried through the dispatch
 // pipeline. Sync calls populate output/success inline; async calls are
 // mutated by their goroutine and read back by the main routine after the
@@ -92,6 +100,12 @@ func (l *AgenticLoop) planAndDispatch(
 		// would derive from context.Background() and the dispatch
 		// goroutines below would not observe a run-level cancellation
 		// until the per-call DefaultAsyncToolTimeout (60s) expired.
+		// TODO(#229-followup): the span name uses the raw call.Name
+		// before tool resolution, so an unknown-tool span carries a
+		// model-controlled name. Lower-blast-radius than the metric
+		// label substitution below (per-span storage, not a persistent
+		// TSDB key) so deferred to a follow-up issue rather than
+		// reworking the span lifecycle here.
 		_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
 			oteltrace.WithAttributes(
 				attribute.String("tool.name", call.Name),
@@ -274,7 +288,19 @@ func (l *AgenticLoop) planAndDispatch(
 			ErrorCategory: errorCategory,
 		})
 
-		toolNameAttr := l.metricAttrs(attribute.String("tool.name", p.call.Name))
+		// Sentinel substitution for the unknown_tool path: p.call.Name
+		// is model-supplied and unbounded when no registry entry
+		// resolves, so it MUST NOT flow into a TSDB label. An attacker-
+		// or malfunctioning-model loop emitting tool_use blocks with
+		// high-entropy unique names would create O(n) unique
+		// timeseries on stirrup.harness.tool_{calls,errors,failures,
+		// call_duration} (CWE-400). Trace records (ErrorReason,
+		// ToolCallTrace.Name above) retain the raw name for debugging.
+		metricToolName := p.call.Name
+		if p.failureCategory == observability.ToolFailureUnknownTool {
+			metricToolName = unknownToolMetricName
+		}
+		toolNameAttr := l.metricAttrs(attribute.String("tool.name", metricToolName))
 		l.Metrics.ToolCalls.Add(ctx, 1, toolNameAttr)
 		l.Metrics.ToolCallDuration.Record(ctx, float64(callDuration.Milliseconds()), toolNameAttr)
 		if !p.success {
@@ -286,7 +312,7 @@ func (l *AgenticLoop) planAndDispatch(
 			// label cardinality with an empty string.
 			if p.failureCategory.IsValid() {
 				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-					attribute.String("tool.name", p.call.Name),
+					attribute.String("tool.name", metricToolName),
 					attribute.String("category", p.failureCategory.String()),
 					attribute.String("provider.type", providerType),
 					attribute.String("provider.model", providerModel),
@@ -342,8 +368,12 @@ func (l *AgenticLoop) planAndDispatch(
 				stallCategory = observability.ToolFailureStallConsecutiveFailures
 			}
 			if stallCategory.IsValid() {
+				// metricToolName carries the unknown_tool sentinel
+				// substitution applied above; reuse it so a stall
+				// triggered by repeated unknown-tool calls does not
+				// re-introduce the unbounded label.
 				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-					attribute.String("tool.name", p.call.Name),
+					attribute.String("tool.name", metricToolName),
 					attribute.String("category", stallCategory.String()),
 					attribute.String("provider.type", providerType),
 					attribute.String("provider.model", providerModel),

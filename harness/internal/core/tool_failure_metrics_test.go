@@ -238,10 +238,17 @@ func TestToolFailureMetrics_TableDriven(t *testing.T) {
 		wantCategory observability.ToolFailureCategory
 	}{
 		{
+			// Locks in the __unknown__ sentinel substitution: when
+			// the model emits a tool_use whose name does not
+			// resolve, the metric MUST report the bounded sentinel
+			// rather than the raw (model-controlled) name. Trace
+			// records still carry the raw name; only the TSDB
+			// label is sanitised. Regression test for the
+			// label-cardinality DoS (CWE-400) closed in this PR.
 			name:         "unknown_tool",
 			tools:        []*tool.Tool{trivialTool()},
 			call:         types.ToolCall{ID: "tc1", Name: "does_not_exist", Input: json.RawMessage(`{}`)},
-			wantTool:     "does_not_exist",
+			wantTool:     "__unknown__",
 			wantCategory: observability.ToolFailureUnknownTool,
 		},
 		{
