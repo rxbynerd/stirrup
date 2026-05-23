@@ -1,4 +1,10 @@
-// Package lakehouse provides file-based implementations of the TraceLakehouse interface.
+// Package lakehouse provides a file-based implementation of the read
+// surface of types.TraceLakehouse plus the concrete write methods
+// (StoreTrace, StoreRecording) that stirrup-eval ingest calls
+// directly. The write methods are intentionally NOT part of the
+// TraceLakehouse interface — see #109 for the architectural rationale
+// (production writes flow through the control plane; cloud-backed
+// adapters never implement write).
 package lakehouse
 
 import (
@@ -18,12 +24,24 @@ const (
 	recordingsDir = "recordings"
 )
 
-// FileStore implements types.TraceLakehouse backed by JSON files on disk.
-// Traces are stored in <root>/traces/<id>.json and recordings in
-// <root>/recordings/<runId>.json.
+// FileStore implements the read surface of types.TraceLakehouse
+// (QueryTraces, QueryRecordings, Metrics, Close) backed by JSON
+// files on disk, and additionally exposes the concrete StoreTrace
+// and StoreRecording methods that `stirrup-eval ingest` constructs
+// a *FileStore for. Traces are stored in <root>/traces/<id>.json
+// and recordings in <root>/recordings/<runId>.json.
+//
+// A compile-time assertion below pins that *FileStore satisfies the
+// narrowed types.TraceLakehouse contract; if a method is ever
+// removed from the read surface accidentally, the build fails.
 type FileStore struct {
 	rootDir string
 }
+
+// _ var pins the interface conformance contract. Any change to
+// types.TraceLakehouse that removes a method from *FileStore will
+// break the build here before it can ship.
+var _ types.TraceLakehouse = (*FileStore)(nil)
 
 // NewFileStore creates a FileStore rooted at rootDir, creating the necessary
 // subdirectories if they don't already exist.
