@@ -14,6 +14,7 @@ import (
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -654,6 +655,20 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			// Rollback: don't append anything on error.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
+			// Co-emit into the tool-failure series when the failed
+			// request carried tool definitions: from the model's
+			// perspective the harness asked it to use tools and the
+			// provider refused. A pure text-only request error is a
+			// provider failure but not a tool-use failure.
+			if len(toolDefs) > 0 {
+				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
+					attribute.String("tool.name", ""),
+					attribute.String("category", observability.ToolFailureProviderRequest.String()),
+					attribute.String("provider.type", selection.Provider),
+					attribute.String("provider.model", selection.Model),
+					attribute.String("run.mode", config.Mode),
+				))
+			}
 			turnMode, turnBatchID := turnModeInfo(selectedProvider)
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
@@ -699,6 +714,21 @@ func (l *AgenticLoop) runInnerLoop(
 			}
 			// Rollback on stream error — don't append partial content.
 			l.Metrics.ProviderErrors.Add(ctx, 1, providerAttrs)
+			// Co-emit into the tool-failure series when this turn had
+			// tools attached: mid-stream parser/disconnect failures
+			// abort tool-call assembly. Distinguished from
+			// provider_request_failed by the category — a failure
+			// after the stream opened is a stream-side fault, not a
+			// rejected request.
+			if len(toolDefs) > 0 {
+				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
+					attribute.String("tool.name", ""),
+					attribute.String("category", observability.ToolFailureProviderStream.String()),
+					attribute.String("provider.type", selection.Provider),
+					attribute.String("provider.model", selection.Model),
+					attribute.String("run.mode", config.Mode),
+				))
+			}
 			turnMode, turnBatchID := turnModeInfo(selectedProvider)
 			l.Trace.RecordTurn(types.TurnTrace{
 				Turn:       turn,
@@ -843,7 +873,10 @@ func (l *AgenticLoop) runInnerLoop(
 		// config.EffectiveToolDispatchMaxParallel(). planAndDispatch preserves
 		// result order, stall-detector ordering, per-call timeouts, and ctx
 		// cancellation propagation; see harness/internal/core/dispatch.go.
-		toolResults, toolRecords, stallOutcome := l.planAndDispatch(ctx, config, toolCalls, stall)
+		// The router's provider/model selection is forwarded so per-call
+		// failure metrics (stirrup.harness.tool_failures) can be attributed
+		// back to the model that emitted the offending tool_use block.
+		toolResults, toolRecords, stallOutcome := l.planAndDispatch(ctx, config, toolCalls, stall, selection.Provider, selection.Model)
 		turnRecord.ToolCalls = toolRecords
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)

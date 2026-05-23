@@ -221,10 +221,27 @@ func (l *AgenticLoop) metricAttrs(extra ...attribute.KeyValue) metric.Measuremen
 // dispatchToolCall executes a single tool call, checking permissions and
 // validating input against the tool's JSON Schema. Returns the tool result
 // string and whether it succeeded.
+//
+// Preserved as a (string, bool) wrapper around dispatchToolCallCategorized
+// so existing test sites that take a two-value return continue to compile.
+// Production call sites in planAndDispatch use the categorised variant
+// directly so the per-failure category flows into the
+// stirrup.harness.tool_failures metric and the ToolCallTrace ErrorCategory
+// field.
 func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall) (string, bool) {
+	out, ok, _ := l.dispatchToolCallCategorized(ctx, call)
+	return out, ok
+}
+
+// dispatchToolCallCategorized is the production entry point. The third
+// return value is the bounded failure category for failed calls; on
+// success the category is empty. Every failure path in this function and
+// its async helper must assign a ToolFailureCategory drawn from the enum
+// in harness/internal/observability/toolfailure.go.
+func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call types.ToolCall) (string, bool, observability.ToolFailureCategory) {
 	t := l.Tools.Resolve(call.Name)
 	if t == nil {
-		return "Unknown tool: " + call.Name, false
+		return "Unknown tool: " + call.Name, false, observability.ToolFailureUnknownTool
 	}
 
 	// Strip prototype-pollution keys before validation so we can both notify
@@ -246,14 +263,14 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 		if l.Security != nil {
 			l.Security.ToolInputRejected(call.Name, []string{err.Error()})
 		}
-		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false
+		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false, observability.ToolFailureSchemaValidation
 	}
 
 	if findings := security.GuardToolCall(call.Name, t.WorkspaceMutating, call.Input); len(findings) > 0 {
 		if l.Security != nil {
 			l.Security.ToolCallGuardTriggered(call.Name, findings)
 		}
-		return fmt.Sprintf("Tool call rejected by security guard for %s", call.Name), false
+		return fmt.Sprintf("Tool call rejected by security guard for %s", call.Name), false, observability.ToolFailureSecurityGuard
 	}
 
 	// Check permissions for tools that mutate the workspace or that
@@ -271,7 +288,7 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 			permSpan.RecordError(err)
 			permSpan.SetStatus(codes.Error, err.Error())
 			permSpan.End()
-			return "Permission check error: " + err.Error(), false
+			return "Permission check error: " + err.Error(), false, observability.ToolFailurePermissionError
 		}
 		permSpan.SetAttributes(attribute.Bool("permission.allowed", result.Allowed))
 		permSpan.End()
@@ -282,7 +299,7 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 			if l.Trace != nil {
 				l.Trace.RecordPermissionDenial()
 			}
-			return "Permission denied: " + result.Reason, false
+			return "Permission denied: " + result.Reason, false, observability.ToolFailurePermissionDenied
 		}
 	}
 
@@ -299,13 +316,13 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 	// Execute the tool handler with the cleaned input so the handler does not
 	// see prototype-pollution keys either.
 	if t.Handler == nil {
-		return fmt.Sprintf("Tool %s has no handler registered", call.Name), false
+		return fmt.Sprintf("Tool %s has no handler registered", call.Name), false, observability.ToolFailureHandlerMissing
 	}
 	output, err := t.Handler(ctx, inputForCall)
 	if err != nil {
-		return "Tool error: " + err.Error(), false
+		return "Tool error: " + err.Error(), false, observability.ToolFailureHandlerError
 	}
-	return output, true
+	return output, true, ""
 }
 
 // dispatchAsyncToolCall runs the async tool path:
@@ -329,7 +346,7 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 	t *tool.Tool,
 	call types.ToolCall,
 	inputForCall json.RawMessage,
-) (string, bool) {
+) (string, bool, observability.ToolFailureCategory) {
 	correlator := l.ensureAsyncCorrelator()
 	if correlator == nil {
 		// NullTransport (sub-agent) — no control plane to round-trip
@@ -337,12 +354,12 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		return fmt.Sprintf(
 			"async tool %s unavailable: this loop has no live control-plane transport",
 			call.Name,
-		), false
+		), false, observability.ToolFailureAsyncTransport
 	}
 
 	dispatch, err := t.AsyncHandler(ctx, inputForCall)
 	if err != nil {
-		return fmt.Sprintf("async tool %s internal error: %s", call.Name, err.Error()), false
+		return fmt.Sprintf("async tool %s internal error: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncPreflight
 	}
 
 	timeout := dispatch.Timeout
@@ -373,14 +390,14 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		// with "timed out", and ctx errors carry context.Canceled /
 		// context.DeadlineExceeded in the chain.
 		if strings.Contains(err.Error(), "emit failed") {
-			return fmt.Sprintf("async tool %s transport_disconnect: %s", call.Name, err.Error()), false
+			return fmt.Sprintf("async tool %s transport_disconnect: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncTransport
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Sprintf("async tool %s cancelled: %s", call.Name, err.Error()), false
+			return fmt.Sprintf("async tool %s cancelled: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncCancelled
 		}
 		// Default: timeout (correlator: "timed out after ...") and any
 		// other unexpected wrapping go here.
-		return fmt.Sprintf("async tool %s timeout: %s", call.Name, err.Error()), false
+		return fmt.Sprintf("async tool %s timeout: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncTimeout
 	}
 
 	resp, ok := payload.(asyncToolResult)
@@ -388,7 +405,7 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		// Defensive: extractAsyncToolResult only ever delivers
 		// asyncToolResult, so reaching this branch means the correlator
 		// was wired with a different extractor. Treat as a hard error.
-		return fmt.Sprintf("async tool %s internal error: unexpected payload type %T", call.Name, payload), false
+		return fmt.Sprintf("async tool %s internal error: unexpected payload type %T", call.Name, payload), false, observability.ToolFailureAsyncInternal
 	}
 	if resp.isError {
 		// The control plane is partially trusted: a compromised or
@@ -402,9 +419,9 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		// timeout, internal error) so the model can disambiguate
 		// upstream failures from harness-side failures.
 		scrubbed := security.Scrub(resp.content)
-		return fmt.Sprintf("async tool %s upstream_error: %s", call.Name, scrubbed), false
+		return fmt.Sprintf("async tool %s upstream_error: %s", call.Name, scrubbed), false, observability.ToolFailureAsyncUpstreamError
 	}
-	return resp.content, true
+	return resp.content, true, ""
 }
 
 // buildMessages constructs the initial message list from the user prompt.

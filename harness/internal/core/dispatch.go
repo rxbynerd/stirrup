@@ -12,6 +12,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -31,12 +32,25 @@ type pendingCall struct {
 	success     bool
 	errorReason string // guard-deny reason; written to trace (apply security.Scrub before setting)
 	denied      bool   // PhasePreTool deny path; takes priority over (output, success)
+	// failureCategory is the bounded ToolFailureCategory describing why
+	// this call failed. Always empty when success is true; one of the
+	// observability.ToolFailureCategory enum values otherwise. Read in
+	// Phase 3 to emit the stirrup.harness.tool_failures counter and to
+	// populate ToolCallTrace.ErrorCategory.
+	failureCategory observability.ToolFailureCategory
 }
 
 // planAndDispatch executes the tool calls produced by one assistant turn,
 // preserving the side-effect ordering of the sequential implementation.
 // Sync calls run inline in assistant-message order; async calls fan out
 // under a bounded semaphore sized to cfg.EffectiveToolDispatchMaxParallel().
+//
+// providerType and providerModel are the router's selection for this turn,
+// threaded in so per-call failure metrics can be attributed back to the
+// model that emitted the offending tool_use block. Empty strings are
+// tolerated for callers without a resolved selection (e.g. unit tests of
+// the dispatch path); the metric attributes still emit with empty
+// provider.type / provider.model.
 //
 // Returned values:
 //   - toolResults: results indexed by original call order (always len(toolCalls))
@@ -59,6 +73,8 @@ func (l *AgenticLoop) planAndDispatch(
 	config *types.RunConfig,
 	toolCalls []types.ToolCall,
 	stall *stallDetector,
+	providerType string,
+	providerModel string,
 ) ([]types.ToolResult, []types.ToolCallRecord, string) {
 	plan := make([]pendingCall, len(toolCalls))
 
@@ -119,6 +135,7 @@ func (l *AgenticLoop) planAndDispatch(
 			plan[i].output = blockedToolMessage
 			plan[i].success = false
 			plan[i].errorReason = reason
+			plan[i].failureCategory = observability.ToolFailureGuardrailDenied
 			continue
 		}
 
@@ -133,9 +150,10 @@ func (l *AgenticLoop) planAndDispatch(
 
 		// Sync path: dispatch inline, preserving the sequential code's
 		// behaviour for sync tools (including Unknown).
-		output, success := l.dispatchToolCall(toolSpanCtx, call)
+		output, success, category := l.dispatchToolCallCategorized(toolSpanCtx, call)
 		plan[i].output = output
 		plan[i].success = success
+		plan[i].failureCategory = category
 	}
 
 	// Phase 2: fan out async calls under a bounded semaphore. The cap
@@ -171,6 +189,7 @@ func (l *AgenticLoop) planAndDispatch(
 							security.Scrub(fmt.Sprintf("%v", r)))
 						plan[idx].output = msg
 						plan[idx].success = false
+						plan[idx].failureCategory = observability.ToolFailureAsyncPanic
 						l.Logger.Error(
 							"async tool panic recovered",
 							"tool", plan[idx].call.Name,
@@ -179,9 +198,10 @@ func (l *AgenticLoop) planAndDispatch(
 						)
 					}
 				}()
-				output, success := l.dispatchToolCall(plan[idx].spanCtx, plan[idx].call)
+				output, success, category := l.dispatchToolCallCategorized(plan[idx].spanCtx, plan[idx].call)
 				plan[idx].output = output
 				plan[idx].success = success
+				plan[idx].failureCategory = category
 			}()
 		}
 		// Wait under cancellation: ctx cancellation propagates through
@@ -203,12 +223,28 @@ func (l *AgenticLoop) planAndDispatch(
 		p := &plan[i]
 		callDuration := time.Since(p.startedAt)
 
-		// Span finalisation.
-		p.span.SetAttributes(
+		// Compute the bounded failure category up front: it conditions
+		// both the per-call OTel span attribute set (so trace backends
+		// without JSONL access still see the category) and the
+		// tool_failures metric emission below.
+		errorCategory := ""
+		if !p.success && p.failureCategory.IsValid() {
+			errorCategory = p.failureCategory.String()
+		}
+
+		// Span finalisation. Attributes MUST be set before End() —
+		// OTel SDKs typically drop SetAttributes calls on an already-
+		// ended span — so the failure_category attribute is included
+		// in the same batch as tool.success/duration/output_size.
+		spanAttrs := []attribute.KeyValue{
 			attribute.Bool("tool.success", p.success),
 			attribute.Int("tool.output_size", len(p.output)),
 			attribute.Int64("tool.duration_ms", callDuration.Milliseconds()),
-		)
+		}
+		if errorCategory != "" {
+			spanAttrs = append(spanAttrs, attribute.String("tool.failure_category", errorCategory))
+		}
+		p.span.SetAttributes(spanAttrs...)
 		switch {
 		case p.denied:
 			p.span.SetStatus(codes.Error, "guardrail_denied")
@@ -229,12 +265,13 @@ func (l *AgenticLoop) planAndDispatch(
 			errorReason = security.Scrub(p.output)
 		}
 		l.Trace.RecordToolCall(types.ToolCallTrace{
-			Name:        p.call.Name,
-			DurationMs:  callDuration.Milliseconds(),
-			Success:     p.success,
-			ErrorReason: errorReason,
-			InputSize:   len(p.call.Input),
-			OutputSize:  len(p.output),
+			Name:          p.call.Name,
+			DurationMs:    callDuration.Milliseconds(),
+			Success:       p.success,
+			ErrorReason:   errorReason,
+			InputSize:     len(p.call.Input),
+			OutputSize:    len(p.output),
+			ErrorCategory: errorCategory,
 		})
 
 		toolNameAttr := l.metricAttrs(attribute.String("tool.name", p.call.Name))
@@ -242,6 +279,20 @@ func (l *AgenticLoop) planAndDispatch(
 		l.Metrics.ToolCallDuration.Record(ctx, float64(callDuration.Milliseconds()), toolNameAttr)
 		if !p.success {
 			l.Metrics.ToolErrors.Add(ctx, 1, toolNameAttr)
+			// Failure-category breakdown for dashboards. Validity is
+			// re-checked here so a producer that forgets to set a
+			// category (Success=false with empty category) still bumps
+			// ToolErrors but does not silently widen ToolFailures
+			// label cardinality with an empty string.
+			if p.failureCategory.IsValid() {
+				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
+					attribute.String("tool.name", p.call.Name),
+					attribute.String("category", p.failureCategory.String()),
+					attribute.String("provider.type", providerType),
+					attribute.String("provider.model", providerModel),
+					attribute.String("run.mode", config.Mode),
+				))
+			}
 		}
 
 		toolResults[i] = types.ToolResult{
@@ -277,6 +328,28 @@ func (l *AgenticLoop) planAndDispatch(
 			l.Metrics.Stalls.Add(ctx, 1,
 				l.metricAttrs(attribute.String("run.mode", config.Mode)),
 			)
+			// Co-emit stall terminations into the tool-failure series
+			// so dashboards can attribute "run ended via stall" back
+			// to (provider, model, tool, stall-flavour). The stall
+			// detector reports two outcomes: "stalled" for repeated
+			// identical calls and "tool_failures" for consecutive
+			// failures — map each onto its own bounded category.
+			var stallCategory observability.ToolFailureCategory
+			switch outcome {
+			case "stalled":
+				stallCategory = observability.ToolFailureStallRepeated
+			case "tool_failures":
+				stallCategory = observability.ToolFailureStallConsecutiveFailures
+			}
+			if stallCategory.IsValid() {
+				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
+					attribute.String("tool.name", p.call.Name),
+					attribute.String("category", stallCategory.String()),
+					attribute.String("provider.type", providerType),
+					attribute.String("provider.model", providerModel),
+					attribute.String("run.mode", config.Mode),
+				))
+			}
 			// Close any spans for calls past the stall point. Phase 2
 			// has already invoked async handlers for these indices, so
 			// the spans are open and would leak if we returned without
