@@ -314,6 +314,40 @@ The lakehouse is what `baseline`, `mine-failures`, `drift`, and
 range, outcome, mode, and model, and computes aggregate metrics
 including p50/p95 duration percentiles.
 
+### Outcome taxonomy
+
+`RunTrace.Outcome` records *why the loop stopped*: `success`,
+`error`, `max_turns`, `verification_failed`, `verification_error`,
+`budget_exceeded`, `stalled`, `tool_failures`, `cancelled`,
+`timeout`, `max_tokens`. By itself it conflates two very different
+states in execution mode: "the harness made the correct change"
+vs. "the loop exited cleanly with zero useful changes." Metrics
+derived from `Outcome == "success"` therefore lie about quality.
+
+`types.EvalOutcome` (`types/evaloutcome.go`) collapses
+`(Outcome, VerificationResults)` onto three buckets:
+
+| Termination outcome                                                                       | Verifier ran? | Verdict   | `EvalOutcome` |
+|-------------------------------------------------------------------------------------------|---------------|-----------|---------------|
+| `success`                                                                                 | yes           | all pass  | `passed`      |
+| `success`                                                                                 | yes           | any fail  | `failed`      |
+| `success`                                                                                 | no            | n/a       | `passed` *    |
+| `verification_failed`, `error`, `tool_failures`                                           | any           | any       | `failed`      |
+| `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `verification_error` | any | any | `inconclusive` |
+| anything else (unknown / empty)                                                           | any           | any       | `inconclusive` |
+
+\* The success-without-verifier branch is trusted as `passed` for
+v0.1 to keep existing baselines stable. Operators who want stricter
+fidelity should wire a verifier (even a cheap smoke-test command);
+a future opt-in `evalOutcomeQuality: verified | unverified` label
+is tracked in #273.
+
+`baseline` and `drift` report `passRate`, `failRate`, and
+`inconclusiveRate` — the three rates sum to 1.0 by construction.
+`mine-failures` defaults to mining only `EvalOutcome == failed`;
+pass `--include-inconclusive` to also mine limit-hit and interrupted
+runs.
+
 ---
 
 ## Subcommands

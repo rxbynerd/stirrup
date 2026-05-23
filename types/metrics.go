@@ -88,8 +88,24 @@ type DriftDeltas struct {
 // cover batch runs separately for operators tracking batch throughput.
 // Both pairs are zero (not nil) when their bucket has no entries.
 type TraceMetrics struct {
-	Count            int     `json:"count"`
-	PassRate         float64 `json:"passRate"`
+	Count int `json:"count"`
+	// PassRate is the fraction of traces whose derived EvalOutcome is
+	// EvalPassed. As of #273 this is a quality signal, not a
+	// termination signal: a run that terminated with Outcome=="success"
+	// but a verifier disagreed is excluded from the numerator.
+	PassRate float64 `json:"passRate"`
+	// FailRate is the fraction of traces whose derived EvalOutcome is
+	// EvalFailed — termination outcomes `error`, `tool_failures`,
+	// `verification_failed`, plus successes where the verifier
+	// disagreed.
+	FailRate float64 `json:"failRate"`
+	// InconclusiveRate is the fraction of traces whose derived
+	// EvalOutcome is EvalInconclusive — limit-hit terminations
+	// (`max_turns`, `budget_exceeded`, `timeout`, `max_tokens`,
+	// `stalled`) and interrupted terminations (`cancelled`,
+	// `verification_error`). The three rates sum to 1.0 by
+	// construction.
+	InconclusiveRate float64 `json:"inconclusiveRate"`
 	MeanTurns        float64 `json:"meanTurns"`
 	MeanTokens       float64 `json:"meanTokens"`
 	P50Duration      float64 `json:"p50DurationMs"`
