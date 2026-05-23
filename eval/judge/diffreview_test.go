@@ -82,7 +82,7 @@ func TestParseDiffReviewVerdict_Malformed(t *testing.T) {
 // before the live API rejects the request with a confusing 400.
 func TestAnthropicRequestShape(t *testing.T) {
 	req := anthropicRequest{
-		Model:       "claude-3-5-haiku-latest",
+		Model:       "claude-haiku-4-5-20251001",
 		System:      "judge",
 		MaxTokens:   1024,
 		Temperature: 0.0,

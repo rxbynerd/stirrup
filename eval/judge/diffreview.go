@@ -41,7 +41,7 @@ import (
 )
 
 const (
-	diffReviewDefaultModel = "claude-3-5-haiku-latest"
+	diffReviewDefaultModel = "claude-haiku-4-5-20251001"
 	diffReviewMaxDiffBytes = 64 * 1024
 	diffReviewAPIURL       = "https://api.anthropic.com/v1/messages"
 	diffReviewAPIVersion   = "2023-06-01"
