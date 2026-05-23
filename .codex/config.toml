@@ -1,0 +1,13 @@
+# Project-local Codex defaults for Stirrup.
+#
+# Codex builds that load project .codex/config.toml should keep multi-agent
+# workflows available for the agent pack in .codex/agents/.
+
+[features]
+multi_agent_v2 = true
+multi_agent = false
+child_agents_md = true
+artifact = true
+chronicle = true
+enable_fanout = true
+runtime_metrics = true
