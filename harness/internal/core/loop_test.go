@@ -533,6 +533,13 @@ func TestDispatchToolCall_PermissionDenied(t *testing.T) {
 	if !strings.Contains(output, "Permission denied") {
 		t.Errorf("expected output to contain 'Permission denied', got %q", output)
 	}
+	rt, err := loop.Trace.Finish(context.Background(), "error")
+	if err != nil {
+		t.Fatalf("finish trace: %v", err)
+	}
+	if rt.PermissionDenials != 1 {
+		t.Errorf("PermissionDenials = %d, want 1", rt.PermissionDenials)
+	}
 
 	// Assert the SecurityLogger was actually called. Without this, a
 	// regression that nil-skips the call would silently pass.

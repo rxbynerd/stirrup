@@ -279,6 +279,9 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 			if l.Security != nil {
 				l.Security.PermissionDenied(call.Name, result.Reason)
 			}
+			if l.Trace != nil {
+				l.Trace.RecordPermissionDenial()
+			}
 			return "Permission denied: " + result.Reason, false
 		}
 	}

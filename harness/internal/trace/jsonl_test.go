@@ -93,6 +93,8 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 		DurationMs: 25,
 		Success:    true,
 	})
+	emitter.RecordPermissionDenial()
+	emitter.RecordPermissionDenial()
 
 	trace, err := emitter.Finish(context.Background(), "success")
 	if err != nil {
@@ -114,6 +116,9 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	}
 	if trace.Outcome != "success" {
 		t.Errorf("Outcome: got %q, want %q", trace.Outcome, "success")
+	}
+	if trace.PermissionDenials != 2 {
+		t.Errorf("PermissionDenials: got %d, want 2", trace.PermissionDenials)
 	}
 	if trace.Config.Provider.APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("APIKeyRef should be redacted, got %q", trace.Config.Provider.APIKeyRef)
@@ -159,6 +164,9 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	}
 	if finished.Trace.Outcome != "success" {
 		t.Errorf("run_finished outcome: got %q, want success", finished.Trace.Outcome)
+	}
+	if finished.Trace.PermissionDenials != 2 {
+		t.Errorf("run_finished permission denials: got %d, want 2", finished.Trace.PermissionDenials)
 	}
 }
 

@@ -41,8 +41,9 @@ type JSONLTraceEmitter struct {
 	// canonical RunTrace (token totals, tool call summaries, outcome)
 	// for the in-process caller (harness factory, eval runner) that
 	// reads it directly without re-parsing the file.
-	turns     []types.TurnTrace
-	toolCalls []types.ToolCallTrace
+	turns             []types.TurnTrace
+	toolCalls         []types.ToolCallTrace
+	permissionDenials int
 }
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
@@ -88,6 +89,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.startedAt = time.Now()
 	e.turns = nil
 	e.toolCalls = nil
+	e.permissionDenials = 0
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -174,6 +176,13 @@ func (e *JSONLTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	_ = e.writeLineLocked(ev)
 }
 
+// RecordPermissionDenial increments the run-level permission denial count.
+func (e *JSONLTraceEmitter) RecordPermissionDenial() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.permissionDenials++
+}
+
 // Finish builds the canonical RunTrace summary, writes the
 // run_finished event, and returns the summary. A run with zero turns
 // still produces a valid run_finished line.
@@ -200,14 +209,15 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 	}
 
 	trace := &types.RunTrace{
-		ID:          e.runID,
-		Config:      redactedConfig,
-		StartedAt:   e.startedAt,
-		CompletedAt: now,
-		Turns:       len(e.turns),
-		TokenUsage:  totalTokens,
-		ToolCalls:   summaries,
-		Outcome:     outcome,
+		ID:                e.runID,
+		Config:            redactedConfig,
+		StartedAt:         e.startedAt,
+		CompletedAt:       now,
+		Turns:             len(e.turns),
+		TokenUsage:        totalTokens,
+		ToolCalls:         summaries,
+		PermissionDenials: e.permissionDenials,
+		Outcome:           outcome,
 	}
 
 	ev := Event{

@@ -140,6 +140,7 @@ trace stats
   total turns:      12
   tokens in / out:  18432 / 4116
   tool calls:       45 (errors: 3)
+  permission denials: 2
   verifications:    1 run (passed: 1, failed: 0)
   longest call ms:  2811
   wall clock:       42.317s
@@ -183,6 +184,7 @@ and is intended as a dashboard / report ingestion shape:
   "tokensOutput": 4116,
   "toolCalls": 45,
   "toolErrors": 3,
+  "permissionDenials": 2,
   "toolCallsByName": {"edit_file": 18, "grep": 14, ...},
   "toolErrorsByName": {"run_command": 3},
   "outcomes": {"success": 1},

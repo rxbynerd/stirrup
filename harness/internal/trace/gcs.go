@@ -62,12 +62,13 @@ type GCSTraceEmitter struct {
 	httpClient      *http.Client
 	endpointBaseURL string // override for tests
 
-	mu        sync.Mutex
-	runID     string
-	config    *types.RunConfig
-	startedAt time.Time
-	turns     []types.TurnTrace
-	toolCalls []types.ToolCallTrace
+	mu                sync.Mutex
+	runID             string
+	config            *types.RunConfig
+	startedAt         time.Time
+	turns             []types.TurnTrace
+	toolCalls         []types.ToolCallTrace
+	permissionDenials int
 }
 
 // GCSTraceEmitterOptions configures a GCSTraceEmitter. Bucket is
@@ -143,6 +144,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.startedAt = time.Now()
 	e.turns = nil
 	e.toolCalls = nil
+	e.permissionDenials = 0
 }
 
 // RecordTurn appends a turn trace.
@@ -166,6 +168,13 @@ func (e *GCSTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.toolCalls = append(e.toolCalls, call)
 }
 
+// RecordPermissionDenial increments the run-level permission denial count.
+func (e *GCSTraceEmitter) RecordPermissionDenial() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.permissionDenials++
+}
+
 // Finish builds the final RunTrace, marshals it as a single JSONL
 // line, and PUTs the bytes to gs://{bucket}/{objectPrefix}/{runID}.jsonl.
 // A run with zero turns still produces a single valid JSON line —
@@ -186,6 +195,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	startedAt := e.startedAt
 	turns := append([]types.TurnTrace(nil), e.turns...)
 	toolCalls := append([]types.ToolCallTrace(nil), e.toolCalls...)
+	permissionDenials := e.permissionDenials
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -207,14 +217,15 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	}
 
 	trace := &types.RunTrace{
-		ID:          runID,
-		Config:      redactedConfig,
-		StartedAt:   startedAt,
-		CompletedAt: now,
-		Turns:       len(turns),
-		TokenUsage:  totalTokens,
-		ToolCalls:   summaries,
-		Outcome:     outcome,
+		ID:                runID,
+		Config:            redactedConfig,
+		StartedAt:         startedAt,
+		CompletedAt:       now,
+		Turns:             len(turns),
+		TokenUsage:        totalTokens,
+		ToolCalls:         summaries,
+		PermissionDenials: permissionDenials,
+		Outcome:           outcome,
 	}
 
 	data, err := json.Marshal(trace)

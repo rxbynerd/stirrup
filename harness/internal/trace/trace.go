@@ -30,6 +30,11 @@ type TraceEmitter interface {
 	// RecordToolCall appends a tool call trace to the current run.
 	RecordToolCall(call types.ToolCallTrace)
 
+	// RecordPermissionDenial increments the run-level permission-denial
+	// counter. Callers should invoke it at the policy denial site, not
+	// infer denials later from tool error strings.
+	RecordPermissionDenial()
+
 	// Finish finalises the trace, writes it to the backing store, and
 	// returns the completed RunTrace.
 	Finish(ctx context.Context, outcome string) (*types.RunTrace, error)
