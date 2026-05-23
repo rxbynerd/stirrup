@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -663,5 +664,56 @@ func TestToolFailureMetrics_ErrorCategoryInTrace(t *testing.T) {
 	}
 	if calls[0].ErrorCategory != observability.ToolFailureHandlerError.String() {
 		t.Errorf("ErrorCategory = %q, want %q", calls[0].ErrorCategory, observability.ToolFailureHandlerError)
+	}
+}
+
+// TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout is the
+// verification test for the deadline/cancellation split in
+// dispatchAsyncToolCall. When the run context expires by deadline,
+// the async dispatch MUST emit async_timeout, NOT async_cancelled —
+// operators alert on async_cancelled to detect user-cancellation
+// spikes; every deadline-bounded run polluting that series defeats
+// the alert. The synthesis brief requires explicit assertions that
+// async_timeout is emitted AND async_cancelled is NOT emitted on a
+// deadline-expired context, so both conditions are checked below.
+func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
+	tr := newAsyncTestTransport()
+	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
+	cfg := &types.RunConfig{
+		RunID:        "test-run-deadline",
+		Mode:         "execution",
+		ToolDispatch: &types.ToolDispatchConfig{MaxParallel: 1},
+	}
+	// Deadline set in the immediate past so correlator.Await's
+	// ctx.Done branch fires with context.DeadlineExceeded. No
+	// tool_result_response is ever fired: the dispatch unblocks via
+	// the cancellation path, not the resolution path.
+	deadline := time.Now().Add(-1 * time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	_, _, outcome := loop.planAndDispatch(
+		ctx, cfg,
+		[]types.ToolCall{{ID: "tc_deadline", Name: "async_echo", Input: json.RawMessage(`{}`)}},
+		&stallDetector{},
+		"anthropic", "claude-sonnet-4-6",
+	)
+	if outcome != "" {
+		t.Fatalf("unexpected stall outcome %q", outcome)
+	}
+	failures := collectFailures(t, reader)
+	var timeoutHits, cancelledHits int64
+	for _, fp := range failures {
+		switch fp.category {
+		case observability.ToolFailureAsyncTimeout.String():
+			timeoutHits += fp.value
+		case observability.ToolFailureAsyncCancelled.String():
+			cancelledHits += fp.value
+		}
+	}
+	if timeoutHits != 1 {
+		t.Errorf("async_timeout count = %d, want exactly 1; full failures = %+v", timeoutHits, failures)
+	}
+	if cancelledHits != 0 {
+		t.Errorf("async_cancelled count = %d, want 0 (deadline must NOT route to cancelled); full failures = %+v", cancelledHits, failures)
 	}
 }

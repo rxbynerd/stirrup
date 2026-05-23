@@ -392,7 +392,20 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		if strings.Contains(err.Error(), "emit failed") {
 			return fmt.Sprintf("async tool %s transport_disconnect: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncTransport
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// Deadline expiry MUST be checked before cancellation. Both the
+		// correlator's per-call timeout and a run-level deadline on ctx
+		// surface as context.DeadlineExceeded wrapped by %w; the
+		// previous combined branch mis-routed every deadline-expired
+		// run to async_cancelled, polluting any alert keyed on
+		// async_cancelled spikes (which signal user cancellation, not
+		// timeout). errors.Is(DeadlineExceeded) and errors.Is(Canceled)
+		// can both return true for some wrapper chains, so order
+		// matters: timeout-first preserves the operator-meaningful
+		// distinction.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Sprintf("async tool %s timeout: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncTimeout
+		}
+		if errors.Is(err, context.Canceled) {
 			return fmt.Sprintf("async tool %s cancelled: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncCancelled
 		}
 		// Default: timeout (correlator: "timed out after ...") and any
