@@ -424,6 +424,40 @@ rate, mean turns, p50/p95 duration) to stdout. Use this to seed an
 experiment baseline from real production data instead of static
 fixtures.
 
+### `ingest` — populate a lakehouse from JSONL traces
+
+```bash
+./stirrup-eval ingest \
+  --lakehouse var/lakehouse \
+  --trace tmp/sessions/run-1.jsonl \
+  --trace tmp/sessions/run-2.jsonl
+```
+
+Reads one or more JSONL trace files (produced by
+`stirrup harness --trace ...`) and persists them into a FileStore
+lakehouse. Two on-wire shapes are accepted transparently per file:
+
+- **Streaming event format (since #270)** — line-delimited events with
+  a `kind` discriminator. One file represents one run; ingest writes
+  both `traces/<runId>.json` and `recordings/<runId>.json`. Full
+  transcripts are preserved on the recording so replay and
+  mine-failures have something to chew on.
+- **Legacy single-blob format** — one `RunTrace` per line, no
+  discriminator. Each line ingests as one `traces/<id>.json` entry;
+  no recording is produced (the legacy shape has no transcript).
+
+Use `--trace -` to read from stdin (single file only). `--trace` is
+repeatable; mixed-format invocations are supported (per-file detection).
+
+A streaming trace that ended without a `run_finished` event (an
+interrupted run — SIGKILL, OOM) is ingested with
+`FinalOutcome.Outcome=="interrupted"` by default so it stays
+discoverable to mine-failures and replay. Pass `--skip-partial` to
+drop interrupted captures.
+
+Re-ingesting the same file is idempotent (last-write-wins, atomic
+rename via #267) so retries do not corrupt the lakehouse.
+
 ### `mine-failures` — turn production failures into tasks
 
 ```bash
