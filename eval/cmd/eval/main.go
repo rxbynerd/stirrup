@@ -393,6 +393,7 @@ func cmdMineFailures(args []string) {
 	limit := fs.Int("limit", 0, "Maximum number of failures to mine")
 	output := fs.String("output", "", "Write EvalSuite HCL to this file (.hcl recommended)")
 	includeBatch := fs.Bool("include-batch", false, "By default, batch runs (provider.batch.enabled=true) are excluded from mined failures because their wall-clock duration inflates apparent stall metrics. Pass --include-batch to include them.")
+	includeInconclusive := fs.Bool("include-inconclusive", false, "By default, only EvalOutcome==failed traces are mined. Inconclusive runs (max_turns / budget_exceeded / timeout / max_tokens / stalled / cancelled / verification_error) are typically investigated manually rather than codified as regressions; pass --include-inconclusive to include them anyway.")
 	if err := fs.Parse(args); err != nil {
 		log.Fatalf("parsing flags: %v", err)
 	}
@@ -424,7 +425,7 @@ func cmdMineFailures(args []string) {
 		log.Fatalf("querying recordings: %v", err)
 	}
 
-	tasks := mineFailureTasksFiltered(recordings, *limit, *includeBatch)
+	tasks := mineFailureTasksFiltered(recordings, *limit, *includeBatch, *includeInconclusive)
 
 	suite := types.EvalSuite{
 		ID:          fmt.Sprintf("mined-failures-%d", time.Now().Unix()),
@@ -588,19 +589,36 @@ func cmdDrift(args []string) {
 	}
 }
 
-// mineFailureTasksFiltered filters recordings for non-success outcomes
+// mineFailureTasksFiltered filters recordings for non-passing outcomes
 // and converts them into EvalTasks with a default test-command judge.
+//
+// As of #273 the filter is `EvalOutcomeFor(rec.FinalOutcome) ==
+// EvalFailed` by default, replacing the previous `Outcome !=
+// "success"` predicate. Failed and inconclusive are distinct
+// categories: failed means the harness produced a wrong-direction
+// result; inconclusive means the harness ran out of room or was
+// interrupted. The latter is typically investigated manually rather
+// than codified as a regression, so it is excluded by default.
+// Pass includeInconclusive=true to mine both.
+//
 // When includeBatch is false (the documented default), recordings
 // whose RunConfig opted into batch provider submission are skipped:
 // their wall-clock duration is dominated by provider-side queue time,
 // not the harness's stall pattern, so including them inflates apparent
 // stall metrics and obscures the prompt patterns mine-failures is here
 // to surface (#138).
-func mineFailureTasksFiltered(recordings []types.RunRecording, limit int, includeBatch bool) []types.EvalTask {
+func mineFailureTasksFiltered(recordings []types.RunRecording, limit int, includeBatch bool, includeInconclusive bool) []types.EvalTask {
 	var tasks []types.EvalTask
 	for _, rec := range recordings {
-		if rec.FinalOutcome.Outcome == "success" {
+		switch types.EvalOutcomeFor(rec.FinalOutcome) {
+		case types.EvalPassed:
 			continue
+		case types.EvalInconclusive:
+			if !includeInconclusive {
+				continue
+			}
+		case types.EvalFailed:
+			// keep
 		}
 		if !includeBatch && isBatchRecording(rec) {
 			continue

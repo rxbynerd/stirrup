@@ -252,16 +252,28 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 	}
 
 	var (
-		passCount    int
-		totalTurns   int
-		totalTokens  int
-		streamingDur []float64
-		batchDur     []float64
+		passCount         int
+		failCount         int
+		inconclusiveCount int
+		totalTurns        int
+		totalTokens       int
+		streamingDur      []float64
+		batchDur          []float64
 	)
 
 	for _, t := range traces {
-		if t.Outcome == "success" {
+		// Pass / fail / inconclusive is derived consumer-side per
+		// types.EvalOutcomeFor (#273). PassRate is now a quality
+		// signal: a success that the verifier disagreed with does NOT
+		// count as a pass, and limit-hit terminations are bucketed
+		// inconclusive rather than silently boosting the failure rate.
+		switch types.EvalOutcomeFor(t) {
+		case types.EvalPassed:
 			passCount++
+		case types.EvalFailed:
+			failCount++
+		case types.EvalInconclusive:
+			inconclusiveCount++
 		}
 		totalTurns += t.Turns
 		totalTokens += t.TokenUsage.Input + t.TokenUsage.Output
@@ -285,6 +297,8 @@ func computeMetrics(traces []types.RunTrace) types.TraceMetrics {
 	return types.TraceMetrics{
 		Count:            n,
 		PassRate:         float64(passCount) / float64(n),
+		FailRate:         float64(failCount) / float64(n),
+		InconclusiveRate: float64(inconclusiveCount) / float64(n),
 		MeanTurns:        float64(totalTurns) / float64(n),
 		MeanTokens:       float64(totalTokens) / float64(n),
 		P50Duration:      percentile(streamingDur, 0.50),

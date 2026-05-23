@@ -417,7 +417,13 @@ func TestParseDuration_BadDays(t *testing.T) {
 
 // --- mineFailureTasks tests ---
 
-func TestMineFailureTasks_FiltersNonSuccess(t *testing.T) {
+// TestMineFailureTasks_FiltersByEvalOutcome pins #273's mining filter:
+// by default only EvalOutcome==failed traces are mined; success traces
+// are excluded as before, and inconclusive traces (max_turns,
+// budget_exceeded, timeout, max_tokens, stalled, cancelled,
+// verification_error) are excluded too unless includeInconclusive is
+// set. The old "anything not success" semantics is gone.
+func TestMineFailureTasks_FiltersByEvalOutcome(t *testing.T) {
 	recordings := []types.RunRecording{
 		{
 			RunID:  "r1",
@@ -453,16 +459,13 @@ func TestMineFailureTasks_FiltersNonSuccess(t *testing.T) {
 		},
 	}
 
-	tasks := mineFailureTasksFiltered(recordings, 0, false)
-	if len(tasks) != 2 {
-		t.Fatalf("got %d tasks, want 2", len(tasks))
+	// Default: only the EvalFailed trace is mined.
+	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1 (default mines only failed)", len(tasks))
 	}
-
 	if tasks[0].Prompt != "fix bug B" {
 		t.Errorf("task[0].Prompt = %q, want %q", tasks[0].Prompt, "fix bug B")
-	}
-	if tasks[0].Mode != "execution" {
-		t.Errorf("task[0].Mode = %q, want %q", tasks[0].Mode, "execution")
 	}
 	if tasks[0].Judge.Type != "test-command" {
 		t.Errorf("task[0].Judge.Type = %q, want %q", tasks[0].Judge.Type, "test-command")
@@ -471,11 +474,41 @@ func TestMineFailureTasks_FiltersNonSuccess(t *testing.T) {
 		t.Errorf("task[0].Judge.Command = %q, want %q", tasks[0].Judge.Command, "go test ./...")
 	}
 
-	if tasks[1].Prompt != "fix bug C" {
-		t.Errorf("task[1].Prompt = %q, want %q", tasks[1].Prompt, "fix bug C")
+	// With --include-inconclusive: max_turns is also mined.
+	tasksWithInconclusive := mineFailureTasksFiltered(recordings, 0, false, true)
+	if len(tasksWithInconclusive) != 2 {
+		t.Fatalf("got %d tasks, want 2 (failed + inconclusive)", len(tasksWithInconclusive))
 	}
-	if tasks[1].Mode != "planning" {
-		t.Errorf("task[1].Mode = %q, want %q", tasks[1].Mode, "planning")
+	if tasksWithInconclusive[1].Prompt != "fix bug C" {
+		t.Errorf("task[1].Prompt = %q, want %q", tasksWithInconclusive[1].Prompt, "fix bug C")
+	}
+}
+
+// TestMineFailureTasks_SuccessWithFailingVerifierMined pins that a
+// run that terminated with Outcome=="success" but where the verifier
+// disagreed is classified EvalFailed and therefore mined by default.
+// The old `Outcome != "success"` filter would have excluded these,
+// silently dropping a genuine quality failure.
+func TestMineFailureTasks_SuccessWithFailingVerifierMined(t *testing.T) {
+	recordings := []types.RunRecording{
+		{
+			RunID:  "r1",
+			Config: types.RunConfig{Prompt: "fix bug A", Mode: "execution"},
+			FinalOutcome: types.RunTrace{
+				ID:      "r1",
+				Outcome: "success",
+				VerificationResults: []types.VerificationResult{
+					{Passed: false, Feedback: "build failed"},
+				},
+			},
+		},
+	}
+	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
+	if len(tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1 (success+failed-verifier is EvalFailed)", len(tasks))
+	}
+	if tasks[0].Prompt != "fix bug A" {
+		t.Errorf("task[0].Prompt = %q, want %q", tasks[0].Prompt, "fix bug A")
 	}
 }
 
@@ -486,7 +519,7 @@ func TestMineFailureTasks_RespectsLimit(t *testing.T) {
 		{RunID: "r3", Config: types.RunConfig{Prompt: "c"}, FinalOutcome: types.RunTrace{Outcome: "error"}},
 	}
 
-	tasks := mineFailureTasksFiltered(recordings, 2, false)
+	tasks := mineFailureTasksFiltered(recordings, 2, false, false)
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2", len(tasks))
 	}
@@ -497,7 +530,7 @@ func TestMineFailureTasks_NoFailures(t *testing.T) {
 		{RunID: "r1", Config: types.RunConfig{Prompt: "a"}, FinalOutcome: types.RunTrace{Outcome: "success"}},
 	}
 
-	tasks := mineFailureTasksFiltered(recordings, 0, false)
+	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
 	if len(tasks) != 0 {
 		t.Fatalf("got %d tasks, want 0", len(tasks))
 	}
@@ -537,7 +570,7 @@ func TestMineFailureTasksFiltered_ExcludesBatchByDefault(t *testing.T) {
 		makeBatchRecording("batch-fail", "error", "batch failure"),
 	}
 
-	tasks := mineFailureTasksFiltered(recordings, 0, false)
+	tasks := mineFailureTasksFiltered(recordings, 0, false, false)
 	if len(tasks) != 1 {
 		t.Fatalf("got %d tasks, want 1 (batch failure must be excluded)", len(tasks))
 	}
@@ -560,7 +593,7 @@ func TestMineFailureTasksFiltered_IncludesBatchWhenRequested(t *testing.T) {
 		makeBatchRecording("batch-fail", "error", "batch failure"),
 	}
 
-	tasks := mineFailureTasksFiltered(recordings, 0, true)
+	tasks := mineFailureTasksFiltered(recordings, 0, true, false)
 	if len(tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2 (both failures included)", len(tasks))
 	}
