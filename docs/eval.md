@@ -381,10 +381,12 @@ the `eval-gate` CI job uses.
 ```
 
 Reads aggregate metrics (`types.TraceMetrics`) from a lakehouse,
-optionally filtered by time range, mode, and model. Writes JSON to
-`--output` if set and prints a summary (count, pass rate, mean
-turns, p50/p95 duration) to stdout. Use this to seed an experiment
-baseline from real production data instead of static fixtures.
+optionally filtered by time range, `--mode`, `--model`, and
+`--provider` (e.g. `anthropic`, `openai-responses`, `gemini`).
+Writes JSON to `--output` if set and prints a summary (count, pass
+rate, mean turns, p50/p95 duration) to stdout. Use this to seed an
+experiment baseline from real production data instead of static
+fixtures.
 
 ### `mine-failures` — turn production failures into tasks
 
