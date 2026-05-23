@@ -40,22 +40,29 @@ AWS-SDK initialisation cost.
 
 Before any trace, recording, or persistent log writes the
 `RunConfig`, it is run through `Redact()` which strips every
-`secret://` reference and every header value that resolves through
-one (notably `traceEmitter.headers`). The persisted artifact never
-contains anything that could be replayed against a provider.
+`secret://` reference, normalises provider and MCP URLs to their
+origin, redacts provider API-key header names, and redacts
+non-allowlisted provider query parameters. The persisted artifact
+never contains anything that could be replayed against a provider.
 
 ### `LogScrubber`
 
 The `harness/internal/observability/ScrubHandler` wraps any
 `slog.Handler` and runs `security.Scrub()` on every string attribute
-value before delegation. Seven regex patterns are scrubbed:
+value before delegation. Nineteen regex patterns are scrubbed,
+covering:
 
 - Anthropic API keys
-- OpenAI API keys
+- OpenAI and Stripe API keys
 - GitHub PATs and app tokens
-- AWS access keys
+- AWS access key IDs and key/value-anchored AWS secret access keys
+- Slack tokens
+- GCP API keys and OAuth2 access tokens
+- Key/value-anchored Azure storage keys
 - Bearer tokens including JWTs (Authorization headers; Basic auth)
 - PEM-encoded private keys
+- API-key header values
+- Key/value-anchored 32-character hex secrets
 - `secret://` references themselves
 
 Because the scrubber sits at the `slog.Handler` boundary, secret

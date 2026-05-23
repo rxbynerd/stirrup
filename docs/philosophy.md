@@ -17,8 +17,8 @@ different class of attack at a different point in the run.
 **Secrets never live in `RunConfig`.** API keys are `secret://`
 references resolved through env vars, files, or AWS SSM. The
 `slog.Handler` that writes logs runs every string through a
-seven-pattern scrubber before any handler sees it — secret leakage
-through logs is structurally impossible.
+credential-pattern scrubber before any handler sees it — secret
+leakage through logs is structurally impossible.
 
 **Cross-cloud credential federation.** GKE Workload Identity, AWS
 IRSA, Azure IMDS, GitHub Actions OIDC, Anthropic WIF, and Azure

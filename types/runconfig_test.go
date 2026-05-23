@@ -59,22 +59,100 @@ func TestRedact_ProvidersAPIKeys(t *testing.T) {
 	}
 }
 
+func TestRedact_ProviderConnectionFields(t *testing.T) {
+	rc := RunConfig{
+		Provider: ProviderConfig{
+			Type:         "openai-compatible",
+			BaseURL:      "https://user:pass@llm-gateway.internal.corp/openai/v1?api-key=raw",
+			APIKeyHeader: "x-api-key",
+			QueryParams: map[string]string{
+				"api-version": "2024-10-21",
+				"api-key":     "raw-query-key",
+				"tenant":      "internal-team",
+			},
+		},
+		Providers: map[string]ProviderConfig{
+			"backup": {
+				Type:         "openai-responses",
+				BaseURL:      "https://backup.internal.example/v1/responses?token=raw",
+				APIKeyHeader: "api-key",
+				QueryParams: map[string]string{
+					"api-version": "preview",
+					"token":       "raw-token",
+				},
+			},
+		},
+	}
+
+	redacted := rc.Redact()
+
+	if got := redacted.Provider.BaseURL; got != "https://llm-gateway.internal.corp" {
+		t.Errorf("Provider.BaseURL = %q, want origin only", got)
+	}
+	if got := redacted.Provider.APIKeyHeader; got != "[REDACTED]" {
+		t.Errorf("Provider.APIKeyHeader = %q, want [REDACTED]", got)
+	}
+	if got := redacted.Provider.QueryParams["api-version"]; got != "2024-10-21" {
+		t.Errorf("Provider.QueryParams[api-version] = %q, want preserved allowlisted value", got)
+	}
+	if got := redacted.Provider.QueryParams["api-key"]; got != "[REDACTED]" {
+		t.Errorf("Provider.QueryParams[api-key] = %q, want [REDACTED]", got)
+	}
+	if got := redacted.Provider.QueryParams["tenant"]; got != "[REDACTED]" {
+		t.Errorf("Provider.QueryParams[tenant] = %q, want [REDACTED]", got)
+	}
+
+	backup := redacted.Providers["backup"]
+	if got := backup.BaseURL; got != "https://backup.internal.example" {
+		t.Errorf("Providers[backup].BaseURL = %q, want origin only", got)
+	}
+	if got := backup.APIKeyHeader; got != "[REDACTED]" {
+		t.Errorf("Providers[backup].APIKeyHeader = %q, want [REDACTED]", got)
+	}
+	if got := backup.QueryParams["api-version"]; got != "preview" {
+		t.Errorf("Providers[backup].QueryParams[api-version] = %q, want preserved allowlisted value", got)
+	}
+	if got := backup.QueryParams["token"]; got != "[REDACTED]" {
+		t.Errorf("Providers[backup].QueryParams[token] = %q, want [REDACTED]", got)
+	}
+
+	redacted.Provider.QueryParams["tenant"] = "mutated"
+	if got := rc.Provider.BaseURL; got != "https://user:pass@llm-gateway.internal.corp/openai/v1?api-key=raw" {
+		t.Errorf("Redact mutated original Provider.BaseURL: %q", got)
+	}
+	if got := rc.Provider.APIKeyHeader; got != "x-api-key" {
+		t.Errorf("Redact mutated original Provider.APIKeyHeader: %q", got)
+	}
+	if got := rc.Provider.QueryParams["tenant"]; got != "internal-team" {
+		t.Errorf("Redact mutated original Provider.QueryParams: %q", got)
+	}
+}
+
 func TestRedact_MCPServersAPIKeys(t *testing.T) {
 	rc := RunConfig{
 		Tools: ToolsConfig{
 			MCPServers: []MCPServerConfig{
-				{URI: "http://a", APIKeyRef: "secret://key1"},
+				{URI: "https://user:pass@mcp-a.internal.example/mcp?api_key=raw", APIKeyRef: "secret://key1"},
 				{URI: "http://b", APIKeyRef: ""},
-				{URI: "http://c", APIKeyRef: "secret://key2"},
+				{URI: "http://c/path?token=raw", APIKeyRef: "secret://key2"},
 			},
 		},
 	}
 	redacted := rc.Redact()
+	if redacted.Tools.MCPServers[0].URI != "https://mcp-a.internal.example" {
+		t.Errorf("MCPServers[0].URI = %q, want origin only", redacted.Tools.MCPServers[0].URI)
+	}
 	if redacted.Tools.MCPServers[0].APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("MCPServers[0].APIKeyRef = %q, want redacted", redacted.Tools.MCPServers[0].APIKeyRef)
 	}
+	if redacted.Tools.MCPServers[1].URI != "http://b" {
+		t.Errorf("MCPServers[1].URI = %q, want unchanged origin", redacted.Tools.MCPServers[1].URI)
+	}
 	if redacted.Tools.MCPServers[1].APIKeyRef != "" {
 		t.Errorf("MCPServers[1].APIKeyRef = %q, want empty", redacted.Tools.MCPServers[1].APIKeyRef)
+	}
+	if redacted.Tools.MCPServers[2].URI != "http://c" {
+		t.Errorf("MCPServers[2].URI = %q, want origin only", redacted.Tools.MCPServers[2].URI)
 	}
 	if redacted.Tools.MCPServers[2].APIKeyRef != "secret://[REDACTED]" {
 		t.Errorf("MCPServers[2].APIKeyRef = %q, want redacted", redacted.Tools.MCPServers[2].APIKeyRef)
@@ -82,6 +160,9 @@ func TestRedact_MCPServersAPIKeys(t *testing.T) {
 	// Original unchanged.
 	if rc.Tools.MCPServers[0].APIKeyRef != "secret://key1" {
 		t.Error("Redact mutated original MCPServers")
+	}
+	if rc.Tools.MCPServers[0].URI != "https://user:pass@mcp-a.internal.example/mcp?api_key=raw" {
+		t.Error("Redact mutated original MCPServers URI")
 	}
 }
 
