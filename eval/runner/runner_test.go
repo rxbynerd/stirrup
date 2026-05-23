@@ -813,7 +813,7 @@ func TestAppendAnthropicWIFArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "boolean only — exchange-disabled identifiers still forwarded",
+			name: "boolean-only toggle — no identifiers set, only the flag forwarded",
 			wif: AnthropicWIFConfig{
 				FromGitHubActions: true,
 			},

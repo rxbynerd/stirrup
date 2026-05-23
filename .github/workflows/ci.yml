@@ -88,17 +88,18 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          # ANTHROPIC_USE_WIF is hard-coded "true" because this job
-          # always forwards the four --anthropic-* flags below;
-          # surfacing it as a variable keeps the gate's logic
-          # readable rather than burying the rationale in a long
-          # boolean expression.
-          ANTHROPIC_USE_WIF=true
-          if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ "$ANTHROPIC_USE_WIF" = "true" ]; then
+          # Check whether a real credential source is available.
+          # GitHub Actions sets ACTIONS_ID_TOKEN_REQUEST_URL only when
+          # id-token: write is in scope and the OIDC subsystem is
+          # operational. If neither a static key nor WIF is present,
+          # skip the run steps and emit a warning so the missing
+          # credential is visible in the job log rather than buried as
+          # per-task auth errors.
+          if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
             echo "has_credentials=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_credentials=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No Anthropic credentials configured (neither ANTHROPIC_API_KEY nor WIF). Skipping live eval runs."
+            echo "::warning::No Anthropic credentials configured (neither ANTHROPIC_API_KEY nor ACTIONS_ID_TOKEN_REQUEST_URL). Skipping live eval runs."
           fi
 
       - name: Run eval suite
