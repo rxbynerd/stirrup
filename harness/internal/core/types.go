@@ -418,6 +418,13 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		// Defensive: extractAsyncToolResult only ever delivers
 		// asyncToolResult, so reaching this branch means the correlator
 		// was wired with a different extractor. Treat as a hard error.
+		//
+		// TODO(#229-followup): no dispatch-site test covers this
+		// emission because the production wiring exposes no seam to
+		// inject a non-asyncToolResult payload — ensureAsyncCorrelator
+		// always attaches extractAsyncToolResult. Gap deferred per
+		// the wave-1-issue-229 synthesis brief; revisit if a future
+		// refactor exposes a way to swap the extractor for tests.
 		return fmt.Sprintf("async tool %s internal error: unexpected payload type %T", call.Name, payload), false, observability.ToolFailureAsyncInternal
 	}
 	if resp.isError {

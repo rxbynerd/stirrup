@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -822,3 +823,192 @@ func TestToolFailureMetrics_AsyncDeadlineRoutesToTimeout(t *testing.T) {
 		t.Errorf("async_cancelled count = %d, want 0 (deadline must NOT route to cancelled); full failures = %+v", cancelledHits, failures)
 	}
 }
+
+// TestToolFailureMetrics_AsyncCancelled exercises the user-driven
+// cancellation path: a live transport that never resolves, dispatch
+// blocks on the correlator, and the run context is cancelled
+// explicitly (not via deadline). Must emit async_cancelled, NOT
+// async_timeout — the operator-visible distinction the deadline split
+// preserves.
+func TestToolFailureMetrics_AsyncCancelled(t *testing.T) {
+	tr := newAsyncTestTransport()
+	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
+	cfg := &types.RunConfig{
+		RunID:        "test-run-cancel",
+		Mode:         "execution",
+		ToolDispatch: &types.ToolDispatchConfig{MaxParallel: 1},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel once the request has been emitted (so we know the Await
+	// is registered and will observe the cancellation via its
+	// ctx.Done branch). The 2s deadline is a wiring-failure guard,
+	// not a timeout we expect to hit.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if tr.lastRequestID("tool_result_request") != "" {
+				cancel()
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	_, _, outcome := loop.planAndDispatch(
+		ctx, cfg,
+		[]types.ToolCall{{ID: "tc_cancel", Name: "async_echo", Input: json.RawMessage(`{}`)}},
+		&stallDetector{},
+		"anthropic", "claude-sonnet-4-6",
+	)
+	if outcome != "" {
+		t.Fatalf("unexpected stall outcome %q", outcome)
+	}
+	failures := collectFailures(t, reader)
+	var timeoutHits, cancelledHits int64
+	for _, fp := range failures {
+		switch fp.category {
+		case observability.ToolFailureAsyncTimeout.String():
+			timeoutHits += fp.value
+		case observability.ToolFailureAsyncCancelled.String():
+			cancelledHits += fp.value
+		}
+	}
+	if cancelledHits != 1 {
+		t.Errorf("async_cancelled count = %d, want exactly 1; full failures = %+v", cancelledHits, failures)
+	}
+	if timeoutHits != 0 {
+		t.Errorf("async_timeout count = %d, want 0 on explicit cancellation; full failures = %+v", timeoutHits, failures)
+	}
+}
+
+// TestToolFailureMetrics_AsyncUpstreamError exercises the
+// IsError=true response path: the control plane delivers a
+// tool_result_response with IsError=true, which dispatch maps to
+// async_upstream_error to keep upstream faults distinct from
+// harness-side faults on dashboards.
+func TestToolFailureMetrics_AsyncUpstreamError(t *testing.T) {
+	tr := newAsyncTestTransport()
+	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
+	cfg := &types.RunConfig{
+		RunID:        "test-run-upstream-err",
+		Mode:         "execution",
+		ToolDispatch: &types.ToolDispatchConfig{MaxParallel: 1},
+	}
+	// Fire a matching IsError=true response after the dispatch
+	// emits its tool_result_request.
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if id := tr.lastRequestID("tool_result_request"); id != "" {
+				yes := true
+				tr.FireControl(types.ControlEvent{
+					Type:      "tool_result_response",
+					RequestID: id,
+					Content:   "upstream said no",
+					IsError:   &yes,
+				})
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	results, _, outcome := loop.planAndDispatch(
+		context.Background(), cfg,
+		[]types.ToolCall{{ID: "tc_upstream", Name: "async_echo", Input: json.RawMessage(`{}`)}},
+		&stallDetector{},
+		"anthropic", "claude-sonnet-4-6",
+	)
+	if outcome != "" {
+		t.Fatalf("unexpected stall outcome %q", outcome)
+	}
+	if len(results) != 1 || !results[0].IsError {
+		t.Fatalf("expected one errored result, got %+v", results)
+	}
+	if !strings.Contains(results[0].Content, "upstream_error:") {
+		t.Errorf("result content missing upstream_error: prefix, got %q", results[0].Content)
+	}
+	failures := collectFailures(t, reader)
+	var upstreamHits int64
+	for _, fp := range failures {
+		if fp.category == observability.ToolFailureAsyncUpstreamError.String() {
+			upstreamHits += fp.value
+			if fp.tool != "async_echo" {
+				t.Errorf("async_upstream_error tool.name = %q, want %q", fp.tool, "async_echo")
+			}
+		}
+	}
+	if upstreamHits != 1 {
+		t.Errorf("async_upstream_error count = %d, want exactly 1; full failures = %+v", upstreamHits, failures)
+	}
+}
+
+// TestToolFailureMetrics_AsyncPanic exercises the Phase 2 goroutine
+// panic-recovery path: a panicking AsyncHandler must be recovered,
+// converted into a structured tool failure, and tagged async_panic.
+// Sibling calls must be unaffected — the panic test in
+// dispatch_parallel_test.go covers that invariant; this test focuses
+// on the metric emission specifically.
+func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
+	tr := newAsyncTestTransport()
+	panicTool := &tool.Tool{
+		Name:        "async_will_panic",
+		Description: "async tool whose preflight panics",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		AsyncHandler: func(_ context.Context, _ json.RawMessage) (tool.AsyncDispatch, error) {
+			panic("synthetic panic for metrics test")
+		},
+	}
+	loop, reader := buildMetricsHarness(t, []*tool.Tool{panicTool}, nil, nil, tr)
+	cfg := &types.RunConfig{
+		RunID:        "test-run-panic",
+		Mode:         "execution",
+		// The fan-out goroutine is the panic recovery site; ensure
+		// the async branch is taken by MaxParallel >= 1.
+		ToolDispatch: &types.ToolDispatchConfig{MaxParallel: 1},
+	}
+	results, _, outcome := loop.planAndDispatch(
+		context.Background(), cfg,
+		[]types.ToolCall{{ID: "tc_panic_m", Name: "async_will_panic", Input: json.RawMessage(`{}`)}},
+		&stallDetector{},
+		"anthropic", "claude-sonnet-4-6",
+	)
+	if outcome != "" {
+		t.Fatalf("unexpected stall outcome %q", outcome)
+	}
+	if len(results) != 1 || !results[0].IsError {
+		t.Fatalf("expected one errored result on panic, got %+v", results)
+	}
+	if !strings.Contains(results[0].Content, "panic") {
+		t.Errorf("result content missing 'panic' substring, got %q", results[0].Content)
+	}
+	failures := collectFailures(t, reader)
+	var panicHits int64
+	for _, fp := range failures {
+		if fp.category == observability.ToolFailureAsyncPanic.String() {
+			panicHits += fp.value
+			if fp.tool != "async_will_panic" {
+				t.Errorf("async_panic tool.name = %q, want %q", fp.tool, "async_will_panic")
+			}
+		}
+	}
+	if panicHits != 1 {
+		t.Errorf("async_panic count = %d, want exactly 1; full failures = %+v", panicHits, failures)
+	}
+}
+
+// async_internal_error is intentionally untested.
+//
+// The category is emitted at types.go's defensive "unexpected payload
+// type" branch in dispatchAsyncToolCall: it only fires if the loop's
+// async correlator were attached with a PayloadExtractor that
+// delivers something other than asyncToolResult. The production code
+// wires extractAsyncToolResult exclusively (see
+// ensureAsyncCorrelator), so the branch is unreachable without
+// exposing a test-only hook on the correlator-attach path or
+// introducing a parallel construction path.
+//
+// Per the synthesis brief's explicit allowance for this gap, the
+// deferral is documented here rather than weakening the seam.
+// TODO(#229-followup): if a future refactor exposes a way to inject
+// a custom PayloadExtractor for tests, add a TestToolFailureMetrics_
+// AsyncInternalError that submits a non-asyncToolResult payload and
+// asserts async_internal_error emission.
