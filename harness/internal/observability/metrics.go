@@ -28,6 +28,7 @@ type Metrics struct {
 	TokensOutput          metric.Int64Counter
 	ToolCalls             metric.Int64Counter
 	ToolErrors            metric.Int64Counter
+	ToolFailures          metric.Int64Counter
 	ProviderRequests      metric.Int64Counter
 	ProviderErrors        metric.Int64Counter
 	ProviderRetryOutcomes metric.Int64Counter
@@ -282,6 +283,25 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.ToolErrors, err = meter.Int64Counter("stirrup.harness.tool_errors",
 		metric.WithUnit("{call}"),
 		metric.WithDescription("Total tool calls that failed"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// ToolFailures decomposes ToolErrors by normalised failure category
+	// and labels each observation with provider.type, provider.model,
+	// tool.name, run.mode, and category. The category attribute is
+	// drawn from the closed ToolFailureCategory enum (see
+	// toolfailure.go) so series cardinality is bounded regardless of
+	// adversary-influenceable inputs. Includes turn-level provider
+	// failures attributable to the tool-use pipeline (request
+	// rejection, mid-stream parser errors with tools attached) and
+	// stall-detector terminations triggered by tool failure patterns,
+	// in addition to the dispatch-site failures already counted by
+	// ToolErrors.
+	m.ToolFailures, err = meter.Int64Counter("stirrup.harness.tool_failures",
+		metric.WithUnit("{failure}"),
+		metric.WithDescription("Tool-use failures decomposed by provider, model, tool, and bounded failure category"),
 	)
 	if err != nil {
 		return nil, err
