@@ -3,7 +3,9 @@ package judge
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,18 +248,49 @@ func TestComposite_DefaultRequireAll(t *testing.T) {
 	}
 }
 
-func TestDiffReview_NotImplemented(t *testing.T) {
+// TestDiffReview_RequiresCriteria pins the input-validation contract:
+// the diff-review judge fails fast when its criteria string is empty,
+// without trying to make any API call. This is the "operator forgot
+// to fill in the judge block" error path.
+func TestDiffReview_RequiresCriteria(t *testing.T) {
 	dir := t.TempDir()
 	j := types.EvalJudge{Type: "diff-review"}
-	v, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
+	if err == nil {
+		t.Fatal("expected error when criteria is empty")
 	}
-	if v.Passed {
-		t.Fatal("expected fail for unimplemented diff-review")
+	if !strings.Contains(err.Error(), "criteria") {
+		t.Errorf("error should mention criteria: %v", err)
 	}
-	if v.Reason != "diff-review judge not yet implemented" {
-		t.Fatalf("unexpected reason: %s", v.Reason)
+}
+
+// TestDiffReview_RequiresAPIKey pins the missing-secret error path:
+// with criteria set but ANTHROPIC_API_KEY unset, the judge returns
+// a clear error rather than crashing or silently passing.
+func TestDiffReview_RequiresAPIKey(t *testing.T) {
+	// Initialize a workspace as a git repo so captureDiff succeeds
+	// before the api-key check fires. Without `git init` the
+	// `git diff HEAD` call fails first; we want the test to pin
+	// the api-key error, not the missing-repo error.
+	dir := t.TempDir()
+	if err := exec.Command("git", "-C", dir, "init", "-q").Run(); err != nil {
+		t.Skipf("git init unavailable: %v", err)
+	}
+	if err := exec.Command("git", "-C", dir, "commit", "--allow-empty", "-m", "init", "--quiet").Run(); err != nil {
+		// commit may fail on a system without git user config;
+		// give the test a chance to still exercise the api-key
+		// check by trying without it.
+		t.Logf("git commit failed (continuing): %v", err)
+	}
+
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	j := types.EvalJudge{Type: "diff-review", Criteria: "be good"}
+	_, err := Evaluate(context.Background(), j, JudgeContext{WorkspaceDir: dir})
+	if err == nil {
+		t.Fatal("expected error when ANTHROPIC_API_KEY is unset")
+	}
+	if !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Errorf("error should mention the env var: %v", err)
 	}
 }
 
