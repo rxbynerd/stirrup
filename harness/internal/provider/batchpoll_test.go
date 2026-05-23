@@ -528,7 +528,7 @@ func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T
 	// Use a chan to release the hanging cancel handler when the test ends,
 	// so we do not leak goroutines beyond the test boundary.
 	release := make(chan struct{})
-	defer close(release)
+	var slowCancelStarted atomic.Bool
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -536,10 +536,13 @@ func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{"id":"batch_xyz","processing_status":"in_progress"}`)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/cancel"):
-			// Block until the test releases — simulates a slow Anthropic
-			// cancel endpoint that would otherwise pin the goroutine to
-			// the full batchCancelTimeout.
-			<-release
+			// Only the first cancel request simulates the slow endpoint.
+			// A retry racing with test teardown should not create a
+			// second active connection parked behind the same release
+			// channel.
+			if slowCancelStarted.CompareAndSwap(false, true) {
+				<-release
+			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = io.WriteString(w, `{}`)
 		default:
@@ -547,7 +550,11 @@ func TestHarnessPollingBatch_BestEffortCancel_HangsForCancelTimeout(t *testing.T
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() {
+		close(release)
+		srv.CloseClientConnections()
+	})
 
 	// 30 ms maxWait lets the timeout fire well before the test budget.
 	c, teardown := newTestPollingClient(t, srv, src, 30*time.Millisecond)
