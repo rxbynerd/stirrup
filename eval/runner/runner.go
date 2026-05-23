@@ -210,14 +210,12 @@ func runTasksConcurrently(ctx context.Context, tasks []types.EvalTask, cfg RunCo
 	jobs := make(chan job)
 
 	var wg sync.WaitGroup
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range concurrency {
+		wg.Go(func() {
 			for j := range jobs {
 				results[j.idx] = runTask(ctx, j.task, cfg, suiteArtifactDir, baseline)
 			}
-		}()
+		})
 	}
 
 	// Feed jobs; honour ctx cancellation so we don't deadlock if all workers

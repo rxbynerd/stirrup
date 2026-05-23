@@ -680,10 +680,7 @@ func sampleTraces(traces []types.RunTrace, sampleBy string, limit int) []types.R
 
 	out := make([]types.RunTrace, 0, limit)
 	for _, a := range allocs {
-		n := a.quota
-		if n > len(a.members) {
-			n = len(a.members)
-		}
+		n := min(a.quota, len(a.members))
 		out = append(out, a.members[:n]...)
 	}
 	return out
@@ -1241,8 +1238,8 @@ func parseDuration(s string) (time.Duration, error) {
 	}
 
 	// Handle "Nd" suffix for days.
-	if strings.HasSuffix(s, "d") {
-		days, err := strconv.ParseFloat(strings.TrimSuffix(s, "d"), 64)
+	if trimmed, ok := strings.CutSuffix(s, "d"); ok {
+		days, err := strconv.ParseFloat(trimmed, 64)
 		if err != nil {
 			return 0, fmt.Errorf("cannot parse %q as duration", s)
 		}
