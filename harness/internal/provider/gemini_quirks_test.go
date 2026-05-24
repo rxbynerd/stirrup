@@ -1,7 +1,14 @@
 package provider
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -91,6 +98,130 @@ func TestGeminiQuirks_Gemini31PreviewLocked_StreamArgsOff(t *testing.T) {
 		t.Errorf("gemini-3.1-pro-preview: body contains streamFunctionCallArguments=true (post-#191 regression): %s", body)
 	}
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(geminiFixtureRoot, "gemini-3.1-pro-preview", "request.json"), body)
+}
+
+// geminiQuirksLogStubServer returns an httptest server that drains
+// the request body and returns a minimal valid Gemini SSE response
+// (one text part + finishReason=STOP). Used by the logging tests so
+// the Stream call completes the full debug/parse path without
+// touching a real Vertex AI endpoint.
+func geminiQuirksLogStubServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w,
+			"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]}}]}\n\n"+
+				"data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n",
+		)
+	}))
+}
+
+// TestGeminiAdapter_QuirksDebugLogListsAppliedRules pins the
+// per-Stream debug line in the Gemini adapter (design §5): the line
+// fires at the top of every Stream call and lists the descriptions
+// of the rules that contributed to the resolution. Mirrors the
+// openai-counterpart TestOpenAIAdapter_DebugLogListsAppliedRules
+// so a future change to the resolution-logging convention is caught
+// uniformly across adapters.
+//
+// gemini-2.5-pro is sufficient to trigger the Gemini base rule
+// ("Gemini: off streamFunctionCallArguments"); the substring asserted
+// is taken verbatim from the rule's Description field, so renaming
+// the description requires updating this test in lockstep.
+func TestGeminiAdapter_QuirksDebugLogListsAppliedRules(t *testing.T) {
+	srv := geminiQuirksLogStubServer(t)
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil)
+	adapter.baseURLOverride = srv.URL
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gemini-2.5-pro",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "gemini quirks resolved") {
+		t.Errorf("debug log message absent from output: %s", logOutput)
+	}
+	const wantRule = "Gemini: off streamFunctionCallArguments"
+	if !strings.Contains(logOutput, wantRule) {
+		t.Errorf("debug log missing rule description substring %q: %s", wantRule, logOutput)
+	}
+}
+
+// TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic confirms the
+// adapter falls back to slog.Default() when Logger is nil rather
+// than panicking on the DebugContext call. The nil-Logger path is
+// guarded in Stream but the test pins it explicitly so a future
+// refactor that drops the guard fails this test rather than
+// surfacing as a nil-deref panic in production.
+func TestGeminiAdapter_QuirksDebugLog_NilLoggerNoPanic(t *testing.T) {
+	srv := geminiQuirksLogStubServer(t)
+	defer srv.Close()
+
+	adapter := NewGeminiAdapter(staticBearer("test-token"), "test-project", "us-central1", nil)
+	adapter.baseURLOverride = srv.URL
+	adapter.Logger = nil
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "gemini-2.5-pro",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+}
+
+// TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry pins the
+// load-bearing design invariant from PR #316: the registry-resolved
+// ProviderQuirks value for any Gemini model is byte-identical, on
+// the wire, to a zero-value ProviderQuirks. The base rule
+// ("Gemini: off streamFunctionCallArguments") writes StreamArgsOff,
+// which IS the zero value of GeminiStreamArgsShape, so the rule is
+// functionally a no-op — but the registry path is the canonical
+// post-#191 default and callers that bypass the registry would
+// regress silently if the rule ever wrote a non-zero value.
+//
+// The test marshals both paths to JSON and asserts bytes.Equal.
+// A future rule that diverges the registry-resolved value from
+// the zero-value default would fail this test, forcing a deliberate
+// decision rather than a silent behaviour change.
+func TestGeminiQuirks_ZeroValueIsIdenticalToDefaultRegistry(t *testing.T) {
+	params := geminiQuirksCanonicalParams("gemini-3.1-pro-preview")
+
+	pre, _, err := BuildGenerateContentRequest(params, nil, quirks.ProviderQuirks{})
+	if err != nil {
+		t.Fatalf("zero-value build: %v", err)
+	}
+	post, _, err := BuildGenerateContentRequest(params, nil, quirks.DefaultRegistry().Resolve("gemini", "gemini-3.1-pro-preview"))
+	if err != nil {
+		t.Fatalf("registry-resolved build: %v", err)
+	}
+	if !bytes.Equal(pre, post) {
+		t.Errorf("zero-value vs registry-resolved wire shape diverged:\n pre:  %s\n post: %s", pre, post)
+	}
 }
 
 // TestGeminiQuirks_OmitSamplingParams_NoOpForGemini is the
