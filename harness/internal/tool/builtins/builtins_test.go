@@ -643,6 +643,37 @@ func TestRegisterBuiltins(t *testing.T) {
 // tool is generous — the longest description today is well under 1000.
 const maxToolDescriptionLen = 2000
 
+// hasPositiveUseThis reports whether desc contains a "Use this" clause
+// that is NOT negated. A description containing only "Do not use this..."
+// or "Don't use this..." would slip past a plain substring check on
+// "Use this"; this helper walks every occurrence and rejects those whose
+// immediately preceding text ends in "not " or "'t ", returning true
+// only if at least one *positive* when-to-use clause is present.
+// Case-insensitive: both "Use this" and "use this" count.
+func hasPositiveUseThis(desc string) bool {
+	lower := strings.ToLower(desc)
+	idx := 0
+	for {
+		hit := strings.Index(lower[idx:], "use this")
+		if hit < 0 {
+			return false
+		}
+		pos := idx + hit
+		// Inspect the immediately preceding context (up to 8 chars) for
+		// negative-guidance prefixes. "Do not " / "don't " / " not "
+		// all end in "not " or "'t " before "use this".
+		start := pos - 8
+		if start < 0 {
+			start = 0
+		}
+		prefix := lower[start:pos]
+		if !strings.HasSuffix(prefix, "not ") && !strings.HasSuffix(prefix, "'t ") {
+			return true
+		}
+		idx = pos + len("use this")
+	}
+}
+
 // extractJSONExample pulls the JSON object that follows the rightmost
 // "Example" marker in a tool description and returns the raw bytes.
 // Matching from the rightmost marker keeps tools with multiple worked
@@ -713,8 +744,11 @@ func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 			// the enriched descriptions. Asserting on it (rather than a
 			// hand-curated per-tool phrase) keeps the contract uniform
 			// and forces future tools to adopt the same convention.
-			if !strings.Contains(def.Description, "Use this") {
-				t.Errorf("description missing when-to-use guidance (expected substring %q)", "Use this")
+			// hasPositiveUseThis rejects matches that are negated (a
+			// description containing only "Do not use this..." would
+			// otherwise pass an unguarded strings.Contains).
+			if !hasPositiveUseThis(def.Description) {
+				t.Errorf("description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
 			}
 			example, ok := extractJSONExample(def.Description)
 			if !ok {
@@ -723,6 +757,58 @@ func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 			var probe map[string]any
 			if err := json.Unmarshal([]byte(example), &probe); err != nil {
 				t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+			}
+		})
+	}
+}
+
+// TestHasPositiveUseThis confirms the tightened when-to-use check
+// rejects descriptions whose only "Use this" appears inside a negation
+// (Do not / Don't / not) while still passing descriptions that carry
+// both a negation and a genuine positive clause. Locks the contract so
+// a future loosening of the helper trips a clear failure.
+func TestHasPositiveUseThis(t *testing.T) {
+	cases := []struct {
+		name string
+		desc string
+		want bool
+	}{
+		{
+			name: "only negated do not",
+			desc: "Do not use this for X.",
+			want: false,
+		},
+		{
+			name: "only negated don't",
+			desc: "Don't use this for X.",
+			want: false,
+		},
+		{
+			name: "only negated bare not",
+			desc: "We do not use this approach.",
+			want: false,
+		},
+		{
+			name: "positive only",
+			desc: "Use this when reading a known file.",
+			want: true,
+		},
+		{
+			name: "both negated and positive",
+			desc: "Use this for X. Do not use this for Y.",
+			want: true,
+		},
+		{
+			name: "no use this at all",
+			desc: "Some unrelated description.",
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasPositiveUseThis(tc.desc); got != tc.want {
+				t.Errorf("hasPositiveUseThis(%q) = %v, want %v", tc.desc, got, tc.want)
 			}
 		})
 	}
@@ -792,8 +878,8 @@ func TestSpawnAgentTool_EnrichedShape(t *testing.T) {
 	if len(def.Description) > maxToolDescriptionLen {
 		t.Errorf("description length %d exceeds cap %d", len(def.Description), maxToolDescriptionLen)
 	}
-	if !strings.Contains(def.Description, "Use this") {
-		t.Errorf("description missing when-to-use guidance")
+	if !hasPositiveUseThis(def.Description) {
+		t.Errorf("description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
 	}
 	example, ok := extractJSONExample(def.Description)
 	if !ok {

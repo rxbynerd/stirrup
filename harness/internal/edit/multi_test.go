@@ -88,8 +88,12 @@ func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
 	if len(def.Description) > maxEditFileDescriptionLen {
 		t.Errorf("description length %d exceeds cap %d", len(def.Description), maxEditFileDescriptionLen)
 	}
-	if !strings.Contains(def.Description, "Use this") {
-		t.Errorf("description missing when-to-use guidance (expected substring %q)", "Use this")
+	// hasPositiveUseThis rejects negated matches (a description
+	// containing only "Do not use this..." would otherwise pass an
+	// unguarded strings.Contains check). Mirrors the helper in
+	// harness/internal/tool/builtins/builtins_test.go.
+	if !hasPositiveUseThis(def.Description) {
+		t.Errorf("description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
 	}
 	example, ok := extractEditFileJSONExample(def.Description)
 	if !ok {
@@ -98,6 +102,31 @@ func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
 	var probe map[string]any
 	if err := json.Unmarshal([]byte(example), &probe); err != nil {
 		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+	}
+}
+
+// hasPositiveUseThis reports whether desc contains a "Use this" clause
+// that is NOT negated. Mirrors the helper in
+// harness/internal/tool/builtins/builtins_test.go; the two packages
+// keep independent copies so each test suite stays self-contained.
+func hasPositiveUseThis(desc string) bool {
+	lower := strings.ToLower(desc)
+	idx := 0
+	for {
+		hit := strings.Index(lower[idx:], "use this")
+		if hit < 0 {
+			return false
+		}
+		pos := idx + hit
+		start := pos - 8
+		if start < 0 {
+			start = 0
+		}
+		prefix := lower[start:pos]
+		if !strings.HasSuffix(prefix, "not ") && !strings.HasSuffix(prefix, "'t ") {
+			return true
+		}
+		idx = pos + len("use this")
 	}
 }
 
