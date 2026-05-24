@@ -526,6 +526,15 @@ func (g *GeminiAdapter) consumeSSE(
 		// the typed chunk struct does not know about. The double
 		// decode is per-chunk only when at least one rule is active —
 		// zero overhead for non-Gemini-3 streams.
+		//
+		// Cost note: the typed decode into `generateContentChunk`
+		// above is the load-bearing one; CaptureFromJSON below
+		// re-decodes the same bytes into `any` for untyped path
+		// walking. The cost is one extra json.Unmarshal per chunk,
+		// bounded by the SSE scanner's per-line cap
+		// (geminiMaxScannerBuffer = 16 MiB, set above). Acceptable
+		// because the path is gated by len(q.ReplayFields) > 0 and
+		// only the gemini-3* rule registers ReplayFields today.
 		if len(q.ReplayFields) > 0 {
 			if captured := quirks.CaptureFromJSON([]byte(data), q.ReplayFields); len(captured) > 0 {
 				for k, v := range captured {

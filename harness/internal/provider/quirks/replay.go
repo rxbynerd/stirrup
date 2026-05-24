@@ -60,6 +60,13 @@ type ReplayPathSegment struct {
 // The parser is intentionally small and table-driven so the surface
 // stays auditable. Callers should treat the returned segments as
 // immutable — the walker reads them many times per response.
+//
+// Precondition: paths come from first-party BuiltinRules() only.
+// There is no operator-injectable path surface in v1, so no
+// segment-count or key-length cap is enforced here. If a future
+// provider.quirkOverrides surface (design §5.1) ever lets operators
+// author paths, enforce caps (e.g. 16 segments, 64-byte keys) at
+// that injection point before the path reaches ParseReplayPath.
 func ParseReplayPath(path string) ([]ReplayPathSegment, error) {
 	if path == "" {
 		return nil, fmt.Errorf("quirks: empty replay path")

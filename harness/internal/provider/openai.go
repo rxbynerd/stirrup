@@ -503,6 +503,15 @@ func (c *openaiChunkChoice) UnmarshalJSON(data []byte) error {
 	if len(helper.Delta) > 0 {
 		c.RawDelta = append(c.RawDelta[:0], helper.Delta...)
 		if err := json.Unmarshal(helper.Delta, &c.Delta); err != nil {
+			// No security.Scrub on the wrapped error: stdlib json
+			// decode errors (UnmarshalTypeError, SyntaxError) carry
+			// only the Go type name and field path — never the
+			// offending value. The gemini adapter does scrub its
+			// HTTP error-body branch (gemini.go around the
+			// resp.StatusCode != 200 path) because that branch
+			// holds the provider's diagnostic prose, which can
+			// contain quota identifiers and trace IDs; the per-
+			// chunk JSON decode here has no such payload.
 			return fmt.Errorf("openaiChunkChoice.delta: %w", err)
 		}
 	}
