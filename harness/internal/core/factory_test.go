@@ -303,10 +303,17 @@ func TestBuildEditStrategy_WholeFile(t *testing.T) {
 	}
 }
 
+// TestBuildEditStrategy_Empty pins the defence-in-depth behaviour of
+// buildEditStrategy for callers that bypass types.ValidateRunConfig.
+// The validator fills an empty EditStrategy.Type with "multi" before
+// the factory is reached, so this branch should never trigger in a
+// validated run — but if it does, the factory must not silently fall
+// back to a strategy that exposes a different write-tool surface than
+// every validated entrypoint.
 func TestBuildEditStrategy_Empty(t *testing.T) {
 	es := buildEditStrategy(types.EditStrategyConfig{})
-	if _, ok := es.(*edit.WholeFileStrategy); !ok {
-		t.Fatalf("expected WholeFileStrategy for empty type, got %T", es)
+	if _, ok := es.(*edit.MultiStrategy); !ok {
+		t.Fatalf("expected MultiStrategy for empty type, got %T", es)
 	}
 }
 
@@ -341,8 +348,8 @@ func TestBuildEditStrategy_CustomFuzzyThreshold(t *testing.T) {
 
 func TestBuildEditStrategy_UnknownFallsBack(t *testing.T) {
 	es := buildEditStrategy(types.EditStrategyConfig{Type: "nonexistent"})
-	if _, ok := es.(*edit.WholeFileStrategy); !ok {
-		t.Fatalf("expected WholeFileStrategy for unknown type, got %T", es)
+	if _, ok := es.(*edit.MultiStrategy); !ok {
+		t.Fatalf("expected MultiStrategy for unknown type, got %T", es)
 	}
 }
 
@@ -1409,6 +1416,72 @@ func TestBuildLoopWithTransport_MinimalValidConfig(t *testing.T) {
 	}
 	if loop.Logger == nil {
 		t.Fatal("Logger is nil")
+	}
+}
+
+// TestBuildLoopWithTransport_EmptyEditStrategyDefaultsToMulti pins the
+// full composition — ValidateRunConfig → applyEditStrategyDefault →
+// buildEditStrategy → wrapWithCodeScanner — across the BuildLoopWithTransport
+// seam. The two halves are exercised independently elsewhere
+// (TestValidateRunConfig_EditStrategyDefaultsToMulti in
+// types/runconfig_test.go and TestBuildEditStrategy_Empty above), but
+// either side could regress without breaking the other: e.g. removing
+// the applyEditStrategyDefault call from ValidateRunConfig while
+// re-adding case "" to buildEditStrategy would leave both unit tests
+// green. This test fails in that scenario because the factory's
+// buildEditStrategy now returns MultiStrategy for an empty type
+// (defence-in-depth) — so we need a non-multi explicit choice in the
+// other tests to detect a missed default. With execution mode, the
+// "patterns" CodeScanner default wraps the base strategy in a
+// ScannedStrategy whose Inner() is the MultiStrategy.
+func TestBuildLoopWithTransport_EmptyEditStrategyDefaultsToMulti(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:           "factory-test-edit-default",
+		Mode:            "execution",
+		Prompt:          "hello",
+		Provider:        types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:        types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		// EditStrategy intentionally omitted: the whole point of this
+		// test is the empty-type → "multi" default chain.
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	// ValidateRunConfig should have written "multi" into the (otherwise
+	// empty) EditStrategy.Type before the factory ran.
+	if config.EditStrategy.Type != "multi" {
+		t.Errorf("expected ValidateRunConfig to default EditStrategy.Type to \"multi\", got %q", config.EditStrategy.Type)
+	}
+
+	// Execution mode defaults CodeScanner.Type to "patterns", which
+	// wraps the base strategy in a ScannedStrategy. Unwrap once before
+	// asserting the inner type.
+	got := loop.Edit
+	if scanned, ok := got.(*edit.ScannedStrategy); ok {
+		got = scanned.Inner()
+	}
+	if _, ok := got.(*edit.MultiStrategy); !ok {
+		t.Fatalf("expected loop.Edit to resolve to *edit.MultiStrategy (possibly via ScannedStrategy wrapper), got %T", loop.Edit)
 	}
 }
 

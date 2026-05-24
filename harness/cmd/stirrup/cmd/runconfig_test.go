@@ -349,3 +349,48 @@ func TestRunRunConfigWithIO_TableDriven(t *testing.T) {
 		})
 	}
 }
+
+// TestRunRunConfig_EmptyEditStrategyDefaultsToMulti pins the
+// stirrup run-config subcommand's edit-strategy default behaviour.
+// With --validate (ResolveAll), the emitted document must carry
+// EditStrategy.Type = "multi" because the validation layer is the
+// single normalization point. Without --validate (ResolveBase), the
+// emitted document deliberately preserves the empty value so chained
+// `run-config | run-config | ...` stages remain idempotent and a
+// later stage can layer one more override on top.
+func TestRunRunConfig_EmptyEditStrategyDefaultsToMulti(t *testing.T) {
+	t.Run("validate fills default", func(t *testing.T) {
+		out, err := runRunConfigForTest(t, []string{
+			"--validate",
+			"--mode", "execution",
+			"--prompt", "test",
+		}, "")
+		if err != nil {
+			t.Fatalf("runRunConfig: %v", err)
+		}
+		var cfg types.RunConfig
+		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+			t.Fatalf("unparseable JSON: %v\n%s", err, out)
+		}
+		if cfg.EditStrategy.Type != "multi" {
+			t.Errorf("EditStrategy.Type = %q, want multi (subcommand default must match CLI and validation)", cfg.EditStrategy.Type)
+		}
+	})
+
+	t.Run("base mode preserves empty for chaining", func(t *testing.T) {
+		out, err := runRunConfigForTest(t, []string{
+			"--mode", "execution",
+			"--prompt", "test",
+		}, "")
+		if err != nil {
+			t.Fatalf("runRunConfig: %v", err)
+		}
+		var cfg types.RunConfig
+		if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+			t.Fatalf("unparseable JSON: %v\n%s", err, out)
+		}
+		if cfg.EditStrategy.Type != "" {
+			t.Errorf("EditStrategy.Type = %q, want empty (ResolveBase must not apply defaults a downstream stage could override)", cfg.EditStrategy.Type)
+		}
+	})
+}

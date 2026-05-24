@@ -1795,6 +1795,43 @@ func TestValidateRunConfig_CodeScannerExplicitOverridesDefault(t *testing.T) {
 	}
 }
 
+// --- EditStrategy default ---
+
+// TestValidateRunConfig_EditStrategyDefaultsToMulti pins the
+// single-normalization-point contract for the edit strategy: a
+// directly-embedded RunConfig with an empty EditStrategy.Type lands on
+// "multi" after validation, matching the CLI and gRPC entrypoints. Prior
+// to this default, the same caller would have reached the factory with
+// an empty Type and silently received the whole-file strategy, which
+// exposes a different write-tool surface than the CLI default.
+func TestValidateRunConfig_EditStrategyDefaultsToMulti(t *testing.T) {
+	c := validConfig() // EditStrategy.Type deliberately left empty
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("validation failed: %v", err)
+	}
+	if c.EditStrategy.Type != "multi" {
+		t.Errorf("expected EditStrategy.Type to default to %q, got %q", "multi", c.EditStrategy.Type)
+	}
+}
+
+// TestValidateRunConfig_EditStrategyExplicitPreserved confirms that an
+// operator who selects whole-file, search-replace, or udiff explicitly
+// is not silently rewritten to "multi" by the defaulting pass.
+func TestValidateRunConfig_EditStrategyExplicitPreserved(t *testing.T) {
+	for _, strategy := range []string{"whole-file", "search-replace", "udiff", "multi"} {
+		t.Run(strategy, func(t *testing.T) {
+			c := validConfig()
+			c.EditStrategy = EditStrategyConfig{Type: strategy}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("validation failed: %v", err)
+			}
+			if c.EditStrategy.Type != strategy {
+				t.Errorf("expected explicit %q to be preserved, got %q", strategy, c.EditStrategy.Type)
+			}
+		})
+	}
+}
+
 // --- Rule of Two ---
 
 // boolRef is a tiny helper for the *bool fields that gate a Rule-of-Two
