@@ -5320,3 +5320,53 @@ func TestRedact_ProviderBatchNotAliased(t *testing.T) {
 		t.Error("mutating redacted named-provider Batch.Enabled leaked to original")
 	}
 }
+
+// TestValidateRunConfig_CompatProfile pins the closed-enum behaviour
+// for ProviderConfig.CompatProfile (Wave 2 #221 Step 1). Empty and
+// "zai-glm" must validate; any other value must fail at startup with
+// an error mentioning the field path.
+func TestValidateRunConfig_CompatProfile(t *testing.T) {
+	t.Run("empty-accepted", func(t *testing.T) {
+		c := validConfig()
+		c.Provider.CompatProfile = ""
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("empty CompatProfile must validate, got: %v", err)
+		}
+	})
+	t.Run("zai-glm-accepted", func(t *testing.T) {
+		c := validConfig()
+		c.Provider.CompatProfile = "zai-glm"
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("CompatProfile=zai-glm must validate, got: %v", err)
+		}
+	})
+	t.Run("unknown-rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Provider.CompatProfile = "unknown"
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("CompatProfile=unknown must fail validation")
+		}
+		if !strings.Contains(err.Error(), "compatProfile") {
+			t.Errorf("error must mention compatProfile, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), `"unknown"`) {
+			t.Errorf("error must surface the offending value, got: %v", err)
+		}
+	})
+	t.Run("named-provider-validates", func(t *testing.T) {
+		// The named-provider loop runs the same validator; pin it so a
+		// future refactor that drops the per-entry call surfaces here.
+		c := validConfig()
+		c.Providers = map[string]ProviderConfig{
+			"secondary": {Type: "openai-compatible", CompatProfile: "not-real"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("named-provider CompatProfile=not-real must fail validation")
+		}
+		if !strings.Contains(err.Error(), "providers[secondary].compatProfile") {
+			t.Errorf("error must mention providers[secondary].compatProfile, got: %v", err)
+		}
+	})
+}

@@ -277,12 +277,13 @@ func guardRailConfigFromProto(pc *pb.GuardRailConfig) types.GuardRailConfig {
 
 func providerConfigFromProto(pc *pb.ProviderConfig) types.ProviderConfig {
 	cfg := types.ProviderConfig{
-		Type:         pc.Type,
-		APIKeyRef:    pc.ApiKeyRef,
-		Region:       pc.Region,
-		Profile:      pc.Profile,
-		BaseURL:      pc.BaseUrl,
-		APIKeyHeader: pc.ApiKeyHeader,
+		Type:          pc.Type,
+		APIKeyRef:     pc.ApiKeyRef,
+		Region:        pc.Region,
+		Profile:       pc.Profile,
+		BaseURL:       pc.BaseUrl,
+		APIKeyHeader:  pc.ApiKeyHeader,
+		CompatProfile: pc.CompatProfile,
 	}
 	if len(pc.QueryParams) > 0 {
 		// Copy the proto-owned map so later mutations to the wire payload

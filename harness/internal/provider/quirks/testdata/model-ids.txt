@@ -1,0 +1,7 @@
+gpt-4o
+gpt-5-nano
+o1-mini
+o1-preview
+claude-3-5-sonnet-20241022
+gemini-2.5-pro
+gemini-3.1-pro-preview

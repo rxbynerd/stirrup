@@ -76,6 +76,12 @@ func ValidCodeScannerTypeValues() []string { return sortedKeys(validCodeScannerT
 // RunConfig.GuardRail.Type.
 func ValidGuardRailTypeValues() []string { return sortedKeys(validGuardRailTypes) }
 
+// ValidCompatProfileValues returns the provider compat profiles
+// accepted on RunConfig.Provider.CompatProfile. The "" (no profile)
+// entry is filtered out so the completion list contains only the
+// typeable values.
+func ValidCompatProfileValues() []string { return sortedNonEmptyKeys(validCompatProfiles) }
+
 func sortedKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
