@@ -281,6 +281,73 @@ func TestRuleCarveOuts(t *testing.T) {
 	})
 }
 
+// TestBuiltinRulesStrictMode exercises the strict-mode rule wiring
+// through DefaultRegistry rather than a synthetic test registry. The
+// OpenAI strict-mode integration tests in the provider package use
+// strictRegistryFor(...) to pin the flag without depending on the
+// production globs, so a glob typo in builtin.go (e.g.
+// `gpt-4o-mini*` → `gpt-4o-mini-*`, which would drop the bare
+// `gpt-4o-mini` from coverage) would not fail any provider-level test.
+// This test closes that gap by asserting the resolved
+// BehaviourFlags.OpenAI.StrictMode through DefaultRegistry for each
+// model the built-in rules are documented to cover, plus pinned
+// negative cases that share the same provider type but are not meant
+// to enable strict mode.
+//
+// The positive set is derived from builtin.go's three strict-mode
+// rules: `gpt-4o-mini*`, `gpt-4.1*`, and `gpt-5*` (which composes
+// through the `gpt-5-chat*` carve-out without clearing StrictMode).
+// The negative set guards against false positives: a future rule
+// landing strict mode on a bare gpt-4o or on an o-series reasoning
+// model would either be a deliberate widening (update the test) or
+// a bug (the test catches it).
+func TestBuiltinRulesStrictMode(t *testing.T) {
+	positives := []string{
+		"gpt-4o-mini",
+		"gpt-4o-mini-2024-07-18",
+		"gpt-4.1",
+		"gpt-4.1-mini",
+		"gpt-4.1-nano",
+		"gpt-5-nano",
+		// gpt-5-chat-latest: carve-out clears OmitSamplingParams but
+		// must NOT clear StrictMode. Redundant with the dedicated
+		// sub-test in TestRuleCarveOuts; pinning both adds defence in
+		// depth because the failure surfaces under each test name.
+		"gpt-5-chat-latest",
+	}
+	for _, model := range positives {
+		model := model
+		t.Run(model+" enables strict mode", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("openai-compatible", model)
+			if !q.BehaviourFlags.OpenAI.StrictMode {
+				t.Errorf("%s: StrictMode = false (built-in rule did not fire)", model)
+			}
+		})
+	}
+
+	// Negative cases. Bare `gpt-4o` is documented by OpenAI as
+	// supporting strict mode but no rule covers it today (the rule
+	// glob `gpt-4o-mini*` is deliberately narrower; see
+	// quirks/builtin.go for the rationale). Pin the current state so
+	// a future opt-in is a deliberate edit. `o1-mini` matches the
+	// reasoning-class rule but not any strict-mode rule.
+	t.Run("gpt-4o does not enable strict mode", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+		if q.BehaviourFlags.OpenAI.StrictMode {
+			t.Errorf("gpt-4o: StrictMode = true; expected false (no built-in rule covers bare gpt-4o today)")
+		}
+	})
+	t.Run("o1-mini omits sampling params but does not enable strict mode", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "o1-mini")
+		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("o1-mini: OmitSamplingParams = false (reasoning-class rule should fire)")
+		}
+		if q.BehaviourFlags.OpenAI.StrictMode {
+			t.Errorf("o1-mini: StrictMode = true; expected false (no rule enables strict mode on o-series)")
+		}
+	})
+}
+
 // TestNoMetacharsInKnownModelIDs reads the catalogue at
 // testdata/model-ids.txt and asserts every entry is a literal model
 // identifier — no glob metacharacters. The catalogue exists to spot-
