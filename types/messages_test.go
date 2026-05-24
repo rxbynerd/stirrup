@@ -23,11 +23,14 @@ func TestToolResult_StructuredOmitemptyByteIdentical(t *testing.T) {
 	if strings.Contains(string(got), "structured") {
 		t.Errorf("nil Structured must be omitted, got: %s", got)
 	}
+	if strings.Contains(string(got), "kind") {
+		t.Errorf("empty Kind must be omitted, got: %s", got)
+	}
 }
 
 func TestToolResult_StructuredRoundTrip(t *testing.T) {
 	payload := json.RawMessage(`{"exit_code":0,"stdout":"ok"}`)
-	r := ToolResult{ToolUseID: "tu_2", Content: "ok", Structured: payload}
+	r := ToolResult{ToolUseID: "tu_2", Content: "ok", Structured: payload, Kind: "command_result"}
 	raw, err := json.Marshal(r)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -42,6 +45,9 @@ func TestToolResult_StructuredRoundTrip(t *testing.T) {
 	if string(back.Structured) != string(payload) {
 		t.Errorf("structured payload not preserved\n got: %s\nwant: %s", back.Structured, payload)
 	}
+	if back.Kind != "command_result" {
+		t.Errorf("kind not preserved: %q", back.Kind)
+	}
 }
 
 // TestToolCallRecord_StructuredOmitempty mirrors the invariant for the trace
@@ -54,5 +60,8 @@ func TestToolCallRecord_StructuredOmitempty(t *testing.T) {
 	}
 	if strings.Contains(string(got), "structured") {
 		t.Errorf("nil Structured must be omitted from ToolCallRecord, got: %s", got)
+	}
+	if strings.Contains(string(got), "kind") {
+		t.Errorf("empty Kind must be omitted from ToolCallRecord, got: %s", got)
 	}
 }
