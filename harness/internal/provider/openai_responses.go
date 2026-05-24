@@ -18,6 +18,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -53,6 +54,12 @@ type OpenAIResponsesAdapter struct {
 	queryParams  map[string]string
 	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	// Registry resolves per-(provider, model) quirks at the top of
+	// every Stream call. No rules target openai-responses in v1; the
+	// field exists so the integration point is in place when a
+	// Responses-specific divergence is added (design §7 Step 4). The
+	// constructor defaults it to quirks.DefaultRegistry().
+	Registry *quirks.Registry
 }
 
 // NewOpenAIResponsesAdapter creates an adapter for the OpenAI Responses API.
@@ -85,6 +92,7 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 		baseURL:      baseURL,
 		apiKeyHeader: auth.APIKeyHeader,
 		queryParams:  auth.QueryParams,
+		Registry:     quirks.DefaultRegistry(),
 	}
 }
 
@@ -483,6 +491,16 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		attribute.String("provider.type", "openai-responses"),
 		attribute.String("provider.model", params.Model),
 	)
+
+	// Resolve quirks for this (provider, model) pair. No rule
+	// targets openai-responses in v1, but the resolution is wired
+	// here so a future rule (e.g. a Responses-specific sampling-param
+	// omission) lands without re-shaping the Stream method.
+	registry := o.Registry
+	if registry == nil {
+		registry = quirks.DefaultRegistry()
+	}
+	_ = registry.Resolve("openai-responses", params.Model)
 
 	reqBody := buildResponsesRequest(params)
 	reqBody.Stream = true
