@@ -280,6 +280,48 @@ Eight built-in tools ship in `harness/internal/tool/builtins/`:
 link-local, multicast), DNS resolution validation, and a 100 KB
 response cap.
 
+### Structured tool results
+
+A `ToolResult` always carries a canonical text rendering in `Content`;
+that text is the fallback every provider can accept and is never
+dropped. Tools that can describe their output as stable fields
+additionally populate an optional typed envelope — `Structured`
+(a `json.RawMessage`) plus a `Kind` discriminator naming the payload's
+shape. The built-in producers emit four shapes: `command_result`
+(`stdout`, `stderr`, `exit_code`, timeout metadata), `search_result`
+(per-match `path`/`line`/`column`/`text`), `find_result`
+(workspace-relative paths), and `file_excerpt` (line window with
+truncation state). Each shape is a concrete Go struct in
+`harness/internal/tool/builtins/structured.go`, not a `map[string]any`,
+so the JSON contract is reviewable and stable.
+
+Whether the structured envelope reaches the model on the wire is a
+per-provider decision, gated by the `StructuredToolResults` capability
+resolved through the [provider-quirks layer](#provider-quirks-layer).
+The capability is a cross-provider concept the loop reasons about
+uniformly even though each family encodes a structured result
+differently:
+
+- **Anthropic** — the Messages API's `tool_result` `content` accepts a
+  content-block array. The adapter emits the canonical text part plus a
+  text part carrying the structured JSON, so the model receives both
+  renderings.
+- **Gemini** — `functionResponse.response` is a free-form JSON object.
+  The adapter embeds the envelope under `structured`/`kind` alongside
+  the canonical `content` key.
+- **OpenAI (Chat Completions and Responses)** — the tool message /
+  `function_call_output` is a plain string on the wire, so these
+  adapters carry no capability and send the text fallback only.
+
+The default is text-only and fail-safe: when the capability is unset or
+false — every provider with no rule, including Bedrock — the adapter
+sends `Content` verbatim and the wire body is byte-identical to the
+pre-structured shape. Structured data is purely additive; an adapter
+that has not opted in never sees it. Trace output includes the
+structured payload, scrubbed on the same footing as the text (the
+secret scrubber runs over `Structured` wherever it appears — the tool
+record and the message history).
+
 ### MCP
 
 The MCP client (`harness/internal/mcp/client.go`) connects to remote
@@ -289,6 +331,26 @@ management. Tool names are namespaced as `mcp_{serverName}_{toolName}`
 to avoid collisions. Tools default to `sideEffects: true`. Connection
 failures log a warning and skip that server's tools rather than
 failing the entire run.
+
+A `tools/call` result is mapped into the
+[structured-result envelope](#structured-tool-results): text content
+becomes the canonical `Content` fallback, `structuredContent` is
+preserved verbatim into `Structured`, and every non-text content item
+(resource link, embedded resource, image, audio, or an unrecognised
+type) is represented as an explicit typed descriptor — kind, URI,
+mime type, and a bounded text prefix for inlined resources — rather
+than being silently discarded. The envelope's `Kind` is
+`mcp_tool_result`.
+
+MCP server output is untrusted, so the preserved structure is bounded
+at the trust boundary: `structuredContent` larger than the size cap is
+dropped (with a marker noting the omission), embedded-resource text is
+truncated to a per-resource limit, and image/audio bytes and binary
+blobs are never inlined — the URI is the durable handle the model uses
+to re-fetch them. The preserved content is not scrubbed in the bridge;
+it rides the same dispatch path as every other tool result, so it
+passes through the secret scrubber before reaching a trace or the model
+history.
 
 ### Provider-facing tool name normalization
 
