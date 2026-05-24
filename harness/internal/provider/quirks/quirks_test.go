@@ -102,14 +102,12 @@ func TestBuiltinRulesValidate(t *testing.T) {
 		}
 		if rule.Apply == nil {
 			t.Errorf("BuiltinRules()[%d] (%q): Apply is required", i, rule.Description)
+			continue
 		}
 		// Canonical-field check: materialise the rule's effect on a
 		// fresh ProviderQuirks and assert every FieldRenames key
 		// (the source side of the rename) is in the canonical set.
 		// Rules that don't touch FieldRenames are no-ops here.
-		if rule.Apply == nil {
-			continue
-		}
 		if rule.ProviderType != "openai-compatible" {
 			// The canonical-field check applies only to openai-compatible
 			// rules today. The Gemini base rule (added in Step 3) sets a

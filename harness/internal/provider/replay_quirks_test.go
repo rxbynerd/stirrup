@@ -330,6 +330,12 @@ func TestReplayFields_Gemini3_PreservesThoughtSignature(t *testing.T) {
 // grepping for "quirks replay fields captured" must see an absent
 // line on a vanilla model.
 func TestReplayFields_GPT4o_NoCaptureWhenNoRuleFires(t *testing.T) {
+	// Reuses the o1-mini fixture because gpt-4o has no dedicated SSE
+	// fixture under testdata/. The test asserts the *absence* of the
+	// replay-fields debug line — fixture content doesn't matter, only
+	// that the adapter doesn't synthesise a capture when no rule
+	// fires. Routing the o1-mini SSE through a gpt-4o stream call
+	// drives that path with valid SSE bytes the parser can decode.
 	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/o1-mini/response.sse"))
 	defer srv.Close()
 
