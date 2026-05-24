@@ -637,3 +637,118 @@ func TestRegisterBuiltins(t *testing.T) {
 		t.Error("search_files must not be registered (split into grep_files and find_files)")
 	}
 }
+
+// maxToolDescriptionLen caps each enriched description so a worst-case
+// system prompt with every tool registered stays bounded. 2000 chars per
+// tool is generous — the longest description today is well under 1000.
+const maxToolDescriptionLen = 2000
+
+// extractJSONExample pulls the JSON object that follows the rightmost
+// "Example" marker in a tool description and returns the raw bytes.
+// Matching from the rightmost marker keeps tools with multiple worked
+// examples (e.g. edit_file's "Example (replace): ...") working without
+// the test having to know each tool's example label. The boundary is the
+// matching '}' for the first '{' after the marker, walking the brace
+// balance so embedded objects do not terminate the scan early.
+func extractJSONExample(desc string) (string, bool) {
+	marker := strings.LastIndex(desc, "Example")
+	if marker < 0 {
+		return "", false
+	}
+	rest := desc[marker:]
+	open := strings.Index(rest, "{")
+	if open < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := open; i < len(rest); i++ {
+		c := rest[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch c {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[open : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// TestBuiltinDescriptions_EnrichedShape asserts that every registered
+// built-in tool description satisfies the #227 contract: when-to-use
+// guidance, a syntactically valid JSON example, and a length below the
+// system-prompt budget cap. Failures here mean a future contributor
+// pared a description back below the agreed shape — the test exists to
+// surface that regression before the change ships.
+func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
+	mock := &mockExecutor{}
+	registry := tool.NewRegistry()
+	RegisterBuiltins(registry, mock)
+
+	for _, def := range registry.List() {
+		t.Run(def.Name, func(t *testing.T) {
+			if len(def.Description) > maxToolDescriptionLen {
+				t.Errorf("description length %d exceeds cap %d", len(def.Description), maxToolDescriptionLen)
+			}
+			// "Use this" is the canonical when-to-use opener used across
+			// the enriched descriptions. Asserting on it (rather than a
+			// hand-curated per-tool phrase) keeps the contract uniform
+			// and forces future tools to adopt the same convention.
+			if !strings.Contains(def.Description, "Use this") {
+				t.Errorf("description missing when-to-use guidance (expected substring %q)", "Use this")
+			}
+			example, ok := extractJSONExample(def.Description)
+			if !ok {
+				t.Fatalf("description missing JSON example after \"Example\" marker; got: %s", def.Description)
+			}
+			var probe map[string]any
+			if err := json.Unmarshal([]byte(example), &probe); err != nil {
+				t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+			}
+		})
+	}
+}
+
+// TestSpawnAgentTool_EnrichedShape applies the same description contract
+// to spawn_agent, which is wired separately from RegisterBuiltins (the
+// factory injects a real spawner closure). A trivial spawner suffices
+// because only the static tool definition is under test.
+func TestSpawnAgentTool_EnrichedShape(t *testing.T) {
+	noopSpawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
+		return json.RawMessage("{}"), nil
+	}
+	def := SpawnAgentTool(noopSpawner)
+	if len(def.Description) > maxToolDescriptionLen {
+		t.Errorf("description length %d exceeds cap %d", len(def.Description), maxToolDescriptionLen)
+	}
+	if !strings.Contains(def.Description, "Use this") {
+		t.Errorf("description missing when-to-use guidance")
+	}
+	example, ok := extractJSONExample(def.Description)
+	if !ok {
+		t.Fatalf("description missing JSON example after \"Example\" marker")
+	}
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(example), &probe); err != nil {
+		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+	}
+}

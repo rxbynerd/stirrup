@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -66,6 +67,85 @@ func TestMultiStrategy_ToolDefinition(t *testing.T) {
 	if !hasOperation {
 		t.Error("operation should be listed in required")
 	}
+}
+
+// maxEditFileDescriptionLen mirrors the cap used for built-in tool
+// descriptions in harness/internal/tool/builtins. Kept local rather than
+// reaching across packages so the two test suites stay independently
+// runnable.
+const maxEditFileDescriptionLen = 2000
+
+// TestMultiStrategy_DescriptionEnrichedShape asserts that the edit_file
+// description carries the #227 contract — when-to-use guidance, an
+// example labelled "Example", and a bounded length. The example is
+// extracted by finding the rightmost "Example" marker and walking the
+// brace balance to capture the JSON object, matching the helper in
+// harness/internal/tool/builtins/builtins_test.go.
+func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	def := m.ToolDefinition()
+
+	if len(def.Description) > maxEditFileDescriptionLen {
+		t.Errorf("description length %d exceeds cap %d", len(def.Description), maxEditFileDescriptionLen)
+	}
+	if !strings.Contains(def.Description, "Use this") {
+		t.Errorf("description missing when-to-use guidance (expected substring %q)", "Use this")
+	}
+	example, ok := extractEditFileJSONExample(def.Description)
+	if !ok {
+		t.Fatalf("description missing JSON example after \"Example\" marker; got: %s", def.Description)
+	}
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(example), &probe); err != nil {
+		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+	}
+}
+
+// extractEditFileJSONExample locates the rightmost "Example" marker in
+// desc, then walks brace balance from the first '{' that follows to find
+// the matching '}'. String literals are skipped so embedded braces in
+// quoted values cannot terminate the scan early.
+func extractEditFileJSONExample(desc string) (string, bool) {
+	marker := strings.LastIndex(desc, "Example")
+	if marker < 0 {
+		return "", false
+	}
+	rest := desc[marker:]
+	open := strings.Index(rest, "{")
+	if open < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := open; i < len(rest); i++ {
+		c := rest[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch c {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[open : i+1], true
+			}
+		}
+	}
+	return "", false
 }
 
 func TestMultiStrategy_RoutesPatchToUdiff(t *testing.T) {
