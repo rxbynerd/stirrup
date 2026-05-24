@@ -259,7 +259,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		g.consumeSSE(ctx, resp, ch, start, metricAttrs, streamN, q)
+		g.consumeSSE(ctx, resp, ch, start, metricAttrs, streamN, q, params.Model)
 		g.recordLatency(ctx, start, metricAttrs)
 	}()
 	return ch, nil
@@ -369,10 +369,29 @@ func (g *GeminiAdapter) consumeSSE(
 	metricAttrs metric.MeasurementOption,
 	streamN int64,
 	q quirks.ProviderQuirks,
+	model string,
 ) {
-	_ = q // reserved for Step 5 (ReplayFields parse-side recognition).
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
+
+	// ReplayFields capture (design D12, Wave 2 parse-side recognition).
+	// The accumulator collects every path matched across every chunk
+	// in this stream; the summary is emitted on any exit path via the
+	// deferred log so a stream that ends in an error still surfaces
+	// what was captured before the error. Length-only reporting per
+	// design §5 — captured values are provider-private (Gemini 3.x's
+	// thoughtSignature) and must not land in log sinks.
+	logger := g.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	replayFieldsCapture := map[string][]any{}
+	defer func() {
+		if len(replayFieldsCapture) == 0 {
+			return
+		}
+		logReplayFieldsCapture(ctx, logger, "gemini", model, replayFieldsCapture)
+	}()
 
 	ttfbRecorded := false
 	emitEvent := func(ev types.StreamEvent) {
@@ -475,6 +494,20 @@ func (g *GeminiAdapter) consumeSSE(
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse generateContent chunk: %w", err)})
 			return
+		}
+
+		// ReplayFields capture (design D12, Wave 2 parse-side
+		// recognition). Decode the same chunk bytes a second time as
+		// a generic map so the path walker can descend through fields
+		// the typed chunk struct does not know about. The double
+		// decode is per-chunk only when at least one rule is active —
+		// zero overhead for non-Gemini-3 streams.
+		if len(q.ReplayFields) > 0 {
+			if captured := quirks.CaptureFromJSON([]byte(data), q.ReplayFields); len(captured) > 0 {
+				for k, v := range captured {
+					replayFieldsCapture[k] = append(replayFieldsCapture[k], v...)
+				}
+			}
 		}
 
 		// Walk the first candidate's parts. Vertex always returns at most
