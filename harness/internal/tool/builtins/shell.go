@@ -37,7 +37,7 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 			"Do not use for filesystem inspection that a dedicated tool covers — prefer read_file, list_directory, grep_files, find_files because they return structured, bounded output and do not need a shell. " +
 			"timeout is in seconds (default 30, max 300); the command is killed when the timeout elapses. " +
 			"Example: {\"command\": \"go test ./harness/internal/tool/...\", \"timeout\": 120}",
-		InputSchema: runCommandSchema,
+		InputSchema:       runCommandSchema,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {

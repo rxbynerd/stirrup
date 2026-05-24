@@ -159,7 +159,7 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			"The pattern is a regex, not a glob — pass '\\bMyFunc\\b' to find the symbol MyFunc, not '*MyFunc*'. " +
 			"include and exclude take shell-style globs (e.g. '*.go') applied to candidate paths. Results are capped by max_results (default 100, max 1000); binary files are skipped. " +
 			"Example: {\"pattern\": \"func ReadFile\\\\b\", \"include\": [\"*.go\"], \"path\": \"harness/internal\"}",
-		InputSchema: grepFilesSchema,
+		InputSchema:       grepFilesSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -241,7 +241,7 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 			"The name field is a glob (filepath.Match syntax) matched against each file's basename only — '*.go', 'handler_*.ts' — not a regex and not a path. The '**' segment is not supported in name; use the include filter to narrow by path. " +
 			"Results are capped by max_results (default 100, max 1000). " +
 			"Example: {\"name\": \"*_test.go\", \"path\": \"harness/internal\", \"exclude\": [\"*/testdata/*\"]}",
-		InputSchema: findFilesSchema,
+		InputSchema:       findFilesSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {

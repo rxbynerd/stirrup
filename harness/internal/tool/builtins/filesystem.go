@@ -114,7 +114,7 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 			"start_line is 1-indexed and limit caps the lines returned (default 2000, max 5000). " +
 			"When start_line is past end-of-file the tool returns a notice rather than an error, so probing with a guessed start_line is safe. " +
 			"Example: {\"path\": \"harness/internal/tool/builtins/filesystem.go\", \"start_line\": 100, \"limit\": 50}",
-		InputSchema: readFileSchema,
+		InputSchema:       readFileSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -206,7 +206,7 @@ func WriteFileTool(exec executor.Executor) *tool.Tool {
 			"Use this when authoring a new file or when a wholesale rewrite is simpler than a targeted change. " +
 			"Do not use for small edits to existing files — prefer edit_file with operation 'replace' or 'patch' so unrelated lines stay untouched. " +
 			"Example: {\"path\": \"cmd/cli/main.go\", \"content\": \"package main\\n\\nfunc main() {}\\n\"}",
-		InputSchema: writeFileSchema,
+		InputSchema:       writeFileSchema,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -239,7 +239,7 @@ func ListDirectoryTool(exec executor.Executor) *tool.Tool {
 			"Use this to discover the shape of an unfamiliar tree; prefer find_files when the goal is to locate files by name across the workspace. " +
 			"Set recursive=true to walk subdirectories up to max_depth (default 3, max 10). Results are capped at max_entries (default 1000, max 10000) and a truncation sentinel is appended when the cap is hit. " +
 			"Example: {\"path\": \"harness/internal\", \"recursive\": true, \"max_depth\": 2}",
-		InputSchema: listDirectorySchema,
+		InputSchema:       listDirectorySchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
