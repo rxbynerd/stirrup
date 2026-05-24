@@ -155,10 +155,12 @@ All three `Executor` implementations enforce workspace containment:
   `url.PathEscape` on every path segment before constructing the
   GitHub Contents API URL.
 
-The `search_files` tool calls `ResolvePath` before constructing the
-shell command and uses `shellQuote()` on every interpolated value.
-Tested against `../../../etc/passwd`, symlink escapes, and absolute
-paths.
+The `grep_files` and `find_files` tools call `ResolvePath` on the
+search root before any directory walk begins, so a workspace-relative
+path that escapes the workspace is rejected before the walker sees
+it. `grep_files` additionally uses `shellQuote()` on every value
+interpolated into the `rg` invocation. Tested against
+`../../../etc/passwd`, symlink escapes, and absolute paths.
 
 ## Environment filtering
 
