@@ -681,6 +681,12 @@ func hasPositiveUseThis(desc string) bool {
 // the test having to know each tool's example label. The boundary is the
 // matching '}' for the first '{' after the marker, walking the brace
 // balance so embedded objects do not terminate the scan early.
+//
+// Contract: descriptions must contain at least one capital-`E` "Example"
+// marker followed by a valid JSON object. The rightmost such marker is
+// the one parsed. A future #222 migration that extracts examples into a
+// structured InputExamples []any field on types.ToolDefinition relies on
+// this contract — the helper here is the seam it would replace.
 func extractJSONExample(desc string) (string, bool) {
 	marker := strings.LastIndex(desc, "Example")
 	if marker < 0 {

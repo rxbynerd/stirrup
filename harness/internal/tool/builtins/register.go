@@ -10,6 +10,12 @@ import (
 // manages its own HTTP client independently. The legacy search_files tool
 // is deliberately absent: callers must use grep_files (regex content) or
 // find_files (glob filename) instead.
+//
+// Cross-references inside tool descriptions (e.g. grep_files mentioning
+// find_files, list_directory mentioning find_files, edit_file mentioning
+// write_file) use the canonical registry tool name. Wave 5 #234 aliases
+// must NOT rename these references — descriptions resolve via the
+// canonical name regardless of which alias the provider surface exposes.
 func RegisterBuiltins(registry *tool.Registry, exec executor.Executor) {
 	registry.Register(ReadFileTool(exec))
 	registry.Register(WriteFileTool(exec))

@@ -134,6 +134,14 @@ func hasPositiveUseThis(desc string) bool {
 // desc, then walks brace balance from the first '{' that follows to find
 // the matching '}'. String literals are skipped so embedded braces in
 // quoted values cannot terminate the scan early.
+//
+// Contract: descriptions must contain at least one capital-`E` "Example"
+// marker followed by a valid JSON object. The rightmost such marker is
+// the one parsed. A future #222 migration that extracts examples into a
+// structured InputExamples []any field on types.ToolDefinition relies on
+// this contract — the helper here is the seam it would replace. The
+// duplicate of this helper in harness/internal/tool/builtins/builtins_test.go
+// carries the same contract.
 func extractEditFileJSONExample(desc string) (string, bool) {
 	marker := strings.LastIndex(desc, "Example")
 	if marker < 0 {
