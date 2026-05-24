@@ -1,37 +1,43 @@
 package quirks
 
-// Shared helper functions used by builtin rule Apply closures. Step 1
-// reserves the file with package-private stubs so Step 2 can land the
-// rule implementations alongside the helpers in a single change.
-//
-// Helpers stay unexported in Step 1 (rather than being exported and
-// empty) so the public surface of the quirks package does not advertise
-// behaviour that doesn't exist yet. Step 2 will rename to
-// ApplyOpenAIReasoningClass / RemoveFromOmit when the implementations
-// land and external rule files (e.g. compat/zai) need to call them.
-//
-// The stubs carry //nolint:unused because Step 1 ships an empty
-// BuiltinRules() so nothing calls them yet; Step 2's first rule
-// addition is the first caller. Removing the stubs would leave Step 2
-// to invent the names at the same time as the rule logic; preserving
-// the names here pins the helper API surface up-front.
+// Shared helper functions used by builtin rule Apply closures. Each
+// helper encapsulates a behaviour-flag mutation that is shared across
+// more than one rule so the rules themselves stay declarative.
 
 // applyOpenAIReasoningClass sets the behaviour-flag combination shared
 // by every OpenAI reasoning-class model: TokenFieldMaxCompletionTokens
-// (already the zero-value default, but pinned explicitly) and
-// OmitSamplingParams to suppress temperature, top_p, presence_penalty,
-// frequency_penalty, logprobs, top_logprobs, and logit_bias.
-//
-// TODO(Step 2): implement.
-//
-//nolint:unused // Step 2 caller is queued; see file-level comment.
-func applyOpenAIReasoningClass(_ *ProviderQuirks) {}
+// (already the zero-value default, pinned explicitly for clarity) and
+// OmitSamplingParams = true to suppress temperature, top_p,
+// presence_penalty, frequency_penalty, logprobs, top_logprobs, and
+// logit_bias from the request body. Reasoning models reject every one
+// of these fields with HTTP 400, so the omission is mandatory rather
+// than a tunable.
+func applyOpenAIReasoningClass(q *ProviderQuirks) {
+	q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxCompletionTokens
+	q.BehaviourFlags.OpenAI.OmitSamplingParams = true
+}
 
-// removeFromOmit drops the named field from ProviderQuirks.OmitFields,
-// used by carve-out rules (e.g. gpt-5-chat*) that need to undo an
-// omission applied by a broader sibling rule.
+// removeFromOmit drops the named field from ProviderQuirks.OmitFields.
+// Used by carve-out rules (e.g. gpt-5-chat*) that need to undo an
+// omission applied by a broader sibling rule. A no-op if the field is
+// not present so callers can use it defensively.
 //
-// TODO(Step 2): implement.
-//
-//nolint:unused // Step 2 caller is queued; see file-level comment.
-func removeFromOmit(_ *ProviderQuirks, _ string) {}
+// This helper is reserved for OmitFields-driven omissions. The current
+// reasoning-class carve-out (gpt-5-chat*) toggles
+// OmitSamplingParams = false directly rather than touching OmitFields,
+// because the batch suppression is expressed as a boolean rather than
+// seven individual entries. removeFromOmit remains because future
+// rules that omit a single non-standard field may need a carve-out
+// for it on a sibling model glob.
+func removeFromOmit(q *ProviderQuirks, name string) {
+	if len(q.OmitFields) == 0 {
+		return
+	}
+	out := q.OmitFields[:0]
+	for _, f := range q.OmitFields {
+		if f != name {
+			out = append(out, f)
+		}
+	}
+	q.OmitFields = out
+}
