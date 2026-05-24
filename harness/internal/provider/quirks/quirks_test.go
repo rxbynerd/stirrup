@@ -214,6 +214,104 @@ func TestDefaultRegistryConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+// TestOpenAITokenFieldMarshalJSON pins the human-readable wire form
+// of each named constant and round-trips through UnmarshalJSON so the
+// CLI output can be parsed back by a consumer that decodes into the
+// same struct.
+func TestOpenAITokenFieldMarshalJSON(t *testing.T) {
+	cases := []struct {
+		val  OpenAITokenField
+		want string
+	}{
+		{TokenFieldMaxCompletionTokens, `"max_completion_tokens"`},
+		{TokenFieldMaxTokens, `"max_tokens"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%v) = %s, want %s", tc.val, got, tc.want)
+			}
+			var round OpenAITokenField
+			if err := json.Unmarshal(got, &round); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if round != tc.val {
+				t.Errorf("round-trip: got %v, want %v", round, tc.val)
+			}
+		})
+	}
+	t.Run("unknown-marshal", func(t *testing.T) {
+		// An out-of-range value must render as "unknown(N)" rather than
+		// panicking so a forward-compatible reader still gets parseable
+		// JSON from a newer harness binary.
+		got, err := json.Marshal(OpenAITokenField(99))
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(got) != `"unknown(99)"` {
+			t.Errorf("Marshal(99) = %s, want %q", got, `"unknown(99)"`)
+		}
+	})
+	t.Run("unknown-unmarshal", func(t *testing.T) {
+		// Unknown strings reject; silent acceptance would defeat the
+		// point of the named constants.
+		var f OpenAITokenField
+		if err := json.Unmarshal([]byte(`"bogus"`), &f); err == nil {
+			t.Error("Unmarshal of unknown string must return an error")
+		}
+	})
+}
+
+// TestGeminiStreamArgsShapeMarshalJSON mirrors
+// TestOpenAITokenFieldMarshalJSON for the Gemini enum.
+func TestGeminiStreamArgsShapeMarshalJSON(t *testing.T) {
+	cases := []struct {
+		val  GeminiStreamArgsShape
+		want string
+	}{
+		{StreamArgsOff, `"off"`},
+		{StreamArgsV2Snapshot, `"v2_snapshot"`},
+		{StreamArgsV3Deltas, `"v3_deltas"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%v) = %s, want %s", tc.val, got, tc.want)
+			}
+			var round GeminiStreamArgsShape
+			if err := json.Unmarshal(got, &round); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if round != tc.val {
+				t.Errorf("round-trip: got %v, want %v", round, tc.val)
+			}
+		})
+	}
+	t.Run("unknown-marshal", func(t *testing.T) {
+		got, err := json.Marshal(GeminiStreamArgsShape(99))
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(got) != `"unknown(99)"` {
+			t.Errorf("Marshal(99) = %s, want %q", got, `"unknown(99)"`)
+		}
+	})
+	t.Run("unknown-unmarshal", func(t *testing.T) {
+		var s GeminiStreamArgsShape
+		if err := json.Unmarshal([]byte(`"bogus"`), &s); err == nil {
+			t.Error("Unmarshal of unknown string must return an error")
+		}
+	})
+}
+
 // TestValueJSONTags pins the camelCase JSON keys + omitempty on the
 // Value struct. Operators read CLI output as JSON; the shape needs to
 // stay stable across the empty-rule-set baseline and the first Step 2

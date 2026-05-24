@@ -3,6 +3,8 @@
 // top of each Stream call to get a ProviderQuirks for the request.
 package quirks
 
+import "fmt"
+
 // ProviderQuirks is the in-memory result of resolving the registry for a
 // (providerType, model) pair. Adapters read it when building a request and
 // (for paths that diverge) when interpreting a response.
@@ -108,6 +110,38 @@ const (
 	TokenFieldMaxTokens OpenAITokenField = 1
 )
 
+// MarshalJSON renders OpenAITokenField as a human-readable string so
+// the CLI introspection output names the wire key rather than the
+// underlying int constant. An unknown value is rendered as
+// "unknown(N)" rather than failing, so a forward-compatible reader
+// can still parse output produced by a newer harness.
+func (f OpenAITokenField) MarshalJSON() ([]byte, error) {
+	switch f {
+	case TokenFieldMaxCompletionTokens:
+		return []byte(`"max_completion_tokens"`), nil
+	case TokenFieldMaxTokens:
+		return []byte(`"max_tokens"`), nil
+	default:
+		return []byte(fmt.Sprintf(`"unknown(%d)"`, int(f))), nil
+	}
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON, so a tool that emits
+// CLI output and feeds it back through json.Unmarshal round-trips
+// cleanly. Unknown strings are rejected — silently accepting them
+// would defeat the point of the named constants.
+func (f *OpenAITokenField) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case `"max_completion_tokens"`:
+		*f = TokenFieldMaxCompletionTokens
+	case `"max_tokens"`:
+		*f = TokenFieldMaxTokens
+	default:
+		return fmt.Errorf("quirks: unknown OpenAITokenField %s", data)
+	}
+	return nil
+}
+
 // GeminiBehaviourFlags covers behaviour divergences in the Gemini adapter.
 // The zero value reproduces today's post-#191 behaviour.
 type GeminiBehaviourFlags struct {
@@ -129,6 +163,39 @@ const (
 	StreamArgsV2Snapshot GeminiStreamArgsShape = 1 // Gemini 2.x cumulative snapshot
 	StreamArgsV3Deltas   GeminiStreamArgsShape = 2 // Gemini 3.x JSON-path delta array
 )
+
+// MarshalJSON renders GeminiStreamArgsShape as a human-readable string
+// for the same reason as OpenAITokenField.MarshalJSON: CLI output is
+// the operator-facing surface, and an opaque integer there is a
+// regression-in-waiting once Step 3 ships a non-default rule.
+func (s GeminiStreamArgsShape) MarshalJSON() ([]byte, error) {
+	switch s {
+	case StreamArgsOff:
+		return []byte(`"off"`), nil
+	case StreamArgsV2Snapshot:
+		return []byte(`"v2_snapshot"`), nil
+	case StreamArgsV3Deltas:
+		return []byte(`"v3_deltas"`), nil
+	default:
+		return []byte(fmt.Sprintf(`"unknown(%d)"`, int(s))), nil
+	}
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON. Rejects unknown
+// strings rather than silently zero-ing the field.
+func (s *GeminiStreamArgsShape) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case `"off"`:
+		*s = StreamArgsOff
+	case `"v2_snapshot"`:
+		*s = StreamArgsV2Snapshot
+	case `"v3_deltas"`:
+		*s = StreamArgsV3Deltas
+	default:
+		return fmt.Errorf("quirks: unknown GeminiStreamArgsShape %s", data)
+	}
+	return nil
+}
 
 // Value is a typed JSON scalar used by ProviderQuirks.ValueOverrides.
 // Exactly one field is set; New* constructors enforce the invariant.
