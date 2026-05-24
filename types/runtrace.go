@@ -48,6 +48,12 @@ type ToolCallSummary struct {
 	// ParentRunID is the run ID of the sub-agent's parent. Populated only
 	// for forwarded sub-agent events.
 	ParentRunID string `json:"parentRunId,omitempty"`
+	// ErrorCategory is the normalised failure category for failed calls.
+	// Always empty on Success=true; one of the
+	// observability.ToolFailureCategory enum values otherwise. Kept here
+	// so the JSONL trace files carry the same taxonomy that the
+	// stirrup.harness.tool_failures metric labels.
+	ErrorCategory string `json:"errorCategory,omitempty"`
 }
 
 // VerificationResult holds the outcome of a verification check.
@@ -117,6 +123,12 @@ type ToolCallTrace struct {
 	// ParentRunID is the run ID of the sub-agent's parent. Populated only
 	// for forwarded sub-agent events.
 	ParentRunID string `json:"parentRunId,omitempty"`
+	// ErrorCategory is the normalised failure category for failed calls.
+	// Always empty on Success=true; one of the
+	// observability.ToolFailureCategory enum values otherwise. Kept here
+	// so the JSONL trace files carry the same taxonomy that the
+	// stirrup.harness.tool_failures metric labels.
+	ErrorCategory string `json:"errorCategory,omitempty"`
 }
 
 // TurnRecord captures the full input/output of a single agentic loop turn.

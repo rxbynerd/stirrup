@@ -384,22 +384,44 @@ back as a user message. Three implementations ship:
   backend setup.
 
 The `harness/internal/observability/` package emits OTel metrics
-alongside tracing: 12 counters (`stirrup.harness.runs`, `.turns`,
+alongside tracing: 13 counters (`stirrup.harness.runs`, `.turns`,
 `.tokens.input`, `.tokens.output`, `.tool_calls`, `.tool_errors`,
-`.provider.requests`, `.provider.errors`, `.context.compactions`,
-`.security.events`, `.verification.attempts`, `.stalls`), 5
-histograms (run, turn, tool-call duration; provider latency; TTFB),
-and 1 UpDownCounter (context token estimate). All instruments use
-standard attributes (`run.mode`, `provider.type`, `tool.name`).
-`NewNoopMetrics()` provides a zero-cost no-op when metrics are
-disabled.
+`.tool_failures`, `.provider.requests`, `.provider.errors`,
+`.context.compactions`, `.security.events`, `.verification.attempts`,
+`.stalls`), 5 histograms (run, turn, tool-call duration; provider
+latency; TTFB), and 1 UpDownCounter (context token estimate). All
+instruments use standard attributes (`run.mode`, `provider.type`,
+`tool.name`). `NewNoopMetrics()` provides a zero-cost no-op when
+metrics are disabled.
+
+`stirrup.harness.tool_failures` decomposes `.tool_errors` by a
+bounded `category` label drawn from the `ToolFailureCategory` enum
+in `harness/internal/observability/toolfailure.go`. The metric is
+labelled `(provider.type, provider.model, tool.name, category,
+run.mode)` so dashboards can attribute failures to specific model
+selections. Categories cover dispatch-site failures
+(`unknown_tool`, `schema_validation_failed`, `permission_denied`,
+`permission_error`, `security_guard_denied`, `guardrail_denied`,
+`handler_error`, `handler_missing`), async-tool failures
+(`async_preflight_error`, `async_transport_unavailable`,
+`async_timeout`, `async_cancelled`, `async_upstream_error`,
+`async_panic`, `async_internal_error`), provider-side failures
+during tool-bearing turns (`provider_request_failed`,
+`provider_stream_failed`), and stall-detector terminations
+(`stall_repeated_calls`, `stall_consecutive_failures`). The same
+category is co-emitted into `ToolCallTrace.ErrorCategory` on each
+failed `tool_call_record` event so JSONL traces carry the
+identical taxonomy.
 
 Resource attributes (`service.name`, `service.namespace`,
 `deployment.environment`, `service.instance.id`, `harness.run.mode`)
 are built once per process. Stirrup's overlay wins over
 `OTEL_RESOURCE_ATTRIBUTES` on key conflicts. High-cardinality fields
 (`run.id`, `run.provider`, `run.model`) stay at span/instrument level
-to avoid metric series cardinality explosion.
+to avoid metric series cardinality explosion. `tool_failures` keeps
+its label set bounded because `category` is a closed enum and
+`tool.name` is the internal canonical tool identifier (not a raw
+schema path or error fragment).
 
 ## Stall detection
 
