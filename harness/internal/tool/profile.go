@@ -60,6 +60,20 @@ var codingClassicProfile = &Profile{
 	},
 }
 
+// NewProfile constructs a Profile from an internal-ID→alias map and an
+// internal-ID→description map. Either map may be nil (no aliases / no
+// description overrides). The maps are used directly, not copied, so the
+// caller must not mutate them after construction.
+//
+// The built-in profiles are package-private values; this constructor is
+// the supported way to build a custom presentation (e.g. an embedder
+// wiring a provider-native profile, or a test exercising a collision the
+// built-in profiles do not produce). It does not register the profile
+// with ProfileFor — a custom profile is passed straight to NewPresenter.
+func NewProfile(name string, aliases, descriptions map[string]string) *Profile {
+	return &Profile{Name: name, aliases: aliases, descriptions: descriptions}
+}
+
 // ProfileFor returns the Profile table for a RunConfig.Tools.Profile
 // value. The empty string and "default" both select the identity
 // presentation. An unknown name returns the default profile and false;

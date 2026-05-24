@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace/noop"
@@ -12,6 +13,7 @@ import (
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -167,4 +169,54 @@ func mustProfile(t *testing.T, name string) *tool.Profile {
 		t.Fatalf("ProfileFor(%q) not found", name)
 	}
 	return p
+}
+
+// toolNameCapturingGuard records the ToolName it sees on each PhasePreTool
+// check so a test can assert which name reaches the guardrail classifier.
+type toolNameCapturingGuard struct {
+	mu        sync.Mutex
+	toolNames []string
+}
+
+func (g *toolNameCapturingGuard) Check(_ context.Context, in guard.Input) (*guard.Decision, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if in.Phase == guard.PhasePreTool {
+		g.toolNames = append(g.toolNames, in.ToolName)
+	}
+	return &guard.Decision{Verdict: guard.VerdictAllow, GuardID: "capture"}, nil
+}
+
+// The PhasePreTool guardrail must see the INTERNAL tool ID, not the alias
+// (issue #234 B1b): a guardrail rule written against an internal name has
+// to fire under any toolset profile. The model calls "grep"; the guard
+// must observe "grep_files".
+func TestProfileDispatch_GuardrailSeesInternalToolName(t *testing.T) {
+	var ran bool
+	reg := tool.NewRegistry()
+	reg.Register(grepFilesTestTool(&ran))
+
+	rec := &recordingTraceEmitter{}
+	loop := buildProfileDispatchLoop(t, reg, mustProfile(t, "coding-classic"), rec)
+	g := &toolNameCapturingGuard{}
+	loop.GuardRail = g
+
+	cfg := &types.RunConfig{Mode: "execution", RunID: "guard-name"}
+	_, _, outcome := loop.planAndDispatch(
+		context.Background(), cfg,
+		[]types.ToolCall{{ID: "tc1", Name: "grep", Input: json.RawMessage(`{}`)}},
+		&stallDetector{}, "anthropic", "claude-sonnet-4-6",
+	)
+	if outcome != "" {
+		t.Fatalf("unexpected stall outcome: %q", outcome)
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.toolNames) != 1 {
+		t.Fatalf("expected 1 PhasePreTool check, got %d", len(g.toolNames))
+	}
+	if g.toolNames[0] != "grep_files" {
+		t.Errorf("guardrail saw ToolName %q, want internal id %q", g.toolNames[0], "grep_files")
+	}
 }

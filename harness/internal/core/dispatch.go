@@ -134,6 +134,26 @@ func (l *AgenticLoop) planAndDispatch(
 			internalName: call.Name,
 		}
 
+		// Resolve up front so every gating surface below keys on the
+		// internal tool ID rather than the model-facing alias (issue #234).
+		// Resolve is a pure lookup; an Unknown tool resolves to nil and
+		// falls through to dispatchToolCall, which fails fast as today.
+		t := l.Tools.Resolve(call.Name)
+		// guardToolName is the name the guardrail classifier sees: the
+		// internal ID when resolved, falling back to the model-supplied
+		// name for an unknown tool. A guardrail rule written against an
+		// internal name must fire under any toolset profile.
+		guardToolName := call.Name
+		if t != nil {
+			// Record the canonical internal tool ID resolved from the
+			// model-facing name. Under a toolset profile call.Name is an
+			// alias; t.Name is always the internal identity (Resolve
+			// returns the underlying tool unchanged), so this is the
+			// alias→internal binding the trace captures.
+			plan[i].internalName = t.Name
+			guardToolName = t.Name
+		}
+
 		// PhasePreTool guard: same semantics as the sequential code. A
 		// deny short-circuits dispatch as a tool failure. Pass the
 		// tool-span ctx so guard.pre_tool nests under tool.<name>.
@@ -141,7 +161,7 @@ func (l *AgenticLoop) planAndDispatch(
 			Phase:     guard.PhasePreTool,
 			Content:   string(call.Input),
 			Source:    "tool_call:" + call.Name,
-			ToolName:  call.Name,
+			ToolName:  guardToolName,
 			ToolInput: call.Input,
 			Mode:      config.Mode,
 			RunID:     config.RunID,
@@ -167,18 +187,6 @@ func (l *AgenticLoop) planAndDispatch(
 			continue
 		}
 
-		// Resolve to decide sync vs async. An Unknown tool falls through
-		// to dispatchToolCall which fails fast with the same error path
-		// as today — treat it as sync.
-		t := l.Tools.Resolve(call.Name)
-		if t != nil {
-			// Record the canonical internal tool ID resolved from the
-			// model-facing name. Under a toolset profile call.Name is an
-			// alias; t.Name is always the internal identity (Resolve
-			// returns the underlying tool unchanged), so this is the
-			// alias→internal binding the trace captures.
-			plan[i].internalName = t.Name
-		}
 		if t != nil && t.AsyncHandler != nil {
 			asyncIndices = append(asyncIndices, i)
 			continue
