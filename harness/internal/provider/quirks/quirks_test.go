@@ -150,6 +150,14 @@ func TestBuiltinRulesValidate(t *testing.T) {
 // The current Z.ai rule stores a bool (tool_stream: true) so the
 // check is trivially satisfied today; the test is structural
 // insurance for future rules.
+//
+// SchemaUnsupportedFeatures gets the same secret-scan: a future
+// first-party rule that accidentally embedded a dynamic
+// secret-referenced string in its unsupported-features list would
+// surface that string in the lint error path (which names the
+// keyword in the error message), bypassing redaction at the log
+// surface. Today's entries are safe literals ("pattern", "format")
+// so the check is defence-in-depth.
 func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
 	for i, rule := range BuiltinRules() {
 		if rule.Apply == nil {
@@ -171,6 +179,86 @@ func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
 			}
 			if strings.Contains(s, "secret://") {
 				t.Errorf("BuiltinRules()[%d] (%q): ExtraBodyFields[%q] = %q contains a secret:// reference", i, rule.Description, k, s)
+			}
+		}
+		for j, s := range q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures {
+			if strings.Contains(s, "secret://") {
+				t.Errorf("BuiltinRules()[%d] (%q): SchemaUnsupportedFeatures[%d] = %q contains a secret:// reference", i, rule.Description, j, s)
+			}
+		}
+	}
+}
+
+// knownJSONSchemaKeywords is the allow-set
+// TestBuiltinRulesSchemaUnsupportedFeaturesKeywords cross-checks every
+// SchemaUnsupportedFeatures entry against. Entries here are the JSON
+// Schema keywords a rule might plausibly declare as Gemini-unsupported.
+// A typo in builtin.go (e.g. "patern" for "pattern") would silently
+// pass the existing lint at runtime — the linter does a literal key
+// match so the unsupported keyword would never fire — and this test
+// is the only structural defence against that.
+//
+// Update when adding a new JSON Schema keyword to any rule's
+// SchemaUnsupportedFeatures list. The set is intentionally broad
+// (covers the OpenAI structured-outputs strict-mode rejection set as
+// well as the Gemini lint's plausible surface) so a deliberate
+// addition only needs one entry rather than a churn of tests.
+var knownJSONSchemaKeywords = map[string]struct{}{
+	"oneOf":             {},
+	"anyOf":             {},
+	"allOf":             {},
+	"not":               {},
+	"pattern":           {},
+	"patternProperties": {},
+	"minProperties":     {},
+	"maxProperties":     {},
+	"format":            {},
+	"minLength":         {},
+	"maxLength":         {},
+	"minimum":           {},
+	"maximum":           {},
+	"exclusiveMinimum":  {},
+	"exclusiveMaximum":  {},
+	"multipleOf":        {},
+	"uniqueItems":       {},
+	"minItems":          {},
+	"maxItems":          {},
+	"minContains":       {},
+	"maxContains":       {},
+	"contains":          {},
+	"if":                {},
+	"then":              {},
+	"else":              {},
+	"dependentSchemas":  {},
+	"dependentRequired": {},
+	"$ref":              {},
+	"$defs":             {},
+}
+
+// TestBuiltinRulesSchemaUnsupportedFeaturesKeywords pins that every
+// string in any rule's SchemaUnsupportedFeatures list is a known JSON
+// Schema keyword (per knownJSONSchemaKeywords). A typo such as "onOf"
+// for "oneOf" would trivially pass all other tests — the lint walker
+// only matches keys present on the schema, so an unsupported entry
+// that never matches anything is silently ineffective — but this test
+// catches the typo as a build-time failure rather than a runtime gap.
+func TestBuiltinRulesSchemaUnsupportedFeaturesKeywords(t *testing.T) {
+	for i, rule := range BuiltinRules() {
+		if rule.Apply == nil {
+			continue
+		}
+		q := ProviderQuirks{
+			FieldRenames:   map[string]string{},
+			OmitFields:     []string{},
+			ValueOverrides: map[string]Value{},
+			EnumCoercions:  map[string]map[string]string{},
+			ReplayFields:   []string{},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}, Gemini: GeminiBehaviourFlags{SchemaUnsupportedFeatures: []string{}}},
+		}
+		rule.Apply(&q)
+		for j, kw := range q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures {
+			if _, ok := knownJSONSchemaKeywords[kw]; !ok {
+				t.Errorf("BuiltinRules()[%d] (%q): SchemaUnsupportedFeatures[%d] = %q is not a known JSON Schema keyword (typo? or add to knownJSONSchemaKeywords if deliberate)", i, rule.Description, j, kw)
 			}
 		}
 	}
