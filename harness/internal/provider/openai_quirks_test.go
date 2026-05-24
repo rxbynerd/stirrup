@@ -371,6 +371,75 @@ func TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDe
 	}
 }
 
+// TestOpenAIChunkChoice_UnmarshalJSON covers the custom decoder's
+// three observable states: a chunk with no delta key (the false-
+// branch of the len(helper.Delta) > 0 guard), a chunk with a
+// malformed delta value (the json.Unmarshal error return), and a
+// chunk with a valid delta (the happy path that populates both
+// RawDelta and the typed Delta). Coverage on the decoder was 80%
+// before this test — the no-delta branch and the error-return
+// branch were both uncovered, leaving production-critical per-
+// chunk paths unverified.
+func TestOpenAIChunkChoice_UnmarshalJSON(t *testing.T) {
+	t.Run("no_delta", func(t *testing.T) {
+		raw := []byte(`{"index":0,"finish_reason":"stop"}`)
+		var c openaiChunkChoice
+		if err := json.Unmarshal(raw, &c); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if c.RawDelta != nil {
+			t.Errorf("RawDelta = %q, want nil (no delta key present)", c.RawDelta)
+		}
+		// Delta must remain the zero value: no Role, no Content, no
+		// ToolCalls.
+		if c.Delta.Role != "" || c.Delta.Content != nil || len(c.Delta.ToolCalls) > 0 {
+			t.Errorf("Delta = %+v, want zero value", c.Delta)
+		}
+		if c.Index != 0 {
+			t.Errorf("Index = %d, want 0", c.Index)
+		}
+		if c.FinishReason == nil || *c.FinishReason != "stop" {
+			t.Errorf("FinishReason = %v, want \"stop\"", c.FinishReason)
+		}
+	})
+	t.Run("malformed_delta", func(t *testing.T) {
+		// A non-object delta cannot decode into openaiDelta (which is
+		// a struct); the typed Unmarshal returns a UnmarshalTypeError
+		// that the custom UnmarshalJSON wraps under
+		// "openaiChunkChoice.delta:". The error must surface.
+		raw := []byte(`{"index":0,"delta":"not-an-object"}`)
+		var c openaiChunkChoice
+		err := json.Unmarshal(raw, &c)
+		if err == nil {
+			t.Fatalf("Unmarshal returned no error; expected delta decode failure")
+		}
+		if !strings.Contains(err.Error(), "openaiChunkChoice.delta") {
+			t.Errorf("error = %q, want substring \"openaiChunkChoice.delta\"", err.Error())
+		}
+	})
+	t.Run("valid_delta", func(t *testing.T) {
+		raw := []byte(`{"index":0,"delta":{"role":"assistant","content":"hello"}}`)
+		var c openaiChunkChoice
+		if err := json.Unmarshal(raw, &c); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if c.Delta.Role != "assistant" {
+			t.Errorf("Delta.Role = %q, want \"assistant\"", c.Delta.Role)
+		}
+		if c.Delta.Content == nil || *c.Delta.Content != "hello" {
+			t.Errorf("Delta.Content = %v, want \"hello\"", c.Delta.Content)
+		}
+		// RawDelta must hold the raw bytes of the delta object so a
+		// ReplayFields walker can descend without coupling to the
+		// typed struct. The bytes are not whitespace-normalised; an
+		// exact match is the strongest assertion.
+		const wantRaw = `{"role":"assistant","content":"hello"}`
+		if string(c.RawDelta) != wantRaw {
+			t.Errorf("RawDelta = %q, want %q", string(c.RawDelta), wantRaw)
+		}
+	})
+}
+
 // TestOpenAIAdapter_DebugLogListsAppliedRules pins the per-Stream
 // debug line from design §5: the line fires at the top of every
 // Stream call and lists the descriptions of the rules that
