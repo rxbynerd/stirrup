@@ -179,11 +179,14 @@ func TestBuildToolRegistry_RespectsExecutorCapabilities(t *testing.T) {
 	if registry.Resolve("run_command") != nil {
 		t.Fatal("did not expect run_command without exec capability")
 	}
-	if registry.Resolve("grep_files") != nil {
-		t.Fatal("did not expect grep_files without exec capability")
+	// grep_files and find_files are filesystem-read primitives; a
+	// CanRead-only executor must still get both. grep_files's rg fast path
+	// gates on CanExec internally and falls back to the native walker.
+	if registry.Resolve("grep_files") == nil {
+		t.Fatal("expected grep_files to register on a CanRead-only executor")
 	}
-	if registry.Resolve("find_files") != nil {
-		t.Fatal("did not expect find_files without exec capability")
+	if registry.Resolve("find_files") == nil {
+		t.Fatal("expected find_files to register on a CanRead-only executor")
 	}
 	// The legacy search_files name must remain absent — the dispatcher
 	// emits a directional error rather than silently aliasing it.
