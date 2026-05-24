@@ -260,16 +260,38 @@ func TestEscalationPolicy_Decide(t *testing.T) {
 			wantKind: EscalationNone,
 		},
 		{
-			name:     "no_escalation_on_later_turn",
+			// Post-B1: Turn is no longer a guard. A later turn with no
+			// prior tool calls (e.g. after a compacted context reset the
+			// counter) is still a missed-tool failure and must escalate;
+			// only PriorToolCalls > 0 stops it.
+			name:     "escalates_on_later_turn_when_no_prior_tool_calls",
 			policy:   newDefaultEscalationPolicy(1, nativeCaps),
 			mutate:   func(in *EscalationInput) { in.Turn = 2 },
-			wantKind: EscalationNone,
+			wantKind: EscalationNative,
 		},
 		{
 			name:     "no_escalation_for_mode_without_requirement",
 			policy:   newDefaultEscalationPolicy(1, nativeCaps),
 			mutate:   func(in *EscalationInput) { in.Mode = "no-such-mode" },
 			wantKind: EscalationNone,
+		},
+		{
+			name:     "planning_mode_escalates",
+			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			mutate:   func(in *EscalationInput) { in.Mode = "planning" },
+			wantKind: EscalationNative,
+		},
+		{
+			name:     "review_mode_escalates",
+			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			mutate:   func(in *EscalationInput) { in.Mode = "review" },
+			wantKind: EscalationNative,
+		},
+		{
+			name:     "toil_mode_escalates",
+			policy:   newDefaultEscalationPolicy(1, nativeCaps),
+			mutate:   func(in *EscalationInput) { in.Mode = "toil" },
+			wantKind: EscalationNative,
 		},
 		{
 			name:     "prompt_when_resolver_nil",
@@ -294,6 +316,28 @@ func TestEscalationPolicy_Decide(t *testing.T) {
 				t.Error("native escalation must not carry a PromptMessage")
 			}
 		})
+	}
+}
+
+// TestEscalationKindString pins the wire form of each EscalationKind.
+// These strings are written verbatim into the escalation.kind OTel span
+// attribute, so a rename of an iota constant that forgot to update
+// String() would silently produce a wrong span label. EscalationNone's
+// "none" reaches String() only via the default fall-through, so the value
+// is asserted explicitly here rather than relying on indirect coverage.
+func TestEscalationKindString(t *testing.T) {
+	cases := []struct {
+		kind EscalationKind
+		want string
+	}{
+		{EscalationNone, "none"},
+		{EscalationNative, "native"},
+		{EscalationPrompt, "prompt"},
+	}
+	for _, tc := range cases {
+		if got := tc.kind.String(); got != tc.want {
+			t.Errorf("EscalationKind(%d).String() = %q, want %q", tc.kind, got, tc.want)
+		}
 	}
 }
 
@@ -413,11 +457,13 @@ func TestEscalation_ResearchAllowsFetchTool(t *testing.T) {
 	}
 }
 
-// TestEscalation_MaxRetryCapEnforced is the unbounded-loop guard: a model
-// that keeps answering without a tool must be escalated at most once (the
-// default cap) and the run must terminate rather than spin. The scripted
-// provider returns a no-tool answer on every call; the loop must stop
-// escalating after the cap and accept the answer.
+// TestEscalation_MaxRetryCapEnforced is the unbounded-loop guard at the
+// default cap: a model that keeps answering without a tool must be
+// escalated at most once and the run must terminate rather than spin. The
+// scripted provider returns a no-tool answer on every call. With the
+// first-turn guard removed (B1), the EscalationsSoFar >= maxRetries cap is
+// the sole bound: after one escalation EscalationsSoFar == 1 == maxRetries,
+// so Decide returns none and the answer is accepted.
 func TestEscalation_MaxRetryCapEnforced(t *testing.T) {
 	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
 	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(1, nativeCaps))
@@ -426,13 +472,62 @@ func TestEscalation_MaxRetryCapEnforced(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	// One escalation (cap=1): the original answer + exactly one forced
-	// retry. The retry also answers with no tool, but the cap (and the
-	// first-turn guard) prevent any further escalation, so the run
-	// terminates at 2 provider calls.
+	// retry. The retry also answers with no tool, but the cap prevents any
+	// further escalation, so the run terminates at 2 provider calls.
 	if prov.calls() != 2 {
 		t.Errorf("cap=1 must yield exactly 2 provider calls (answer + 1 retry), got %d", prov.calls())
 	}
 	if n := countNoToolWhenRequired(t, reader); n != 1 {
 		t.Errorf("no_tool_when_required count = %d, want exactly 1 (cap enforced)", n)
+	}
+}
+
+// TestEscalation_MaxRetryCapEnforcedAtTwo proves the cap ceiling is now
+// reachable (B1): with maxRetries=2 and a model that never calls a tool,
+// escalation fires exactly twice — original answer + two forced retries =
+// 3 provider calls and 2 no_tool_when_required emissions — then the cap
+// stops it and the run terminates. Before B1 this behaved identically to
+// maxRetries=1 because the turn guard short-circuited the second retry.
+func TestEscalation_MaxRetryCapEnforcedAtTwo(t *testing.T) {
+	prov := &sequencedProvider{scripts: [][]types.StreamEvent{noToolAnswer()}}
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps))
+
+	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if prov.calls() != 3 {
+		t.Errorf("cap=2 must yield exactly 3 provider calls (answer + 2 retries), got %d", prov.calls())
+	}
+	if n := countNoToolWhenRequired(t, reader); n != 2 {
+		t.Errorf("no_tool_when_required count = %d, want exactly 2 (cap=2 enforced)", n)
+	}
+	// Every forced retry must carry ToolChoiceRequired (native-capable).
+	for i := 1; i < prov.calls(); i++ {
+		if prov.choiceAt(i) != types.ToolChoiceRequired {
+			t.Errorf("retry call %d ToolChoice = %v, want required", i, prov.choiceAt(i))
+		}
+	}
+}
+
+// TestEscalation_RecoveryStopsAfterToolCall pins the natural stop now that
+// PriorToolCalls — not Turn — is the gate: a model that answers with no
+// tool, is escalated, and then calls a tool on the retry must NOT be
+// escalated again even when the cap (2) would otherwise allow it. The
+// PriorToolCalls > 0 guard ends recovery the moment a tool is used.
+func TestEscalation_RecoveryStopsAfterToolCall(t *testing.T) {
+	prov := &sequencedProvider{scripts: [][]types.StreamEvent{
+		noToolAnswer(),
+		toolCallTurn(),
+		{{Type: "text_delta", Text: "done"}, {Type: "message_complete", StopReason: "end_turn"}},
+	}}
+	loop, reader := buildEscalationLoop(prov, newDefaultEscalationPolicy(2, nativeCaps))
+
+	if _, err := loop.Run(context.Background(), escalationConfig("execution")); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// answer (escalate) -> tool call (PriorToolCalls becomes 1) ->
+	// final no-tool answer accepted (PriorToolCalls > 0 blocks escalation).
+	if n := countNoToolWhenRequired(t, reader); n != 1 {
+		t.Errorf("no_tool_when_required count = %d, want 1 (recovery stops once a tool is called)", n)
 	}
 }

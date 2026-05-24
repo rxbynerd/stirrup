@@ -100,9 +100,17 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 	if !in.ToolsAvailable {
 		return none
 	}
-	// Only the first assistant turn. A model that already used tools and
-	// then answers is making a legitimate judgement, not skipping context.
-	if in.PriorToolCalls > 0 || in.Turn > 0 {
+	// The model must not have called any tool yet. This is the
+	// load-bearing gate: it distinguishes a model skipping workspace
+	// context from one that answered after using tools (which is a
+	// legitimate judgement). It is NOT keyed on Turn — a forced retry
+	// advances the turn counter, so gating on Turn would make the
+	// EscalationsSoFar cap unreachable for maxRetries > 1, and Turn is a
+	// weaker proxy that breaks when a compacted context resets it. With
+	// PriorToolCalls == 0 as the gate, escalation repeats (up to the cap
+	// checked above) only while the model still has not called any tool,
+	// and stops naturally the moment one is called.
+	if in.PriorToolCalls > 0 {
 		return none
 	}
 	// Mode-aware requirement. Modes absent from the table require no tool,
@@ -117,13 +125,13 @@ func (p *defaultEscalationPolicy) Decide(in EscalationInput) EscalationDecision 
 	if p.supportsNativeRequired(in.Provider, in.Model) {
 		return EscalationDecision{
 			Kind:   EscalationNative,
-			Reason: fmt.Sprintf("mode %q expects a tool call on the first turn; retrying with provider-native required tool choice", in.Mode),
+			Reason: fmt.Sprintf("mode %q expects a tool call before answering and none was made; retrying with provider-native required tool choice", in.Mode),
 		}
 	}
 	return EscalationDecision{
 		Kind:          EscalationPrompt,
 		PromptMessage: fmt.Sprintf("You answered without calling any tool, but this task requires it: %s. Call an appropriate tool now rather than answering from assumption.", req.description),
-		Reason:        fmt.Sprintf("mode %q expects a tool call on the first turn; provider lacks native required tool choice, retrying with a stronger prompt", in.Mode),
+		Reason:        fmt.Sprintf("mode %q expects a tool call before answering and none was made; provider lacks native required tool choice, retrying with a stronger prompt", in.Mode),
 	}
 }
 
