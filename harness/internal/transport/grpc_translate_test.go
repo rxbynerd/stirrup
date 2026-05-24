@@ -758,6 +758,50 @@ func TestRunConfigFromProto_BatchProviderConfigPreserved(t *testing.T) {
 	})
 }
 
+// TestRunConfigFromProto_CompatProfileRoundTrip pins the wire-to-
+// internal copy of ProviderConfig.CompatProfile (issue #221 Wave 2).
+// The translate hop is forward-only — operators set CompatProfile on
+// the wire and the harness consumes it; there is no symmetric Go-to-
+// proto path for this field. The same silent-drop class of regression
+// that bit SessionName (gh-95), Anthropic WIF (gh-117), Azure WIF
+// (gh-118), and TraceEmitter (gh-100) is the failure mode this test
+// guards against: a future ProviderConfig field reshuffle could drop
+// CompatProfile from the translate block and a Z.ai-targeted run
+// would silently fall back to the openai-compatible defaults — a
+// HTTP 400 on the first turn rather than a clean validation error.
+//
+// Three sub-cases cover the wire→internal contract:
+//   - explicit "zai-glm" round-trips verbatim
+//   - empty string round-trips as empty (default profile)
+//   - unrecognised string round-trips verbatim; ValidateRunConfig is
+//     responsible for rejecting it — the translate layer must not
+//     silently coerce unknown values
+func TestRunConfigFromProto_CompatProfileRoundTrip(t *testing.T) {
+	cases := []struct {
+		name        string
+		profile     string
+		wantProfile string
+	}{
+		{name: "zai-glm", profile: "zai-glm", wantProfile: "zai-glm"},
+		{name: "empty default", profile: "", wantProfile: ""},
+		{name: "unrecognised value passes through", profile: "future-profile", wantProfile: "future-profile"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := &pb.RunConfig{
+				Provider: &pb.ProviderConfig{
+					Type:          "openai-compatible",
+					CompatProfile: tc.profile,
+				},
+			}
+			rc := runConfigFromProto(pc)
+			if rc.Provider.CompatProfile != tc.wantProfile {
+				t.Errorf("CompatProfile: got %q, want %q", rc.Provider.CompatProfile, tc.wantProfile)
+			}
+		})
+	}
+}
+
 // TestRunConfigFromProto_TemperatureRoundTrip pins the pointer-vs-nil
 // distinction across the wire boundary for RunConfig.Temperature
 // (issue #217). The control plane must be able to (a) leave the field
