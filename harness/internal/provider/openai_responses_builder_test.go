@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -139,7 +140,11 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 			}
 			captured := <-capturedCh
 
-			built := buildResponsesRequest(tc.params)
+			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.params.Model)
+			built, err := buildResponsesRequest(tc.params, q, nil)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
 			built.Stream = true
 			builtBytes, err := json.Marshal(built)
 			if err != nil {
@@ -166,7 +171,11 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
-	got := buildResponsesRequest(params)
+	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
+	got, err := buildResponsesRequest(params, q, nil)
+	if err != nil {
+		t.Fatalf("buildResponsesRequest: %v", err)
+	}
 	if got.Stream != false {
 		t.Errorf("builder default: Stream = %v, want false", got.Stream)
 	}

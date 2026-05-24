@@ -139,7 +139,10 @@ func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 			captured := <-capturedCh
 
 			q := quirks.DefaultRegistry().Resolve("openai-compatible", tc.params.Model)
-			built := buildOpenAIRequest(tc.params, true, q)
+			built, err := buildOpenAIRequest(tc.params, true, q, nil)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
 			builtBytes, err := json.Marshal(built)
 			if err != nil {
 				t.Fatalf("marshal builder output: %v", err)
@@ -169,20 +172,28 @@ func TestBuildOpenAIRequest_StreamFlag(t *testing.T) {
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
 	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
-	if got := buildOpenAIRequest(params, true, q).Stream; got != true {
-		t.Errorf("stream=true argument: got Stream=%v, want true", got)
+	reqTrue, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build stream=true: %v", err)
 	}
-	if got := buildOpenAIRequest(params, false, q).Stream; got != false {
-		t.Errorf("stream=false argument: got Stream=%v, want false", got)
+	if reqTrue.Stream != true {
+		t.Errorf("stream=true argument: got Stream=%v, want true", reqTrue.Stream)
 	}
-	trueBody, err := json.Marshal(buildOpenAIRequest(params, true, q))
+	reqFalse, err := buildOpenAIRequest(params, false, q, nil)
+	if err != nil {
+		t.Fatalf("build stream=false: %v", err)
+	}
+	if reqFalse.Stream != false {
+		t.Errorf("stream=false argument: got Stream=%v, want false", reqFalse.Stream)
+	}
+	trueBody, err := json.Marshal(reqTrue)
 	if err != nil {
 		t.Fatalf("marshal stream=true body: %v", err)
 	}
 	if !strings.Contains(string(trueBody), `"stream":true`) {
 		t.Errorf(`expected "stream":true in stream=true body: %s`, trueBody)
 	}
-	falseBody, err := json.Marshal(buildOpenAIRequest(params, false, q))
+	falseBody, err := json.Marshal(reqFalse)
 	if err != nil {
 		t.Fatalf("marshal stream=false body: %v", err)
 	}

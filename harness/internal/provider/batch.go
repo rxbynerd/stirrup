@@ -265,9 +265,27 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 			registry = quirks.DefaultRegistry()
 		}
 		q := registry.Resolve("openai-compatible", params.Model)
-		return json.Marshal(buildOpenAIRequest(params, false, q))
+		// Batch submissions go through a one-shot adapter that does
+		// not retain a cache between calls. Pass nil so the strict-
+		// mode normaliser runs synchronously per request — a batch
+		// submission is rare enough that the per-tool walk cost is
+		// negligible compared to the round-trip latency.
+		req, err := buildOpenAIRequest(params, false, q, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(req)
 	case "openai-responses":
-		return json.Marshal(buildResponsesRequest(params))
+		registry := a.Registry
+		if registry == nil {
+			registry = quirks.DefaultRegistry()
+		}
+		q := registry.Resolve("openai-responses", params.Model)
+		req, err := buildResponsesRequest(params, q, nil)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(req)
 	default:
 		return nil, fmt.Errorf("batch: unsupported provider type %q", a.provType)
 	}
