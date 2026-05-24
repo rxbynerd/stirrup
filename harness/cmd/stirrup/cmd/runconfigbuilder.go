@@ -387,6 +387,8 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	providerRetryWallClockBudget, _ := f.GetDuration("provider-retry-wall-clock")
 	workspaceExportTo, _ := f.GetString("export-workspace-to")
 	toolDispatchMaxParallel, _ := f.GetInt("max-tool-parallel")
+	escalateToolChoice, _ := f.GetBool("escalate-tool-choice")
+	escalateToolChoiceMaxRetries, _ := f.GetInt("escalate-tool-choice-max-retries")
 	batch, _ := f.GetBool("batch")
 
 	var queryParams map[string]string
@@ -465,6 +467,8 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
 		WorkspaceExportTo:            workspaceExportTo,
 		ToolDispatchMaxParallel:      toolDispatchMaxParallel,
+		EscalateToolChoice:           escalateToolChoice,
+		EscalateToolChoiceMaxRetries: escalateToolChoiceMaxRetries,
 		Batch:                        batch,
 	})
 }
