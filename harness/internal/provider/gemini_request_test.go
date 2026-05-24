@@ -55,8 +55,9 @@ type decodedFuncDecl struct {
 
 type decodedToolConfig struct {
 	FunctionCallingConfig struct {
-		Mode                        string `json:"mode"`
-		StreamFunctionCallArguments bool   `json:"streamFunctionCallArguments"`
+		Mode                        string   `json:"mode"`
+		AllowedFunctionNames        []string `json:"allowedFunctionNames"`
+		StreamFunctionCallArguments bool     `json:"streamFunctionCallArguments"`
 	} `json:"functionCallingConfig"`
 }
 
@@ -376,6 +377,90 @@ func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPr
 	}
 	if params["type"] != "OBJECT" {
 		t.Errorf("parameters.type = %v, want OBJECT", params["type"])
+	}
+}
+
+// TestBuildGenerateContentRequest_ToolChoice pins the
+// functionCallingConfig.mode projection gated on the resolved
+// capability. Gemini's base rule advertises every mode, so:
+//   - ToolChoiceAuto (zero) keeps mode AUTO with no allowedFunctionNames;
+//   - ToolChoiceRequired emits mode ANY;
+//   - ToolChoiceNone emits mode NONE;
+//   - ToolChoiceTool emits mode ANY restricted to the named tool;
+//   - ToolChoiceTool with no name degrades to AUTO.
+func TestBuildGenerateContentRequest_ToolChoice(t *testing.T) {
+	q := quirks.DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+	baseTools := []types.ToolDefinition{
+		{Name: "read_file", Description: "read a file", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
+	}
+
+	cases := []struct {
+		name        string
+		choice      types.ToolChoiceMode
+		toolName    string
+		wantMode    string
+		wantAllowed []string
+	}{
+		{"auto", types.ToolChoiceAuto, "", "AUTO", nil},
+		{"required", types.ToolChoiceRequired, "", "ANY", nil},
+		{"none", types.ToolChoiceNone, "", "NONE", nil},
+		{"named tool", types.ToolChoiceTool, "read_file", "ANY", []string{"read_file"}},
+		{"named tool without name degrades to auto", types.ToolChoiceTool, "", "AUTO", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _, err := BuildGenerateContentRequest(types.StreamParams{
+				Model:          "gemini-2.5-pro",
+				ToolChoice:     tc.choice,
+				ToolChoiceName: tc.toolName,
+				Messages:       []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+				Tools:          baseTools,
+			}, nil, q)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			dr := decodeGeminiRequest(t, body)
+			if dr.ToolConfig == nil {
+				t.Fatalf("expected toolConfig to be set")
+			}
+			if got := dr.ToolConfig.FunctionCallingConfig.Mode; got != tc.wantMode {
+				t.Errorf("mode = %q, want %q", got, tc.wantMode)
+			}
+			got := dr.ToolConfig.FunctionCallingConfig.AllowedFunctionNames
+			if len(got) != len(tc.wantAllowed) {
+				t.Fatalf("allowedFunctionNames = %v, want %v", got, tc.wantAllowed)
+			}
+			for i := range got {
+				if got[i] != tc.wantAllowed[i] {
+					t.Errorf("allowedFunctionNames[%d] = %q, want %q", i, got[i], tc.wantAllowed[i])
+				}
+			}
+		})
+	}
+}
+
+// TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability pins
+// the graceful no-op: a zero-value capability leaves the mode at AUTO
+// even for a ToolChoiceRequired request (the historical default emitted
+// whenever tools are present).
+func TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
+	body, _, err := BuildGenerateContentRequest(types.StreamParams{
+		Model:      "gemini-2.5-pro",
+		ToolChoice: types.ToolChoiceRequired,
+		Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		Tools: []types.ToolDefinition{
+			{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}, nil, quirks.ProviderQuirks{})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	dr := decodeGeminiRequest(t, body)
+	if dr.ToolConfig == nil {
+		t.Fatalf("expected toolConfig to be set")
+	}
+	if got := dr.ToolConfig.FunctionCallingConfig.Mode; got != "AUTO" {
+		t.Errorf("zero-value capability: mode = %q, want AUTO", got)
 	}
 }
 

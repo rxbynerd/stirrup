@@ -104,10 +104,12 @@ func BuildGenerateContentRequest(
 				Parameters:  converted,
 			})
 		}
+		mode, allowed := geminiToolChoiceFromParams(params, q.ToolChoice)
 		req.Tools = []geminiTools{{FunctionDeclarations: decls}}
 		req.ToolConfig = &geminiToolConfig{
 			FunctionCallingConfig: geminiFunctionCallingConfig{
-				Mode:                        "AUTO",
+				Mode:                        mode,
+				AllowedFunctionNames:        allowed,
 				StreamFunctionCallArguments: streamFunctionCallArgsFromQuirks(q),
 			},
 		}
@@ -321,6 +323,42 @@ func normaliseToolArgs(in json.RawMessage) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return in
+}
+
+// geminiToolChoiceFromParams projects the provider-neutral
+// StreamParams.ToolChoice onto Gemini's functionCallingConfig.mode and,
+// for the named-tool form, allowedFunctionNames. It is gated on the
+// resolved capability and falls back to "AUTO" (the historical default
+// emitted whenever tools were present) for the auto mode, for any
+// unsupported mode, and for a named-tool choice with no name. Returning
+// "AUTO" with a nil allow-list keeps the wire body byte-identical to the
+// pre-#230 shape in every non-escalated turn.
+func geminiToolChoiceFromParams(params types.StreamParams, capability quirks.ToolChoiceCapability) (mode string, allowedFunctionNames []string) {
+	if !capability.Supported {
+		return "AUTO", nil
+	}
+	switch params.ToolChoice {
+	case types.ToolChoiceRequired:
+		if !capability.Required {
+			return "AUTO", nil
+		}
+		return "ANY", nil
+	case types.ToolChoiceNone:
+		if !capability.None {
+			return "AUTO", nil
+		}
+		return "NONE", nil
+	case types.ToolChoiceTool:
+		// Gemini expresses "force this one tool" as ANY mode restricted to
+		// a single allowed function name. A choice with no name is not
+		// expressible, so fall back to AUTO.
+		if !capability.NamedTool || params.ToolChoiceName == "" {
+			return "AUTO", nil
+		}
+		return "ANY", []string{params.ToolChoiceName}
+	default:
+		return "AUTO", nil
+	}
 }
 
 // streamFunctionCallArgsFromQuirks projects the resolved
