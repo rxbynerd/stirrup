@@ -409,6 +409,92 @@ func TestListDirectoryTool_MaxEntriesTruncation(t *testing.T) {
 	}
 }
 
+func TestListDirectoryTool_EmptyPath(t *testing.T) {
+	mock := &mockExecutor{}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": ""})
+	_, err := listTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "path is required") {
+		t.Errorf("expected path-required error, got %v", err)
+	}
+}
+
+func TestListDirectoryTool_MaxEntriesValidation(t *testing.T) {
+	mock := &mockExecutor{}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": ".", "max_entries": 0})
+	_, err := listTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "max_entries must be >=") {
+		t.Errorf("expected lower-bound error, got %v", err)
+	}
+
+	input, _ = json.Marshal(map[string]any{"path": ".", "max_entries": 100000})
+	_, err = listTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "max_entries must be <=") {
+		t.Errorf("expected upper-bound error, got %v", err)
+	}
+}
+
+func TestListDirectoryTool_RecursiveRootError(t *testing.T) {
+	mock := &mockExecutor{
+		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
+			return nil, fmt.Errorf("root inaccessible")
+		},
+	}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": ".", "recursive": true})
+	_, err := listTool.Handler(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected error when root is inaccessible")
+	}
+}
+
+func TestReadFileTool_StartLineBelowOne(t *testing.T) {
+	mock := &mockExecutor{}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":       "file.txt",
+		"start_line": 0,
+	})
+	_, err := readTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "start_line must be >=") {
+		t.Errorf("expected start_line lower-bound error, got %v", err)
+	}
+}
+
+func TestReadFileTool_LimitBelowOne(t *testing.T) {
+	mock := &mockExecutor{}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":  "file.txt",
+		"limit": 0,
+	})
+	_, err := readTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "limit must be >=") {
+		t.Errorf("expected limit lower-bound error, got %v", err)
+	}
+}
+
+func TestReadFileTool_ExecError(t *testing.T) {
+	mock := &mockExecutor{
+		readFileFunc: func(ctx context.Context, path string) (string, error) {
+			return "", fmt.Errorf("file not found")
+		},
+	}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": "missing.txt"})
+	_, err := readTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "file not found") {
+		t.Errorf("expected file-not-found error, got %v", err)
+	}
+}
+
 func TestListDirectoryTool_MaxDepthOverLimit(t *testing.T) {
 	mock := &mockExecutor{}
 	listTool := ListDirectoryTool(mock)

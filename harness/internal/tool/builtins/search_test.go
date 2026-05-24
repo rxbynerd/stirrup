@@ -326,6 +326,97 @@ func TestFindFilesTool_InvalidGlob(t *testing.T) {
 	}
 }
 
+func TestFindFilesTool_PathTraversalRejected(t *testing.T) {
+	mock := &mockExecutor{
+		resolvePathFunc: func(string) (string, error) {
+			return "", errors.New("path escapes workspace")
+		},
+	}
+	find := FindFilesTool(mock)
+	input, _ := json.Marshal(map[string]any{"name": "*.go", "path": "../../etc"})
+	_, err := find.Handler(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected resolve-path error")
+	}
+	if !strings.Contains(err.Error(), "resolve search path") {
+		t.Errorf("expected resolve search path error, got %v", err)
+	}
+}
+
+func TestFindFilesTool_MaxResultsValidation(t *testing.T) {
+	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
+
+	// Below the minimum.
+	input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": 0})
+	_, err := find.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "max_results must be >=") {
+		t.Errorf("expected lower-bound error, got %v", err)
+	}
+
+	// Above the maximum.
+	input, _ = json.Marshal(map[string]any{"name": "*.go", "max_results": 5000})
+	_, err = find.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "max_results must be <=") {
+		t.Errorf("expected upper-bound error, got %v", err)
+	}
+}
+
+func TestGrepFilesTool_MaxResultsValidation(t *testing.T) {
+	withRipgrepProbe(t, false)
+	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
+
+	input, _ := json.Marshal(map[string]any{"pattern": "x", "max_results": 0})
+	_, err := grep.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "max_results must be >=") {
+		t.Errorf("expected lower-bound error, got %v", err)
+	}
+
+	input, _ = json.Marshal(map[string]any{"pattern": "x", "max_results": 5000})
+	_, err = grep.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "max_results must be <=") {
+		t.Errorf("expected upper-bound error, got %v", err)
+	}
+}
+
+func TestGrepFilesTool_EmptyPattern(t *testing.T) {
+	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
+	input, _ := json.Marshal(map[string]any{"pattern": ""})
+	_, err := grep.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "pattern is required") {
+		t.Errorf("expected pattern-required error, got %v", err)
+	}
+}
+
+func TestFindFilesTool_EmptyName(t *testing.T) {
+	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
+	input, _ := json.Marshal(map[string]any{"name": ""})
+	_, err := find.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "name is required") {
+		t.Errorf("expected name-required error, got %v", err)
+	}
+}
+
+func TestGrepFilesTool_RipgrepNoMatches(t *testing.T) {
+	withRipgrepProbe(t, true)
+	fe := &fsExecutor{
+		root:    t.TempDir(),
+		canExec: true,
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			// rg exit code 1 is "no matches found", not a hard error.
+			return &executor.ExecResult{ExitCode: 1}, nil
+		},
+	}
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "absent"})
+	out, err := grep.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "No matches found") {
+		t.Errorf("expected no-match notice, got %q", out)
+	}
+}
+
 func TestFindFilesTool_DoubleStarGlob(t *testing.T) {
 	// `**` is not supported by filepath.Match (which is shell-style) — the
 	// model is more likely to pass a basename like "handler_*.go" and rely
