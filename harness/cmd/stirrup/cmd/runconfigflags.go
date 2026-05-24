@@ -29,6 +29,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("api-key-header", "", "Header name for sending the API key. Empty = Authorization: Bearer (default). Set to \"api-key\" for Azure OpenAI key auth.")
 	f.StringArray("query-param", nil, "Repeatable key=value query parameter appended to every provider request URL (e.g. api-version=preview). Used by the openai-* adapters.")
 	f.String("provider-compat-profile", "", "Optional compatibility profile selecting a pre-defined provider-quirks rule. Closed set; current legal values: \"\" (no profile), \"zai-glm\" (Z.ai GLM tool_stream + legacy max_tokens).")
+	f.String("tools-profile", "", "Model-facing toolset profile (sets tools.profile). Closed set; current legal values: \"\"/\"default\" (no aliasing, internal tool names), \"coding-classic\" (terse coding-CLI aliases: grep, find, bash). Dispatch identities are unchanged regardless of profile.")
 	f.String("gcp-project", "", "GCP project ID hosting the Vertex AI usage. Required when --provider=gemini.")
 	f.String("gcp-location", "global", "Vertex AI location: \"global\" or a region (e.g. us-central1). Determines the URL host and project location segment.")
 	f.String("gcp-credentials-file", "", "Path to a Google service account JSON key file. When set, implies credential.type=gcp-service-account.")
@@ -126,6 +127,7 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues("code-scanner", types.ValidCodeScannerTypeValues())
 	staticValues("guardrail", types.ValidGuardRailTypeValues())
 	staticValues("provider-compat-profile", types.ValidCompatProfileValues())
+	staticValues("tools-profile", types.ValidToolsProfileValues())
 
 	// log-level and api-key-header are not declared as validator-closed
 	// sets in types/runconfig.go, but operators benefit from a hinted

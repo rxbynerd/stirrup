@@ -68,8 +68,21 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		mode = parentConfig.Mode
 	}
 
-	// Build a child tool registry that excludes spawn_agent to prevent recursion.
-	childTools := filterToolRegistry(parent.Tools, "spawn_agent")
+	// Build a child tool registry that excludes spawn_agent to prevent
+	// recursion. filterToolRegistry rebuilds a plain registry keyed by the
+	// internal tool IDs (Resolve returns tools whose Name is the internal
+	// identity), so the child starts from internal names regardless of the
+	// parent's presentation. Re-wrap it under the parent's toolset profile
+	// (issue #234) so a sub-agent sees the same aliases the parent does;
+	// NewPresenter on a default/nil profile is the identity presentation,
+	// so the non-profile path is unchanged. A presenter build failure here
+	// would only arise from an alias collision the parent already resolved,
+	// so fall back to the unaliased child registry rather than aborting the
+	// spawn.
+	var childTools tool.ToolRegistry = filterToolRegistry(parent.Tools, "spawn_agent")
+	if presenter, err := tool.NewPresenter(childTools, parent.ToolProfile); err == nil {
+		childTools = presenter
+	}
 
 	// Use a capture transport to collect the sub-agent's text output.
 	// The capture transport wraps a NullTransport, recording text_delta
@@ -117,6 +130,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Prompt:      parent.Prompt,
 		Context:     contextpkg.NewSlidingWindowStrategy(),
 		Tools:       childTools,
+		ToolProfile: parent.ToolProfile,
 		Executor:    parent.Executor,
 		Edit:        parent.Edit,
 		Verifier:    verifier.NewNoneVerifier(),

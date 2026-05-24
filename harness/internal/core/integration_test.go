@@ -339,10 +339,17 @@ func TestBuildLoop_ResearchModeWebFetchEndToEnd(t *testing.T) {
 
 	// Replace web_fetch with a stub so the test does not depend on
 	// network access. The permission policy runs *before* the handler,
-	// so this still exercises the WP1 gating path.
-	registry, ok := loop.Tools.(*tool.Registry)
+	// so this still exercises the WP1 gating path. loop.Tools is the
+	// profile Presenter (issue #234); unwrap to the underlying registry
+	// to swap a handler — web_fetch is unaliased under the default
+	// profile, so the presented name is unchanged by the re-registration.
+	presenter, ok := loop.Tools.(*tool.Presenter)
 	if !ok {
-		t.Fatalf("expected *tool.Registry, got %T", loop.Tools)
+		t.Fatalf("expected *tool.Presenter, got %T", loop.Tools)
+	}
+	registry, ok := presenter.Unwrap().(*tool.Registry)
+	if !ok {
+		t.Fatalf("expected *tool.Registry under presenter, got %T", presenter.Unwrap())
 	}
 	original := registry.Resolve("web_fetch")
 	if original == nil {

@@ -555,6 +555,29 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		addApprovalTool(pp, "spawn_agent")
 	}
 
+	// Apply the toolset-profile presentation (issue #234) last, after every
+	// tool (built-ins, MCP, spawn_agent) is registered, so the alias mapping
+	// covers the complete tool set. The presenter wraps the registry for the
+	// loop's List/Resolve seam only; the permission policy, mutating-tool
+	// set, and MCP registration above all keep operating on the raw registry
+	// and the internal tool IDs, so aliasing changes the model-facing name
+	// without touching dispatch gating. The profile name passed ValidateRunConfig
+	// already; ProfileFor returning false here would mean a profile in the
+	// validator's closed set has no table, which is a build-time bug we fail
+	// loudly on rather than silently presenting no aliases.
+	profile, ok := tool.ProfileFor(config.Tools.Profile)
+	if !ok {
+		cleanup()
+		return nil, fmt.Errorf("tools.profile %q has no presentation table", config.Tools.Profile)
+	}
+	presenter, err := tool.NewPresenter(registry, profile)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("build tool profile presenter: %w", err)
+	}
+	loop.Tools = presenter
+	loop.ToolProfile = profile
+
 	return loop, nil
 }
 

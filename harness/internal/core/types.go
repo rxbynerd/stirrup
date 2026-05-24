@@ -56,12 +56,19 @@ const asyncResultTruncationSuffix = "... [truncated by harness]"
 // fields — the loop has no imports from concrete implementations, no environment
 // variable reads, no direct file system access.
 type AgenticLoop struct {
-	Provider     provider.ProviderAdapter
-	Providers    map[string]provider.ProviderAdapter
-	Router       router.ModelRouter
-	Prompt       prompt.PromptBuilder
-	Context      contextpkg.ContextStrategy
-	Tools        tool.ToolRegistry
+	Provider  provider.ProviderAdapter
+	Providers map[string]provider.ProviderAdapter
+	Router    router.ModelRouter
+	Prompt    prompt.PromptBuilder
+	Context   contextpkg.ContextStrategy
+	Tools     tool.ToolRegistry
+	// ToolProfile is the resolved toolset-profile presentation applied to
+	// Tools (issue #234). Nil means the default (identity) profile. Held on
+	// the loop so SpawnSubAgent can re-present the filtered child registry
+	// under the same profile, keeping parent and child tool names
+	// consistent. The factory always sets Tools to a *tool.Presenter built
+	// with this profile.
+	ToolProfile  *tool.Profile
 	Executor     executor.Executor
 	Edit         edit.EditStrategy
 	Verifier     verifier.Verifier
