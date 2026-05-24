@@ -29,6 +29,15 @@ package quirks
 // Operators who want a non-default rule (e.g. Z.ai compat) inject it
 // via NewRegistry — see harness/internal/provider/compat/zai for the
 // pattern.
+//
+// Gemini base rule: the "gemini / *" entry pins StreamArgsOff as the
+// resolved value for every Gemini request. The flag is the zero value
+// of GeminiStreamArgsShape, so the rule is a no-op functionally; it
+// exists so every Gemini request explicitly resolves the StreamArgs
+// decision through the registry, and so a future model-scoped rule
+// (e.g. a Gemini 3.x V3Deltas pilot) only needs to add a more-
+// specific entry without re-touching gemini_request.go. Aligns with
+// design §7 Step 3.
 func BuiltinRules() []Rule {
 	return []Rule{
 		{
@@ -58,6 +67,22 @@ func BuiltinRules() []Rule {
 				// carve-out. Specificity ordering (D10) guarantees this
 				// rule runs after gpt-5*.
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = false
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "*",
+			Description:  "Gemini: off streamFunctionCallArguments (post-#191 default)",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// StreamArgsOff is the zero value, so this write is a
+				// no-op functionally. The rule exists to document the
+				// design intent: every Gemini request resolves the
+				// StreamArgs decision via the registry, and a future
+				// model-scoped rule (e.g. "gemini-3*" pinning
+				// StreamArgsV3Deltas after live verification) can
+				// override this baseline without touching the adapter.
+				q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape = StreamArgsOff
 			},
 		},
 	}
