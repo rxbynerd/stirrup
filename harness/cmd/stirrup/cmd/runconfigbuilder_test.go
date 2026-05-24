@@ -140,6 +140,46 @@ func TestBuildRunConfig_StdinBaseWithFlagOverride(t *testing.T) {
 	}
 }
 
+// TestBuildRunConfig_EscalationMaxRetriesBasePreserved pins the R3
+// Changed() guard: a base config that sets toolChoiceEscalation.maxRetries
+// must survive when the operator passes no --escalate-tool-choice-max-retries
+// flag. Before the guard the flag's default (0) was forwarded
+// unconditionally and would clobber the base value.
+func TestBuildRunConfig_EscalationMaxRetriesBasePreserved(t *testing.T) {
+	var base types.RunConfig
+	if err := json.Unmarshal([]byte(minimalRunConfigJSON(t)), &base); err != nil {
+		t.Fatalf("unmarshal base: %v", err)
+	}
+	base.ToolChoiceEscalation = &types.ToolChoiceEscalationConfig{Enabled: true, MaxRetries: 3}
+	raw, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal base: %v", err)
+	}
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.ParseFlags([]string{"--max-turns", "5"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Stdin:   strings.NewReader(string(raw)),
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.ToolChoiceEscalation == nil {
+		t.Fatal("base ToolChoiceEscalation must survive, got nil")
+	}
+	if !cfg.ToolChoiceEscalation.Enabled {
+		t.Error("base Enabled=true must survive")
+	}
+	if cfg.ToolChoiceEscalation.MaxRetries != 3 {
+		t.Errorf("MaxRetries = %d, want 3 (base preserved, no flag passed)", cfg.ToolChoiceEscalation.MaxRetries)
+	}
+}
+
 // TestBuildRunConfig_FilePath verifies the file-loading branch. The
 // path coverage matters because loadRunConfigFile already had a code
 // path for file reads pre-refactor — the test confirms BuildRunConfig

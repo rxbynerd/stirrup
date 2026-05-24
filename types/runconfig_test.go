@@ -4800,6 +4800,19 @@ func TestValidateRunConfig_ToolChoiceEscalationAcceptsValid(t *testing.T) {
 			t.Errorf("disabled effective retries = %d, want 0", got)
 		}
 	})
+	t.Run("explicit_cap_2", func(t *testing.T) {
+		// Exercises the third return branch of
+		// EffectiveToolChoiceEscalationMaxRetries (Enabled && MaxRetries > 0
+		// → return the configured value verbatim).
+		c := validConfig()
+		c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: true, MaxRetries: 2}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("enabled escalation with explicit cap must validate: %v", err)
+		}
+		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != 2 {
+			t.Errorf("explicit cap effective retries = %d, want 2", got)
+		}
+	})
 }
 
 // --- BatchProviderConfig ---

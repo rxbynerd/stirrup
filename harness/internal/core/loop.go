@@ -1008,19 +1008,34 @@ func (l *AgenticLoop) applyEscalation(
 	// stirrup.harness.tool_failures see missed-tool recovery alongside the
 	// dispatch-site categories. tool.name is the empty bounded sentinel —
 	// no tool was involved — matching the provider_request/stream paths.
-	l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-		attribute.String("tool.name", ""),
-		attribute.String("category", observability.ToolFailureNoToolWhenRequired.String()),
-		attribute.String("provider.type", providerType),
-		attribute.String("provider.model", model),
-		attribute.String("run.mode", config.Mode),
-	))
+	// Gate on IsValid() like every dispatch.go emit site so a future
+	// dynamic category can never widen label cardinality past the enum.
+	if observability.ToolFailureNoToolWhenRequired.IsValid() {
+		l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
+			attribute.String("tool.name", ""),
+			attribute.String("category", observability.ToolFailureNoToolWhenRequired.String()),
+			attribute.String("provider.type", providerType),
+			attribute.String("provider.model", model),
+			attribute.String("run.mode", config.Mode),
+		))
+	}
+
+	// Scrub the policy reason before it lands on the OTel span and the
+	// slog line. The only built-in policy builds Reason from the validated
+	// mode enum (no secret can reach it), but EscalationPolicy is a public
+	// interface: a future policy interpolating in.StopReason or workspace
+	// content would otherwise leak past ScrubHandler, which covers neither
+	// span attributes nor this log path. Mirrors the scrubbedErr pattern at
+	// the provider.Stream call sites.
+	scrubbedReason := security.Scrub(decision.Reason)
 
 	_, span := l.Tracer.Start(l.traceCtx(ctx), "tool_choice.escalation",
 		oteltrace.WithAttributes(
 			attribute.String("run.mode", config.Mode),
 			attribute.String("escalation.kind", decision.Kind.String()),
-			attribute.String("escalation.reason", decision.Reason),
+			// Reason is a short static string; see EscalationDecision.Reason
+			// godoc — NOT a metric label.
+			attribute.String("escalation.reason", scrubbedReason),
 		),
 	)
 	span.End()
@@ -1028,7 +1043,7 @@ func (l *AgenticLoop) applyEscalation(
 	l.Logger.Info("tool-choice escalation",
 		"mode", config.Mode,
 		"kind", decision.Kind.String(),
-		"reason", decision.Reason,
+		"reason", scrubbedReason,
 	)
 
 	return messages
