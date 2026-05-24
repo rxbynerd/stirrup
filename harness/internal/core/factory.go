@@ -343,6 +343,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		case *provider.OpenAIResponsesAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
+			pa.Logger = logger
 		case *provider.BedrockAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics

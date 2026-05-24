@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -54,6 +55,7 @@ type OpenAIResponsesAdapter struct {
 	queryParams  map[string]string
 	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	Logger       *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
 	// Registry resolves per-(provider, model) quirks at the top of
 	// every Stream call. No rules target openai-responses in v1; the
 	// field exists so the integration point is in place when a
@@ -500,7 +502,22 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	_ = registry.Resolve("openai-responses", params.Model)
+	_, appliedRules := registry.ResolveWithRules("openai-responses", params.Model)
+
+	logger := o.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	// Debug-level log mirrors the chat adapter so an operator gets the
+	// same trace surface regardless of which OpenAI endpoint is in
+	// use. Empty rules list today (no openai-responses rule); the line
+	// fires anyway so a future rule landing here is immediately
+	// visible in debug output.
+	logger.DebugContext(ctx, "openai-responses quirks resolved",
+		slog.String("provider.type", "openai-responses"),
+		slog.String("provider.model", params.Model),
+		slog.Any("rules", ruleDescriptions(appliedRules)),
+	)
 
 	reqBody := buildResponsesRequest(params)
 	reqBody.Stream = true

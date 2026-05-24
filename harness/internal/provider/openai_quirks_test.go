@@ -1,7 +1,14 @@
 package provider
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -295,4 +302,133 @@ func TestOpenAIRequest_UnmarshalJSON(t *testing.T) {
 			t.Errorf("ExtraBodyFields[tool_stream] = %v (ok=%v), want true", v, ok)
 		}
 	})
+}
+
+// quirksLogStubServer returns an httptest server that drains the
+// request body and returns an empty [DONE] SSE stream. Used by the
+// logging tests so the Stream call completes the full warn/debug
+// path without touching a real OpenAI endpoint.
+func quirksLogStubServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
+}
+
+// TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDescription
+// pins design risk 2: when OmitSamplingParams suppresses a caller-
+// supplied non-nil Temperature, the warn log must (a) fire, (b) name
+// the rule that caused the suppression so an operator can identify
+// the source without reading code, and (c) NOT include the suppressed
+// value itself (sidechannel concern — the caller's value would
+// otherwise propagate into any log sink that captures warn records).
+func TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDescription(t *testing.T) {
+	srv := quirksLogStubServer(t)
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:       "o1-mini",
+		MaxTokens:   4096,
+		Temperature: types.Float64Ptr(0.5),
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "openai quirks suppressed caller temperature") {
+		t.Errorf("warn log message absent from output: %s", logOutput)
+	}
+	// The reasoning-class rule description must appear in the warn
+	// record so the operator can trace which rule fired. The exact
+	// substring is the rule's Description field — if the rule text
+	// changes the substring below must change with it.
+	const wantRule = "OpenAI reasoning-class"
+	if !strings.Contains(logOutput, wantRule) {
+		t.Errorf("warn log missing rule description substring %q: %s", wantRule, logOutput)
+	}
+	// The suppressed value must NOT appear in the log. The number
+	// "0.5" alone could collide with a metric value or a duration, so
+	// pin against the named attribute key as well.
+	if strings.Contains(logOutput, "temperature.suppressed") {
+		t.Errorf("warn log contains legacy 'temperature.suppressed' attribute; the suppressed value must not leak: %s", logOutput)
+	}
+}
+
+// TestOpenAIAdapter_DebugLogListsAppliedRules pins the per-Stream
+// debug line from design §5: the line fires at the top of every
+// Stream call and lists the descriptions of the rules that
+// contributed to the resolution. Empty rule list is still logged so a
+// future grep against the line never misses a resolution.
+func TestOpenAIAdapter_DebugLogListsAppliedRules(t *testing.T) {
+	srv := quirksLogStubServer(t)
+	defer srv.Close()
+
+	cases := []struct {
+		name  string
+		model string
+		// Substrings the debug record must contain. Empty means no
+		// rule fired — the debug record fires anyway with `rules:[]`.
+		wantRuleSubstrings []string
+	}{
+		{
+			name:               "reasoning-class rule fires",
+			model:              "o1-mini",
+			wantRuleSubstrings: []string{"OpenAI reasoning-class"},
+		},
+		{
+			name:               "no rule fires for gpt-4o",
+			model:              "gpt-4o",
+			wantRuleSubstrings: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+			adapter.Logger = logger
+
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{
+				Model:     tc.model,
+				MaxTokens: 4096,
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			for range ch {
+			}
+
+			logOutput := buf.String()
+			if !strings.Contains(logOutput, "openai quirks resolved") {
+				t.Errorf("debug log message absent: %s", logOutput)
+			}
+			for _, want := range tc.wantRuleSubstrings {
+				if !strings.Contains(logOutput, want) {
+					t.Errorf("debug log missing rule substring %q: %s", want, logOutput)
+				}
+			}
+		})
+	}
 }

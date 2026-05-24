@@ -301,6 +301,18 @@ func openAIWireTokenKey(f quirks.OpenAITokenField) string {
 	return "max_completion_tokens"
 }
 
+// ruleDescriptions returns the Description field of each rule in the
+// supplied slice, preserving order. Returned as a non-nil empty slice
+// when the input is empty so the slog.Any attribute renders as `[]`
+// rather than `null` — easier to grep and parse downstream.
+func ruleDescriptions(rules []quirks.Rule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.Description)
+	}
+	return out
+}
+
 // canonicalOpenAIFields enumerates the top-level Chat Completions
 // request fields the adapter knows how to emit. ExtraBodyFields rules
 // must not collide with any of these — the registry self-test guards
@@ -588,21 +600,40 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q := registry.Resolve("openai-compatible", params.Model)
+	q, appliedRules := registry.ResolveWithRules("openai-compatible", params.Model)
+
+	logger := o.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	// Debug-level log lists the descriptions of every rule that
+	// contributed to this resolution (design §5). Emitted even when
+	// the list is empty so an operator grepping for the line knows
+	// the resolution ran; an absent entry would be ambiguous between
+	// "no rule fired" and "the log line was suppressed". The list is
+	// in apply order — the last entry is the rule that won on
+	// overlapping fields.
+	logger.DebugContext(ctx, "openai quirks resolved",
+		slog.String("provider.type", "openai-compatible"),
+		slog.String("provider.model", params.Model),
+		slog.Any("rules", ruleDescriptions(appliedRules)),
+	)
 
 	// Warn-level log when a caller-supplied non-nil Temperature is
-	// suppressed by a quirk rule (design risk 2). The reasoning-class
-	// rules omit temperature outright; without this signal an operator
-	// who set --temperature would silently observe greedy decoding.
+	// suppressed by a quirk rule (design risk 2, §9). The reasoning-
+	// class rules omit temperature outright; without this signal an
+	// operator who set --temperature would silently observe greedy
+	// decoding. The rule descriptions are attached so the operator
+	// can name the rule that fired without grepping the source. The
+	// suppressed value itself is intentionally NOT logged — it is the
+	// caller's input and surfacing it here would leak the value into
+	// any log sink that captures warn-level records.
 	if q.BehaviourFlags.OpenAI.OmitSamplingParams && params.Temperature != nil {
-		logger := o.Logger
-		if logger == nil {
-			logger = slog.Default()
-		}
 		logger.WarnContext(ctx, "openai quirks suppressed caller temperature",
 			slog.String("provider.type", "openai-compatible"),
 			slog.String("provider.model", params.Model),
-			slog.Float64("temperature.suppressed", *params.Temperature),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
 		)
 	}
 
