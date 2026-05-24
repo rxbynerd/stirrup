@@ -443,6 +443,116 @@ func TestNormalizeStrictSchema_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
+// TestNormalizeStrictSchema_Idempotent pins that the normaliser is
+// stable under repeated application: feeding the rewritten output back
+// through NormalizeStrictSchema produces byte-identical bytes. This
+// guards two regressions:
+//
+//   - A rewrite that wraps an already-nullable property's type with a
+//     second "null" entry (caught by makeNullable's "already null"
+//     branch — currently the only path through that branch).
+//   - A rewrite that re-sorts `required` differently on a schema that
+//     already lists every property in sorted order.
+//
+// Idempotency also lets the cache stay correct under a hypothetical
+// retry path: feeding cached bytes back through the normaliser must
+// yield the same bytes.
+func TestNormalizeStrictSchema_Idempotent(t *testing.T) {
+	in := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"req":      {"type": "string"},
+			"opt_int":  {"type": "integer"},
+			"opt_arr":  {"type": "array", "items": {"type": "string"}},
+			"nested":   {
+				"type": "object",
+				"properties": {
+					"inner_req": {"type": "string"},
+					"inner_opt": {"type": "integer"}
+				},
+				"required": ["inner_req"]
+			}
+		},
+		"required": ["req"]
+	}`)
+	first, err := NormalizeStrictSchema("idempotent_tool", in)
+	if err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	second, err := NormalizeStrictSchema("idempotent_tool", first)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Errorf("normaliser is not idempotent\n first:  %s\n second: %s", first, second)
+	}
+}
+
+// TestNormalizeStrictSchema_ObjectWithNoProperties pins the early-
+// return path in normalizeStrictObject when a node has `type: object`
+// but no `properties` key. The output must still carry the canonical
+// strict-mode shape (additionalProperties=false, an empty properties
+// object, and an empty required array) so the wire body is well-formed
+// even for a no-arg tool that uses an explicit `type: object`.
+func TestNormalizeStrictSchema_ObjectWithNoProperties(t *testing.T) {
+	out, err := NormalizeStrictSchema("noargs_tool", json.RawMessage(`{"type":"object"}`))
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	var got map[string]any
+	if uerr := json.Unmarshal(out, &got); uerr != nil {
+		t.Fatalf("re-unmarshal: %v", uerr)
+	}
+	if got["type"] != "object" {
+		t.Errorf("type = %v, want object", got["type"])
+	}
+	if got["additionalProperties"] != false {
+		t.Errorf("additionalProperties = %v, want false", got["additionalProperties"])
+	}
+	props, ok := got["properties"].(map[string]any)
+	if !ok {
+		t.Errorf("properties = %v, want empty object", got["properties"])
+	} else if len(props) != 0 {
+		t.Errorf("properties = %v, want empty", props)
+	}
+	req, ok := got["required"].([]any)
+	if !ok {
+		t.Errorf("required = %v, want empty array", got["required"])
+	} else if len(req) != 0 {
+		t.Errorf("required = %v, want empty", req)
+	}
+}
+
+// TestNormalizeStrictSchema_ArrayWithNoItems pins the early-return
+// path in normalizeStrictArray when a node has `type: array` but no
+// `items` key. The schema must round-trip without error — the
+// canonical built-in schemas always declare items, but a permissive
+// MCP-imported schema might not, and the normaliser should not reject
+// it as long as the surrounding strict-mode invariants hold for the
+// parent object.
+func TestNormalizeStrictSchema_ArrayWithNoItems(t *testing.T) {
+	in := json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"tags": {"type": "array"}
+		},
+		"required": ["tags"]
+	}`)
+	out, err := NormalizeStrictSchema("array_noitems_tool", in)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	tags := got["properties"].(map[string]any)["tags"].(map[string]any)
+	if tags["type"] != "array" {
+		t.Errorf("tags.type = %v, want array (untouched, no items present)", tags["type"])
+	}
+	if _, has := tags["items"]; has {
+		t.Errorf("tags.items unexpectedly present: %v", tags["items"])
+	}
+}
+
 // containsString reports whether the supplied []any contains a string
 // equal to s. Used in tests that check the type-array form for null.
 func containsString(arr []any, s string) bool {
