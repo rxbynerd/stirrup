@@ -187,6 +187,18 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 
+	// Mirror the applied-rules list onto the OTel span as a
+	// `provider.quirk.applied` attribute (design §5). Emitted in
+	// parallel with the slog DEBUG line above so log-only and
+	// trace-only consumers both observe which rules fired. The
+	// IsValid guard tolerates the no-tracer case: when no exporter
+	// is configured, SpanFromContext returns a non-recording span
+	// whose SetAttributes is a no-op anyway, but checking IsValid
+	// keeps the attribute slice allocation off the hot path.
+	if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
+	}
+
 	body, _, err := BuildGenerateContentRequest(params, g.safety, q)
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)
@@ -389,6 +401,18 @@ func (g *GeminiAdapter) consumeSSE(
 	defer func() {
 		if len(replayFieldsCapture) == 0 {
 			return
+		}
+		// Mirror the per-stream capture summary onto the OTel span
+		// (design §5): emit `replay_fields_captured.count` and
+		// `.total_len` so trace consumers see the rule fired without
+		// having to correlate with slog. Length-only — values stay
+		// off the trace just as they stay off the log.
+		if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+			totalCount, totalLen := summarizeReplayCaptures(replayFieldsCapture)
+			span.SetAttributes(
+				attribute.Int("replay_fields_captured.count", totalCount),
+				attribute.Int("replay_fields_captured.total_len", totalLen),
+			)
 		}
 		logReplayFieldsCapture(ctx, logger, "gemini", model, replayFieldsCapture)
 	}()
