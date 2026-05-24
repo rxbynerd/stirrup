@@ -153,9 +153,13 @@ var lookPath = func(name string) (string, error) {
 // without re-running the search.
 func GrepFilesTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:              "grep_files",
-		Description:       "Search file contents in the workspace for a regular expression (RE2). Returns 'path:line:match' lines. Prefers ripgrep when available, falls back to a Go-native walker. Results are bounded by max_results.",
-		InputSchema:       grepFilesSchema,
+		Name: "grep_files",
+		Description: "Search file contents in the workspace for a regular expression (Go RE2 syntax). Returns one 'path:line:match' line per hit. " +
+			"Use this when looking for a string, symbol, or pattern inside files; use find_files instead when searching by filename or extension. " +
+			"The pattern is a regex, not a glob — pass '\\bMyFunc\\b' to find the symbol MyFunc, not '*MyFunc*'. " +
+			"include and exclude take shell-style globs (e.g. '*.go') applied to candidate paths. Results are capped by max_results (default 100, max 1000); binary files are skipped. " +
+			"Example: {\"pattern\": \"func ReadFile\\\\b\", \"include\": [\"*.go\"], \"path\": \"harness/internal\"}",
+		InputSchema: grepFilesSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -231,9 +235,13 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 // executor regardless of CanExec.
 func FindFilesTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:              "find_files",
-		Description:       "Find files in the workspace whose names match a shell-style glob (e.g. '*.go', 'handler_*.ts'). Returns one path per line. Results are bounded by max_results.",
-		InputSchema:       findFilesSchema,
+		Name: "find_files",
+		Description: "Locate files in the workspace whose basenames match a shell-style glob. Returns one workspace-relative path per line. " +
+			"Use this when searching by filename or extension; use grep_files instead when searching for a pattern inside file contents. " +
+			"The name field is a glob (filepath.Match syntax) matched against each file's basename only — '*.go', 'handler_*.ts' — not a regex and not a path. The '**' segment is not supported in name; use the include filter to narrow by path. " +
+			"Results are capped by max_results (default 100, max 1000). " +
+			"Example: {\"name\": \"*_test.go\", \"path\": \"harness/internal\", \"exclude\": [\"*/testdata/*\"]}",
+		InputSchema: findFilesSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
