@@ -385,6 +385,28 @@ func TestValidateRunConfig_KnownToolsProfilesAccepted(t *testing.T) {
 	}
 }
 
+// TestToolsConfig_ProfileOmittedOnWire pins the issue #234 back-compat
+// guarantee at the wire level: an empty Profile must not emit a "profile"
+// key, so a config written before profiles existed round-trips
+// byte-identically. The positive case confirms the key appears when set.
+func TestToolsConfig_ProfileOmittedOnWire(t *testing.T) {
+	b, err := json.Marshal(ToolsConfig{BuiltIn: []string{"read_file"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "profile") {
+		t.Errorf("empty Profile must be omitted from ToolsConfig, got: %s", b)
+	}
+
+	withProfile, err := json.Marshal(ToolsConfig{Profile: "coding-classic"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(withProfile), `"profile":"coding-classic"`) {
+		t.Errorf("a set Profile must appear on the wire, got: %s", withProfile)
+	}
+}
+
 func TestValidateRunConfig_MaxTurnsExceedsLimit(t *testing.T) {
 	c := validConfig()
 	c.MaxTurns = 101

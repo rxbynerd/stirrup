@@ -207,6 +207,49 @@ func TestPresenter_AliasCollisionResolvedByToolname(t *testing.T) {
 	}
 }
 
+// Collision resolution must be independent of registration order:
+// NewPresenter sorts by internal ID before calling BuildFromCandidates,
+// so the same tool set always pins the same alias to the same tool no
+// matter which order the registry listed them in. Registering the two
+// colliding tools in both orders must yield identical presented-name
+// mappings (same bare-alias winner, same disambiguated suffix).
+func TestPresenter_CollisionOrderIndependent(t *testing.T) {
+	collide := &Profile{
+		Name: "collide",
+		aliases: map[string]string{
+			"grep_files": "search",
+			"find_files": "search",
+		},
+	}
+
+	presentedFor := func(first, second string) map[string]string {
+		reg := newRegistryWith(
+			fixedTool(first, "f"),
+			fixedTool(second, "s"),
+		)
+		p, err := NewPresenter(reg, collide)
+		if err != nil {
+			t.Fatalf("NewPresenter(%s,%s): %v", first, second, err)
+		}
+		// Map internal ID → presented name, independent of List order.
+		m := map[string]string{}
+		for _, d := range p.List() {
+			m[p.InternalName(d.Name)] = d.Name
+		}
+		return m
+	}
+
+	forward := presentedFor("grep_files", "find_files")
+	reverse := presentedFor("find_files", "grep_files")
+
+	for _, internal := range []string{"grep_files", "find_files"} {
+		if forward[internal] != reverse[internal] {
+			t.Errorf("presented name for %q depends on registration order: %q vs %q",
+				internal, forward[internal], reverse[internal])
+		}
+	}
+}
+
 func TestPresenter_ResolveUnknownReturnsNil(t *testing.T) {
 	reg := newRegistryWith(fixedTool("read_file", "read"))
 	p, err := NewPresenter(reg, codingClassicProfile)
