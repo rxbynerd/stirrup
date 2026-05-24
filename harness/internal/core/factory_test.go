@@ -1441,14 +1441,14 @@ func TestBuildLoopWithTransport_EmptyEditStrategyDefaultsToMulti(t *testing.T) {
 
 	timeout := 30
 	config := &types.RunConfig{
-		RunID:            "factory-test-edit-default",
-		Mode:             "execution",
-		Prompt:           "hello",
-		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
-		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
-		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
-		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
-		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		RunID:           "factory-test-edit-default",
+		Mode:            "execution",
+		Prompt:          "hello",
+		Provider:        types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:        types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
 		// EditStrategy intentionally omitted: the whole point of this
 		// test is the empty-type → "multi" default chain.
 		Verifier:         types.VerifierConfig{Type: "none"},
