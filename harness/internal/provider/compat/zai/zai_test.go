@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
@@ -117,5 +118,35 @@ func TestZAICompatRule_DoesNotAffectNonGLMModels(t *testing.T) {
 	q = reg.Resolve("openai-compatible", "glm-4-plus")
 	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
 		t.Errorf("glm-4-plus: TokenField = %v, want max_tokens (rule should fire)", q.BehaviourFlags.OpenAI.TokenField)
+	}
+}
+
+// TestCompatRuleExtraBodyFieldsNoSecrets is the per-compat-package
+// mirror of quirks.TestBuiltinRulesExtraBodyFieldsNoSecrets: it
+// materialises the Z.ai rule into a fresh ProviderQuirks and walks
+// every ExtraBodyFields value for the secret:// prefix. The map is
+// serialised verbatim into the request body, and RunConfig.Redact()
+// never reaches inside a quirks rule, so a secret reference embedded
+// here would propagate to every wire request without redaction.
+//
+// The current rule stores a bool (tool_stream: true) so the check
+// is trivially satisfied today. The test is structural insurance
+// for the next time the rule grows — and the pattern is intended
+// for every future compat package to copy: each compat package
+// must contribute its own version of this test against its own
+// CompatRule, because the quirks_test.go version only walks
+// BuiltinRules() and cannot reach compat rules that are not part
+// of the registry default.
+func TestCompatRuleExtraBodyFieldsNoSecrets(t *testing.T) {
+	q := quirks.NewRegistry([]quirks.Rule{zai.CompatRule()}).Resolve("openai-compatible", "glm-4-plus")
+	for k, v := range q.BehaviourFlags.OpenAI.ExtraBodyFields {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(s, "secret://") {
+			t.Errorf("Z.ai CompatRule ExtraBodyFields[%q] = %q contains a secret:// reference; "+
+				"compat rule values are serialised verbatim and bypass RunConfig.Redact()", k, s)
+		}
 	}
 }
