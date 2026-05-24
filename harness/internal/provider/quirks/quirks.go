@@ -132,12 +132,15 @@ const (
 
 // Value is a typed JSON scalar used by ProviderQuirks.ValueOverrides.
 // Exactly one field is set; New* constructors enforce the invariant.
+// JSON tags use camelCase + omitempty so the CLI introspection output
+// stays consistent with the rest of ProviderQuirks and only emits the
+// populated field.
 type Value struct {
-	String *string
-	Int    *int
-	Float  *float64
-	Bool   *bool
-	Null   bool
+	String *string  `json:"string,omitempty"`
+	Int    *int     `json:"int,omitempty"`
+	Float  *float64 `json:"float,omitempty"`
+	Bool   *bool    `json:"bool,omitempty"`
+	Null   bool     `json:"null,omitempty"`
 }
 
 // NewStringValue returns a Value carrying the given string.

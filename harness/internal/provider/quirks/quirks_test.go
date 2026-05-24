@@ -1,6 +1,7 @@
 package quirks
 
 import (
+	"encoding/json"
 	"reflect"
 	"sync"
 	"testing"
@@ -211,4 +212,34 @@ func TestDefaultRegistryConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestValueJSONTags pins the camelCase JSON keys + omitempty on the
+// Value struct. Operators read CLI output as JSON; the shape needs to
+// stay stable across the empty-rule-set baseline and the first Step 2
+// rule that populates ValueOverrides.
+func TestValueJSONTags(t *testing.T) {
+	cases := []struct {
+		name string
+		val  Value
+		want string
+	}{
+		{"string", NewStringValue("foo"), `{"string":"foo"}`},
+		{"int", NewIntValue(42), `{"int":42}`},
+		{"float", NewFloatValue(3.14), `{"float":3.14}`},
+		{"bool-true", NewBoolValue(true), `{"bool":true}`},
+		{"bool-false", NewBoolValue(false), `{"bool":false}`},
+		{"null", NewNullValue(), `{"null":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%+v) = %s, want %s", tc.val, got, tc.want)
+			}
+		})
+	}
 }
