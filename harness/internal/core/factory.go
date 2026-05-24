@@ -25,6 +25,8 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/compat/zai"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/security/codescanner"
@@ -582,7 +584,22 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		// nil pointer defensively in case a non-CLI caller bypasses the
 		// validator.
 		retry := provider.RetryPolicyFromConfig(cfg.Retry)
-		return provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry), nil
+		adapter := provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry)
+		// Inject a compat rule into the adapter's registry when the
+		// operator selected a compatProfile. The default registry is
+		// already attached by the constructor; we replace it with a
+		// new registry containing the compat rule appended after
+		// BuiltinRules so the compat rule's specificity ordering wins
+		// against any first-party glob it overlaps.
+		if cfg.CompatProfile != "" {
+			extra, err := resolveCompatProfile(cfg.CompatProfile)
+			if err != nil {
+				return nil, fmt.Errorf("resolve compat profile: %w", err)
+			}
+			rules := append(quirks.BuiltinRules(), extra)
+			adapter.Registry = quirks.NewRegistry(rules)
+		}
+		return adapter, nil
 	case "openai-responses":
 		if cred.BearerToken == nil {
 			return nil, fmt.Errorf("openai-responses provider requires a bearer credential but the credential source produced none")
@@ -1409,6 +1426,27 @@ func buildGCSTraceCredentialSource(cfg *types.CredentialConfig) (credential.Sour
 			"credential.type=%q is not supported for the gcs trace emitter; "+
 				"expected \"gcp-workload-identity\" or \"gcp-default\"",
 			cfg.Type)
+	}
+}
+
+// resolveCompatProfile maps the closed enum of supported
+// compatProfile names to the rule the corresponding compat package
+// exports. The set must stay aligned with validCompatProfiles in
+// types/runconfig.go — ValidateRunConfig rejects unknown values at
+// startup, so an unknown value reaching this switch is a defence-in-
+// depth signal that the validator was bypassed (e.g. by a non-CLI
+// caller).
+//
+// New entries here require a corresponding compat package under
+// harness/internal/provider/compat/<name>/ and an addition to
+// validCompatProfiles. Adding a name to the validator without a rule
+// would silently no-op for runs that selected the new profile.
+func resolveCompatProfile(profile string) (quirks.Rule, error) {
+	switch profile {
+	case "zai-glm":
+		return zai.CompatRule(), nil
+	default:
+		return quirks.Rule{}, fmt.Errorf("unknown compat profile %q (supported: zai-glm)", profile)
 	}
 }
 
