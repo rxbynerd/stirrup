@@ -215,6 +215,14 @@ type anthropicMessage struct {
 // documents support for it. Provider-private state added to
 // types.ContentBlock by some other adapter is, by default, dropped on
 // egress to Anthropic.
+// Content is a json.RawMessage rather than a string because the Messages
+// API accepts a tool_result block's `content` as either a JSON string or an
+// array of content blocks. The string form is the default (a JSON-encoded
+// string literal); the array form is emitted only when the resolved
+// StructuredToolResults capability is on and the result carries a structured
+// envelope (issue #231 B2). A nil Content omits the key (omitempty), so a
+// text block or tool_use block — which never set Content — serialises
+// byte-identically to the pre-#231 shape.
 type anthropicContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -222,8 +230,19 @@ type anthropicContentBlock struct {
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+}
+
+// anthropicToolResultPart is one entry in the array form of a tool_result
+// block's content. The Messages API's tool_result content array accepts
+// "text" (and "image") parts; the harness uses only "text", carrying the
+// structured envelope as a JSON-serialised text part alongside the canonical
+// text part. There is no native JSON content type for tool_result, so this
+// is the faithful representation of "structured data the model can read".
+type anthropicToolResultPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // translateMessagesAnthropic copies a slice of types.Message into the
@@ -235,7 +254,7 @@ type anthropicContentBlock struct {
 // otherwise have been forwarded to api.anthropic.com via the model
 // router); the same mechanism covers any provider-private field added
 // to the shared carrier in the future.
-func translateMessagesAnthropic(messages []types.Message) []anthropicMessage {
+func translateMessagesAnthropic(messages []types.Message, cap quirks.StructuredToolResultCapability) []anthropicMessage {
 	out := make([]anthropicMessage, len(messages))
 	for i, msg := range messages {
 		blocks := make([]anthropicContentBlock, len(msg.Content))
@@ -247,7 +266,7 @@ func translateMessagesAnthropic(messages []types.Message) []anthropicMessage {
 				Name:      b.Name,
 				Input:     b.Input,
 				ToolUseID: b.ToolUseID,
-				Content:   b.Content,
+				Content:   anthropicToolResultContent(b, cap),
 				IsError:   b.IsError,
 			}
 		}
@@ -257,6 +276,47 @@ func translateMessagesAnthropic(messages []types.Message) []anthropicMessage {
 		}
 	}
 	return out
+}
+
+// anthropicToolResultContent renders the `content` field of one content
+// block for the Anthropic wire. For non-tool_result blocks it returns nil so
+// the key is omitted (text/tool_use blocks never carry tool-result content).
+// For tool_result blocks it returns the JSON-string form by default; when the
+// resolved capability accepts the content-block array shape and the block
+// carries a structured envelope, it returns the array form — the canonical
+// text part plus a text part holding the structured JSON — so the model
+// receives both renderings and the text fallback survives even if a consumer
+// reads only the first part.
+//
+// A marshalling failure falls back to the plain string content: structured
+// serialisation is purely additive and must never drop the canonical text.
+func anthropicToolResultContent(b types.ContentBlock, cap quirks.StructuredToolResultCapability) json.RawMessage {
+	if b.Type != "tool_result" {
+		return nil
+	}
+	if cap.Supported && cap.ContentBlockArray && len(b.Structured) > 0 {
+		parts := []anthropicToolResultPart{
+			{Type: "text", Text: b.Content},
+			{Type: "text", Text: string(b.Structured)},
+		}
+		if raw, err := json.Marshal(parts); err == nil {
+			return raw
+		}
+	}
+	// Preserve the pre-#231 omitempty behaviour: an empty tool-result
+	// content omitted the `content` key entirely. Returning nil keeps that
+	// byte-for-byte. A non-empty string is emitted as a JSON string literal,
+	// identical to what the old `Content string` field produced.
+	if b.Content == "" {
+		return nil
+	}
+	raw, err := json.Marshal(b.Content)
+	if err != nil {
+		// json.Marshal on a string cannot fail in practice; emit an empty
+		// JSON string so the wire shape stays valid.
+		return json.RawMessage(`""`)
+	}
+	return raw
 }
 
 // SSE event types from the Anthropic API.
@@ -298,12 +358,14 @@ type sseMessageDelta struct {
 // non-streaming caller (batch submission, phase 2 of issue #133) can reuse
 // the same projection without duplicating field-by-field copying.
 //
-// q carries the resolved per-(provider, model) quirks. Today the only
-// load-bearing field for the Anthropic build path is the cross-provider
-// ToolChoice capability, which gates whether StreamParams.ToolChoice is
-// projected onto the tool_choice object. A zero-value q (Supported=false)
-// emits no tool_choice field, so callers that do not route through the
-// registry produce the pre-#230 wire shape.
+// q carries the resolved per-(provider, model) quirks. Two cross-provider
+// capabilities are load-bearing on the Anthropic build path: ToolChoice gates
+// whether StreamParams.ToolChoice is projected onto the tool_choice object,
+// and StructuredToolResults gates whether a tool_result block carrying a
+// structured envelope is serialised as the content-block array form rather
+// than the plain string. A zero-value q (both Supported=false) emits no
+// tool_choice field and string-only tool results, so callers that do not
+// route through the registry produce the pre-#230/#231 wire shape.
 //
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. thinking_config), change the return type to
@@ -312,7 +374,7 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 	return anthropicRequest{
 		Model:    params.Model,
 		System:   params.System,
-		Messages: translateMessagesAnthropic(params.Messages),
+		Messages: translateMessagesAnthropic(params.Messages, q.StructuredToolResults),
 		// slices.Clone avoids aliasing params.Tools into the returned
 		// struct. translateMessagesAnthropic / translateTools(Responses)
 		// allocate fresh output slices for messages and tools on the

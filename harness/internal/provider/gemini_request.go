@@ -65,7 +65,7 @@ func BuildGenerateContentRequest(
 	safety []types.GeminiSafetySetting,
 	q quirks.ProviderQuirks,
 ) (body []byte, toolNameByID map[string]string, err error) {
-	contents, toolNameByID, err := translateMessagesGemini(params.System, params.Messages)
+	contents, toolNameByID, err := translateMessagesGemini(params.System, params.Messages, q.StructuredToolResults)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -180,7 +180,7 @@ func BuildGenerateContentRequest(
 // pinned ordering, where function_call_output items precede the next user
 // turn's instructions). Without that ordering, Vertex receives a user-text
 // turn before a function-response, which violates its own expectations.
-func translateMessagesGemini(system string, messages []types.Message) ([]geminiContent, map[string]string, error) {
+func translateMessagesGemini(system string, messages []types.Message, cap quirks.StructuredToolResultCapability) ([]geminiContent, map[string]string, error) {
 	_ = system // consumed by geminiSystemFromMessages, not here
 	out := make([]geminiContent, 0, len(messages))
 	toolNameByID := make(map[string]string)
@@ -259,11 +259,9 @@ func translateMessagesGemini(system string, messages []types.Message) ([]geminiC
 					if !ok {
 						return nil, nil, fmt.Errorf("messages[%d].content[%d]: tool_result references unknown tool_use_id %q", i, j, block.ToolUseID)
 					}
-					response := map[string]interface{}{
-						"content": block.Content,
-					}
-					if block.IsError {
-						response["error"] = true
+					response, err := geminiToolResultResponse(block, cap)
+					if err != nil {
+						return nil, nil, fmt.Errorf("messages[%d].content[%d]: %w", i, j, err)
 					}
 					out = append(out, geminiContent{
 						Role: "function",
@@ -316,6 +314,30 @@ func geminiSystemFromMessages(system string, messages []types.Message) string {
 		}
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// geminiToolResultResponse marshals one tool_result block into the JSON
+// object Vertex expects in functionResponse.response. The canonical text
+// always populates "content" (the fallback the model can read regardless of
+// structured support). When the resolved capability accepts the object-
+// response shape and the block carries a structured envelope, the envelope is
+// embedded verbatim under "structured" with its discriminator under "kind";
+// otherwise the response is the text-only {"content": ...} (with "error" on a
+// failed call) that is byte-identical to the pre-#231 map form.
+func geminiToolResultResponse(block types.ContentBlock, cap quirks.StructuredToolResultCapability) (json.RawMessage, error) {
+	body := geminiFunctionResponseBody{
+		Content: block.Content,
+		Error:   block.IsError,
+	}
+	if cap.Supported && cap.ObjectResponse && len(block.Structured) > 0 {
+		body.Structured = block.Structured
+		body.Kind = block.Kind
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal functionResponse body: %w", err)
+	}
+	return raw, nil
 }
 
 // normaliseToolArgs returns an argument JSON object suitable for Gemini's
