@@ -6,8 +6,13 @@ package quirks
 // specificity-then-declaration-order (design D10): longer ModelMatch
 // globs run last and win on overlapping fields. The current set:
 //
-//   - openai-compatible / "o[1-9]-*"      — reasoning class (o1, o3,
-//     o4-mini ...): omit sampling params via applyOpenAIReasoningClass.
+//   - openai-compatible / "o[1-9]*"       — reasoning class. Matches
+//     both bare aliases ("o1", "o3", "o4") and dash-suffixed variants
+//     ("o1-mini", "o3-mini", "o4-mini"). Omits sampling params via
+//     applyOpenAIReasoningClass. The "[1-9]" class requires the
+//     leading digit be 1-9; two-digit series like "o10-mini" also
+//     match because the trailing "*" consumes the second digit, so
+//     forward-compat with a future o10+ alias is automatic.
 //   - openai-compatible / "gpt-5*"        — reasoning class: same
 //     behaviour as the o-series.
 //   - openai-compatible / "gpt-5-chat*"   — carve-out: gpt-5-chat-latest
@@ -28,8 +33,8 @@ func BuiltinRules() []Rule {
 	return []Rule{
 		{
 			ProviderType: "openai-compatible",
-			ModelMatch:   "o[1-9]-*",
-			Description:  "OpenAI reasoning-class (o1-o9): omit sampling params",
+			ModelMatch:   "o[1-9]*",
+			Description:  "OpenAI reasoning-class (o-series, single-digit prefix): omit sampling params",
 			LastVerified: Date("2026-05-24"),
 			Apply:        applyOpenAIReasoningClass,
 		},

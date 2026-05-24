@@ -228,6 +228,35 @@ func TestRuleCarveOuts(t *testing.T) {
 			t.Errorf("gpt-5-chat-mini: OmitSamplingParams = true; expected false (carve-out should cover the family)")
 		}
 	})
+	// Bare o-series aliases (o1, o3, o4) are shipped by OpenAI as
+	// production model IDs alongside their dash-suffixed variants. The
+	// glob "o[1-9]*" must cover both forms; a previous "o[1-9]-*"
+	// dash-required form silently bypassed the rule for the bare form
+	// and produced HTTP 400 responses. Each bare ID is asserted
+	// individually so a regression names the specific alias.
+	for _, bare := range []string{"o1", "o3", "o4"} {
+		bare := bare
+		t.Run("bare "+bare+" omits sampling params", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("openai-compatible", bare)
+			if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+				t.Errorf("%s: OmitSamplingParams = false; expected true (o-series rule must cover the bare alias)", bare)
+			}
+		})
+	}
+	// Two-digit series (e.g. o10-mini) match the "o[1-9]*" glob because
+	// [1-9] consumes the leading "1" and the trailing "*" consumes
+	// "0-mini". This is the safer default for forward-compatibility:
+	// any future o10+ alias that ships will inherit the reasoning-class
+	// behaviour rather than silently regressing to greedy decoding +
+	// HTTP 400. Pinned so a future tightening of the glob is a
+	// deliberate edit that breaks this test rather than a silent
+	// behaviour change.
+	t.Run("o10-mini also omits sampling params (forward-compat)", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "o10-mini")
+		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("o10-mini: OmitSamplingParams = false; expected true (o[1-9]* should match two-digit aliases)")
+		}
+	})
 }
 
 // TestNoMetacharsInKnownModelIDs reads the catalogue at
