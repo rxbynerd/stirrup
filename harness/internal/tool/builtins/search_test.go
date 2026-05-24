@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,6 +41,34 @@ func (f *fsExecutor) ResolvePath(relativePath string) (string, error) {
 }
 func (f *fsExecutor) Capabilities() executor.ExecutorCapabilities {
 	return executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: f.canExec, MaxTimeout: time.Minute}
+}
+
+// TestRipgrepDetector_OnceCache covers the once-cache semantics of the
+// detector itself rather than going via the package-level seam. The
+// existing withRipgrepProbe helper swaps the whole detector, which means
+// the production once-cache path (sync.Once + atomic.Bool) is never
+// exercised by the rest of the suite. A regression that breaks the
+// caching contract — e.g. dropping sync.Once for an unsynchronised
+// re-probe per call — would not be caught.
+func TestRipgrepDetector_OnceCache(t *testing.T) {
+	var probeCount atomic.Int64
+	d := &ripgrepDetector{
+		probe: func() bool {
+			probeCount.Add(1)
+			return true
+		},
+	}
+
+	first := d.detect()
+	second := d.detect()
+	third := d.detect()
+
+	if got := probeCount.Load(); got != 1 {
+		t.Errorf("probe must run exactly once, got %d invocations", got)
+	}
+	if !first || !second || !third {
+		t.Errorf("all three detect() calls must return the cached value (true); got %v %v %v", first, second, third)
+	}
 }
 
 // withRipgrepProbe pins the cached ripgrep detection to a known value so a
