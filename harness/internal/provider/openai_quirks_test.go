@@ -371,6 +371,58 @@ func TestOpenAIAdapter_OmitSamplingParams_WarnsOnSuppressedTemperatureWithRuleDe
 	}
 }
 
+// TestLogReplayFieldsCapture_NonStringValue exercises the
+// non-string fallback branch in logReplayFieldsCapture's per-value
+// switch. The default arm runs json.Marshal on the value to compute
+// its length contribution; without this test, the side-channel
+// safety invariant (length only, never the value) was unverified
+// for any captured value type other than string.
+//
+// Current ReplayFields rules only register string-typed fields
+// (reasoning_content, thoughtSignature), but CaptureReplayFields
+// can return any JSON value type, and the helper is the safety
+// gate for future rules. The test pins three properties: the log
+// line is emitted, it contains the field name and length metadata,
+// and it does NOT contain the literal value (the leakage we
+// guard against).
+func TestLogReplayFieldsCapture_NonStringValue(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	// Use a float64 value that, when JSON-marshalled, yields a
+	// distinctive substring ("123.45"). The default branch in the
+	// type switch is the one that fires here — strings short-circuit
+	// on the typed case before reaching the marshal path.
+	capture := map[string][]any{
+		"reasoning_content": {float64(123.45)},
+	}
+	logReplayFieldsCapture(context.Background(), logger, "openai-compatible", "deepseek-reasoner", capture)
+
+	out := buf.String()
+	if !strings.Contains(out, "quirks replay fields captured") {
+		t.Fatalf("log line missing; got: %s", out)
+	}
+	if !strings.Contains(out, "reasoning_content") {
+		t.Errorf("log line missing field name 'reasoning_content'; got: %s", out)
+	}
+	if !strings.Contains(out, `"count":1`) {
+		t.Errorf("log line missing count=1; got: %s", out)
+	}
+	// json.Marshal(float64(123.45)) = "123.45" (6 bytes). The
+	// total_len must equal 6. Pin it exactly to catch any future
+	// regression that decides to skip the default branch.
+	if !strings.Contains(out, `"total_len":6`) {
+		t.Errorf("log line missing total_len=6; got: %s", out)
+	}
+	// The value itself must NOT appear in the log under any
+	// representation. "123.45" is the canonical JSON form and the
+	// one the marshal path would emit if a future refactor swapped
+	// length-reporting for value-reporting.
+	if strings.Contains(out, "123.45") {
+		t.Errorf("log leaked non-string value 123.45 (length-only invariant violated); got: %s", out)
+	}
+}
+
 // TestOpenAIChunkChoice_UnmarshalJSON covers the custom decoder's
 // three observable states: a chunk with no delta key (the false-
 // branch of the len(helper.Delta) > 0 guard), a chunk with a
