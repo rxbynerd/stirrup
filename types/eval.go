@@ -88,7 +88,7 @@ type EvalTask struct {
 
 // EvalJudge describes how to judge a run's outcome.
 type EvalJudge struct {
-	Type     string      `json:"type"` // "test-command" | "file-exists" | "file-contains" | "diff-review" | "composite"
+	Type     string      `json:"type"` // "test-command" | "file-exists" | "file-contains" | "diff-review" | "tool-trace" | "composite"
 	Command  string      `json:"command,omitempty"`
 	Paths    []string    `json:"paths,omitempty"`
 	Path     string      `json:"path,omitempty"`
@@ -96,6 +96,70 @@ type EvalJudge struct {
 	Criteria string      `json:"criteria,omitempty"`
 	Judges   []EvalJudge `json:"judges,omitempty"`
 	Require  string      `json:"require,omitempty"` // "all" | "any"
+
+	// ToolTrace carries the parameters for the "tool-trace" judge type,
+	// which inspects the run's RunTrace.ToolCalls rather than the
+	// workspace filesystem. Nil for every other judge type, so the field
+	// is omitted from the wire shape of the existing file/command judges.
+	ToolTrace *ToolTraceCriteria `json:"toolTrace,omitempty"`
+}
+
+// ToolTraceCriteria parameterises the "tool-trace" judge (issue #233). It
+// asserts on the tool-call behaviour a run recorded in its RunTrace —
+// which tools were called, in what relative order, how often, with what
+// success — rather than on the resulting workspace state. The two are
+// complementary: a file-state judge confirms the agent reached the right
+// end state, while a tool-trace judge confirms it got there by the
+// expected tool-use path (e.g. read-before-edit, bounded search,
+// in-loop recovery from an unknown-tool miss).
+//
+// Tool names are matched against the internal tool ID (RunTrace
+// ToolCallSummary.InternalName when set, falling back to Name under the
+// default profile), so an assertion written against the canonical name
+// holds under any toolset profile alias (issue #234).
+type ToolTraceCriteria struct {
+	// Sequence is an ordered list of internal tool names that must each
+	// appear at least once, in this relative order, somewhere in the
+	// run's tool calls. Non-adjacent calls between the listed names are
+	// permitted — only the relative order of the named tools is checked.
+	// Empty means no ordering constraint.
+	Sequence []string `json:"sequence,omitempty"`
+
+	// Calls is a set of per-tool count / success expectations evaluated
+	// independently of Sequence. Empty means no per-tool constraint.
+	Calls []ToolCallExpectation `json:"calls,omitempty"`
+
+	// ForbidUnknown, when true, fails the judge if any tool call recorded
+	// an unknown-tool / renamed-tool failure that was never followed by a
+	// successful call to the named replacement. Used to assert in-loop
+	// recovery from a renamed-tool miss actually happened.
+	ForbidUnknown bool `json:"forbidUnknown,omitempty"`
+}
+
+// ToolCallExpectation is a single per-tool assertion within a
+// ToolTraceCriteria. Name is the internal tool ID. The optional bounds
+// and success flag let a task assert, for example, "edit_file was called
+// at least once and every call succeeded" or "grep_files was called and
+// no call errored".
+type ToolCallExpectation struct {
+	// Name is the internal tool ID to match (e.g. "read_file",
+	// "edit_file", "grep_files").
+	Name string `json:"name"`
+
+	// MinCalls is the minimum number of matching calls required. Zero
+	// means no lower bound.
+	MinCalls int `json:"minCalls,omitempty"`
+
+	// MaxCalls is the maximum number of matching calls allowed. A nil
+	// pointer means no upper bound; a non-nil zero forbids the tool
+	// entirely.
+	MaxCalls *int `json:"maxCalls,omitempty"`
+
+	// AllSucceeded, when true, requires every matching call to have
+	// succeeded. When false (the default) call success is not asserted —
+	// recovery scenarios deliberately expect a failed call followed by a
+	// successful one.
+	AllSucceeded bool `json:"allSucceeded,omitempty"`
 }
 
 // Experiment holds one or more variables constant while varying others.

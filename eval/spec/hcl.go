@@ -153,14 +153,33 @@ type taskSpec struct {
 }
 
 type judgeSpec struct {
-	Type     string      `hcl:"type"`
-	Command  string      `hcl:"command,optional"`
-	Paths    []string    `hcl:"paths,optional"`
-	Path     string      `hcl:"path,optional"`
-	Pattern  string      `hcl:"pattern,optional"`
-	Criteria string      `hcl:"criteria,optional"`
-	Require  string      `hcl:"require,optional"`
-	Judges   []judgeSpec `hcl:"judge,block"`
+	Type      string         `hcl:"type"`
+	Command   string         `hcl:"command,optional"`
+	Paths     []string       `hcl:"paths,optional"`
+	Path      string         `hcl:"path,optional"`
+	Pattern   string         `hcl:"pattern,optional"`
+	Criteria  string         `hcl:"criteria,optional"`
+	Require   string         `hcl:"require,optional"`
+	ToolTrace *toolTraceSpec `hcl:"tool_trace,block"`
+	Judges    []judgeSpec    `hcl:"judge,block"`
+}
+
+// toolTraceSpec mirrors types.ToolTraceCriteria for the "tool-trace" judge.
+// sequence is the ordered list of internal tool names that must appear in
+// that relative order; each `call` block is a per-tool count / success
+// expectation. forbid_unknown asserts in-loop recovery from a renamed- or
+// unknown-tool miss.
+type toolTraceSpec struct {
+	Sequence      []string             `hcl:"sequence,optional"`
+	ForbidUnknown bool                 `hcl:"forbid_unknown,optional"`
+	Calls         []toolCallExpectSpec `hcl:"call,block"`
+}
+
+type toolCallExpectSpec struct {
+	Name         string `hcl:"name,label"`
+	MinCalls     int    `hcl:"min_calls,optional"`
+	MaxCalls     *int   `hcl:"max_calls,optional"`
+	AllSucceeded bool   `hcl:"all_succeeded,optional"`
 }
 
 // rejectUnsupportedTopLevel inspects the file body and returns a clear
@@ -358,6 +377,17 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		)
 	}
 
+	// Same reasoning for the tool_trace block: only the tool-trace judge
+	// consumes it. A tool_trace block on any other type is an authoring
+	// mistake (a misplaced block or a forgotten `type = "tool-trace"`),
+	// so reject it rather than silently dropping the assertions.
+	if j.Type != "tool-trace" && j.ToolTrace != nil {
+		return types.EvalJudge{}, fmt.Errorf(
+			"%s: judge.type %q does not support a tool_trace block (use type \"tool-trace\")",
+			context, j.Type,
+		)
+	}
+
 	out := types.EvalJudge{
 		Type:     j.Type,
 		Command:  j.Command,
@@ -366,6 +396,16 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 		Pattern:  j.Pattern,
 		Criteria: j.Criteria,
 		Require:  j.Require,
+	}
+
+	if j.Type == "tool-trace" {
+		if j.ToolTrace == nil {
+			return types.EvalJudge{}, fmt.Errorf(
+				"%s: tool-trace judge requires a tool_trace block",
+				context,
+			)
+		}
+		out.ToolTrace = toolTraceSpecToType(j.ToolTrace)
 	}
 
 	if j.Type == "composite" {
@@ -404,6 +444,29 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 	}
 
 	return out, nil
+}
+
+// toolTraceSpecToType materialises a parsed toolTraceSpec into the
+// canonical types.ToolTraceCriteria. The HCL `call` blocks carry the
+// matched internal tool name as a block label; everything else is an
+// optional attribute.
+func toolTraceSpecToType(s *toolTraceSpec) *types.ToolTraceCriteria {
+	out := &types.ToolTraceCriteria{
+		Sequence:      s.Sequence,
+		ForbidUnknown: s.ForbidUnknown,
+	}
+	if len(s.Calls) > 0 {
+		out.Calls = make([]types.ToolCallExpectation, 0, len(s.Calls))
+		for _, c := range s.Calls {
+			out.Calls = append(out.Calls, types.ToolCallExpectation{
+				Name:         c.Name,
+				MinCalls:     c.MinCalls,
+				MaxCalls:     c.MaxCalls,
+				AllSucceeded: c.AllSucceeded,
+			})
+		}
+	}
+	return out
 }
 
 // formatDiagnostics renders an hcl.Diagnostics into a single wrapped
