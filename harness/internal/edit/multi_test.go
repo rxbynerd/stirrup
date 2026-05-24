@@ -287,6 +287,60 @@ func TestMultiStrategy_ReplaceMissingNewString(t *testing.T) {
 	}
 }
 
+// TestMultiStrategy_ReplaceMissingOldString covers the validateOperationFields
+// branch at multi.go:225 — operation=replace with new_string set but
+// old_string absent. The pre-existing tests covered missing new_string
+// and the unknown-operation paths, leaving this one reachable production
+// branch unexercised.
+func TestMultiStrategy_ReplaceMissingOldString(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "replace",
+		"new_string": "y"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false when replace omits old_string")
+	}
+	if !contains(result.Error, "old_string") {
+		t.Errorf("error should mention old_string, got: %s", result.Error)
+	}
+}
+
+// TestMultiStrategy_DeleteMissingOldString covers the branch at multi.go:233
+// — operation=delete with both old_string and new_string absent. The
+// pre-existing delete tests covered the wrong-direction case (new_string
+// supplied) but not the missing-required-field case.
+func TestMultiStrategy_DeleteMissingOldString(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "delete"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false when delete omits old_string")
+	}
+	if !contains(result.Error, "old_string") {
+		t.Errorf("error should mention old_string, got: %s", result.Error)
+	}
+}
+
 func TestMultiStrategy_DeleteWithNewStringRejected(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
