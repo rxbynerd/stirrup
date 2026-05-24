@@ -117,12 +117,12 @@ func TestBuiltinRulesValidate(t *testing.T) {
 			continue
 		}
 		q := ProviderQuirks{
-			FieldRenames:    map[string]string{},
-			OmitFields:      []string{},
-			ValueOverrides:  map[string]Value{},
-			EnumCoercions:   map[string]map[string]string{},
-			ReplayFields:    []string{},
-			BehaviourFlags:  ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
+			FieldRenames:   map[string]string{},
+			OmitFields:     []string{},
+			ValueOverrides: map[string]Value{},
+			EnumCoercions:  map[string]map[string]string{},
+			ReplayFields:   []string{},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
 		}
 		rule.Apply(&q)
 		for key := range q.FieldRenames {
@@ -168,6 +168,38 @@ func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestRemoveFromOmit covers the helper's three observable states:
+// removing an entry that is present, a no-op when absent, and a
+// no-op when the slice is nil. The helper is kept available for
+// future OmitFields-driven carve-outs even though Step 2's only
+// carve-out toggles OmitSamplingParams directly; the test exists so
+// the lint surface doesn't flag the helper as dead code.
+func TestRemoveFromOmit(t *testing.T) {
+	t.Run("removes present entry", func(t *testing.T) {
+		q := &ProviderQuirks{OmitFields: []string{"temperature", "top_p", "logprobs"}}
+		removeFromOmit(q, "top_p")
+		got := strings.Join(q.OmitFields, ",")
+		want := "temperature,logprobs"
+		if got != want {
+			t.Errorf("OmitFields = %q, want %q", got, want)
+		}
+	})
+	t.Run("no-op when absent", func(t *testing.T) {
+		q := &ProviderQuirks{OmitFields: []string{"temperature"}}
+		removeFromOmit(q, "top_p")
+		if len(q.OmitFields) != 1 || q.OmitFields[0] != "temperature" {
+			t.Errorf("OmitFields = %v, want [temperature]", q.OmitFields)
+		}
+	})
+	t.Run("no-op when nil slice", func(t *testing.T) {
+		q := &ProviderQuirks{}
+		removeFromOmit(q, "top_p")
+		if len(q.OmitFields) != 0 {
+			t.Errorf("OmitFields = %v, want empty", q.OmitFields)
+		}
+	})
 }
 
 // TestRuleCarveOuts pins the gpt-5-chat carve-out behaviour. The
@@ -261,7 +293,6 @@ func TestKnownModelIDsResolutionSmoke(t *testing.T) {
 	}
 	t.Logf("rule resolution smoke: %d (provider,model) pairs produced a non-default ProviderQuirks", resolved)
 }
-
 
 // TestRuleStaleness logs (does not fail) any rule whose LastVerified
 // is more than 180 days behind today. Per design §2.3 staleness is a
