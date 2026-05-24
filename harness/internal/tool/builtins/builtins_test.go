@@ -72,122 +72,13 @@ func (m *mockExecutor) Capabilities() executor.ExecutorCapabilities {
 // --- shellQuote tests ---
 
 func TestShellQuote_EmbeddedSingleQuote(t *testing.T) {
-	// shellQuote is unexported, so we test it indirectly via the search tool.
-	// When a pattern contains a single quote, the grep command must still be
-	// well-formed. We verify shellQuote produces the correct escaping by
-	// checking the command string passed to the executor.
-	var capturedCmd string
-	mock := &mockExecutor{
-		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
-			capturedCmd = command
-			return &executor.ExecResult{ExitCode: 1, Stdout: "", Stderr: ""}, nil
-		},
-	}
-
-	t.Run("direct", func(t *testing.T) {
-		got := shellQuote("a'b")
-		// Expected: 'a'\''b' — close quote, escaped literal quote, reopen quote.
-		want := "'a'\\''b'"
-		if got != want {
-			t.Errorf("shellQuote(\"a'b\") = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("indirect_via_search", func(t *testing.T) {
-		searchTool := SearchFilesTool(mock)
-		input, _ := json.Marshal(map[string]string{
-			"pattern": "it's",
-			"type":    "grep",
-		})
-		_, _ = searchTool.Handler(context.Background(), input)
-
-		// The captured command should contain the correctly escaped pattern.
-		if !strings.Contains(capturedCmd, "'it'\\''s'") {
-			t.Errorf("expected escaped single quote in command, got: %s", capturedCmd)
-		}
-	})
-}
-
-// --- SearchFilesTool tests ---
-
-func TestSearchFilesTool_InvalidType(t *testing.T) {
-	mock := &mockExecutor{}
-	searchTool := SearchFilesTool(mock)
-
-	input, _ := json.Marshal(map[string]string{
-		"pattern": "foo",
-		"type":    "exec",
-	})
-
-	_, err := searchTool.Handler(context.Background(), input)
-	if err == nil {
-		t.Fatal("expected error for invalid search type 'exec'")
-	}
-	if !strings.Contains(err.Error(), "type must be") {
-		t.Errorf("error should mention invalid type, got: %v", err)
-	}
-}
-
-func TestSearchFilesTool_GrepMode(t *testing.T) {
-	mock := &mockExecutor{
-		resolvePathFunc: func(relativePath string) (string, error) {
-			if relativePath != "." {
-				t.Errorf("expected default path '.', got %q", relativePath)
-			}
-			return "/workspace", nil
-		},
-		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
-			if !strings.HasPrefix(command, "grep") {
-				t.Errorf("expected grep command, got: %s", command)
-			}
-			if !strings.Contains(command, "'/workspace'") {
-				t.Errorf("expected resolved workspace path in command, got: %s", command)
-			}
-			return &executor.ExecResult{
-				ExitCode: 0,
-				Stdout:   "main.go:10:func main() {\n",
-			}, nil
-		},
-	}
-
-	searchTool := SearchFilesTool(mock)
-	input, _ := json.Marshal(map[string]string{
-		"pattern": "func main",
-		"type":    "grep",
-	})
-
-	result, err := searchTool.Handler(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "main.go:10") {
-		t.Errorf("expected grep output in result, got: %s", result)
-	}
-}
-
-func TestSearchFilesTool_PathTraversalRejected(t *testing.T) {
-	mock := &mockExecutor{
-		resolvePathFunc: func(relativePath string) (string, error) {
-			if relativePath != "../../etc" {
-				t.Errorf("unexpected path: %q", relativePath)
-			}
-			return "", fmt.Errorf("path escapes workspace")
-		},
-	}
-
-	searchTool := SearchFilesTool(mock)
-	input, _ := json.Marshal(map[string]string{
-		"pattern": "passwd",
-		"path":    "../../etc",
-		"type":    "grep",
-	})
-
-	_, err := searchTool.Handler(context.Background(), input)
-	if err == nil {
-		t.Fatal("expected traversal error")
-	}
-	if !strings.Contains(err.Error(), "resolve search path") {
-		t.Fatalf("expected resolved-path error, got %v", err)
+	// shellQuote is unexported; verify directly. When a pattern contains a
+	// single quote, the constructed shell command must still be well-formed.
+	got := shellQuote("a'b")
+	// Expected: 'a'\''b' — close quote, escaped literal quote, reopen quote.
+	want := "'a'\\''b'"
+	if got != want {
+		t.Errorf("shellQuote(\"a'b\") = %q, want %q", got, want)
 	}
 }
 
@@ -629,7 +520,8 @@ func TestRegisterBuiltins(t *testing.T) {
 		"read_file",
 		"write_file",
 		"list_directory",
-		"search_files",
+		"grep_files",
+		"find_files",
 		"run_command",
 		"web_fetch",
 	}

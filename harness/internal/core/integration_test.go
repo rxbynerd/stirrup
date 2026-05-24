@@ -179,8 +179,16 @@ func TestBuildToolRegistry_RespectsExecutorCapabilities(t *testing.T) {
 	if registry.Resolve("run_command") != nil {
 		t.Fatal("did not expect run_command without exec capability")
 	}
+	if registry.Resolve("grep_files") != nil {
+		t.Fatal("did not expect grep_files without exec capability")
+	}
+	if registry.Resolve("find_files") != nil {
+		t.Fatal("did not expect find_files without exec capability")
+	}
+	// The legacy search_files name must remain absent — the dispatcher
+	// emits a directional error rather than silently aliasing it.
 	if registry.Resolve("search_files") != nil {
-		t.Fatal("did not expect search_files without exec capability")
+		t.Fatal("search_files must not be registered (split into grep_files/find_files)")
 	}
 	if registry.Resolve("write_file") != nil {
 		t.Fatal("did not expect write_file without write capability")

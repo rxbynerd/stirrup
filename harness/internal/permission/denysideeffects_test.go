@@ -62,7 +62,7 @@ func TestDenySideEffects_AllowsApprovalRequiredButNonMutating(t *testing.T) {
 }
 
 // TestDenySideEffects_AllowsPureReadTools confirms the policy never
-// denies read_file, list_directory or search_files.
+// denies read_file, list_directory, grep_files, or find_files.
 func TestDenySideEffects_AllowsPureReadTools(t *testing.T) {
 	mutating := map[string]bool{
 		"write_file":  true,
@@ -70,7 +70,7 @@ func TestDenySideEffects_AllowsPureReadTools(t *testing.T) {
 	}
 	policy := NewDenySideEffects(mutating)
 
-	for _, name := range []string{"read_file", "list_directory", "search_files"} {
+	for _, name := range []string{"read_file", "list_directory", "grep_files", "find_files"} {
 		t.Run(name, func(t *testing.T) {
 			tool := types.ToolDefinition{Name: name}
 			result, err := policy.Check(context.Background(), tool, json.RawMessage(`{}`))

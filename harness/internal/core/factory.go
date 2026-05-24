@@ -849,8 +849,17 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "list_directory") && caps.CanRead {
 		registry.Register(builtins.ListDirectoryTool(exec))
 	}
-	if toolEnabled(cfg.BuiltIn, "search_files") && caps.CanExec {
-		registry.Register(builtins.SearchFilesTool(exec))
+	// grep_files and find_files replace the old search_files tool.
+	// grep_files prefers ripgrep when present; its native fallback uses
+	// host-filesystem walking, which only makes sense when the executor
+	// resolves to a real on-host path. CanExec is true for the local and
+	// container executors and false for the API executor, mirroring the
+	// gate the old search_files used so behaviour stays consistent.
+	if toolEnabled(cfg.BuiltIn, "grep_files") && caps.CanExec {
+		registry.Register(builtins.GrepFilesTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "find_files") && caps.CanExec {
+		registry.Register(builtins.FindFilesTool(exec))
 	}
 	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
 		registry.Register(builtins.RunCommandTool(exec))
