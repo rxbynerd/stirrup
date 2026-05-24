@@ -158,6 +158,11 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			"Use this when looking for a string, symbol, or pattern inside files; use find_files instead when searching by filename or extension. " +
 			"The pattern is a regex, not a glob — pass '\\bMyFunc\\b' to find the symbol MyFunc, not '*MyFunc*'. " +
 			"include and exclude take shell-style globs (e.g. '*.go') applied to candidate paths. Results are capped by max_results (default 100, max 1000); binary files are skipped. " +
+			// The `\\\\b` in the example renders as `\b` on the wire (a RE2
+			// word boundary). It is double-escaped because the Go string
+			// literal first consumes one layer of backslashes, leaving the
+			// JSON example with `\\b`, which JSON parsers then decode to
+			// `\b` for the regex engine.
 			"Example: {\"pattern\": \"func ReadFile\\\\b\", \"include\": [\"*.go\"], \"path\": \"harness/internal\"}",
 		InputSchema:       grepFilesSchema,
 		WorkspaceMutating: false,
