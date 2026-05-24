@@ -333,6 +333,13 @@ func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 // boundary breaks a JSON literal), the entire payload is replaced by a
 // JSON string literal carrying the scrubbed text so the on-disk shape
 // stays parseable.
+//
+// Assumes the caller produced the json.RawMessage with encoding/json's default
+// (non-HTML-escaping) marshaller. An HTML-escaping encoder (json.HTMLEscape, or
+// json.Encoder without SetEscapeHTML(false)) would emit `<`, `>`, `&` and
+// U+2028/U+2029 as \uXXXX sequences in the raw byte stream, which can cause a
+// secret regex anchored on those characters to miss. Do not pipe HTMLEscape
+// output through this function.
 func scrubRawJSON(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw

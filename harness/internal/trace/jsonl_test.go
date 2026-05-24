@@ -343,6 +343,14 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
 	if !strings.Contains(onDisk, `"structured"`) {
 		t.Errorf("expected the structured field to survive scrubbing in the trace, got:\n%s", onDisk)
 	}
+	// R3 guard: scrubRawJSON scrubs the raw byte stream and assumes a
+	// non-HTML-escaping marshaller. None of this fixture's strings contain
+	// HTML-special chars, so no \uXXXX escapes must appear on disk; if a
+	// future change pipes HTMLEscape output through scrubRawJSON this fails,
+	// flagging that secret regexes could miss escaped bytes.
+	if strings.Contains(onDisk, `\u`) {
+		t.Errorf("unexpected \\u escape on disk — an HTML-escaping encoder would defeat raw-byte scrubbing:\n%s", onDisk)
+	}
 }
 
 // TestJSONLTraceEmitter_PartialStream pins the SIGKILL-safety property:
