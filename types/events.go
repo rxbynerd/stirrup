@@ -1,6 +1,10 @@
 package types
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+)
 
 // StreamEvent represents a single event from the model's streaming response.
 //
@@ -91,6 +95,37 @@ const (
 	// (defensive: a named-tool choice with no name is not expressible).
 	ToolChoiceTool
 )
+
+// ToolChoiceAuto must remain the zero value: StreamParams.ToolChoice is
+// tagged omitempty, which suppresses the field only when the value is the
+// integer zero. If a future edit reorders the iota (e.g. promoting
+// ToolChoiceNone to 0 as a "safer" default), omitempty would silently
+// start suppressing the wrong mode and break every JSON round-trip
+// without a compilation error. Indexing a one-element array at
+// ToolChoiceAuto fails to compile the moment ToolChoiceAuto is non-zero.
+var _ = [1]struct{}{}[ToolChoiceAuto]
+
+// toolChoiceNamePattern is the character-set and length bound enforced on
+// StreamParams.ToolChoiceName before it is serialised onto any provider
+// wire. It is the intersection of the three providers' documented
+// function-name grammars (Anthropic's `^[a-zA-Z0-9_-]{1,64}$` is the
+// tightest, so it governs). See ValidateToolChoiceName.
+var toolChoiceNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+// ValidateToolChoiceName reports whether a named-tool choice's tool name
+// is safe to emit onto a provider request body. It enforces
+// `^[a-zA-Z0-9_-]{1,64}$` — the intersection of the Anthropic, OpenAI,
+// and Gemini function-name grammars. A1 owns the tool-choice wire format,
+// so validation lives at the serialization boundary: the loop escalation
+// path (A2) will be the first caller to feed model-influenced names
+// through ToolChoiceName, and adapters call this to fail closed (degrade
+// the named-tool form to auto) rather than emit an unvalidated value.
+func ValidateToolChoiceName(name string) error {
+	if !toolChoiceNamePattern.MatchString(name) {
+		return fmt.Errorf("tool choice name %q must match %s", name, toolChoiceNamePattern.String())
+	}
+	return nil
+}
 
 // StreamParams holds the parameters for a model streaming request.
 type StreamParams struct {
