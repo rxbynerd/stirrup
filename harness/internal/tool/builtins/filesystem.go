@@ -91,14 +91,14 @@ var listDirectorySchema = json.RawMessage(`{
 // Defaults and bounds for read_file and list_directory. Kept as package-level
 // constants so tests can pin the values without re-parsing the schemas.
 const (
-	readFileDefaultLimit       = 2000
-	readFileMaxLimit           = 5000
-	listDirDefaultMaxDepth     = 3
-	listDirAbsoluteMaxDepth    = 10
-	listDirDefaultMaxEntries   = 1000
-	listDirAbsoluteMaxEntries  = 10000
-	listDirTruncationSentinel  = "[truncated: max_entries reached]"
-	readFilePastEOFNoticeFmt   = "[empty: start_line %d is past end of file (file has %d lines)]"
+	readFileDefaultLimit      = 2000
+	readFileMaxLimit          = 5000
+	listDirDefaultMaxDepth    = 3
+	listDirAbsoluteMaxDepth   = 10
+	listDirDefaultMaxEntries  = 1000
+	listDirAbsoluteMaxEntries = 10000
+	listDirTruncationSentinel = "[truncated: max_entries reached]"
+	readFilePastEOFNoticeFmt  = "[empty: start_line %d is past end of file (file has %d lines)]"
 )
 
 // ReadFileTool returns a tool that reads a file from the workspace. The

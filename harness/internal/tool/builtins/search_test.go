@@ -18,9 +18,9 @@ import (
 // exercised without involving a sandbox. Exec is not used by the native
 // path; tests that want to exercise the rg path stub it explicitly.
 type fsExecutor struct {
-	root   string
+	root    string
 	canExec bool
-	execFn func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error)
+	execFn  func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error)
 }
 
 func (f *fsExecutor) ReadFile(context.Context, string) (string, error)        { return "", nil }
