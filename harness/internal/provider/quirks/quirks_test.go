@@ -493,7 +493,7 @@ func TestKnownModelIDsResolutionSmoke(t *testing.T) {
 		}
 		for _, prov := range provs {
 			q := DefaultRegistry().Resolve(prov, line)
-			if q.BehaviourFlags.OpenAI.OmitSamplingParams || q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxCompletionTokens || q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != StreamArgsOff {
+			if q.BehaviourFlags.OpenAI.OmitSamplingParams || q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxCompletionTokens || q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != StreamArgsOff || q.ToolChoice.Supported {
 				resolved++
 			}
 		}
