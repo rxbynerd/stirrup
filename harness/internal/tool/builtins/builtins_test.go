@@ -828,10 +828,10 @@ func TestHasPositiveUseThis(t *testing.T) {
 // archaeological.
 func TestExtractJSONExample(t *testing.T) {
 	cases := []struct {
-		name    string
-		input   string
-		want    string
-		wantOK  bool
+		name   string
+		input  string
+		want   string
+		wantOK bool
 	}{
 		{
 			name:   "no marker",
