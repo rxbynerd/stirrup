@@ -148,6 +148,59 @@ func extractEditFileJSONExample(desc string) (string, bool) {
 	return "", false
 }
 
+// TestExtractEditFileJSONExample locks the contract of the
+// extractEditFileJSONExample helper directly. The helper duplicates the
+// extractJSONExample helper in harness/internal/tool/builtins; the two
+// suites run independently so the duplication is intentional. A future
+// #222 migration to a structured InputExamples []any field on
+// types.ToolDefinition would replace both helpers — this test pins the
+// edge-case behaviour so the migration stays mechanical.
+func TestExtractEditFileJSONExample(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "no marker",
+			input:  "This description has no marker",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "two markers rightmost wins",
+			input:  "Example: {\"a\": 1}\n\nExample: {\"b\": 2}",
+			want:   "{\"b\": 2}",
+			wantOK: true,
+		},
+		{
+			name:   "malformed json after marker",
+			input:  "Example: {not valid",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "standard happy path",
+			input:  "Use this for targeted edits. Example: {\"path\": \"x\"}",
+			want:   "{\"path\": \"x\"}",
+			wantOK: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractEditFileJSONExample(tc.input)
+			if ok != tc.wantOK {
+				t.Errorf("ok mismatch: got %v, want %v", ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("value mismatch: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMultiStrategy_RoutesPatchToUdiff(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)

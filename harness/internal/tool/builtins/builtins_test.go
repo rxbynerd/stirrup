@@ -728,6 +728,58 @@ func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 	}
 }
 
+// TestExtractJSONExample locks the contract of the extractJSONExample
+// helper directly, independent of any real tool description. The helper
+// is the seam a future #222 migration to a structured InputExamples
+// []any field on types.ToolDefinition would replace; pinning the
+// edge-case behaviour here keeps that migration mechanical instead of
+// archaeological.
+func TestExtractJSONExample(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    string
+		wantOK  bool
+	}{
+		{
+			name:   "no marker",
+			input:  "This description has no marker",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "two markers rightmost wins",
+			input:  "Example: {\"a\": 1}\n\nExample: {\"b\": 2}",
+			want:   "{\"b\": 2}",
+			wantOK: true,
+		},
+		{
+			name:   "malformed json after marker",
+			input:  "Example: {not valid",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "standard happy path",
+			input:  "Use this when reading a known file. Example: {\"path\": \"x\"}",
+			want:   "{\"path\": \"x\"}",
+			wantOK: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractJSONExample(tc.input)
+			if ok != tc.wantOK {
+				t.Errorf("ok mismatch: got %v, want %v", ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("value mismatch: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestSpawnAgentTool_EnrichedShape applies the same description contract
 // to spawn_agent, which is wired separately from RegisterBuiltins (the
 // factory injects a real spawner closure). A trivial spawner suffices
