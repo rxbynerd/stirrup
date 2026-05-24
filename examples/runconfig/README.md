@@ -188,7 +188,8 @@ active and Rule of Two is enforced.
     "builtIn": [
       "read_file",
       "list_directory",
-      "search_files",
+      "grep_files",
+      "find_files",
       "edit_file",
       "run_command",
       "web_fetch",

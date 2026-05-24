@@ -3431,9 +3431,10 @@ type ToolsConfig struct {
 	//	"write_file"     — write/overwrite a file (side-effecting).
 	//	"search_replace" — find-and-replace within a file.
 	//	"apply_diff"     — apply a unified diff patch.
-	//	"edit_file"      — multi-strategy edit (routes to appropriate strategy).
+	//	"edit_file"      — multi-strategy edit (explicit operation enum).
 	//	"list_directory"  — list directory contents.
-	//	"search_files"   — search file contents with regex.
+	//	"grep_files"     — search file contents with a regex.
+	//	"find_files"     — search file names with a glob.
 	//	"run_command"    — execute a shell command (side-effecting).
 	//	"web_fetch"      — fetch a URL via HTTP GET.
 	//	"spawn_agent"    — spawn a sub-agent with its own conversation loop.
