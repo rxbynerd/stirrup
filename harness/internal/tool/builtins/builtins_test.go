@@ -627,4 +627,13 @@ func TestRegisterBuiltins(t *testing.T) {
 			t.Errorf("expected tool %q to be registered", name)
 		}
 	}
+
+	// The legacy search_files name must remain absent — the registry no
+	// longer ships it, and the dispatcher emits a directional hint for
+	// callers that still use it. Asserting absence here keeps a future
+	// accidental re-introduction from silently passing the positive
+	// checks above.
+	if registered["search_files"] {
+		t.Error("search_files must not be registered (split into grep_files and find_files)")
+	}
 }

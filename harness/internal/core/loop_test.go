@@ -511,6 +511,28 @@ func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
 	}
 }
 
+// TestRenamedToolHint exercises the rename table directly so the wording
+// of each entry is contracted independently of the dispatcher. The
+// dispatcher test above covers the wiring; this one pins the hint
+// strings themselves.
+func TestRenamedToolHint(t *testing.T) {
+	want := "tool not found: search_files; use grep_files (regex content search) or find_files (glob filename search)"
+	got, ok := renamedToolHint("search_files")
+	if !ok {
+		t.Fatal("expected renamedToolHint to recognise search_files")
+	}
+	if got != want {
+		t.Errorf("hint mismatch:\n got:  %q\n want: %q", got, want)
+	}
+
+	// Names that were never previously registered must return (\"\", false)
+	// so the caller falls through to the generic unknown-tool path. A
+	// future rename addition must explicitly land in the table.
+	if _, ok := renamedToolHint("not_a_tool"); ok {
+		t.Error("renamedToolHint must return ok=false for unrecognised names")
+	}
+}
+
 type errorVerifier struct{}
 
 func (m *errorVerifier) Verify(_ context.Context, _ verifier.VerifyContext) (*types.VerificationResult, error) {

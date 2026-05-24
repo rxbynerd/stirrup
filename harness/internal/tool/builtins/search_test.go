@@ -43,6 +43,79 @@ func (f *fsExecutor) Capabilities() executor.ExecutorCapabilities {
 	return executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: f.canExec, MaxTimeout: time.Minute}
 }
 
+// TestGrepNative_PermissionDeniedSubdirSkipped covers the fs.ErrPermission
+// branch in grepNative. A 0000-mode subdirectory inside the workspace must
+// be skipped silently (returning fs.SkipDir from the callback) so that
+// matches in readable siblings are still returned.
+func TestGrepNative_PermissionDeniedSubdirSkipped(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: 0000 mode does not deny access")
+	}
+	withRipgrepProbe(t, false)
+	dir := t.TempDir()
+
+	// Readable sibling — match content present here.
+	if err := os.WriteFile(filepath.Join(dir, "readable.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile readable: %v", err)
+	}
+	// Unreadable subdirectory.
+	locked := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "secret.txt"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("Chmod 0000: %v", err)
+	}
+	// Restore mode on cleanup so t.TempDir() removal succeeds.
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	grep := GrepFilesTool(&fsExecutor{root: dir})
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	out, err := grep.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("permission-denied dir must not surface as an error; got: %v", err)
+	}
+	if !strings.Contains(out, "readable.txt") {
+		t.Errorf("expected readable sibling match, got %q", out)
+	}
+}
+
+// TestFindNative_PermissionDeniedSubdirSkipped is the symmetric coverage
+// for findNative's fs.ErrPermission branch.
+func TestFindNative_PermissionDeniedSubdirSkipped(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: 0000 mode does not deny access")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "readable.go"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile readable: %v", err)
+	}
+	locked := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "secret.go"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("Chmod 0000: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	find := FindFilesTool(&fsExecutor{root: dir})
+	input, _ := json.Marshal(map[string]any{"name": "*.go"})
+	out, err := find.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("permission-denied dir must not surface as an error; got: %v", err)
+	}
+	if !strings.Contains(out, "readable.go") {
+		t.Errorf("expected readable sibling match, got %q", out)
+	}
+}
+
 // TestRipgrepDetector_OnceCache covers the once-cache semantics of the
 // detector itself rather than going via the package-level seam. The
 // existing withRipgrepProbe helper swaps the whole detector, which means
@@ -220,7 +293,11 @@ func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
 		},
 	}
 	grep := GrepFilesTool(fe)
-	input, _ := json.Marshal(map[string]any{"pattern": "hit"})
+	input, _ := json.Marshal(map[string]any{
+		"pattern": "hit",
+		"include": []string{"*.go"},
+		"exclude": []string{"vendor/**"},
+	})
 	out, err := grep.Handler(context.Background(), input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -230,6 +307,15 @@ func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
 	}
 	if !strings.Contains(out, "x.go:1:hit") {
 		t.Errorf("expected rg stdout in result, got %q", out)
+	}
+	// Each include glob must be passed to rg as --glob 'pattern' and each
+	// exclude glob as --glob '!pattern' — the two for-loops in
+	// grepViaRipgrep that wire these were previously unobserved.
+	if !strings.Contains(capturedCmd, "--glob '*.go'") {
+		t.Errorf("expected --glob '*.go' in rg invocation, got %q", capturedCmd)
+	}
+	if !strings.Contains(capturedCmd, "--glob '!vendor/**'") {
+		t.Errorf("expected --glob '!vendor/**' (negated) in rg invocation, got %q", capturedCmd)
 	}
 }
 
