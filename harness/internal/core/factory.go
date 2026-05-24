@@ -427,7 +427,21 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return nil, fmt.Errorf("batch is not supported for transport type %q", config.Transport.Type)
 		}
 
-		prov = provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, config.RunID)
+		batchAdapter := provider.NewBatchAdapter(prov, batchClient, config.Provider.Batch, config.Provider.Type, config.RunID)
+		// Thread the streaming inner adapter's quirks registry into
+		// the BatchAdapter so the batch body-marshal path produces the
+		// same wire shape the streaming path would have produced for
+		// the same (provider, model) pair. Without this, a future
+		// batch allow-list expansion that admits a compat-profile
+		// provider (e.g. Z.ai) would silently use the default
+		// registry and miss the compat rule's extras. v1's
+		// validateBatchConfig allow-list does not include any compat-
+		// profile provider today, but the wiring is unconditional so
+		// the gap cannot reappear.
+		if compatible, ok := prov.(*provider.OpenAICompatibleAdapter); ok {
+			batchAdapter.Registry = compatible.Registry
+		}
+		prov = batchAdapter
 		// Replace the entry in the providers map so model-router lookups
 		// route to the batched wrapper rather than the raw streaming
 		// adapter (#194-style cross-routing risk: a router that picks

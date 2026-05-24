@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -348,6 +349,78 @@ func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 		t.Errorf("openai-compatible body must carry stream=false: %s", body)
 	} else if string(raw["stream"]) != "false" {
 		t.Errorf("openai-compatible body must carry stream=false; got %s", raw["stream"])
+	}
+}
+
+// TestBatchAdapter_MarshalUsesInjectedRegistry pins the Registry
+// field plumbing: a BatchAdapter constructed with a registry that
+// includes a compat rule (e.g. Z.ai's TokenFieldMaxTokens +
+// tool_stream) must produce a batch body matching the rule's wire
+// shape. Without this test the factory's
+// `batchAdapter.Registry = compatible.Registry` line could be
+// deleted and the batch path would silently fall back to the
+// default registry — a future Z.ai-via-batch run would emit
+// max_completion_tokens (wrong key) and omit tool_stream.
+//
+// The test injects a registry containing only a synthetic compat-
+// like rule rather than depending on the real Z.ai package, to
+// keep batch_test self-contained.
+func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
+	customRule := quirks.Rule{
+		ProviderType: "openai-compatible",
+		ModelMatch:   "synthetic-*",
+		Description:  "test rule: max_tokens + tool_stream",
+		LastVerified: quirks.Date("2026-05-24"),
+		Apply: func(q *quirks.ProviderQuirks) {
+			q.BehaviourFlags.OpenAI.TokenField = quirks.TokenFieldMaxTokens
+			q.BehaviourFlags.OpenAI.ExtraBodyFields["tool_stream"] = true
+		},
+	}
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+	a.Registry = quirks.NewRegistry([]quirks.Rule{customRule})
+
+	body, err := a.marshalRequestBody(types.StreamParams{
+		Model:     "synthetic-foo",
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+	})
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if _, ok := raw["max_tokens"]; !ok {
+		t.Errorf("body missing 'max_tokens' (injected registry rule did not apply): %s", body)
+	}
+	if _, ok := raw["max_completion_tokens"]; ok {
+		t.Errorf("body contains 'max_completion_tokens'; injected rule should have switched the key: %s", body)
+	}
+	if v, ok := raw["tool_stream"]; !ok || v != true {
+		t.Errorf("body missing 'tool_stream':true (injected rule did not populate ExtraBodyFields): %s", body)
+	}
+}
+
+// TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil pins the
+// nil-registry fallback in marshalRequestBody. The vast majority of
+// BatchAdapter call sites (every test in the package, every existing
+// production code path) leave Registry unset; the fallback to
+// quirks.DefaultRegistry() preserves their behaviour.
+func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "run-test")
+	// Registry intentionally left nil.
+	body, err := a.marshalRequestBody(types.StreamParams{
+		Model:     "o1-mini", // matches the builtin reasoning-class rule
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		MaxTokens: 256,
+	})
+	if err != nil {
+		t.Fatalf("marshalRequestBody: %v", err)
+	}
+	s := string(body)
+	if !strings.Contains(s, `"max_completion_tokens"`) {
+		t.Errorf("nil-registry fallback failed: body missing max_completion_tokens: %s", s)
 	}
 }
 
