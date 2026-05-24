@@ -45,6 +45,7 @@ func SpawnAgentTool(spawner SubAgentSpawner) *tool.Tool {
 	return &tool.Tool{
 		Name: "spawn_agent",
 		Description: "Delegate a self-contained subtask to a fresh sub-agent. The sub-agent shares the workspace and tools but runs with its own conversation history and returns a single JSON-encoded result. " +
+			"The sub-agent inherits the parent's permission policy, security GuardRail, and code scanner — spawning is a high-privilege delegation, not a sandbox. " +
 			"Use this for work that benefits from a clean context (broad exploration, parallel-feel investigation, a bounded refactor) or that would otherwise pollute the parent conversation. " +
 			"Do not use for trivial one-tool-call tasks — the spawn overhead outweighs the benefit. The prompt must be specific and self-contained because the sub-agent cannot see the parent's history. " +
 			"mode defaults to the parent's mode; max_turns bounds the sub-agent at 1-20 turns (default 10). " +
