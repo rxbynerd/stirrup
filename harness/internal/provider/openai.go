@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -313,6 +314,63 @@ func ruleDescriptions(rules []quirks.Rule) []string {
 	return out
 }
 
+// logReplayFieldsCapture emits a debug-level summary of the per-stream
+// ReplayFields capture (design §5, design D12). Length-only reporting:
+// the captured values themselves are provider-private blobs (DeepSeek's
+// reasoning_content, Gemini's thoughtSignature) that the harness must
+// not echo into any log sink. Operators get presence + size; the rule
+// fired observably without leaking the content.
+//
+// Shared by both adapters so the log shape stays uniform; the
+// helper lives in openai.go because that is where ruleDescriptions
+// already sits.
+func logReplayFieldsCapture(ctx context.Context, logger *slog.Logger, providerType, model string, capture map[string][]any) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	// Sort the path keys so the log output is deterministic across
+	// runs even though Go map iteration order is not. Stable ordering
+	// makes the line greppable across runs and easier to test against.
+	paths := make([]string, 0, len(capture))
+	for k := range capture {
+		paths = append(paths, k)
+	}
+	sort.Strings(paths)
+	// Per-path summary: count of captured pieces and sum of stringified
+	// lengths. The string length is a proxy for "size of what was
+	// captured" that does not require knowing the underlying type; for
+	// non-string values, the JSON encoding's length is the natural
+	// proxy. Errors marshalling a value back to JSON degrade to a
+	// zero length rather than failing the log line.
+	summaries := make([]any, 0, len(paths))
+	for _, p := range paths {
+		values := capture[p]
+		totalLen := 0
+		for _, v := range values {
+			switch s := v.(type) {
+			case string:
+				totalLen += len(s)
+			default:
+				b, err := json.Marshal(v)
+				if err == nil {
+					totalLen += len(b)
+				}
+			}
+		}
+		summaries = append(summaries,
+			slog.Group(p,
+				slog.Int("count", len(values)),
+				slog.Int("total_len", totalLen),
+			),
+		)
+	}
+	logger.DebugContext(ctx, "quirks replay fields captured",
+		slog.String("provider.type", providerType),
+		slog.String("provider.model", model),
+		slog.Group("replay_fields_captured", summaries...),
+	)
+}
+
 // canonicalOpenAIFields enumerates the top-level Chat Completions
 // request fields the adapter knows how to emit. ExtraBodyFields rules
 // must not collide with any of these — the registry self-test guards
@@ -386,10 +444,43 @@ type openaiChunk struct {
 }
 
 // openaiChunkChoice is a single choice within a streaming chunk.
+//
+// RawDelta is the un-decoded JSON bytes of the same delta object that
+// Delta carries — captured so ReplayFields rules (design D12) can walk
+// non-canonical assistant-message fields (e.g. DeepSeek's
+// `reasoning_content`) without the adapter declaring them as typed
+// fields on openaiDelta. Populated by openaiChunkChoice.UnmarshalJSON;
+// the field is on the struct rather than computed lazily so the SSE
+// parse loop accesses it at zero cost when no rule is active.
 type openaiChunkChoice struct {
-	Index        int         `json:"index"`
-	Delta        openaiDelta `json:"delta"`
-	FinishReason *string     `json:"finish_reason"`
+	Index        int             `json:"index"`
+	Delta        openaiDelta     `json:"delta"`
+	FinishReason *string         `json:"finish_reason"`
+	RawDelta     json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON captures the raw bytes of the `delta` field alongside
+// the typed decode. The two-pass shape mirrors openaiRequest's
+// MarshalJSON / UnmarshalJSON: the typed fields drive the normal SSE
+// loop; the RawMessage gives the ReplayFields path walker a document
+// to descend without coupling the walker to the typed struct.
+func (c *openaiChunkChoice) UnmarshalJSON(data []byte) error {
+	type alias openaiChunkChoice
+	var helper struct {
+		alias
+		Delta json.RawMessage `json:"delta"`
+	}
+	if err := json.Unmarshal(data, &helper); err != nil {
+		return err
+	}
+	*c = openaiChunkChoice(helper.alias)
+	if len(helper.Delta) > 0 {
+		c.RawDelta = append(c.RawDelta[:0], helper.Delta...)
+		if err := json.Unmarshal(helper.Delta, &c.Delta); err != nil {
+			return fmt.Errorf("openaiChunkChoice.delta: %w", err)
+		}
+	}
+	return nil
 }
 
 // openaiDelta is the incremental content in a streaming chunk.
@@ -709,7 +800,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		o.consumeSSE(ctx, resp, ch, start, metricAttrs)
+		o.consumeSSE(ctx, resp, ch, start, metricAttrs, q, logger, params.Model)
 		o.recordLatency(ctx, start, metricAttrs)
 	}()
 	return ch, nil
@@ -730,7 +821,18 @@ func (o *OpenAICompatibleAdapter) recordLatency(ctx context.Context, start time.
 // streamStart and metricAttrs are forwarded for ProviderTTFB measurement: the
 // first non-empty stream event observed marks "time to first byte" for this
 // request. TTFB is recorded at most once per stream.
-func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption) {
+//
+// q carries the resolved per-(provider, model) quirks for this stream
+// (design D5). The parser reads q.ReplayFields and captures the named
+// paths from each chunk's delta object — design D12. The captured set
+// surfaces in a per-stream debug log emitted at the end of the stream
+// (Wave 2 lands parse-side recognition only — outbound threading is
+// deferred per §9 risk 7).
+//
+// logger and model are threaded purely so the per-stream replay-fields
+// debug summary names the model and stays on the same logger the
+// caller-side debug/warn logs use.
+func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, q quirks.ProviderQuirks, logger *slog.Logger, model string) {
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
@@ -748,6 +850,25 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 
 	// Track in-flight tool calls by index for argument accumulation.
 	toolCalls := make(map[int]*openaiToolCallState)
+
+	// replayFieldsCapture is the per-stream accumulator for the
+	// ReplayFields-captured values across every chunk's delta. Keyed by
+	// the rule's path string (verbatim from q.ReplayFields). Stored as
+	// a slice per path so a multi-chunk delta (e.g. DeepSeek's
+	// reasoning_content streamed across multiple chunks) records each
+	// piece in arrival order rather than only the last value. The
+	// terminal log line summarises lengths, not values.
+	replayFieldsCapture := map[string][]any{}
+	// Emit the per-stream ReplayFields summary on any exit path
+	// (normal end, early return on error, ctx cancel). Length-only
+	// reporting per design §5: avoid leaking captured content into
+	// any log sink that consumes DEBUG records.
+	defer func() {
+		if len(replayFieldsCapture) == 0 {
+			return
+		}
+		logReplayFieldsCapture(ctx, logger, "openai-compatible", model, replayFieldsCapture)
+	}()
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -785,6 +906,20 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		}
 
 		for _, choice := range chunk.Choices {
+			// ReplayFields capture (design D12, Wave 2 parse-side
+			// recognition). Walk the raw delta object once per chunk
+			// and merge any matching paths into the per-stream
+			// accumulator. The path walker is a no-op when
+			// q.ReplayFields is empty so the cost in the zero-rules
+			// case is one slice-length check.
+			if len(q.ReplayFields) > 0 && len(choice.RawDelta) > 0 {
+				if captured := quirks.CaptureFromJSON(choice.RawDelta, q.ReplayFields); len(captured) > 0 {
+					for k, v := range captured {
+						replayFieldsCapture[k] = append(replayFieldsCapture[k], v...)
+					}
+				}
+			}
+
 			// Text content delta.
 			if choice.Delta.Content != nil && *choice.Delta.Content != "" {
 				emitEvent(types.StreamEvent{
