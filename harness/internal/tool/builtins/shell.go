@@ -31,9 +31,13 @@ var runCommandSchema = json.RawMessage(`{
 // RunCommandTool returns a tool that executes a shell command in the workspace.
 func RunCommandTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:              "run_command",
-		Description:       "Execute a shell command in the workspace directory. Returns stdout and stderr. The command is killed if it exceeds the timeout.",
-		InputSchema:       runCommandSchema,
+		Name: "run_command",
+		Description: "Execute a shell command in the workspace directory. Returns stdout, then a 'STDERR:' block when stderr is non-empty, then '[exit code: N]' when the command exited non-zero. " +
+			"Use this for build, test, format, lint, and other tooling invocations that have to actually run. " +
+			"Do not use for filesystem inspection that a dedicated tool covers — prefer read_file, list_directory, grep_files, find_files because they return structured, bounded output and do not need a shell. " +
+			"timeout is in seconds (default 30, max 300); the command is killed when the timeout elapses. " +
+			"Example: {\"command\": \"go test ./harness/internal/tool/...\", \"timeout\": 120}",
+		InputSchema: runCommandSchema,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {

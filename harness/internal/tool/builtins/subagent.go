@@ -43,8 +43,12 @@ type SubAgentSpawner func(ctx context.Context, prompt, mode string, maxTurns int
 // reference to the parent AgenticLoop and RunConfig.
 func SpawnAgentTool(spawner SubAgentSpawner) *tool.Tool {
 	return &tool.Tool{
-		Name:        "spawn_agent",
-		Description: "Spawn a sub-agent to handle a subtask. The sub-agent has access to the same workspace and tools but runs independently with its own conversation history. Use for tasks that benefit from a fresh context or that can be performed independently.",
+		Name: "spawn_agent",
+		Description: "Delegate a self-contained subtask to a fresh sub-agent. The sub-agent shares the workspace and tools but runs with its own conversation history and returns a single JSON-encoded result. " +
+			"Use this for work that benefits from a clean context (broad exploration, parallel-feel investigation, a bounded refactor) or that would otherwise pollute the parent conversation. " +
+			"Do not use for trivial one-tool-call tasks — the spawn overhead outweighs the benefit. The prompt must be specific and self-contained because the sub-agent cannot see the parent's history. " +
+			"mode defaults to the parent's mode; max_turns bounds the sub-agent at 1-20 turns (default 10). " +
+			"Example: {\"prompt\": \"Find every call site of harness.RunConfig.Redact and list them as path:line.\", \"mode\": \"research\", \"max_turns\": 8}",
 		InputSchema: spawnAgentSchema,
 		// The spawn_agent tool itself does not mutate the workspace —
 		// the sub-agent it launches is gated by its own permission
