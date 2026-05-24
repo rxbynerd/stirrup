@@ -69,6 +69,19 @@ func (m *mockExecutor) Capabilities() executor.ExecutorCapabilities {
 	}
 }
 
+// invokeText dispatches a tool the way the agentic loop does — preferring a
+// StructuredHandler over a plain Handler (issue #231) — and returns just the
+// canonical text output and error. Tests that only assert the text fallback
+// use this so they remain agnostic to which handler form a tool exposes;
+// tests that assert the structured payload call StructuredHandler directly.
+func invokeText(ctx context.Context, tl *tool.Tool, input json.RawMessage) (string, error) {
+	if tl.StructuredHandler != nil {
+		text, _, err := tl.StructuredHandler(ctx, input)
+		return text, err
+	}
+	return tl.Handler(ctx, input)
+}
+
 // --- shellQuote tests ---
 
 func TestShellQuote_EmbeddedSingleQuote(t *testing.T) {
@@ -182,7 +195,7 @@ func TestReadFileTool_EmptyPath(t *testing.T) {
 	readTool := ReadFileTool(mock)
 
 	input, _ := json.Marshal(map[string]string{"path": ""})
-	_, err := readTool.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), readTool, input)
 	if err == nil {
 		t.Fatal("expected error for empty path")
 	}
@@ -200,7 +213,7 @@ func TestReadFileTool_LineNumberedOutput(t *testing.T) {
 	readTool := ReadFileTool(mock)
 
 	input, _ := json.Marshal(map[string]any{"path": "file.txt"})
-	result, err := readTool.Handler(context.Background(), input)
+	result, err := invokeText(context.Background(), readTool, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,7 +236,7 @@ func TestReadFileTool_LineRange(t *testing.T) {
 		"start_line": 2,
 		"limit":      2,
 	})
-	result, err := readTool.Handler(context.Background(), input)
+	result, err := invokeText(context.Background(), readTool, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -245,7 +258,7 @@ func TestReadFileTool_StartLinePastEOF(t *testing.T) {
 		"path":       "file.txt",
 		"start_line": 500,
 	})
-	result, err := readTool.Handler(context.Background(), input)
+	result, err := invokeText(context.Background(), readTool, input)
 	if err != nil {
 		t.Fatalf("expected non-error for start_line past EOF, got %v", err)
 	}
@@ -262,7 +275,7 @@ func TestReadFileTool_LimitOverMax(t *testing.T) {
 		"path":  "file.txt",
 		"limit": 100000,
 	})
-	_, err := readTool.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), readTool, input)
 	if err == nil {
 		t.Fatal("expected error for limit over maximum")
 	}
@@ -286,7 +299,7 @@ func TestReadFileTool_PaddingAlignsColumns(t *testing.T) {
 	readTool := ReadFileTool(mock)
 
 	input, _ := json.Marshal(map[string]any{"path": "file.txt"})
-	result, err := readTool.Handler(context.Background(), input)
+	result, err := invokeText(context.Background(), readTool, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -460,7 +473,7 @@ func TestReadFileTool_StartLineBelowOne(t *testing.T) {
 		"path":       "file.txt",
 		"start_line": 0,
 	})
-	_, err := readTool.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), readTool, input)
 	if err == nil || !strings.Contains(err.Error(), "start_line must be >=") {
 		t.Errorf("expected start_line lower-bound error, got %v", err)
 	}
@@ -474,7 +487,7 @@ func TestReadFileTool_LimitBelowOne(t *testing.T) {
 		"path":  "file.txt",
 		"limit": 0,
 	})
-	_, err := readTool.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), readTool, input)
 	if err == nil || !strings.Contains(err.Error(), "limit must be >=") {
 		t.Errorf("expected limit lower-bound error, got %v", err)
 	}
@@ -489,7 +502,7 @@ func TestReadFileTool_ExecError(t *testing.T) {
 	readTool := ReadFileTool(mock)
 
 	input, _ := json.Marshal(map[string]any{"path": "missing.txt"})
-	_, err := readTool.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), readTool, input)
 	if err == nil || !strings.Contains(err.Error(), "file not found") {
 		t.Errorf("expected file-not-found error, got %v", err)
 	}
@@ -566,7 +579,7 @@ func TestRunCommandTool_NonZeroExitCode(t *testing.T) {
 	runTool := RunCommandTool(mock)
 	input, _ := json.Marshal(map[string]string{"command": "false"})
 
-	result, err := runTool.Handler(context.Background(), input)
+	result, err := invokeText(context.Background(), runTool, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -586,7 +599,7 @@ func TestRunCommandTool_EmptyCommand(t *testing.T) {
 	runTool := RunCommandTool(mock)
 
 	input, _ := json.Marshal(map[string]string{"command": ""})
-	_, err := runTool.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), runTool, input)
 	if err == nil {
 		t.Fatal("expected error for empty command")
 	}
