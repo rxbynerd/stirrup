@@ -406,6 +406,8 @@ func TestBuildGenerateContentRequest_ToolChoice(t *testing.T) {
 		{"none", types.ToolChoiceNone, "", "NONE", nil},
 		{"named tool", types.ToolChoiceTool, "read_file", "ANY", []string{"read_file"}},
 		{"named tool without name degrades to auto", types.ToolChoiceTool, "", "AUTO", nil},
+		{"named tool with invalid name degrades to auto", types.ToolChoiceTool, "bad name!", "AUTO", nil},
+		{"named tool with over-length name degrades to auto", types.ToolChoiceTool, strings.Repeat("a", 65), "AUTO", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -461,6 +463,44 @@ func TestBuildGenerateContentRequest_ToolChoiceUnsupportedCapability(t *testing.
 	}
 	if got := dr.ToolConfig.FunctionCallingConfig.Mode; got != "AUTO" {
 		t.Errorf("zero-value capability: mode = %q, want AUTO", got)
+	}
+}
+
+// TestBuildGenerateContentRequest_ToolChoice_PartialCapability exercises
+// the per-mode guard branches (B2) that today's full-support builtin
+// rule never reaches: Supported=true with a specific mode disabled must
+// fall back to mode AUTO rather than emit the disallowed mode.
+func TestBuildGenerateContentRequest_ToolChoice_PartialCapability(t *testing.T) {
+	tools := []types.ToolDefinition{
+		{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	cases := []struct {
+		name   string
+		choice types.ToolChoiceMode
+		cap    quirks.ToolChoiceCapability
+	}{
+		{"required disabled", types.ToolChoiceRequired, quirks.ToolChoiceCapability{Supported: true, Required: false}},
+		{"none disabled", types.ToolChoiceNone, quirks.ToolChoiceCapability{Supported: true, None: false}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _, err := BuildGenerateContentRequest(types.StreamParams{
+				Model:      "gemini-2.5-pro",
+				ToolChoice: tc.choice,
+				Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+				Tools:      tools,
+			}, nil, quirks.ProviderQuirks{ToolChoice: tc.cap})
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			dr := decodeGeminiRequest(t, body)
+			if dr.ToolConfig == nil {
+				t.Fatalf("expected toolConfig to be set")
+			}
+			if got := dr.ToolConfig.FunctionCallingConfig.Mode; got != "AUTO" {
+				t.Errorf("partial capability: mode = %q, want AUTO", got)
+			}
+		})
 	}
 }
 
