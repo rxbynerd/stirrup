@@ -1,0 +1,13 @@
+# synthetic: derived from the DeepSeek API documentation for the chat-completions streaming endpoint because the harness does not yet have a live deepseek-reasoner capture. The reasoning_content field is documented as a sibling of content on each assistant delta; the value here is fabricated text demonstrating the field's presence so the Step 5 ReplayFields parse-side test has a fixture to assert against. Replace with a real DeepSeek-reasoner capture before relying on the rule against live traffic.
+data: {"id":"chatcmpl-ds-reasoner-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-reasoner-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"Let me think step by step."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-reasoner-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":" The user asked for 2+2."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-reasoner-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"The answer is 4."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-reasoner-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":12}}
+
+data: [DONE]
+
