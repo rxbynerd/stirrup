@@ -462,6 +462,66 @@ func TestGrepFilesTool_RipgrepNoMatches(t *testing.T) {
 	}
 }
 
+// TestDoubleStarMatch_EscapesMetacharacters pins the regex-injection fix:
+// the previous implementation escaped only `.`, so any other regex
+// metacharacter in the glob produced either a malformed regex (the
+// regexp.Compile error was silently swallowed, so the filter failed open
+// — CWE-185) or a regex with unintended semantics (capturing groups,
+// quantifiers). It also iterated by byte, splitting multi-byte UTF-8 across
+// the default branch. This table covers both shapes.
+func TestDoubleStarMatch_EscapesMetacharacters(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+		path    string
+		want    bool
+	}{
+		// Square brackets in the glob must be treated as literal, not as a
+		// regex character class. Pre-fix this either compiled into a class
+		// or threw an "[" parse error swallowed by the helper.
+		{"literal brackets match", "src/[abc].go", "src/[abc].go", true},
+		{"literal brackets no match", "src/[abc].go", "src/a.go", false},
+
+		// Parentheses must not introduce a capturing group; the literal
+		// path is "src/(util).go" not "src/util.go".
+		{"literal parens match", "src/(util).go", "src/(util).go", true},
+		{"literal parens no match", "src/(util).go", "src/util.go", false},
+
+		// `+` is a regex quantifier; treated as a literal in glob.
+		{"plus literal match", "src/a+b.go", "src/a+b.go", true},
+		{"plus literal no match", "src/a+b.go", "src/aab.go", false},
+
+		// Curly braces, pipes, dollar, caret — all regex metacharacters
+		// that must round-trip as literals.
+		{"braces literal", "src/{x}.go", "src/{x}.go", true},
+		{"dollar literal", "src/$var.go", "src/$var.go", true},
+		{"caret literal", "src/^a.go", "src/^a.go", true},
+
+		// Non-ASCII path: pre-fix the byte-indexed loop garbled the
+		// multi-byte rune into invalid regex fragments.
+		{"utf8 match", "café/**/x.go", "café/sub/x.go", true},
+		{"utf8 prefix mismatch", "café/**/x.go", "cafe/sub/x.go", false},
+
+		// `**` and `*` still behave as wildcards (regression guard).
+		{"double star match", "src/**/x.go", "src/a/b/x.go", true},
+		{"single star match", "src/*.go", "src/foo.go", true},
+		{"single star no cross segment", "src/*.go", "src/sub/foo.go", false},
+
+		// `[!.]*` — leading `!` and `.` must be literals (filepath.Match
+		// already handles this via globHit's basename/rel fall-throughs;
+		// doubleStarMatch's job is to not crash). The regex must compile.
+		{"bang dot star literal", "[!.]*", "[!.]xyz", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := doubleStarMatch(c.pattern, c.path)
+			if got != c.want {
+				t.Errorf("doubleStarMatch(%q, %q) = %v, want %v", c.pattern, c.path, got, c.want)
+			}
+		})
+	}
+}
+
 func TestFindFilesTool_DoubleStarGlob(t *testing.T) {
 	// `**` is not supported by filepath.Match (which is shell-style) — the
 	// model is more likely to pass a basename like "handler_*.go" and rely

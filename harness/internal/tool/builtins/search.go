@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -482,8 +483,16 @@ func globHit(g, base, rel string) bool {
 // doubleStarMatch translates `**` into a regex `.*` over a path-segment-aware
 // matcher. A short helper rather than a dependency on doublestar keeps the
 // behaviour explicit at the call site and avoids pulling another module.
+//
+// Non-wildcard runes are passed through regexp.QuoteMeta so glob patterns
+// containing regex metacharacters ([, ], (, ), +, {, }, |, \, ^, $) translate
+// to a regex that matches them literally. The previous implementation
+// escaped only `.`; any other metacharacter produced either a compile error
+// (silently swallowed, so the filter failed open) or a regex with unintended
+// semantics (capturing groups, quantifiers). Iteration is by rune so
+// multi-byte UTF-8 path segments (e.g. café/**) are not split across the
+// pass-through path.
 func doubleStarMatch(pattern, path string) bool {
-	// Escape regex metacharacters except the wildcards we recognise.
 	var b strings.Builder
 	b.WriteString("^")
 	i := 0
@@ -498,12 +507,10 @@ func doubleStarMatch(pattern, path string) bool {
 		case pattern[i] == '?':
 			b.WriteString("[^/]")
 			i++
-		case pattern[i] == '.':
-			b.WriteString(`\.`)
-			i++
 		default:
-			b.WriteByte(pattern[i])
-			i++
+			r, size := utf8.DecodeRuneInString(pattern[i:])
+			b.WriteString(regexp.QuoteMeta(string(r)))
+			i += size
 		}
 	}
 	b.WriteString("$")
