@@ -56,6 +56,42 @@ type StreamEvent struct {
 	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
+// ToolChoiceMode is a closed enum selecting how the model is steered
+// toward (or away from) tool use on a single turn. It is a
+// provider-neutral control: each adapter projects it onto the provider's
+// native tool_choice / functionCallingConfig shape, gated on the resolved
+// provider capability. The zero value (ToolChoiceAuto) reproduces the
+// historical behaviour — the model decides whether to call a tool — so
+// every existing caller that never sets ToolChoice is unaffected.
+type ToolChoiceMode int
+
+const (
+	// ToolChoiceAuto lets the model decide whether to call a tool. Zero
+	// value: an adapter MUST treat it as "emit nothing on the wire" so
+	// the request is byte-identical to the pre-tool-choice shape.
+	ToolChoiceAuto ToolChoiceMode = iota
+
+	// ToolChoiceRequired forces the model to call at least one tool on
+	// this turn (Anthropic "any", OpenAI "required", Gemini "ANY"). The
+	// loop escalation chunk (A2) drives this when a turn ended without a
+	// tool call but one was expected.
+	ToolChoiceRequired
+
+	// ToolChoiceNone forbids tool calls on this turn (Anthropic "none"
+	// has no native form and is handled by omitting tools; OpenAI
+	// "none"; Gemini "NONE"). Reserved for callers that want a
+	// text-only turn while leaving the tool definitions in place.
+	ToolChoiceNone
+
+	// ToolChoiceTool forces the model to call one specific tool, named by
+	// StreamParams.ToolChoiceName. Anthropic {"type":"tool","name":...},
+	// OpenAI {"type":"function","function":{"name":...}}, Gemini ANY mode
+	// with allowedFunctionNames. A ToolChoice of ToolChoiceTool with an
+	// empty ToolChoiceName is treated by adapters as ToolChoiceAuto
+	// (defensive: a named-tool choice with no name is not expressible).
+	ToolChoiceTool
+)
+
 // StreamParams holds the parameters for a model streaming request.
 type StreamParams struct {
 	Model     string           `json:"model"`
@@ -71,6 +107,21 @@ type StreamParams struct {
 	// verbatim, including an explicit 0.0 to request greedy decoding.
 	// Use Float64Ptr to construct a pointer from a literal.
 	Temperature *float64 `json:"temperature,omitempty"`
+
+	// ToolChoice steers tool use for this turn. The zero value
+	// (ToolChoiceAuto) preserves the historical behaviour and is omitted
+	// from the wire by every adapter, so existing callers are byte-for-
+	// byte unchanged. An adapter emits a native tool_choice field only
+	// when the resolved provider capability advertises support for the
+	// requested mode; otherwise it is a graceful no-op (the prompt-based
+	// fallback is the escalation chunk's responsibility, not the
+	// adapter's).
+	ToolChoice ToolChoiceMode `json:"toolChoice,omitempty"`
+
+	// ToolChoiceName names the specific tool to force when ToolChoice is
+	// ToolChoiceTool. Ignored for every other mode. An empty value with
+	// ToolChoiceTool degrades to ToolChoiceAuto at the adapter.
+	ToolChoiceName string `json:"toolChoiceName,omitempty"`
 }
 
 // Float64Ptr returns a pointer to the given float64 value. It is a
