@@ -103,8 +103,14 @@ func NewMultiStrategy(fuzzyThreshold float64) *MultiStrategy {
 // ToolDefinition returns the unified tool definition for the multi-strategy.
 func (m *MultiStrategy) ToolDefinition() types.ToolDefinition {
 	return types.ToolDefinition{
-		Name:        "edit_file",
-		Description: "Edit a file using an explicit operation. Set operation to 'replace' (old_string + new_string), 'delete' (old_string only), 'rewrite' (content), or 'patch' (diff). The operation field is required.",
+		Name: "edit_file",
+		Description: "Modify an existing file in the workspace. Use this for targeted edits; use write_file when authoring a new file or replacing the entire contents wholesale. " +
+			"The operation field is required and selects the strategy:\n" +
+			"  - 'replace' substitutes new_string for old_string. Requires old_string + new_string. old_string must occur exactly once in the file.\n" +
+			"  - 'delete' removes old_string from the file. Requires old_string only; passing new_string is rejected — choose 'replace' for any non-empty substitution.\n" +
+			"  - 'rewrite' replaces the whole file with content. Requires content.\n" +
+			"  - 'patch' applies a unified diff. Requires diff. Useful for multi-hunk edits.\n" +
+			"Example (replace): {\"path\": \"main.go\", \"operation\": \"replace\", \"old_string\": \"return nil\", \"new_string\": \"return err\"}",
 		InputSchema: multiSchema,
 	}
 }
