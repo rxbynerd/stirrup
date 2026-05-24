@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -34,6 +35,16 @@ var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 // BLOCK_NONE — the secure default for a coding harness. See
 // defaultGeminiSafetyThresholds for the full list.
 //
+// q carries the resolved per-(provider, model) quirks for this stream.
+// Today its only load-bearing field for the request-build path is
+// BehaviourFlags.Gemini.StreamFunctionCallArgsShape, which selects the
+// value emitted at functionCallingConfig.streamFunctionCallArguments.
+// A zero-value q reproduces today's post-#191 behaviour (StreamArgsOff
+// → false on the wire), so callers that do not yet route through the
+// registry continue to work. Future Gemini quirks (3.x V3Deltas pilot,
+// model-specific tool-config flags) are added by extending the switch
+// rather than threading new parameters.
+//
 // Errors fall into three categories:
 //
 //   - tool schema conversion failures (propagated from ConvertSchema)
@@ -47,6 +58,7 @@ var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 func BuildGenerateContentRequest(
 	params types.StreamParams,
 	safety []types.GeminiSafetySetting,
+	q quirks.ProviderQuirks,
 ) (body []byte, toolNameByID map[string]string, err error) {
 	contents, toolNameByID, err := translateMessagesGemini(params.System, params.Messages)
 	if err != nil {
@@ -87,7 +99,7 @@ func BuildGenerateContentRequest(
 		req.ToolConfig = &geminiToolConfig{
 			FunctionCallingConfig: geminiFunctionCallingConfig{
 				Mode:                        "AUTO",
-				StreamFunctionCallArguments: false,
+				StreamFunctionCallArguments: streamFunctionCallArgsFromQuirks(q),
 			},
 		}
 	}
@@ -300,6 +312,27 @@ func normaliseToolArgs(in json.RawMessage) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return in
+}
+
+// streamFunctionCallArgsFromQuirks projects the resolved
+// GeminiStreamArgsShape onto the boolean the wire schema uses for
+// functionCallingConfig.streamFunctionCallArguments. Today the
+// production resolution is always StreamArgsOff (post-#191 default),
+// so the wire bool is always false; the projection exists so a future
+// model-scoped rule that pins StreamArgsV2Snapshot or StreamArgsV3Deltas
+// flips the bool without touching this file. Unknown enum values
+// conservatively map to false — the post-#191 safe default — rather
+// than panicking, so a forward-compatible reader of an older harness
+// build does not crash on a newer rule.
+func streamFunctionCallArgsFromQuirks(q quirks.ProviderQuirks) bool {
+	switch q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape {
+	case quirks.StreamArgsOff:
+		return false
+	case quirks.StreamArgsV2Snapshot, quirks.StreamArgsV3Deltas:
+		return true
+	default:
+		return false
+	}
 }
 
 // buildGeminiSafetySettings returns the safety settings list to send on

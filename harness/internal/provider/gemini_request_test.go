@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -85,7 +86,7 @@ func TestBuildGenerateContentRequest_SystemInstructionFromParams(t *testing.T) {
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestBuildGenerateContentRequest_SingleUserText(t *testing.T) {
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Hello"}}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestBuildGenerateContentRequest_MultiTurnWithToolUse(t *testing.T) {
 				{Type: "tool_result", ToolUseID: "call_1", Content: "package main"},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestBuildGenerateContentRequest_AssistantToolUseCoalescing(t *testing.T) {
 				{Type: "tool_use", ID: "c2", Name: "read_file", Input: json.RawMessage(`{"path":"x"}`)},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -223,7 +224,7 @@ func TestBuildGenerateContentRequest_ToolResultUnknownIDErrors(t *testing.T) {
 				{Type: "tool_result", ToolUseID: "ghost", Content: "data"},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err == nil {
 		t.Fatalf("expected error for unknown tool_use_id, got nil")
 	}
@@ -243,7 +244,7 @@ func TestBuildGenerateContentRequest_ErrorToolResultIncludesErrorFlag(t *testing
 				{Type: "tool_result", ToolUseID: "c1", Content: "ENOENT", IsError: true},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestBuildGenerateContentRequest_DefaultSafetySettings(t *testing.T) {
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +312,7 @@ func TestBuildGenerateContentRequest_CustomSafetySettings(t *testing.T) {
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
-	}, custom)
+	}, custom, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -347,7 +348,7 @@ func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPr
 				InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
 			},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -384,7 +385,7 @@ func TestBuildGenerateContentRequest_NoToolConfigWhenNoTools(t *testing.T) {
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -410,7 +411,7 @@ func TestBuildGenerateContentRequest_BadToolSchemaErrors(t *testing.T) {
 				InputSchema: json.RawMessage(`{"$ref":"#/$defs/Foo"}`),
 			},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err == nil {
 		t.Fatalf("expected error for tool schema with $ref")
 	}
@@ -428,7 +429,7 @@ func TestBuildGenerateContentRequest_MultipleSystemMessagesConcatenated(t *testi
 			{Role: "system", Content: []types.ContentBlock{{Type: "text", Text: "Extra rule B."}}},
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -457,7 +458,7 @@ func TestBuildGenerateContentRequest_AssistantToolResultRejected(t *testing.T) {
 				{Type: "tool_result", ToolUseID: "x", Content: "y"},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err == nil {
 		t.Fatalf("expected error for tool_result on assistant message")
 	}
@@ -474,7 +475,7 @@ func TestBuildGenerateContentRequest_GenerationConfig(t *testing.T) {
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -526,7 +527,7 @@ func TestBuildGenerateContentRequest_TemperatureWireShape(t *testing.T) {
 				MaxTokens:   tc.maxTokens,
 				Temperature: tc.temperature,
 				Messages:    messages,
-			}, nil)
+			}, nil, quirks.ProviderQuirks{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -560,7 +561,7 @@ func TestBuildGenerateContentRequest_AssistantToolUseEmptyInputBecomesEmptyObjec
 				{Type: "tool_use", ID: "c1", Name: "noop", Input: nil},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -592,7 +593,7 @@ func TestBuildGenerateContentRequest_BodyIsValidJSON(t *testing.T) {
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -619,7 +620,7 @@ func TestBuildGenerateContentRequest_UserTextAndToolResultOrdering(t *testing.T)
 				{Type: "tool_result", ToolUseID: "c1", Content: "ok"},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -660,7 +661,7 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTrip(t *testing.T) {
 				{Type: "tool_result", ToolUseID: "call_1", Content: "package main"},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -706,7 +707,7 @@ func TestBuildGenerateContentRequest_ThoughtSignatureRoundTripOnText(t *testing.
 				{Type: "text", Text: "hello!", ThoughtSignature: sig},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -746,7 +747,7 @@ func TestBuildGenerateContentRequest_NoThoughtSignatureWhenAbsent(t *testing.T) 
 				{Type: "tool_use", ID: "c1", Name: "read_file", Input: json.RawMessage(`{"path":"x"}`)},
 			}},
 		},
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -806,7 +807,7 @@ func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model:    "gemini-3.1-pro-preview",
 		Messages: messages,
-	}, nil)
+	}, nil, quirks.ProviderQuirks{})
 	if err != nil {
 		t.Fatalf("BuildGenerateContentRequest: %v", err)
 	}
