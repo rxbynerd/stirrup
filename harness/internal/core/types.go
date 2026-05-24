@@ -241,6 +241,15 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call types.ToolCall) (string, bool, observability.ToolFailureCategory) {
 	t := l.Tools.Resolve(call.Name)
 	if t == nil {
+		// Issue #225 split the legacy search_files tool into two strictly-
+		// typed tools (grep_files for regex content search, find_files for
+		// glob filename search). Emitting a directional error here turns
+		// what would otherwise be an opaque "Unknown tool" miss into a
+		// migration hint the model can act on in-loop, while still
+		// preserving the unknown-tool failure category for telemetry.
+		if msg, ok := renamedToolHint(call.Name); ok {
+			return msg, false, observability.ToolFailureUnknownTool
+		}
 		return "Unknown tool: " + call.Name, false, observability.ToolFailureUnknownTool
 	}
 
@@ -634,4 +643,21 @@ func estimateToolDefinitionTokens(tools []types.ToolDefinition) int {
 		total += len(t.InputSchema) / tokenEstimationDivisor
 	}
 	return total
+}
+
+// renamedToolHint maps legacy tool names removed in the issue #225 schema
+// redesign to a directional error message naming the replacement(s). It
+// returns ("", false) for any name that was never registered under a
+// previous taxonomy; the caller falls through to the generic unknown-tool
+// path in that case.
+//
+// Kept as a small table rather than a sentinel so future renames can land
+// here without touching dispatch logic. The strings are stable: a future
+// reviewer searching for the migration message can grep this file.
+func renamedToolHint(name string) (string, bool) {
+	switch name {
+	case "search_files":
+		return "tool not found: search_files; use grep_files (regex content search) or find_files (glob filename search)", true
+	}
+	return "", false
 }

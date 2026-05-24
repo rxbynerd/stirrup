@@ -472,6 +472,34 @@ func TestDispatchToolCall_UnknownTool(t *testing.T) {
 	}
 }
 
+// TestDispatchToolCall_LegacySearchFilesEmitsHint pins the migration error
+// emitted when a model (or a stale operator config) still calls the
+// pre-#225 search_files tool. The dispatcher must direct the caller to the
+// two replacement tools rather than emitting an opaque "Unknown tool".
+func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{})
+
+	call := types.ToolCall{
+		ID:    "tc_legacy",
+		Name:  "search_files",
+		Input: json.RawMessage(`{"pattern":"foo","type":"grep"}`),
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if success {
+		t.Error("expected success == false for legacy search_files name")
+	}
+	if !strings.Contains(output, "search_files") {
+		t.Errorf("expected output to mention search_files, got %q", output)
+	}
+	if !strings.Contains(output, "grep_files") {
+		t.Errorf("expected output to suggest grep_files, got %q", output)
+	}
+	if !strings.Contains(output, "find_files") {
+		t.Errorf("expected output to suggest find_files, got %q", output)
+	}
+}
+
 type errorVerifier struct{}
 
 func (m *errorVerifier) Verify(_ context.Context, _ verifier.VerifyContext) (*types.VerificationResult, error) {
