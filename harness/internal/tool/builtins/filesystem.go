@@ -117,42 +117,89 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 		InputSchema:       readFileSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
-		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
+		StructuredHandler: func(ctx context.Context, input json.RawMessage) (string, json.RawMessage, error) {
 			var params struct {
 				Path      string `json:"path"`
 				StartLine *int   `json:"start_line,omitempty"`
 				Limit     *int   `json:"limit,omitempty"`
 			}
 			if err := json.Unmarshal(input, &params); err != nil {
-				return "", fmt.Errorf("parse input: %w", err)
+				return "", nil, fmt.Errorf("parse input: %w", err)
 			}
 			if params.Path == "" {
-				return "", fmt.Errorf("path is required")
+				return "", nil, fmt.Errorf("path is required")
 			}
 			startLine := 1
 			if params.StartLine != nil {
 				if *params.StartLine < 1 {
-					return "", fmt.Errorf("start_line must be >= 1, got %d", *params.StartLine)
+					return "", nil, fmt.Errorf("start_line must be >= 1, got %d", *params.StartLine)
 				}
 				startLine = *params.StartLine
 			}
 			limit := readFileDefaultLimit
 			if params.Limit != nil {
 				if *params.Limit < 1 {
-					return "", fmt.Errorf("limit must be >= 1, got %d", *params.Limit)
+					return "", nil, fmt.Errorf("limit must be >= 1, got %d", *params.Limit)
 				}
 				if *params.Limit > readFileMaxLimit {
-					return "", fmt.Errorf("limit must be <= %d, got %d", readFileMaxLimit, *params.Limit)
+					return "", nil, fmt.Errorf("limit must be <= %d, got %d", readFileMaxLimit, *params.Limit)
 				}
 				limit = *params.Limit
 			}
 
 			content, err := exec.ReadFile(ctx, params.Path)
 			if err != nil {
-				return "", err
+				return "", nil, err
 			}
-			return formatReadFile(content, startLine, limit), nil
+			text := formatReadFile(content, startLine, limit)
+			excerpt := readFileExcerpt(params.Path, content, startLine, limit)
+			structured, marshalErr := json.Marshal(excerpt)
+			if marshalErr != nil {
+				return "", nil, fmt.Errorf("marshal structured result: %w", marshalErr)
+			}
+			return text, structured, nil
 		},
+	}
+}
+
+// readFileExcerpt computes the typed structured payload for read_file from the
+// same inputs formatReadFile uses, mirroring its line-window arithmetic so the
+// structured fields agree with the text rendering exactly (issue #231). Lines
+// holds the excerpt content without the line-number prefixes the text adds.
+// PastEOF is set when start_line is beyond the file, matching the past-EOF
+// notice the text returns; Lines is empty in that case. Truncated reports that
+// the window stopped short of the end of the file.
+func readFileExcerpt(path, content string, startLine, limit int) fileExcerpt {
+	// Mirror formatReadFile's trailing-newline handling so the line count and
+	// the EOF boundary match the text rendering byte-for-byte.
+	lines := strings.Split(content, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	totalLines := len(lines)
+	if startLine > totalLines {
+		return fileExcerpt{
+			Path:      path,
+			StartLine: startLine,
+			EndLine:   totalLines,
+			PastEOF:   true,
+			Lines:     []string{},
+		}
+	}
+	endLine := startLine + limit - 1
+	if endLine > totalLines {
+		endLine = totalLines
+	}
+	excerptLines := make([]string, 0, endLine-startLine+1)
+	for i := startLine; i <= endLine; i++ {
+		excerptLines = append(excerptLines, lines[i-1])
+	}
+	return fileExcerpt{
+		Path:      path,
+		StartLine: startLine,
+		EndLine:   endLine,
+		Truncated: endLine < totalLines,
+		Lines:     excerptLines,
 	}
 }
 

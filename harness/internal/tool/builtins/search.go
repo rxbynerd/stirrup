@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -167,7 +168,7 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 		InputSchema:       grepFilesSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
-		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
+		StructuredHandler: func(ctx context.Context, input json.RawMessage) (string, json.RawMessage, error) {
 			var params struct {
 				Pattern    string   `json:"pattern"`
 				Path       string   `json:"path,omitempty"`
@@ -176,10 +177,10 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 				MaxResults *int     `json:"max_results,omitempty"`
 			}
 			if err := json.Unmarshal(input, &params); err != nil {
-				return "", fmt.Errorf("parse input: %w", err)
+				return "", nil, fmt.Errorf("parse input: %w", err)
 			}
 			if params.Pattern == "" {
-				return "", fmt.Errorf("pattern is required")
+				return "", nil, fmt.Errorf("pattern is required")
 			}
 			// Compile the pattern early so a bad regex returns a clean
 			// error before the executor is even touched. Models often
@@ -187,15 +188,15 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			// message is the clearest signal we can give them.
 			re, err := regexp.Compile(params.Pattern)
 			if err != nil {
-				return "", fmt.Errorf("invalid regex pattern: %w", err)
+				return "", nil, fmt.Errorf("invalid regex pattern: %w", err)
 			}
 			maxResults := grepDefaultMaxResults
 			if params.MaxResults != nil {
 				if *params.MaxResults < 1 {
-					return "", fmt.Errorf("max_results must be >= 1, got %d", *params.MaxResults)
+					return "", nil, fmt.Errorf("max_results must be >= 1, got %d", *params.MaxResults)
 				}
 				if *params.MaxResults > grepAbsoluteMax {
-					return "", fmt.Errorf("max_results must be <= %d, got %d", grepAbsoluteMax, *params.MaxResults)
+					return "", nil, fmt.Errorf("max_results must be <= %d, got %d", grepAbsoluteMax, *params.MaxResults)
 				}
 				maxResults = *params.MaxResults
 			}
@@ -205,33 +206,100 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			}
 			resolvedDir, err := exec.ResolvePath(searchDir)
 			if err != nil {
-				return "", fmt.Errorf("resolve search path: %w", err)
+				return "", nil, fmt.Errorf("resolve search path: %w", err)
 			}
 
+			text := ""
 			if defaultRipgrepDetector.detect() && exec.Capabilities().CanExec {
-				out, ok, err := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, maxResults)
+				out, ok, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, maxResults)
 				switch {
-				case err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
+				case rgErr != nil && (errors.Is(rgErr, context.Canceled) || errors.Is(rgErr, context.DeadlineExceeded)):
 					// Context-cancellation must propagate — the caller asked
 					// to stop. Don't paper over it by re-walking natively.
-					return "", err
-				case err != nil:
+					return "", nil, rgErr
+				case rgErr != nil:
 					// Executor transport failure (Docker socket timeout,
 					// container restart, etc.) — treat the same as an rg
 					// exit code >= 2 and fall through to the native walker.
 					// A transient transport flake should not be more fatal
 					// than a real rg error.
-					slog.WarnContext(ctx, "rg invocation failed, falling back to native grep", "err", err)
+					slog.WarnContext(ctx, "rg invocation failed, falling back to native grep", "err", rgErr)
 				case ok:
-					return out, nil
+					text = out
 				}
 				// rg exited with an unexpected error code, or its transport
 				// failed; fall through to the Go-native walker so the
 				// caller still gets an answer.
 			}
-			return grepNative(resolvedDir, re, params.Include, params.Exclude, maxResults)
+			if text == "" {
+				native, nativeErr := grepNative(resolvedDir, re, params.Include, params.Exclude, maxResults)
+				if nativeErr != nil {
+					return "", nil, nativeErr
+				}
+				text = native
+			}
+
+			// Parse the canonical "path:line:text" rendering back into typed
+			// matches for the structured payload (issue #231). Both the rg
+			// and native paths emit this shape, so parsing keeps the text
+			// rendering byte-identical while still surfacing stable fields.
+			matches := parseGrepMatches(text)
+			structured, marshalErr := json.Marshal(searchResult{
+				Matches:   matches,
+				Truncated: len(matches) >= maxResults,
+			})
+			if marshalErr != nil {
+				return "", nil, fmt.Errorf("marshal structured result: %w", marshalErr)
+			}
+			return text, structured, nil
 		},
 	}
+}
+
+// noMatchesText is the sentinel both search paths return when nothing matched.
+const noMatchesText = "No matches found."
+
+// parseGrepMatches converts the canonical "path:line:text" grep rendering into
+// typed matches. It is the inverse of the text both grepNative and
+// grepViaRipgrep emit, so the structured payload can be derived without
+// re-running the search and without perturbing the text. The "No matches
+// found." sentinel and blank lines parse to an empty (non-nil) slice.
+//
+// A line is split on its first two colons: anything after the second colon is
+// the match text verbatim (so a match containing colons is preserved). A line
+// that does not parse into path/line/text — e.g. a path containing a colon
+// that confuses the split, which neither path produces in practice — is
+// skipped rather than guessed at; the verbatim text rendering still carries it
+// for the model.
+func parseGrepMatches(text string) []searchMatch {
+	matches := make([]searchMatch, 0)
+	if text == "" || text == noMatchesText {
+		return matches
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			continue
+		}
+		firstColon := strings.IndexByte(line, ':')
+		if firstColon < 0 {
+			continue
+		}
+		rest := line[firstColon+1:]
+		secondColon := strings.IndexByte(rest, ':')
+		if secondColon < 0 {
+			continue
+		}
+		lineNum, err := strconv.Atoi(rest[:secondColon])
+		if err != nil {
+			continue
+		}
+		matches = append(matches, searchMatch{
+			Path: line[:firstColon],
+			Line: lineNum,
+			Text: rest[secondColon+1:],
+		})
+	}
+	return matches
 }
 
 // FindFilesTool returns a tool that searches for file names matching a
@@ -249,7 +317,7 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 		InputSchema:       findFilesSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
-		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
+		StructuredHandler: func(ctx context.Context, input json.RawMessage) (string, json.RawMessage, error) {
 			var params struct {
 				Name       string   `json:"name"`
 				Path       string   `json:"path,omitempty"`
@@ -258,24 +326,24 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 				MaxResults *int     `json:"max_results,omitempty"`
 			}
 			if err := json.Unmarshal(input, &params); err != nil {
-				return "", fmt.Errorf("parse input: %w", err)
+				return "", nil, fmt.Errorf("parse input: %w", err)
 			}
 			if params.Name == "" {
-				return "", fmt.Errorf("name is required")
+				return "", nil, fmt.Errorf("name is required")
 			}
 			// Validate the glob early so a malformed pattern returns a
 			// clean error before any directory walk begins. filepath.Match
 			// returns ErrBadPattern for unbalanced brackets, etc.
 			if _, err := filepath.Match(params.Name, ""); err != nil {
-				return "", fmt.Errorf("invalid glob pattern %q: %w", params.Name, err)
+				return "", nil, fmt.Errorf("invalid glob pattern %q: %w", params.Name, err)
 			}
 			maxResults := findDefaultMaxResults
 			if params.MaxResults != nil {
 				if *params.MaxResults < 1 {
-					return "", fmt.Errorf("max_results must be >= 1, got %d", *params.MaxResults)
+					return "", nil, fmt.Errorf("max_results must be >= 1, got %d", *params.MaxResults)
 				}
 				if *params.MaxResults > findAbsoluteMax {
-					return "", fmt.Errorf("max_results must be <= %d, got %d", findAbsoluteMax, *params.MaxResults)
+					return "", nil, fmt.Errorf("max_results must be <= %d, got %d", findAbsoluteMax, *params.MaxResults)
 				}
 				maxResults = *params.MaxResults
 			}
@@ -285,11 +353,43 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 			}
 			resolvedDir, err := exec.ResolvePath(searchDir)
 			if err != nil {
-				return "", fmt.Errorf("resolve search path: %w", err)
+				return "", nil, fmt.Errorf("resolve search path: %w", err)
 			}
-			return findNative(resolvedDir, params.Name, params.Include, params.Exclude, maxResults)
+			text, err := findNative(resolvedDir, params.Name, params.Include, params.Exclude, maxResults)
+			if err != nil {
+				return "", nil, err
+			}
+
+			// Derive the typed path list from the canonical newline-joined
+			// rendering so the text stays byte-identical (issue #231).
+			paths := parseFindPaths(text)
+			structured, marshalErr := json.Marshal(findResult{
+				Paths:     paths,
+				Truncated: len(paths) >= maxResults,
+			})
+			if marshalErr != nil {
+				return "", nil, fmt.Errorf("marshal structured result: %w", marshalErr)
+			}
+			return text, structured, nil
 		},
 	}
+}
+
+// parseFindPaths converts the canonical newline-joined find_files rendering
+// into a typed path list, the inverse of the text findNative produces. The
+// "No matches found." sentinel and blank lines yield an empty (non-nil) slice.
+func parseFindPaths(text string) []string {
+	paths := make([]string, 0)
+	if text == "" || text == noMatchesText {
+		return paths
+	}
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			continue
+		}
+		paths = append(paths, line)
+	}
+	return paths
 }
 
 // grepViaRipgrep runs `rg --line-number --no-heading --color never` and
