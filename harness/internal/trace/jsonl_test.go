@@ -353,6 +353,58 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured pins the
+// issue #231 B2 requirement that a structured tool-result envelope carried on a
+// message-history ContentBlock is scrubbed before persistence. This is the
+// route MCP-derived structured content (untrusted server output) takes into the
+// trace: it lands on the tool_result block of the NEXT turn's ModelInput, not
+// only on the ToolCallRecord. A secret-shaped substring inside that block's
+// Structured payload must not reach disk in the clear.
+func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	emitter.Start("run-scrub-cb-structured", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 2,
+		ModelInput: types.ModelInput{
+			Model: "claude-3-5-sonnet-latest",
+			Messages: []types.Message{
+				{
+					Role: "user",
+					Content: []types.ContentBlock{
+						{
+							Type:      "tool_result",
+							ToolUseID: "call_1",
+							Content:   "ok",
+							Kind:      "mcp_tool_result",
+							Structured: json.RawMessage(
+								`{"structured_content":{"token":"sk-ant-api03-cbleak"}}`,
+							),
+						},
+					},
+				},
+			},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	if strings.Contains(onDisk, "sk-ant-api03-cbleak") {
+		t.Errorf("scrubber missed secret in content-block structured payload on disk:\n%s", onDisk)
+	}
+	if !strings.Contains(onDisk, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] placeholder proving the content-block structured scrub ran, got:\n%s", onDisk)
+	}
+	// The structured field must survive as parseable JSON, not a mangled
+	// fragment — scrubRawJSON preserves a valid shape.
+	if !strings.Contains(onDisk, `"structured"`) {
+		t.Errorf("expected the content-block structured field to survive scrubbing, got:\n%s", onDisk)
+	}
+}
+
 // TestJSONLTraceEmitter_PartialStream pins the SIGKILL-safety property:
 // when a run is interrupted between RecordTurnRecord and Finish, the
 // on-disk file is still parseable up to the last completed event.
