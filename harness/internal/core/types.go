@@ -653,6 +653,12 @@ func estimateCurrentTokens(messages []types.Message) int {
 			total += len(block.ID) / tokenEstimationDivisor
 			total += len(block.Name) / tokenEstimationDivisor
 			total += len(block.ToolUseID) / tokenEstimationDivisor
+			// The structured envelope (issue #231) rides on tool_result
+			// blocks and, for a Gemini object-response result, can be up to
+			// maxMCPStructuredSize; counting it keeps the budget estimate from
+			// under-shooting and triggering a mid-run context overflow. Kind
+			// is a short discriminator and not worth counting.
+			total += len(block.Structured) / tokenEstimationDivisor
 		}
 	}
 	if total == 0 {

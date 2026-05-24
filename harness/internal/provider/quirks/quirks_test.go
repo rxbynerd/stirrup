@@ -633,6 +633,16 @@ func TestStructuredToolResultCapabilityRules(t *testing.T) {
 		}
 	})
 
+	t.Run("bedrock stays text-only", func(t *testing.T) {
+		// builtin.go names bedrock as the load-bearing negative: a provider
+		// with no rule stays text-only by construction. Pin it so a future
+		// bedrock rule flipping Supported=true cannot land unnoticed.
+		q := DefaultRegistry().Resolve("bedrock", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+		if q.StructuredToolResults != (StructuredToolResultCapability{}) {
+			t.Errorf("bedrock: StructuredToolResults = %+v, want zero value (text-only)", q.StructuredToolResults)
+		}
+	})
+
 	t.Run("unknown provider resolves zero (text-only)", func(t *testing.T) {
 		q := DefaultRegistry().Resolve("mystery-provider", "some-model")
 		if q.StructuredToolResults != (StructuredToolResultCapability{}) {

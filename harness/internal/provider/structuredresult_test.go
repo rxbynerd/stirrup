@@ -145,6 +145,26 @@ func TestAnthropicStructuredToolResult_TextByDefault(t *testing.T) {
 	}
 }
 
+// TestAnthropicToolResultContent_EmptyContentCapabilityOn (REC-1) pins that an
+// empty canonical text with a non-empty structured payload does NOT emit the
+// array form with a meaningless empty-string first part. It falls through to a
+// nil return — the pre-#231 omitempty shape for an empty-content tool result —
+// regardless of the structured envelope.
+func TestAnthropicToolResultContent_EmptyContentCapabilityOn(t *testing.T) {
+	cap := quirks.StructuredToolResultCapability{Supported: true, ContentBlockArray: true}
+	block := types.ContentBlock{
+		Type:       "tool_result",
+		ToolUseID:  "call_1",
+		Content:    "",
+		Structured: json.RawMessage(`{"exit_code":0}`),
+		Kind:       "command_result",
+	}
+	got := anthropicToolResultContent(block, cap)
+	if got != nil {
+		t.Errorf("empty content with structured must return nil (no empty-string array part), got %s", got)
+	}
+}
+
 // TestGeminiStructuredToolResult_CapabilityOn pins that the Gemini builder
 // embeds the structured envelope under functionResponse.response.structured
 // (with kind) alongside the canonical content when the capability accepts it.

@@ -294,7 +294,12 @@ func anthropicToolResultContent(b types.ContentBlock, cap quirks.StructuredToolR
 	if b.Type != "tool_result" {
 		return nil
 	}
-	if cap.Supported && cap.ContentBlockArray && len(b.Structured) > 0 {
+	// The array form requires a non-empty canonical text: an empty first part
+	// ({"type":"text","text":""}) is meaningless and diverges from the
+	// pre-#231 shape for empty-content results (which omitted the content key
+	// entirely). When Content is empty, fall through to the nil-return below
+	// regardless of the structured payload.
+	if cap.Supported && cap.ContentBlockArray && len(b.Structured) > 0 && b.Content != "" {
 		parts := []anthropicToolResultPart{
 			{Type: "text", Text: b.Content},
 			{Type: "text", Text: string(b.Structured)},
