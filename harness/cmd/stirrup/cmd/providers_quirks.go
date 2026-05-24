@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -114,29 +115,50 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 	return nil
 }
 
-// collectAppliedRules walks the rule slice and returns the metadata
-// for every rule whose predicate fires for (provider, model), using
-// quirks.RuleMatches so the CLI's "what rules ran" report is the same
-// predicate Resolve walks (no silent divergence if the predicate
-// gains a dimension).
+// collectAppliedRules returns the metadata for every rule that
+// actually contributes to a Resolve for (provider, model). The output
+// is ordered the same way Resolve applies them: glob length ascending
+// with declaration order as the tiebreaker, so the last entry in the
+// list is the rule whose writes won on overlapping keys. Rules with
+// nil Apply are filtered out for the same reason — Resolve skips
+// them, so reporting them as "applied" would be a lie.
 //
 // Returns a non-nil empty slice when no rule matched so the JSON
 // output is `[]` rather than `null` — easier to script against.
 func collectAppliedRules(rules []quirks.Rule, provider, model string) []appliedRuleCLIOutput {
-	out := make([]appliedRuleCLIOutput, 0, len(rules))
-	cutoff := time.Now().Add(-quirksStaleness)
-	for _, rule := range rules {
+	type indexed struct {
+		idx  int
+		rule quirks.Rule
+	}
+	matched := make([]indexed, 0, len(rules))
+	for i, rule := range rules {
+		if rule.Apply == nil {
+			continue
+		}
 		if !quirks.RuleMatches(rule, provider, model) {
 			continue
 		}
+		matched = append(matched, indexed{idx: i, rule: rule})
+	}
+	sort.SliceStable(matched, func(i, j int) bool {
+		li := len(matched[i].rule.ModelMatch)
+		lj := len(matched[j].rule.ModelMatch)
+		if li != lj {
+			return li < lj
+		}
+		return matched[i].idx < matched[j].idx
+	})
+	out := make([]appliedRuleCLIOutput, 0, len(matched))
+	cutoff := time.Now().Add(-quirksStaleness)
+	for _, m := range matched {
 		lastVerified := ""
-		if !rule.LastVerified.IsZero() {
-			lastVerified = rule.LastVerified.Format("2006-01-02")
+		if !m.rule.LastVerified.IsZero() {
+			lastVerified = m.rule.LastVerified.Format("2006-01-02")
 		}
 		out = append(out, appliedRuleCLIOutput{
-			Description:  rule.Description,
+			Description:  m.rule.Description,
 			LastVerified: lastVerified,
-			Stale:        !rule.LastVerified.IsZero() && rule.LastVerified.Before(cutoff),
+			Stale:        !m.rule.LastVerified.IsZero() && m.rule.LastVerified.Before(cutoff),
 		})
 	}
 	return out
