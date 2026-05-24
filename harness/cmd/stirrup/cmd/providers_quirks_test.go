@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 )
 
 // newTestProvidersQuirksCommand returns a fresh cobra command preloaded
@@ -125,5 +128,126 @@ func TestProvidersQuirks_OutputIsValidJSON(t *testing.T) {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("missing top-level key %q in output: %s", key, buf.String())
 		}
+	}
+}
+
+// TestCollectAppliedRules_FiltersAndFlagsCorrectly exercises every
+// branch of collectAppliedRules using a hand-constructed rule slice.
+// Without this test the CLI's primary operator-facing correctness
+// surface had zero direct coverage (BuiltinRules() is empty in Step 1
+// so no rule ever flowed through the predicate or staleness branches).
+//
+// Covers:
+//   - matching rule (ProviderType + ModelMatch glob both match)
+//   - non-matching rule (different ProviderType)
+//   - stale-flag branch (LastVerified > 180 days ago)
+//   - zero-LastVerified branch (empty lastVerified string; Stale=false)
+//   - Apply == nil guard (skipped; mirrors Resolve)
+//   - specificity ordering (longer ModelMatch glob runs last and wins)
+func TestCollectAppliedRules_FiltersAndFlagsCorrectly(t *testing.T) {
+	noop := func(*quirks.ProviderQuirks) {}
+	stale := time.Now().Add(-365 * 24 * time.Hour) // 1y ago, well past 180d
+	fresh := time.Now().Add(-30 * 24 * time.Hour)  // 30d ago, fresh
+
+	rules := []quirks.Rule{
+		{
+			// Wildcard rule: matches every model for the provider.
+			// Glob length 1, declared first → runs first under sort.
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*",
+			Description:  "wildcard openai-compatible",
+			LastVerified: fresh,
+			Apply:        noop,
+		},
+		{
+			// Stale rule: LastVerified > 180d ago.
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-4*",
+			Description:  "stale gpt-4 rule",
+			LastVerified: stale,
+			Apply:        noop,
+		},
+		{
+			// Zero-LastVerified rule: lastVerified field renders empty,
+			// Stale flag stays false (zero time is not "before cutoff"
+			// in the meaningful sense the operator cares about).
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-4o",
+			Description:  "zero-LastVerified gpt-4o rule",
+			LastVerified: time.Time{},
+			Apply:        noop,
+		},
+		{
+			// Non-matching: different ProviderType.
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-*",
+			Description:  "anthropic claude rule (should not appear)",
+			LastVerified: fresh,
+			Apply:        noop,
+		},
+		{
+			// Apply == nil: must be filtered out, matching Resolve's
+			// behaviour, even though the predicate matches.
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-4o",
+			Description:  "nil-apply gpt-4o rule (should not appear)",
+			LastVerified: fresh,
+			Apply:        nil,
+		},
+	}
+
+	got := collectAppliedRules(rules, "openai-compatible", "gpt-4o")
+
+	// Expected, in specificity order:
+	//   1. "wildcard openai-compatible"            (glob length 1)
+	//   2. "stale gpt-4 rule"                      (glob length 5)
+	//   3. "zero-LastVerified gpt-4o rule"         (glob length 6)
+	// The anthropic rule has the wrong ProviderType; the nil-apply rule
+	// is skipped by the guard.
+	wantDescriptions := []string{
+		"wildcard openai-compatible",
+		"stale gpt-4 rule",
+		"zero-LastVerified gpt-4o rule",
+	}
+	if len(got) != len(wantDescriptions) {
+		t.Fatalf("got %d applied rules, want %d: %+v", len(got), len(wantDescriptions), got)
+	}
+	for i, want := range wantDescriptions {
+		if got[i].Description != want {
+			t.Errorf("applied[%d].Description = %q, want %q", i, got[i].Description, want)
+		}
+	}
+
+	// Stale flag and lastVerified rendering by index in the sorted output.
+	if got[0].Stale {
+		t.Errorf("applied[0] (fresh wildcard) Stale = true, want false")
+	}
+	if got[0].LastVerified != fresh.Format("2006-01-02") {
+		t.Errorf("applied[0].LastVerified = %q, want %q", got[0].LastVerified, fresh.Format("2006-01-02"))
+	}
+	if !got[1].Stale {
+		t.Errorf("applied[1] (stale) Stale = false, want true")
+	}
+	if got[1].LastVerified != stale.Format("2006-01-02") {
+		t.Errorf("applied[1].LastVerified = %q, want %q", got[1].LastVerified, stale.Format("2006-01-02"))
+	}
+	if got[2].Stale {
+		t.Errorf("applied[2] (zero-LastVerified) Stale = true, want false (zero time is not flagged)")
+	}
+	if got[2].LastVerified != "" {
+		t.Errorf("applied[2].LastVerified = %q, want empty string for zero time", got[2].LastVerified)
+	}
+}
+
+// TestCollectAppliedRules_EmptyRules pins the empty-rule-set
+// behaviour the JSON output depends on: an empty rule slice returns a
+// non-nil empty slice so the encoded JSON is `[]` rather than `null`.
+func TestCollectAppliedRules_EmptyRules(t *testing.T) {
+	got := collectAppliedRules(nil, "openai-compatible", "gpt-4o")
+	if got == nil {
+		t.Fatal("collectAppliedRules(nil, ...) returned nil; want non-nil empty slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("collectAppliedRules(nil, ...) = %+v, want empty", got)
 	}
 }
