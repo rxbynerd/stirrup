@@ -314,6 +314,32 @@ func ruleDescriptions(rules []quirks.Rule) []string {
 	return out
 }
 
+// summarizeReplayCaptures sums per-path piece counts and the string-or-
+// JSON-encoded length of every captured value across the whole map. The
+// same length proxy logReplayFieldsCapture uses (raw string length for
+// string values, json.Marshal length otherwise) so the span attribute
+// and the slog summary agree. Returned as totals only — never per-path,
+// never per-value — so callers can attach the summary to an OTel span
+// without enumerating field names that would balloon attribute count
+// on a multi-rule stream.
+func summarizeReplayCaptures(capture map[string][]any) (totalCount, totalLen int) {
+	for _, values := range capture {
+		totalCount += len(values)
+		for _, v := range values {
+			switch s := v.(type) {
+			case string:
+				totalLen += len(s)
+			default:
+				b, err := json.Marshal(v)
+				if err == nil {
+					totalLen += len(b)
+				}
+			}
+		}
+	}
+	return totalCount, totalLen
+}
+
 // logReplayFieldsCapture emits a debug-level summary of the per-stream
 // ReplayFields capture (design §5, design D12). Length-only reporting:
 // the captured values themselves are provider-private blobs (DeepSeek's
@@ -711,6 +737,20 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 
+	// Mirror the applied-rules list onto the OTel span as a
+	// `provider.quirk.applied` attribute (design §5). The slog DEBUG
+	// line and the span attribute are emitted together so log-only
+	// (Cloud Logging) and trace-only (Jaeger, Honeycomb, Datadog)
+	// consumers both observe which rules fired. The IsValid guard
+	// tolerates the no-tracer case: when no exporter is configured,
+	// SpanFromContext returns a non-recording span whose
+	// SetAttributes is a no-op anyway, but checking IsValid keeps the
+	// attribute slice allocation off the hot path when no tracer is
+	// attached.
+	if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
+	}
+
 	// Warn-level log when a caller-supplied non-nil Temperature is
 	// suppressed by a quirk rule (design risk 2, §9). The reasoning-
 	// class rules omit temperature outright; without this signal an
@@ -866,6 +906,19 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	defer func() {
 		if len(replayFieldsCapture) == 0 {
 			return
+		}
+		// Mirror the per-stream capture summary onto the OTel span
+		// (design §5): emit `replay_fields_captured.count` and
+		// `.total_len` so trace consumers see the rule fired without
+		// having to correlate with slog. Length-only — values stay
+		// off the trace just as they stay off the log. The IsValid
+		// guard keeps the marshal cost off the no-tracer path.
+		if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+			totalCount, totalLen := summarizeReplayCaptures(replayFieldsCapture)
+			span.SetAttributes(
+				attribute.Int("replay_fields_captured.count", totalCount),
+				attribute.Int("replay_fields_captured.total_len", totalLen),
+			)
 		}
 		logReplayFieldsCapture(ctx, logger, "openai-compatible", model, replayFieldsCapture)
 	}()
