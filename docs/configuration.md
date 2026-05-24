@@ -412,6 +412,16 @@ broaden capability — it cannot surface a tool the registry did not
 register, and an alias for a tool a read-only mode excluded does not
 exist because the excluded tool is never registered to alias.
 
+Every gating and guard surface keys on the internal tool ID, never the
+alias: the permission policy, the workspace-mutation guard, the
+guardrail's `PhasePreTool` classifier input, and the sub-agent
+recursion filter all see `grep_files`, not `grep`. **Cedar policies and
+permission configs must reference internal tool IDs** (`run_command`,
+`grep_files`, `edit_file`, …), not profile aliases. A Cedar rule that
+forbids `"bash"` under the `coding-classic` profile matches nothing —
+the policy engine is never shown the alias. Write the rule against
+`run_command`.
+
 Existing configs keep working. Because the default profile is the
 identity presentation, a config that names tools by their internal IDs
 in `tools.builtIn` (or a model that calls them by those IDs) continues
@@ -428,7 +438,12 @@ the binding never silently routes a call to the wrong handler.
 Traces record both names. Each tool-call trace and record carries the
 model-facing `name` and, when an alias was resolved, the internal
 `internalName`; under the default profile the two coincide and
-`internalName` is omitted, keeping the trace wire shape unchanged.
+`internalName` is omitted, keeping the trace wire shape unchanged. An
+absent `internalName` is therefore ambiguous in isolation — it means
+either "called by internal name under the default profile" or "the name
+did not resolve to a known tool under a non-default profile". The active
+`tools.profile` is recorded in the trace's attached `RunConfig`, so the
+two cases are distinguishable by reading it alongside the record.
 
 ## Limits and budgets
 

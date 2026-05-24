@@ -41,6 +41,12 @@ type RunTrace struct {
 // InternalName is omitted from the wire to keep the existing trace shape
 // byte-identical; a non-default profile records both so a trace is
 // auditable and the alias→internal binding is recoverable.
+//
+// An empty InternalName is ambiguous in isolation: it means the tool was
+// called by its internal name under the default profile, OR the name did
+// not resolve to a known tool under a non-default profile. The active
+// profile is recorded in the run's RunConfig (tools.profile); read it
+// alongside the record to disambiguate.
 type ToolCallSummary struct {
 	Name         string `json:"name"`
 	InternalName string `json:"internalName,omitempty"`
@@ -120,7 +126,9 @@ func (t TurnTrace) IsBatch() bool {
 //
 // Name is the model-facing name (the alias under a toolset profile);
 // InternalName is the internal tool ID it dispatched to (issue #234).
-// See ToolCallSummary for the omitempty rationale.
+// See ToolCallSummary for the omitempty rationale and the empty-value
+// ambiguity (default profile vs unresolved name under a non-default
+// profile).
 type ToolCallTrace struct {
 	Name         string `json:"name"`
 	InternalName string `json:"internalName,omitempty"`
