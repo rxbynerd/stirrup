@@ -222,6 +222,40 @@ func TestPresenter_ResolveUnknownReturnsNil(t *testing.T) {
 	}
 }
 
+// The presenter only aliases tools that are actually registered. A
+// profile aliasing a tool a read-only mode declined to register (here
+// run_command -> bash, with run_command absent from the registry)
+// produces no "bash" alias and no way to reach the excluded tool — the
+// alias cannot smuggle an unregistered tool past the registry. This is
+// the registry-level half of the issue #234 read-only-mode invariant
+// (the config-level half is enforced by ValidateRunConfig).
+func TestPresenter_AliasCannotSurfaceUnregisteredTool(t *testing.T) {
+	// A read-only-style registry: no run_command / edit_file registered.
+	reg := newRegistryWith(
+		fixedTool("read_file", "read"),
+		fixedTool("grep_files", "regex"),
+		fixedTool("find_files", "glob"),
+	)
+	p, err := NewPresenter(reg, codingClassicProfile)
+	if err != nil {
+		t.Fatalf("NewPresenter: %v", err)
+	}
+
+	// "bash" is run_command's alias, but run_command was never registered,
+	// so no presented name should be "bash" and Resolve("bash") is nil.
+	for _, d := range p.List() {
+		if d.Name == "bash" {
+			t.Fatalf("alias 'bash' present for an unregistered tool: %+v", d)
+		}
+	}
+	if got := p.Resolve("bash"); got != nil {
+		t.Errorf("Resolve('bash') = %v, want nil — alias must not surface an unregistered tool", got)
+	}
+	if got := p.Resolve("run_command"); got != nil {
+		t.Errorf("Resolve('run_command') = %v, want nil — tool was never registered", got)
+	}
+}
+
 func TestPresenter_Unwrap(t *testing.T) {
 	reg := newRegistryWith(fixedTool("read_file", "read"))
 	p, err := NewPresenter(reg, defaultProfile)

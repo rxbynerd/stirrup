@@ -359,6 +359,32 @@ func TestValidateRunConfig_InvalidBuiltInTool(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_UnknownToolsProfile(t *testing.T) {
+	c := validConfig()
+	c.Tools.Profile = "provider-native-but-unimplemented"
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for unknown tools.profile")
+	}
+	if !strings.Contains(err.Error(), "tools.profile") {
+		t.Errorf("expected error to mention tools.profile, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_KnownToolsProfilesAccepted(t *testing.T) {
+	// Empty (default), explicit "default", and the one shipped alternate
+	// all validate. The empty value is the byte-identical-to-today path.
+	for _, profile := range []string{"", "default", "coding-classic"} {
+		t.Run(profile, func(t *testing.T) {
+			c := validConfig()
+			c.Tools.Profile = profile
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("profile %q should validate, got: %v", profile, err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_MaxTurnsExceedsLimit(t *testing.T) {
 	c := validConfig()
 	c.MaxTurns = 101
@@ -478,6 +504,32 @@ func TestValidateRunConfig_ReadOnlyModeWithWriteToolInList(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A toolset profile must not loosen the read-only-mode write-tool
+// exclusion. Profile selection presents aliases for tools that are
+// already enabled; it cannot smuggle a write tool past validation, so a
+// read-only mode that lists a write tool is still rejected regardless of
+// the profile. (Issue #234 hard constraint.)
+func TestValidateRunConfig_ReadOnlyModeProfileDoesNotBypassWriteExclusion(t *testing.T) {
+	for _, profile := range []string{"default", "coding-classic"} {
+		t.Run(profile, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = "research"
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{
+				BuiltIn: []string{"read_file", "run_command"},
+				Profile: profile,
+			}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("profile %q must not let a write tool into read-only mode", profile)
+			}
+			if !strings.Contains(err.Error(), "read-only mode") || !strings.Contains(err.Error(), "run_command") {
+				t.Errorf("expected read-only-mode rejection mentioning run_command, got: %v", err)
+			}
+		})
 	}
 }
 

@@ -104,6 +104,90 @@ func TestBuildRunConfig_FlagOnlyMatchesBuildHarnessRunConfig(t *testing.T) {
 	}
 }
 
+// TestBuildRunConfig_ToolsProfileFlag pins that --tools-profile threads
+// onto RunConfig.Tools.Profile on the flag-only path and that omitting it
+// leaves the default (empty) identity profile, so a bare invocation does
+// not opt into aliasing (issue #234).
+func TestBuildRunConfig_ToolsProfileFlag(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	if err := cmd.ParseFlags([]string{
+		"--mode", "execution",
+		"--prompt", "x",
+		"--tools-profile", "coding-classic",
+	}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	cfg, err := BuildRunConfig(RunConfigSources{Cmd: cmd, Resolve: ResolveAll})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.Tools.Profile != "coding-classic" {
+		t.Errorf("Tools.Profile = %q, want coding-classic", cfg.Tools.Profile)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Errorf("config with tools-profile should validate, got: %v", err)
+	}
+
+	// Without the flag, the profile stays empty (the default identity
+	// presentation).
+	bare := newTestHarnessCommand()
+	if err := bare.ParseFlags([]string{"--mode", "execution", "--prompt", "x"}); err != nil {
+		t.Fatalf("ParseFlags(bare): %v", err)
+	}
+	bareCfg, err := BuildRunConfig(RunConfigSources{Cmd: bare, Resolve: ResolveAll})
+	if err != nil {
+		t.Fatalf("BuildRunConfig(bare): %v", err)
+	}
+	if bareCfg.Tools.Profile != "" {
+		t.Errorf("bare Tools.Profile = %q, want empty (default)", bareCfg.Tools.Profile)
+	}
+}
+
+// TestBuildRunConfig_ToolsProfileOverridesBase pins that --tools-profile
+// overrides a base config's tools.profile and that omitting the flag
+// preserves the base value (the applyOverrides Changed() guard).
+func TestBuildRunConfig_ToolsProfileOverridesBase(t *testing.T) {
+	var base types.RunConfig
+	if err := json.Unmarshal([]byte(minimalRunConfigJSON(t)), &base); err != nil {
+		t.Fatalf("unmarshal base: %v", err)
+	}
+	base.Tools.Profile = "coding-classic"
+	baseJSON, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal base: %v", err)
+	}
+
+	// No flag: base profile preserved.
+	cmd := newTestHarnessCommand()
+	if err := cmd.ParseFlags([]string{"--max-turns", "5"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	cfg, err := BuildRunConfig(RunConfigSources{
+		Stdin: strings.NewReader(string(baseJSON)), Cmd: cmd, Resolve: ResolveBase,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg.Tools.Profile != "coding-classic" {
+		t.Errorf("base profile not preserved: got %q", cfg.Tools.Profile)
+	}
+
+	// Explicit flag wins over the base.
+	cmd2 := newTestHarnessCommand()
+	if err := cmd2.ParseFlags([]string{"--tools-profile", "default"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	cfg2, err := BuildRunConfig(RunConfigSources{
+		Stdin: strings.NewReader(string(baseJSON)), Cmd: cmd2, Resolve: ResolveBase,
+	})
+	if err != nil {
+		t.Fatalf("BuildRunConfig: %v", err)
+	}
+	if cfg2.Tools.Profile != "default" {
+		t.Errorf("flag did not override base profile: got %q", cfg2.Tools.Profile)
+	}
+}
+
 // TestBuildRunConfig_StdinBaseWithFlagOverride exercises the canonical
 // pipeline shape: a JSON RunConfig arrives on stdin and an explicit
 // flag overrides one field. The base survives intact for every field
