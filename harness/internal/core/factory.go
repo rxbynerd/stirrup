@@ -433,6 +433,42 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		providers[config.Provider.Type] = prov
 	}
 
+	// 14c. Wrap every loop-facing provider adapter with the tool-name
+	// normalizer. Applied as the outermost wrap (after batch and any
+	// fallback wraps) so the loop's inbound tool_call reverse-mapping
+	// reaches the wire-event stream before any consumer touches the
+	// name. Skipping a provider that already happens to use only
+	// well-formed names is intentional: every adapter goes through the
+	// wrapper so the invariant ("provider never sees an invalid name")
+	// holds for any future MCP server or operator-defined tool. See
+	// issue #223.
+	prov = provider.NewNormalizingAdapter(prov, config.Provider.Type)
+	wrappedProviders := make(map[string]provider.ProviderAdapter, len(providers))
+	for name, p := range providers {
+		// The default provider's wrap above already pinned the type to
+		// config.Provider.Type; mirror that for any additional providers
+		// declared in config.Providers — their key is unique by name but
+		// the policy must come from their declared Type, not their map
+		// key (which may differ from the type discriminator).
+		providerType := config.Provider.Type
+		if name != config.Provider.Type {
+			if cfg, ok := config.Providers[name]; ok {
+				providerType = cfg.Type
+			}
+		}
+		if name == config.Provider.Type {
+			// The default-provider entry was just rebuilt above; reuse
+			// that exact wrapper so identity is preserved across the
+			// loop.Provider and loop.Providers[default] references —
+			// some call sites (router fallback, guardrail) compare by
+			// pointer.
+			wrappedProviders[name] = prov
+			continue
+		}
+		wrappedProviders[name] = provider.NewNormalizingAdapter(p, providerType)
+	}
+	providers = wrappedProviders
+
 	loop := &AgenticLoop{
 		Provider:     prov,
 		Providers:    providers,

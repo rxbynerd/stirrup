@@ -289,6 +289,38 @@ to avoid collisions. Tools default to `sideEffects: true`. Connection
 failures log a warning and skip that server's tools rather than
 failing the entire run.
 
+### Provider-facing tool name normalization
+
+Provider tool/function names have stricter constraints than what the
+registry enforces — MCP-derived names with hyphens, dots, spaces or
+non-ASCII can be registered locally but rejected by a provider on the
+wire. The `harness/internal/tool/toolname` package centralises a
+per-provider naming policy and is applied by a `NormalizingAdapter`
+that wraps every `ProviderAdapter` at factory time (the outermost
+wrap, outside any batch wrapper). The wrapper rewrites tool
+definitions and `tool_use` block names on egress and reverse-maps
+inbound `tool_call` events back to the registry-side name so dispatch
+continues to resolve by the original identifier.
+
+Effective rules per provider type:
+
+- **Anthropic / OpenAI (Chat Completions and Responses) / Bedrock** —
+  `[A-Za-z0-9_-]{1,64}`. Leading digits allowed.
+- **Gemini (Vertex AI)** — `[A-Za-z_][A-Za-z0-9_]{0,63}`. Hyphens are
+  not allowed and a leading digit is replaced with `_<digit>`.
+- **Unknown providers** — fall through to the strictest policy
+  (Gemini's) so a new adapter cannot regress until its policy is
+  added.
+
+Substitution replaces every disallowed character with `_`. Names that
+exceed the length cap are hard-truncated; names that collide after
+sanitization gain a deterministic six-hex-character SHA-256 suffix
+derived from the internal name so two long names that share a common
+prefix stay distinguishable. A collision that cannot be resolved
+(e.g. the same internal name registered twice) fails the stream
+before any request is issued — silent aliasing would route a
+tool_call to the wrong handler.
+
 ### Sub-agent spawning
 
 The `spawn_agent` tool creates a fresh `AgenticLoop` with its own

@@ -1976,9 +1976,9 @@ func TestBuildLoopWithTransport_OpenAICompatibleAdapterHasLogger(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	adapter, ok := loop.Provider.(*provider.OpenAICompatibleAdapter)
+	adapter, ok := unwrapNormalizer(loop.Provider).(*provider.OpenAICompatibleAdapter)
 	if !ok {
-		t.Fatalf("loop.Provider type = %T, want *provider.OpenAICompatibleAdapter", loop.Provider)
+		t.Fatalf("loop.Provider (after unwrap) type = %T, want *provider.OpenAICompatibleAdapter", unwrapNormalizer(loop.Provider))
 	}
 	if adapter.Logger == nil {
 		t.Error("OpenAICompatibleAdapter.Logger is nil; factory should inject the ScrubHandler-backed logger so retry warnings get scrubbed")
@@ -2314,6 +2314,20 @@ func TestBuildProvider_OpenAIResponsesNilBearerErrors(t *testing.T) {
 // dependency just for a one-off literal pointer.
 func intPtr(v int) *int { return &v }
 
+// unwrapNormalizer peels off the *provider.NormalizingAdapter the
+// factory now applies as the outermost wrap (#223), returning the
+// inner adapter. Tests that assert on a specific concrete adapter
+// type (BatchAdapter, OpenAICompatibleAdapter, …) use this so the
+// assertion still describes the meaningful structural invariant
+// (batch wrapping is present, logger is wired, …) without being
+// coupled to the normalizer's existence.
+func unwrapNormalizer(p provider.ProviderAdapter) provider.ProviderAdapter {
+	if n, ok := p.(*provider.NormalizingAdapter); ok {
+		return n.Unwrap()
+	}
+	return p
+}
+
 // TestBuildLoopWithTransport_BatchAdapterWiredWhenEnabled asserts the
 // gRPC + batch.enabled wiring path in the factory: the top-level provider
 // and the entry in the providers map are both replaced with a
@@ -2357,15 +2371,15 @@ func TestBuildLoopWithTransport_BatchAdapterWiredWhenEnabled(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	ba, ok := loop.Provider.(*provider.BatchAdapter)
+	ba, ok := unwrapNormalizer(loop.Provider).(*provider.BatchAdapter)
 	if !ok {
-		t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+		t.Fatalf("loop.Provider (after unwrap): got %T, want *provider.BatchAdapter", unwrapNormalizer(loop.Provider))
 	}
 	mapped, ok := loop.Providers[config.Provider.Type]
 	if !ok {
 		t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
 	}
-	if mapped != ba {
+	if unwrapNormalizer(mapped) != ba {
 		t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
 	}
 }
@@ -2415,12 +2429,12 @@ func TestBuildLoopWithTransport_BatchAdapterWiredOnStdio(t *testing.T) {
 	}
 	defer func() { _ = loop.Close() }()
 
-	ba, ok := loop.Provider.(*provider.BatchAdapter)
+	ba, ok := unwrapNormalizer(loop.Provider).(*provider.BatchAdapter)
 	if !ok {
-		t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+		t.Fatalf("loop.Provider (after unwrap): got %T, want *provider.BatchAdapter", unwrapNormalizer(loop.Provider))
 	}
 	mapped := loop.Providers[config.Provider.Type]
-	if mapped != ba {
+	if unwrapNormalizer(mapped) != ba {
 		t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
 	}
 }
@@ -2474,22 +2488,137 @@ func TestBuildLoopWithTransport_BatchOnStdioAcceptsOpenAI(t *testing.T) {
 			}
 
 			// loop.Provider must be the BatchAdapter wrapper for the
-			// stdio batch path; the providers map entry for this
-			// provider type must point at the same wrapper so a
-			// model-router that picks the default provider by type
-			// routes through batching rather than bypassing it.
-			ba, ok := loop.Provider.(*provider.BatchAdapter)
+			// stdio batch path (unwrapped from the outer NormalizingAdapter
+			// added by #223); the providers map entry for this provider
+			// type must point at the same wrapper so a model-router that
+			// picks the default provider by type routes through batching
+			// rather than bypassing it.
+			ba, ok := unwrapNormalizer(loop.Provider).(*provider.BatchAdapter)
 			if !ok {
-				t.Fatalf("loop.Provider: got %T, want *provider.BatchAdapter", loop.Provider)
+				t.Fatalf("loop.Provider (after unwrap): got %T, want *provider.BatchAdapter", unwrapNormalizer(loop.Provider))
 			}
 			mapped, ok := loop.Providers[config.Provider.Type]
 			if !ok {
 				t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
 			}
-			if mapped != ba {
+			if unwrapNormalizer(mapped) != ba {
 				t.Errorf("loop.Providers[%q]: %T %p, want same *BatchAdapter %p", config.Provider.Type, mapped, mapped, ba)
 			}
 		})
+	}
+}
+
+// --- normalizer wrap pinned at loop seam (#223) ---
+
+// TestBuildLoopWithTransport_NormalizingAdapterWrapsGeminiProvider
+// asserts the outermost wrap on a Gemini-built loop is the
+// NormalizingAdapter. Existing Gemini factory tests call buildProvider
+// directly, which returns _before_ the step 14c wrap in
+// BuildLoopWithTransport; a refactor that dropped the Gemini wrap
+// branch would not have been caught by them. This test reaches the
+// loop seam end-to-end so the invariant is pinned where it matters —
+// the only ProviderAdapter the loop ever calls Stream on.
+func TestBuildLoopWithTransport_NormalizingAdapterWrapsGeminiProvider(t *testing.T) {
+	keyPath := writeFakeServiceAccountJSON(t, t.TempDir())
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", keyPath)
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-gemini-normalizer",
+		Mode:             "planning",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "gemini", GCPProject: "test-project", GCPLocation: "us-central1"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "gemini", Model: "gemini-2.5-pro"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	// Outermost-wrap assertion: type-assert directly to
+	// *provider.NormalizingAdapter rather than going through
+	// unwrapNormalizer. The synthesis brief calls this out — the
+	// invariant is "the loop sees the normalizer", not merely "a
+	// normalizer exists somewhere in the chain".
+	n, ok := loop.Provider.(*provider.NormalizingAdapter)
+	if !ok {
+		t.Fatalf("loop.Provider type = %T, want *provider.NormalizingAdapter (outermost wrap for gemini)", loop.Provider)
+	}
+	if _, ok := n.Unwrap().(*provider.GeminiAdapter); !ok {
+		t.Errorf("unwrapped inner type = %T, want *provider.GeminiAdapter", n.Unwrap())
+	}
+	mapped, ok := loop.Providers[config.Provider.Type]
+	if !ok {
+		t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
+	}
+	if mapped != loop.Provider {
+		t.Errorf("loop.Providers[%q] is not the same wrapper as loop.Provider (pointer identity broken)", config.Provider.Type)
+	}
+}
+
+// TestBuildLoopWithTransport_NormalizingAdapterWrapsBedrockProvider
+// asserts the outermost wrap on a Bedrock-built loop is the
+// NormalizingAdapter. Bedrock's AWS SDK config loader is lazy: it
+// constructs the client without hitting the network, so the factory
+// build succeeds even without real AWS credentials — sufficient to
+// pin step 14c's wrap for the Bedrock branch.
+func TestBuildLoopWithTransport_NormalizingAdapterWrapsBedrockProvider(t *testing.T) {
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-bedrock-normalizer",
+		Mode:             "planning",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "bedrock", Region: "us-east-1"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "bedrock", Model: "anthropic.claude-3-5-sonnet-20241022-v2:0"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	n, ok := loop.Provider.(*provider.NormalizingAdapter)
+	if !ok {
+		t.Fatalf("loop.Provider type = %T, want *provider.NormalizingAdapter (outermost wrap for bedrock)", loop.Provider)
+	}
+	if _, ok := n.Unwrap().(*provider.BedrockAdapter); !ok {
+		t.Errorf("unwrapped inner type = %T, want *provider.BedrockAdapter", n.Unwrap())
+	}
+	mapped, ok := loop.Providers[config.Provider.Type]
+	if !ok {
+		t.Fatalf("loop.Providers[%q] missing", config.Provider.Type)
+	}
+	if mapped != loop.Provider {
+		t.Errorf("loop.Providers[%q] is not the same wrapper as loop.Provider (pointer identity broken)", config.Provider.Type)
 	}
 }
 
