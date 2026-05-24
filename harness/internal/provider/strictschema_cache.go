@@ -68,16 +68,6 @@ func (c *strictSchemaCache) lookup(key strictSchemaCacheKey) (json.RawMessage, b
 	return out, ok
 }
 
-// store records the normalised schema. Concurrent stores of the same
-// key are idempotent — the last write wins, both writes produce the
-// same bytes for the same input, so there is no observable race.
-func (c *strictSchemaCache) store(key strictSchemaCacheKey, value json.RawMessage) {
-	c.mu.Lock()
-	c.entries[key] = value
-	c.mu.Unlock()
-	c.Misses.Add(1)
-}
-
 // schemaHash returns a hex-encoded SHA-256 of the input bytes. Used by
 // the cache key. Constant in size (64 chars) so the map's key
 // equality cost is bounded regardless of schema size.
@@ -93,6 +83,14 @@ func schemaHash(raw json.RawMessage) string {
 // operator can see the failure surface in logs each time, and so a
 // rule change that introduces strict mode mid-run does not paper over
 // a transient parse problem.
+//
+// Concurrency: the miss path takes a write lock and re-checks for the
+// key after acquiring it. Concurrent first-misses on the same key
+// produce exactly one normalisation and one Misses increment — the
+// loser of the lock race observes the winner's stored bytes on its
+// re-check and accounts as a hit. Misses is only incremented on a
+// successful normalisation so a fail-closed schema lint does not
+// inflate the counter on every retry.
 func normalizeStrictWithCache(cache *strictSchemaCache, model, toolName string, raw json.RawMessage) (json.RawMessage, error) {
 	if cache == nil {
 		return NormalizeStrictSchema(toolName, raw)
@@ -105,10 +103,34 @@ func normalizeStrictWithCache(cache *strictSchemaCache, model, toolName string, 
 	if cached, ok := cache.lookup(key); ok {
 		return cached, nil
 	}
+	return cache.computeAndStore(key, toolName, raw)
+}
+
+// computeAndStore handles the miss path under a write lock. Holding the
+// write lock for the duration of NormalizeStrictSchema gives this cache
+// singleflight semantics: only one goroutine runs the normaliser for a
+// given key. Concurrent first-misses serialise on the lock; the loser
+// observes the winner's entry on its re-check and is accounted a hit.
+//
+// Misses is incremented inside the locked section only when the entry
+// was genuinely absent on re-check AND normalisation succeeded — the
+// counter then reflects the number of (model, tool-name, schema-hash)
+// triples that produced a usable rewrite, not the number of attempts
+// or failures.
+func (c *strictSchemaCache) computeAndStore(key strictSchemaCacheKey, toolName string, raw json.RawMessage) (json.RawMessage, error) {
+	c.mu.Lock()
+	if cached, ok := c.entries[key]; ok {
+		c.mu.Unlock()
+		c.Hits.Add(1)
+		return cached, nil
+	}
 	out, err := NormalizeStrictSchema(toolName, raw)
 	if err != nil {
+		c.mu.Unlock()
 		return nil, err
 	}
-	cache.store(key, out)
+	c.entries[key] = out
+	c.Misses.Add(1)
+	c.mu.Unlock()
 	return out, nil
 }
