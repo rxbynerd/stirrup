@@ -34,7 +34,7 @@ func TestMultiStrategy_RecordsAttemptsAndDuration(t *testing.T) {
 	strat := NewMultiStrategy(defaultFuzzyThreshold)
 	strat.Metrics = m
 
-	input := json.RawMessage(`{"path":"test.txt","old_string":"world","new_string":"universe"}`)
+	input := json.RawMessage(`{"path":"test.txt","operation":"replace","old_string":"world","new_string":"universe"}`)
 	result, err := strat.Apply(context.Background(), input, exec)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -92,6 +92,7 @@ func TestMultiStrategy_RecordsFallback(t *testing.T) {
 
 	input := json.RawMessage(`{
 		"path": "test.txt",
+		"operation": "replace",
 		"old_string": "missing",
 		"new_string": "replaced",
 		"content": "totally new content"
