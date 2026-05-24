@@ -135,6 +135,6 @@ func (p *defaultEscalationPolicy) supportsNativeRequired(providerType, model str
 	if p.caps == nil || providerType == "" {
 		return false
 	}
-	cap := p.caps.Resolve(providerType, model).ToolChoice
-	return cap.Supported && cap.Required
+	tc := p.caps.Resolve(providerType, model).ToolChoice
+	return tc.Supported && tc.Required
 }
