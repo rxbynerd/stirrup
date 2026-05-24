@@ -433,16 +433,21 @@ back as a user message. Three implementations ship:
 
 The provider-quirks layer (see
 [`provider-quirks.md`](provider-quirks.md)) surfaces resolution
-observability via slog rather than via span attributes. Each
-`ProviderAdapter.Stream` call emits a `provider quirks resolved`
-DEBUG record naming every contributing rule's description; when a
+observability through both slog records and OTel span attributes
+so log-only and trace-only consumers each see which rules fired.
+Each `ProviderAdapter.Stream` call emits an `openai quirks
+resolved` (or `gemini quirks resolved`) DEBUG record naming every
+contributing rule's description, and sets the matching
+`provider.quirk.applied` attribute on the active span. When a
 rule's `OmitSamplingParams` suppresses a caller-supplied non-nil
 `Temperature`, an `openai quirks suppressed caller temperature`
 WARN record fires naming the responsible rule. When a rule
 registers `ReplayFields` paths and any value is captured during
 the stream, a `quirks replay fields captured` DEBUG record fires
-on stream exit summarising `{count, total_len}` per path —
-length-only, never the captured values themselves.
+on stream exit summarising `{count, total_len}` per path — and
+the same totals are attached to the span as
+`replay_fields_captured.count` / `.total_len`. Length-only on
+both surfaces; never the captured values themselves.
 
 The `harness/internal/observability/` package emits OTel metrics
 alongside tracing: 13 counters (`stirrup.harness.runs`, `.turns`,

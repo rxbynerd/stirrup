@@ -216,7 +216,7 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `deepseek-reasoner*` | DeepSeek reasoner: preserve `reasoning_content` (parse-side only)  |
 | `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: preserve `reasoning_content` (parse-side only)          |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
-| `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` on `functionCall` parts (parse-side only) |
+| `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
 
 The compat profile rule for Z.ai GLM is registered separately via
 `harness/internal/provider/compat/zai/CompatRule()`; it is not in
@@ -227,10 +227,12 @@ The compat profile rule for Z.ai GLM is registered separately via
 
 The three `ReplayFields` rules added in Wave 2 land **parse-side
 recognition only**. Captured values surface in a per-stream debug
-log so operators can see the rule fired, but the values are not yet
-threaded back into outbound message history. Multi-turn runs against
-affected models continue to fail on turn 2 in the same way they did
-before the rule; the observable improvement is the debug attribute.
+log (and as totals on the active OTel span) so operators can see
+the rule fired, but the values are not yet threaded back into
+outbound message history. Multi-turn runs against affected models
+continue to fail on turn 2 in the same way they did before the
+rule; the observable improvement is the slog DEBUG record and the
+matching span attributes.
 
 Outbound threading is design §9 risk 7 and is tracked separately.
 The Description of every ReplayFields rule ends in `(parse-side
@@ -241,10 +243,15 @@ the convention.
 The captured-fields debug log line is `quirks replay fields
 captured` at slog DEBUG level. It records a per-path summary of
 `{count, total_len}` only — captured values themselves are
-provider-private (DeepSeek reasoning_content, Gemini
-thoughtSignature) and never appear in log sinks.
-`TestReplayFields_DeepSeekReasoner_LogIsLengthOnly` pins the
-side-channel guard.
+provider-private (DeepSeek `reasoning_content`, Gemini
+`thoughtSignature` — the latter is a sibling of `functionCall` on
+each `parts[]` element, not a child; see `geminiPart` in
+`harness/internal/provider/gemini_types.go`) and never appear in
+log sinks. The same totals are mirrored onto the OTel span as
+`replay_fields_captured.count` and `replay_fields_captured.total_len`,
+so trace-only consumers see the rule fired without correlating
+back to slog. `TestReplayFields_DeepSeekReasoner_LogIsLengthOnly`
+pins the side-channel guard on the slog side.
 
 ## 4. Composition with the NormalizingAdapter
 
@@ -270,8 +277,10 @@ The factory composes both without either knowing about the other.
 |---|---|---|
 | `provider.compatProfile` on `ProviderConfig` | `RunConfig` string field | Closed enum. Only legal value in v1: `"zai-glm"`. Unknown values fail at startup via `ValidateRunConfig`. |
 | `stirrup providers quirks --provider X --model Y` | CLI subcommand | Prints resolved `ProviderQuirks` as JSON, plus `Description`, `LastVerified`, staleness flag of every contributing rule. Side-effect-free. |
-| `provider quirks resolved` / `gemini quirks resolved` slog DEBUG line | structured log | One line per Stream call, listing every contributing rule's Description in apply order. Last entry is the rule whose writes won on overlapping fields. Emitted even when no rule fired (rules:[]) so a missing line unambiguously means "the resolution did not run". |
+| `openai quirks resolved` / `gemini quirks resolved` slog DEBUG line (per-adapter prefix, identical body shape) | structured log | One line per Stream call, listing every contributing rule's Description in apply order. Last entry is the rule whose writes won on overlapping fields. Emitted even when no rule fired (rules:[]) so a missing line unambiguously means "the resolution did not run". Operators writing log filters should match the exact per-adapter prefix; a generic `"quirks resolved"` substring will not find either record. |
+| `provider.quirk.applied` OTel span attribute | trace attribute | Set on the active `provider.stream` span at the same point the slog DEBUG line is emitted. Carries the same `[]string` of rule Descriptions. Lets a trace-only consumer (Datadog, Honeycomb, Jaeger) see which rules fired without needing to correlate with a separate log sink. |
 | `quirks replay fields captured` slog DEBUG line | structured log | Per-stream summary of `{count, total_len}` per captured ReplayFields path, emitted on stream exit. Length-only — captured values themselves are not logged. |
+| `replay_fields_captured.count` / `replay_fields_captured.total_len` OTel span attributes | trace attributes | Set on the active `provider.stream` span on stream exit, in parallel with the slog DEBUG record above. Totals across every captured path; length-only invariant matches the slog surface. |
 | `openai quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
 
 ### 5.1 Read-only registry
