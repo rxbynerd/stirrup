@@ -169,6 +169,18 @@ the same flags grouped by concern.
 | `--base-url` | (none) | Provider base URL. Required for Azure / gateway scenarios. |
 | `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
 | `--query-param key=value` | (none) | Repeatable. Adds query parameters to every provider request URL — e.g. `--query-param api-version=preview` for Azure. Keys here override duplicates already encoded in `--base-url`. |
+| `--provider-compat-profile` | (none) | Closed enum that loads a provider-quirks compatibility profile. Only legal value in v1: `"zai-glm"` (Z.ai GLM legacy `max_tokens` key + `tool_stream: true` extension). Unknown values fail at startup. JSON path: `provider.compatProfile`. |
+
+Wire-shape divergences between provider/model pairs (e.g. OpenAI
+reasoning-class sampling-param omissions, Z.ai GLM legacy field
+names, Gemini 3.x `thoughtSignature` preservation) are not exposed
+on `RunConfig`. They are first-party rules in the
+`harness/internal/provider/quirks` registry, applied per-stream by
+the adapter. The `--provider-compat-profile` flag is the only
+operator-facing surface that influences quirk resolution; all other
+rules apply automatically based on `provider.type` and `model`.
+Introspect with `stirrup providers quirks --provider X --model Y`;
+full reference at [`provider-quirks.md`](provider-quirks.md).
 
 For the full per-adapter wire-format reference, including Azure
 Foundry notes and intentional exclusions, see
