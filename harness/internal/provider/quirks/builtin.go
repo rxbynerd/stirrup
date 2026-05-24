@@ -162,6 +162,19 @@ func BuiltinRules() []Rule {
 				// structured-outputs guide. The flag drives the
 				// adapter to rewrite each tool's InputSchema and
 				// emit `strict: true` on the wire entry.
+				//
+				// The glob is `gpt-4o-mini*` rather than `gpt-4o*`
+				// deliberately: OpenAI's structured-outputs guide
+				// lists bare gpt-4o as supporting strict mode, but
+				// strict-mode behaviour on the bare model has not
+				// been verified against a current snapshot. Adding
+				// a wider glob risks a HTTP 400 on a deployment
+				// using a gpt-4o snapshot that diverges from the
+				// guide. If strict mode is confirmed against a live
+				// bare-gpt-4o request, add a separate rule (or
+				// widen this glob) — the negative pin in
+				// TestBuiltinRulesStrictMode catches the current
+				// gap so opting in is a deliberate edit.
 				q.BehaviourFlags.OpenAI.StrictMode = true
 			},
 		},

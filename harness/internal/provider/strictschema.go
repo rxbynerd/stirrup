@@ -55,6 +55,15 @@ func (e *strictSchemaError) Error() string {
 // toolName is informational only — it is embedded in error messages so
 // the caller does not need to wrap. Pass "" when the caller wraps its
 // own context onto the returned error.
+//
+// Caller precondition (design §5.1): the schemas this function accepts
+// must originate from first-party tool registrations
+// (harness/internal/tool/builtins/) or the structured MCP import path.
+// Operator-authored schemas are not accepted in v1; the recursion has
+// no depth cap because the canonical schema surface is bounded by
+// design. A future operator-facing surface (e.g. the deferred
+// quirkOverrides hook on provider.Registry) must add a depth cap here
+// before exposing untrusted nesting.
 func NormalizeStrictSchema(toolName string, in json.RawMessage) (json.RawMessage, error) {
 	if len(in) == 0 || string(in) == "{}" {
 		return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false,"required":[]}`), nil

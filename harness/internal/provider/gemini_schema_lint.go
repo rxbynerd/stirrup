@@ -32,6 +32,15 @@ func (e *geminiSchemaLintError) Error() string {
 // through `properties` and `items`. Returns nil when the schema uses
 // only keywords the resolved Gemini model accepts.
 //
+// Caller precondition (design §5.1): the schemas this function walks
+// must originate from first-party tool registrations
+// (harness/internal/tool/builtins/) or the structured MCP import path.
+// Operator-authored schemas are not accepted in v1; the recursion has
+// no depth cap because the canonical schema surface is bounded by
+// design. A future operator-facing surface (e.g. the deferred
+// quirkOverrides hook on provider.Registry) must add a depth cap here
+// before exposing untrusted nesting.
+//
 // The lint runs BEFORE ConvertSchema so the operator sees one clear
 // error (the policy rejection) rather than the structural rewrite
 // reasons ConvertSchema would surface for the same shape (e.g. an
