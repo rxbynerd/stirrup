@@ -322,6 +322,73 @@ func TestOpenAIRequest_UnmarshalJSON(t *testing.T) {
 			t.Errorf("ExtraBodyFields[tool_stream] = %v (ok=%v), want true", v, ok)
 		}
 	})
+
+	t.Run("tool_choice string round-trips out of ExtraBodyFields", func(t *testing.T) {
+		// A string tool_choice must decode into r.ToolChoice, not leak
+		// into ExtraBodyFields (which would trip the marshal-side
+		// canonical-field collision guard on the next encode).
+		original := openaiRequest{
+			Model:      "gpt-4o",
+			Messages:   []openaiMessage{{Role: "user", Content: "hi"}},
+			MaxTokens:  256,
+			Stream:     true,
+			ToolChoice: "required",
+		}
+		out, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		var round openaiRequest
+		if err := json.Unmarshal(out, &round); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if _, leaked := round.ExtraBodyFields["tool_choice"]; leaked {
+			t.Errorf("tool_choice leaked into ExtraBodyFields: %+v", round.ExtraBodyFields)
+		}
+		if round.ToolChoice != "required" {
+			t.Errorf("ToolChoice = %v, want \"required\"", round.ToolChoice)
+		}
+		// Re-marshalling the decoded request must reproduce the field
+		// stably (the canonical guard must not reject it).
+		out2, err := json.Marshal(round)
+		if err != nil {
+			t.Fatalf("re-Marshal: %v", err)
+		}
+		if !strings.Contains(string(out2), `"tool_choice":"required"`) {
+			t.Errorf("re-marshalled body missing tool_choice: %s", out2)
+		}
+	})
+
+	t.Run("tool_choice typed named object round-trips with deterministic order", func(t *testing.T) {
+		original := openaiRequest{
+			Model:     "gpt-4o",
+			Messages:  []openaiMessage{{Role: "user", Content: "hi"}},
+			MaxTokens: 256,
+			Stream:    true,
+			ToolChoice: openAINamedToolChoice{
+				Type:     "function",
+				Function: openAINamedToolChoiceFunc{Name: "read_file"},
+			},
+		}
+		out, err := json.Marshal(original)
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		// The typed struct pins key order: "type" before "function".
+		if !strings.Contains(string(out), `"tool_choice":{"type":"function","function":{"name":"read_file"}}`) {
+			t.Errorf("marshalled body has unexpected tool_choice shape: %s", out)
+		}
+		var round openaiRequest
+		if err := json.Unmarshal(out, &round); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if _, leaked := round.ExtraBodyFields["tool_choice"]; leaked {
+			t.Errorf("tool_choice leaked into ExtraBodyFields: %+v", round.ExtraBodyFields)
+		}
+		if round.ToolChoice == nil {
+			t.Error("decoded ToolChoice is nil, want the function object")
+		}
+	})
 }
 
 // quirksLogStubServer returns an httptest server that drains the

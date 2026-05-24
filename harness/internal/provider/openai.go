@@ -482,6 +482,23 @@ type openaiTool struct {
 	Function openaiToolDefinition `json:"function"`
 }
 
+// openAINamedToolChoice is the object form of OpenAI's tool_choice that
+// forces a specific function. Typed (rather than a map[string]any) so the
+// marshalled key order is deterministic — "type" before "function" — and
+// to honour the project's anti-`any` rule (wave-2 design D13). The string
+// forms ("required"/"none") are emitted directly as a string value, so
+// only the named form needs a struct.
+type openAINamedToolChoice struct {
+	Type     string                    `json:"type"` // "function"
+	Function openAINamedToolChoiceFunc `json:"function"`
+}
+
+// openAINamedToolChoiceFunc is the function payload inside an
+// openAINamedToolChoice.
+type openAINamedToolChoiceFunc struct {
+	Name string `json:"name"`
+}
+
 // openaiToolDefinition is the function definition inside an openaiTool.
 //
 // Strict is a *bool so the zero-value request body omits the field
@@ -724,7 +741,12 @@ func translateTools(tools []types.ToolDefinition, strict bool, model string, cac
 //
 // OpenAI accepts a string ("auto"/"required"/"none") or an object naming
 // a specific function. The named-tool form degrades to nil when the tool
-// name is empty (not expressible) rather than emitting an invalid object.
+// name is empty or fails ValidateToolChoiceName (not expressible / unsafe)
+// rather than emitting an invalid object.
+//
+// The return type is `any` because OpenAI's tool_choice is a sum type
+// (string OR object); the named-tool object is the typed
+// openAINamedToolChoice so its key order is deterministic on the wire.
 func openAIToolChoiceFromParams(params types.StreamParams, capability quirks.ToolChoiceCapability) any {
 	if !capability.Supported {
 		return nil
@@ -744,15 +766,42 @@ func openAIToolChoiceFromParams(params types.StreamParams, capability quirks.Too
 		if !capability.NamedTool || params.ToolChoiceName == "" {
 			return nil
 		}
-		return map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": params.ToolChoiceName},
+		if err := types.ValidateToolChoiceName(params.ToolChoiceName); err != nil {
+			warnInvalidToolChoiceName("openai-compatible", params.Model, len(params.ToolChoiceName))
+			return nil
+		}
+		return openAINamedToolChoice{
+			Type:     "function",
+			Function: openAINamedToolChoiceFunc{Name: params.ToolChoiceName},
 		}
 	default:
 		// ToolChoiceAuto (zero value): auto is the wire default, so emit
 		// nothing rather than an explicit "auto" string.
 		return nil
 	}
+}
+
+// warnInvalidToolChoiceName logs a single warn when a ToolChoiceTool
+// request carried a name that failed ValidateToolChoiceName, so the
+// degradation to auto is observable. Shared by all three adapters'
+// projection helpers. Uses slog.Default() rather than threading the
+// per-adapter logger: this is a should-never-happen defensive path (A1
+// has no caller that feeds model-influenced names through ToolChoiceName),
+// so the value of trace correlation does not justify widening every
+// builder signature.
+//
+// The offending name is NOT logged. It is caller/model-influenced input
+// that could carry log-injection bytes (newlines, control chars), and the
+// fixed grammar in the message is enough for an operator to understand
+// the rejection. The name's length is the only quantitative signal, which
+// is safe to surface.
+func warnInvalidToolChoiceName(providerType, model string, nameLen int) {
+	slog.Default().Warn("tool choice name failed validation; degrading to auto",
+		slog.String("provider.type", providerType),
+		slog.String("provider.model", model),
+		slog.String("grammar", "^[a-zA-Z0-9_-]{1,64}$"),
+		slog.Int("name_len", nameLen),
+	)
 }
 
 // mapFinishReason converts OpenAI's finish_reason to stirrup's stop reason.
