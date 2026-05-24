@@ -63,7 +63,7 @@ func TestResolveEmptyRegistry(t *testing.T) {
 //
 // Step 1 ships an empty rule set so this loop runs zero iterations;
 // the test still validates that BuiltinRules returns a usable value
-// (the for-range over a nil slice is the assertion).
+// (the for-range over the slice is the assertion).
 func TestBuiltinRulesValidate(t *testing.T) {
 	for i, rule := range BuiltinRules() {
 		if rule.Description == "" {

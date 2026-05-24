@@ -22,5 +22,5 @@ package quirks
 // via NewRegistry — see harness/internal/provider/compat/zai for the
 // pattern.
 func BuiltinRules() []Rule {
-	return nil
+	return []Rule{}
 }
