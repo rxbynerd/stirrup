@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/rxbynerd/stirrup/harness/internal/tool/toolname"
 	"github.com/rxbynerd/stirrup/types"
@@ -165,25 +166,39 @@ func NewPresenter(inner ToolRegistry, profile *Profile) (*Presenter, error) {
 
 	defs := inner.List()
 
-	// Map each internal name to its alias target, then resolve collisions
-	// among the targets through toolname.Build. The internal-name slice
-	// passed to Build is the alias-target slice, so Build's output keyed by
-	// alias target gives the collision-resolved presented name. Two tools
-	// aliasing to the same target are disambiguated by Build's hash suffix
-	// exactly as a provider name collision would be.
-	targets := make([]string, len(defs))
-	for i, d := range defs {
-		targets[i] = profile.aliasTarget(d.Name)
+	// Resolve alias collisions through toolname.BuildFromCandidates, the
+	// shared collision core (#223). The keys are the internal tool IDs
+	// (unique, the registry contract), and the candidate for each key is
+	// its profile alias target. Keying disambiguation off the internal ID
+	// — not the alias — is what lets two tools alias to the same target:
+	// the IDs are distinct, so Build sees a candidate collision (not a
+	// duplicate-key error) and disambiguates one alias with the same
+	// deterministic SHA-suffix a provider name collision would get. No
+	// second collision algorithm exists.
+	// Sort by internal ID before resolving so the collision disambiguation
+	// is independent of registration order: two runs of the same tool set
+	// pin the same alias to the same internal ID regardless of the order
+	// the registry happened to list them in. Mirrors the BuildSorted
+	// rationale in the provider normalizer.
+	sortedDefs := make([]types.ToolDefinition, len(defs))
+	copy(sortedDefs, defs)
+	sort.Slice(sortedDefs, func(i, j int) bool { return sortedDefs[i].Name < sortedDefs[j].Name })
+
+	keys := make([]string, len(sortedDefs))
+	candidates := make([]string, len(sortedDefs))
+	for i, d := range sortedDefs {
+		keys[i] = d.Name
+		candidates[i] = profile.aliasTarget(d.Name)
 	}
 
-	mapping, err := toolname.BuildSorted(targets, aliasPolicy)
+	mapping, err := toolname.BuildFromCandidates(keys, candidates, aliasPolicy)
 	if err != nil {
 		return nil, fmt.Errorf("tool profile %q alias collision: %w", profile.Name, err)
 	}
 
 	for _, d := range defs {
 		internal := d.Name
-		presented := mapping.Translate(profile.aliasTarget(internal))
+		presented := mapping.Translate(internal) // internal ID → collision-resolved alias
 		p.presentedFor[internal] = presented
 		p.internalFor[presented] = internal
 		// Insert the internal name as an identity key too so a model or

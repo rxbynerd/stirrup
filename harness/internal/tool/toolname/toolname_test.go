@@ -281,6 +281,80 @@ func TestMapping_MissingKeyPassThrough(t *testing.T) {
 	}
 }
 
+// BuildFromCandidates is the shared collision core the toolset-profile
+// presenter (issue #234) routes alias resolution through. Two distinct
+// keys whose candidates are the identical string must be disambiguated by
+// the same hash-suffix scheme Build uses for sanitize collisions — not
+// rejected as a duplicate (the keys differ; only the candidates collide).
+func TestBuildFromCandidates_IdenticalCandidatesDisambiguated(t *testing.T) {
+	keys := []string{"grep_files", "find_files"}
+	candidates := []string{"search", "search"}
+	policy := Policy{MaxLen: 64, AllowHyphen: true, AllowLeadingDigit: true}
+
+	m, err := BuildFromCandidates(keys, candidates, policy)
+	if err != nil {
+		t.Fatalf("BuildFromCandidates: %v", err)
+	}
+
+	gf := m.Translate("grep_files")
+	ff := m.Translate("find_files")
+	if gf == ff {
+		t.Fatalf("identical candidates not disambiguated: both %q", gf)
+	}
+	// Exactly one keeps the bare candidate; the other carries the
+	// "_<6hex>" suffix Build derives from the colliding key.
+	bareCount := 0
+	for _, ext := range []string{gf, ff} {
+		if ext == "search" {
+			bareCount++
+		}
+	}
+	if bareCount != 1 {
+		t.Errorf("expected exactly one bare 'search', got gf=%q ff=%q", gf, ff)
+	}
+	// Round-trip both back to their keys.
+	if m.Reverse(gf) != "grep_files" || m.Reverse(ff) != "find_files" {
+		t.Errorf("reverse failed: Reverse(%q)=%q Reverse(%q)=%q", gf, m.Reverse(gf), ff, m.Reverse(ff))
+	}
+}
+
+// A duplicate KEY (not candidate) is still a caller bug and rejected, so
+// the presenter's registry-uniqueness contract is enforced.
+func TestBuildFromCandidates_DuplicateKeyRejected(t *testing.T) {
+	_, err := BuildFromCandidates(
+		[]string{"dup", "dup"},
+		[]string{"a", "b"},
+		Policy{MaxLen: 64, AllowHyphen: true, AllowLeadingDigit: true},
+	)
+	if err == nil {
+		t.Fatal("expected duplicate-key error, got nil")
+	}
+}
+
+func TestBuildFromCandidates_LengthMismatchRejected(t *testing.T) {
+	_, err := BuildFromCandidates(
+		[]string{"a", "b"},
+		[]string{"x"},
+		Policy{MaxLen: 64},
+	)
+	if err == nil {
+		t.Fatal("expected length-mismatch error, got nil")
+	}
+}
+
+// Build must continue to delegate to BuildFromCandidates unchanged: the
+// existing sanitize+collision behaviour is preserved.
+func TestBuild_StillResolvesSanitizeCollisions(t *testing.T) {
+	names := []string{"mcp_jira-issue", "mcp_jira.issue"}
+	m, err := Build(names, PolicyFor("gemini"))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if m.Translate(names[0]) == m.Translate(names[1]) {
+		t.Fatal("sanitize collision no longer resolved after refactor")
+	}
+}
+
 func TestBuild_AcceptsAllProviderNamesForCommonRegistry(t *testing.T) {
 	// Smoke test: a realistic registry should normalise cleanly under
 	// every provider's policy.

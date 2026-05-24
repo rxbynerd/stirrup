@@ -149,56 +149,82 @@ func (m *Mapping) Reverse(external string) string {
 // twice). Failing closed is the correct behaviour for the loop: a
 // silent alias would route a tool call to the wrong handler.
 func Build(internalNames []string, policy Policy) (*Mapping, error) {
-	m := &Mapping{
-		ExternalFor: make(map[string]string, len(internalNames)),
-		InternalFor: make(map[string]string, len(internalNames)),
+	// First pass: compute the candidate external name for every internal
+	// name by normalising it onto the policy's character set. The
+	// candidate slice is positionally aligned with internalNames, so the
+	// collision resolver below can key disambiguation off the internal
+	// name while colliding on the candidate.
+	candidates := make([]string, len(internalNames))
+	for i, name := range internalNames {
+		candidates[i] = sanitize(name, policy)
+	}
+	return BuildFromCandidates(internalNames, candidates, policy)
+}
+
+// BuildFromCandidates resolves collisions among caller-supplied external
+// candidate names and returns the round-trip Mapping. It is the shared
+// core of the collision algorithm: Build calls it after sanitising each
+// internal name onto the policy character set, and the toolset-profile
+// presenter (issue #234) calls it with each tool's profile alias as the
+// candidate so alias collisions are disambiguated by exactly the same
+// deterministic hash-suffix scheme — there is no second algorithm.
+//
+// keys are the unique identities the disambiguation suffix is derived
+// from (the internal tool IDs); candidates[i] is the desired external
+// name for keys[i]. The two slices must be the same length. A duplicate
+// key is a caller bug (the registry contract is that internal names are
+// unique) and is rejected; two distinct keys whose candidates collide are
+// disambiguated by appending the SHA-256-derived suffix of the colliding
+// key, within the policy's length budget. A collision the suffix cannot
+// resolve fails closed — a silent alias would route a tool call to the
+// wrong handler.
+func BuildFromCandidates(keys, candidates []string, policy Policy) (*Mapping, error) {
+	if len(keys) != len(candidates) {
+		return nil, fmt.Errorf("toolname: keys/candidates length mismatch (%d vs %d)", len(keys), len(candidates))
 	}
 
-	// Deduplicate — a single internal name passed twice is a caller
+	m := &Mapping{
+		ExternalFor: make(map[string]string, len(keys)),
+		InternalFor: make(map[string]string, len(keys)),
+	}
+
+	// Deduplicate keys — a single internal name passed twice is a caller
 	// bug, not a collision. The registry contract is that names are
-	// unique, but tests and embedding callers may bypass it; surface
-	// the duplicate as an explicit error rather than silently
-	// overwriting the first entry.
-	seen := make(map[string]struct{}, len(internalNames))
-	for _, n := range internalNames {
+	// unique, but tests and embedding callers may bypass it; surface the
+	// duplicate as an explicit error rather than silently overwriting the
+	// first entry.
+	seen := make(map[string]struct{}, len(keys))
+	for _, n := range keys {
 		if _, dup := seen[n]; dup {
 			return nil, fmt.Errorf("toolname: duplicate internal tool name %q", n)
 		}
 		seen[n] = struct{}{}
 	}
 
-	// First pass: compute the candidate external name for every
-	// internal name. Iterate the input order so the mapping building
-	// is deterministic for a given input.
-	candidates := make([]string, len(internalNames))
-	for i, name := range internalNames {
-		candidates[i] = sanitize(name, policy)
-	}
-
-	// Second pass: detect collisions among the candidates. When two
-	// candidates collide, derive a disambiguating suffix from the
-	// internal name's SHA-256 hash. This is deterministic, keeps the
-	// suffix short, and survives reordering of the input slice.
+	// Detect collisions among the candidates. When two candidates collide,
+	// derive a disambiguating suffix from the colliding key's SHA-256
+	// hash. This is deterministic, keeps the suffix short, and survives
+	// reordering of the input slice.
 	//
-	// The suffix is appended within the MaxLen budget — sanitize may
-	// produce a name shorter than MaxLen, in which case the suffix is
-	// added directly; if sanitize already returned a MaxLen-truncated
-	// name, the truncation is shortened to make room.
-	used := make(map[string]string, len(candidates)) // external → internal
+	// The suffix is appended within the MaxLen budget — a candidate may be
+	// shorter than MaxLen, in which case the suffix is added directly; a
+	// MaxLen-truncated candidate has its truncation shortened to make
+	// room.
+	used := make(map[string]string, len(candidates)) // external → key
 	for i, ext := range candidates {
-		internal := internalNames[i]
-		if existing, taken := used[ext]; taken && existing != internal {
-			ext = disambiguate(ext, internal, policy)
-			if other, stillCollides := used[ext]; stillCollides && other != internal {
+		key := keys[i]
+		if existing, taken := used[ext]; taken && existing != key {
+			ext = disambiguate(ext, key, policy)
+			if other, stillCollides := used[ext]; stillCollides && other != key {
 				return nil, fmt.Errorf(
 					"toolname: cannot resolve collision between %q and %q (both normalise to %q under policy MaxLen=%d AllowHyphen=%v AllowLeadingDigit=%v)",
-					internal, other, ext, policy.MaxLen, policy.AllowHyphen, policy.AllowLeadingDigit,
+					key, other, ext, policy.MaxLen, policy.AllowHyphen, policy.AllowLeadingDigit,
 				)
 			}
 		}
-		used[ext] = internal
-		m.ExternalFor[internal] = ext
-		m.InternalFor[ext] = internal
+		used[ext] = key
+		m.ExternalFor[key] = ext
+		m.InternalFor[ext] = key
 	}
 
 	return m, nil
