@@ -602,6 +602,65 @@ func TestToolChoiceRulesSetSupportedWhenAnyMode(t *testing.T) {
 	}
 }
 
+// TestStructuredToolResultCapabilityRules pins that each first-party
+// provider's base rule advertises the structured tool-result wire shape its
+// API actually accepts, that the capability lands on the top-level
+// ProviderQuirks.StructuredToolResults field, and that a provider with no
+// rule resolves the zero value (text-only). OpenAI is the load-bearing
+// negative: its tool messages are plain strings on the wire, so it must NOT
+// gain the capability — the no-regression guarantee for the OpenAI adapters.
+func TestStructuredToolResultCapabilityRules(t *testing.T) {
+	t.Run("anthropic advertises content-block array", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
+		want := StructuredToolResultCapability{Supported: true, ContentBlockArray: true}
+		if q.StructuredToolResults != want {
+			t.Errorf("anthropic: StructuredToolResults = %+v, want %+v", q.StructuredToolResults, want)
+		}
+	})
+
+	t.Run("gemini advertises object response", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+		want := StructuredToolResultCapability{Supported: true, ObjectResponse: true}
+		if q.StructuredToolResults != want {
+			t.Errorf("gemini: StructuredToolResults = %+v, want %+v", q.StructuredToolResults, want)
+		}
+	})
+
+	t.Run("openai-compatible stays text-only", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+		if q.StructuredToolResults != (StructuredToolResultCapability{}) {
+			t.Errorf("openai-compatible: StructuredToolResults = %+v, want zero value (text-only)", q.StructuredToolResults)
+		}
+	})
+
+	t.Run("unknown provider resolves zero (text-only)", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("mystery-provider", "some-model")
+		if q.StructuredToolResults != (StructuredToolResultCapability{}) {
+			t.Errorf("unknown provider: StructuredToolResults = %+v, want zero value (text-only)", q.StructuredToolResults)
+		}
+	})
+}
+
+// TestStructuredToolResultRulesSetSupportedWhenAnyShape pins the structural
+// relationship the adapters depend on: any first-party rule that turns on a
+// structured wire-shape bool must also set Supported. An adapter checks
+// Supported as the master gate, so a rule that set ObjectResponse without
+// Supported would silently keep the provider text-only.
+func TestStructuredToolResultRulesSetSupportedWhenAnyShape(t *testing.T) {
+	for i, rule := range BuiltinRules() {
+		if rule.Apply == nil {
+			continue
+		}
+		q := freshQuirks()
+		rule.Apply(&q)
+		sr := q.StructuredToolResults
+		anyShape := sr.ObjectResponse || sr.ContentBlockArray
+		if anyShape && !sr.Supported {
+			t.Errorf("BuiltinRules()[%d] (%q): a structured-result shape is set but Supported is false", i, rule.Description)
+		}
+	}
+}
+
 // freshQuirks returns a ProviderQuirks with the same map/slice
 // pre-initialisation Resolve performs, for rule-materialisation tests
 // that call Apply directly.

@@ -57,6 +57,17 @@ type ProviderQuirks struct {
 	// graceful no-op the StreamParams.ToolChoice contract requires.
 	ToolChoice ToolChoiceCapability `json:"toolChoice"`
 
+	// StructuredToolResults declares whether the resolved (provider, model)
+	// accepts a structured (non-string) tool-result payload on the wire, and
+	// in which wire shape. Like ToolChoice it is a TOP-LEVEL capability: a
+	// tool result carrying structure is a cross-provider concept the loop
+	// reasons about uniformly even though each family encodes it differently
+	// (Anthropic content-block array, Gemini functionResponse object, OpenAI
+	// plain string). The zero value advertises no support, so an adapter for
+	// a provider with no rule sends only the text Content — byte-identical to
+	// the pre-#231 wire shape, with the canonical text fallback intact.
+	StructuredToolResults StructuredToolResultCapability `json:"structuredToolResults"`
+
 	// --- Behaviour flags ---
 
 	// BehaviourFlags carries adapter-internal behaviour flags that cannot be
