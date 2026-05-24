@@ -498,6 +498,17 @@ func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
 	if !strings.Contains(output, "find_files") {
 		t.Errorf("expected output to suggest find_files, got %q", output)
 	}
+	// The parenthetical suffixes are load-bearing model-guidance text:
+	// they tell a confused model which of the two replacements maps to
+	// its original intent. A silent reword that drops either descriptor
+	// would degrade self-correction without failing the name-only checks
+	// above, so we pin them here.
+	if !strings.Contains(output, "regex content search") {
+		t.Errorf("expected hint to describe grep_files as 'regex content search', got %q", output)
+	}
+	if !strings.Contains(output, "glob filename search") {
+		t.Errorf("expected hint to describe find_files as 'glob filename search', got %q", output)
+	}
 }
 
 type errorVerifier struct{}
