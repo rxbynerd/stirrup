@@ -272,6 +272,62 @@ func TestGrepNative_SkipsSymlinks(t *testing.T) {
 	}
 }
 
+// TestGrepViaRipgrep_TransportErrorFallsBackToNative pins the resilience
+// contract: an executor transport failure (Docker socket flake, container
+// restart, microVM hiccup) must NOT escalate to a hard tool-call error.
+// rg exit code >= 2 already falls back to native; transport failure
+// preventing rg from launching is less severe and should behave the same.
+func TestGrepViaRipgrep_TransportErrorFallsBackToNative(t *testing.T) {
+	withRipgrepProbe(t, true)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fe := &fsExecutor{
+		root:    dir,
+		canExec: true,
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			return nil, errors.New("docker socket: connection refused")
+		},
+	}
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	out, err := grep.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("transport error must not surface; expected native fallback, got: %v", err)
+	}
+	if !strings.Contains(out, "a.go") {
+		t.Errorf("expected native walker to surface a.go, got %q", out)
+	}
+}
+
+// TestGrepViaRipgrep_ContextCancelPropagates pins the other half: when the
+// executor returns context.Canceled (the caller asked to stop), we must
+// NOT silently re-walk natively. The cancellation must propagate.
+func TestGrepViaRipgrep_ContextCancelPropagates(t *testing.T) {
+	withRipgrepProbe(t, true)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("needle\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	fe := &fsExecutor{
+		root:    dir,
+		canExec: true,
+		execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+			return nil, context.Canceled
+		},
+	}
+	grep := GrepFilesTool(fe)
+	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
+	_, err := grep.Handler(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected context.Canceled to propagate")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled; got %v", err)
+	}
+}
+
 func TestGrepFilesTool_PathTraversalRejected(t *testing.T) {
 	mock := &mockExecutor{
 		resolvePathFunc: func(relativePath string) (string, error) {

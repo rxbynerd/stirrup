@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -200,14 +201,24 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 
 			if defaultRipgrepDetector.detect() && exec.Capabilities().CanExec {
 				out, ok, err := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, maxResults)
-				if err != nil {
+				switch {
+				case err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
+					// Context-cancellation must propagate — the caller asked
+					// to stop. Don't paper over it by re-walking natively.
 					return "", err
-				}
-				if ok {
+				case err != nil:
+					// Executor transport failure (Docker socket timeout,
+					// container restart, etc.) — treat the same as an rg
+					// exit code >= 2 and fall through to the native walker.
+					// A transient transport flake should not be more fatal
+					// than a real rg error.
+					slog.WarnContext(ctx, "rg invocation failed, falling back to native grep", "err", err)
+				case ok:
 					return out, nil
 				}
-				// rg exited with an unexpected error code; fall through to
-				// the Go-native walker so the caller still gets an answer.
+				// rg exited with an unexpected error code, or its transport
+				// failed; fall through to the Go-native walker so the
+				// caller still gets an answer.
 			}
 			return grepNative(resolvedDir, re, params.Include, params.Exclude, maxResults)
 		},
