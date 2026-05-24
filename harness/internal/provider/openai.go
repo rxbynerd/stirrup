@@ -129,23 +129,25 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 // StreamParams.Temperature pointer type so the unset-vs-explicit-zero
 // distinction survives marshalling. See issue #200.
 //
-// TokenField and OmitSampling carry the resolved quirks for this
-// request and drive MarshalJSON, which is the single point that
+// TokenField and OmitSamplingParams carry the resolved quirks for
+// this request and drive MarshalJSON, which is the single point that
 // translates the canonical struct into the wire-shape selected by the
-// rule. ExtraBodyFields carries provider-specific top-level keys
-// (e.g. Z.ai's "tool_stream") that are merged after the canonical
-// fields. None of these three are serialised under their own JSON
-// keys — they steer the MarshalJSON projection only.
+// rule. The field name mirrors quirks.OpenAIBehaviourFlags.OmitSamplingParams
+// so a search for either form finds both sides of the projection.
+// ExtraBodyFields carries provider-specific top-level keys (e.g.
+// Z.ai's "tool_stream") that are merged after the canonical fields.
+// None of these three are serialised under their own JSON keys —
+// they steer the MarshalJSON projection only.
 type openaiRequest struct {
-	Model           string          `json:"-"`
-	Messages        []openaiMessage `json:"-"`
-	Tools           []openaiTool    `json:"-"`
-	MaxTokens       int             `json:"-"`
-	Temperature     *float64        `json:"-"`
-	Stream          bool            `json:"-"`
-	TokenField      quirks.OpenAITokenField
-	OmitSampling    bool
-	ExtraBodyFields map[string]any
+	Model              string          `json:"-"`
+	Messages           []openaiMessage `json:"-"`
+	Tools              []openaiTool    `json:"-"`
+	MaxTokens          int             `json:"-"`
+	Temperature        *float64        `json:"-"`
+	Stream             bool            `json:"-"`
+	TokenField         quirks.OpenAITokenField
+	OmitSamplingParams bool
+	ExtraBodyFields    map[string]any
 }
 
 // MarshalJSON projects the canonical openaiRequest into the wire body
@@ -158,15 +160,15 @@ type openaiRequest struct {
 //     "max_completion_tokens" (default) or "max_tokens" (Z.ai compat
 //     and similar legacy gateways). The value is always emitted, even
 //     at zero, matching the prior struct-tag behaviour.
-//   - "temperature" — emitted only when both OmitSampling is false
-//     AND Temperature is non-nil. OmitSampling = true guarantees the
-//     field is suppressed even when the caller supplied a non-nil
-//     value (per design risk 2, the adapter's Stream call logs a
-//     warning when this suppression fires).
+//   - "temperature" — emitted only when both OmitSamplingParams is
+//     false AND Temperature is non-nil. OmitSamplingParams = true
+//     guarantees the field is suppressed even when the caller supplied
+//     a non-nil value (per design risk 2, the adapter's Stream call
+//     logs a warning when this suppression fires).
 //   - Other sampling params (top_p, presence_penalty,
 //     frequency_penalty, logprobs, top_logprobs, logit_bias) are not
 //     yet first-class struct fields; they will be omitted by default
-//     once added if OmitSampling is true. The flag's contract is
+//     once added if OmitSamplingParams is true. The flag's contract is
 //     declared in OpenAIBehaviourFlags doc comments.
 //   - ExtraBodyFields — merged into the body after canonical fields.
 //     Key collision with a canonical key is rejected as an error
@@ -184,7 +186,7 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 	if len(r.Tools) > 0 {
 		out["tools"] = r.Tools
 	}
-	if !r.OmitSampling && r.Temperature != nil {
+	if !r.OmitSamplingParams && r.Temperature != nil {
 		out["temperature"] = *r.Temperature
 	}
 	for k, v := range r.ExtraBodyFields {
@@ -554,15 +556,15 @@ func mapFinishReason(reason string) string {
 // apply a batch-specific projection here.
 func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks) openaiRequest {
 	return openaiRequest{
-		Model:           params.Model,
-		Messages:        translateMessages(params.System, params.Messages),
-		Tools:           translateTools(params.Tools),
-		MaxTokens:       params.MaxTokens,
-		Temperature:     params.Temperature,
-		Stream:          stream,
-		TokenField:      q.BehaviourFlags.OpenAI.TokenField,
-		OmitSampling:    q.BehaviourFlags.OpenAI.OmitSamplingParams,
-		ExtraBodyFields: q.BehaviourFlags.OpenAI.ExtraBodyFields,
+		Model:              params.Model,
+		Messages:           translateMessages(params.System, params.Messages),
+		Tools:              translateTools(params.Tools),
+		MaxTokens:          params.MaxTokens,
+		Temperature:        params.Temperature,
+		Stream:             stream,
+		TokenField:         q.BehaviourFlags.OpenAI.TokenField,
+		OmitSamplingParams: q.BehaviourFlags.OpenAI.OmitSamplingParams,
+		ExtraBodyFields:    q.BehaviourFlags.OpenAI.ExtraBodyFields,
 	}
 }
 
