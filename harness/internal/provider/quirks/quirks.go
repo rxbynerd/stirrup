@@ -19,42 +19,42 @@ type ProviderQuirks struct {
 	// JSON key the request should emit. Empty key means "use canonical name".
 	// Adapters validate that every key is in their declared canonical set at
 	// registry build; unknown keys panic via TestBuiltinRulesValidate.
-	FieldRenames map[string]string
+	FieldRenames map[string]string `json:"fieldRenames"`
 
 	// OmitFields lists canonical fields the adapter MUST NOT emit, even when
 	// non-zero. Applied after ValueOverrides (omission wins).
-	OmitFields []string
+	OmitFields []string `json:"omitFields"`
 
 	// ValueOverrides forces a canonical field's serialised value, ignoring
 	// StreamParams. Applied before OmitFields.
-	ValueOverrides map[string]Value
+	ValueOverrides map[string]Value `json:"valueOverrides"`
 
 	// EnumCoercions maps canonical field name → (caller-value → wire-value).
 	// A present outer key with no inner match means the caller's value is
 	// unsupported and the field is dropped (equivalent to OmitFields for that
 	// value). v1 ships no rules; the surface is declared and tested with
 	// synthetic rules.
-	EnumCoercions map[string]map[string]string
+	EnumCoercions map[string]map[string]string `json:"enumCoercions"`
 
 	// ReplayFields lists assistant-message field paths to preserve verbatim
 	// across turns. Parse-side recognition only in v1; outbound threading is
 	// a follow-up. Paths use dot-separated keys with [] for array-of-objects.
-	ReplayFields []string
+	ReplayFields []string `json:"replayFields"`
 
 	// --- Behaviour flags ---
 
 	// BehaviourFlags carries adapter-internal behaviour flags that cannot be
 	// expressed as flat field operations. Each provider family has a typed
 	// sub-struct; adapters access only the sub-struct they own.
-	BehaviourFlags ProviderBehaviourFlags
+	BehaviourFlags ProviderBehaviourFlags `json:"behaviourFlags"`
 }
 
 // ProviderBehaviourFlags holds per-provider structural flags. Fields are
 // safe to read if zero — the zero value preserves today's adapter behaviour
 // in every case.
 type ProviderBehaviourFlags struct {
-	OpenAI OpenAIBehaviourFlags
-	Gemini GeminiBehaviourFlags
+	OpenAI OpenAIBehaviourFlags `json:"openai"`
+	Gemini GeminiBehaviourFlags `json:"gemini"`
 	// Future: Anthropic AnthropicBehaviourFlags (reserved; Anthropic v1 has no
 	// structural divergences beyond what StreamParams already encodes).
 }
@@ -68,7 +68,7 @@ type OpenAIBehaviourFlags struct {
 	// legacy key required by some compat providers (Z.ai GLM, older vLLM
 	// builds, Ollama before 0.7). Only rules that explicitly need the legacy
 	// key set this; the default is always the modern field.
-	TokenField OpenAITokenField
+	TokenField OpenAITokenField `json:"tokenField"`
 
 	// OmitSamplingParams, when true, omits temperature, top_p,
 	// presence_penalty, frequency_penalty, logprobs, top_logprobs, and
@@ -77,7 +77,7 @@ type OpenAIBehaviourFlags struct {
 	// StreamParams.Temperature is nil (omitempty); this flag additionally
 	// omits the other six fields and guarantees temperature is never sent
 	// even if the caller set a non-nil value.
-	OmitSamplingParams bool
+	OmitSamplingParams bool `json:"omitSamplingParams"`
 
 	// ExtraBodyFields carries provider-specific top-level request fields that
 	// do not exist in the canonical OpenAI Chat Completions schema. The
@@ -89,7 +89,7 @@ type OpenAIBehaviourFlags struct {
 	// request fields are an error detected at registry build time.
 	// Secrets MUST NOT appear here — the registry self-test asserts that no
 	// ExtraBodyField value contains a secret:// reference.
-	ExtraBodyFields map[string]any
+	ExtraBodyFields map[string]any `json:"extraBodyFields"`
 }
 
 // OpenAITokenField controls which JSON key carries the token budget in an
@@ -118,7 +118,7 @@ type GeminiBehaviourFlags struct {
 	// Default (StreamArgsOff = 0) preserves the post-#191 behaviour: the
 	// flag is set to false for all models and no partial-args parsing
 	// occurs. Future rules can model-scope the V2 and V3 shapes.
-	StreamFunctionCallArgsShape GeminiStreamArgsShape
+	StreamFunctionCallArgsShape GeminiStreamArgsShape `json:"streamFunctionCallArgsShape"`
 }
 
 // GeminiStreamArgsShape enumerates the streamFunctionCallArguments shapes.
