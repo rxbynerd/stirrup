@@ -340,7 +340,9 @@ preserved verbatim into `Structured`, and every non-text content item
 type) is represented as an explicit typed descriptor — kind, URI,
 mime type, and a bounded text prefix for inlined resources — rather
 than being silently discarded. The envelope's `Kind` is
-`mcp_tool_result`.
+`mcp_tool_result`. MCP `annotations` (audience/priority hints on
+content items per the 2025-06-18 spec) are intentionally not decoded or
+forwarded; they are client-filtering metadata, not model-facing payload.
 
 MCP server output is untrusted, so the preserved structure is bounded
 at the trust boundary: `structuredContent` larger than the size cap is
