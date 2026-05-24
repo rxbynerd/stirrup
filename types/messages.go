@@ -44,6 +44,19 @@ type ContentBlock struct {
 	Content          string          `json:"content,omitempty"`
 	IsError          bool            `json:"is_error,omitempty"`
 	ThoughtSignature string          `json:"thought_signature,omitempty"`
+
+	// Structured and Kind carry the optional typed tool-result envelope
+	// (issue #231) from a tool_result ToolResult onto the message-history
+	// content block so the provider adapters can decide, per the resolved
+	// StructuredToolResults capability, whether to serialise the structured
+	// shape or fall back to the text Content. They are populated only on
+	// tool_result blocks and only when the producing tool emitted structured
+	// data; both are omitempty so a text-only result serialises byte-
+	// identically to the pre-#231 shape. Content remains the canonical
+	// fallback and is always populated — an adapter that does not opt into
+	// the structured shape ignores these fields entirely.
+	Structured json.RawMessage `json:"structured,omitempty"`
+	Kind       string          `json:"kind,omitempty"`
 }
 
 // ToolDefinition describes a tool available to the model.

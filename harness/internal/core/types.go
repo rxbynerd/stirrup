@@ -511,10 +511,12 @@ func appendToolResults(messages []types.Message, results []types.ToolResult) []t
 	blocks := make([]types.ContentBlock, len(results))
 	for i, r := range results {
 		blocks[i] = types.ContentBlock{
-			Type:      "tool_result",
-			ToolUseID: r.ToolUseID,
-			Content:   r.Content,
-			IsError:   r.IsError,
+			Type:       "tool_result",
+			ToolUseID:  r.ToolUseID,
+			Content:    r.Content,
+			IsError:    r.IsError,
+			Structured: r.Structured,
+			Kind:       r.Kind,
 		}
 	}
 	return append(messages, types.Message{

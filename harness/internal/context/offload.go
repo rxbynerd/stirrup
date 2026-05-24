@@ -106,6 +106,13 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 					filePath,
 				)
 			}
+			// Drop the structured envelope (issue #231) alongside the
+			// offloaded/truncated text: the structured payload mirrors the
+			// same large output, so retaining it would defeat the offload
+			// it was meant to shrink. The text fallback the model now sees
+			// points at the offload file, which is the authoritative copy.
+			newContent[j].Structured = nil
+			newContent[j].Kind = ""
 			modified = true
 		}
 

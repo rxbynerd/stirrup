@@ -308,6 +308,15 @@ func scrubModelInput(in types.ModelInput) types.ModelInput {
 // scrubContentBlocks scrubs text and tool-result content. Tool-use
 // blocks carry an Input json.RawMessage that may itself encode arbitrary
 // content; we re-use scrubRawJSON to preserve a valid JSON shape.
+//
+// The Structured field on a tool_result block carries the issue #231 typed
+// envelope and, for MCP-derived results, untrusted server output. It is
+// scrubbed on the same footing as Input via scrubRawJSON so a secret-shaped
+// substring in a structured payload (built-in OR MCP) cannot reach the
+// persisted trace unscrubbed. This mirrors the ToolCallRecord.Structured
+// scrub in scrubTurnRecord; both surfaces are scrubbed because the same
+// payload reaches the trace via two routes (the turn record AND the next
+// turn's model input message history).
 func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 	if blocks == nil {
 		return nil
@@ -320,6 +329,9 @@ func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 		}
 		if len(nb.Input) > 0 {
 			nb.Input = scrubRawJSON(nb.Input)
+		}
+		if len(nb.Structured) > 0 {
+			nb.Structured = scrubRawJSON(nb.Structured)
 		}
 		out[i] = nb
 	}
