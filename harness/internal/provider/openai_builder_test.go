@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -281,6 +283,54 @@ func TestBuildOpenAIRequest_ToolChoice_PartialCapability(t *testing.T) {
 		q := quirks.ProviderQuirks{ToolChoice: quirks.ToolChoiceCapability{Supported: true, None: false}}
 		assertNoToolChoice(t, params, q)
 	})
+}
+
+// TestToolChoiceName_InvalidEmitsWarn pins B3's observability half: an
+// invalid named-tool name degrades to auto AND emits a slog.Warn that
+// carries the grammar but NOT the offending name (which could carry
+// log-injection bytes). The shared warnInvalidToolChoiceName helper is
+// exercised through the openai projection; a single test covers the
+// helper for all three adapters since they call the same function.
+func TestToolChoiceName_InvalidEmitsWarn(t *testing.T) {
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	const badName = "bad name!\ninjected"
+	params := types.StreamParams{
+		Model:          "gpt-4o",
+		MaxTokens:      256,
+		ToolChoice:     types.ToolChoiceTool,
+		ToolChoiceName: badName,
+		Messages:       []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+		Tools:          []types.ToolDefinition{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	}
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "tool_choice") {
+		t.Errorf("invalid name must degrade to auto, got: %s", body)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "failed validation") {
+		t.Errorf("expected a validation warn, got log: %s", logged)
+	}
+	// The raw name must NOT appear in the log line — only its length and
+	// the grammar are safe to surface.
+	if strings.Contains(logged, "bad name!") || strings.Contains(logged, "injected") {
+		t.Errorf("warn leaked the offending name into the log: %s", logged)
+	}
+	if !strings.Contains(logged, `"grammar"`) {
+		t.Errorf("warn missing the grammar attribute: %s", logged)
+	}
 }
 
 // assertNoToolChoice builds the request and fails if the marshalled body

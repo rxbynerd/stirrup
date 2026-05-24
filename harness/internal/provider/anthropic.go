@@ -180,6 +180,13 @@ func anthropicToolChoiceFromParams(params types.StreamParams, cap quirks.ToolCho
 		if !cap.NamedTool || params.ToolChoiceName == "" {
 			return nil
 		}
+		// Defense-in-depth at the wire boundary (#230 B3): A2 will feed
+		// model-influenced names through ToolChoiceName, so reject any
+		// name outside the providers' shared grammar and degrade to auto.
+		if err := types.ValidateToolChoiceName(params.ToolChoiceName); err != nil {
+			warnInvalidToolChoiceName("anthropic", params.Model, len(params.ToolChoiceName))
+			return nil
+		}
 		return &anthropicToolChoice{Type: "tool", Name: params.ToolChoiceName}
 	default:
 		// ToolChoiceAuto (zero value) and ToolChoiceNone both emit no

@@ -175,7 +175,8 @@ func TestBuildAnthropicRequest_StreamFlag(t *testing.T) {
 //   - ToolChoiceAuto (zero) and ToolChoiceNone emit no tool_choice field;
 //   - ToolChoiceRequired emits {"type":"any"};
 //   - ToolChoiceTool with a name emits {"type":"tool","name":...};
-//   - ToolChoiceTool with no name degrades to auto (no field).
+//   - ToolChoiceTool with no name, an invalid name, or an over-length
+//     name degrades to auto (no field).
 func TestBuildAnthropicRequest_ToolChoice(t *testing.T) {
 	base := types.StreamParams{
 		Model:     "claude-sonnet-4-6",
@@ -198,6 +199,8 @@ func TestBuildAnthropicRequest_ToolChoice(t *testing.T) {
 		{"required emits any", types.ToolChoiceRequired, "", `"tool_choice":{"type":"any"}`},
 		{"tool emits named", types.ToolChoiceTool, "read_file", `"tool_choice":{"type":"tool","name":"read_file"}`},
 		{"tool without name degrades to auto", types.ToolChoiceTool, "", ""},
+		{"tool with invalid name degrades to auto", types.ToolChoiceTool, "bad name!", ""},
+		{"tool with over-length name degrades to auto", types.ToolChoiceTool, strings.Repeat("a", 65), ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,6 +242,27 @@ func TestBuildAnthropicRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
 	}
 	if strings.Contains(string(body), "tool_choice") {
 		t.Errorf("zero-value capability must emit no tool_choice field, got: %s", body)
+	}
+}
+
+// TestBuildAnthropicRequest_ToolChoice_PartialCapability exercises the
+// per-mode guard branch (B2) that the full-support builtin rule never
+// reaches: a capability with Supported=true but Required=false must omit
+// the field rather than fail open and emit {"type":"any"}.
+func TestBuildAnthropicRequest_ToolChoice_PartialCapability(t *testing.T) {
+	params := types.StreamParams{
+		Model:      "claude-sonnet-4-6",
+		MaxTokens:  256,
+		ToolChoice: types.ToolChoiceRequired,
+		Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+	}
+	q := quirks.ProviderQuirks{ToolChoice: quirks.ToolChoiceCapability{Supported: true, Required: false, NamedTool: true}}
+	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "tool_choice") {
+		t.Errorf("Required=false capability must emit no tool_choice field, got: %s", body)
 	}
 }
 
