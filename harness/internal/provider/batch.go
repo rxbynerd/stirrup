@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
@@ -240,7 +241,16 @@ func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMe
 	case "anthropic":
 		return json.Marshal(buildAnthropicRequest(params, false))
 	case "openai-compatible":
-		return json.Marshal(buildOpenAIRequest(params, false))
+		// Batch path resolves quirks via DefaultRegistry only — compat
+		// profiles (Z.ai etc.) are not wired into BatchAdapter in Wave
+		// 2, so a batch run against a compat-profile provider would
+		// not pick up its extras. Streaming inner adapters honour the
+		// compat profile; the factory sets BatchProviderConfig only
+		// when allow-list permits, and v1 explicitly allowed-lists
+		// anthropic plus the two OpenAI dialects (no compat profile
+		// is approved for batch yet).
+		q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+		return json.Marshal(buildOpenAIRequest(params, false, q))
 	case "openai-responses":
 		return json.Marshal(buildResponsesRequest(params))
 	default:
