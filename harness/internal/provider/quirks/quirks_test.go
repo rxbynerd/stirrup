@@ -111,9 +111,14 @@ func TestBuiltinRulesValidate(t *testing.T) {
 			continue
 		}
 		if rule.ProviderType != "openai-compatible" {
-			// Per-provider canonical sets will arrive when Gemini/
-			// Anthropic-targeted rules land in Step 3. Until then,
-			// the openai-compatible set is the only one to enforce.
+			// The canonical-field check applies only to openai-compatible
+			// rules today. The Gemini base rule (added in Step 3) sets a
+			// BehaviourFlags entry rather than touching FieldRenames, so
+			// there is nothing to validate against a canonical wire-field
+			// list. When a Gemini or Anthropic rule does touch
+			// FieldRenames, mirror the canonicalOpenAIFieldNames table
+			// for that provider and extend this check rather than
+			// dropping it.
 			continue
 		}
 		q := ProviderQuirks{

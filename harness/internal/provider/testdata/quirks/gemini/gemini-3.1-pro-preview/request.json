@@ -1,0 +1,65 @@
+# synthetic: derived from BuildGenerateContentRequest + DefaultRegistry().Resolve("gemini", "gemini-3.1-pro-preview") because the harness does not yet have a live Vertex AI 3.x capture; pins the post-#191 regression guard — Gemini 3.x families must NOT emit streamFunctionCallArguments=true (which would switch the wire format to the JSON-path delta shape the parser does not understand).
+{
+  "contents": [
+    {
+      "parts": [
+        {
+          "text": "hello"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "generationConfig": {
+    "maxOutputTokens": 4096,
+    "temperature": 0.5
+  },
+  "safetySettings": [
+    {
+      "category": "HARM_CATEGORY_HATE_SPEECH",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_HARASSMENT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+      "threshold": "BLOCK_NONE"
+    },
+    {
+      "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
+      "threshold": "BLOCK_NONE"
+    }
+  ],
+  "toolConfig": {
+    "functionCallingConfig": {
+      "mode": "AUTO"
+    }
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "description": "read a file",
+          "name": "read_file",
+          "parameters": {
+            "properties": {
+              "path": {
+                "type": "STRING"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "OBJECT"
+          }
+        }
+      ]
+    }
+  ]
+}
