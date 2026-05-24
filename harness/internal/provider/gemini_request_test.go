@@ -379,6 +379,65 @@ func TestBuildGenerateContentRequest_StreamFunctionCallArgumentsFalseWhenToolsPr
 	}
 }
 
+// TestStreamFunctionCallArgsFromQuirks_TrueForV2AndV3 pins the
+// projection from the resolved GeminiStreamArgsShape onto the
+// wire boolean. The post-#191 default (StreamArgsOff) keeps the
+// flag false; any future model-scoped rule that pins V2 or V3
+// flips the boolean to true so the request body opts in to
+// streamed function-call args. The table includes StreamArgsOff
+// as the sanity baseline.
+//
+// The `default` arm of the switch in streamFunctionCallArgsFromQuirks
+// is intentionally not exercised here — it is the forward-compatibility
+// safety net for an enum value the build does not yet know about,
+// which is unreachable today without constructing the enum out of
+// range.
+func TestStreamFunctionCallArgsFromQuirks_TrueForV2AndV3(t *testing.T) {
+	cases := []struct {
+		name  string
+		shape quirks.GeminiStreamArgsShape
+		want  bool
+	}{
+		{name: "off baseline", shape: quirks.StreamArgsOff, want: false},
+		{name: "v2 snapshot opts in", shape: quirks.StreamArgsV2Snapshot, want: true},
+		{name: "v3 deltas opts in", shape: quirks.StreamArgsV3Deltas, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := quirks.ProviderQuirks{
+				BehaviourFlags: quirks.ProviderBehaviourFlags{
+					Gemini: quirks.GeminiBehaviourFlags{
+						StreamFunctionCallArgsShape: tc.shape,
+					},
+				},
+			}
+			body, _, err := BuildGenerateContentRequest(types.StreamParams{
+				Model: "gemini-2.5-pro",
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+				},
+				Tools: []types.ToolDefinition{
+					{
+						Name:        "read_file",
+						Description: "read a file",
+						InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+					},
+				},
+			}, nil, q)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			dr := decodeGeminiRequest(t, body)
+			if dr.ToolConfig == nil {
+				t.Fatalf("expected toolConfig to be present when tools are declared")
+			}
+			if got := dr.ToolConfig.FunctionCallingConfig.StreamFunctionCallArguments; got != tc.want {
+				t.Errorf("streamFunctionCallArguments = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildGenerateContentRequest_NoToolConfigWhenNoTools(t *testing.T) {
 	body, _, err := BuildGenerateContentRequest(types.StreamParams{
 		Model: "gemini-2.5-pro",
