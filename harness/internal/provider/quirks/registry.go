@@ -97,6 +97,11 @@ func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
 		ValueOverrides: map[string]Value{},
 		EnumCoercions:  map[string]map[string]string{},
 		ReplayFields:   []string{},
+		BehaviourFlags: ProviderBehaviourFlags{
+			OpenAI: OpenAIBehaviourFlags{
+				ExtraBodyFields: map[string]any{},
+			},
+		},
 	}
 	if r == nil {
 		return q

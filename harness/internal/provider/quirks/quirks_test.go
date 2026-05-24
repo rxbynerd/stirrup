@@ -37,10 +37,22 @@ func TestResolveEmptyRegistry(t *testing.T) {
 		t.Errorf("expected empty collections, got %+v", q)
 	}
 	// Behaviour flags must be at their zero values so adapters fall
-	// through to today's behaviour.
-	want := ProviderBehaviourFlags{}
+	// through to today's behaviour — with the documented exception that
+	// OpenAI.ExtraBodyFields is pre-initialised to a non-nil empty map
+	// so rules can read-modify-write without nil guards.
+	if q.BehaviourFlags.OpenAI.ExtraBodyFields == nil {
+		t.Error("BehaviourFlags.OpenAI.ExtraBodyFields must be non-nil")
+	}
+	if len(q.BehaviourFlags.OpenAI.ExtraBodyFields) != 0 {
+		t.Errorf("BehaviourFlags.OpenAI.ExtraBodyFields = %+v, want empty", q.BehaviourFlags.OpenAI.ExtraBodyFields)
+	}
+	want := ProviderBehaviourFlags{
+		OpenAI: OpenAIBehaviourFlags{
+			ExtraBodyFields: map[string]any{},
+		},
+	}
 	if !reflect.DeepEqual(q.BehaviourFlags, want) {
-		t.Errorf("BehaviourFlags = %+v, want zero value", q.BehaviourFlags)
+		t.Errorf("BehaviourFlags = %+v, want %+v", q.BehaviourFlags, want)
 	}
 }
 
