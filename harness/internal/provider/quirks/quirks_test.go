@@ -170,13 +170,17 @@ func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
 	}
 }
 
-// TestRemoveFromOmit covers the helper's three observable states:
-// removing an entry that is present, a no-op when absent, and a
-// no-op when the slice is nil. The helper is kept available for
-// future OmitFields-driven carve-outs even though Step 2's only
-// carve-out toggles OmitSamplingParams directly; the test exists so
-// the lint surface doesn't flag the helper as dead code.
-func TestRemoveFromOmit(t *testing.T) {
+// TestRemoveFromOmit_ReservedHelper covers the helper's three
+// observable states: removing an entry that is present, a no-op
+// when absent, and a no-op when the slice is nil. The helper is
+// kept available for future OmitFields-driven carve-outs even
+// though Step 2's only carve-out toggles OmitSamplingParams
+// directly. The test exists primarily so the linter does not flag
+// the helper as dead code; the "ReservedHelper" suffix on the test
+// name signals this to a future reader who wonders why a tested
+// helper has no production caller, so they don't delete the
+// function thinking it is genuinely unused.
+func TestRemoveFromOmit_ReservedHelper(t *testing.T) {
 	t.Run("removes present entry", func(t *testing.T) {
 		q := &ProviderQuirks{OmitFields: []string{"temperature", "top_p", "logprobs"}}
 		removeFromOmit(q, "top_p")
