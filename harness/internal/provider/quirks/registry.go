@@ -117,7 +117,7 @@ func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
 	}
 	matches := make([]indexed, 0, len(r.rules))
 	for i, rule := range r.rules {
-		if !ruleMatches(rule, providerType, model) {
+		if !RuleMatches(rule, providerType, model) {
 			continue
 		}
 		matches = append(matches, indexed{idx: i, rule: rule})
@@ -139,13 +139,18 @@ func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
 	return q
 }
 
-// ruleMatches reports whether the rule fires for the given (provider,
+// RuleMatches reports whether the rule fires for the given (provider,
 // model) pair. An empty ModelMatch matches every model. A glob that
 // fails to compile (e.g. an unmatched `[`) is treated as a non-match
 // rather than panicking, on the same principle as the existing
 // validators: bad input rejects loudly elsewhere, runtime resolution
 // stays safe.
-func ruleMatches(rule Rule, providerType, model string) bool {
+//
+// Exported so the CLI introspection surface can reuse the exact same
+// predicate the agentic loop's Resolve walks, eliminating the silent
+// divergence risk if the predicate ever gains a second dimension
+// (e.g. design D11's BaseURLMatch seam).
+func RuleMatches(rule Rule, providerType, model string) bool {
 	if rule.ProviderType != providerType {
 		return false
 	}

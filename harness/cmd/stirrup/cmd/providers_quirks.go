@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -115,29 +114,11 @@ func runProvidersQuirksWithIO(cmd *cobra.Command, stdout io.Writer) error {
 	return nil
 }
 
-// cliRuleMatches mirrors quirks.ruleMatches (unexported) so the CLI's
-// "what rules ran" report stays faithful to what Resolve actually
-// executes. If the quirks-internal helper grows to consult more
-// fields (e.g. BaseURLMatch in a future step) this needs to track.
-func cliRuleMatches(rule quirks.Rule, provider, model string) bool {
-	if rule.ProviderType != provider {
-		return false
-	}
-	if rule.ModelMatch == "" {
-		return true
-	}
-	ok, err := path.Match(rule.ModelMatch, model)
-	if err != nil {
-		return false
-	}
-	return ok
-}
-
-// collectAppliedRules walks the rule slice in declaration order and
-// returns the metadata for every rule whose ProviderType + ModelMatch
-// predicate fires for (provider, model). Mirrors the matching logic
-// in registry.Resolve so the CLI's "what rules ran" report is
-// faithful to what actually executed.
+// collectAppliedRules walks the rule slice and returns the metadata
+// for every rule whose predicate fires for (provider, model), using
+// quirks.RuleMatches so the CLI's "what rules ran" report is the same
+// predicate Resolve walks (no silent divergence if the predicate
+// gains a dimension).
 //
 // Returns a non-nil empty slice when no rule matched so the JSON
 // output is `[]` rather than `null` — easier to script against.
@@ -145,7 +126,7 @@ func collectAppliedRules(rules []quirks.Rule, provider, model string) []appliedR
 	out := make([]appliedRuleCLIOutput, 0, len(rules))
 	cutoff := time.Now().Add(-quirksStaleness)
 	for _, rule := range rules {
-		if !cliRuleMatches(rule, provider, model) {
+		if !quirks.RuleMatches(rule, provider, model) {
 			continue
 		}
 		lastVerified := ""

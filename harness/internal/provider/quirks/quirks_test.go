@@ -214,6 +214,64 @@ func TestDefaultRegistryConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+// TestRuleMatches pins the exported predicate the CLI shares with
+// Resolve. Covers exact-match, empty-ModelMatch wildcard, glob
+// success, glob non-match, ProviderType mismatch, and malformed glob
+// (returns false rather than panicking).
+func TestRuleMatches(t *testing.T) {
+	cases := []struct {
+		name         string
+		rule         Rule
+		providerType string
+		model        string
+		want         bool
+	}{
+		{
+			name:         "exact match with empty ModelMatch wildcard",
+			rule:         Rule{ProviderType: "openai-compatible", ModelMatch: ""},
+			providerType: "openai-compatible",
+			model:        "gpt-4o",
+			want:         true,
+		},
+		{
+			name:         "glob match",
+			rule:         Rule{ProviderType: "openai-compatible", ModelMatch: "gpt-5*"},
+			providerType: "openai-compatible",
+			model:        "gpt-5-nano",
+			want:         true,
+		},
+		{
+			name:         "glob non-match",
+			rule:         Rule{ProviderType: "openai-compatible", ModelMatch: "gpt-5*"},
+			providerType: "openai-compatible",
+			model:        "gpt-4o",
+			want:         false,
+		},
+		{
+			name:         "ProviderType mismatch",
+			rule:         Rule{ProviderType: "anthropic", ModelMatch: "*"},
+			providerType: "openai-compatible",
+			model:        "gpt-5-nano",
+			want:         false,
+		},
+		{
+			name:         "malformed glob returns false (no panic)",
+			rule:         Rule{ProviderType: "openai-compatible", ModelMatch: "gpt-[5"},
+			providerType: "openai-compatible",
+			model:        "gpt-5-nano",
+			want:         false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RuleMatches(tc.rule, tc.providerType, tc.model)
+			if got != tc.want {
+				t.Errorf("RuleMatches(%+v, %q, %q) = %v, want %v", tc.rule, tc.providerType, tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestOpenAITokenFieldMarshalJSON pins the human-readable wire form
 // of each named constant and round-trips through UnmarshalJSON so the
 // CLI output can be parsed back by a consumer that decodes into the
