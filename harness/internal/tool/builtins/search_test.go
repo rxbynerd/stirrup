@@ -289,7 +289,10 @@ func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
 		canExec: true,
 		execFn: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
 			capturedCmd = command
-			return &executor.ExecResult{ExitCode: 0, Stdout: "x.go:1:hit\n"}, nil
+			return &executor.ExecResult{
+				ExitCode: 0,
+				Stdout:   `{"type":"match","data":{"path":{"text":"x.go"},"lines":{"text":"hit\n"},"line_number":1}}` + "\n",
+			}, nil
 		},
 	}
 	grep := GrepFilesTool(fe)
@@ -305,8 +308,13 @@ func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
 	if !strings.HasPrefix(capturedCmd, "rg ") {
 		t.Errorf("expected rg command, got %q", capturedCmd)
 	}
-	if !strings.Contains(out, "x.go:1:hit") {
-		t.Errorf("expected rg stdout in result, got %q", out)
+	if !strings.Contains(capturedCmd, "--json") {
+		t.Errorf("expected --json in rg invocation, got %q", capturedCmd)
+	}
+	// The rendered text is reconstructed from the JSON fields and must match
+	// the historical "path:line:text" form byte-for-byte.
+	if out != "x.go:1:hit" {
+		t.Errorf("expected reconstructed rg text 'x.go:1:hit', got %q", out)
 	}
 	// Each include glob must be passed to rg as --glob 'pattern' and each
 	// exclude glob as --glob '!pattern' — the two for-loops in

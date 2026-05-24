@@ -8,6 +8,17 @@ package builtins
 // already produced is unchanged and remains the canonical fallback; these
 // structs are purely additive.
 
+// Kind discriminators identify which struct a ToolResult.Structured payload
+// carries (issue #231). B2's MCP bridge and provider adapters route by these
+// stable values rather than JSON-sniffing the payload, which would violate the
+// typed-not-`any` rule. Each StructuredHandler returns the matching kind.
+const (
+	kindCommandResult = "command_result"
+	kindSearchResult  = "search_result"
+	kindFindResult    = "find_result"
+	kindFileExcerpt   = "file_excerpt"
+)
+
 // commandResult is the structured payload for run_command. timedOut reports
 // whether the command was killed by its timeout; in the current executor
 // contract a timeout surfaces as a handler error before the structured payload

@@ -73,11 +73,18 @@ type ToolCall struct {
 // the pre-#231 shape via omitempty. Whether a provider receives Content or
 // Structured on the wire is decided by the provider adapters (issue #231 B2),
 // not here; the harness always keeps Content populated as the safe fallback.
+//
+// Kind names the shape of the Structured payload (e.g. "command_result",
+// "file_excerpt") so B2's provider adapters and MCP bridge can route it by a
+// stable discriminator instead of unmarshalling and sniffing the JSON (which
+// would breach the typed-not-`any` rule). It is empty for text-only results
+// and so omitted from the wire, preserving byte-identical pre-#231 output.
 type ToolResult struct {
 	ToolUseID  string          `json:"tool_use_id"`
 	Content    string          `json:"content"`
 	IsError    bool            `json:"is_error,omitempty"`
 	Structured json.RawMessage `json:"structured,omitempty"`
+	Kind       string          `json:"kind,omitempty"`
 }
 
 // Artifact represents a named output produced during a run.

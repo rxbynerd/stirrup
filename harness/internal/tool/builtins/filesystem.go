@@ -117,47 +117,47 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 		InputSchema:       readFileSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
-		StructuredHandler: func(ctx context.Context, input json.RawMessage) (string, json.RawMessage, error) {
+		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
 			var params struct {
 				Path      string `json:"path"`
 				StartLine *int   `json:"start_line,omitempty"`
 				Limit     *int   `json:"limit,omitempty"`
 			}
 			if err := json.Unmarshal(input, &params); err != nil {
-				return "", nil, fmt.Errorf("parse input: %w", err)
+				return tool.StructuredResult{}, fmt.Errorf("parse input: %w", err)
 			}
 			if params.Path == "" {
-				return "", nil, fmt.Errorf("path is required")
+				return tool.StructuredResult{}, fmt.Errorf("path is required")
 			}
 			startLine := 1
 			if params.StartLine != nil {
 				if *params.StartLine < 1 {
-					return "", nil, fmt.Errorf("start_line must be >= 1, got %d", *params.StartLine)
+					return tool.StructuredResult{}, fmt.Errorf("start_line must be >= 1, got %d", *params.StartLine)
 				}
 				startLine = *params.StartLine
 			}
 			limit := readFileDefaultLimit
 			if params.Limit != nil {
 				if *params.Limit < 1 {
-					return "", nil, fmt.Errorf("limit must be >= 1, got %d", *params.Limit)
+					return tool.StructuredResult{}, fmt.Errorf("limit must be >= 1, got %d", *params.Limit)
 				}
 				if *params.Limit > readFileMaxLimit {
-					return "", nil, fmt.Errorf("limit must be <= %d, got %d", readFileMaxLimit, *params.Limit)
+					return tool.StructuredResult{}, fmt.Errorf("limit must be <= %d, got %d", readFileMaxLimit, *params.Limit)
 				}
 				limit = *params.Limit
 			}
 
 			content, err := exec.ReadFile(ctx, params.Path)
 			if err != nil {
-				return "", nil, err
+				return tool.StructuredResult{}, err
 			}
 			text := formatReadFile(content, startLine, limit)
 			excerpt := readFileExcerpt(params.Path, content, startLine, limit)
 			structured, marshalErr := json.Marshal(excerpt)
 			if marshalErr != nil {
-				return "", nil, fmt.Errorf("marshal structured result: %w", marshalErr)
+				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
 			}
-			return text, structured, nil
+			return tool.StructuredResult{Text: text, Structured: structured, Kind: kindFileExcerpt}, nil
 		},
 	}
 }

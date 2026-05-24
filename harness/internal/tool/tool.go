@@ -27,6 +27,24 @@ type AsyncDispatch struct {
 	Timeout time.Duration
 }
 
+// StructuredResult is the return value of a StructuredHandler (issue #231). It
+// carries the canonical Text fallback (always populated, identical to what a
+// plain Handler would return) plus an optional typed Structured payload and a
+// Kind discriminator naming the payload's shape.
+//
+// The zero value (empty Text, nil Structured, empty Kind) is a valid
+// "text-only" result; in practice a StructuredHandler always sets Text, and
+// sets Structured+Kind together. Kind lets B2's MCP bridge and provider
+// adapters route the payload by shape without unmarshalling it (which would
+// violate the typed-not-`any` rule). A non-empty Structured with an empty Kind
+// is a producer bug — dispatch does not enforce it, but consumers may treat an
+// unknown/empty kind as opaque.
+type StructuredResult struct {
+	Text       string
+	Structured json.RawMessage
+	Kind       string
+}
+
 // Tool represents a single tool that the model can invoke.
 //
 // WorkspaceMutating and RequiresApproval are deliberately separate flags
@@ -80,13 +98,13 @@ type Tool struct {
 	// StructuredHandler, when non-nil, is preferred over Handler for
 	// synchronous dispatch. It returns the same canonical text the plain
 	// Handler would (so the text fallback is unchanged) plus an optional
-	// typed structured payload marshalled into a json.RawMessage (issue
-	// #231). A nil payload is equivalent to having only Handler set — the
-	// result carries text but no structured envelope. Tool authors must
-	// marshal a typed Go struct into the payload, never a map[string]any
-	// (wave-2 design D13). The dispatch path scrubs the payload on the same
-	// footing as the text before it reaches a persisted trace.
-	StructuredHandler func(ctx context.Context, input json.RawMessage) (text string, structured json.RawMessage, err error)
+	// typed structured payload (issue #231). A zero StructuredResult is
+	// equivalent to having only Handler set — the result carries text but no
+	// structured envelope. Tool authors must marshal a typed Go struct into
+	// the payload, never a map[string]any (wave-2 design D13). The dispatch
+	// path scrubs the payload on the same footing as the text before it
+	// reaches a persisted trace.
+	StructuredHandler func(ctx context.Context, input json.RawMessage) (StructuredResult, error)
 
 	// AsyncHandler, when non-nil, marks the tool as async. The loop calls
 	// it after permission/security checks and uses the returned

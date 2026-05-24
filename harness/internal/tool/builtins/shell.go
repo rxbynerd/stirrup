@@ -40,16 +40,16 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 		InputSchema:       runCommandSchema,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
-		StructuredHandler: func(ctx context.Context, input json.RawMessage) (string, json.RawMessage, error) {
+		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
 			var params struct {
 				Command string `json:"command"`
 				Timeout *int   `json:"timeout"`
 			}
 			if err := json.Unmarshal(input, &params); err != nil {
-				return "", nil, fmt.Errorf("parse input: %w", err)
+				return tool.StructuredResult{}, fmt.Errorf("parse input: %w", err)
 			}
 			if params.Command == "" {
-				return "", nil, fmt.Errorf("command is required")
+				return tool.StructuredResult{}, fmt.Errorf("command is required")
 			}
 
 			timeoutSeconds := 30
@@ -66,7 +66,7 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 
 			result, err := exec.Exec(ctx, params.Command, timeout)
 			if err != nil {
-				return "", nil, err
+				return tool.StructuredResult{}, err
 			}
 
 			structured, marshalErr := json.Marshal(commandResult{
@@ -79,10 +79,14 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 				TimeoutSeconds: timeoutSeconds,
 			})
 			if marshalErr != nil {
-				return "", nil, fmt.Errorf("marshal structured result: %w", marshalErr)
+				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
 			}
 
-			return formatRunCommand(result.Stdout, result.Stderr, result.ExitCode), structured, nil
+			return tool.StructuredResult{
+				Text:       formatRunCommand(result.Stdout, result.Stderr, result.ExitCode),
+				Structured: structured,
+				Kind:       kindCommandResult,
+			}, nil
 		},
 	}
 }

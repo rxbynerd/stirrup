@@ -76,8 +76,8 @@ func (m *mockExecutor) Capabilities() executor.ExecutorCapabilities {
 // tests that assert the structured payload call StructuredHandler directly.
 func invokeText(ctx context.Context, tl *tool.Tool, input json.RawMessage) (string, error) {
 	if tl.StructuredHandler != nil {
-		text, _, err := tl.StructuredHandler(ctx, input)
-		return text, err
+		res, err := tl.StructuredHandler(ctx, input)
+		return res.Text, err
 	}
 	return tl.Handler(ctx, input)
 }

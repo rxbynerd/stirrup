@@ -153,6 +153,8 @@ type ModelInput struct {
 // persisted trace. It is scrubbed for secret-shaped content at record time on
 // the same footing as Output — a file excerpt or command transcript captured
 // in the structured payload can contain credentials just as the text can.
+// Kind names the Structured payload's shape (see ToolResult.Kind); empty and
+// omitted for text-only calls.
 type ToolCallRecord struct {
 	ID         string          `json:"id"`
 	Name       string          `json:"name"`
@@ -161,6 +163,7 @@ type ToolCallRecord struct {
 	DurationMs int64           `json:"durationMs"`
 	Success    bool            `json:"success"`
 	Structured json.RawMessage `json:"structured,omitempty"`
+	Kind       string          `json:"kind,omitempty"`
 }
 
 // RunRecording is a full recording of a run.

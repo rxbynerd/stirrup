@@ -9,22 +9,26 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// structuredEchoTool is a sync tool exposing a StructuredHandler that returns
-// both a text fallback and a typed structured payload, exercising the issue
-// #231 dispatch seam.
+// structuredEchoTool is a sync tool exposing a StructuredHandler that returns a
+// text fallback, a typed structured payload, and a kind discriminator,
+// exercising the issue #231 dispatch seam.
 func structuredEchoTool() *tool.Tool {
 	return &tool.Tool{
 		Name:        "structured_echo",
 		Description: "test structured tool",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
-		StructuredHandler: func(_ context.Context, _ json.RawMessage) (string, json.RawMessage, error) {
-			return "text fallback", json.RawMessage(`{"field":"value"}`), nil
+		StructuredHandler: func(_ context.Context, _ json.RawMessage) (tool.StructuredResult, error) {
+			return tool.StructuredResult{
+				Text:       "text fallback",
+				Structured: json.RawMessage(`{"field":"value"}`),
+				Kind:       "command_result",
+			}, nil
 		},
 	}
 }
 
-// plainEchoTool exposes only a plain Handler — it must produce a nil
-// structured payload so a text-only tool stays text-only.
+// plainEchoTool exposes only a plain Handler — it must produce a zero
+// structuredOutput so a text-only tool stays text-only.
 func plainEchoTool() *tool.Tool {
 	return &tool.Tool{
 		Name:        "plain_echo",
@@ -50,8 +54,11 @@ func TestDispatch_StructuredHandlerCarriesPayload(t *testing.T) {
 	if out != "text fallback" {
 		t.Errorf("text fallback mismatch: %q", out)
 	}
-	if string(structured) != `{"field":"value"}` {
-		t.Errorf("structured payload mismatch: %s", structured)
+	if string(structured.payload) != `{"field":"value"}` {
+		t.Errorf("structured payload mismatch: %s", structured.payload)
+	}
+	if structured.kind != "command_result" {
+		t.Errorf("structured kind mismatch: %q", structured.kind)
 	}
 }
 
@@ -66,13 +73,17 @@ func TestDispatch_PlainHandlerHasNilStructured(t *testing.T) {
 	if !success || out != "plain text" {
 		t.Fatalf("unexpected result: success=%v out=%q", success, out)
 	}
-	if structured != nil {
-		t.Errorf("plain-Handler tool must yield nil structured, got: %s", structured)
+	if structured.payload != nil {
+		t.Errorf("plain-Handler tool must yield nil structured payload, got: %s", structured.payload)
+	}
+	if structured.kind != "" {
+		t.Errorf("plain-Handler tool must yield empty kind, got: %q", structured.kind)
 	}
 }
 
 // TestPlanAndDispatch_StructuredFlowsToResult pins that the structured payload
-// reaches both the ToolResult (model-facing) and the ToolCallRecord (trace).
+// and kind reach both the ToolResult (model-facing) and the ToolCallRecord
+// (trace).
 func TestPlanAndDispatch_StructuredFlowsToResult(t *testing.T) {
 	tr := newAsyncTestTransport()
 	loop := buildAsyncTestLoop(t, tr, structuredEchoTool())
@@ -97,7 +108,13 @@ func TestPlanAndDispatch_StructuredFlowsToResult(t *testing.T) {
 	if string(results[0].Structured) != `{"field":"value"}` {
 		t.Errorf("ToolResult.Structured mismatch: %s", results[0].Structured)
 	}
+	if results[0].Kind != "command_result" {
+		t.Errorf("ToolResult.Kind mismatch: %q", results[0].Kind)
+	}
 	if string(records[0].Structured) != `{"field":"value"}` {
 		t.Errorf("ToolCallRecord.Structured mismatch: %s", records[0].Structured)
+	}
+	if records[0].Kind != "command_result" {
+		t.Errorf("ToolCallRecord.Kind mismatch: %q", records[0].Kind)
 	}
 }
