@@ -54,6 +54,9 @@ func TestResolveEmptyRegistry(t *testing.T) {
 		OpenAI: OpenAIBehaviourFlags{
 			ExtraBodyFields: map[string]any{},
 		},
+		Gemini: GeminiBehaviourFlags{
+			SchemaUnsupportedFeatures: []string{},
+		},
 	}
 	if !reflect.DeepEqual(q.BehaviourFlags, want) {
 		t.Errorf("BehaviourFlags = %+v, want %+v", q.BehaviourFlags, want)
@@ -125,7 +128,7 @@ func TestBuiltinRulesValidate(t *testing.T) {
 			ValueOverrides: map[string]Value{},
 			EnumCoercions:  map[string]map[string]string{},
 			ReplayFields:   []string{},
-			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}, Gemini: GeminiBehaviourFlags{SchemaUnsupportedFeatures: []string{}}},
 		}
 		rule.Apply(&q)
 		for key := range q.FieldRenames {
@@ -158,7 +161,7 @@ func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
 			ValueOverrides: map[string]Value{},
 			EnumCoercions:  map[string]map[string]string{},
 			ReplayFields:   []string{},
-			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}, Gemini: GeminiBehaviourFlags{SchemaUnsupportedFeatures: []string{}}},
 		}
 		rule.Apply(&q)
 		for k, v := range q.BehaviourFlags.OpenAI.ExtraBodyFields {
