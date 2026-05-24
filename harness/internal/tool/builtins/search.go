@@ -64,7 +64,7 @@ var findFilesSchema = json.RawMessage(`{
 	"properties": {
 		"name": {
 			"type": "string",
-			"description": "A shell-style glob pattern (e.g. '*.go', '**/handler_*.ts') to match against file names. NOT a regex."
+			"description": "A shell-style glob (filepath.Match syntax) matched against each file's basename only — e.g. '*.go', 'handler_*.ts'. Does not support '**'. To narrow by path, use the include field instead."
 		},
 		"path": {
 			"type": "string",

@@ -432,6 +432,29 @@ func TestGrepFilesTool_EmptyPattern(t *testing.T) {
 	}
 }
 
+// TestFindFilesTool_SchemaBasenameSemantics pins the name-field description
+// to make basename-only matching explicit. The pre-fix description included
+// `**/handler_*.ts` as an example, but filepath.Match does not understand
+// `**` and the matcher is basename-only, so models taking the example at
+// face value got silent zero-match results.
+func TestFindFilesTool_SchemaBasenameSemantics(t *testing.T) {
+	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
+	schema := string(find.InputSchema)
+
+	if !strings.Contains(schema, "basename only") {
+		t.Errorf("name schema description must state basename-only semantics, got: %s", schema)
+	}
+	if !strings.Contains(schema, "Does not support '**'") {
+		t.Errorf("name schema description must call out missing '**' support, got: %s", schema)
+	}
+	if strings.Contains(schema, "**/handler_*.ts") {
+		t.Errorf("name schema must not advertise the misleading '**/handler_*.ts' example, got: %s", schema)
+	}
+	if !strings.Contains(schema, "include field") {
+		t.Errorf("name schema description must direct path matching to the include field, got: %s", schema)
+	}
+}
+
 func TestFindFilesTool_EmptyName(t *testing.T) {
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 	input, _ := json.Marshal(map[string]any{"name": ""})
