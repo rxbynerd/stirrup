@@ -113,7 +113,7 @@ func ReadFileTool(exec executor.Executor) *tool.Tool {
 			"Use this when the exact content of a known file is needed; prefer grep_files when searching for a string across many files. " +
 			"start_line is 1-indexed and limit caps the lines returned (default 2000, max 5000). " +
 			"When start_line is past end-of-file the tool returns a notice rather than an error, so probing with a guessed start_line is safe. " +
-			"Example: {\"path\": \"harness/internal/tool/builtins/filesystem.go\", \"start_line\": 100, \"limit\": 50}",
+			"Example: {\"path\": \"path/to/file.go\", \"start_line\": 100, \"limit\": 50}",
 		InputSchema:       readFileSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
