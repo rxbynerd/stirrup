@@ -24,13 +24,17 @@ func newTestProvidersQuirksCommand() *cobra.Command {
 }
 
 // TestProvidersQuirks_EmptyRegistryEmitsValidJSON exercises the
-// Step-1 BuiltinRules() empty state: the subcommand must still
-// produce a structurally valid JSON document with an empty
-// appliedRules slice (not null) and a ProviderQuirks value at the
-// post-Resolve zero shape (non-nil empty maps/slices).
+// no-rules-matched state: the subcommand must still produce a
+// structurally valid JSON document with an empty appliedRules slice
+// (not null) and a ProviderQuirks value at the post-Resolve zero shape
+// (non-nil empty maps/slices). It resolves an unknown provider type so
+// no builtin rule fires — the first-party providers now all carry a
+// cross-provider tool-choice base rule (#230) that matches every model,
+// so this assertion needs a provider with no rules at all to still
+// observe the empty-appliedRules path.
 func TestProvidersQuirks_EmptyRegistryEmitsValidJSON(t *testing.T) {
 	cmd := newTestProvidersQuirksCommand()
-	if err := cmd.ParseFlags([]string{"--provider", "openai-compatible", "--model", "gpt-4o"}); err != nil {
+	if err := cmd.ParseFlags([]string{"--provider", "no-such-provider", "--model", "gpt-4o"}); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
 	}
 	var buf bytes.Buffer
@@ -43,8 +47,8 @@ func TestProvidersQuirks_EmptyRegistryEmitsValidJSON(t *testing.T) {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
 	}
 
-	if got.Provider != "openai-compatible" {
-		t.Errorf("Provider = %q, want openai-compatible", got.Provider)
+	if got.Provider != "no-such-provider" {
+		t.Errorf("Provider = %q, want no-such-provider", got.Provider)
 	}
 	if got.Model != "gpt-4o" {
 		t.Errorf("Model = %q, want gpt-4o", got.Model)
