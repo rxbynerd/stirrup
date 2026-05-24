@@ -604,6 +604,25 @@ type ProviderConfig struct {
 	// BatchProviderConfig for the supported provider types and the
 	// transport / mode cross-field invariants enforced by ValidateRunConfig.
 	Batch *BatchProviderConfig `json:"batch,omitempty"`
+
+	// CompatProfile, when non-empty, selects an optional compatibility
+	// profile for providers that require non-standard extensions on top
+	// of the canonical wire shape. The factory uses the value to inject
+	// a pre-defined rule into the provider's quirks registry; the
+	// wire-shape knowledge lives in harness/internal/provider/compat/
+	// and is not authored by the operator.
+	//
+	// Closed enum, validated at startup. Currently supported:
+	//
+	//   ""          — no compat profile (default).
+	//   "zai-glm"   — Z.ai GLM tool_stream extension and legacy
+	//                 max_tokens field. Applied on top of provider.type
+	//                 = "openai-compatible".
+	//
+	// Unknown values are rejected by ValidateRunConfig. Adding a new
+	// value requires both an entry in validCompatProfiles and a matching
+	// rule in harness/internal/provider/compat/.
+	CompatProfile string `json:"compatProfile,omitempty"`
 }
 
 // BatchProviderConfig controls async batch submission for a provider turn.
@@ -1055,6 +1074,19 @@ var validBatchProviderTypes = map[string]bool{
 	"anthropic":         true,
 	"openai-compatible": true,
 	"openai-responses":  true,
+}
+
+// validCompatProfiles is the closed set of ProviderConfig.CompatProfile
+// values accepted by ValidateRunConfig. Adding an entry requires a
+// matching rule in harness/internal/provider/compat/ and a factory
+// resolveCompatProfile switch arm.
+//
+// Wave 2 Step 1 ships the enum but no compat rules; "zai-glm" is the
+// only legal non-empty value and its rule lands in Step 2 alongside the
+// factory plumbing.
+var validCompatProfiles = map[string]bool{
+	"":        true, // explicit empty is the default (no profile)
+	"zai-glm": true,
 }
 
 // gcpProjectIDPattern matches the GCP project ID rules: starts with a
@@ -1711,6 +1743,25 @@ func validateOptionalType(name, value string, valid map[string]bool, errs *[]str
 	}
 }
 
+// validateCompatProfile enforces the closed set of legal
+// ProviderConfig.CompatProfile values. Empty string is the default
+// (no profile) and validates cleanly. Unknown values fail loudly with
+// the legal-set list so operators can correct typos at startup rather
+// than seeing an opaque "rule not found" deeper in the factory.
+//
+// The legal set is small enough to enumerate in the error message;
+// when it grows past a handful of values the message should fall back
+// to a sorted slice from validCompatProfiles.
+func validateCompatProfile(path, value string, errs *[]string) {
+	if validCompatProfiles[value] {
+		return
+	}
+	*errs = append(*errs, fmt.Sprintf(
+		"%s %q is not a recognised compat profile; legal values: \"\", \"zai-glm\"",
+		path, value,
+	))
+}
+
 // pathHasDotDotSegment reports whether path contains a literal ".."
 // component when split on either '/' or '\'. A substring check on
 // `..` would also match harmless filenames like "foo..bar.cedar"; we
@@ -2220,6 +2271,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 	validateAnthropicProviderFields("provider", config.Provider, errs)
 	validateAzureWIFCrossField("provider", config.Provider, errs)
 	validateProviderRetryConfig("provider.retry", config.Provider.Retry, retryDefaulted["provider.retry"], errs)
+	validateCompatProfile("provider.compatProfile", config.Provider.CompatProfile, errs)
 	for name, provider := range config.Providers {
 		if name == "" {
 			*errs = append(*errs, "providers map contains an empty provider name")
@@ -2238,6 +2290,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		validateAzureWIFCrossField(path, provider, errs)
 		retryPath := fmt.Sprintf("%s.retry", path)
 		validateProviderRetryConfig(retryPath, provider.Retry, retryDefaulted[retryPath], errs)
+		validateCompatProfile(fmt.Sprintf("%s.compatProfile", path), provider.CompatProfile, errs)
 		// Batch is a top-level-only concept in v1: the spec wires
 		// per-turn batching against RunConfig.Provider, and a Batch
 		// block on a named entry would silently parse, store, and have

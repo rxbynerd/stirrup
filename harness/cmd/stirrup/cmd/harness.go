@@ -101,15 +101,21 @@ func readPromptFile(path string) (string, error) {
 // RunConfig built by buildHarnessRunConfig. Extracted so the construction
 // path is testable without booting cobra.
 type harnessCLIOptions struct {
-	RunID         string
-	Mode          string
-	SessionName   string
-	Prompt        string
-	ProviderType  string
-	APIKeyRef     string
-	BaseURL       string
-	APIKeyHeader  string
-	QueryParams   map[string]string
+	RunID        string
+	Mode         string
+	SessionName  string
+	Prompt       string
+	ProviderType string
+	APIKeyRef    string
+	BaseURL      string
+	APIKeyHeader string
+	QueryParams  map[string]string
+
+	// CompatProfile selects an optional provider-quirks compat profile
+	// (Wave 2 #221). Closed set, validated by ValidateRunConfig; the
+	// flag is empty by default so a bare invocation does not opt into a
+	// compat shape.
+	CompatProfile string
 	Model         string
 	Workspace     string
 	MaxTurns      int
@@ -339,9 +345,10 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 				}
 				return opts.APIKeyRef
 			}(),
-			BaseURL:      opts.BaseURL,
-			APIKeyHeader: opts.APIKeyHeader,
-			QueryParams:  opts.QueryParams,
+			BaseURL:       opts.BaseURL,
+			APIKeyHeader:  opts.APIKeyHeader,
+			QueryParams:   opts.QueryParams,
+			CompatProfile: opts.CompatProfile,
 		},
 		ModelRouter: types.ModelRouterConfig{
 			Type:     "static",
@@ -839,6 +846,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("api-key-header") {
 		cfg.Provider.APIKeyHeader, _ = f.GetString("api-key-header")
+	}
+	if changed("provider-compat-profile") {
+		cfg.Provider.CompatProfile, _ = f.GetString("provider-compat-profile")
 	}
 	if changed("gcp-project") {
 		cfg.Provider.GCPProject, _ = f.GetString("gcp-project")

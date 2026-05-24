@@ -345,6 +345,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	baseURL, _ := f.GetString("base-url")
 	apiKeyHeader, _ := f.GetString("api-key-header")
 	queryParamRaw, _ := f.GetStringArray("query-param")
+	compatProfile, _ := f.GetString("provider-compat-profile")
 	gcpProject, _ := f.GetString("gcp-project")
 	gcpLocation, _ := f.GetString("gcp-location")
 	gcpCredentialsFile, _ := f.GetString("gcp-credentials-file")
@@ -419,6 +420,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		BaseURL:                      baseURL,
 		APIKeyHeader:                 apiKeyHeader,
 		QueryParams:                  queryParams,
+		CompatProfile:                compatProfile,
 		APIKeyRef:                    apiKeyRef,
 		GCPProject:                   gcpProject,
 		GCPLocation:                  gcpLocation,
