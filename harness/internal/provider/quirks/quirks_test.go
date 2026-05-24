@@ -368,6 +368,98 @@ func TestGeminiRule_NoMatchOnOpenAICompatProvider(t *testing.T) {
 	}
 }
 
+// TestReplayFieldsRules_DeepSeekReasoner pins the DeepSeek-reasoner
+// rule fires and populates ReplayFields with the documented path.
+// The defensive isolation cases assert the rule does NOT fire for
+// other DeepSeek-family models (e.g. deepseek-v3) and does NOT fire
+// when the same model name is routed through a non-openai-compatible
+// provider.
+func TestReplayFieldsRules_DeepSeekReasoner(t *testing.T) {
+	t.Run("fires on deepseek-reasoner", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-reasoner")
+		if len(q.ReplayFields) != 1 || q.ReplayFields[0] != "reasoning_content" {
+			t.Errorf("ReplayFields = %v, want [reasoning_content]", q.ReplayFields)
+		}
+	})
+	t.Run("fires on deepseek-reasoner-lite (suffix variant)", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-reasoner-lite")
+		if len(q.ReplayFields) != 1 || q.ReplayFields[0] != "reasoning_content" {
+			t.Errorf("ReplayFields = %v, want [reasoning_content]", q.ReplayFields)
+		}
+	})
+	t.Run("does not fire on unrelated openai-compatible models", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-chat")
+		if len(q.ReplayFields) != 0 {
+			t.Errorf("deepseek-chat must not fire deepseek-reasoner rule; got ReplayFields=%v", q.ReplayFields)
+		}
+	})
+	t.Run("does not fire when routed through a different provider", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("gemini", "deepseek-reasoner")
+		for _, p := range q.ReplayFields {
+			if p == "reasoning_content" {
+				t.Errorf("DeepSeek rule leaked into Gemini provider resolution: %v", q.ReplayFields)
+			}
+		}
+	})
+}
+
+// TestReplayFieldsRules_DeepSeekV4 mirrors DeepSeekReasoner for the
+// v4 family rule. Same shape, different glob.
+func TestReplayFieldsRules_DeepSeekV4(t *testing.T) {
+	t.Run("fires on deepseek-v4", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-v4")
+		if len(q.ReplayFields) != 1 || q.ReplayFields[0] != "reasoning_content" {
+			t.Errorf("ReplayFields = %v, want [reasoning_content]", q.ReplayFields)
+		}
+	})
+	t.Run("fires on deepseek-v4-chat", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-v4-chat")
+		if len(q.ReplayFields) != 1 || q.ReplayFields[0] != "reasoning_content" {
+			t.Errorf("ReplayFields = %v, want [reasoning_content]", q.ReplayFields)
+		}
+	})
+	t.Run("does not fire on deepseek-v3 (no rule)", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-v3")
+		if len(q.ReplayFields) != 0 {
+			t.Errorf("deepseek-v3 must not fire deepseek-v4 rule; got ReplayFields=%v", q.ReplayFields)
+		}
+	})
+}
+
+// TestReplayFieldsRules_Gemini3 pins the gemini-3* ReplayFields rule:
+// fires on gemini-3* model ids, captures the sibling-of-functionCall
+// thoughtSignature path, and does not fire on 2.x or on
+// openai-compatible resolutions that happen to use a Gemini-like model
+// name.
+func TestReplayFieldsRules_Gemini3(t *testing.T) {
+	t.Run("fires on gemini-3.1-pro-preview", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("gemini", "gemini-3.1-pro-preview")
+		wantPath := "candidates[].content.parts[].thoughtSignature"
+		found := false
+		for _, p := range q.ReplayFields {
+			if p == wantPath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Gemini 3 rule did not register %q; got ReplayFields=%v", wantPath, q.ReplayFields)
+		}
+	})
+	t.Run("does not fire on gemini-2.5-pro", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+		if len(q.ReplayFields) != 0 {
+			t.Errorf("gemini-2.5-pro must not fire gemini-3* rule; got ReplayFields=%v", q.ReplayFields)
+		}
+	})
+	t.Run("does not fire when routed through openai-compatible", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gemini-3.1-pro-preview")
+		if len(q.ReplayFields) != 0 {
+			t.Errorf("Gemini 3 rule leaked into openai-compatible resolution: %v", q.ReplayFields)
+		}
+	})
+}
+
 // TestRuleStaleness logs (does not fail) any rule whose LastVerified
 // is more than 180 days behind today. Per design §2.3 staleness is a
 // signal, not an error — re-verification is the response, not breaking
