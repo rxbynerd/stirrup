@@ -147,6 +147,12 @@ type ModelInput struct {
 }
 
 // ToolCallRecord records a single tool call and its result.
+//
+// Structured carries the optional typed result envelope (issue #231) when the
+// tool produced one; it is nil for text-only tools and so omitted from the
+// persisted trace. It is scrubbed for secret-shaped content at record time on
+// the same footing as Output — a file excerpt or command transcript captured
+// in the structured payload can contain credentials just as the text can.
 type ToolCallRecord struct {
 	ID         string          `json:"id"`
 	Name       string          `json:"name"`
@@ -154,6 +160,7 @@ type ToolCallRecord struct {
 	Output     string          `json:"output"`
 	DurationMs int64           `json:"durationMs"`
 	Success    bool            `json:"success"`
+	Structured json.RawMessage `json:"structured,omitempty"`
 }
 
 // RunRecording is a full recording of a run.
