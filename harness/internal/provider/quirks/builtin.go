@@ -135,6 +135,71 @@ func BuiltinRules() []Rule {
 				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
 			},
 		},
+		// --- Schema lint / strict-mode rules (#228, Wave 3 Step B) ---
+		//
+		// OpenAI structured-outputs strict mode is opt-in per model:
+		// the wire body emits `strict: true` on each tool and the
+		// adapter rewrites the InputSchema so every property is in
+		// `required` with optionals nullable. The model surface that
+		// supports strict mode is documented at
+		// https://platform.openai.com/docs/guides/structured-outputs
+		// and grows as the API expands.
+		//
+		// The rules below cover the model families that explicitly
+		// list strict-mode support in the OpenAI function-calling
+		// guide as of LastVerified. A new model family added to the
+		// supported list needs its own rule; the existing
+		// `gpt-5*`/`o[1-9]*` reasoning-class rules above (which omit
+		// sampling params) compose cleanly because they touch a
+		// different field.
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-4o-mini*",
+			Description:  "OpenAI gpt-4o-mini: enable strict-mode structured outputs",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// gpt-4o-mini supports strict mode per the OpenAI
+				// structured-outputs guide. The flag drives the
+				// adapter to rewrite each tool's InputSchema and
+				// emit `strict: true` on the wire entry.
+				q.BehaviourFlags.OpenAI.StrictMode = true
+			},
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-4.1*",
+			Description:  "OpenAI gpt-4.1 family: enable strict-mode structured outputs",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// gpt-4.1, gpt-4.1-mini, and gpt-4.1-nano all support
+				// strict mode per the OpenAI structured-outputs guide.
+				q.BehaviourFlags.OpenAI.StrictMode = true
+			},
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-5*",
+			Description:  "OpenAI gpt-5 family: enable strict-mode structured outputs",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// The gpt-5 family supports strict mode in addition to
+				// the reasoning-class sampling-param omission applied
+				// by the rule above. Specificity ordering (D10) puts
+				// this rule after the existing gpt-5* reasoning rule
+				// (declaration order tiebreak), so both writes take
+				// effect — StrictMode = true and OmitSamplingParams
+				// = true on the same resolution.
+				//
+				// Note: the existing gpt-5-chat* carve-out runs LAST
+				// because its glob is longer. That rule clears
+				// OmitSamplingParams but does not touch StrictMode,
+				// so gpt-5-chat-latest will still emit strict tools.
+				// If a future API change rejects strict mode on the
+				// chat-class fork, extend the carve-out's Apply to
+				// also clear StrictMode.
+				q.BehaviourFlags.OpenAI.StrictMode = true
+			},
+		},
 		{
 			ProviderType: "gemini",
 			ModelMatch:   "gemini-3*",
@@ -157,6 +222,33 @@ func BuiltinRules() []Rule {
 				// a list, one per textual/functionCall chunk).
 				q.ReplayFields = append(q.ReplayFields,
 					"candidates[].content.parts[].thoughtSignature",
+				)
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3*",
+			Description:  "Gemini 3: reject `pattern` and `format` keywords in tool schemas",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// Gemini's function-declaration Schema dialect (a
+				// subset of OpenAPI 3.0) does not reliably honour
+				// `pattern` and `format` for tool inputs across the
+				// Gemini 3.x rollout: some surfaces silently ignore
+				// the keyword, others reject the request outright.
+				// The lint takes the conservative position — reject
+				// at request-build time so the operator sees a clear
+				// failure rather than a tool whose validation rules
+				// were quietly dropped by the wire transform.
+				//
+				// The built-in tool schemas do not use either
+				// keyword today, so this rule has no observable
+				// effect on the canonical surface; it catches
+				// operator-supplied or MCP-imported schemas that
+				// would otherwise hit Gemini's silent-drop path.
+				q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures = append(
+					q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures,
+					"pattern", "format",
 				)
 			},
 		},
