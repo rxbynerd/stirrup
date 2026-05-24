@@ -120,6 +120,16 @@ var scrubbers = []scrubber{
 		re:          regexp.MustCompile(`projects/[A-Za-z0-9_\-]+/locations`),
 		replacement: "projects/test-project/locations",
 	},
+	// GCP OAuth2 access tokens (ya29.<base64url payload>). These are
+	// the bearer tokens minted by the gcp-workload-identity and
+	// gcp-service-account credential sources; a captured Vertex AI
+	// request fixture would carry one in the Authorization header.
+	// The prefix is google-fixed, the body is opaque, so a regex on
+	// the prefix-with-trailing-payload is the right shape.
+	{
+		re:          regexp.MustCompile(`ya29\.[A-Za-z0-9_\-]+`),
+		replacement: "ya29.REDACTED",
+	},
 }
 
 // canonicalise normalises a JSON document so two semantically equal
