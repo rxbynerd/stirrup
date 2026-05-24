@@ -1115,6 +1115,15 @@ type ResultSinkConfig struct {
 type ToolsConfig struct {
 	BuiltIn    []string          `json:"builtIn,omitempty"`    // which built-in tools to enable
 	MCPServers []MCPServerConfig `json:"mcpServers,omitempty"` // MCP server connections
+	// Profile selects a model-facing presentation for the registered
+	// tools (issue #234). It controls only the names/descriptions a model
+	// sees on the wire — internal dispatch identities are unchanged, so a
+	// config that names tools by their internal IDs (grep_files,
+	// edit_file, …) keeps working under any profile. The zero value
+	// ("default") is the identity presentation: a bare run is byte-
+	// identical to the pre-profile behaviour. Closed set, validated by
+	// ValidateRunConfig.
+	Profile string `json:"profile,omitempty"`
 }
 
 // MCPServerConfig describes a single MCP server connection.
@@ -1155,6 +1164,28 @@ var validBatchProviderTypes = map[string]bool{
 var validCompatProfiles = map[string]bool{
 	"":        true, // explicit empty is the default (no profile)
 	"zai-glm": true,
+}
+
+// validToolsProfiles is the closed set of ToolsConfig.Profile values
+// accepted by ValidateRunConfig (issue #234). The empty string and
+// "default" are both the identity presentation (no aliasing) so a
+// config that omits the field and one that sets it to "default" behave
+// identically and validate cleanly.
+//
+// Adding an entry requires a matching profile table in
+// harness/internal/tool/profile.go; an entry here without one would
+// validate at config time but present no aliases, which is a silent
+// no-op rather than a clear error.
+//
+// "coding-classic" is the one alternate shipped in v1: it presents the
+// terse, widely-recognised coding-tool names (read_file→read_file is a
+// no-op, grep_files→grep, find_files→find, run_command→bash) that
+// models with strong coding-CLI priors call by reflex, while dispatch
+// still resolves them to the internal tools.
+var validToolsProfiles = map[string]bool{
+	"":               true, // explicit empty is the default (no aliasing)
+	"default":        true,
+	"coding-classic": true,
 }
 
 // gcpProjectIDPattern matches the GCP project ID rules: starts with a
@@ -1710,6 +1741,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateProviderConfigs(config, retryDefaulted, &errs)
 	validateAPIKeyRefs(config, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
+	validateToolsProfile(config.Tools.Profile, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	for name, prov := range config.Providers {
 		validateCredentialConfig(prov.Credential, fmt.Sprintf("providers[%s].credential", name), &errs)
@@ -1830,6 +1862,21 @@ func validateCompatProfile(path, value string, errs *[]string) {
 	*errs = append(*errs, fmt.Sprintf(
 		"%s %q is not a recognised compat profile; legal values: \"\", \"zai-glm\"",
 		path, value,
+	))
+}
+
+// validateToolsProfile enforces the closed set of legal
+// ToolsConfig.Profile values (issue #234). Empty string and "default"
+// are the identity presentation and validate cleanly. Unknown values
+// fail loudly with the legal-set list so a typo surfaces at startup
+// rather than as a silently un-aliased run.
+func validateToolsProfile(value string, errs *[]string) {
+	if validToolsProfiles[value] {
+		return
+	}
+	*errs = append(*errs, fmt.Sprintf(
+		"tools.profile %q is not a recognised toolset profile; legal values: \"\" (default), \"default\", \"coding-classic\"",
+		value,
 	))
 }
 
