@@ -560,6 +560,13 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	)
 
 	if q.BehaviourFlags.OpenAI.StrictMode {
+		// Dormant in v1: no built-in rule currently sets
+		// StrictMode=true for any openai-responses model, so this
+		// branch is forward-compat scaffolding. It runs in tests that
+		// inject a synthetic registry (see
+		// TestResponsesStrictMode_WireBodyShape in
+		// openai_responses_builder_test.go) and would activate the
+		// moment a builtin rule targets openai-responses.
 		logger.DebugContext(ctx, "openai-responses strict mode applied",
 			slog.String("provider.type", "openai-responses"),
 			slog.String("provider.model", params.Model),
