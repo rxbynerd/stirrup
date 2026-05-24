@@ -1578,8 +1578,21 @@ type ProviderConfig struct {
 	// entries in RunConfig.providers map are streaming-only and any batch
 	// field on them is rejected by ValidateRunConfig. See
 	// BatchProviderConfig for the mode / transport cross-field invariants.
-	// Next available field number: 15.
-	Batch         *BatchProviderConfig `protobuf:"bytes,14,opt,name=batch,proto3" json:"batch,omitempty"`
+	Batch *BatchProviderConfig `protobuf:"bytes,14,opt,name=batch,proto3" json:"batch,omitempty"`
+	// Optional. Selects a pre-defined provider-quirks compat profile that
+	// extends the adapter's wire shape (Wave 2 #221). Closed enum,
+	// validated by ValidateRunConfig at startup. Currently supported:
+	//
+	//	""        — no profile (default).
+	//	"zai-glm" — Z.ai GLM tool_stream extension and legacy max_tokens
+	//	            field. Applied on top of provider.type =
+	//	            "openai-compatible".
+	//
+	// The wire-shape knowledge lives in harness/internal/provider/compat/;
+	// this field is a discriminator only and never carries operator-
+	// authored rule data.
+	// Next available field number: 16.
+	CompatProfile string `protobuf:"bytes,15,opt,name=compat_profile,json=compatProfile,proto3" json:"compat_profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1710,6 +1723,13 @@ func (x *ProviderConfig) GetBatch() *BatchProviderConfig {
 		return x.Batch
 	}
 	return nil
+}
+
+func (x *ProviderConfig) GetCompatProfile() string {
+	if x != nil {
+		return x.CompatProfile
+	}
+	return ""
 }
 
 // BatchProviderConfig controls async batch submission for a provider
@@ -3664,7 +3684,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
 	"durationMs\x12\x1f\n" +
 	"\vstop_reason\x18\a \x01(\tR\n" +
-	"stopReason\"\xf7\x05\n" +
+	"stopReason\"\x9e\x06\n" +
 	"\x0eProviderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x16\n" +
@@ -3683,7 +3703,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x14gcp_credentials_file\x18\v \x01(\tR\x12gcpCredentialsFile\x12]\n" +
 	"\x16gemini_safety_settings\x18\f \x03(\v2'.stirrup.harness.v1.GeminiSafetySettingR\x14geminiSafetySettings\x12B\n" +
 	"\x05retry\x18\r \x01(\v2'.stirrup.harness.v1.ProviderRetryConfigH\x00R\x05retry\x88\x01\x01\x12=\n" +
-	"\x05batch\x18\x0e \x01(\v2'.stirrup.harness.v1.BatchProviderConfigR\x05batch\x1a>\n" +
+	"\x05batch\x18\x0e \x01(\v2'.stirrup.harness.v1.BatchProviderConfigR\x05batch\x12%\n" +
+	"\x0ecompat_profile\x18\x0f \x01(\tR\rcompatProfile\x1a>\n" +
 	"\x10QueryParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\b\n" +

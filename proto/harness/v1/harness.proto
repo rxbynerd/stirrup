@@ -739,8 +739,20 @@ message ProviderConfig {
   // entries in RunConfig.providers map are streaming-only and any batch
   // field on them is rejected by ValidateRunConfig. See
   // BatchProviderConfig for the mode / transport cross-field invariants.
-  // Next available field number: 15.
   BatchProviderConfig batch = 14;
+
+  // Optional. Selects a pre-defined provider-quirks compat profile that
+  // extends the adapter's wire shape (Wave 2 #221). Closed enum,
+  // validated by ValidateRunConfig at startup. Currently supported:
+  //   ""        — no profile (default).
+  //   "zai-glm" — Z.ai GLM tool_stream extension and legacy max_tokens
+  //               field. Applied on top of provider.type =
+  //               "openai-compatible".
+  // The wire-shape knowledge lives in harness/internal/provider/compat/;
+  // this field is a discriminator only and never carries operator-
+  // authored rule data.
+  // Next available field number: 16.
+  string compat_profile = 15;
 }
 
 // BatchProviderConfig controls async batch submission for a provider
