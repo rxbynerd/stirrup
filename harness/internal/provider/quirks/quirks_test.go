@@ -226,6 +226,18 @@ func TestRuleCarveOuts(t *testing.T) {
 			t.Errorf("gpt-5-chat-latest: OmitSamplingParams = true after carve-out; expected false")
 		}
 	})
+	// The carve-out clears OmitSamplingParams but deliberately leaves
+	// StrictMode set (the gpt-5* strict-mode rule fired earlier in the
+	// resolution order). An accidental edit that adds
+	// `q.BehaviourFlags.OpenAI.StrictMode = false` to the carve-out's
+	// Apply would silently regress strict-mode coverage for
+	// gpt-5-chat-latest; this assertion pins the composition.
+	t.Run("gpt-5-chat-latest retains strict mode", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-chat-latest")
+		if !q.BehaviourFlags.OpenAI.StrictMode {
+			t.Errorf("gpt-5-chat-latest: StrictMode = false after carve-out; expected true (carve-out must not clear strict mode)")
+		}
+	})
 	t.Run("gpt-5-nano omits sampling params", func(t *testing.T) {
 		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-nano")
 		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
