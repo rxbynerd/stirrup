@@ -77,6 +77,7 @@ var canonicalOpenAIFieldNames = map[string]bool{
 	"model":                 true,
 	"messages":              true,
 	"tools":                 true,
+	"tool_choice":           true,
 	"max_completion_tokens": true,
 	"max_tokens":            true,
 	"temperature":           true,

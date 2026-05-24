@@ -158,6 +158,14 @@ type openaiRequest struct {
 	TokenField         quirks.OpenAITokenField
 	OmitSamplingParams bool
 	ExtraBodyFields    map[string]any
+	// ToolChoice is the wire value for the OpenAI "tool_choice" field:
+	// a string ("auto"/"required"/"none") or an object naming a function.
+	// A nil interface omits the field entirely so the zero-value
+	// ToolChoiceAuto request is byte-identical to the pre-#230 shape.
+	// Populated by buildOpenAIRequest only when the resolved capability
+	// advertises support for the requested mode; steers MarshalJSON, it
+	// has no JSON struct tag of its own.
+	ToolChoice any
 }
 
 // MarshalJSON projects the canonical openaiRequest into the wire body
@@ -195,6 +203,9 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 	}
 	if len(r.Tools) > 0 {
 		out["tools"] = r.Tools
+	}
+	if r.ToolChoice != nil {
+		out["tool_choice"] = r.ToolChoice
 	}
 	if !r.OmitSamplingParams && r.Temperature != nil {
 		out["temperature"] = *r.Temperature
@@ -258,6 +269,14 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 		}
 		r.Temperature = &t
 		delete(raw, "temperature")
+	}
+	if v, ok := raw["tool_choice"]; ok {
+		var tc any
+		if err := json.Unmarshal(v, &tc); err != nil {
+			return fmt.Errorf("openaiRequest.tool_choice: %w", err)
+		}
+		r.ToolChoice = tc
+		delete(raw, "tool_choice")
 	}
 	// Token budget: accept either canonical key. MarshalJSON emits
 	// exactly one key, so a valid request body should not contain
@@ -414,6 +433,7 @@ var canonicalOpenAIFields = map[string]struct{}{
 	"model":                 {},
 	"messages":              {},
 	"tools":                 {},
+	"tool_choice":           {},
 	"max_completion_tokens": {},
 	"max_tokens":            {},
 	"temperature":           {},
@@ -696,6 +716,45 @@ func translateTools(tools []types.ToolDefinition, strict bool, model string, cac
 	return out, nil
 }
 
+// openAIToolChoiceFromParams projects the provider-neutral
+// StreamParams.ToolChoice onto the OpenAI tool_choice wire value, gated
+// on the resolved capability. Returns nil — meaning "emit no field" — for
+// the auto mode and for any unsupported mode, leaving the request
+// byte-identical to the pre-#230 shape.
+//
+// OpenAI accepts a string ("auto"/"required"/"none") or an object naming
+// a specific function. The named-tool form degrades to nil when the tool
+// name is empty (not expressible) rather than emitting an invalid object.
+func openAIToolChoiceFromParams(params types.StreamParams, capability quirks.ToolChoiceCapability) any {
+	if !capability.Supported {
+		return nil
+	}
+	switch params.ToolChoice {
+	case types.ToolChoiceRequired:
+		if !capability.Required {
+			return nil
+		}
+		return "required"
+	case types.ToolChoiceNone:
+		if !capability.None {
+			return nil
+		}
+		return "none"
+	case types.ToolChoiceTool:
+		if !capability.NamedTool || params.ToolChoiceName == "" {
+			return nil
+		}
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": params.ToolChoiceName},
+		}
+	default:
+		// ToolChoiceAuto (zero value): auto is the wire default, so emit
+		// nothing rather than an explicit "auto" string.
+		return nil
+	}
+}
+
 // mapFinishReason converts OpenAI's finish_reason to stirrup's stop reason.
 func mapFinishReason(reason string) string {
 	switch reason {
@@ -745,6 +804,7 @@ func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.Provide
 		TokenField:         q.BehaviourFlags.OpenAI.TokenField,
 		OmitSamplingParams: q.BehaviourFlags.OpenAI.OmitSamplingParams,
 		ExtraBodyFields:    q.BehaviourFlags.OpenAI.ExtraBodyFields,
+		ToolChoice:         openAIToolChoiceFromParams(params, q.ToolChoice),
 	}, nil
 }
 

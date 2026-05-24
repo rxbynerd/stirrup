@@ -155,6 +155,86 @@ func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 	}
 }
 
+// TestBuildOpenAIRequest_ToolChoice pins the tool_choice projection gated
+// on the resolved capability. OpenAI's base rule advertises every mode,
+// so:
+//   - ToolChoiceAuto (zero) emits no tool_choice field;
+//   - ToolChoiceRequired emits "tool_choice":"required";
+//   - ToolChoiceNone emits "tool_choice":"none";
+//   - ToolChoiceTool emits the function object;
+//   - ToolChoiceTool with no name degrades to auto (no field).
+func TestBuildOpenAIRequest_ToolChoice(t *testing.T) {
+	base := types.StreamParams{
+		Model:     "gpt-4o",
+		MaxTokens: 256,
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+		Tools: []types.ToolDefinition{
+			{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", base.Model)
+
+	cases := []struct {
+		name       string
+		choice     types.ToolChoiceMode
+		toolName   string
+		wantSubstr string // empty means "no tool_choice field"
+	}{
+		{"auto omits field", types.ToolChoiceAuto, "", ""},
+		{"required emits required", types.ToolChoiceRequired, "", `"tool_choice":"required"`},
+		{"none emits none", types.ToolChoiceNone, "", `"tool_choice":"none"`},
+		{"tool emits function object", types.ToolChoiceTool, "read_file", `"tool_choice":{"function":{"name":"read_file"},"type":"function"}`},
+		{"tool without name degrades to auto", types.ToolChoiceTool, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := base
+			params.ToolChoice = tc.choice
+			params.ToolChoiceName = tc.toolName
+			req, err := buildOpenAIRequest(params, true, q, nil)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if tc.wantSubstr == "" {
+				if strings.Contains(string(body), "tool_choice") {
+					t.Errorf("expected no tool_choice field, got body: %s", body)
+				}
+				return
+			}
+			if !strings.Contains(string(body), tc.wantSubstr) {
+				t.Errorf("expected %s in body, got: %s", tc.wantSubstr, body)
+			}
+		})
+	}
+}
+
+// TestBuildOpenAIRequest_ToolChoiceUnsupportedCapability pins the
+// graceful no-op: a zero-value capability emits no tool_choice field
+// even for a ToolChoiceRequired request.
+func TestBuildOpenAIRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
+	params := types.StreamParams{
+		Model:      "gpt-4o",
+		MaxTokens:  256,
+		ToolChoice: types.ToolChoiceRequired,
+		Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+	}
+	req, err := buildOpenAIRequest(params, true, quirks.ProviderQuirks{}, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "tool_choice") {
+		t.Errorf("zero-value capability must emit no tool_choice field, got: %s", body)
+	}
+}
+
 // TestBuildOpenAIRequest_StreamFlag verifies the stream argument drives
 // the wire field, so a future batch caller passing false produces a body
 // with "stream":false. Pinning this here prevents the helper from
