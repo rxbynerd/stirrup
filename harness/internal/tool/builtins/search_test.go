@@ -227,6 +227,51 @@ func TestGrepFilesTool_RipgrepFallsBackOnHardError(t *testing.T) {
 	}
 }
 
+// TestGrepNative_SkipsSymlinks pins the CWE-59 fix: a symlink inside the
+// workspace pointing to an external file must NOT have its content surfaced
+// to the model by grep_files. exec.ResolvePath only validates the search
+// root, so the WalkDir callback must explicitly skip symlink entries before
+// calling os.ReadFile (which would otherwise follow the symlink).
+func TestGrepNative_SkipsSymlinks(t *testing.T) {
+	withRipgrepProbe(t, false)
+	workspace := t.TempDir()
+	outside := t.TempDir()
+
+	// Regular file inside the workspace: this one MUST be matched.
+	if err := os.WriteFile(filepath.Join(workspace, "regular.txt"), []byte("match-target\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile regular: %v", err)
+	}
+	// External file with the same match content — it lives outside the
+	// workspace and MUST NOT appear in results.
+	externalPath := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(externalPath, []byte("match-target\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile external: %v", err)
+	}
+	// Symlink inside the workspace pointing at the external file. Without
+	// the symlink-skip guard, grepNative would follow this link via
+	// os.ReadFile and surface its content.
+	symlinkPath := filepath.Join(workspace, "escape.txt")
+	if err := os.Symlink(externalPath, symlinkPath); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	grep := GrepFilesTool(&fsExecutor{root: workspace})
+	input, _ := json.Marshal(map[string]any{"pattern": "match-target"})
+	out, err := grep.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "regular.txt") {
+		t.Errorf("regular file should match, got %q", out)
+	}
+	if strings.Contains(out, "escape.txt") {
+		t.Errorf("symlinked path must not appear in results (CWE-59), got %q", out)
+	}
+	if strings.Contains(out, "secret.txt") {
+		t.Errorf("external symlink target content must not be surfaced, got %q", out)
+	}
+}
+
 func TestGrepFilesTool_PathTraversalRejected(t *testing.T) {
 	mock := &mockExecutor{
 		resolvePathFunc: func(relativePath string) (string, error) {

@@ -337,6 +337,16 @@ func grepNative(dir string, re *regexp.Regexp, include, exclude []string, maxRes
 		if d.IsDir() {
 			return nil
 		}
+		// CWE-59: os.ReadFile follows symlinks unconditionally. Skipping
+		// symlink entries here closes a workspace-escape: a symlink inside
+		// the workspace pointing at /etc/shadow (or any host-readable file)
+		// would otherwise have its content surfaced to the model when it
+		// matches the search pattern. exec.ResolvePath validates the search
+		// root, not individual file reads during the walk; this is the gap
+		// it cannot cover.
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
 		if !pathMatchesFilters(path, dir, include, exclude) {
 			return nil
 		}
