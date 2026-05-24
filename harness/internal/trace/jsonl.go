@@ -257,6 +257,9 @@ func (e *JSONLTraceEmitter) Close() error {
 //     wrapped as a JSON string literal so the on-disk shape stays a
 //     valid json.RawMessage).
 //   - turn.ToolCalls[*].Output (string).
+//   - turn.ToolCalls[*].Structured (raw JSON; scrubbed via scrubRawJSON like
+//     the tool-call Input, since the structured envelope carries the same
+//     untrusted content as Output).
 func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 	out := types.TurnRecord{
 		Turn:        t.Turn,
@@ -272,6 +275,12 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 			Output:     security.Scrub(tc.Output),
 			DurationMs: tc.DurationMs,
 			Success:    tc.Success,
+			// The structured payload (issue #231) carries the same
+			// untrusted content as Output — a command transcript or file
+			// excerpt that can hold credentials — so it is scrubbed on the
+			// same footing. scrubRawJSON preserves a valid json.RawMessage
+			// shape on disk even when a secret straddles a JSON token.
+			Structured: scrubRawJSON(tc.Structured),
 		}
 	}
 	return out
