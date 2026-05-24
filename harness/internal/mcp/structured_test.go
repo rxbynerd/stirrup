@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -98,6 +99,7 @@ func TestMCP_MarksNonTextContent(t *testing.T) {
 			{"type": "resource_link", "uri": "file:///report.pdf", "name": "report", "mimeType": "application/pdf"},
 			{"type": "resource", "resource": {"uri": "file:///note.txt", "mimeType": "text/plain", "text": "inline note"}},
 			{"type": "image", "mimeType": "image/png", "data": "BASE64"},
+			{"type": "audio", "mimeType": "audio/mpeg", "data": "BASE64"},
 			{"type": "future_kind"}
 		]
 	}`
@@ -118,8 +120,8 @@ func TestMCP_MarksNonTextContent(t *testing.T) {
 	for _, n := range env.NonText {
 		byKind[n.Kind] = n
 	}
-	if len(env.NonText) != 4 {
-		t.Fatalf("expected 4 non-text descriptors (link, resource, image, unsupported), got %d: %+v", len(env.NonText), env.NonText)
+	if len(env.NonText) != 5 {
+		t.Fatalf("expected 5 non-text descriptors (link, resource, image, audio, unsupported), got %d: %+v", len(env.NonText), env.NonText)
 	}
 	if rl, ok := byKind["resource_link"]; !ok || rl.URI != "file:///report.pdf" || rl.Name != "report" {
 		t.Errorf("resource_link descriptor wrong/missing: %+v", rl)
@@ -129,6 +131,9 @@ func TestMCP_MarksNonTextContent(t *testing.T) {
 	}
 	if img, ok := byKind["image"]; !ok || img.MimeType != "image/png" {
 		t.Errorf("image descriptor wrong/missing: %+v", img)
+	}
+	if au, ok := byKind["audio"]; !ok || au.MimeType != "audio/mpeg" {
+		t.Errorf("audio descriptor wrong/missing (shares the image arm but the discriminator must be 'audio'): %+v", au)
 	}
 	if un, ok := byKind["unsupported"]; !ok || un.Name != "future_kind" {
 		t.Errorf("unsupported descriptor wrong/missing (a new content kind must be marked, not dropped): %+v", un)
@@ -227,5 +232,157 @@ func TestMCP_TextOnlyResultHasNoStructured(t *testing.T) {
 	}
 	if res.Kind != "" {
 		t.Errorf("text-only result must carry no kind, got %q", res.Kind)
+	}
+}
+
+// TestMCP_NullStructuredContentIsAbsent (BLK-2) pins that an explicit
+// "structuredContent": null does NOT fabricate a structured turn. A non-nil
+// json.RawMessage("null") would otherwise pass the len>0 guard and, since
+// omitempty does not omit a non-nil slice, serialise "structured_content":null
+// onto the wire — a spurious structured result for a server that signalled it
+// has none.
+func TestMCP_NullStructuredContentIsAbsent(t *testing.T) {
+	raw := `{"content":[{"type":"text","text":"x"}],"structuredContent":null}`
+	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "nullsc", raw), "srv", "nullsc")
+
+	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Text != "x" {
+		t.Errorf("text = %q, want %q", res.Text, "x")
+	}
+	if len(res.Structured) != 0 {
+		t.Errorf("null structuredContent must produce no envelope, got %s", res.Structured)
+	}
+	if res.Kind != "" {
+		t.Errorf("null structuredContent must produce no kind, got %q", res.Kind)
+	}
+}
+
+// TestMCP_CapsContentItemCount (BLK-3) pins that the content item-count cap
+// fires BEFORE the descriptor slice is fully built: the envelope retains at
+// most maxMCPContentItems descriptors plus a truncation marker, stays within
+// the size bound, and the overflow is marked rather than silently dropped.
+// Calling buildMCPStructured directly keeps the assertion on the allocation
+// boundary the cap protects.
+func TestMCP_CapsContentItemCount(t *testing.T) {
+	items := make([]contentItem, maxMCPContentItems+200)
+	for i := range items {
+		items[i] = contentItem{Type: "image", MimeType: "image/png"}
+	}
+	encoded := buildMCPStructured(toolsCallResult{Content: items})
+	if len(encoded) == 0 {
+		t.Fatal("expected a non-nil envelope")
+	}
+	if len(encoded) > maxMCPStructuredSize {
+		t.Fatalf("envelope %d bytes exceeds bound %d", len(encoded), maxMCPStructuredSize)
+	}
+	var env mcpStructuredResult
+	if err := json.Unmarshal(encoded, &env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	// maxMCPContentItems image descriptors + 1 truncation marker.
+	if len(env.NonText) != maxMCPContentItems+1 {
+		t.Fatalf("expected %d descriptors (cap + marker), got %d", maxMCPContentItems+1, len(env.NonText))
+	}
+	var marked bool
+	for _, n := range env.NonText {
+		if n.Kind == "unsupported" && strings.Contains(n.Name, "item-count bound") {
+			marked = true
+		}
+	}
+	if !marked {
+		t.Errorf("expected a truncation marker for the dropped items, got %+v", env.NonText)
+	}
+}
+
+// TestMCP_OversizedAssembledEnvelopeIsMarked (REC-2) pins that when many
+// individually-valid non-text descriptors push the assembled envelope past the
+// size bound, the bridge returns a marker envelope rather than silently
+// dropping everything — preserving the represent-or-mark contract.
+func TestMCP_OversizedAssembledEnvelopeIsMarked(t *testing.T) {
+	// Each resource_link carries a long URI; enough of them (under the item
+	// count cap) exceed maxMCPStructuredSize once assembled.
+	longURI := "file:///" + strings.Repeat("a", 2048)
+	const n = 200 // 200 * ~2KB ~= 400KB > 256KB, but well under maxMCPContentItems
+	items := make([]contentItem, n)
+	for i := range items {
+		items[i] = contentItem{Type: "resource_link", URI: longURI}
+	}
+	encoded := buildMCPStructured(toolsCallResult{Content: items})
+	if len(encoded) == 0 {
+		t.Fatal("expected a non-nil marker envelope, got nil")
+	}
+	if len(encoded) > maxMCPStructuredSize {
+		t.Fatalf("marker envelope %d bytes exceeds bound %d", len(encoded), maxMCPStructuredSize)
+	}
+	var env mcpStructuredResult
+	if err := json.Unmarshal(encoded, &env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if len(env.NonText) != 1 || env.NonText[0].Kind != "unsupported" || !strings.Contains(env.NonText[0].Name, "envelope dropped") {
+		t.Errorf("expected a single 'envelope dropped' marker, got %+v", env.NonText)
+	}
+}
+
+// TestMCP_BinaryBlobResourceNotInlined (REC-4) pins that an embedded resource
+// carrying a binary blob (not text) is flagged Truncated with no inlined body
+// — the bridge never forwards untrusted binary bytes, only the URI handle.
+func TestMCP_BinaryBlobResourceNotInlined(t *testing.T) {
+	raw := `{"content":[{"type":"text","text":"ok"},{"type":"resource","resource":{"uri":"file:///img.png","mimeType":"image/png","blob":"BASE64DATA=="}}]}`
+	resolved := connectAndResolve(t, mcpServerReturningCallResult(t, "blobres", raw), "files", "blobres")
+
+	res, err := callMCPStructured(t, resolved, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	var env mcpStructuredResult
+	if err := json.Unmarshal(res.Structured, &env); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if len(env.NonText) != 1 {
+		t.Fatalf("expected 1 resource descriptor, got %+v", env.NonText)
+	}
+	d := env.NonText[0]
+	if d.Kind != "resource" {
+		t.Errorf("kind = %q, want resource", d.Kind)
+	}
+	if !d.Truncated {
+		t.Errorf("binary blob resource must be flagged Truncated, got %+v", d)
+	}
+	if d.Text != "" {
+		t.Errorf("binary blob must not be inlined as text, got %q", d.Text)
+	}
+	if d.URI != "file:///img.png" {
+		t.Errorf("URI = %q, want file:///img.png (the durable handle)", d.URI)
+	}
+}
+
+// TestSanitizeMCPToolName_RuneSafe (BLK-1) pins that truncation is rune-safe:
+// a name of 65 three-byte runes (195 bytes) truncates to exactly
+// maxMCPToolNameLen runes and stays valid UTF-8 — a byte-slice cut would split
+// a codepoint and emit an invalid string into the tool.name metric attribute.
+func TestSanitizeMCPToolName_RuneSafe(t *testing.T) {
+	// "世" is a 3-byte UTF-8 rune.
+	long := strings.Repeat("世", maxMCPToolNameLen+20)
+	got := sanitizeMCPToolName(long)
+	if !utf8.ValidString(got) {
+		t.Fatalf("sanitised name is not valid UTF-8: %q", got)
+	}
+	if n := utf8.RuneCountInString(got); n != maxMCPToolNameLen {
+		t.Errorf("rune count = %d, want %d", n, maxMCPToolNameLen)
+	}
+
+	// A short name is returned unchanged.
+	short := "echo"
+	if sanitizeMCPToolName(short) != short {
+		t.Errorf("short name was altered: %q", sanitizeMCPToolName(short))
+	}
+
+	// An ASCII name exactly at the cap is unchanged.
+	atCap := strings.Repeat("a", maxMCPToolNameLen)
+	if got := sanitizeMCPToolName(atCap); got != atCap {
+		t.Errorf("at-cap name altered: len %d", len(got))
 	}
 }
