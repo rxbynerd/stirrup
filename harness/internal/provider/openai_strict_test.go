@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -371,5 +372,130 @@ func TestOpenAIStrictMode_DoesNotFireForNonStrictModel(t *testing.T) {
 	// mode is off.
 	if misses := adapter.strictSchemas.Misses.Load(); misses != 0 {
 		t.Errorf("misses = %d, want 0 (non-strict path should not consult cache)", misses)
+	}
+}
+
+// TestOpenAIStrictMode_ErrorsAreNotCached pins the documented contract
+// that normalisation failures bypass the cache entirely. A schema whose
+// strict-mode lint fails (here: contains `oneOf`) must re-surface the
+// error on every Stream call so an operator sees the rejection in logs
+// at every turn rather than once at first occurrence. Neither Hits nor
+// Misses moves on a failing call: Hits requires a lookup-hit (the
+// failing schema is never stored, so subsequent lookups also miss),
+// and Misses is only incremented on a successful normalisation.
+func TestOpenAIStrictMode_ErrorsAreNotCached(t *testing.T) {
+	// HTTP server must NOT be reached — strict-mode lint fails before
+	// any wire request is issued, on every turn.
+	hit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+	adapter.Registry = strictRegistryFor("gpt-4o-mini")
+
+	params := types.StreamParams{
+		Model:    "gpt-4o-mini",
+		Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+		Tools: []types.ToolDefinition{
+			{
+				Name:        "bad_tool",
+				Description: "uses oneOf which strict mode cannot express",
+				InputSchema: json.RawMessage(`{"oneOf":[{"type":"string"},{"type":"integer"}]}`),
+			},
+		},
+	}
+
+	// Two consecutive Stream calls with the same failing schema.
+	// Both must surface the lint error rather than the second observing
+	// a cached failure.
+	for i := 0; i < 2; i++ {
+		_, err := adapter.Stream(context.Background(), params)
+		if err == nil {
+			t.Fatalf("Stream %d: expected error, got nil", i)
+		}
+		if !strings.Contains(err.Error(), "oneOf") {
+			t.Errorf("Stream %d: error %q does not name the offending keyword", i, err)
+		}
+	}
+	if hit {
+		t.Errorf("HTTP server was reached; strict-mode lint should fail before any wire request")
+	}
+	// Both counters must stay at zero: the failing schema is never
+	// stored (so no subsequent lookup-hit is possible), and Misses
+	// only moves on a successful normalisation.
+	if hits := adapter.strictSchemas.Hits.Load(); hits != 0 {
+		t.Errorf("hits = %d, want 0 (failing schema must not produce cache hits)", hits)
+	}
+	if misses := adapter.strictSchemas.Misses.Load(); misses != 0 {
+		t.Errorf("misses = %d, want 0 (failing schema must not be memoised)", misses)
+	}
+}
+
+// TestOpenAIStrictMode_ConcurrentFirstMiss pins the singleflight
+// behaviour of the strict-schema cache: N goroutines calling Stream
+// simultaneously on the same adapter, same model, same schema produce
+// exactly one Misses increment and N-1 Hits. Prior to the B5 fix the
+// counters would overshoot — multiple goroutines could both observe
+// the initial miss, both run NormalizeStrictSchema, and both increment
+// Misses, giving Misses == N for what is logically a single miss.
+//
+// Runs with -race to also catch a regression in the lock ordering
+// inside computeAndStore. The schema is deliberately the canonical
+// strictTestSchema so the rewrite cost is realistic (small but
+// non-trivial recursive walk).
+func TestOpenAIStrictMode_ConcurrentFirstMiss(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("k"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+	adapter.Registry = strictRegistryFor("gpt-4o-mini")
+
+	params := types.StreamParams{
+		Model:    "gpt-4o-mini",
+		Messages: []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
+		Tools: []types.ToolDefinition{
+			{
+				Name:        "search",
+				Description: "search",
+				InputSchema: json.RawMessage(strictTestSchema),
+			},
+		},
+	}
+
+	const N = 32
+	var wg sync.WaitGroup
+	wg.Add(N)
+	start := make(chan struct{})
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			ch, err := adapter.Stream(context.Background(), params)
+			if err != nil {
+				t.Errorf("Stream: %v", err)
+				return
+			}
+			for range ch {
+			}
+		}()
+	}
+	// Release all goroutines at once to maximise the chance of a
+	// concurrent first-miss against the empty cache.
+	close(start)
+	wg.Wait()
+
+	misses := adapter.strictSchemas.Misses.Load()
+	hits := adapter.strictSchemas.Hits.Load()
+	if misses != 1 {
+		t.Errorf("misses = %d, want 1 (one logical first-miss across %d goroutines)", misses, N)
+	}
+	if hits != N-1 {
+		t.Errorf("hits = %d, want %d (all but the first-miss goroutine observe the cached entry)", hits, N-1)
 	}
 }
