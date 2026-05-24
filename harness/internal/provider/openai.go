@@ -247,9 +247,18 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 		r.Temperature = &t
 		delete(raw, "temperature")
 	}
-	// Token budget under either canonical key. Both should never be
-	// present simultaneously; if they are, the later (longer-glob)
-	// key wins in the same way MarshalJSON would only emit one.
+	// Token budget: accept either canonical key. MarshalJSON emits
+	// exactly one key, so a valid request body should not contain
+	// both simultaneously. If both are present the input is a caller
+	// error (likely a hand-crafted body or a misconfigured rule) and
+	// is rejected here rather than silently letting one overwrite the
+	// other; without this guard the second decode would clobber the
+	// first depending on decode order.
+	_, hasMCT := raw["max_completion_tokens"]
+	_, hasMT := raw["max_tokens"]
+	if hasMCT && hasMT {
+		return fmt.Errorf("openaiRequest: both max_completion_tokens and max_tokens present")
+	}
 	if v, ok := raw["max_completion_tokens"]; ok {
 		if err := json.Unmarshal(v, &r.MaxTokens); err != nil {
 			return fmt.Errorf("openaiRequest.max_completion_tokens: %w", err)
