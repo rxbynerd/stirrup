@@ -68,6 +68,7 @@ type AgenticLoop struct {
 	Permissions  permission.PermissionPolicy
 	Git          git.GitStrategy
 	GuardRail    guard.GuardRail
+	Escalation   EscalationPolicy // tool-choice missed-tool recovery (#230); nil = disabled
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
 	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)

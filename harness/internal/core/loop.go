@@ -417,6 +417,17 @@ func (l *AgenticLoop) runInnerLoop(
 	var lastStopReason string
 	stall := &stallDetector{}
 
+	// Tool-choice escalation state (#230). priorToolCalls tracks whether
+	// the model has dispatched any tool yet this inner-loop run;
+	// escalationsSoFar bounds the missed-tool recovery; pendingToolChoice
+	// carries a forced tool-choice mode onto the next turn's Stream call
+	// (set by the native escalation path, consumed once). All three stay
+	// at their zero values — and the escalation path is never taken — when
+	// the loop's EscalationPolicy is nil (the OFF-by-default case).
+	priorToolCalls := 0
+	escalationsSoFar := 0
+	pendingToolChoice := types.ToolChoiceAuto
+
 	for turn := 0; turn < config.MaxTurns; turn++ {
 		l.Logger.Info("turn started", "turn", turn)
 
@@ -612,6 +623,15 @@ func (l *AgenticLoop) runInnerLoop(
 		if temperature == nil {
 			temperature = types.Float64Ptr(defaultTemperature)
 		}
+		// Consume any forced tool choice the escalation path set on the
+		// previous iteration. Reset to auto immediately so the override
+		// applies to exactly one turn — a single bounded nudge, not a
+		// sticky mode. The zero value (ToolChoiceAuto) leaves the request
+		// byte-for-byte unchanged, so a run that never escalates is
+		// unaffected.
+		turnToolChoice := pendingToolChoice
+		pendingToolChoice = types.ToolChoiceAuto
+
 		ch, err := selectedProvider.Stream(spanCtx, types.StreamParams{
 			Model:       selection.Model,
 			System:      systemPrompt,
@@ -619,6 +639,7 @@ func (l *AgenticLoop) runInnerLoop(
 			Tools:       l.Tools.List(),
 			MaxTokens:   defaultReserveForResponse,
 			Temperature: temperature,
+			ToolChoice:  turnToolChoice,
 		})
 		if err != nil {
 			// Scrub the status string before it lands on the OTel span.
@@ -811,6 +832,38 @@ func (l *AgenticLoop) runInnerLoop(
 		// Extract tool calls.
 		toolCalls := collectToolCalls(sr.Blocks)
 
+		// Tool-choice escalation (#230). When the model returns a
+		// final/text answer (no tool calls) on a turn where the harness
+		// expected tool use, the injected EscalationPolicy decides whether
+		// this is a likely missed-tool failure and how to recover. The
+		// loop itself makes no judgement — it forwards the turn facts and
+		// acts on the decision. A nil policy (OFF by default) makes
+		// escalationDecision a no-op, so this block is inert on a bare run.
+		// The check runs before the terminal end_turn / non-tool-use
+		// returns so a recovered turn continues the loop instead of being
+		// accepted as the final answer.
+		if len(toolCalls) == 0 && sr.StopReason != "tool_use" {
+			decision := l.escalationDecision(EscalationInput{
+				Mode:             config.Mode,
+				Provider:         selection.Provider,
+				Model:            selection.Model,
+				StopReason:       sr.StopReason,
+				ToolsAvailable:   len(toolDefs) > 0,
+				PriorToolCalls:   priorToolCalls,
+				Turn:             turn,
+				EscalationsSoFar: escalationsSoFar,
+			})
+			if decision.Kind != EscalationNone {
+				// Persist the no-tool turn transcript before the retry so
+				// replay/mining still sees the rejected answer. The retry
+				// turn is recorded separately on its own iteration.
+				l.Trace.RecordTurnRecord(turnRecord)
+				messages = l.applyEscalation(ctx, config, decision, selection.Provider, selection.Model, messages, &pendingToolChoice)
+				escalationsSoFar++
+				continue
+			}
+		}
+
 		if sr.StopReason == "end_turn" {
 			// Record the turn transcript with no tool calls before the
 			// success return. Even an end_turn carries a transcript
@@ -880,6 +933,11 @@ func (l *AgenticLoop) runInnerLoop(
 		turnRecord.ToolCalls = toolRecords
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
+		// Record that the model has now used tools this run. The
+		// escalation trigger (#230) fires only on the first assistant
+		// turn with no prior tool calls; once this is non-zero a later
+		// no-tool answer is a legitimate judgement and is left alone.
+		priorToolCalls += len(toolCalls)
 		if stallOutcome != "" {
 			return messages, stallOutcome
 		}
@@ -906,6 +964,74 @@ func (l *AgenticLoop) runInnerLoop(
 
 	// Reached max turns.
 	return messages, "max_turns"
+}
+
+// applyEscalation performs the recovery the EscalationPolicy chose for a
+// suspected missed-tool turn (#230) and records its observability. It
+// returns the (possibly extended) message history.
+//
+//   - EscalationNative sets *pendingToolChoice to ToolChoiceRequired so
+//     the next turn's Stream call forces a tool. The provider adapter only
+//     honours this when the resolved capability supports it; the policy has
+//     already confirmed support, but the prompt path is the safe fallback
+//     either way.
+//   - EscalationPrompt appends a user message stating the unmet
+//     requirement so the model is nudged to call a tool on the next turn.
+//
+// Both paths emit a stirrup.harness.tool_failures observation under the
+// no_tool_when_required category (bounded labels only — no model strings)
+// and an escalation OTel span tagged with the run mode, the chosen kind,
+// and the policy's reason, so operators can audit why a retry happened.
+func (l *AgenticLoop) applyEscalation(
+	ctx context.Context,
+	config *types.RunConfig,
+	decision EscalationDecision,
+	providerType, model string,
+	messages []types.Message,
+	pendingToolChoice *types.ToolChoiceMode,
+) []types.Message {
+	switch decision.Kind {
+	case EscalationNative:
+		*pendingToolChoice = types.ToolChoiceRequired
+	case EscalationPrompt:
+		if decision.PromptMessage != "" {
+			messages = append(messages, types.Message{
+				Role: "user",
+				Content: []types.ContentBlock{
+					{Type: "text", Text: decision.PromptMessage},
+				},
+			})
+		}
+	}
+
+	// Co-emit into the tool-failure series so dashboards keyed on
+	// stirrup.harness.tool_failures see missed-tool recovery alongside the
+	// dispatch-site categories. tool.name is the empty bounded sentinel —
+	// no tool was involved — matching the provider_request/stream paths.
+	l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
+		attribute.String("tool.name", ""),
+		attribute.String("category", observability.ToolFailureNoToolWhenRequired.String()),
+		attribute.String("provider.type", providerType),
+		attribute.String("provider.model", model),
+		attribute.String("run.mode", config.Mode),
+	))
+
+	_, span := l.Tracer.Start(l.traceCtx(ctx), "tool_choice.escalation",
+		oteltrace.WithAttributes(
+			attribute.String("run.mode", config.Mode),
+			attribute.String("escalation.kind", decision.Kind.String()),
+			attribute.String("escalation.reason", decision.Reason),
+		),
+	)
+	span.End()
+
+	l.Logger.Info("tool-choice escalation",
+		"mode", config.Mode,
+		"kind", decision.Kind.String(),
+		"reason", decision.Reason,
+	)
+
+	return messages
 }
 
 // RunFollowUpLoop waits for follow-up user_response control events on the
