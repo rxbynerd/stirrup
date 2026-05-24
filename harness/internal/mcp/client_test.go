@@ -119,6 +119,25 @@ func writeJSONRPCError(w http.ResponseWriter, id int64, code int, message string
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// callMCPText invokes a registered MCP tool's StructuredHandler and returns
+// the canonical text fallback. MCP tools register a StructuredHandler (issue
+// #231 B2) rather than a plain Handler, so tests exercising only the text
+// result route through this helper. callMCPStructured returns the full
+// StructuredResult for tests that assert the structured envelope.
+func callMCPText(t *testing.T, tl *tool.Tool, input json.RawMessage) (string, error) {
+	t.Helper()
+	res, err := callMCPStructured(t, tl, input)
+	return res.Text, err
+}
+
+func callMCPStructured(t *testing.T, tl *tool.Tool, input json.RawMessage) (tool.StructuredResult, error) {
+	t.Helper()
+	if tl.StructuredHandler == nil {
+		t.Fatalf("tool %q has no StructuredHandler", tl.Name)
+	}
+	return tl.StructuredHandler(context.Background(), input)
+}
+
 func TestConnect_ToolDiscovery(t *testing.T) {
 	tools := []mcpTool{
 		{
@@ -195,7 +214,7 @@ func TestConnect_ToolCallDispatch(t *testing.T) {
 		t.Fatal("tool not found")
 	}
 
-	result, err := resolved.Handler(context.Background(), json.RawMessage(`{}`))
+	result, err := callMCPText(t, resolved, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
@@ -238,7 +257,7 @@ func TestConnect_SessionIDManagement(t *testing.T) {
 	if resolved == nil {
 		t.Fatal("tool not found")
 	}
-	_, _ = resolved.Handler(context.Background(), json.RawMessage(`{}`))
+	_, _ = callMCPText(t, resolved, json.RawMessage(`{}`))
 
 	reqs = log.get()
 	if len(reqs) < 2 {
@@ -456,7 +475,7 @@ func TestConnect_ToolCallError(t *testing.T) {
 		t.Fatal("tool not found")
 	}
 
-	_, err := resolved.Handler(context.Background(), json.RawMessage(`{}`))
+	_, err := callMCPText(t, resolved, json.RawMessage(`{}`))
 	if err == nil {
 		t.Fatal("expected error from tool call")
 	}
@@ -593,7 +612,7 @@ func TestMCPCall_RecordsMetrics_Success(t *testing.T) {
 	if resolved == nil {
 		t.Fatal("tool not found")
 	}
-	if _, err := resolved.Handler(context.Background(), json.RawMessage(`{}`)); err != nil {
+	if _, err := callMCPText(t, resolved, json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
 
@@ -675,7 +694,7 @@ func TestMCPCall_RecordsMetrics_Failure(t *testing.T) {
 	if resolved == nil {
 		t.Fatal("tool not found")
 	}
-	if _, err := resolved.Handler(context.Background(), json.RawMessage(`{}`)); err == nil {
+	if _, err := callMCPText(t, resolved, json.RawMessage(`{}`)); err == nil {
 		t.Fatal("expected handler error from isError=true response")
 	}
 
@@ -831,7 +850,7 @@ func TestRegisterMCPTool_RecordsTruncatedToolName(t *testing.T) {
 	if resolved == nil {
 		t.Fatal("registered tool not found")
 	}
-	if _, err := resolved.Handler(context.Background(), json.RawMessage(`{}`)); err != nil {
+	if _, err := callMCPText(t, resolved, json.RawMessage(`{}`)); err != nil {
 		t.Fatalf("Handler: %v", err)
 	}
 
