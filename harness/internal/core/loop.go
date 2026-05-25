@@ -683,7 +683,7 @@ func (l *AgenticLoop) runInnerLoop(
 			// provider failure but not a tool-use failure.
 			if len(toolDefs) > 0 {
 				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-					attribute.String("tool.name", ""),
+					attribute.String("tool.name", observability.ToolNameProviderScope),
 					attribute.String("category", observability.ToolFailureProviderRequest.String()),
 					attribute.String("provider.type", selection.Provider),
 					attribute.String("provider.model", selection.Model),
@@ -743,7 +743,7 @@ func (l *AgenticLoop) runInnerLoop(
 			// rejected request.
 			if len(toolDefs) > 0 {
 				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-					attribute.String("tool.name", ""),
+					attribute.String("tool.name", observability.ToolNameProviderScope),
 					attribute.String("category", observability.ToolFailureProviderStream.String()),
 					attribute.String("provider.type", selection.Provider),
 					attribute.String("provider.model", selection.Model),
@@ -1012,7 +1012,7 @@ func (l *AgenticLoop) applyEscalation(
 	// dynamic category can never widen label cardinality past the enum.
 	if observability.ToolFailureNoToolWhenRequired.IsValid() {
 		l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-			attribute.String("tool.name", ""),
+			attribute.String("tool.name", observability.ToolNameProviderScope),
 			attribute.String("category", observability.ToolFailureNoToolWhenRequired.String()),
 			attribute.String("provider.type", providerType),
 			attribute.String("provider.model", model),
