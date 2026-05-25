@@ -1,0 +1,38 @@
+# synthetic: derived from buildResponsesRequest + DefaultRegistry().Resolve because the harness does not yet carry a live capture. Pins the tool-enabled OpenAI Responses request shape: tools are the flat function form (type/name/description/parameters), input items use the typed message/input_text variants (the #199 fix), max_output_tokens carries the budget, and store is always emitted. See testdata/quirks/README.md to refresh.
+{
+  "model": "gpt-4o",
+  "instructions": "You are helpful.",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "weather in Paris?"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get the current weather for a city.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "max_output_tokens": 4096,
+  "temperature": 0.5,
+  "stream": true,
+  "store": false
+}
