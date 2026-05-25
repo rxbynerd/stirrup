@@ -671,6 +671,93 @@ func TestStructuredToolResultRulesSetSupportedWhenAnyShape(t *testing.T) {
 	}
 }
 
+// TestParallelToolCallsCapabilityRules pins which providers advertise a
+// native parallel-tool-call control (#222). Gemini and Bedrock are the
+// load-bearing negatives: builtin.go names them as deliberately absent, so a
+// future rule flipping Supported=true cannot land unnoticed.
+func TestParallelToolCallsCapabilityRules(t *testing.T) {
+	supported := map[string]string{
+		"anthropic":         "claude-sonnet-4-5",
+		"openai-compatible": "gpt-4o",
+		"openai-responses":  "gpt-4o",
+	}
+	for provider, model := range supported {
+		t.Run(provider+" advertises disable", func(t *testing.T) {
+			q := DefaultRegistry().Resolve(provider, model)
+			want := ParallelToolCallsCapability{Supported: true, Disable: true}
+			if q.ParallelToolCalls != want {
+				t.Errorf("%s: ParallelToolCalls = %+v, want %+v", provider, q.ParallelToolCalls, want)
+			}
+		})
+	}
+
+	unsupported := map[string]string{
+		"gemini":         "gemini-2.5-pro",
+		"bedrock":        "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"mystery-vendor": "some-model",
+	}
+	for provider, model := range unsupported {
+		t.Run(provider+" stays unsupported", func(t *testing.T) {
+			q := DefaultRegistry().Resolve(provider, model)
+			if q.ParallelToolCalls != (ParallelToolCallsCapability{}) {
+				t.Errorf("%s: ParallelToolCalls = %+v, want zero value (unsupported)", provider, q.ParallelToolCalls)
+			}
+		})
+	}
+}
+
+// TestToolExamplesCapabilityRules pins which providers accept the JSON-Schema
+// `examples` keyword in a tool's parameters (#222). Gemini is the load-bearing
+// negative: its Schema dialect rejects `examples`, so the example must reach
+// the model via the description text instead — never folded into the schema.
+func TestToolExamplesCapabilityRules(t *testing.T) {
+	supported := map[string]string{
+		"anthropic":         "claude-sonnet-4-5",
+		"openai-compatible": "gpt-4o",
+		"openai-responses":  "gpt-4o",
+	}
+	for provider, model := range supported {
+		t.Run(provider+" accepts schema examples", func(t *testing.T) {
+			q := DefaultRegistry().Resolve(provider, model)
+			want := ToolExamplesCapability{Supported: true}
+			if q.ToolExamples != want {
+				t.Errorf("%s: ToolExamples = %+v, want %+v", provider, q.ToolExamples, want)
+			}
+		})
+	}
+
+	unsupported := map[string]string{
+		"gemini":         "gemini-2.5-pro",
+		"bedrock":        "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		"mystery-vendor": "some-model",
+	}
+	for provider, model := range unsupported {
+		t.Run(provider+" stays unsupported", func(t *testing.T) {
+			q := DefaultRegistry().Resolve(provider, model)
+			if q.ToolExamples != (ToolExamplesCapability{}) {
+				t.Errorf("%s: ToolExamples = %+v, want zero value (unsupported)", provider, q.ToolExamples)
+			}
+		})
+	}
+}
+
+// TestParallelToolCallsRulesSetSupportedWhenDisable pins the structural
+// relationship the adapters depend on: any rule that turns on the Disable bool
+// must also set Supported. An adapter checks Supported as the master gate, so
+// a rule that set Disable without Supported would silently no-op.
+func TestParallelToolCallsRulesSetSupportedWhenDisable(t *testing.T) {
+	for i, rule := range BuiltinRules() {
+		if rule.Apply == nil {
+			continue
+		}
+		q := freshQuirks()
+		rule.Apply(&q)
+		if q.ParallelToolCalls.Disable && !q.ParallelToolCalls.Supported {
+			t.Errorf("BuiltinRules()[%d] (%q): Disable is set but Supported is false", i, rule.Description)
+		}
+	}
+}
+
 // freshQuirks returns a ProviderQuirks with the same map/slice
 // pre-initialisation Resolve performs, for rule-materialisation tests
 // that call Apply directly.

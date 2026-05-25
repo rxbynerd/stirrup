@@ -385,5 +385,66 @@ func BuiltinRules() []Rule {
 				)
 			},
 		},
+		// --- Parallel-tool-call + input-example capability rules (#222) ---
+		//
+		// Both are cross-provider capabilities, so the resolved flags live on
+		// the top-level ProviderQuirks.ParallelToolCalls / .ToolExamples
+		// fields rather than a provider sub-struct. Each first-party provider
+		// that has a native parallel control and/or accepts the JSON-Schema
+		// `examples` keyword declares a base "*" rule; the adapters gate
+		// serialisation on the resolved capability and emit nothing when it is
+		// unsupported.
+		//
+		// Gemini and Bedrock are deliberately absent: Gemini has no native
+		// parallel control and its Schema dialect rejects `examples` (the
+		// example still reaches the model via the #227 description text), and
+		// the Bedrock Converse API has neither control. Both therefore stay at
+		// the zero-value (unsupported) capability by construction — pinned by
+		// the negative assertions in TestParallelToolCallsCapabilityRules and
+		// TestToolExamplesCapabilityRules.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "*",
+			Description:  "Anthropic: disable_parallel_tool_use on tool_choice; accepts schema examples",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// Anthropic expresses "no parallel" via
+				// tool_choice.disable_parallel_tool_use; there is no top-level
+				// field, so the adapter synthesises a tool_choice object when a
+				// disable is requested. The Messages API passes through
+				// arbitrary JSON-Schema keywords in input_schema, so `examples`
+				// reaches the model.
+				q.ParallelToolCalls = ParallelToolCallsCapability{Supported: true, Disable: true}
+				q.ToolExamples = ToolExamplesCapability{Supported: true}
+			},
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*",
+			Description:  "OpenAI-compatible: top-level parallel_tool_calls; accepts schema examples",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// OpenAI Chat Completions accepts a top-level
+				// `parallel_tool_calls` bool (either direction) and passes
+				// through the JSON-Schema `examples` keyword in a function's
+				// parameters object.
+				q.ParallelToolCalls = ParallelToolCallsCapability{Supported: true, Disable: true}
+				q.ToolExamples = ToolExamplesCapability{Supported: true}
+			},
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "*",
+			Description:  "OpenAI Responses: top-level parallel_tool_calls; accepts schema examples",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// The Responses API shares the Chat Completions
+				// `parallel_tool_calls` bool and schema passthrough. This is
+				// the first builtin rule for the openai-responses provider
+				// type — it previously resolved an empty quirks set.
+				q.ParallelToolCalls = ParallelToolCallsCapability{Supported: true, Disable: true}
+				q.ToolExamples = ToolExamplesCapability{Supported: true}
+			},
+		},
 	}
 }
