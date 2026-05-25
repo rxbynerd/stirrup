@@ -61,10 +61,30 @@ type ToolCall struct {
 }
 
 // ToolResult represents the result of a tool invocation.
+//
+// Content is the canonical text rendering of the result and is always
+// populated — it is the fallback every provider can accept. Structured is
+// an optional, purely additive typed payload (issue #231): producers that
+// can describe their output as stable fields (a command's stdout/stderr/exit
+// code, a search's path/line/text matches, a file excerpt's line window)
+// marshal a typed Go struct into it so downstream consumers can parse the
+// result without re-deriving it from the text. The zero value (nil) means
+// "no structured data", so a text-only result serialises byte-identically to
+// the pre-#231 shape via omitempty. Whether a provider receives Content or
+// Structured on the wire is decided by the provider adapters (issue #231 B2),
+// not here; the harness always keeps Content populated as the safe fallback.
+//
+// Kind names the shape of the Structured payload (e.g. "command_result",
+// "file_excerpt") so B2's provider adapters and MCP bridge can route it by a
+// stable discriminator instead of unmarshalling and sniffing the JSON (which
+// would breach the typed-not-`any` rule). It is empty for text-only results
+// and so omitted from the wire, preserving byte-identical pre-#231 output.
 type ToolResult struct {
-	ToolUseID string `json:"tool_use_id"`
-	Content   string `json:"content"`
-	IsError   bool   `json:"is_error,omitempty"`
+	ToolUseID  string          `json:"tool_use_id"`
+	Content    string          `json:"content"`
+	IsError    bool            `json:"is_error,omitempty"`
+	Structured json.RawMessage `json:"structured,omitempty"`
+	Kind       string          `json:"kind,omitempty"`
 }
 
 // Artifact represents a named output produced during a run.

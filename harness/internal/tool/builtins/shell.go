@@ -40,51 +40,76 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 		InputSchema:       runCommandSchema,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
-		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {
+		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
 			var params struct {
 				Command string `json:"command"`
 				Timeout *int   `json:"timeout"`
 			}
 			if err := json.Unmarshal(input, &params); err != nil {
-				return "", fmt.Errorf("parse input: %w", err)
+				return tool.StructuredResult{}, fmt.Errorf("parse input: %w", err)
 			}
 			if params.Command == "" {
-				return "", fmt.Errorf("command is required")
+				return tool.StructuredResult{}, fmt.Errorf("command is required")
 			}
 
-			timeout := 30 * time.Second
+			timeoutSeconds := 30
 			if params.Timeout != nil {
-				t := *params.Timeout
-				if t <= 0 {
-					t = 30
+				timeoutSeconds = *params.Timeout
+				if timeoutSeconds <= 0 {
+					timeoutSeconds = 30
 				}
-				if t > 300 {
-					t = 300
+				if timeoutSeconds > 300 {
+					timeoutSeconds = 300
 				}
-				timeout = time.Duration(t) * time.Second
 			}
+			timeout := time.Duration(timeoutSeconds) * time.Second
 
 			result, err := exec.Exec(ctx, params.Command, timeout)
 			if err != nil {
-				return "", err
+				return tool.StructuredResult{}, err
 			}
 
-			var out strings.Builder
-			if result.Stdout != "" {
-				out.WriteString(result.Stdout)
-			}
-			if result.Stderr != "" {
-				if out.Len() > 0 {
-					out.WriteString("\n")
-				}
-				out.WriteString("STDERR:\n")
-				out.WriteString(result.Stderr)
-			}
-			if result.ExitCode != 0 {
-				fmt.Fprintf(&out, "\n[exit code: %d]", result.ExitCode)
+			structured, marshalErr := json.Marshal(commandResult{
+				Stdout:   result.Stdout,
+				Stderr:   result.Stderr,
+				ExitCode: result.ExitCode,
+				// A timeout surfaces as the err above, so a result reaching
+				// here always completed within the bound.
+				TimedOut:       false,
+				TimeoutSeconds: timeoutSeconds,
+			})
+			if marshalErr != nil {
+				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
 			}
 
-			return out.String(), nil
+			return tool.StructuredResult{
+				Text:       formatRunCommand(result.Stdout, result.Stderr, result.ExitCode),
+				Structured: structured,
+				Kind:       kindCommandResult,
+			}, nil
 		},
 	}
+}
+
+// formatRunCommand renders the canonical text output for run_command:
+// stdout, then a "STDERR:" block when stderr is non-empty, then a
+// "[exit code: N]" line when the command exited non-zero. This is the
+// text fallback every provider can accept and must stay byte-identical to
+// the pre-#231 rendering.
+func formatRunCommand(stdout, stderr string, exitCode int) string {
+	var out strings.Builder
+	if stdout != "" {
+		out.WriteString(stdout)
+	}
+	if stderr != "" {
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString("STDERR:\n")
+		out.WriteString(stderr)
+	}
+	if exitCode != 0 {
+		fmt.Fprintf(&out, "\n[exit code: %d]", exitCode)
+	}
+	return out.String()
 }

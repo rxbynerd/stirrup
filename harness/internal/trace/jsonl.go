@@ -257,6 +257,9 @@ func (e *JSONLTraceEmitter) Close() error {
 //     wrapped as a JSON string literal so the on-disk shape stays a
 //     valid json.RawMessage).
 //   - turn.ToolCalls[*].Output (string).
+//   - turn.ToolCalls[*].Structured (raw JSON; scrubbed via scrubRawJSON like
+//     the tool-call Input, since the structured envelope carries the same
+//     untrusted content as Output).
 func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 	out := types.TurnRecord{
 		Turn:        t.Turn,
@@ -272,6 +275,12 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 			Output:     security.Scrub(tc.Output),
 			DurationMs: tc.DurationMs,
 			Success:    tc.Success,
+			// The structured payload (issue #231) carries the same
+			// untrusted content as Output — a command transcript or file
+			// excerpt that can hold credentials — so it is scrubbed on the
+			// same footing. scrubRawJSON preserves a valid json.RawMessage
+			// shape on disk even when a secret straddles a JSON token.
+			Structured: scrubRawJSON(tc.Structured),
 		}
 	}
 	return out
@@ -324,6 +333,13 @@ func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 // boundary breaks a JSON literal), the entire payload is replaced by a
 // JSON string literal carrying the scrubbed text so the on-disk shape
 // stays parseable.
+//
+// Assumes the caller produced the json.RawMessage with encoding/json's default
+// (non-HTML-escaping) marshaller. An HTML-escaping encoder (json.HTMLEscape, or
+// json.Encoder without SetEscapeHTML(false)) would emit `<`, `>`, `&` and
+// U+2028/U+2029 as \uXXXX sequences in the raw byte stream, which can cause a
+// secret regex anchored on those characters to miss. Do not pipe HTMLEscape
+// output through this function.
 func scrubRawJSON(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return raw

@@ -37,6 +37,7 @@ type pendingCall struct {
 	spanCtx     context.Context //nolint:containedctx // span parent ctx threaded into dispatch
 	startedAt   time.Time
 	output      string
+	structured  structuredOutput // optional typed result payload + kind (issue #231); zero value for text-only tools and every failure path
 	success     bool
 	errorReason string // guard-deny reason; written to trace (apply security.Scrub before setting)
 	denied      bool   // PhasePreTool deny path; takes priority over (output, success)
@@ -164,8 +165,9 @@ func (l *AgenticLoop) planAndDispatch(
 
 		// Sync path: dispatch inline, preserving the sequential code's
 		// behaviour for sync tools (including Unknown).
-		output, success, category := l.dispatchToolCallCategorized(toolSpanCtx, call)
+		output, success, category, structured := l.dispatchToolCallCategorized(toolSpanCtx, call)
 		plan[i].output = output
+		plan[i].structured = structured
 		plan[i].success = success
 		plan[i].failureCategory = category
 	}
@@ -212,8 +214,9 @@ func (l *AgenticLoop) planAndDispatch(
 						)
 					}
 				}()
-				output, success, category := l.dispatchToolCallCategorized(plan[idx].spanCtx, plan[idx].call)
+				output, success, category, structured := l.dispatchToolCallCategorized(plan[idx].spanCtx, plan[idx].call)
 				plan[idx].output = output
+				plan[idx].structured = structured
 				plan[idx].success = success
 				plan[idx].failureCategory = category
 			}()
@@ -322,9 +325,11 @@ func (l *AgenticLoop) planAndDispatch(
 		}
 
 		toolResults[i] = types.ToolResult{
-			ToolUseID: p.call.ID,
-			Content:   p.output,
-			IsError:   !p.success,
+			ToolUseID:  p.call.ID,
+			Content:    p.output,
+			IsError:    !p.success,
+			Structured: p.structured.payload,
+			Kind:       p.structured.kind,
 		}
 		// Full record carries raw input/output for the turn transcript.
 		// The dispatch site is the only place with both fields in scope:
@@ -340,6 +345,8 @@ func (l *AgenticLoop) planAndDispatch(
 			Output:     p.output,
 			DurationMs: callDuration.Milliseconds(),
 			Success:    p.success,
+			Structured: p.structured.payload,
+			Kind:       p.structured.kind,
 		}
 
 		if err := l.Transport.Emit(types.HarnessEvent{

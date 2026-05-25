@@ -304,6 +304,55 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured pins the issue #231
+// requirement that the structured tool-result payload is scrubbed on the same
+// footing as the text Output: a command transcript or file excerpt carried in
+// ToolCallRecord.Structured must never reach disk with a secret in the clear.
+func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	emitter.Start("run-scrub-structured", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ToolCalls: []types.ToolCallRecord{
+			{
+				Name:    "run_command",
+				Input:   json.RawMessage(`{"command":"cat .env"}`),
+				Output:  "redacted in text already",
+				Success: true,
+				Structured: json.RawMessage(
+					`{"stdout":"API_KEY=sk-ant-api03-structuredleak","stderr":"","exit_code":0}`,
+				),
+			},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	if strings.Contains(onDisk, "sk-ant-api03-structuredleak") {
+		t.Errorf("scrubber missed secret in structured payload on disk:\n%s", onDisk)
+	}
+	if !strings.Contains(onDisk, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] placeholder proving the structured scrub ran, got:\n%s", onDisk)
+	}
+	// The on-disk structured payload must remain a parseable JSON object,
+	// not a mangled fragment — scrubRawJSON preserves a valid shape.
+	if !strings.Contains(onDisk, `"structured"`) {
+		t.Errorf("expected the structured field to survive scrubbing in the trace, got:\n%s", onDisk)
+	}
+	// R3 guard: scrubRawJSON scrubs the raw byte stream and assumes a
+	// non-HTML-escaping marshaller. None of this fixture's strings contain
+	// HTML-special chars, so no \uXXXX escapes must appear on disk; if a
+	// future change pipes HTMLEscape output through scrubRawJSON this fails,
+	// flagging that secret regexes could miss escaped bytes.
+	if strings.Contains(onDisk, `\u`) {
+		t.Errorf("unexpected \\u escape on disk — an HTML-escaping encoder would defeat raw-byte scrubbing:\n%s", onDisk)
+	}
+}
+
 // TestJSONLTraceEmitter_PartialStream pins the SIGKILL-safety property:
 // when a run is interrupted between RecordTurnRecord and Finish, the
 // on-disk file is still parseable up to the last completed event.

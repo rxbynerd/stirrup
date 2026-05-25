@@ -74,7 +74,7 @@ func TestGrepNative_PermissionDeniedSubdirSkipped(t *testing.T) {
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("permission-denied dir must not surface as an error; got: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestFindNative_PermissionDeniedSubdirSkipped(t *testing.T) {
 
 	find := FindFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
-	out, err := find.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), find, input)
 	if err != nil {
 		t.Fatalf("permission-denied dir must not surface as an error; got: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestGrepFilesTool_NativeMatchesContent(t *testing.T) {
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "Hello"})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestGrepFilesTool_InvalidRegex(t *testing.T) {
 	// `[` is an unbalanced character class — a common mistake for models
 	// that confuse shell globs with regexes.
 	input, _ := json.Marshal(map[string]any{"pattern": "["})
-	_, err := grep.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), grep, input)
 	if err == nil {
 		t.Fatal("expected error for invalid regex")
 	}
@@ -204,7 +204,7 @@ func TestGrepFilesTool_MaxResultsBound(t *testing.T) {
 	}
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "needle", "max_results": 2})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestGrepFilesTool_IncludeExclude(t *testing.T) {
 		"include": []string{"*.go"},
 		"exclude": []string{"skip.go"},
 	})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestGrepFilesTool_NoMatches(t *testing.T) {
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "absent_pattern"})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestGrepFilesTool_BinaryFilesSkipped(t *testing.T) {
 
 	grep := GrepFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"pattern": "match"})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -289,7 +289,10 @@ func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
 		canExec: true,
 		execFn: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
 			capturedCmd = command
-			return &executor.ExecResult{ExitCode: 0, Stdout: "x.go:1:hit\n"}, nil
+			return &executor.ExecResult{
+				ExitCode: 0,
+				Stdout:   `{"type":"match","data":{"path":{"text":"x.go"},"lines":{"text":"hit\n"},"line_number":1}}` + "\n",
+			}, nil
 		},
 	}
 	grep := GrepFilesTool(fe)
@@ -298,15 +301,20 @@ func TestGrepFilesTool_RipgrepPathSelected(t *testing.T) {
 		"include": []string{"*.go"},
 		"exclude": []string{"vendor/**"},
 	})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.HasPrefix(capturedCmd, "rg ") {
 		t.Errorf("expected rg command, got %q", capturedCmd)
 	}
-	if !strings.Contains(out, "x.go:1:hit") {
-		t.Errorf("expected rg stdout in result, got %q", out)
+	if !strings.Contains(capturedCmd, "--json") {
+		t.Errorf("expected --json in rg invocation, got %q", capturedCmd)
+	}
+	// The rendered text is reconstructed from the JSON fields and must match
+	// the historical "path:line:text" form byte-for-byte.
+	if out != "x.go:1:hit" {
+		t.Errorf("expected reconstructed rg text 'x.go:1:hit', got %q", out)
 	}
 	// Each include glob must be passed to rg as --glob 'pattern' and each
 	// exclude glob as --glob '!pattern' — the two for-loops in
@@ -332,7 +340,7 @@ func TestGrepFilesTool_RipgrepFallsBackOnHardError(t *testing.T) {
 	}
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "foo"})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -372,7 +380,7 @@ func TestGrepNative_SkipsSymlinks(t *testing.T) {
 
 	grep := GrepFilesTool(&fsExecutor{root: workspace})
 	input, _ := json.Marshal(map[string]any{"pattern": "match-target"})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -407,7 +415,7 @@ func TestGrepViaRipgrep_TransportErrorFallsBackToNative(t *testing.T) {
 	}
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("transport error must not surface; expected native fallback, got: %v", err)
 	}
@@ -434,7 +442,7 @@ func TestGrepViaRipgrep_ContextCancelPropagates(t *testing.T) {
 	}
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "needle"})
-	_, err := grep.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), grep, input)
 	if err == nil {
 		t.Fatal("expected context.Canceled to propagate")
 	}
@@ -451,7 +459,7 @@ func TestGrepFilesTool_PathTraversalRejected(t *testing.T) {
 	}
 	grep := GrepFilesTool(mock)
 	input, _ := json.Marshal(map[string]any{"pattern": "secret", "path": "../../etc"})
-	_, err := grep.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), grep, input)
 	if err == nil {
 		t.Fatal("expected resolve-path error")
 	}
@@ -469,7 +477,7 @@ func TestFindFilesTool_GlobMatch(t *testing.T) {
 
 	find := FindFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "*.go"})
-	out, err := find.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), find, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -491,7 +499,7 @@ func TestFindFilesTool_RecursesIntoSubdirs(t *testing.T) {
 
 	find := FindFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "handler_*.go"})
-	out, err := find.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), find, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -507,7 +515,7 @@ func TestFindFilesTool_MaxResultsBound(t *testing.T) {
 	}
 	find := FindFilesTool(&fsExecutor{root: dir})
 	input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": 2})
-	out, err := find.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), find, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -520,7 +528,7 @@ func TestFindFilesTool_MaxResultsBound(t *testing.T) {
 func TestFindFilesTool_NoMatches(t *testing.T) {
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 	input, _ := json.Marshal(map[string]any{"name": "*.nope"})
-	out, err := find.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), find, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -533,7 +541,7 @@ func TestFindFilesTool_InvalidGlob(t *testing.T) {
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 	// An unbalanced bracket is rejected by filepath.Match.
 	input, _ := json.Marshal(map[string]any{"name": "[broken"})
-	_, err := find.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), find, input)
 	if err == nil {
 		t.Fatal("expected error for invalid glob")
 	}
@@ -550,7 +558,7 @@ func TestFindFilesTool_PathTraversalRejected(t *testing.T) {
 	}
 	find := FindFilesTool(mock)
 	input, _ := json.Marshal(map[string]any{"name": "*.go", "path": "../../etc"})
-	_, err := find.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), find, input)
 	if err == nil {
 		t.Fatal("expected resolve-path error")
 	}
@@ -564,14 +572,14 @@ func TestFindFilesTool_MaxResultsValidation(t *testing.T) {
 
 	// Below the minimum.
 	input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": 0})
-	_, err := find.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), find, input)
 	if err == nil || !strings.Contains(err.Error(), "max_results must be >=") {
 		t.Errorf("expected lower-bound error, got %v", err)
 	}
 
 	// Above the maximum.
 	input, _ = json.Marshal(map[string]any{"name": "*.go", "max_results": 5000})
-	_, err = find.Handler(context.Background(), input)
+	_, err = invokeText(context.Background(), find, input)
 	if err == nil || !strings.Contains(err.Error(), "max_results must be <=") {
 		t.Errorf("expected upper-bound error, got %v", err)
 	}
@@ -582,13 +590,13 @@ func TestGrepFilesTool_MaxResultsValidation(t *testing.T) {
 	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
 
 	input, _ := json.Marshal(map[string]any{"pattern": "x", "max_results": 0})
-	_, err := grep.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), grep, input)
 	if err == nil || !strings.Contains(err.Error(), "max_results must be >=") {
 		t.Errorf("expected lower-bound error, got %v", err)
 	}
 
 	input, _ = json.Marshal(map[string]any{"pattern": "x", "max_results": 5000})
-	_, err = grep.Handler(context.Background(), input)
+	_, err = invokeText(context.Background(), grep, input)
 	if err == nil || !strings.Contains(err.Error(), "max_results must be <=") {
 		t.Errorf("expected upper-bound error, got %v", err)
 	}
@@ -597,7 +605,7 @@ func TestGrepFilesTool_MaxResultsValidation(t *testing.T) {
 func TestGrepFilesTool_EmptyPattern(t *testing.T) {
 	grep := GrepFilesTool(&fsExecutor{root: t.TempDir()})
 	input, _ := json.Marshal(map[string]any{"pattern": ""})
-	_, err := grep.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), grep, input)
 	if err == nil || !strings.Contains(err.Error(), "pattern is required") {
 		t.Errorf("expected pattern-required error, got %v", err)
 	}
@@ -629,7 +637,7 @@ func TestFindFilesTool_SchemaBasenameSemantics(t *testing.T) {
 func TestFindFilesTool_EmptyName(t *testing.T) {
 	find := FindFilesTool(&fsExecutor{root: t.TempDir()})
 	input, _ := json.Marshal(map[string]any{"name": ""})
-	_, err := find.Handler(context.Background(), input)
+	_, err := invokeText(context.Background(), find, input)
 	if err == nil || !strings.Contains(err.Error(), "name is required") {
 		t.Errorf("expected name-required error, got %v", err)
 	}
@@ -647,7 +655,7 @@ func TestGrepFilesTool_RipgrepNoMatches(t *testing.T) {
 	}
 	grep := GrepFilesTool(fe)
 	input, _ := json.Marshal(map[string]any{"pattern": "absent"})
-	out, err := grep.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), grep, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -733,7 +741,7 @@ func TestFindFilesTool_DoubleStarGlob(t *testing.T) {
 		"name":    "*.go",
 		"include": []string{"pkg/**"},
 	})
-	out, err := find.Handler(context.Background(), input)
+	out, err := invokeText(context.Background(), find, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

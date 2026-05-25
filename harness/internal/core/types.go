@@ -229,9 +229,23 @@ func (l *AgenticLoop) metricAttrs(extra ...attribute.KeyValue) metric.Measuremen
 // directly so the per-failure category flows into the
 // stirrup.harness.tool_failures metric and the ToolCallTrace ErrorCategory
 // field.
+//
+// NOTE: this shim drops the structured payload. New tests that need to assert
+// structured output must call dispatchToolCallCategorized directly.
 func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall) (string, bool) {
-	out, ok, _ := l.dispatchToolCallCategorized(ctx, call)
+	out, ok, _, _ := l.dispatchToolCallCategorized(ctx, call)
 	return out, ok
+}
+
+// structuredOutput carries the optional typed result payload (issue #231)
+// from a StructuredHandler back through dispatch. The zero value (nil payload,
+// empty kind) means "no structured data": every failure path and every plain-
+// Handler tool returns it, so a text-only result stays text-only. Kind names
+// the payload's shape so it can be routed without unmarshalling (see
+// types.ToolResult.Kind).
+type structuredOutput struct {
+	payload json.RawMessage
+	kind    string
 }
 
 // dispatchToolCallCategorized is the production entry point. The third
@@ -239,7 +253,12 @@ func (l *AgenticLoop) dispatchToolCall(ctx context.Context, call types.ToolCall)
 // success the category is empty. Every failure path in this function and
 // its async helper must assign a ToolFailureCategory drawn from the enum
 // in harness/internal/observability/toolfailure.go.
-func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call types.ToolCall) (string, bool, observability.ToolFailureCategory) {
+//
+// The fourth return value is the optional structured result payload (issue
+// #231). It is the zero structuredOutput on every failure path and for any
+// tool that exposes only a plain Handler, so a text-only result stays
+// text-only; it is populated only on the success path of a StructuredHandler.
+func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call types.ToolCall) (string, bool, observability.ToolFailureCategory, structuredOutput) {
 	t := l.Tools.Resolve(call.Name)
 	if t == nil {
 		// Issue #225 split the legacy search_files tool into two strictly-
@@ -249,9 +268,9 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 		// migration hint the model can act on in-loop, while still
 		// preserving the unknown-tool failure category for telemetry.
 		if msg, ok := renamedToolHint(call.Name); ok {
-			return msg, false, observability.ToolFailureUnknownTool
+			return msg, false, observability.ToolFailureUnknownTool, structuredOutput{}
 		}
-		return "Unknown tool: " + call.Name, false, observability.ToolFailureUnknownTool
+		return "Unknown tool: " + call.Name, false, observability.ToolFailureUnknownTool, structuredOutput{}
 	}
 
 	// Strip prototype-pollution keys before validation so we can both notify
@@ -273,14 +292,14 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 		if l.Security != nil {
 			l.Security.ToolInputRejected(call.Name, []string{err.Error()})
 		}
-		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false, observability.ToolFailureSchemaValidation
+		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false, observability.ToolFailureSchemaValidation, structuredOutput{}
 	}
 
 	if findings := security.GuardToolCall(call.Name, t.WorkspaceMutating, call.Input); len(findings) > 0 {
 		if l.Security != nil {
 			l.Security.ToolCallGuardTriggered(call.Name, findings)
 		}
-		return fmt.Sprintf("Tool call rejected by security guard for %s", call.Name), false, observability.ToolFailureSecurityGuard
+		return fmt.Sprintf("Tool call rejected by security guard for %s", call.Name), false, observability.ToolFailureSecurityGuard, structuredOutput{}
 	}
 
 	// Check permissions for tools that mutate the workspace or that
@@ -298,7 +317,7 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 			permSpan.RecordError(err)
 			permSpan.SetStatus(codes.Error, err.Error())
 			permSpan.End()
-			return "Permission check error: " + err.Error(), false, observability.ToolFailurePermissionError
+			return "Permission check error: " + err.Error(), false, observability.ToolFailurePermissionError, structuredOutput{}
 		}
 		permSpan.SetAttributes(attribute.Bool("permission.allowed", result.Allowed))
 		permSpan.End()
@@ -309,7 +328,7 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 			if l.Trace != nil {
 				l.Trace.RecordPermissionDenial()
 			}
-			return "Permission denied: " + result.Reason, false, observability.ToolFailurePermissionDenied
+			return "Permission denied: " + result.Reason, false, observability.ToolFailurePermissionDenied, structuredOutput{}
 		}
 	}
 
@@ -320,19 +339,31 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 	// / the timeout fires). Permission and security checks above already
 	// ran and gated dispatch identically to the sync path.
 	if t.AsyncHandler != nil {
-		return l.dispatchAsyncToolCall(ctx, t, call, inputForCall)
+		output, success, category := l.dispatchAsyncToolCall(ctx, t, call, inputForCall)
+		return output, success, category, structuredOutput{}
 	}
 
 	// Execute the tool handler with the cleaned input so the handler does not
-	// see prototype-pollution keys either.
-	if t.Handler == nil {
-		return fmt.Sprintf("Tool %s has no handler registered", call.Name), false, observability.ToolFailureHandlerMissing
+	// see prototype-pollution keys either. A StructuredHandler is preferred
+	// over the plain Handler: it yields the identical text plus an optional
+	// typed structured payload (issue #231). Either form is acceptable; a
+	// tool that sets only Handler simply returns no structured payload.
+	switch {
+	case t.StructuredHandler != nil:
+		res, err := t.StructuredHandler(ctx, inputForCall)
+		if err != nil {
+			return "Tool error: " + err.Error(), false, observability.ToolFailureHandlerError, structuredOutput{}
+		}
+		return res.Text, true, "", structuredOutput{payload: res.Structured, kind: res.Kind}
+	case t.Handler != nil:
+		output, err := t.Handler(ctx, inputForCall)
+		if err != nil {
+			return "Tool error: " + err.Error(), false, observability.ToolFailureHandlerError, structuredOutput{}
+		}
+		return output, true, "", structuredOutput{}
+	default:
+		return fmt.Sprintf("Tool %s has no handler registered", call.Name), false, observability.ToolFailureHandlerMissing, structuredOutput{}
 	}
-	output, err := t.Handler(ctx, inputForCall)
-	if err != nil {
-		return "Tool error: " + err.Error(), false, observability.ToolFailureHandlerError
-	}
-	return output, true, ""
 }
 
 // dispatchAsyncToolCall runs the async tool path:
