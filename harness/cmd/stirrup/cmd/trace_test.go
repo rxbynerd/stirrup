@@ -74,6 +74,49 @@ func TestTraceShow_PrintsRecords(t *testing.T) {
 	}
 }
 
+// TestToolStatus_RendersErrorCategory pins the #314 trace-show change:
+// a failed tool call carrying an ErrorCategory must render it inline
+// (e.g. "fail (unknown_tool)") so an operator sees the same bounded
+// taxonomy the metrics expose, while a failure without a category and a
+// success keep their bare renderings.
+func TestToolStatus_RendersErrorCategory(t *testing.T) {
+	cases := []struct {
+		name string
+		tc   types.ToolCallSummary
+		want string
+	}{
+		{"failure with category", types.ToolCallSummary{Success: false, ErrorCategory: "unknown_tool"}, "fail (unknown_tool)"},
+		{"failure without category", types.ToolCallSummary{Success: false}, "fail"},
+		{"success ignores category", types.ToolCallSummary{Success: true, ErrorCategory: "unknown_tool"}, "ok"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := toolStatus(tc.tc, false)
+			if got != tc.want {
+				t.Errorf("toolStatus = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTraceShow_RendersErrorCategoryEndToEnd drives the full trace show
+// path on a trace whose failed call carries a category, confirming the
+// category reaches the operator-facing output (not just the unit-tested
+// helper).
+func TestTraceShow_RendersErrorCategoryEndToEnd(t *testing.T) {
+	traces := sampleTraces()
+	traces[0].ToolCalls[1].ErrorCategory = "permission_denied"
+	path := writeTraceFile(t, traces)
+
+	var out bytes.Buffer
+	if err := runTraceShowWith(path, &out, colorNever); err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !strings.Contains(out.String(), "fail (permission_denied)") {
+		t.Errorf("trace show output missing rendered error category\n--- output ---\n%s", out.String())
+	}
+}
+
 func TestTraceShow_AlwaysEmitsAnsi(t *testing.T) {
 	path := writeTraceFile(t, sampleTraces())
 	var out bytes.Buffer

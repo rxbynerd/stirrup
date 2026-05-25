@@ -4728,6 +4728,138 @@ func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 	})
 }
 
+// TestValidateRunConfig_ProviderModelLabelBound pins the cardinality
+// guard from #310: the router-resolved model string rides on the
+// provider.model OTel metric label, so for anthropic, openai-compatible,
+// and openai-responses it must match observabilityLabelPattern
+// (^[A-Za-z0-9._-]{1,64}$). #304 hardened the model-controlled tool.name
+// label; this is the operator-controlled sibling.
+func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
+	// A 65-char model string overruns the 64-char label cap.
+	tooLong := strings.Repeat("a", 65)
+
+	t.Run("rejected", func(t *testing.T) {
+		cases := []struct {
+			name     string
+			provider string
+			model    string
+		}{
+			{"anthropic with space", "anthropic", "claude sonnet"},
+			{"anthropic with slash", "anthropic", "anthropic/claude"},
+			{"anthropic too long", "anthropic", tooLong},
+			{"anthropic with newline", "anthropic", "claude\nsonnet"},
+			{"openai-compatible with colon", "openai-compatible", "gpt-4:turbo"},
+			{"openai-responses with percent", "openai-responses", "gpt%2F4o"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				c := validConfig()
+				c.Provider = ProviderConfig{Type: tc.provider}
+				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: tc.provider, Model: tc.model}
+				err := ValidateRunConfig(c)
+				if err == nil {
+					t.Fatalf("expected %q on %s to be rejected, got nil", tc.model, tc.provider)
+				}
+				if !strings.Contains(err.Error(), "modelRouter.model") {
+					t.Errorf("expected error to name modelRouter.model, got: %v", err)
+				}
+				if !strings.Contains(err.Error(), "provider.model") {
+					t.Errorf("expected error to explain the provider.model label rationale, got: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("accepted", func(t *testing.T) {
+		cases := []struct {
+			provider string
+			model    string
+		}{
+			{"anthropic", "claude-sonnet-4-6"},
+			{"anthropic", "claude-opus-4-1"},
+			{"openai-compatible", "gpt-4o"},
+			{"openai-responses", "gpt-4.1"},
+			{"anthropic", strings.Repeat("a", 64)}, // exactly at the cap
+		}
+		for _, tc := range cases {
+			t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
+				c := validConfig()
+				c.Provider = ProviderConfig{Type: tc.provider}
+				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: tc.provider, Model: tc.model}
+				if err := ValidateRunConfig(c); err != nil {
+					t.Fatalf("expected %q on %s to be accepted, got: %v", tc.model, tc.provider, err)
+				}
+			})
+		}
+	})
+
+	t.Run("per_mode_override_bound", func(t *testing.T) {
+		// The label-bound check resolves through ModeModels "provider/model"
+		// entries too, mirroring the gemini and bedrock validators.
+		c := validConfig()
+		c.Provider = ProviderConfig{Type: "anthropic"}
+		c.ModelRouter = ModelRouterConfig{
+			Type:       "per-mode",
+			Provider:   "anthropic",
+			Model:      "claude-sonnet-4-6",
+			ModeModels: map[string]string{"execution": "anthropic/claude is bad"},
+		}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected per-mode override with an invalid model label to be rejected")
+		}
+		if !strings.Contains(err.Error(), "modelRouter.modeModels[execution]") {
+			t.Errorf("expected error to name the offending mode entry, got: %v", err)
+		}
+	})
+
+	t.Run("bedrock_colon_and_arn_exempt_from_strict_class", func(t *testing.T) {
+		// Bedrock model ids legitimately carry colons (version suffix) and
+		// ARNs carry colons + slashes; the label-bound check must not
+		// reject the shapes validateBedrockModelID already accepts. Only
+		// the length + printability bound applies to bedrock.
+		valid := []string{
+			"anthropic.claude-sonnet-4-5-20250929-v1:0",
+			"meta.llama3-8b-instruct-v1:0",
+			"arn:aws:bedrock:eu-west-1:123456789012:inference-profile/eu.anthropic.claude-sonnet-4-6",
+		}
+		for _, model := range valid {
+			t.Run(model, func(t *testing.T) {
+				c := validConfig()
+				c.Provider = ProviderConfig{
+					Type:       "bedrock",
+					Region:     "us-east-1",
+					Credential: &CredentialConfig{Type: "aws-default"},
+				}
+				c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: model}
+				if err := ValidateRunConfig(c); err != nil {
+					t.Fatalf("expected bedrock model %q to be accepted, got: %v", model, err)
+				}
+			})
+		}
+	})
+
+	t.Run("bedrock_non_printable_rejected", func(t *testing.T) {
+		// The bedrock branch drops the strict character class but still
+		// rejects a non-printable byte — the actual cardinality / label-
+		// corruption vector the issue targets.
+		c := validConfig()
+		c.Provider = ProviderConfig{
+			Type:       "bedrock",
+			Region:     "us-east-1",
+			Credential: &CredentialConfig{Type: "aws-default"},
+		}
+		c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "bedrock", Model: "anthropic.claude\x00sonnet"}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected bedrock model with a NUL byte to be rejected")
+		}
+		if !strings.Contains(err.Error(), "non-printable") {
+			t.Errorf("expected error to mention non-printable, got: %v", err)
+		}
+	})
+}
+
 // TestValidateRunConfig_APIKeyRefMustBeSecretReference asserts that
 // every secret-bearing apiKeyRef field is required to use the
 // "secret://" scheme. A literal API key landing in RunConfig is a

@@ -173,6 +173,14 @@ func toolStatus(tc types.ToolCallSummary, color bool) string {
 	if tc.Success {
 		return colorize(color, ansiGreen, "ok")
 	}
+	// Surface the bounded failure taxonomy when the trace carries it, so
+	// an operator reading the trace sees the same category the metrics
+	// expose (e.g. "fail (unknown_tool)") rather than a bare success bit
+	// (issue #314). ErrorCategory is empty on older traces and on failures
+	// recorded before the taxonomy landed; fall back to "fail" then.
+	if tc.ErrorCategory != "" {
+		return colorize(color, ansiRed, "fail ("+tc.ErrorCategory+")")
+	}
 	return colorize(color, ansiRed, "fail")
 }
 

@@ -118,6 +118,16 @@ const (
 	ToolFailureNoToolWhenRequired ToolFailureCategory = "no_tool_when_required"
 )
 
+// ToolNameProviderScope is the value emitted for the tool.name metric
+// label on tool_failures observations that have no individual tool call
+// in scope — the provider-scope categories ToolFailureProviderRequest
+// and ToolFailureProviderStream, emitted from runInnerLoop where the
+// failure precedes (or supersedes) any per-call dispatch. The wire value
+// is the empty string; the constant exists so the emission-site intent
+// is explicit and dashboard authors can grep for the sentinel rather
+// than puzzle over an unexplained empty-string series.
+const ToolNameProviderScope = ""
+
 // allToolFailureCategories is the closed set of valid category values.
 // Used by IsValid (and tests asserting the cardinality bound) to confirm
 // metric labels are drawn from the enum rather than a free-form string.

@@ -537,6 +537,52 @@ func TestToolFailureCategory_BoundedCardinality(t *testing.T) {
 	}
 }
 
+// TestToolFailureCategory_InvalidCategoryDropped asserts the converse of
+// TestToolFailureCategory_BoundedCardinality: a failed call whose
+// failureCategory is NOT a member of the bounded enum must be dropped by
+// the if p.failureCategory.IsValid() guard in emitToolCallMetrics — it
+// still bumps tool_errors but emits NO tool_failures observation, so a
+// free-form / future-renamed category can never widen the bounded
+// category label.
+//
+// The guard has no model-facing trigger (every production producer sets a
+// valid enum member or leaves the category empty), so the rejection
+// branch is exercised here through the emitToolCallMetrics seam with a
+// synthetic pendingCall carrying a deliberately bogus category. A refactor
+// that swapped IsValid() for a weaker check (e.g. != "") would let this
+// observation through and fail the assertion.
+func TestToolFailureCategory_InvalidCategoryDropped(t *testing.T) {
+	loop, reader := buildMetricsHarness(t, []*tool.Tool{trivialTool()}, nil, nil, nil)
+
+	// A failed call with a category that is not in the enum. IsValid()
+	// must reject it: tool_errors increments, tool_failures does not.
+	bogus := &pendingCall{
+		call:            types.ToolCall{ID: "bogus", Name: "trivial", Input: json.RawMessage(`{}`)},
+		startedAt:       time.Now(),
+		internalName:    "trivial",
+		success:         false,
+		failureCategory: observability.ToolFailureCategory("permission_denied_v2"),
+	}
+	// Guard the test's own premise: if this string ever becomes a real
+	// enum member the test is no longer exercising the rejection branch.
+	if bogus.failureCategory.IsValid() {
+		t.Fatalf("test premise broken: %q is now a valid category", bogus.failureCategory)
+	}
+
+	got := loop.emitToolCallMetrics(
+		context.Background(), bogus, 5*time.Millisecond,
+		"anthropic", "claude-sonnet-4-6", "execution",
+	)
+	if got != "trivial" {
+		t.Errorf("metricToolName = %q, want %q (no sentinel substitution for a non-unknown_tool category)", got, "trivial")
+	}
+
+	failures := collectFailures(t, reader)
+	if len(failures) != 0 {
+		t.Fatalf("expected no tool_failures observation for an invalid category, got %d: %+v", len(failures), failures)
+	}
+}
+
 // TestToolFailureCategory_EnumIsValid sanity-checks the enum itself:
 // every exported ToolFailure* constant declared in toolfailure.go must
 // be registered in allToolFailureCategories. A new constant added
@@ -996,20 +1042,76 @@ func TestToolFailureMetrics_AsyncPanic(t *testing.T) {
 	}
 }
 
-// async_internal_error is intentionally untested.
+// TestToolFailureMetrics_AsyncInternalError exercises the defensive
+// "unexpected payload type" branch in dispatchAsyncToolCall: when the
+// correlator's Await returns a payload that is not an asyncToolResult,
+// the type assertion fails and the call is tagged async_internal_error.
 //
-// The category is emitted at types.go's defensive "unexpected payload
-// type" branch in dispatchAsyncToolCall: it only fires if the loop's
-// async correlator were attached with a PayloadExtractor that
-// delivers something other than asyncToolResult. The production code
-// wires extractAsyncToolResult exclusively (see
-// ensureAsyncCorrelator), so the branch is unreachable without
-// exposing a test-only hook on the correlator-attach path or
-// introducing a parallel construction path.
-//
-// Per the synthesis brief's explicit allowance for this gap, the
-// deferral is documented here rather than weakening the seam.
-// TODO(#229-followup): if a future refactor exposes a way to inject
-// a custom PayloadExtractor for tests, add a TestToolFailureMetrics_
-// AsyncInternalError that submits a non-asyncToolResult payload and
-// asserts async_internal_error emission.
+// The production path wires extractAsyncToolResult exclusively, which
+// only ever produces asyncToolResult, so this branch has no model-facing
+// trigger. The test installs a PayloadExtractor override via
+// withAsyncExtractor that returns a string payload keyed by the request
+// ID — the override unblocks Await like the real extractor but delivers
+// the wrong concrete type, driving the fallthrough. This closes the
+// #229-followup gap that previously left the branch untested.
+func TestToolFailureMetrics_AsyncInternalError(t *testing.T) {
+	tr := newAsyncTestTransport()
+	loop, reader := buildMetricsHarness(t, []*tool.Tool{asyncEchoTool()}, nil, nil, tr)
+	// Override the extractor BEFORE the first dispatch constructs the
+	// correlator. It matches on tool_result_response (so Await unblocks)
+	// but returns a string rather than an asyncToolResult, forcing the
+	// payload.(asyncToolResult) assertion to fail.
+	loop.withAsyncExtractor(func(event types.ControlEvent) (string, any) {
+		if event.Type != "tool_result_response" {
+			return "", nil
+		}
+		return event.RequestID, "not an asyncToolResult"
+	})
+	cfg := &types.RunConfig{
+		RunID:        "test-run-internal-err",
+		Mode:         "execution",
+		ToolDispatch: &types.ToolDispatchConfig{MaxParallel: 1},
+	}
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if id := tr.lastRequestID("tool_result_request"); id != "" {
+				tr.FireControl(types.ControlEvent{
+					Type:      "tool_result_response",
+					RequestID: id,
+					Content:   "ignored — extractor override discards this",
+				})
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	results, _, outcome := loop.planAndDispatch(
+		context.Background(), cfg,
+		[]types.ToolCall{{ID: "tc_internal", Name: "async_echo", Input: json.RawMessage(`{}`)}},
+		&stallDetector{},
+		"anthropic", "claude-sonnet-4-6",
+	)
+	if outcome != "" {
+		t.Fatalf("unexpected stall outcome %q", outcome)
+	}
+	if len(results) != 1 || !results[0].IsError {
+		t.Fatalf("expected one errored result, got %+v", results)
+	}
+	if !strings.Contains(results[0].Content, "internal error: unexpected payload type") {
+		t.Errorf("result content missing internal-error prefix, got %q", results[0].Content)
+	}
+	failures := collectFailures(t, reader)
+	var internalHits int64
+	for _, fp := range failures {
+		if fp.category == observability.ToolFailureAsyncInternal.String() {
+			internalHits += fp.value
+			if fp.tool != "async_echo" {
+				t.Errorf("async_internal_error tool.name = %q, want %q", fp.tool, "async_echo")
+			}
+		}
+	}
+	if internalHits != 1 {
+		t.Errorf("async_internal_error count = %d, want exactly 1; full failures = %+v", internalHits, failures)
+	}
+}

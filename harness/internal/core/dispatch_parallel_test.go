@@ -685,6 +685,66 @@ func TestParallelDispatch_OTelSpans_AreSiblingsUnderTurn(t *testing.T) {
 	}
 }
 
+// TestParallelDispatch_UnknownTool_SpanNameSentinel pins the span-name
+// cardinality bound from issue #309: an unknown (unresolved) tool must open
+// its OTel span as "tool.__unknown__" rather than "tool.<model-controlled
+// name>", so a hostile or buggy provider response cannot pollute trace
+// storage with arbitrary span names. The model-supplied name is still
+// preserved verbatim in the tool.name attribute for debuggability.
+func TestParallelDispatch_UnknownTool_SpanNameSentinel(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	tr := newAsyncTestTransport()
+	// Register no tools, so every call resolves to nil (unknown).
+	loop := buildParallelDispatchLoop(t, tr)
+	loop.Tracer = tp.Tracer("test")
+	config := configWithMaxParallel(2)
+
+	const hostileName = "../../etc/passwd; DROP TABLE spans;--"
+	calls := []types.ToolCall{
+		{ID: "tc_unknown_0", Name: hostileName, Input: json.RawMessage(`{}`)},
+	}
+
+	// An unknown tool fails fast inline (no transport round-trip), so no
+	// FireControl is needed; planAndDispatch returns synchronously.
+	results, _, _ := loop.planAndDispatch(context.Background(), config, calls, &stallDetector{}, "", "")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	spans := exporter.GetSpans()
+	var toolSpan *tracetest.SpanStub
+	for i := range spans {
+		if strings.HasPrefix(spans[i].Name, "tool.") {
+			toolSpan = &spans[i]
+			break
+		}
+	}
+	if toolSpan == nil {
+		t.Fatalf("no tool.* span found (spans=%v)", spanNames(spans))
+	}
+	if toolSpan.Name != "tool.__unknown__" {
+		t.Errorf("unknown-tool span name = %q, want %q (model-controlled name must be substituted with the sentinel)",
+			toolSpan.Name, "tool.__unknown__")
+	}
+	// The raw model-supplied name must still be recorded on the attribute.
+	var sawName bool
+	for _, attr := range toolSpan.Attributes {
+		if string(attr.Key) == "tool.name" {
+			sawName = true
+			if attr.Value.AsString() != hostileName {
+				t.Errorf("tool.name attribute = %q, want raw model name %q",
+					attr.Value.AsString(), hostileName)
+			}
+		}
+	}
+	if !sawName {
+		t.Error("tool.name attribute missing from unknown-tool span")
+	}
+}
+
 func spanNames(spans []tracetest.SpanStub) []string {
 	names := make([]string, len(spans))
 	for i, s := range spans {

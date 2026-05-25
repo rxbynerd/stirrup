@@ -301,7 +301,11 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	// ToolErrors.
 	m.ToolFailures, err = meter.Int64Counter("stirrup.harness.tool_failures",
 		metric.WithUnit("{failure}"),
-		metric.WithDescription("Tool-use failures decomposed by provider, model, tool, and bounded failure category"),
+		metric.WithDescription("Tool-use failures decomposed by provider, model, tool, and bounded failure category. "+
+			"For provider-scope failures (provider_request_failed, provider_stream_failed) where no individual tool call is in scope, "+
+			"tool.name is the empty string (see observability.ToolNameProviderScope). "+
+			"Stall-terminated batches co-emit one stall_consecutive_failures observation alongside the N per-call failure observations, "+
+			"so sum(stirrup.harness.tool_failures) counts N+1 for such a batch; this double-count is intentional and load-bearing for stall alerts."),
 	)
 	if err != nil {
 		return nil, err

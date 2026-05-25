@@ -2,9 +2,117 @@ package types
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+// TestToolCallSummary_StructuralParityWithTrace guards the four
+// types.ToolCallSummary(tc) conversions the harness performs on a
+// ToolCallTrace. The cast is a struct conversion: it only compiles while
+// the two types have identical underlying field shapes, but Go permits
+// the conversion to silently ignore differing struct *tags* and, more
+// dangerously, a future field added to ToolCallTrace without a matching
+// addition to ToolCallSummary would either break the conversion (caught
+// at build) or — if added to ToolCallSummary first — leave the trace
+// struct missing data with no signal. This reflection check fails loudly
+// the moment the field set (name + type + json tag) diverges, so the
+// next person editing one struct is forced to mirror the other (#314).
+func TestToolCallSummary_StructuralParityWithTrace(t *testing.T) {
+	type fieldShape struct {
+		Name string
+		Type string
+		Tag  string
+	}
+	fields := func(rt reflect.Type) []fieldShape {
+		out := make([]fieldShape, 0, rt.NumField())
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			out = append(out, fieldShape{
+				Name: f.Name,
+				Type: f.Type.String(),
+				Tag:  f.Tag.Get("json"),
+			})
+		}
+		return out
+	}
+
+	summary := fields(reflect.TypeOf(ToolCallSummary{}))
+	trace := fields(reflect.TypeOf(ToolCallTrace{}))
+
+	if !reflect.DeepEqual(summary, trace) {
+		t.Errorf("ToolCallSummary and ToolCallTrace field sets diverged; the "+
+			"types.ToolCallSummary(tc) cast would silently drop or misalign data.\n"+
+			"ToolCallSummary: %+v\nToolCallTrace:   %+v\n"+
+			"Add the new field to BOTH structs (same name, type, json tag, and order).",
+			summary, trace)
+	}
+}
+
+// TestToolCallTrace_ErrorCategoryRoundTrip decodes a JSONL trace record
+// and asserts the ErrorCategory field is either empty or a member of the
+// bounded observability.ToolFailureCategory enum's wire-string set.
+// ErrorCategory is a plain string in types because types cannot import
+// harness/internal/observability (the layering is intentional — see
+// docs/architecture.md), so there is no compile-time guard that a write
+// site used a valid member. The valid set is hard-coded here to preserve
+// that layering boundary: if the enum gains a member, this list must be
+// updated in lockstep, which is the explicit reminder the test exists to
+// provide.
+func TestToolCallTrace_ErrorCategoryRoundTrip(t *testing.T) {
+	// Mirror of observability.ToolFailureCategory wire strings. NOT
+	// imported — types must not depend on harness/internal/observability.
+	validCategories := map[string]struct{}{
+		"unknown_tool":                {},
+		"schema_validation_failed":    {},
+		"security_guard_denied":       {},
+		"permission_denied":           {},
+		"permission_error":            {},
+		"guardrail_denied":            {},
+		"handler_error":               {},
+		"handler_missing":             {},
+		"async_preflight_error":       {},
+		"async_transport_unavailable": {},
+		"async_timeout":               {},
+		"async_cancelled":             {},
+		"async_upstream_error":        {},
+		"async_panic":                 {},
+		"async_internal_error":        {},
+		"provider_request_failed":     {},
+		"provider_stream_failed":      {},
+		"stall_repeated_calls":        {},
+		"stall_consecutive_failures":  {},
+		"no_tool_when_required":       {},
+	}
+
+	// A JSONL fixture: one successful call (no category) and one failed
+	// call carrying a category from the bounded set.
+	const fixture = `{"name":"read_file","durationMs":12,"success":true}
+{"name":"missing_tool","durationMs":3,"success":false,"errorReason":"no such tool","errorCategory":"unknown_tool"}`
+
+	for i, line := range strings.Split(strings.TrimSpace(fixture), "\n") {
+		var tc ToolCallTrace
+		if err := json.Unmarshal([]byte(line), &tc); err != nil {
+			t.Fatalf("line %d: Unmarshal: %v", i, err)
+		}
+		if tc.ErrorCategory == "" {
+			continue
+		}
+		if _, ok := validCategories[tc.ErrorCategory]; !ok {
+			t.Errorf("line %d: ErrorCategory %q is not a member of the bounded enum wire-string set", i, tc.ErrorCategory)
+		}
+	}
+
+	// A category outside the bounded set must be flagged by the same
+	// guard, proving the assertion is load-bearing rather than vacuous.
+	var bogus ToolCallTrace
+	if err := json.Unmarshal([]byte(`{"name":"x","success":false,"errorCategory":"made_up_category"}`), &bogus); err != nil {
+		t.Fatalf("Unmarshal bogus: %v", err)
+	}
+	if _, ok := validCategories[bogus.ErrorCategory]; ok {
+		t.Fatalf("test premise broken: %q must not be in the valid set", bogus.ErrorCategory)
+	}
+}
 
 // TestTurnTrace_MarshalRoundTrip pins the wire shape of TurnTrace.Mode
 // and TurnTrace.BatchID added in #138. The omitempty contract is

@@ -2460,6 +2460,12 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 	// the opaque ValidationException from AWS.
 	validateBedrockModelID(config, errs)
 
+	// Cardinality bound on the provider.model OTel metric label across all
+	// provider types. The Gemini-specific check above is URL-safety; this
+	// one is observability self-harm prevention for anthropic,
+	// openai-compatible, openai-responses, and bedrock (issue #310).
+	validateProviderModelLabel(config, errs)
+
 	checkProviderRef := func(path, name string) {
 		if name == "" {
 			return
@@ -3206,6 +3212,100 @@ func validateBedrockModelID(config *RunConfig, errs *[]string) {
 		if providerIsBedrock(providerName) {
 			checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode), model)
 		}
+	}
+}
+
+// validateProviderModelLabel bounds the character set and length of the
+// router-resolved model string for every provider type, because that
+// value rides on the provider.model OTel metric label (dispatch.go and
+// loop.go). #304 hardened the model-controlled tool.name label; this is
+// the operator-controlled sibling: an operator with RunConfig authoring
+// power (Cloud Run job spec, gRPC submitter) could otherwise set an
+// unbounded or non-printable model string that inflates TSDB cardinality
+// or breaks dashboard label rendering (CWE-400, issue #310). The bound is
+// observabilityLabelPattern — the same ^[A-Za-z0-9._-]{1,64}$ the Gemini
+// precedent (geminiModelNamePattern) and the OTel resource labels already
+// enforce.
+//
+// Scope mirrors validateGeminiModelName: ModelRouter.Model under the
+// resolved default provider, plus each ModeModels override. CheapModel /
+// ExpensiveModel are intentionally not checked here for the same reason
+// validateGeminiModelName skips them — the dynamic router's model
+// selection is not yet exercised by a provider whose label this guards,
+// and adding a check there without a corresponding emission site would be
+// dead validation.
+//
+// Bedrock is special-cased. Its model ids legitimately carry bytes the
+// strict label pattern rejects: a version suffix colon
+// ("anthropic.claude-sonnet-4-5-20250929-v1:0"), or a full inference-
+// profile ARN with colons and slashes. validateBedrockModelID already
+// accepts both shapes, so applying the strict character class here would
+// reject configs the bedrock validator declares valid. Bedrock instead
+// gets a length-plus-printability bound — the actual "unreasonably long
+// or non-printable" cardinality vector the issue names — without
+// constraining the character class. The 256-byte cap sits well above the
+// longest published inference-profile ARN with comfortable headroom.
+func validateProviderModelLabel(config *RunConfig, errs *[]string) {
+	const bedrockModelLabelMaxLen = 256
+
+	resolveType := func(name string) string {
+		if name == "" {
+			return config.Provider.Type
+		}
+		if validProviderTypes[name] {
+			return name
+		}
+		if p, ok := config.Providers[name]; ok {
+			return p.Type
+		}
+		return ""
+	}
+
+	checkModel := func(label, providerType, model string) {
+		if model == "" {
+			return
+		}
+		if providerType == "bedrock" {
+			// Length + printability only; the character class is owned by
+			// validateBedrockModelID, which permits colons and ARN slashes.
+			if len(model) > bedrockModelLabelMaxLen {
+				*errs = append(*errs, fmt.Sprintf(
+					"%s is %d bytes; must be <= %d so the provider.model metric label stays bounded",
+					label, len(model), bedrockModelLabelMaxLen))
+				return
+			}
+			for _, r := range model {
+				if !unicode.IsPrint(r) {
+					*errs = append(*errs, fmt.Sprintf(
+						"%s %q contains a non-printable character; the model name rides on "+
+							"the provider.model metric label and must stay printable",
+						label, model))
+					return
+				}
+			}
+			return
+		}
+		if !observabilityLabelPattern.MatchString(model) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s %q must match %s; the model name rides on the provider.model "+
+					"metric label and an unbounded or non-printable value inflates "+
+					"observability cardinality",
+				label, model, observabilityLabelPattern))
+		}
+	}
+
+	checkModel("modelRouter.model", resolveType(config.ModelRouter.Provider), config.ModelRouter.Model)
+
+	for mode, spec := range config.ModelRouter.ModeModels {
+		providerName, model, ok := strings.Cut(spec, "/")
+		if !ok {
+			// No provider prefix — inherits ModelRouter.Provider.
+			checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode),
+				resolveType(config.ModelRouter.Provider), spec)
+			continue
+		}
+		checkModel(fmt.Sprintf("modelRouter.modeModels[%s]", mode),
+			resolveType(providerName), model)
 	}
 }
 
