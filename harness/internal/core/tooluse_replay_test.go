@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -70,8 +71,10 @@ type toolUseScenario struct {
 
 // runToolUseScenario builds an AgenticLoop around the scenario's replay turns
 // and a real LocalExecutor, runs it to completion, and returns the workspace
-// dir and the resulting RunTrace. It fails the test on any setup error.
-func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTrace) {
+// dir, the resulting RunTrace, and a recording transport that captured every
+// emitted event (so tests can assert tool_result content, not just the
+// summary counts in the trace). It fails the test on any setup error.
+func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTrace, *recordingTransport) {
 	t.Helper()
 
 	workspace := t.TempDir()
@@ -108,6 +111,7 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 		prov = provider.NewNormalizingAdapter(prov, sc.providerType)
 	}
 
+	rec := &recordingTransport{}
 	loop := &AgenticLoop{
 		Provider:    prov,
 		Router:      router.NewStaticRouter("replay", "replay-model"),
@@ -119,7 +123,7 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 		Verifier:    verifier.NewNoneVerifier(),
 		Permissions: permission.NewAllowAll(),
 		Git:         git.NewNoneGitStrategy(),
-		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
+		Transport:   rec,
 		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
 		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     observability.NewNoopMetrics(),
@@ -145,7 +149,23 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 	if runTrace == nil {
 		t.Fatal("nil RunTrace")
 	}
-	return workspace, runTrace
+	return workspace, runTrace, rec
+}
+
+// toolResultContent returns the Content of the tool_result event the loop
+// emitted for the given tool-use ID. Fails the test if no such event was
+// recorded — every dispatched tool call produces exactly one tool_result.
+func toolResultContent(t *testing.T, rec *recordingTransport, toolUseID string) string {
+	t.Helper()
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	for _, ev := range rec.events {
+		if ev.Type == "tool_result" && ev.ToolUseID == toolUseID {
+			return ev.Content
+		}
+	}
+	t.Fatalf("no tool_result event recorded for tool-use ID %q", toolUseID)
+	return ""
 }
 
 // --- trace assertion helpers (the trace-side judge, inlined for the harness
@@ -225,7 +245,7 @@ func finalText(text string) types.TurnRecord {
 // answer. Regression-covers the #225 grep_files/read_file/edit_file split and
 // the read→edit→answer arc the whole redesign serves.
 func TestToolUse_ReadSearchEditBuildLoop(t *testing.T) {
-	workspace, tr := runToolUseScenario(t, toolUseScenario{
+	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
 			"calc.go": "package calc\n\nfunc Double(n int) int {\n\treturn n + n\n}\n",
@@ -250,7 +270,7 @@ func TestToolUse_ReadSearchEditBuildLoop(t *testing.T) {
 // TestToolUse_ReadBeforeEdit asserts the trace records read_file before
 // edit_file — the read-before-edit discipline #225's schema encourages.
 func TestToolUse_ReadBeforeEdit(t *testing.T) {
-	workspace, tr := runToolUseScenario(t, toolUseScenario{
+	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
 			"greeting.txt": "hello old world\n",
@@ -269,15 +289,17 @@ func TestToolUse_ReadBeforeEdit(t *testing.T) {
 }
 
 // TestToolUse_LineRangeReading exercises read_file with start_line + limit
-// (#225 line-range reading) and asserts the structured fileExcerpt payload
-// carries the requested window. Regression-covers the #231 structured result
-// for read_file.
+// (#225 line-range reading) and asserts the returned tool result carries the
+// requested line window — lines 5-7 of the fixture and nothing outside it.
+// Regression-covers the #231 structured result line arithmetic for read_file.
 func TestToolUse_LineRangeReading(t *testing.T) {
+	// Distinct, greppable line contents so an off-by-one window leak is
+	// detectable: "line-05", "line-06", ... "line-20".
 	lines := make([]string, 0, 20)
 	for i := 1; i <= 20; i++ {
-		lines = append(lines, "line "+string(rune('A'+i-1)))
+		lines = append(lines, fmt.Sprintf("line-%02d", i))
 	}
-	_, tr := runToolUseScenario(t, toolUseScenario{
+	_, tr, rec := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: map[string]string{
 			"doc.txt": strings.Join(lines, "\n") + "\n",
 		},
@@ -290,17 +312,35 @@ func TestToolUse_LineRangeReading(t *testing.T) {
 	if total, failed := countCalls(tr, "read_file"); total != 1 || failed != 0 {
 		t.Fatalf("read_file calls: total=%d failed=%d, want 1/0", total, failed)
 	}
+
+	// The window must be exactly lines 5-7; lines 4 and 8 must be absent.
+	out := toolResultContent(t, rec, "c1")
+	for _, want := range []string{"line-05", "line-06", "line-07"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("read_file result missing %q in window; got:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"line-04", "line-08"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("read_file result leaked out-of-window line %q; got:\n%s", unwanted, out)
+		}
+	}
 }
 
-// TestToolUse_BoundedSearch asserts a broad grep with max_results caps output
-// (#225 bounded results) and that the structured searchResult marks
-// truncation. Uses run-trace success + a workspace with many matches.
+// TestToolUse_BoundedSearch asserts a broad grep with max_results=2 caps the
+// returned matches end-to-end (#225 bounded results) over a workspace with
+// twenty hits: the rendered tool result the model sees must carry exactly two
+// match lines, not all twenty. The bounded count is the observable effect of
+// the searchResult.Truncated flag; the structured flag itself is pinned at
+// the builtin level in TestGrepFilesTool_StructuredTruncated (#231), and the
+// grep text rendering carries no truncation marker, so this test asserts the
+// behavioural cap rather than the flag.
 func TestToolUse_BoundedSearch(t *testing.T) {
 	files := map[string]string{}
 	for i := 0; i < 10; i++ {
 		files["f"+string(rune('0'+i))+".txt"] = "needle here\nneedle again\n"
 	}
-	_, tr := runToolUseScenario(t, toolUseScenario{
+	_, tr, rec := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: files,
 		turns: []types.TurnRecord{
 			toolUse("c1", "grep_files", `{"pattern":"needle","max_results":2}`),
@@ -311,6 +351,19 @@ func TestToolUse_BoundedSearch(t *testing.T) {
 	if total, failed := countCalls(tr, "grep_files"); total != 1 || failed != 0 {
 		t.Fatalf("grep_files calls: total=%d failed=%d, want 1/0", total, failed)
 	}
+
+	// The workspace has 20 matches (2 per file x 10 files); max_results=2
+	// must cap the rendered output to 2 match lines.
+	out := toolResultContent(t, rec, "c1")
+	matchLines := 0
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.Contains(line, "needle") {
+			matchLines++
+		}
+	}
+	if matchLines != 2 {
+		t.Errorf("grep_files returned %d match lines, want 2 (max_results bound); got:\n%s", matchLines, out)
+	}
 }
 
 // TestToolUse_InvalidArgRecovery drives an edit_file with a missing required
@@ -318,7 +371,7 @@ func TestToolUse_BoundedSearch(t *testing.T) {
 // Asserts the first call failed, the second succeeded, and the file ended in
 // the corrected state — the invalid-argument recovery loop.
 func TestToolUse_InvalidArgRecovery(t *testing.T) {
-	workspace, tr := runToolUseScenario(t, toolUseScenario{
+	workspace, tr, _ := runToolUseScenario(t, toolUseScenario{
 		editStrategy: "multi",
 		workspaceFiles: map[string]string{
 			"config.txt": "mode=off\n",
@@ -342,12 +395,54 @@ func TestToolUse_InvalidArgRecovery(t *testing.T) {
 	}
 }
 
+// TestToolUse_AmbiguousEdit covers the "ambiguous edit request" behaviour
+// named in #233's goal list: the first edit_file 'replace' uses an old_string
+// that matches multiple locations, which the search-replace strategy rejects
+// with an exactly-one-match error; the model recovers with a more specific
+// old_string. This is a distinct failure mode from invalid-arg recovery
+// (missing field) — here the arguments are well-formed but not unique.
+// Asserts two attempts (first fails), final file in the corrected state, and
+// that the failure message named the multi-location ambiguity.
+func TestToolUse_AmbiguousEdit(t *testing.T) {
+	workspace, tr, rec := runToolUseScenario(t, toolUseScenario{
+		editStrategy: "multi",
+		workspaceFiles: map[string]string{
+			// Two identical "value = 1" lines: a bare old_string of
+			// "value = 1" matches both.
+			"settings.ini": "[a]\nvalue = 1\n[b]\nvalue = 1\n",
+		},
+		turns: []types.TurnRecord{
+			// Ambiguous: "value = 1" occurs twice.
+			toolUse("c1", "edit_file", `{"path":"settings.ini","operation":"replace","old_string":"value = 1","new_string":"value = 2"}`),
+			// Recovery: a section-qualified old_string matches exactly one.
+			toolUse("c2", "edit_file", `{"path":"settings.ini","operation":"replace","old_string":"[b]\nvalue = 1","new_string":"[b]\nvalue = 2"}`),
+			finalText("Disambiguated."),
+		},
+	})
+
+	total, failed := countCalls(tr, "edit_file")
+	if total != 2 || failed != 1 {
+		t.Fatalf("edit_file calls: total=%d failed=%d, want 2/1", total, failed)
+	}
+	// The first attempt's error must name the multi-location ambiguity so the
+	// model has a signal to recover from.
+	firstErr := toolResultContent(t, rec, "c1")
+	if !strings.Contains(firstErr, "match") {
+		t.Errorf("first edit_file error should name the ambiguity; got %q", firstErr)
+	}
+	// Final state: section [b]'s value changed, section [a]'s did not.
+	got := readWorkspaceFile(t, workspace, "settings.ini")
+	if got != "[a]\nvalue = 1\n[b]\nvalue = 2\n" {
+		t.Fatalf("settings.ini = %q, want only the [b] value changed", got)
+	}
+}
+
 // TestToolUse_UnknownToolRecovery calls the retired search_files name, gets
 // the directional renamed-tool hint (#225), then recovers with grep_files.
 // Asserts the failed call's error names the replacements and that the
 // recovery call succeeded.
 func TestToolUse_UnknownToolRecovery(t *testing.T) {
-	_, tr := runToolUseScenario(t, toolUseScenario{
+	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: map[string]string{
 			"src.go": "package src\n// TODO: implement\n",
 		},
@@ -382,7 +477,7 @@ func TestToolUse_UnknownToolRecovery(t *testing.T) {
 // fan-out/ordered-recording path in planAndDispatch. Asserts both calls were
 // recorded in order.
 func TestToolUse_MultiToolTurn(t *testing.T) {
-	_, tr := runToolUseScenario(t, toolUseScenario{
+	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		workspaceFiles: map[string]string{
 			"a.go": "package a\n",
 			"b.go": "package b\n",
@@ -410,9 +505,12 @@ func TestToolUse_MultiToolTurn(t *testing.T) {
 // TestToolUse_NoToolAnswerEscalates exercises tool-choice escalation (#230):
 // in execution mode the model first answers with text only, having called no
 // tool. With the escalation policy enabled the loop forces a retry; the
-// retried turn calls read_file. Asserts read_file was ultimately called.
+// retried turn calls read_file and the run then completes. Asserts the
+// recovery actually happened — read_file was called and the run reached the
+// "success" outcome (not max_turns or a crash), so a regression that fires
+// escalation but never recovers is caught.
 func TestToolUse_NoToolAnswerEscalates(t *testing.T) {
-	_, tr := runToolUseScenario(t, toolUseScenario{
+	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		escalationRetries: 1,
 		mode:              "execution",
 		workspaceFiles: map[string]string{
@@ -428,8 +526,11 @@ func TestToolUse_NoToolAnswerEscalates(t *testing.T) {
 		},
 	})
 
-	if total, _ := countCalls(tr, "read_file"); total < 1 {
-		t.Fatalf("expected read_file to be called after escalation; got names %v", toolCallNames(tr))
+	if total, failed := countCalls(tr, "read_file"); total != 1 || failed != 0 {
+		t.Fatalf("expected exactly one successful read_file after escalation; got total=%d failed=%d names %v", total, failed, toolCallNames(tr))
+	}
+	if tr.Outcome != "success" {
+		t.Fatalf("expected run to complete with outcome 'success' after escalation recovery, got %q", tr.Outcome)
 	}
 }
 
@@ -437,7 +538,7 @@ func TestToolUse_NoToolAnswerEscalates(t *testing.T) {
 // escalation policy disabled (the OFF-by-default posture) a no-tool answer is
 // accepted unchanged and no tool is called.
 func TestToolUse_NoToolAnswerAcceptedWhenEscalationOff(t *testing.T) {
-	_, tr := runToolUseScenario(t, toolUseScenario{
+	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		mode: "execution",
 		workspaceFiles: map[string]string{
 			"main.go": "package main\n",
@@ -478,7 +579,7 @@ func TestToolUse_MCPNameNormalization(t *testing.T) {
 	// must emit the external name the model would have seen on the wire.
 	externalName := strings.ReplaceAll(internalName, "-", "_")
 
-	_, tr := runToolUseScenario(t, toolUseScenario{
+	_, tr, _ := runToolUseScenario(t, toolUseScenario{
 		providerType: "gemini",
 		extraTools:   []*tool.Tool{mcpTool},
 		turns: []types.TurnRecord{
