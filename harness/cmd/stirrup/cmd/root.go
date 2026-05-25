@@ -39,9 +39,26 @@ var rootCmd = &cobra.Command{
 }
 
 // Execute runs the root command. Called from main().
+//
+// SilenceErrors + SilenceUsage are set so a RunE failure prints the
+// error message alone — Execute() owns the stderr line below, and the
+// 80-flag usage block Cobra would otherwise append on every error is
+// noise on a one-line "prompt is required" or "invalid config" failure
+// (the #249 review called this out). --help still prints the full usage
+// because SilenceUsage only suppresses the usage-on-error path, not an
+// explicit help request.
+//
+// The exit code follows the four-level CLI scheme (issue #253): an
+// error wrapped in an *exitError carries its class code (1 validation /
+// 2 parse / 3 I/O); any other error preserves the historical default of
+// 1. classifyExitCode encodes the mapping so it is unit-testable without
+// reaching os.Exit.
 func Execute() {
+	rootCmd.SilenceErrors = true
+	rootCmd.SilenceUsage = true
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(classifyExitCode(err))
 	}
 }
 

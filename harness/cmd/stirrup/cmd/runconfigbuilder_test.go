@@ -724,6 +724,11 @@ func TestWriteRunConfigJSON_WriteError(t *testing.T) {
 		if !strings.Contains(err.Error(), "write RunConfig") {
 			t.Errorf("error should describe the write failure, got: %v", err)
 		}
+		// A write failure is an I/O error (exit 3): the marshal succeeded
+		// but the bytes did not reach the sink.
+		if got := classifyExitCode(err); got != exitIO {
+			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
+		}
 	})
 
 	t.Run("second write (newline) fails", func(t *testing.T) {
@@ -734,6 +739,9 @@ func TestWriteRunConfigJSON_WriteError(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "write RunConfig") {
 			t.Errorf("error should describe the newline write failure, got: %v", err)
+		}
+		if got := classifyExitCode(err); got != exitIO {
+			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
 		}
 	})
 }

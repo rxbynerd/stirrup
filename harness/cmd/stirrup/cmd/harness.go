@@ -43,13 +43,18 @@ const maxPromptFileBytes int64 = 10 * 1024 * 1024 // matches local.go maxFileSiz
 // --prompt-file ./brief.txt` from their checkout gets the file next
 // to them, not next to a possibly-remote workspace.
 func readPromptFile(path string) (string, error) {
+	// Every failure here is an I/O error (exit 3): a --prompt-file the
+	// harness could not stat, open, or read, or one whose contents
+	// failed a pre-read precondition (directory, non-regular, oversize,
+	// empty). None is a JSON parse failure — the prompt file is plain
+	// text — so they all classify as I/O.
 	clean := filepath.Clean(path)
 	info, err := os.Stat(clean)
 	if err != nil {
-		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
+		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("reading --prompt-file %q: is a directory", path)
+		return "", ioError(fmt.Errorf("reading --prompt-file %q: is a directory", path))
 	}
 	// Reject character devices, named pipes (FIFOs), Unix sockets, and
 	// every other non-regular file type. `os.Stat` reports Size()==0
@@ -63,10 +68,10 @@ func readPromptFile(path string) (string, error) {
 	// The IsDir() guard above does not cover these; IsDir() is false
 	// for devices and FIFOs.
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("reading --prompt-file %q: not a regular file", path)
+		return "", ioError(fmt.Errorf("reading --prompt-file %q: not a regular file", path))
 	}
 	if info.Size() > maxPromptFileBytes {
-		return "", fmt.Errorf("reading --prompt-file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxPromptFileBytes)
+		return "", ioError(fmt.Errorf("reading --prompt-file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxPromptFileBytes))
 	}
 	// Bounded read via io.LimitReader. Belt-and-braces alongside the
 	// stat-time size check above: closes the TOCTOU window where the
@@ -77,15 +82,15 @@ func readPromptFile(path string) (string, error) {
 	// the operator-facing error is accurate.
 	f, err := os.Open(clean)
 	if err != nil {
-		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
+		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxPromptFileBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("reading --prompt-file %q: %w", path, err)
+		return "", ioError(fmt.Errorf("reading --prompt-file %q: %w", path, err))
 	}
 	if int64(len(data)) > maxPromptFileBytes {
-		return "", fmt.Errorf("reading --prompt-file %q: exceeds %d byte cap", path, maxPromptFileBytes)
+		return "", ioError(fmt.Errorf("reading --prompt-file %q: exceeds %d byte cap", path, maxPromptFileBytes))
 	}
 	// Trim only trailing CR/LF so `echo "prompt" > file` and
 	// `printf 'prompt\n' > file` both produce the same string. Leading
@@ -93,7 +98,7 @@ func readPromptFile(path string) (string, error) {
 	// indentation (e.g. a code block) should round-trip unchanged.
 	trimmed := strings.TrimRight(string(data), "\r\n")
 	if trimmed == "" {
-		return "", fmt.Errorf("--prompt-file %q is empty", path)
+		return "", ioError(fmt.Errorf("--prompt-file %q is empty", path))
 	}
 	return trimmed, nil
 }
@@ -660,28 +665,37 @@ const maxConfigFileBytes int64 = 1 << 20 // 1 MiB
 // JSON fields are rejected so that typos in the config file surface as
 // errors rather than being silently ignored.
 func loadRunConfigFile(path string) (*types.RunConfig, error) {
+	// A missing / unreadable / oversize / empty file is an I/O failure
+	// (exit 3): the bytes never reached the JSON decoder. Only the decode
+	// step below is a parse failure (exit 2). I/O-class errors use the
+	// "reading config file" prefix and parse-class errors use "parsing
+	// config file" so the operator-facing wording matches the exit code.
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+		return nil, ioError(fmt.Errorf("reading config file %q: %w", path, err))
 	}
 	if info.IsDir() {
-		return nil, fmt.Errorf("reading config file %q: is a directory", path)
+		return nil, ioError(fmt.Errorf("reading config file %q: is a directory", path))
 	}
 	if info.Size() > maxConfigFileBytes {
-		return nil, fmt.Errorf("reading config file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxConfigFileBytes)
+		return nil, ioError(fmt.Errorf("reading config file %q: %d bytes exceeds %d byte cap", path, info.Size(), maxConfigFileBytes))
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+		return nil, ioError(fmt.Errorf("reading config file %q: %w", path, err))
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("parsing config file %q: file is empty", path)
+		// "reading", not "parsing": an empty file never reached the JSON
+		// decoder, so the I/O exit class (3) and the wording agree. The
+		// parallel readRunConfigFromReader empty-stdin path already says
+		// "reading", so this aligns the two.
+		return nil, ioError(fmt.Errorf("reading config file %q: file is empty", path))
 	}
 	var cfg types.RunConfig
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parsing config file %q: %w", path, err)
+		return nil, parseError(fmt.Errorf("parsing config file %q: %w", path, err))
 	}
 	return &cfg, nil
 }
@@ -1316,7 +1330,7 @@ func writeOutputRunConfig(path string, cfg *types.RunConfig) error {
 	// a replay file.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		return fmt.Errorf("opening --output-runconfig %q: %w", path, err)
+		return ioError(fmt.Errorf("opening --output-runconfig %q: %w", path, err))
 	}
 	return writeAndCloseRunConfig(f, path, cfg)
 }
@@ -1335,7 +1349,7 @@ func writeOutputRunConfig(path string, cfg *types.RunConfig) error {
 func writeAndCloseRunConfig(wc io.WriteCloser, path string, cfg *types.RunConfig) error {
 	writeErr := writeRunConfigJSON(wc, cfg, false)
 	if cerr := wc.Close(); cerr != nil && writeErr == nil {
-		return fmt.Errorf("closing --output-runconfig %q: %w", path, cerr)
+		return ioError(fmt.Errorf("closing --output-runconfig %q: %w", path, cerr))
 	}
 	return writeErr
 }

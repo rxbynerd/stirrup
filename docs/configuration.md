@@ -328,6 +328,27 @@ stdout. The default JSONL trace writes to a file (or to nothing when
 `STIRRUP_RESULT` line. A future JSONL emitter that writes to stdout
 would conflict with `--output=json`.
 
+### Exit codes
+
+The CLI distinguishes failure classes through the process exit code so
+a wrapper script can branch on *why* a command failed without parsing
+stderr. The scheme is uniform across `harness`, `job`, and
+`run-config`:
+
+| Code | Class | Examples |
+|---|---|---|
+| `0` | Success | The command completed; for `harness`, a run reached a terminal outcome. |
+| `1` | Validation / precondition | `ValidateRunConfig` (or `run-config --validate`) rejected the resolved config; a required prompt had no source; `job` ran without `CONTROL_PLANE_ADDR`. Also the default for any failure not in a more specific class. |
+| `2` | Parse error | The JSON in a `--config` file or piped stdin failed to decode (syntax error, unknown field, type mismatch). |
+| `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure. |
+
+A failed or cancelled *run* (as opposed to a configuration failure)
+exits non-zero on the same `1` default path; the `RunResult` on stdout
+carries the run's outcome for callers that need finer detail than the
+exit code. The interactive first-contact hints (a bare `stirrup` or a
+bare `stirrup harness` on a terminal) are a success surface and exit
+`0`.
+
 ## Component-selection limits
 
 The CLI deliberately exposes only a subset of each component's
