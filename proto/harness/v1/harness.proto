@@ -1194,6 +1194,7 @@ message EditStrategyConfig {
   //   "multi"          — unified edit_file tool that auto-routes to the
   //                      appropriate strategy based on which fields the model
   //                      provides, with automatic fallback on failure.
+  // An empty value resolves to "multi" during ValidateRunConfig.
   string type = 1;
 
   // For "udiff" and "multi": minimum similarity ratio for fuzzy matching

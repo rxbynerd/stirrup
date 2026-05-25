@@ -102,7 +102,9 @@ func (a *NormalizingAdapter) Stream(ctx context.Context, params types.StreamPara
 // Unwrap returns the inner ProviderAdapter the normalizer wraps. It
 // is intended for tests that need to assert on the concrete adapter
 // type (e.g. that batch wrapping is present) without coupling them to
-// the wrapper's existence. Production code should not unwrap — the
+// the wrapper's existence. The intended consumer is within-module test
+// code only; an unexported method would not serve the test's
+// type-assertion pattern. Production code should not unwrap — the
 // normalizer is the single source of truth for the on-wire name
 // invariant and bypassing it would be a regression.
 func (a *NormalizingAdapter) Unwrap() ProviderAdapter {

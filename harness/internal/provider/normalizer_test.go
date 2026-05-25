@@ -351,6 +351,70 @@ func TestNormalizingAdapter_LastBatchIDEmptyWhenInnerNotBatch(t *testing.T) {
 	}
 }
 
+func TestNormalizingAdapter_UnwrapReturnsInner(t *testing.T) {
+	// Unwrap's pointer-identity contract is otherwise only exercised
+	// indirectly through factory_test.go's unwrapNormalizer helper, so a
+	// refactor that broke Unwrap could survive if a test author updated
+	// that helper in lockstep. Pin the contract directly here.
+	inner := &fakeAdapter{}
+	w := NewNormalizingAdapter(inner, "anthropic")
+	got := w.Unwrap()
+	if got != ProviderAdapter(inner) {
+		t.Errorf("Unwrap() = %p, want the inner adapter %p passed to NewNormalizingAdapter", got, inner)
+	}
+}
+
+func TestNormalizingAdapter_NonASCIINameRoundTrip_Gemini(t *testing.T) {
+	// The full adapter stack must keep a non-ASCII internal name off the
+	// wire (Gemini rejects non-ASCII) yet restore it on the inbound
+	// tool_call so dispatch still resolves the handler. The round-trip
+	// property is unit-tested in toolname_test.go but not through the
+	// wrapper; this is the exact failure mode #223 targeted.
+	//
+	// "café_search" sanitizes to "caf__search" under the Gemini policy:
+	// the non-ASCII "é" rune becomes one underscore.
+	const internalName = "café_search"
+	const wireName = "caf__search"
+
+	inner := &fakeAdapter{
+		scripted: []types.StreamEvent{
+			{Type: "tool_call", ID: "call_1", Name: wireName},
+			{Type: "message_complete", StopReason: "tool_use"},
+		},
+	}
+	w := NewNormalizingAdapter(inner, "gemini")
+
+	params := types.StreamParams{
+		Tools: []types.ToolDefinition{
+			{Name: internalName, InputSchema: json.RawMessage(`{}`)},
+		},
+	}
+	ch, err := w.Stream(context.Background(), params)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	outbound := inner.receivedParams.Tools[0].Name
+	for _, r := range outbound {
+		if r > 127 {
+			t.Fatalf("outbound tool name %q contains non-ASCII rune %q", outbound, r)
+		}
+	}
+
+	var sawToolCall bool
+	for ev := range ch {
+		if ev.Type == "tool_call" {
+			sawToolCall = true
+			if ev.Name != internalName {
+				t.Errorf("inbound tool_call Name = %q, want internal %q restored", ev.Name, internalName)
+			}
+		}
+	}
+	if !sawToolCall {
+		t.Fatal("expected to observe a tool_call event")
+	}
+}
+
 func TestNormalizingAdapter_RoundTripDispatch_OpenAIResponses(t *testing.T) {
 	// Integration-style: a full request/response cycle on a provider
 	// type that permits hyphens. Both directions must preserve the

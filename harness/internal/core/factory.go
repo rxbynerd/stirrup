@@ -467,17 +467,6 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	prov = provider.NewNormalizingAdapter(prov, config.Provider.Type)
 	wrappedProviders := make(map[string]provider.ProviderAdapter, len(providers))
 	for name, p := range providers {
-		// The default provider's wrap above already pinned the type to
-		// config.Provider.Type; mirror that for any additional providers
-		// declared in config.Providers — their key is unique by name but
-		// the policy must come from their declared Type, not their map
-		// key (which may differ from the type discriminator).
-		providerType := config.Provider.Type
-		if name != config.Provider.Type {
-			if cfg, ok := config.Providers[name]; ok {
-				providerType = cfg.Type
-			}
-		}
 		if name == config.Provider.Type {
 			// The default-provider entry was just rebuilt above; reuse
 			// that exact wrapper so identity is preserved across the
@@ -486,6 +475,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			// pointer.
 			wrappedProviders[name] = prov
 			continue
+		}
+		// Additional providers declared in config.Providers: their map
+		// key is unique by name but the policy must come from their
+		// declared Type, not the key (which may differ from the type
+		// discriminator). Fall back to the key when no entry is found.
+		providerType := name
+		if cfg, ok := config.Providers[name]; ok {
+			providerType = cfg.Type
 		}
 		wrappedProviders[name] = provider.NewNormalizingAdapter(p, providerType)
 	}
@@ -1134,6 +1131,20 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	case "multi":
 		return edit.NewMultiStrategy(fuzzyThreshold)
 	default:
+		// Reached only by callers that bypass types.ValidateRunConfig (e.g.
+		// gRPC / embedders constructing a RunConfig directly). The fallback
+		// to multi is intentional defence-in-depth, but a typo'd or
+		// future-but-unwired type silently degrading is worth surfacing so
+		// the mis-configuration is detectable. Uses slog.Default() rather
+		// than threading a logger: this is a should-never-happen path and
+		// the call site (factory.go:123) precedes structured-logger
+		// construction, so the value of run correlation does not justify
+		// widening the signature.
+		slog.Default().Warn("unknown edit strategy type; falling back to multi",
+			slog.String("attempted_type", cfg.Type),
+			slog.String("selected_type", "multi"),
+			slog.String("hint", "route the RunConfig through types.ValidateRunConfig to normalize EditStrategy.Type"),
+		)
 		return edit.NewMultiStrategy(fuzzyThreshold)
 	}
 }
