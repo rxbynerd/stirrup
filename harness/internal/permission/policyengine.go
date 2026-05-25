@@ -210,6 +210,33 @@ func (p *PolicyEnginePolicy) Check(ctx context.Context, tool types.ToolDefinitio
 	}
 }
 
+// Probe validates the loaded Cedar policy set for a dry-run preflight.
+// The file was already read and parsed at construction (a malformed file
+// fails the build), so this confirms the parsed set is present and
+// exercises one cedar.Authorize evaluation against a synthetic request to
+// smoke-test the decision path. It deliberately calls cedar.Authorize
+// directly rather than Check: Check would delegate an unmatched decision
+// to the fallback policy, and for an ask-upstream fallback that means a
+// live transport approval prompt — a side effect a probe must never
+// trigger. A nil set (impossible via the normal constructor but reachable
+// for a hand-built policy) is reported so the preflight does not silently
+// pass a policy that would deny every call at run time.
+func (p *PolicyEnginePolicy) Probe(_ context.Context) error {
+	if p == nil || p.cedar == nil {
+		return errors.New("policy-engine: no Cedar policy set loaded")
+	}
+	probeTool := types.ToolDefinition{Name: "preflight_probe"}
+	req, entities, err := p.buildRequest(probeTool, json.RawMessage(`{}`))
+	if err != nil {
+		return fmt.Errorf("policy-engine: build probe request: %w", err)
+	}
+	// The decision itself is irrelevant — the probe only confirms the
+	// policy set evaluates without panicking or erroring on a well-formed
+	// request.
+	cedar.Authorize(p.cedar, entities, req)
+	return nil
+}
+
 // ForChildRun returns a shallow clone of the receiver bound to a new
 // child run identity. The Cedar policy set, fallback policy, and
 // security emitter are reused unchanged; runID is replaced with the

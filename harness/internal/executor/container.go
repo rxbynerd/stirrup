@@ -58,10 +58,34 @@ type ContainerExecutor struct {
 	workspace   string // always containerWorkspace ("/workspace")
 	hostDir     string
 	networkMode string
+	image       string // requested image, retained for the dry-run probe
 	Security    SecurityEventEmitter
 	// proxy, when non-nil, is the in-process egress proxy started for the
 	// allowlist network mode. Close() stops it.
 	proxy *egressproxy.Proxy
+}
+
+// Probe checks the container runtime for a dry-run preflight: it pings
+// the engine socket (GET /_ping) and verifies the requested image is
+// present locally (GET /images/{image}/json) without pulling. An absent
+// image is reported as an error carrying a remediation hint rather than
+// silently pulling at run time, which would burn the run's wall-clock on
+// a multi-hundred-megabyte download the operator did not anticipate.
+func (e *ContainerExecutor) Probe(ctx context.Context) error {
+	if err := e.api.ping(ctx); err != nil {
+		return fmt.Errorf("container engine unreachable: %w", err)
+	}
+	if e.image == "" {
+		return nil
+	}
+	present, err := e.api.imageExistsLocally(ctx, e.image)
+	if err != nil {
+		return fmt.Errorf("inspect image %q: %w", e.image, err)
+	}
+	if !present {
+		return fmt.Errorf("image %q is not present locally; pull it before the run (e.g. `docker pull %s`)", e.image, e.image)
+	}
+	return nil
 }
 
 // NewContainerExecutor creates and starts a container, returning an executor
@@ -194,6 +218,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		workspace:   containerWorkspace,
 		hostDir:     cfg.HostDir,
 		networkMode: hc.NetworkMode,
+		image:       cfg.Image,
 		Security:    nil,
 		proxy:       proxy,
 	}, nil

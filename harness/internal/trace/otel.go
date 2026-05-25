@@ -455,6 +455,28 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	return trace, nil
 }
 
+// Probe checks OTLP exporter reachability for a dry-run preflight. It
+// starts and immediately ends a throwaway span, then ForceFlushes the
+// provider so the configured exporter actually attempts a connection to
+// the collector. A flush error (unreachable endpoint, TLS failure, auth
+// rejection) is surfaced so the preflight step fails with the exporter's
+// diagnostic rather than discovering the misconfiguration only at
+// run-end when the first batch is dropped.
+//
+// The probe span carries no run data and is not the root span, so it does
+// not perturb the run trace; Start has not been called at preflight time.
+func (e *OTelTraceEmitter) Probe(ctx context.Context) error {
+	if e.provider == nil {
+		return nil
+	}
+	_, span := e.tracer.Start(ctx, "stirrup.preflight.probe")
+	span.End()
+	if err := e.provider.ForceFlush(ctx); err != nil {
+		return fmt.Errorf("OTLP exporter flush failed: %w", err)
+	}
+	return nil
+}
+
 // Tracer returns the OTel tracer used by this emitter, allowing the loop
 // to create child spans for component calls.
 func (e *OTelTraceEmitter) Tracer() oteltrace.Tracer {

@@ -159,6 +159,57 @@ func (c *containerAPIClient) createContainer(ctx context.Context, cfg containerC
 	return result.ID, nil
 }
 
+// ping issues GET /_ping against the engine socket. A 2xx (the engine
+// answers "OK") confirms the daemon is reachable; doRequest turns any
+// >=400 into an error. Used by the dry-run preflight probe so an
+// unreachable or stopped daemon surfaces before the run commits to
+// creating a container.
+func (c *containerAPIClient) ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/_ping"), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.doRequest(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// imageExistsLocally reports whether the named image is present in the
+// engine's local store via GET /images/{name}/json. A 404 is translated
+// to (false, nil) — the image is simply not pulled — so the preflight can
+// distinguish "engine unreachable" (an error) from "image absent" (a
+// warning the operator can act on without a failed run). The probe never
+// pulls: that is a deliberate cost/latency decision left to the run
+// itself. The image reference is path-escaped because it may contain a
+// registry host, a tag, or an "@sha256:" digest with reserved bytes.
+func (c *containerAPIClient) imageExistsLocally(ctx context.Context, image string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/images/"+url.PathEscape(image)+"/json"), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("docker API request GET /images/%s/json: %w", image, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch {
+	case resp.StatusCode == http.StatusNotFound:
+		return false, nil
+	case resp.StatusCode >= 400:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var apiErr apiError
+		if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
+			return false, fmt.Errorf("docker API GET /images/%s/json: %s (HTTP %d)", image, apiErr.Message, resp.StatusCode)
+		}
+		return false, fmt.Errorf("docker API GET /images/%s/json: HTTP %d", image, resp.StatusCode)
+	default:
+		return true, nil
+	}
+}
+
 func (c *containerAPIClient) startContainer(ctx context.Context, id string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(fmt.Sprintf("/containers/%s/start", id)), nil)
 	if err != nil {
