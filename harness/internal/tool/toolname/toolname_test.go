@@ -216,6 +216,37 @@ func TestBuild_IrresolvableCollisionErrors(t *testing.T) {
 	}
 }
 
+func TestBuild_PathologicalMaxLenResolvesColludingPair(t *testing.T) {
+	// Exercise the budget < 1 guard in disambiguate on its success path:
+	// distinct from TestBuild_IrresolvableCollisionErrors (which forces
+	// the guard then fails closed), here the guard still produces two
+	// distinct names so the collision resolves.
+	//
+	// Under MaxLen=2 the 7-char hash suffix ("_" + 6 hex) cannot fit, so
+	// budget = 2 - 7 < 1 and disambiguate returns suffix[:2]. Both names
+	// share the "ji" prefix and truncate to the same bare external name;
+	// the second is routed through disambiguate and lands on a distinct
+	// two-char hash slice, keeping the pair separable and round-trippable.
+	names := []string{"jira_alpha", "jira_bravo"}
+	policy := Policy{MaxLen: 2, AllowHyphen: false, AllowLeadingDigit: true}
+	m, err := Build(names, policy)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	a, b := m.Translate(names[0]), m.Translate(names[1])
+	if a == b {
+		t.Fatalf("collision not resolved: both names normalised to %q", a)
+	}
+	if len(a) > policy.MaxLen || len(b) > policy.MaxLen {
+		t.Errorf("disambiguation exceeded MaxLen=%d: %q (len %d), %q (len %d)", policy.MaxLen, a, len(a), b, len(b))
+	}
+	for _, n := range names {
+		if got := m.Reverse(m.Translate(n)); got != n {
+			t.Errorf("round-trip failed for %q: got %q", n, got)
+		}
+	}
+}
+
 func TestBuild_LongNamesGetHashSuffixWhenColliding(t *testing.T) {
 	// Two long names that share a 64-char prefix would collide after
 	// hard truncation; the hash suffix must keep them distinct.
