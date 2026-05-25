@@ -528,6 +528,49 @@ func TestLoadSuiteHCL_ExistingSuitesParse(t *testing.T) {
 	}
 }
 
+// TestLoadSuiteHCL_ToolUseSuiteParses asserts the tool-use reliability
+// suite (#233) parses and that its tool-trace judges decode with their
+// sequence / call expectations intact. The suite ships with the eval-gate;
+// a parse regression here would surface as an opaque runner failure, so
+// pin it in the spec package where the error is precise.
+func TestLoadSuiteHCL_ToolUseSuiteParses(t *testing.T) {
+	got, err := LoadSuiteHCL("../suites/tooluse.hcl")
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.ID != "tooluse-reliability" {
+		t.Errorf("suite ID = %q, want tooluse-reliability", got.ID)
+	}
+	if len(got.Tasks) == 0 {
+		t.Fatal("expected at least one task")
+	}
+
+	// At least one task must carry a tool-trace judge with a non-empty
+	// sequence — that is the trace-side coverage the suite exists to add.
+	sawSequence := false
+	var walk func(j types.EvalJudge)
+	walk = func(j types.EvalJudge) {
+		if j.Type == "tool-trace" {
+			if j.ToolTrace == nil {
+				t.Errorf("tool-trace judge in task has nil ToolTrace")
+				return
+			}
+			if len(j.ToolTrace.Sequence) > 0 {
+				sawSequence = true
+			}
+		}
+		for _, sub := range j.Judges {
+			walk(sub)
+		}
+	}
+	for _, task := range got.Tasks {
+		walk(task.Judge)
+	}
+	if !sawSequence {
+		t.Error("expected at least one tool-trace judge with a sequence constraint")
+	}
+}
+
 // TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig pins the
 // openai-responses regression suite's chunk-4 update: the suite now
 // authors a suite-level inline `run_config` block that nails the
