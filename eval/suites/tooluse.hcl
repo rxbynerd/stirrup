@@ -21,7 +21,10 @@
 # Live-provider path (opt-in, NOT default CI):
 #   `stirrup-eval run` spawns the real `stirrup harness` binary, which has
 #   no replay-provider path — so running THIS file end-to-end needs a live
-#   provider. Pin the provider/model with a suite-level run_config (or a
+#   provider. A no-credential execution path for stirrup-eval run is blocked
+#   on #272 (a replay-provider RunConfig path / --replay-file flag); until
+#   that lands, the harness-side replay test above is the only creds-free
+#   gate. Pin the provider/model with a suite-level run_config (or a
 #   --config baseline) and supply the credential as a secret:// reference,
 #   then:
 #
