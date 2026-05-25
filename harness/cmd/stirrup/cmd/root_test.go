@@ -47,6 +47,58 @@ func TestRootCmd_Version(t *testing.T) {
 	}
 }
 
+// TestRootCmd_BareInvocationPrintsHint pins issue #249's root behaviour:
+// a bare `stirrup` (no subcommand, no --help / --version) prints the
+// short two-subcommand orientation hint to stdout and exits 0 — not
+// Cobra's full usage block. The hint is plain text: no ANSI so it reads
+// identically in a terminal, a pager, or a captured file.
+func TestRootCmd_BareInvocationPrintsHint(t *testing.T) {
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetArgs([]string{})
+	// SetArgs does not clear flag values parsed by a prior Execute() on
+	// the shared package-level rootCmd. TestRootCmd_Version leaves the
+	// auto-registered --version bool marked Changed=true, and Cobra
+	// short-circuits to the version output before Run fires. Reset it so
+	// this test observes the bare-invocation Run path regardless of
+	// execution order.
+	if vf := rootCmd.Flags().Lookup("version"); vf != nil {
+		_ = vf.Value.Set("false")
+		vf.Changed = false
+	}
+	defer func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetArgs(nil)
+	}()
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute() returned error: %v (a bare invocation must exit 0)", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"stirrup — a coding agent harness",
+		"stirrup harness --prompt",
+		"stirrup job",
+		"stirrup harness --help",
+		"stirrup --version",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("bare-stirrup hint missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+	// The hint must be plain text — no boxes, no headings beyond the
+	// title, and crucially no ANSI escapes.
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("bare-stirrup hint must not contain ANSI escapes\n--- output ---\n%s", out)
+	}
+	// A regression that printed Cobra's full help instead of the hint
+	// would surface its "Available Commands:" / "Flags:" sections.
+	if strings.Contains(out, "Available Commands:") || strings.Contains(out, "Use \"stirrup [command] --help\"") {
+		t.Errorf("bare-stirrup printed Cobra's full help, want the terse hint\n--- output ---\n%s", out)
+	}
+}
+
 // fakeExporter is a workspaceexport.Exporter that returns a fixed
 // error. Used by the exportWorkspace tests to exercise the required /
 // optional error-handling branches without standing up a real GCS

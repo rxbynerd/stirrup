@@ -5398,3 +5398,140 @@ func TestRunHarness_OutputFlagRejectsInvalidValueBeforeOutputRunconfig(t *testin
 		t.Errorf("--output-runconfig=- should not have written to stdout when --output is invalid, got: %q", stdout)
 	}
 }
+
+// TestPrintHarnessUsageHint_ColorEmitsAnsi pins that the grouped hint
+// uses ANSI for headings + dim example values when colour is enabled.
+// Mirrors TestTraceShow_AlwaysEmitsAnsi: the renderer takes an explicit
+// color bool so the test pins the formatting path without a PTY.
+func TestPrintHarnessUsageHint_ColorEmitsAnsi(t *testing.T) {
+	var buf bytes.Buffer
+	printHarnessUsageHint(&buf, true)
+	out := buf.String()
+	if !strings.Contains(out, "\x1b[") {
+		t.Errorf("colour-enabled hint must contain ANSI escapes\n--- output ---\n%s", out)
+	}
+	if !strings.Contains(out, ansiBold) {
+		t.Errorf("colour-enabled hint must bold its headings\n--- output ---\n%s", out)
+	}
+	for _, want := range []string{"USAGE", "REQUIRED", "RUN SHAPE", "PROVIDER", "CONFIGURATION", "EXAMPLES", "--prompt", "--mode"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hint missing group/flag %q\n--- output ---\n%s", want, out)
+		}
+	}
+}
+
+// TestPrintHarnessUsageHint_PlainStripsAnsi pins the plain path: with
+// colour disabled (non-TTY, NO_COLOR, or a piped 2>&1 | cat) the hint
+// carries no ANSI escapes but keeps the same grouped headings.
+func TestPrintHarnessUsageHint_PlainStripsAnsi(t *testing.T) {
+	var buf bytes.Buffer
+	printHarnessUsageHint(&buf, false)
+	out := buf.String()
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("colour-disabled hint must not contain ANSI escapes\n--- output ---\n%s", out)
+	}
+	for _, want := range []string{"USAGE", "REQUIRED", "RUN SHAPE", "PROVIDER", "CONFIGURATION", "EXAMPLES"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("plain hint missing group %q\n--- output ---\n%s", want, out)
+		}
+	}
+}
+
+// TestResolvePromptForRun_InteractiveReturnsHintSentinel pins the TTY
+// branch of the prompt-required gate (issue #249): when stderr is
+// interactive and no source supplied a prompt, resolvePromptForRun
+// returns errPromptHintRequested so runHarness can show the grouped hint
+// and exit 0. The interactive decision is injected via the
+// stderrIsInteractive seam rather than a real PTY.
+func TestResolvePromptForRun_InteractiveReturnsHintSentinel(t *testing.T) {
+	orig := stderrIsInteractive
+	stderrIsInteractive = func() bool { return true }
+	defer func() { stderrIsInteractive = orig }()
+
+	cmd := newTestHarnessCommand()
+	cfg := &types.RunConfig{}
+	err := resolvePromptForRun(cmd, cfg)
+	if !errors.Is(err, errPromptHintRequested) {
+		t.Fatalf("resolvePromptForRun on a TTY = %v, want errPromptHintRequested", err)
+	}
+}
+
+// TestResolvePromptForRun_NonInteractiveReturnsOpaqueError pins the
+// non-TTY branch: scripted callers keep the verbatim "prompt is
+// required" error and a non-zero exit so log aggregators are not
+// flooded with the multi-line hint.
+func TestResolvePromptForRun_NonInteractiveReturnsOpaqueError(t *testing.T) {
+	orig := stderrIsInteractive
+	stderrIsInteractive = func() bool { return false }
+	defer func() { stderrIsInteractive = orig }()
+
+	cmd := newTestHarnessCommand()
+	cfg := &types.RunConfig{}
+	err := resolvePromptForRun(cmd, cfg)
+	if err == nil {
+		t.Fatal("resolvePromptForRun without a prompt = nil, want the prompt-required error")
+	}
+	if errors.Is(err, errPromptHintRequested) {
+		t.Fatalf("non-TTY caller got the interactive hint sentinel: %v", err)
+	}
+	if !strings.Contains(err.Error(), "prompt is required") {
+		t.Errorf("error = %q, want the opaque prompt-required message", err.Error())
+	}
+}
+
+// TestRunHarness_BareInteractivePrintsHintAndExitsZero drives the full
+// runHarness path on a TTY with no prompt: it must print the grouped
+// hint to the command's stderr and return nil (exit 0). The
+// stderrIsInteractive seam forces the TTY branch; cmd.SetErr captures
+// the hint so the assertion does not depend on a real terminal.
+func TestRunHarness_BareInteractivePrintsHintAndExitsZero(t *testing.T) {
+	orig := stderrIsInteractive
+	stderrIsInteractive = func() bool { return true }
+	defer func() { stderrIsInteractive = orig }()
+	// Force colour off so the captured text is plain and stable
+	// regardless of the test host's NO_COLOR / TTY state — the colour
+	// branch is pinned separately by TestPrintHarnessUsageHint_*.
+	t.Setenv("NO_COLOR", "1")
+
+	cmd := newTestHarnessCommand()
+	var errBuf bytes.Buffer
+	cmd.SetErr(&errBuf)
+
+	getOut := captureStdout(t)
+	err := runHarness(cmd, nil)
+	stdout := getOut()
+	if err != nil {
+		t.Fatalf("runHarness on a TTY with no prompt = %v, want nil (exit 0)", err)
+	}
+	hint := errBuf.String()
+	if !strings.Contains(hint, "stirrup harness") || !strings.Contains(hint, "USAGE") {
+		t.Errorf("expected grouped hint on stderr, got: %q", hint)
+	}
+	if stdout != "" {
+		t.Errorf("grouped hint must go to stderr, not stdout; stdout = %q", stdout)
+	}
+}
+
+// TestRunHarness_BareNonInteractiveKeepsError pins the scripted path
+// end-to-end: with a non-TTY stderr and no prompt, runHarness returns
+// the opaque prompt-required error (non-zero exit) and prints no hint.
+func TestRunHarness_BareNonInteractiveKeepsError(t *testing.T) {
+	orig := stderrIsInteractive
+	stderrIsInteractive = func() bool { return false }
+	defer func() { stderrIsInteractive = orig }()
+
+	cmd := newTestHarnessCommand()
+	var errBuf bytes.Buffer
+	cmd.SetErr(&errBuf)
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("runHarness with no prompt on a non-TTY = nil, want the prompt-required error")
+	}
+	if !strings.Contains(err.Error(), "prompt is required") {
+		t.Errorf("error = %q, want the opaque prompt-required message", err.Error())
+	}
+	if strings.Contains(errBuf.String(), "USAGE") {
+		t.Errorf("non-TTY path must not print the grouped hint, got: %q", errBuf.String())
+	}
+}
