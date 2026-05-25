@@ -263,11 +263,12 @@ emits a `code_scan_warning` event and continues.
 
 ## Tools
 
-Seven built-in tools ship in `harness/internal/tool/builtins/`:
+Eight built-in tools ship in `harness/internal/tool/builtins/`:
 
 - `read_file`
 - `list_directory`
-- `search_files`
+- `grep_files`
+- `find_files`
 - `edit_file` (registered when any of `edit_file`, `write_file`,
   `search_replace`, or `apply_diff` is in `tools.builtIn`)
 - `run_command`

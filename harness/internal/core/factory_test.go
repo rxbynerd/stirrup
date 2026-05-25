@@ -1178,7 +1178,7 @@ func TestMutatingToolSet(t *testing.T) {
 	// Read-only tools are not mutating. (spawn_agent is registered
 	// after the loop is built and is therefore not in this set; see
 	// BuildLoopWithTransport.)
-	for _, name := range []string{"read_file", "list_directory", "search_files", "web_fetch"} {
+	for _, name := range []string{"read_file", "list_directory", "grep_files", "find_files", "web_fetch"} {
 		if mutating[name] {
 			t.Errorf("%s should not be workspace-mutating", name)
 		}
@@ -1200,7 +1200,7 @@ func TestApprovalRequiredToolSet(t *testing.T) {
 		}
 	}
 	// Pure-read tools never require approval.
-	for _, name := range []string{"read_file", "list_directory", "search_files"} {
+	for _, name := range []string{"read_file", "list_directory", "grep_files", "find_files"} {
 		if approval[name] {
 			t.Errorf("%s should not require approval", name)
 		}
@@ -1600,7 +1600,7 @@ func TestBuildLoopWithTransport_AllToolsRegisteredByDefault(t *testing.T) {
 	defer func() { _ = loop.Close() }()
 
 	// With no tools.builtIn filter, all tools should be registered.
-	expectedTools := []string{"read_file", "list_directory", "search_files", "run_command", "write_file", "web_fetch", "spawn_agent"}
+	expectedTools := []string{"read_file", "list_directory", "grep_files", "find_files", "run_command", "write_file", "web_fetch", "spawn_agent"}
 	for _, name := range expectedTools {
 		if loop.Tools.Resolve(name) == nil {
 			t.Errorf("expected tool %q to be registered", name)

@@ -849,8 +849,18 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "list_directory") && caps.CanRead {
 		registry.Register(builtins.ListDirectoryTool(exec))
 	}
-	if toolEnabled(cfg.BuiltIn, "search_files") && caps.CanExec {
-		registry.Register(builtins.SearchFilesTool(exec))
+	// grep_files and find_files replace the old search_files tool. Both
+	// tools are filesystem-read primitives — find_files is pure Go and
+	// never shells out; grep_files's native walker only needs read
+	// access, and the ripgrep fast path checks CanExec internally before
+	// invoking exec.Exec. Gating on CanRead therefore matches semantics:
+	// a future read-only sandboxed executor (CanRead=true, CanExec=false)
+	// gets working content/name search instead of silently losing both.
+	if toolEnabled(cfg.BuiltIn, "grep_files") && caps.CanRead {
+		registry.Register(builtins.GrepFilesTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "find_files") && caps.CanRead {
+		registry.Register(builtins.FindFilesTool(exec))
 	}
 	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
 		registry.Register(builtins.RunCommandTool(exec))

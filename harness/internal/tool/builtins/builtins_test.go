@@ -72,122 +72,13 @@ func (m *mockExecutor) Capabilities() executor.ExecutorCapabilities {
 // --- shellQuote tests ---
 
 func TestShellQuote_EmbeddedSingleQuote(t *testing.T) {
-	// shellQuote is unexported, so we test it indirectly via the search tool.
-	// When a pattern contains a single quote, the grep command must still be
-	// well-formed. We verify shellQuote produces the correct escaping by
-	// checking the command string passed to the executor.
-	var capturedCmd string
-	mock := &mockExecutor{
-		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
-			capturedCmd = command
-			return &executor.ExecResult{ExitCode: 1, Stdout: "", Stderr: ""}, nil
-		},
-	}
-
-	t.Run("direct", func(t *testing.T) {
-		got := shellQuote("a'b")
-		// Expected: 'a'\''b' — close quote, escaped literal quote, reopen quote.
-		want := "'a'\\''b'"
-		if got != want {
-			t.Errorf("shellQuote(\"a'b\") = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("indirect_via_search", func(t *testing.T) {
-		searchTool := SearchFilesTool(mock)
-		input, _ := json.Marshal(map[string]string{
-			"pattern": "it's",
-			"type":    "grep",
-		})
-		_, _ = searchTool.Handler(context.Background(), input)
-
-		// The captured command should contain the correctly escaped pattern.
-		if !strings.Contains(capturedCmd, "'it'\\''s'") {
-			t.Errorf("expected escaped single quote in command, got: %s", capturedCmd)
-		}
-	})
-}
-
-// --- SearchFilesTool tests ---
-
-func TestSearchFilesTool_InvalidType(t *testing.T) {
-	mock := &mockExecutor{}
-	searchTool := SearchFilesTool(mock)
-
-	input, _ := json.Marshal(map[string]string{
-		"pattern": "foo",
-		"type":    "exec",
-	})
-
-	_, err := searchTool.Handler(context.Background(), input)
-	if err == nil {
-		t.Fatal("expected error for invalid search type 'exec'")
-	}
-	if !strings.Contains(err.Error(), "type must be") {
-		t.Errorf("error should mention invalid type, got: %v", err)
-	}
-}
-
-func TestSearchFilesTool_GrepMode(t *testing.T) {
-	mock := &mockExecutor{
-		resolvePathFunc: func(relativePath string) (string, error) {
-			if relativePath != "." {
-				t.Errorf("expected default path '.', got %q", relativePath)
-			}
-			return "/workspace", nil
-		},
-		execFunc: func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
-			if !strings.HasPrefix(command, "grep") {
-				t.Errorf("expected grep command, got: %s", command)
-			}
-			if !strings.Contains(command, "'/workspace'") {
-				t.Errorf("expected resolved workspace path in command, got: %s", command)
-			}
-			return &executor.ExecResult{
-				ExitCode: 0,
-				Stdout:   "main.go:10:func main() {\n",
-			}, nil
-		},
-	}
-
-	searchTool := SearchFilesTool(mock)
-	input, _ := json.Marshal(map[string]string{
-		"pattern": "func main",
-		"type":    "grep",
-	})
-
-	result, err := searchTool.Handler(context.Background(), input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "main.go:10") {
-		t.Errorf("expected grep output in result, got: %s", result)
-	}
-}
-
-func TestSearchFilesTool_PathTraversalRejected(t *testing.T) {
-	mock := &mockExecutor{
-		resolvePathFunc: func(relativePath string) (string, error) {
-			if relativePath != "../../etc" {
-				t.Errorf("unexpected path: %q", relativePath)
-			}
-			return "", fmt.Errorf("path escapes workspace")
-		},
-	}
-
-	searchTool := SearchFilesTool(mock)
-	input, _ := json.Marshal(map[string]string{
-		"pattern": "passwd",
-		"path":    "../../etc",
-		"type":    "grep",
-	})
-
-	_, err := searchTool.Handler(context.Background(), input)
-	if err == nil {
-		t.Fatal("expected traversal error")
-	}
-	if !strings.Contains(err.Error(), "resolve search path") {
-		t.Fatalf("expected resolved-path error, got %v", err)
+	// shellQuote is unexported; verify directly. When a pattern contains a
+	// single quote, the constructed shell command must still be well-formed.
+	got := shellQuote("a'b")
+	// Expected: 'a'\''b' — close quote, escaped literal quote, reopen quote.
+	want := "'a'\\''b'"
+	if got != want {
+		t.Errorf("shellQuote(\"a'b\") = %q, want %q", got, want)
 	}
 }
 
@@ -300,6 +191,328 @@ func TestReadFileTool_EmptyPath(t *testing.T) {
 	}
 }
 
+func TestReadFileTool_LineNumberedOutput(t *testing.T) {
+	mock := &mockExecutor{
+		readFileFunc: func(ctx context.Context, path string) (string, error) {
+			return "alpha\nbeta\ngamma\n", nil
+		},
+	}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": "file.txt"})
+	result, err := readTool.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "1\talpha\n2\tbeta\n3\tgamma"
+	if result != want {
+		t.Errorf("output mismatch\n got: %q\nwant: %q", result, want)
+	}
+}
+
+func TestReadFileTool_LineRange(t *testing.T) {
+	mock := &mockExecutor{
+		readFileFunc: func(ctx context.Context, path string) (string, error) {
+			return "one\ntwo\nthree\nfour\nfive\n", nil
+		},
+	}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":       "file.txt",
+		"start_line": 2,
+		"limit":      2,
+	})
+	result, err := readTool.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "2\ttwo\n3\tthree"
+	if result != want {
+		t.Errorf("output mismatch\n got: %q\nwant: %q", result, want)
+	}
+}
+
+func TestReadFileTool_StartLinePastEOF(t *testing.T) {
+	mock := &mockExecutor{
+		readFileFunc: func(ctx context.Context, path string) (string, error) {
+			return "only one line\n", nil
+		},
+	}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":       "file.txt",
+		"start_line": 500,
+	})
+	result, err := readTool.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("expected non-error for start_line past EOF, got %v", err)
+	}
+	if !strings.Contains(result, "past end of file") {
+		t.Errorf("expected past-EOF notice, got: %q", result)
+	}
+}
+
+func TestReadFileTool_LimitOverMax(t *testing.T) {
+	mock := &mockExecutor{}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":  "file.txt",
+		"limit": 100000,
+	})
+	_, err := readTool.Handler(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected error for limit over maximum")
+	}
+	if !strings.Contains(err.Error(), "limit must be <=") {
+		t.Errorf("error should mention limit upper bound, got: %v", err)
+	}
+}
+
+func TestReadFileTool_PaddingAlignsColumns(t *testing.T) {
+	// A 12-line range crosses single→double digit boundaries; line numbers
+	// must be right-aligned to a width of 2 so columns line up.
+	lines := make([]string, 12)
+	for i := range lines {
+		lines[i] = "x"
+	}
+	mock := &mockExecutor{
+		readFileFunc: func(ctx context.Context, path string) (string, error) {
+			return strings.Join(lines, "\n") + "\n", nil
+		},
+	}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": "file.txt"})
+	result, err := readTool.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Line 1 should be " 1\tx" (padded), line 12 should be "12\tx".
+	if !strings.Contains(result, " 1\tx") {
+		t.Errorf("expected padded line 1 prefix \" 1\\t\", got: %q", result)
+	}
+	if !strings.Contains(result, "12\tx") {
+		t.Errorf("expected unpadded line 12 prefix \"12\\t\", got: %q", result)
+	}
+}
+
+// --- ListDirectoryTool tests ---
+
+func TestListDirectoryTool_FlatDefault(t *testing.T) {
+	mock := &mockExecutor{
+		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
+			return []string{"file.go", "sub/"}, nil
+		},
+	}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": "."})
+	result, err := listTool.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "file.go\nsub/" {
+		t.Errorf("unexpected output: %q", result)
+	}
+}
+
+func TestListDirectoryTool_Recursive(t *testing.T) {
+	mock := &mockExecutor{
+		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
+			switch path {
+			case ".":
+				return []string{"a.go", "sub/"}, nil
+			case "./sub":
+				return []string{"b.go", "nested/"}, nil
+			case "./sub/nested":
+				return []string{"c.go"}, nil
+			}
+			return nil, fmt.Errorf("unexpected path %q", path)
+		},
+	}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":      ".",
+		"recursive": true,
+		"max_depth": 5,
+	})
+	result, err := listTool.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{"a.go", "sub/", "sub/b.go", "sub/nested/", "sub/nested/c.go"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("expected %q in result, got: %q", want, result)
+		}
+	}
+}
+
+func TestListDirectoryTool_RecursiveDepthLimit(t *testing.T) {
+	mock := &mockExecutor{
+		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
+			switch path {
+			case ".":
+				return []string{"sub/"}, nil
+			case "./sub":
+				return []string{"deeper/"}, nil
+			case "./sub/deeper":
+				return []string{"file.go"}, nil
+			}
+			return nil, nil
+		},
+	}
+	listTool := ListDirectoryTool(mock)
+
+	// max_depth=1 should list "sub/" and "sub/deeper/" but NOT "sub/deeper/file.go".
+	input, _ := json.Marshal(map[string]any{
+		"path":      ".",
+		"recursive": true,
+		"max_depth": 1,
+	})
+	result, err := listTool.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "sub/") {
+		t.Errorf("expected sub/ in result, got: %q", result)
+	}
+	if !strings.Contains(result, "sub/deeper/") {
+		t.Errorf("expected sub/deeper/ at depth=1, got: %q", result)
+	}
+	if strings.Contains(result, "file.go") {
+		t.Errorf("did not expect deeper file at max_depth=1, got: %q", result)
+	}
+}
+
+func TestListDirectoryTool_MaxEntriesTruncation(t *testing.T) {
+	mock := &mockExecutor{
+		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
+			return []string{"a", "b", "c", "d", "e"}, nil
+		},
+	}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":        ".",
+		"max_entries": 3,
+	})
+	result, err := listTool.Handler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "[truncated") {
+		t.Errorf("expected truncation sentinel, got: %q", result)
+	}
+}
+
+func TestListDirectoryTool_EmptyPath(t *testing.T) {
+	mock := &mockExecutor{}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": ""})
+	_, err := listTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "path is required") {
+		t.Errorf("expected path-required error, got %v", err)
+	}
+}
+
+func TestListDirectoryTool_MaxEntriesValidation(t *testing.T) {
+	mock := &mockExecutor{}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": ".", "max_entries": 0})
+	_, err := listTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "max_entries must be >=") {
+		t.Errorf("expected lower-bound error, got %v", err)
+	}
+
+	input, _ = json.Marshal(map[string]any{"path": ".", "max_entries": 100000})
+	_, err = listTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "max_entries must be <=") {
+		t.Errorf("expected upper-bound error, got %v", err)
+	}
+}
+
+func TestListDirectoryTool_RecursiveRootError(t *testing.T) {
+	mock := &mockExecutor{
+		listDirectoryFunc: func(ctx context.Context, path string) ([]string, error) {
+			return nil, fmt.Errorf("root inaccessible")
+		},
+	}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": ".", "recursive": true})
+	_, err := listTool.Handler(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected error when root is inaccessible")
+	}
+}
+
+func TestReadFileTool_StartLineBelowOne(t *testing.T) {
+	mock := &mockExecutor{}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":       "file.txt",
+		"start_line": 0,
+	})
+	_, err := readTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "start_line must be >=") {
+		t.Errorf("expected start_line lower-bound error, got %v", err)
+	}
+}
+
+func TestReadFileTool_LimitBelowOne(t *testing.T) {
+	mock := &mockExecutor{}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":  "file.txt",
+		"limit": 0,
+	})
+	_, err := readTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "limit must be >=") {
+		t.Errorf("expected limit lower-bound error, got %v", err)
+	}
+}
+
+func TestReadFileTool_ExecError(t *testing.T) {
+	mock := &mockExecutor{
+		readFileFunc: func(ctx context.Context, path string) (string, error) {
+			return "", fmt.Errorf("file not found")
+		},
+	}
+	readTool := ReadFileTool(mock)
+
+	input, _ := json.Marshal(map[string]any{"path": "missing.txt"})
+	_, err := readTool.Handler(context.Background(), input)
+	if err == nil || !strings.Contains(err.Error(), "file not found") {
+		t.Errorf("expected file-not-found error, got %v", err)
+	}
+}
+
+func TestListDirectoryTool_MaxDepthOverLimit(t *testing.T) {
+	mock := &mockExecutor{}
+	listTool := ListDirectoryTool(mock)
+
+	input, _ := json.Marshal(map[string]any{
+		"path":      ".",
+		"recursive": true,
+		"max_depth": 11,
+	})
+	_, err := listTool.Handler(context.Background(), input)
+	if err == nil {
+		t.Fatal("expected error for max_depth over limit")
+	}
+	if !strings.Contains(err.Error(), "max_depth must be <=") {
+		t.Errorf("error should mention max_depth bound, got: %v", err)
+	}
+}
+
 // --- WriteFileTool tests ---
 
 func TestWriteFileTool_Success(t *testing.T) {
@@ -393,7 +606,8 @@ func TestRegisterBuiltins(t *testing.T) {
 		"read_file",
 		"write_file",
 		"list_directory",
-		"search_files",
+		"grep_files",
+		"find_files",
 		"run_command",
 		"web_fetch",
 	}
@@ -412,5 +626,14 @@ func TestRegisterBuiltins(t *testing.T) {
 		if !registered[name] {
 			t.Errorf("expected tool %q to be registered", name)
 		}
+	}
+
+	// The legacy search_files name must remain absent — the registry no
+	// longer ships it, and the dispatcher emits a directional hint for
+	// callers that still use it. Asserting absence here keeps a future
+	// accidental re-introduction from silently passing the positive
+	// checks above.
+	if registered["search_files"] {
+		t.Error("search_files must not be registered (split into grep_files and find_files)")
 	}
 }

@@ -21,7 +21,8 @@ func TestMultiStrategy_ToolDefinition(t *testing.T) {
 		t.Error("input schema should not be empty")
 	}
 
-	// Verify the schema is valid JSON containing expected fields.
+	// Verify the schema is valid JSON containing expected fields, the
+	// operation enum is declared, and operation is on the required list.
 	var schema map[string]interface{}
 	if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
 		t.Fatalf("schema is not valid JSON: %v", err)
@@ -30,14 +31,44 @@ func TestMultiStrategy_ToolDefinition(t *testing.T) {
 	if !ok {
 		t.Fatal("schema missing properties")
 	}
-	for _, field := range []string{"path", "content", "diff", "old_string", "new_string"} {
+	for _, field := range []string{"path", "operation", "content", "diff", "old_string", "new_string"} {
 		if _, exists := props[field]; !exists {
 			t.Errorf("schema missing property %q", field)
 		}
 	}
+	opProp, ok := props["operation"].(map[string]interface{})
+	if !ok {
+		t.Fatal("operation property missing or wrong type")
+	}
+	enum, ok := opProp["enum"].([]interface{})
+	if !ok {
+		t.Fatal("operation enum missing")
+	}
+	for _, want := range []string{"replace", "delete", "rewrite", "patch"} {
+		found := false
+		for _, v := range enum {
+			if v == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("operation enum missing %q", want)
+		}
+	}
+	required, _ := schema["required"].([]interface{})
+	hasOperation := false
+	for _, v := range required {
+		if v == "operation" {
+			hasOperation = true
+		}
+	}
+	if !hasOperation {
+		t.Error("operation should be listed in required")
+	}
 }
 
-func TestMultiStrategy_RoutesToUdiff(t *testing.T) {
+func TestMultiStrategy_RoutesPatchToUdiff(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -47,6 +78,7 @@ func TestMultiStrategy_RoutesToUdiff(t *testing.T) {
 	m := NewMultiStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{
 		"path": "test.txt",
+		"operation": "patch",
 		"diff": "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2_modified\n line3"
 	}`)
 
@@ -64,7 +96,7 @@ func TestMultiStrategy_RoutesToUdiff(t *testing.T) {
 	}
 }
 
-func TestMultiStrategy_RoutesToSearchReplace(t *testing.T) {
+func TestMultiStrategy_RoutesReplaceToSearchReplace(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -73,6 +105,7 @@ func TestMultiStrategy_RoutesToSearchReplace(t *testing.T) {
 	m := NewMultiStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{
 		"path": "test.txt",
+		"operation": "replace",
 		"old_string": "world",
 		"new_string": "universe"
 	}`)
@@ -91,13 +124,41 @@ func TestMultiStrategy_RoutesToSearchReplace(t *testing.T) {
 	}
 }
 
-func TestMultiStrategy_RoutesToWholeFile(t *testing.T) {
+func TestMultiStrategy_RoutesDeleteToSearchReplace(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	writeTestFile(t, dir, "test.txt", "hello world")
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "delete",
+		"old_string": " world"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !result.Applied {
+		t.Errorf("expected Applied=true; error: %s", result.Error)
+	}
+
+	content, _ := exec.ReadFile(context.Background(), "test.txt")
+	if content != "hello" {
+		t.Errorf("unexpected content: %q", content)
+	}
+}
+
+func TestMultiStrategy_RoutesRewriteToWholeFile(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
 	m := NewMultiStrategy(defaultFuzzyThreshold)
 	input := json.RawMessage(`{
 		"path": "new.txt",
+		"operation": "rewrite",
 		"content": "brand new content"
 	}`)
 
@@ -115,7 +176,7 @@ func TestMultiStrategy_RoutesToWholeFile(t *testing.T) {
 	}
 }
 
-func TestMultiStrategy_FallbackOnUdiffFailure(t *testing.T) {
+func TestMultiStrategy_FallbackPatchToWholeFile(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
@@ -124,9 +185,11 @@ func TestMultiStrategy_FallbackOnUdiffFailure(t *testing.T) {
 	writeTestFile(t, dir, "test.txt", "original content")
 
 	m := NewMultiStrategy(defaultFuzzyThreshold)
-	// Provide both diff (which will fail) and content (which will succeed).
+	// operation=patch is primary; content is provided so whole-file
+	// queues as a soft fallback after the diff fails.
 	input := json.RawMessage(`{
 		"path": "test.txt",
+		"operation": "patch",
 		"diff": "@@ -1,3 +1,3 @@\n nonexistent_line1\n-nonexistent_line2\n+replacement\n nonexistent_line3",
 		"content": "fallback content"
 	}`)
@@ -145,16 +208,19 @@ func TestMultiStrategy_FallbackOnUdiffFailure(t *testing.T) {
 	}
 }
 
-func TestMultiStrategy_FallbackSearchReplaceToWholeFile(t *testing.T) {
+func TestMultiStrategy_FallbackReplaceToWholeFile(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
 	writeTestFile(t, dir, "test.txt", "hello world")
 
 	m := NewMultiStrategy(defaultFuzzyThreshold)
-	// old_string won't be found, so search-replace fails; content fallback succeeds.
+	// operation=replace is primary; old_string won't be found, so the
+	// search-replace fails; the content field provides a whole-file
+	// safety net that succeeds.
 	input := json.RawMessage(`{
 		"path": "test.txt",
+		"operation": "replace",
 		"old_string": "nonexistent text",
 		"new_string": "replacement",
 		"content": "whole file fallback"
@@ -174,23 +240,194 @@ func TestMultiStrategy_FallbackSearchReplaceToWholeFile(t *testing.T) {
 	}
 }
 
-func TestMultiStrategy_NoApplicableStrategy(t *testing.T) {
+func TestMultiStrategy_MissingOperation(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
 	m := NewMultiStrategy(defaultFuzzyThreshold)
-	// Only path provided, no strategy-specific fields.
-	input := json.RawMessage(`{"path": "test.txt"}`)
+	// No operation field — the new contract requires one.
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"old_string": "x",
+		"new_string": "y"
+	}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if result.Applied {
-		t.Error("expected Applied=false when no strategy fields present")
+		t.Error("expected Applied=false when operation is missing")
 	}
-	if result.Error == "" {
-		t.Error("expected an error message")
+	if !contains(result.Error, "operation is required") {
+		t.Errorf("error should mention required operation, got: %s", result.Error)
+	}
+}
+
+func TestMultiStrategy_ReplaceMissingNewString(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "replace",
+		"old_string": "x"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false when replace omits new_string")
+	}
+	if !contains(result.Error, "new_string") {
+		t.Errorf("error should mention new_string, got: %s", result.Error)
+	}
+}
+
+// TestMultiStrategy_ReplaceMissingOldString covers the validateOperationFields
+// branch at multi.go:225 — operation=replace with new_string set but
+// old_string absent. The pre-existing tests covered missing new_string
+// and the unknown-operation paths, leaving this one reachable production
+// branch unexercised.
+func TestMultiStrategy_ReplaceMissingOldString(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "replace",
+		"new_string": "y"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false when replace omits old_string")
+	}
+	if !contains(result.Error, "old_string") {
+		t.Errorf("error should mention old_string, got: %s", result.Error)
+	}
+}
+
+// TestMultiStrategy_DeleteMissingOldString covers the branch at multi.go:233
+// — operation=delete with both old_string and new_string absent. The
+// pre-existing delete tests covered the wrong-direction case (new_string
+// supplied) but not the missing-required-field case.
+func TestMultiStrategy_DeleteMissingOldString(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "delete"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false when delete omits old_string")
+	}
+	if !contains(result.Error, "old_string") {
+		t.Errorf("error should mention old_string, got: %s", result.Error)
+	}
+}
+
+func TestMultiStrategy_DeleteWithNewStringRejected(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "delete",
+		"old_string": "x",
+		"new_string": "y"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false when delete supplies new_string")
+	}
+	if !contains(result.Error, "delete") {
+		t.Errorf("error should mention delete operation, got: %s", result.Error)
+	}
+}
+
+func TestMultiStrategy_RewriteMissingContent(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "rewrite"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false when rewrite omits content")
+	}
+	if !contains(result.Error, "content") {
+		t.Errorf("error should mention content, got: %s", result.Error)
+	}
+}
+
+func TestMultiStrategy_PatchMissingDiff(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "patch"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false when patch omits diff")
+	}
+	if !contains(result.Error, "diff") {
+		t.Errorf("error should mention diff, got: %s", result.Error)
+	}
+}
+
+func TestMultiStrategy_UnknownOperation(t *testing.T) {
+	dir := t.TempDir()
+	exec := newTestExecutor(t, dir)
+
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	input := json.RawMessage(`{
+		"path": "test.txt",
+		"operation": "destroy"
+	}`)
+
+	result, err := m.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Error("expected Applied=false for unknown operation")
+	}
+	if !contains(result.Error, "unknown operation") {
+		t.Errorf("error should mention unknown operation, got: %s", result.Error)
 	}
 }
 
@@ -199,7 +436,7 @@ func TestMultiStrategy_MissingPath(t *testing.T) {
 	exec := newTestExecutor(t, dir)
 
 	m := NewMultiStrategy(defaultFuzzyThreshold)
-	input := json.RawMessage(`{"content": "hello"}`)
+	input := json.RawMessage(`{"operation": "rewrite", "content": "hello"}`)
 
 	result, err := m.Apply(context.Background(), input, exec)
 	if err != nil {
@@ -230,10 +467,12 @@ func TestMultiStrategy_AllStrategiesFail(t *testing.T) {
 	writeTestFile(t, dir, "test.txt", "original content")
 
 	m := NewMultiStrategy(defaultFuzzyThreshold)
-	// diff will fail (bad context), old_string will fail (not found).
-	// No content field, so no whole-file fallback.
+	// operation=patch primary fails; old_string fallback also fails.
+	// No content field, so no whole-file fallback. Error must name both
+	// candidates that ran.
 	input := json.RawMessage(`{
 		"path": "test.txt",
+		"operation": "patch",
 		"diff": "@@ -1,3 +1,3 @@\n bad1\n-bad2\n+replacement\n bad3",
 		"old_string": "nonexistent",
 		"new_string": "replacement"
@@ -249,23 +488,23 @@ func TestMultiStrategy_AllStrategiesFail(t *testing.T) {
 	if result.Error == "" {
 		t.Error("expected an error message listing failures")
 	}
-	// Error should mention both strategies.
 	if !contains(result.Error, "udiff") || !contains(result.Error, "search-replace") {
 		t.Errorf("error should mention failed strategies, got: %s", result.Error)
 	}
 }
 
-func TestMultiStrategy_PriorityOrder(t *testing.T) {
+func TestMultiStrategy_PrimaryWinsOverFallback(t *testing.T) {
 	dir := t.TempDir()
 	exec := newTestExecutor(t, dir)
 
 	writeTestFile(t, dir, "test.txt", "line1\nline2\nline3\n")
 
 	m := NewMultiStrategy(defaultFuzzyThreshold)
-	// Provide both diff and content. Udiff should be tried first and succeed,
-	// so whole-file should never be reached.
+	// operation=patch with a valid diff; content is also provided as a
+	// safety net but should NOT be reached because the patch succeeds.
 	input := json.RawMessage(`{
 		"path": "test.txt",
+		"operation": "patch",
 		"diff": "@@ -1,3 +1,3 @@\n line1\n-line2\n+line2_via_diff\n line3",
 		"content": "whole file override"
 	}`)
@@ -280,7 +519,7 @@ func TestMultiStrategy_PriorityOrder(t *testing.T) {
 
 	content, _ := exec.ReadFile(context.Background(), "test.txt")
 	if content != "line1\nline2_via_diff\nline3\n" {
-		t.Errorf("udiff should have been preferred, got content: %q", content)
+		t.Errorf("primary patch should have applied, got content: %q", content)
 	}
 }
 

@@ -313,7 +313,7 @@ func TestValidateRunConfig_ReadOnlyModeWithDenySideEffects(t *testing.T) {
 	c := validConfig()
 	c.Mode = "review"
 	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
-	c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory", "search_files"}}
+	c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory", "grep_files", "find_files"}}
 	if err := ValidateRunConfig(c); err != nil {
 		t.Fatalf("deny-side-effects should be accepted for read-only mode, got: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestValidateRunConfig_ReadOnlyModeWithOnlyReadTools(t *testing.T) {
 			c := validConfig()
 			c.Mode = mode
 			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
-			c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory", "search_files"}}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file", "list_directory", "grep_files", "find_files"}}
 			if err := ValidateRunConfig(c); err != nil {
 				t.Fatalf("expected no error for %s mode with read-only tools, got: %v", mode, err)
 			}

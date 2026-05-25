@@ -106,7 +106,7 @@ func TestSanitize_EmptyNamePlaceholder(t *testing.T) {
 }
 
 func TestBuild_RoundTripPreservesIdentity(t *testing.T) {
-	names := []string{"read_file", "list_directory", "search_files"}
+	names := []string{"read_file", "list_directory", "grep_files", "find_files"}
 	m, err := Build(names, PolicyFor("openai-compatible"))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -285,7 +285,7 @@ func TestBuild_AcceptsAllProviderNamesForCommonRegistry(t *testing.T) {
 	// Smoke test: a realistic registry should normalise cleanly under
 	// every provider's policy.
 	names := []string{
-		"read_file", "list_directory", "search_files",
+		"read_file", "list_directory", "grep_files", "find_files",
 		"write_file", "edit_file", "run_command", "web_fetch",
 		"spawn_agent",
 		"mcp_jira_create-issue", "mcp_slack_post.message",

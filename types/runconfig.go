@@ -1503,7 +1503,8 @@ var validBuiltInToolNames = map[string]bool{
 	"apply_diff":     true,
 	"edit_file":      true,
 	"list_directory": true,
-	"search_files":   true,
+	"grep_files":     true,
+	"find_files":     true,
 	"run_command":    true,
 	"web_fetch":      true,
 	"spawn_agent":    true,
@@ -1542,7 +1543,8 @@ func DefaultReadOnlyBuiltInTools() []string {
 	return []string{
 		"read_file",
 		"list_directory",
-		"search_files",
+		"grep_files",
+		"find_files",
 		"web_fetch",
 		"spawn_agent",
 	}

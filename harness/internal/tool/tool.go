@@ -42,7 +42,7 @@ type AsyncDispatch struct {
 //     consumes additional model budget and acts on its own).
 //
 // Tools may set neither, one, or both flags. Read-only tools (read_file,
-// list_directory, search_files) set neither.
+// list_directory, grep_files, find_files) set neither.
 //
 // A tool is async when AsyncHandler is non-nil. The agentic loop will:
 //

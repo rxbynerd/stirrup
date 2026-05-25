@@ -472,6 +472,67 @@ func TestDispatchToolCall_UnknownTool(t *testing.T) {
 	}
 }
 
+// TestDispatchToolCall_LegacySearchFilesEmitsHint pins the migration error
+// emitted when a model (or a stale operator config) still calls the
+// pre-#225 search_files tool. The dispatcher must direct the caller to the
+// two replacement tools rather than emitting an opaque "Unknown tool".
+func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
+	loop := buildTestLoop(&mockProvider{})
+
+	call := types.ToolCall{
+		ID:    "tc_legacy",
+		Name:  "search_files",
+		Input: json.RawMessage(`{"pattern":"foo","type":"grep"}`),
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	if success {
+		t.Error("expected success == false for legacy search_files name")
+	}
+	if !strings.Contains(output, "search_files") {
+		t.Errorf("expected output to mention search_files, got %q", output)
+	}
+	if !strings.Contains(output, "grep_files") {
+		t.Errorf("expected output to suggest grep_files, got %q", output)
+	}
+	if !strings.Contains(output, "find_files") {
+		t.Errorf("expected output to suggest find_files, got %q", output)
+	}
+	// The parenthetical suffixes are load-bearing model-guidance text:
+	// they tell a confused model which of the two replacements maps to
+	// its original intent. A silent reword that drops either descriptor
+	// would degrade self-correction without failing the name-only checks
+	// above, so we pin them here.
+	if !strings.Contains(output, "regex content search") {
+		t.Errorf("expected hint to describe grep_files as 'regex content search', got %q", output)
+	}
+	if !strings.Contains(output, "glob filename search") {
+		t.Errorf("expected hint to describe find_files as 'glob filename search', got %q", output)
+	}
+}
+
+// TestRenamedToolHint exercises the rename table directly so the wording
+// of each entry is contracted independently of the dispatcher. The
+// dispatcher test above covers the wiring; this one pins the hint
+// strings themselves.
+func TestRenamedToolHint(t *testing.T) {
+	want := "tool not found: search_files; use grep_files (regex content search) or find_files (glob filename search)"
+	got, ok := renamedToolHint("search_files")
+	if !ok {
+		t.Fatal("expected renamedToolHint to recognise search_files")
+	}
+	if got != want {
+		t.Errorf("hint mismatch:\n got:  %q\n want: %q", got, want)
+	}
+
+	// Names that were never previously registered must return (\"\", false)
+	// so the caller falls through to the generic unknown-tool path. A
+	// future rename addition must explicitly land in the table.
+	if _, ok := renamedToolHint("not_a_tool"); ok {
+		t.Error("renamedToolHint must return ok=false for unrecognised names")
+	}
+}
+
 type errorVerifier struct{}
 
 func (m *errorVerifier) Verify(_ context.Context, _ verifier.VerifyContext) (*types.VerificationResult, error) {
