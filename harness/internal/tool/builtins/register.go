@@ -23,5 +23,9 @@ func RegisterBuiltins(registry *tool.Registry, exec executor.Executor) {
 	registry.Register(GrepFilesTool(exec))
 	registry.Register(FindFilesTool(exec))
 	registry.Register(RunCommandTool(exec))
+	registry.Register(GitStatusTool(exec))
+	registry.Register(GitChangedFilesTool(exec))
+	registry.Register(GitDiffTool(exec))
+	registry.Register(GitShowTool(exec))
 	registry.Register(WebFetchTool())
 }

@@ -587,6 +587,39 @@ func TestValidateRunConfig_ReadOnlyModeWithOnlyReadTools(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_ReadOnlyModeAcceptsGitTools proves the #29 invariant
+// that the read-only VCS tools (git_status, git_changed_files, git_diff,
+// git_show) are accepted in every read-only mode, while a config that also
+// lists a write tool is still rejected. The two halves share a fixture so the
+// only difference between accept and reject is the presence of run_command.
+func TestValidateRunConfig_ReadOnlyModeAcceptsGitTools(t *testing.T) {
+	gitTools := []string{"git_status", "git_changed_files", "git_diff", "git_show"}
+	for _, mode := range []string{"planning", "review", "research", "toil"} {
+		t.Run(mode+"/accept", func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: append([]string{"read_file"}, gitTools...)}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("read-only mode %q should accept git tools, got: %v", mode, err)
+			}
+		})
+		t.Run(mode+"/reject_with_write", func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: append(append([]string{"read_file"}, gitTools...), "run_command")}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("read-only mode %q must still reject run_command alongside git tools", mode)
+			}
+			if !strings.Contains(err.Error(), "read-only mode") || !strings.Contains(err.Error(), "run_command") {
+				t.Errorf("expected rejection mentioning run_command, got: %v", err)
+			}
+		})
+	}
+}
+
 // TestDefaultReadOnlyBuiltInTools_PassesValidation locks in the invariant
 // that DefaultReadOnlyBuiltInTools() is always a valid Tools.BuiltIn list
 // for every read-only mode. Callers (notably the stirrup CLI) rely on

@@ -263,7 +263,7 @@ emits a `code_scan_warning` event and continues.
 
 ## Tools
 
-Eight built-in tools ship in `harness/internal/tool/builtins/`:
+Twelve built-in tools ship in `harness/internal/tool/builtins/`:
 
 - `read_file`
 - `list_directory`
@@ -272,8 +272,25 @@ Eight built-in tools ship in `harness/internal/tool/builtins/`:
 - `edit_file` (registered when any of `edit_file`, `write_file`,
   `search_replace`, or `apply_diff` is in `tools.builtIn`)
 - `run_command`
+- `git_status`
+- `git_changed_files`
+- `git_diff`
+- `git_show`
 - `web_fetch`
 - `spawn_agent`
+
+The four `git_*` tools are read-only: they neither mutate the
+workspace nor require approval, so the read-only modes (`planning`,
+`review`, `research`, `toil`) enable them by default, enabling
+inspection of a change set without `run_command`. The executor runs commands
+through `sh -c`, so each tool builds its git invocation from a fixed
+verb plus single-quoted arguments and validates any `path` (against
+the workspace root) or `ref` (rejecting shell metacharacters and a
+leading `-`) before it reaches the shell. Output is bounded — `git_diff`
+and `git_show` cap on bytes and lines with a truncation sentinel, and
+the status/changed-file lists cap on entry count — so a large worktree
+cannot exhaust model context. A non-git workspace returns a clear
+deterministic error rather than a raw git failure.
 
 `web_fetch` enforces SSRF protection: scheme allowlist (`http`,
 `https`), private-IP/reserved-range blocking (RFC 1918, loopback,
@@ -287,11 +304,15 @@ that text is the fallback every provider can accept and is never
 dropped. Tools that can describe their output as stable fields
 additionally populate an optional typed envelope — `Structured`
 (a `json.RawMessage`) plus a `Kind` discriminator naming the payload's
-shape. The built-in producers emit four shapes: `command_result`
+shape. The built-in producers emit eight shapes: `command_result`
 (`stdout`, `stderr`, `exit_code`, timeout metadata), `search_result`
 (per-match `path`/`line`/`column`/`text`), `find_result`
-(workspace-relative paths), and `file_excerpt` (line window with
-truncation state). Each shape is a concrete Go struct in
+(workspace-relative paths), `file_excerpt` (line window with
+truncation state), `git_status` (current branch plus porcelain
+entries with per-path staged/unstaged status letters), `git_changed_files`
+(name-status letters per path), `git_diff` (bounded unified-diff text
+with a truncation flag), and `git_show` (bounded revision output).
+Each shape is a concrete Go struct in
 `harness/internal/tool/builtins/structured.go`, not a `map[string]any`,
 so the JSON contract is reviewable and stable.
 

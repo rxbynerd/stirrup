@@ -363,7 +363,7 @@ Tools carry two independent permission flags:
 
 | Tool examples | Flags | `allow-all` | `deny-side-effects` | `ask-upstream` |
 |---|---|---|---|---|
-| `read_file`, `list_directory`, `grep_files`, `find_files` | neither flag | Allow | Allow | Allow |
+| `read_file`, `list_directory`, `grep_files`, `find_files`, `git_status`, `git_changed_files`, `git_diff`, `git_show` | neither flag | Allow | Allow | Allow |
 | `web_fetch`, `spawn_agent` | `RequiresApproval` only | Allow | Allow | Prompt |
 | `run_command` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Prompt |
 | `edit_file`, `write_file` | `WorkspaceMutating` + `RequiresApproval` | Allow | Deny | Prompt |
