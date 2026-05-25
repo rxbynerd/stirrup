@@ -1,0 +1,11 @@
+# synthetic: derived from the DeepSeek API documentation for the chat-completions streaming endpoint because the harness does not yet have a live deepseek-v4 capture. The v4 family uses the same reasoning_content sibling-of-content shape as the reasoner family per the DeepSeek API docs; this fixture mirrors that wire shape with v4-appropriate strings so the Step 5 ReplayFields parse-side test has independent fixtures for each rule. Replace with a real DeepSeek-v4 capture before relying on the rule against live traffic.
+data: {"id":"chatcmpl-ds-v4-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"Considering the request carefully."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":6}}
+
+data: [DONE]
+

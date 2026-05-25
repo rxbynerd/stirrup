@@ -321,6 +321,22 @@ prefix stay distinguishable. A collision that cannot be resolved
 before any request is issued — silent aliasing would route a
 tool_call to the wrong handler.
 
+### Provider-quirks layer
+
+Beneath the tool-name normalization layer, each concrete adapter
+resolves a per-(provider, model) `ProviderQuirks` value at the top
+of every `Stream()` call. The layer handles wire-shape and
+behaviour divergences that the canonical `ProviderAdapter`
+interface cannot express: OpenAI reasoning-class sampling-param
+omissions, Z.ai GLM legacy field names, Gemini 3.x
+`thoughtSignature` capture, DeepSeek `reasoning_content` parse-side
+recognition. The `NormalizingAdapter` wraps the concrete adapter
+from the outside; the quirks resolution sits inside the adapter's
+`Stream()` body. Both layers compose without either knowing about
+the other.
+
+Full reference: [`provider-quirks.md`](provider-quirks.md).
+
 ### Sub-agent spawning
 
 The `spawn_agent` tool creates a fresh `AgenticLoop` with its own
@@ -414,6 +430,24 @@ back as a user message. Three implementations ship:
   verification, permission checks, and git operations. See
   [`observability-cloud.md`](observability-cloud.md) for cloud
   backend setup.
+
+The provider-quirks layer (see
+[`provider-quirks.md`](provider-quirks.md)) surfaces resolution
+observability through both slog records and OTel span attributes
+so log-only and trace-only consumers each see which rules fired.
+Each `ProviderAdapter.Stream` call emits an `openai quirks
+resolved` (or `gemini quirks resolved`) DEBUG record naming every
+contributing rule's description, and sets the matching
+`provider.quirk.applied` attribute on the active span. When a
+rule's `OmitSamplingParams` suppresses a caller-supplied non-nil
+`Temperature`, an `openai quirks suppressed caller temperature`
+WARN record fires naming the responsible rule. When a rule
+registers `ReplayFields` paths and any value is captured during
+the stream, a `quirks replay fields captured` DEBUG record fires
+on stream exit summarising `{count, total_len}` per path — and
+the same totals are attached to the span as
+`replay_fields_captured.count` / `.total_len`. Length-only on
+both surfaces; never the captured values themselves.
 
 The `harness/internal/observability/` package emits OTel metrics
 alongside tracing: 13 counters (`stirrup.harness.runs`, `.turns`,

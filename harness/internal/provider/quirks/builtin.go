@@ -85,5 +85,80 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape = StreamArgsOff
 			},
 		},
+		// --- ReplayFields rules (design §6.5, D12) ---
+		//
+		// Wave 2 lands parse-side recognition only. Each rule's
+		// Description ends in "(parse-side only)" so trace consumers
+		// know the captured value is observable but not yet threaded
+		// back into outbound history. Outbound threading is design
+		// §9 risk 7, deferred to a follow-up.
+		//
+		// The Description suffix is enforced by
+		// TestBuiltinRulesParseSideOnlySuffix in replay_test.go.
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "deepseek-reasoner*",
+			Description:  "DeepSeek reasoner: preserve reasoning_content (parse-side only)",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// DeepSeek's reasoner family surfaces its chain-of-
+				// thought as a `reasoning_content` field on each
+				// assistant delta, alongside the canonical `content`
+				// field. The DeepSeek API docs describe the field as
+				// part of the model's response, and the openai-
+				// compatible streaming layout places it at the same
+				// nesting level as `content` (a direct child of
+				// `delta`). The single-segment path captures it
+				// directly when the adapter walks the choice's raw
+				// delta object.
+				//
+				// Field-path verification status: unverified against a
+				// live DeepSeek-reasoner capture as of LastVerified.
+				// Mark the rule stale if not re-verified within the
+				// 180-day window; the staleness test will surface it.
+				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
+			},
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "deepseek-v4*",
+			Description:  "DeepSeek v4: preserve reasoning_content (parse-side only)",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// DeepSeek's v4 series uses the same reasoning_content
+				// field on the assistant delta as the reasoner family
+				// per the DeepSeek API documentation. If a future v4
+				// release diverges (e.g. adopts a structured
+				// `thinking` field instead) the rule needs a
+				// LastVerified bump and the path adjusted; the
+				// staleness test will surface the prompt.
+				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "gemini-3*",
+			Description:  "Gemini 3: preserve thoughtSignature on functionCall parts (parse-side only)",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// Gemini 3.x emits `thoughtSignature` as a sibling
+				// field on every `parts[]` entry alongside the
+				// `functionCall` or `text` discriminator (see
+				// gemini_types.go::geminiPart). The signature is
+				// part-level state, not a child of the functionCall
+				// itself — a path that descends through functionCall
+				// captures nothing (pinned by
+				// TestCaptureReplayFields_GeminiToolCall in
+				// replay_test.go).
+				//
+				// The path uses [] array iteration twice because the
+				// response shape nests candidates (a list, even when
+				// only one is requested) of content with parts (also
+				// a list, one per textual/functionCall chunk).
+				q.ReplayFields = append(q.ReplayFields,
+					"candidates[].content.parts[].thoughtSignature",
+				)
+			},
+		},
 	}
 }

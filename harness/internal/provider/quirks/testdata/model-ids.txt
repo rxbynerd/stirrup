@@ -14,3 +14,6 @@ gemini-2.5-pro
 gemini-3.1-pro-preview
 glm-4-plus
 glm-4-air
+deepseek-reasoner
+deepseek-v4
+deepseek-v4-chat

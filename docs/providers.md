@@ -124,6 +124,30 @@ AI Studio direct support.
 See `examples/runconfig/vertex-gemini.json` and
 `examples/runconfig/vertex-gemini-wif.json`.
 
+## Per-model wire-shape quirks
+
+Provider/model pairs sometimes diverge from the adapter's canonical
+wire shape: OpenAI's reasoning-class models reject sampling
+parameters, Z.ai GLM requires the legacy `max_tokens` key, Gemini
+3.x emits a `thoughtSignature` blob that must survive turn
+boundaries. Rather than encoding these as adapter-internal model
+substring checks, the harness routes them through a registry-driven
+quirks layer at `harness/internal/provider/quirks/`.
+
+Operators do not author quirk rules. Two surfaces are available:
+
+- `provider.compatProfile` on `ProviderConfig` — a closed enum that
+  selects from a small set of compatibility profiles. Only legal
+  value in v1: `"zai-glm"`, which loads the Z.ai GLM compat rule
+  (legacy `max_tokens` key and the `tool_stream: true` extension).
+  Unknown values fail at startup via `ValidateRunConfig`.
+- `stirrup providers quirks --provider X --model Y` — introspection
+  subcommand that prints the resolved `ProviderQuirks` value plus
+  every contributing rule's description, last-verified date, and
+  staleness flag as JSON. Side-effect-free.
+
+Full reference: [`provider-quirks.md`](provider-quirks.md).
+
 ## Credential federation
 
 All five providers consume credentials through `credential.Source.Resolve()`,
