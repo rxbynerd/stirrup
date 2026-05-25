@@ -350,6 +350,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		case *provider.GeminiAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
+			pa.Logger = logger
 		}
 	}
 
@@ -630,6 +631,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		if cred.BearerToken == nil {
 			return nil, fmt.Errorf("gemini provider requires GCP credentials but the credential source produced none")
 		}
+		// No compat profiles for Gemini in v1; registry defaults to DefaultRegistry().
 		return provider.NewGeminiAdapter(cred.BearerToken, cfg.GCPProject, cfg.GCPLocation, cfg.GeminiSafetySettings), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses)", cfg.Type)

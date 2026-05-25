@@ -10,6 +10,60 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirkstest"
 )
 
+// TestScrubFixture pins the substitution behaviour of each scrubber
+// rule. Adding a new scrubber to the package's `scrubbers` list
+// requires a corresponding row here; otherwise a future
+// TestFixturesScrubbed failure for that pattern would surface as
+// "scrubber X exists" without a matching positive-case assertion
+// proving X does what its replacement string claims.
+//
+// Each row supplies an input substring and the expected output
+// substring after ScrubFixture. The test does not anchor the
+// regex — the full fixture body around the secret is irrelevant
+// to the rewrite — so substring presence on both sides is the
+// right shape.
+func TestScrubFixture(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "openai bearer token",
+			in:   "Authorization: Bearer sk-1234567890abcdef",
+			want: "Authorization: Bearer REDACTED",
+		},
+		{
+			name: "x-api-key header",
+			in:   "x-api-key: sk-abcdef1234567890",
+			want: "x-api-key: REDACTED",
+		},
+		{
+			name: "anthropic api key",
+			in:   "sk-ant-api03-abcdef1234567890",
+			want: "REDACTED-ANTHROPIC-KEY",
+		},
+		{
+			name: "gcp project id in vertex url",
+			in:   "https://aiplatform.googleapis.com/v1/projects/prod-billing-1234/locations/us-central1/...",
+			want: "https://aiplatform.googleapis.com/v1/projects/test-project/locations/us-central1/...",
+		},
+		{
+			name: "gcp ya29 oauth token",
+			in:   "Authorization: Bearer ya29.AHES6ZS-7n8abcdefghijklmnop",
+			want: "Authorization: Bearer ya29.REDACTED",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(quirkstest.ScrubFixture([]byte(tc.in)))
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("ScrubFixture(%q) = %q, want substring %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestFixturesScrubbed is the CI gate that enforces design risk 4:
 // no fixture committed to the repository may carry an upstream
 // credential or other sensitive substring that ScrubFixture would

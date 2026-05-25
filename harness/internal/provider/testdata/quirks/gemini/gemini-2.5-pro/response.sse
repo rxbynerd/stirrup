@@ -1,0 +1,4 @@
+# synthetic: derived from the Vertex AI streamGenerateContent wire format documented in gemini.go's consumeSSE because the harness does not yet have a live 2.5 capture; pins a minimal end-of-turn text response (no tool calls) so the StreamArgsOff path is sufficient to parse it. Step 5 forward-stub: this response.sse is not consumed by any Step 3 test; the Step 5 ReplayFields parse-side test will load it via quirkstest.LoadFixture. Replace with a real Vertex AI capture before Step 5 ships.
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hi"}]},"index":0}]}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":1,"totalTokenCount":5}}

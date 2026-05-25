@@ -111,9 +111,14 @@ func TestBuiltinRulesValidate(t *testing.T) {
 			continue
 		}
 		if rule.ProviderType != "openai-compatible" {
-			// Per-provider canonical sets will arrive when Gemini/
-			// Anthropic-targeted rules land in Step 3. Until then,
-			// the openai-compatible set is the only one to enforce.
+			// The canonical-field check applies only to openai-compatible
+			// rules today. The Gemini base rule (added in Step 3) sets a
+			// BehaviourFlags entry rather than touching FieldRenames, so
+			// there is nothing to validate against a canonical wire-field
+			// list. When a Gemini or Anthropic rule does touch
+			// FieldRenames, mirror the canonicalOpenAIFieldNames table
+			// for that provider and extend this check rather than
+			// dropping it.
 			continue
 		}
 		q := ProviderQuirks{
@@ -325,6 +330,42 @@ func TestKnownModelIDsResolutionSmoke(t *testing.T) {
 		}
 	}
 	t.Logf("rule resolution smoke: %d (provider,model) pairs produced a non-default ProviderQuirks", resolved)
+}
+
+// TestGeminiRule_NoMatchOnOpenAICompatProvider pins the cross-provider
+// isolation invariant: the Gemini base rule keys on
+// ProviderType == "gemini" and must NOT fire when the resolution is
+// for the openai-compatible provider, even when the model string
+// happens to look like a Gemini model id (e.g. "gemini-2.5-pro"
+// routed through a third-party gateway that exposes Vertex models
+// behind an OpenAI-compatible facade).
+//
+// Today the isolation is structurally guaranteed because RuleMatches
+// compares ProviderType exactly and the Gemini base rule's writes
+// land on BehaviourFlags.Gemini, never BehaviourFlags.OpenAI. The
+// test is defence-in-depth: a future code path that loosens
+// provider-type matching (e.g. a wildcard ProviderType, or a rule
+// that writes across sub-structs) would fail this assertion rather
+// than silently leak Gemini behaviour into an openai-compatible
+// request.
+func TestGeminiRule_NoMatchOnOpenAICompatProvider(t *testing.T) {
+	q := DefaultRegistry().Resolve("openai-compatible", "gemini-2.5-pro")
+	// The Gemini sub-struct must remain at its zero value: the base
+	// rule did not fire because the provider type does not match.
+	// Asserting against the zero value (rather than just inspecting
+	// whether the rule's writes landed) catches a future
+	// regression where a Gemini rule writes to the Gemini sub-struct
+	// on an openai-compatible resolution by accident.
+	if q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != StreamArgsOff {
+		t.Errorf("openai-compatible/gemini-2.5-pro: BehaviourFlags.Gemini.StreamFunctionCallArgsShape = %v, want StreamArgsOff (zero value); Gemini rule must not fire on a non-gemini provider", q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape)
+	}
+	// And the openai-compatible defaults are unaffected.
+	if q.BehaviourFlags.OpenAI.OmitSamplingParams {
+		t.Errorf("openai-compatible/gemini-2.5-pro: OpenAI.OmitSamplingParams = true; no rule should have fired")
+	}
+	if q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxCompletionTokens {
+		t.Errorf("openai-compatible/gemini-2.5-pro: OpenAI.TokenField = %v, want TokenFieldMaxCompletionTokens (zero default)", q.BehaviourFlags.OpenAI.TokenField)
+	}
 }
 
 // TestRuleStaleness logs (does not fail) any rule whose LastVerified

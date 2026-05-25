@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -66,6 +68,18 @@ type GeminiAdapter struct {
 	// construction. Both nil-safe at every call site.
 	Tracer  oteltrace.Tracer
 	Metrics *observability.Metrics
+
+	// Logger is field-injected by the factory; nil falls back to
+	// slog.Default(). Used for the per-Stream quirks debug log line.
+	Logger *slog.Logger
+
+	// Registry resolves per-(provider, model) wire-shape and behaviour
+	// overrides at the top of every Stream call. The constructor seeds
+	// this with quirks.DefaultRegistry() so callers that ignore the
+	// field still get the built-in rule set. Tests overwrite it
+	// directly; the adapter's public API does not need a WithRegistry
+	// option. Mirrors the OpenAICompatibleAdapter pattern.
+	Registry *quirks.Registry
 }
 
 // NewGeminiAdapter creates an adapter for Vertex AI's
@@ -96,6 +110,7 @@ func NewGeminiAdapter(
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
+		Registry: quirks.DefaultRegistry(),
 	}
 }
 
@@ -145,7 +160,34 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		attribute.String("provider.model", params.Model),
 	)
 
-	body, _, err := BuildGenerateContentRequest(params, g.safety)
+	// Resolve quirks for this (provider, model) pair. Per design D4 the
+	// resolution is per-stream; per design D5 the same resolved value
+	// drives both send (BuildGenerateContentRequest) and parse
+	// (consumeSSE — Step 5 will consume the value via the captured
+	// closure). The nil-Registry guard tolerates callers that build the
+	// adapter outside the factory without going through NewGeminiAdapter.
+	registry := g.Registry
+	if registry == nil {
+		registry = quirks.DefaultRegistry()
+	}
+	q, appliedRules := registry.ResolveWithRules("gemini", params.Model)
+
+	logger := g.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	// Debug-level log lists the descriptions of every rule that
+	// contributed to this resolution (design §5). Emitted even when
+	// the list is empty so an operator grepping for the line knows
+	// the resolution ran; an absent entry would be ambiguous between
+	// "no rule fired" and "the log line was suppressed".
+	logger.DebugContext(ctx, "gemini quirks resolved",
+		slog.String("provider.type", "gemini"),
+		slog.String("provider.model", params.Model),
+		slog.Any("rules", ruleDescriptions(appliedRules)),
+	)
+
+	body, _, err := BuildGenerateContentRequest(params, g.safety, q)
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
@@ -217,7 +259,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 
 	ch := make(chan types.StreamEvent, 64)
 	go func() {
-		g.consumeSSE(ctx, resp, ch, start, metricAttrs, streamN)
+		g.consumeSSE(ctx, resp, ch, start, metricAttrs, streamN, q)
 		g.recordLatency(ctx, start, metricAttrs)
 	}()
 	return ch, nil
@@ -311,6 +353,14 @@ type toolCallBuf struct {
 // through functionResponse, so we generate IDs that only need to be unique
 // within this Stream call and the bookkeeping the marshaller does for
 // outbound tool_result correlation.
+//
+// q carries the resolved per-(provider, model) quirks for this stream
+// (design D5). The parser is the load-bearing consumer for Step 5
+// (ReplayFields parse-side recognition for Gemini 3.x), so q is
+// threaded here even though today's body does not yet branch on it —
+// the seam exists so Step 5's parse hook can read q.ReplayFields and
+// (eventually) q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape
+// without re-touching the Stream call site.
 func (g *GeminiAdapter) consumeSSE(
 	ctx context.Context,
 	resp *http.Response,
@@ -318,7 +368,9 @@ func (g *GeminiAdapter) consumeSSE(
 	streamStart time.Time,
 	metricAttrs metric.MeasurementOption,
 	streamN int64,
+	q quirks.ProviderQuirks,
 ) {
+	_ = q // reserved for Step 5 (ReplayFields parse-side recognition).
 	defer close(ch)
 	defer func() { _ = resp.Body.Close() }()
 
