@@ -23,6 +23,8 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/trace/noop"
+
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -36,8 +38,6 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
-	"go.opentelemetry.io/otel/trace/noop"
-
 	"github.com/rxbynerd/stirrup/types"
 )
 
