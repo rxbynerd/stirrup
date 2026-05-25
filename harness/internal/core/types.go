@@ -511,10 +511,12 @@ func appendToolResults(messages []types.Message, results []types.ToolResult) []t
 	blocks := make([]types.ContentBlock, len(results))
 	for i, r := range results {
 		blocks[i] = types.ContentBlock{
-			Type:      "tool_result",
-			ToolUseID: r.ToolUseID,
-			Content:   r.Content,
-			IsError:   r.IsError,
+			Type:       "tool_result",
+			ToolUseID:  r.ToolUseID,
+			Content:    r.Content,
+			IsError:    r.IsError,
+			Structured: r.Structured,
+			Kind:       r.Kind,
 		}
 	}
 	return append(messages, types.Message{
@@ -651,6 +653,12 @@ func estimateCurrentTokens(messages []types.Message) int {
 			total += len(block.ID) / tokenEstimationDivisor
 			total += len(block.Name) / tokenEstimationDivisor
 			total += len(block.ToolUseID) / tokenEstimationDivisor
+			// The structured envelope (issue #231) rides on tool_result
+			// blocks and, for a Gemini object-response result, can be up to
+			// maxMCPStructuredSize; counting it keeps the budget estimate from
+			// under-shooting and triggering a mid-run context overflow. Kind
+			// is a short discriminator and not worth counting.
+			total += len(block.Structured) / tokenEstimationDivisor
 		}
 	}
 	if total == 0 {

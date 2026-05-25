@@ -305,6 +305,59 @@ func BuiltinRules() []Rule {
 				}
 			},
 		},
+		// --- Structured tool-result capability rules (#231, Wave 4 B2) ---
+		//
+		// "tool results can carry structure" is a cross-provider concept, so
+		// the resolved capability lives on the top-level
+		// ProviderQuirks.StructuredToolResults field rather than a provider
+		// sub-struct. Each first-party provider declares a base "*" rule
+		// advertising the wire shape its API actually accepts; the adapters
+		// gate serialisation on the resolved capability and send only the
+		// text Content when Supported is false. A provider with no rule here
+		// (e.g. bedrock) therefore stays text-only by construction.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "*",
+			Description:  "Anthropic: tool_result content accepts a content-block array (text + structured JSON block)",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// Anthropic's Messages API accepts tool_result `content`
+				// as either a plain string or an array of content blocks
+				// (https://docs.anthropic.com/en/api/messages — tool_result
+				// content is `string | Array<text|image>`). There is no
+				// native JSON content type, so the structured envelope is
+				// carried as an additional `text` block alongside the
+				// canonical text block. A model (or downstream tool) that
+				// only reads the first block still receives the text
+				// fallback verbatim.
+				q.StructuredToolResults = StructuredToolResultCapability{
+					Supported:         true,
+					ContentBlockArray: true,
+				}
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "*",
+			Description:  "Gemini: functionResponse.response is a free-form JSON object (carries structured envelope)",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// Vertex AI's functionResponse.response field is a free-form
+				// JSON object (https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/function-calling
+				// — FunctionResponse.response is a Struct). The structured
+				// envelope maps directly into that object; the canonical
+				// text rides alongside under a reserved "content" key so a
+				// model that ignores the structured fields still sees the
+				// text fallback. OpenAI is deliberately absent from this rule
+				// set: a Chat Completions `tool` message and a Responses
+				// function_call_output are both plain strings on the wire, so
+				// the OpenAI adapters stay text-only with no capability.
+				q.StructuredToolResults = StructuredToolResultCapability{
+					Supported:      true,
+					ObjectResponse: true,
+				}
+			},
+		},
 		{
 			ProviderType: "gemini",
 			ModelMatch:   "gemini-3*",

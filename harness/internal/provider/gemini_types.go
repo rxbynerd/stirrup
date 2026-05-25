@@ -84,12 +84,35 @@ type geminiFunctionCall struct {
 // there is no ID echo, so the request builder maintains its own ID→name
 // map (toolNameByID) to populate this field correctly.
 //
-// Response is a free-form JSON object. The harness convention is
-// {"content": <result-string>}; an additional {"error": true} key is set
-// when the tool call failed so the model can react.
+// Response is the free-form JSON object Vertex requires
+// (FunctionResponse.response is a Struct). It is a json.RawMessage rather
+// than a map[string]any so the request builder marshals a typed
+// geminiFunctionResponseBody (the no-`any` rule, wave-2 design D13); the
+// raw form also lets the builder embed a structured envelope (issue #231 B2)
+// without re-deriving an untyped map. The harness convention is
+// {"content": <result-string>} with an optional {"error": true} on failure,
+// plus an optional structured payload under the kind-named key when the
+// resolved capability accepts it.
 type geminiFunctionResponse struct {
-	Name     string                 `json:"name"`
-	Response map[string]interface{} `json:"response"`
+	Name     string          `json:"name"`
+	Response json.RawMessage `json:"response"`
+}
+
+// geminiFunctionResponseBody is the typed shape marshalled into
+// geminiFunctionResponse.Response. Content is the canonical text fallback and
+// is always present so a model that ignores the structured fields still
+// receives the result. Error is set only on a failed call. Structured carries
+// the issue #231 envelope verbatim and is emitted only when the resolved
+// StructuredToolResults capability accepts the object-response shape; Kind
+// names its discriminator so a consumer can route without sniffing. All three
+// extension fields are omitempty, so a text-only result on a non-structured
+// resolution marshals to {"content": ...} — byte-identical to the pre-#231
+// map form (which carried exactly that key).
+type geminiFunctionResponseBody struct {
+	Content    string          `json:"content"`
+	Error      bool            `json:"error,omitempty"`
+	Structured json.RawMessage `json:"structured,omitempty"`
+	Kind       string          `json:"kind,omitempty"`
 }
 
 // geminiTools wraps a list of declarations. Vertex accepts multiple Tools

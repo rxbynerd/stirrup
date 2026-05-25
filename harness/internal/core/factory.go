@@ -160,6 +160,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	var mcpClient *mcp.Client
 	if len(config.Tools.MCPServers) > 0 {
 		mcpClient = mcp.NewClient(registry, nil)
+		// Wire the logger before Connect so the per-server tool-count cap
+		// warning (emitted during tools/list) reaches operators. Metrics is
+		// field-injected later, after the run's metrics instance exists.
+		mcpClient.Logger = logger
 		ownedClosers = append(ownedClosers, mcpClient)
 		for _, srv := range config.Tools.MCPServers {
 			if err := mcpClient.Connect(ctx, srv, secrets); err != nil {

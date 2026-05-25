@@ -120,10 +120,37 @@ type ProviderQuirks struct {
     EnumCoercions   map[string]map[string]string // caller value → wire value
     ReplayFields    []string                  // assistant-message paths to preserve (parse-side only in v1)
 
+    // Cross-provider capabilities (top-level, not per-adapter).
+    ToolChoice            ToolChoiceCapability           // native tool_choice support (auto/required/none/named)
+    StructuredToolResults StructuredToolResultCapability // accepts a non-string tool-result payload, and in which shape
+
     // Behaviour flags (per-adapter typed sub-structs).
     BehaviourFlags  ProviderBehaviourFlags
 }
+```
 
+A **capability** is a top-level field rather than a per-adapter
+behaviour flag when it expresses a concept the loop reasons about
+uniformly across families even though each provider encodes it
+differently. `ToolChoice` and `StructuredToolResults` are the two:
+every family has *some* form of tool-choice control and *some*
+notion of (or lack of) a structured tool result, so modelling either
+under one provider's sub-struct would force the other adapters to
+reach across family boundaries to read it, which the behaviour-flag
+ownership rule forbids. Each capability's zero value advertises no
+support, so an adapter resolving a provider with no rule emits the
+pre-capability wire shape — the graceful default the
+`StreamParams`/`ToolResult` contracts require.
+
+`StructuredToolResults` (issue #231) gates whether the structured
+tool-result envelope is serialised onto the wire. The first-party
+rules opt in Anthropic (content-block array form) and Gemini
+(`functionResponse.response` object); OpenAI and any unruled provider
+stay text-only. See the
+[structured tool results](architecture.md#structured-tool-results)
+section of the architecture doc for the per-provider wire shapes.
+
+```go
 type ProviderBehaviourFlags struct {
     OpenAI OpenAIBehaviourFlags
     Gemini GeminiBehaviourFlags
