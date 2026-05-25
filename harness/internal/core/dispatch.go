@@ -101,6 +101,25 @@ func (l *AgenticLoop) planAndDispatch(
 	for i, call := range toolCalls {
 		l.Logger.Info("tool dispatched", "tool", call.Name)
 		callStart := time.Now()
+		// Resolve up front so every gating surface below keys on the
+		// internal tool ID rather than the model-facing alias (issue #234).
+		// Resolve is a pure lookup; an Unknown tool resolves to nil and
+		// falls through to dispatchToolCall, which fails fast as today.
+		// Resolution must precede span creation so the span name can be
+		// bounded against model-controlled tool names (issue #309).
+		t := l.Tools.Resolve(call.Name)
+
+		// Bound the span name's cardinality the same way the metric label
+		// below is bounded: an unknown tool resolves to nil and carries a
+		// model-controlled name, so the span name is substituted with the
+		// __unknown__ sentinel. Trace backends index on span name, so an
+		// unbounded name is the same CWE-400 vector as an unbounded TSDB
+		// label (issue #309). The model-supplied name is still preserved
+		// verbatim in the tool.name attribute for debuggability.
+		spanName := "tool." + call.Name
+		if t == nil {
+			spanName = "tool." + unknownToolMetricName
+		}
 		// Span is parented under l.traceCtx(ctx) (the trace-emitter's root
 		// when OTel is wired) so it nests correctly in the trace backend,
 		// but the propagated span ctx is rooted in the cancellable `ctx`.
@@ -108,13 +127,7 @@ func (l *AgenticLoop) planAndDispatch(
 		// would derive from context.Background() and the dispatch
 		// goroutines below would not observe a run-level cancellation
 		// until the per-call DefaultAsyncToolTimeout (60s) expired.
-		// TODO(#229-followup): the span name uses the raw call.Name
-		// before tool resolution, so an unknown-tool span carries a
-		// model-controlled name. Lower-blast-radius than the metric
-		// label substitution below (per-span storage, not a persistent
-		// TSDB key) so deferred to a follow-up issue rather than
-		// reworking the span lifecycle here.
-		_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), "tool."+call.Name,
+		_, toolSpan := l.Tracer.Start(l.traceCtx(ctx), spanName,
 			oteltrace.WithAttributes(
 				attribute.String("tool.name", call.Name),
 				attribute.Int("tool.input_size", len(call.Input)),
@@ -134,11 +147,6 @@ func (l *AgenticLoop) planAndDispatch(
 			internalName: call.Name,
 		}
 
-		// Resolve up front so every gating surface below keys on the
-		// internal tool ID rather than the model-facing alias (issue #234).
-		// Resolve is a pure lookup; an Unknown tool resolves to nil and
-		// falls through to dispatchToolCall, which fails fast as today.
-		t := l.Tools.Resolve(call.Name)
 		// guardToolName is the name the guardrail classifier sees: the
 		// internal ID when resolved, falling back to the model-supplied
 		// name for an unknown tool. A guardrail rule written against an
