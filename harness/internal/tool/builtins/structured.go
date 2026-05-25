@@ -13,10 +13,14 @@ package builtins
 // stable values rather than JSON-sniffing the payload, which would violate the
 // typed-not-`any` rule. Each StructuredHandler returns the matching kind.
 const (
-	kindCommandResult = "command_result"
-	kindSearchResult  = "search_result"
-	kindFindResult    = "find_result"
-	kindFileExcerpt   = "file_excerpt"
+	kindCommandResult   = "command_result"
+	kindSearchResult    = "search_result"
+	kindFindResult      = "find_result"
+	kindFileExcerpt     = "file_excerpt"
+	kindGitStatus       = "git_status"
+	kindGitChangedFiles = "git_changed_files"
+	kindGitDiff         = "git_diff"
+	kindGitShow         = "git_show"
 )
 
 // commandResult is the structured payload for run_command. timedOut reports
@@ -75,4 +79,72 @@ type fileExcerpt struct {
 	Truncated bool     `json:"truncated"`
 	PastEOF   bool     `json:"past_eof,omitempty"`
 	Lines     []string `json:"lines"`
+}
+
+// gitStatusEntry is a single working-tree change from git_status, parsed from
+// `git status --porcelain=v1`. Staged and Unstaged hold the two porcelain XY
+// status letters (a space means unmodified in that column); the raw two-rune
+// code is preserved verbatim in Code so consumers that recognise less common
+// states (copied, type-changed) are not lossy. OrigPath is set only for
+// renames/copies and names the source path.
+type gitStatusEntry struct {
+	Code     string `json:"code"`
+	Staged   string `json:"staged"`
+	Unstaged string `json:"unstaged"`
+	Path     string `json:"path"`
+	OrigPath string `json:"orig_path,omitempty"`
+}
+
+// gitStatusResult is the structured payload for git_status. Branch is the
+// current branch (or a detached-HEAD marker); Entries is the ordered list of
+// working-tree changes, capped at the entry bound. Truncated reports the cap
+// was hit. Clean is true when the working tree had no changes. Entries is a
+// non-nil slice so the JSON always carries an array.
+type gitStatusResult struct {
+	Branch    string           `json:"branch"`
+	Clean     bool             `json:"clean"`
+	Entries   []gitStatusEntry `json:"entries"`
+	Truncated bool             `json:"truncated"`
+}
+
+// gitChangedFile is a single path from git_changed_files with its name-status
+// letter (A/M/D/R/C/T). OrigPath is the rename/copy source when Status is R/C.
+type gitChangedFile struct {
+	Status   string `json:"status"`
+	Path     string `json:"path"`
+	OrigPath string `json:"orig_path,omitempty"`
+}
+
+// gitChangedFilesResult is the structured payload for git_changed_files: the
+// ordered list of changed paths and whether the result was capped. Staged
+// records whether the staged (index vs HEAD) or unstaged (worktree vs index)
+// view was requested. Files is a non-nil slice so the JSON always carries an
+// array.
+type gitChangedFilesResult struct {
+	Staged    bool             `json:"staged"`
+	Files     []gitChangedFile `json:"files"`
+	Truncated bool             `json:"truncated"`
+}
+
+// gitDiffResult is the structured payload for git_diff: the unified diff text,
+// bounded by byte and line caps, and the bounds that produced it. Staged
+// records whether the staged view (--cached) was requested; Path echoes the
+// single-path filter when one was supplied. Truncated reports the diff was cut
+// at a bound.
+type gitDiffResult struct {
+	Diff      string `json:"diff"`
+	Staged    bool   `json:"staged"`
+	Path      string `json:"path,omitempty"`
+	Truncated bool   `json:"truncated"`
+}
+
+// gitShowResult is the structured payload for git_show: the bounded output of
+// `git show <ref>` (optionally restricted to a single path). Ref echoes the
+// requested revision; Path echoes the single-path filter when one was
+// supplied. Truncated reports the output was cut at a bound.
+type gitShowResult struct {
+	Ref       string `json:"ref"`
+	Path      string `json:"path,omitempty"`
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated"`
 }
