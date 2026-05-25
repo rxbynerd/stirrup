@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -154,9 +153,70 @@ type anthropicRequest struct {
 // Anthropic has no native "none" — a no-tools turn is expressed by
 // omitting the tools array — so ToolChoiceNone never produces this
 // struct.
+//
+// DisableParallelToolUse carries the #222 parallel-tool-call control.
+// Anthropic has no top-level parallel field: forbidding parallel tool calls
+// is expressed only as this flag on the tool_choice object. A nil pointer
+// omits the key (parallel is Anthropic's default); applyAnthropicParallel sets
+// it true when the caller requested no-parallel, synthesising an auto
+// tool_choice when none was otherwise produced.
 type anthropicToolChoice struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse *bool  `json:"disable_parallel_tool_use,omitempty"`
+}
+
+// applyAnthropicParallel folds a requested parallel-disable (#222) onto the
+// tool_choice object. Only the disable direction is expressible — Anthropic's
+// default is parallel-enabled — so a nil or =true StreamParams.ParallelToolCalls
+// is a no-op. When disable is requested and the capability supports it, the
+// flag rides on the tool_choice object, synthesising an auto object if the
+// tool-choice projection produced none. The structural "none" mode is left
+// untouched: there are no tool calls to parallelise and synthesising auto
+// would contradict the caller.
+func applyAnthropicParallel(tc *anthropicToolChoice, params types.StreamParams, capability quirks.ParallelToolCallsCapability) *anthropicToolChoice {
+	if params.ParallelToolCalls == nil || *params.ParallelToolCalls {
+		return tc
+	}
+	if !capability.Supported || !capability.Disable {
+		return tc
+	}
+	if tc == nil {
+		if params.ToolChoice == types.ToolChoiceNone {
+			return nil
+		}
+		tc = &anthropicToolChoice{Type: "auto"}
+	}
+	disable := true
+	tc.DisableParallelToolUse = &disable
+	return tc
+}
+
+// translateToolsAnthropic returns a fresh copy of the tool definitions with
+// each tool's worked examples (#222) folded into its input_schema when the
+// resolved capability supports it. It replaces a bare slices.Clone: the
+// Anthropic adapter serialises types.ToolDefinition onto the wire (Presentation
+// carries json:"-"), so examples must be merged into the schema explicitly.
+// The fresh slice preserves the no-aliasing guarantee buildAnthropicRequest
+// relies on. Anthropic has no strict-mode subset restriction, so examples fold
+// whenever the capability is on. Examples are advisory: a merge that cannot
+// marshal (not reachable for a map just unmarshalled) leaves the schema as-is
+// rather than failing the request — the description still carries the example.
+func translateToolsAnthropic(tools []types.ToolDefinition, examples bool) []types.ToolDefinition {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]types.ToolDefinition, len(tools))
+	copy(out, tools)
+	if !examples {
+		return out
+	}
+	for i := range out {
+		if merged, err := mergeSchemaExamples(out[i].InputSchema, toolInputExamples(out[i])); err == nil {
+			out[i].InputSchema = merged
+		}
+	}
+	return out
 }
 
 // anthropicToolChoiceFromParams projects the provider-neutral
@@ -380,17 +440,14 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 		Model:    params.Model,
 		System:   params.System,
 		Messages: translateMessagesAnthropic(params.Messages, q.StructuredToolResults),
-		// slices.Clone avoids aliasing params.Tools into the returned
-		// struct. translateMessagesAnthropic / translateTools(Responses)
-		// allocate fresh output slices for messages and tools on the
-		// sibling adapters; the Anthropic path was the only builder
-		// passing the input slice through by reference. Once the phase-2
-		// batch caller retains the returned struct across a retry or
-		// concurrent send, a caller mutating params.Tools would race.
-		Tools:       slices.Clone(params.Tools),
+		// translateToolsAnthropic allocates a fresh slice (so a caller mutating
+		// params.Tools cannot race the returned struct, as the phase-2 batch
+		// caller requires) and folds #222 worked examples into each tool's
+		// input_schema when the resolved capability supports it.
+		Tools:       translateToolsAnthropic(params.Tools, q.ToolExamples.Supported),
 		MaxTokens:   params.MaxTokens,
 		Temperature: params.Temperature,
-		ToolChoice:  anthropicToolChoiceFromParams(params, q.ToolChoice),
+		ToolChoice:  applyAnthropicParallel(anthropicToolChoiceFromParams(params, q.ToolChoice), params, q.ParallelToolCalls),
 		Stream:      stream,
 	}
 }

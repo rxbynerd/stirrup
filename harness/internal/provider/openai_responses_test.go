@@ -1386,7 +1386,7 @@ func TestTranslateToolsResponses(t *testing.T) {
 			InputSchema: json.RawMessage(`{"type":"object"}`),
 		},
 	}
-	result, err := translateToolsResponses(tools, false, "gpt-4o", nil)
+	result, err := translateToolsResponses(tools, false, false, "gpt-4o", nil)
 	if err != nil {
 		t.Fatalf("translateToolsResponses: %v", err)
 	}
@@ -1407,10 +1407,10 @@ func TestTranslateToolsResponses(t *testing.T) {
 }
 
 func TestTranslateToolsResponses_Empty(t *testing.T) {
-	if got, err := translateToolsResponses(nil, false, "gpt-4o", nil); err != nil || got != nil {
+	if got, err := translateToolsResponses(nil, false, false, "gpt-4o", nil); err != nil || got != nil {
 		t.Errorf("translateToolsResponses(nil) = (%+v, %v), want (nil, nil)", got, err)
 	}
-	if got, err := translateToolsResponses([]types.ToolDefinition{}, false, "gpt-4o", nil); err != nil || got != nil {
+	if got, err := translateToolsResponses([]types.ToolDefinition{}, false, false, "gpt-4o", nil); err != nil || got != nil {
 		t.Errorf("translateToolsResponses(empty) = (%+v, %v), want (nil, nil)", got, err)
 	}
 }

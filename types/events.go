@@ -157,6 +157,20 @@ type StreamParams struct {
 	// ToolChoiceTool. Ignored for every other mode. An empty value with
 	// ToolChoiceTool degrades to ToolChoiceAuto at the adapter.
 	ToolChoiceName string `json:"toolChoiceName,omitempty"`
+
+	// ParallelToolCalls steers whether the provider may emit more than one
+	// tool call in a single turn (issue #222). It is a *bool, mirroring the
+	// Temperature precedent above: a nil pointer is the zero value and means
+	// "say nothing on the wire", so the request is byte-identical to the
+	// pre-#222 shape and every existing caller is unaffected. A non-nil
+	// value is projected onto the provider's native control only when the
+	// resolved ParallelToolCalls capability advertises support — top-level
+	// `parallel_tool_calls` on OpenAI Chat/Responses, `disable_parallel_tool_use`
+	// inside Anthropic's tool_choice object — and is a graceful no-op
+	// otherwise (Gemini and Bedrock have no native control). Parallelism is
+	// an efficiency hint, not a correctness lever, so an unsupported provider
+	// gets no prompt-based fallback the way ToolChoice does.
+	ParallelToolCalls *bool `json:"parallelToolCalls,omitempty"`
 }
 
 // Float64Ptr returns a pointer to the given float64 value. It is a

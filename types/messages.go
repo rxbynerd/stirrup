@@ -64,6 +64,55 @@ type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"input_schema"`
+
+	// Presentation carries optional, additive per-tool metadata (issue
+	// #222): worked input examples and behavioural annotations. The
+	// `json:"-"` tag is load-bearing, not cosmetic: the Anthropic adapter
+	// historically serialised ToolDefinition onto the Messages wire
+	// verbatim, and Anthropic rejects unknown top-level keys on a tool
+	// object. Keeping Presentation off the default JSON encoding means the
+	// nil zero value is byte-identical to the pre-#222 wire shape on every
+	// adapter, and an adapter that wants to surface any part of Presentation
+	// must read it explicitly and project it into its own wire struct
+	// (gated on the resolved provider capability). An adapter with no
+	// capability treats Presentation as a deliberate, test-covered no-op.
+	Presentation *ToolPresentation `json:"-"`
+}
+
+// ToolPresentation is the optional per-tool metadata bundle introduced for
+// issue #222. Both fields are advisory: serialisation is gated per-adapter on
+// the resolved quirks capability, and the nil/empty zero value emits nothing.
+type ToolPresentation struct {
+	// InputExamples are worked example inputs for the tool, each a JSON
+	// object valid against InputSchema. They migrate the inline "Example:
+	// {…}" convention enriched into descriptions by #227 into structured
+	// data. Adapters that advertise the examples capability fold these into
+	// the JSON-Schema `examples` keyword inside the emitted parameters
+	// object; adapters without it ignore them. Nothing is lost for the
+	// latter — the #227 description text still carries the example for every
+	// provider, unconditionally.
+	InputExamples []json.RawMessage `json:"inputExamples,omitempty"`
+
+	// Annotations are MCP-style behavioural hints (spec 2025-06-18). No
+	// first-party provider (OpenAI, Anthropic, Gemini, Bedrock) exposes a
+	// tool-annotation wire field today, so these are carried for internal
+	// use and round-tripped from MCP servers; the first-party adapters treat
+	// them as a deliberate, test-covered no-op. Built-in tools derive them
+	// from their WorkspaceMutating flag; MCP-imported tools carry the
+	// server-declared annotations verbatim.
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+}
+
+// ToolAnnotations mirrors the MCP tool-annotations object (spec 2025-06-18).
+// Each hint is a *bool so "unset" is distinguishable from an explicit "false":
+// a built-in tool derives ReadOnlyHint/DestructiveHint from its mutation flag,
+// while an MCP server may supply any subset, leaving the rest unset.
+type ToolAnnotations struct {
+	Title           string `json:"title,omitempty"`
+	ReadOnlyHint    *bool  `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool  `json:"destructiveHint,omitempty"`
+	IdempotentHint  *bool  `json:"idempotentHint,omitempty"`
+	OpenWorldHint   *bool  `json:"openWorldHint,omitempty"`
 }
 
 // ToolCall represents a tool invocation by the model.

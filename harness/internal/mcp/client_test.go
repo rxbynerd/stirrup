@@ -189,6 +189,66 @@ func TestConnect_ToolDiscovery(t *testing.T) {
 	}
 }
 
+// TestConnect_ToolAnnotations verifies the bridge parses server-declared MCP
+// tool annotations (#222) and surfaces them on the registered tool's
+// ToolPresentation, while pinning the invariant that the hints are advisory:
+// a server asserting readOnlyHint must NOT relax the conservative
+// WorkspaceMutating/RequiresApproval gating the harness applies to all remote
+// tools.
+func TestConnect_ToolAnnotations(t *testing.T) {
+	readOnly := true
+	destructive := false
+	tools := []mcpTool{
+		{
+			Name:        "lookup",
+			Description: "Look up a record",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			Annotations: &types.ToolAnnotations{
+				Title:           "Lookup",
+				ReadOnlyHint:    &readOnly,
+				DestructiveHint: &destructive,
+			},
+		},
+	}
+
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+	config := types.MCPServerConfig{Name: "svc", URI: srv.URL}
+
+	if err := client.Connect(context.Background(), config, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	resolved := registry.Resolve("mcp_svc_lookup")
+	if resolved == nil {
+		t.Fatal("Resolve returned nil for mcp_svc_lookup")
+	}
+	if resolved.Annotations == nil {
+		t.Fatal("server annotations were not carried onto the tool")
+	}
+	if resolved.Annotations.Title != "Lookup" {
+		t.Errorf("Annotations.Title = %q, want %q", resolved.Annotations.Title, "Lookup")
+	}
+	if resolved.Annotations.ReadOnlyHint == nil || !*resolved.Annotations.ReadOnlyHint {
+		t.Error("ReadOnlyHint should round-trip as true")
+	}
+	// The advisory hint must not override the conservative gating defaults.
+	if !resolved.WorkspaceMutating || !resolved.RequiresApproval {
+		t.Error("server readOnlyHint must not relax WorkspaceMutating/RequiresApproval")
+	}
+
+	// The annotations also surface on the model-facing Presentation (#222).
+	def := resolved.Definition()
+	if def.Presentation == nil || def.Presentation.Annotations == nil {
+		t.Fatalf("Definition().Presentation.Annotations missing: %+v", def.Presentation)
+	}
+	if def.Presentation.Annotations.Title != "Lookup" {
+		t.Errorf("Presentation Annotations.Title = %q, want %q", def.Presentation.Annotations.Title, "Lookup")
+	}
+}
+
 func TestConnect_ToolCallDispatch(t *testing.T) {
 	tools := []mcpTool{
 		{

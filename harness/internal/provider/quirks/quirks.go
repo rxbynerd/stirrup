@@ -68,6 +68,22 @@ type ProviderQuirks struct {
 	// the pre-#231 wire shape, with the canonical text fallback intact.
 	StructuredToolResults StructuredToolResultCapability `json:"structuredToolResults"`
 
+	// ParallelToolCalls declares whether the resolved (provider, model)
+	// supports a native parallel-tool-call control (issue #222). Top-level
+	// for the same cross-provider reason as ToolChoice: limiting the model to
+	// one tool call per turn is a uniform concept the loop reasons about even
+	// though OpenAI, Anthropic, and Gemini encode it differently. The zero
+	// value advertises no support, so an adapter with no rule emits nothing.
+	ParallelToolCalls ParallelToolCallsCapability `json:"parallelToolCalls"`
+
+	// ToolExamples declares whether the resolved (provider, model) accepts
+	// the JSON-Schema `examples` keyword inside a tool's parameters object
+	// (issue #222). The zero value advertises no support, so examples are not
+	// folded into the schema and the #227 description text remains the
+	// carrier. Gemini deliberately stays at the zero value — its Schema
+	// dialect rejects `examples`.
+	ToolExamples ToolExamplesCapability `json:"toolExamples"`
+
 	// --- Behaviour flags ---
 
 	// BehaviourFlags carries adapter-internal behaviour flags that cannot be

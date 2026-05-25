@@ -137,6 +137,15 @@ type mcpTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	// Annotations carries the server-declared MCP tool annotations (spec
+	// 2025-06-18). types.ToolAnnotations mirrors the MCP object field-for-
+	// field, so it doubles as the wire-parse target; absent annotations leave
+	// it nil. The harness surfaces these on the tool's ToolPresentation (#222)
+	// but does not yet act on them — the conservative WorkspaceMutating/
+	// RequiresApproval defaults below still govern gating regardless of what a
+	// remote server claims, so a server cannot relax its own gating by
+	// asserting readOnlyHint.
+	Annotations *types.ToolAnnotations `json:"annotations,omitempty"`
 }
 
 type toolsListResult struct {
@@ -702,6 +711,11 @@ func (c *Client) registerMCPTool(serverName string, sess *serverSession, mt mcpT
 		Name:        prefixedName,
 		Description: mt.Description,
 		InputSchema: mt.InputSchema,
+		// Carry the server-declared annotations through to the tool's
+		// ToolPresentation (#222). They are advisory metadata only — the
+		// conservative WorkspaceMutating/RequiresApproval defaults below are
+		// what govern gating, never these hints.
+		Annotations: mt.Annotations,
 		// MCP tools are remote and opaque to the harness: we cannot
 		// statically tell whether they mutate the workspace, so be
 		// conservative and assume they do. They also require upstream

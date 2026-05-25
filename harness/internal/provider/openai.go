@@ -166,6 +166,13 @@ type openaiRequest struct {
 	// advertises support for the requested mode; steers MarshalJSON, it
 	// has no JSON struct tag of its own.
 	ToolChoice any
+	// ParallelToolCalls is the wire value for the top-level
+	// "parallel_tool_calls" bool (#222). A nil pointer omits the field so
+	// the request is byte-identical to the pre-#222 shape; buildOpenAIRequest
+	// populates it only when the caller set StreamParams.ParallelToolCalls and
+	// the resolved capability advertises support. Steered by MarshalJSON, no
+	// struct tag of its own.
+	ParallelToolCalls *bool
 }
 
 // MarshalJSON projects the canonical openaiRequest into the wire body
@@ -206,6 +213,9 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 	}
 	if r.ToolChoice != nil {
 		out["tool_choice"] = r.ToolChoice
+	}
+	if r.ParallelToolCalls != nil {
+		out["parallel_tool_calls"] = *r.ParallelToolCalls
 	}
 	if !r.OmitSamplingParams && r.Temperature != nil {
 		out["temperature"] = *r.Temperature
@@ -277,6 +287,14 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 		}
 		r.ToolChoice = tc
 		delete(raw, "tool_choice")
+	}
+	if v, ok := raw["parallel_tool_calls"]; ok {
+		var b bool
+		if err := json.Unmarshal(v, &b); err != nil {
+			return fmt.Errorf("openaiRequest.parallel_tool_calls: %w", err)
+		}
+		r.ParallelToolCalls = &b
+		delete(raw, "parallel_tool_calls")
 	}
 	// Token budget: accept either canonical key. MarshalJSON emits
 	// exactly one key, so a valid request body should not contain
@@ -444,6 +462,7 @@ var canonicalOpenAIFields = map[string]struct{}{
 	"top_logprobs":          {},
 	"logit_bias":            {},
 	"stream":                {},
+	"parallel_tool_calls":   {},
 }
 
 // isCanonicalOpenAIField reports whether the given top-level request
@@ -705,7 +724,7 @@ func translateMessages(system string, messages []types.Message) []openaiMessage 
 // Returns an error when strict-mode normalisation rejects a tool's
 // schema — the request must not be sent in that case (design §5
 // fail-closed contract).
-func translateTools(tools []types.ToolDefinition, strict bool, model string, cache *strictSchemaCache) ([]openaiTool, error) {
+func translateTools(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) ([]openaiTool, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
@@ -724,6 +743,18 @@ func translateTools(tools []types.ToolDefinition, strict bool, model string, cac
 			def.Parameters = normalised
 			truthy := true
 			def.Strict = &truthy
+		} else if examples {
+			// Fold worked examples (#222) into the schema's `examples`
+			// keyword — but only for non-strict tools. OpenAI's
+			// structured-outputs subset rejects `examples`, so strict tools
+			// must rely on the description text (which carries the same
+			// example) instead. The strict branch above therefore never
+			// folds; this else-if guarantees the two are mutually exclusive.
+			merged, err := mergeSchemaExamples(def.Parameters, toolInputExamples(t))
+			if err != nil {
+				return nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
+			}
+			def.Parameters = merged
 		}
 		out[i] = openaiTool{
 			Type:     "function",
@@ -779,6 +810,19 @@ func openAIToolChoiceFromParams(params types.StreamParams, capability quirks.Too
 		// nothing rather than an explicit "auto" string.
 		return nil
 	}
+}
+
+// openAIParallelFromParams projects StreamParams.ParallelToolCalls onto the
+// OpenAI top-level parallel_tool_calls bool, gated on the resolved capability.
+// Returns nil — meaning "emit no field" — when the caller did not set the
+// control or the provider does not advertise support, leaving the request
+// byte-identical to the pre-#222 shape. Shared by the Chat and Responses
+// adapters, which use the identical top-level wire field.
+func openAIParallelFromParams(params types.StreamParams, capability quirks.ParallelToolCallsCapability) *bool {
+	if params.ParallelToolCalls == nil || !capability.Supported {
+		return nil
+	}
+	return params.ParallelToolCalls
 }
 
 // warnInvalidToolChoiceName logs a single warn when a ToolChoiceTool
@@ -839,7 +883,7 @@ func mapFinishReason(reason string) string {
 // accepts (e.g. top_p on Responses, equivalent constraints on Chat
 // Completions), apply a batch-specific projection here.
 func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks, strictCache *strictSchemaCache) (openaiRequest, error) {
-	tools, err := translateTools(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, params.Model, strictCache)
+	tools, err := translateTools(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
 	if err != nil {
 		return openaiRequest{}, err
 	}
@@ -854,6 +898,7 @@ func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.Provide
 		OmitSamplingParams: q.BehaviourFlags.OpenAI.OmitSamplingParams,
 		ExtraBodyFields:    q.BehaviourFlags.OpenAI.ExtraBodyFields,
 		ToolChoice:         openAIToolChoiceFromParams(params, q.ToolChoice),
+		ParallelToolCalls:  openAIParallelFromParams(params, q.ParallelToolCalls),
 	}, nil
 }
 

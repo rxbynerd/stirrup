@@ -113,15 +113,56 @@ type Tool struct {
 	// emitted; the error message is surfaced to the model as a tool
 	// internal error.
 	AsyncHandler func(ctx context.Context, input json.RawMessage) (AsyncDispatch, error)
+
+	// InputExamples are optional worked example inputs (issue #222), each a
+	// JSON object valid against InputSchema. Built-in tools populate this to
+	// carry the example previously embedded only in the description (#227) as
+	// structured data; adapters fold it into the JSON-Schema `examples`
+	// keyword where the resolved provider capability allows. MCP-imported
+	// tools leave it nil.
+	InputExamples []json.RawMessage
+
+	// Annotations, when non-nil, supplies MCP-style behavioural hints
+	// verbatim and overrides the hints Definition() would otherwise derive
+	// from WorkspaceMutating. The MCP bridge sets it to the server-declared
+	// tool annotations; built-in tools leave it nil and accept the derived
+	// ReadOnlyHint/DestructiveHint.
+	Annotations *types.ToolAnnotations
 }
 
 // Definition converts a Tool to the wire-format ToolDefinition used by the
 // model provider.
 func (t *Tool) Definition() types.ToolDefinition {
 	return types.ToolDefinition{
-		Name:        t.Name,
-		Description: t.Description,
-		InputSchema: t.InputSchema,
+		Name:         t.Name,
+		Description:  t.Description,
+		InputSchema:  t.InputSchema,
+		Presentation: t.presentation(),
+	}
+}
+
+// presentation builds the optional per-tool metadata bundle (issue #222). It
+// returns nil when the tool carries neither examples nor explicit annotations,
+// preserving the byte-identical pre-#222 contract for those tools. When a
+// bundle is warranted, annotations are derived from the WorkspaceMutating flag
+// unless the tool supplied its own (an MCP-imported tool carries the
+// server-declared annotations verbatim).
+func (t *Tool) presentation() *types.ToolPresentation {
+	if len(t.InputExamples) == 0 && t.Annotations == nil {
+		return nil
+	}
+	annotations := t.Annotations
+	if annotations == nil {
+		readOnly := !t.WorkspaceMutating
+		destructive := t.WorkspaceMutating
+		annotations = &types.ToolAnnotations{
+			ReadOnlyHint:    &readOnly,
+			DestructiveHint: &destructive,
+		}
+	}
+	return &types.ToolPresentation{
+		InputExamples: t.InputExamples,
+		Annotations:   annotations,
 	}
 }
 

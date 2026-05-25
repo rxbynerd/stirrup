@@ -123,6 +123,8 @@ type ProviderQuirks struct {
     // Cross-provider capabilities (top-level, not per-adapter).
     ToolChoice            ToolChoiceCapability           // native tool_choice support (auto/required/none/named)
     StructuredToolResults StructuredToolResultCapability // accepts a non-string tool-result payload, and in which shape
+    ParallelToolCalls     ParallelToolCallsCapability    // native parallel-tool-call control (#222)
+    ToolExamples          ToolExamplesCapability         // accepts the JSON-Schema `examples` keyword in a tool's parameters (#222)
 
     // Behaviour flags (per-adapter typed sub-structs).
     BehaviourFlags  ProviderBehaviourFlags
@@ -132,15 +134,33 @@ type ProviderQuirks struct {
 A **capability** is a top-level field rather than a per-adapter
 behaviour flag when it expresses a concept the loop reasons about
 uniformly across families even though each provider encodes it
-differently. `ToolChoice` and `StructuredToolResults` are the two:
-every family has *some* form of tool-choice control and *some*
-notion of (or lack of) a structured tool result, so modelling either
-under one provider's sub-struct would force the other adapters to
-reach across family boundaries to read it, which the behaviour-flag
+differently. `ToolChoice`, `StructuredToolResults`,
+`ParallelToolCalls`, and `ToolExamples` are the four: every family
+has *some* form of (or lack of) each, so modelling any of them under
+one provider's sub-struct would force the other adapters to reach
+across family boundaries to read it, which the behaviour-flag
 ownership rule forbids. Each capability's zero value advertises no
 support, so an adapter resolving a provider with no rule emits the
 pre-capability wire shape — the graceful default the
 `StreamParams`/`ToolResult` contracts require.
+
+The two `#222` capabilities gate the tool-reliability controls the
+model-facing contract added on top of tool-choice and strict mode:
+
+| Control | Source | OpenAI Chat | OpenAI Responses | Anthropic | Gemini | Bedrock |
+|---|---|---|---|---|---|---|
+| Parallel-tool-call policy | `StreamParams.ParallelToolCalls` | `parallel_tool_calls` | `parallel_tool_calls` | `tool_choice.disable_parallel_tool_use` | — | — |
+| Input examples | `ToolDefinition.Presentation.InputExamples` | schema `examples`¹ | schema `examples`¹ | schema `examples` | —² | — |
+| Tool annotations | `ToolDefinition.Presentation.Annotations` | —³ | —³ | —³ | —³ | —³ |
+
+¹ Folded only on non-strict tools: OpenAI's structured-outputs
+subset rejects the `examples` keyword, so strict tools rely on the
+description text (which carries the same example).
+² Gemini's function-declaration Schema dialect rejects `examples`, so
+the capability stays off and the description text is the carrier.
+³ No first-party provider has a tool-annotation wire field; annotations
+are carried for internal use and round-tripped from MCP servers (see
+[#222](architecture.md)), and are a deliberate no-op on every adapter.
 
 `StructuredToolResults` (issue #231) gates whether the structured
 tool-result envelope is serialised onto the wire. The first-party
@@ -388,16 +408,18 @@ The quirks layer is deliberately scoped to per-(provider, model)
 request-shape and response-parsing divergence. Several adjacent
 concerns are tracked separately:
 
-- **Tool-contract metadata (#222).** Provider-facing tool metadata
-  (strict mode, tool-choice policy, parallel-call policy, input
-  examples, annotations) is a property of `types.ToolDefinition`,
-  keyed by tool name — not by (provider, model). The two
-  cardinalities are different. When #222 lands, each adapter's
-  `translateTools()` will gain the mapping; whether a model supports
-  a given tool feature (e.g. `strict: true`) is a one-line check
-  against the resolved `ProviderQuirks` (likely a `SupportsStrictMode
-  bool` flag on `OpenAIBehaviourFlags`). This is a small extension to
-  the quirks shape, not a redesign.
+- **Tool-contract metadata (#222, landed).** Provider-facing tool
+  metadata splits along its two cardinalities. The per-tool payload —
+  input examples and annotations — lives on
+  `types.ToolDefinition.Presentation`, keyed by tool name. Whether a
+  (provider, model) *accepts* a given control is a check against the
+  resolved `ProviderQuirks`: strict mode is `OpenAIBehaviourFlags.StrictMode`,
+  and the parallel-call and examples controls are the top-level
+  `ParallelToolCalls` / `ToolExamples` capabilities documented in
+  [§2.1](#21-providerquirks). Each adapter's `translateTools()`
+  consults the resolved capability before projecting the per-tool
+  payload onto its wire shape — the per-provider mapping in the §2.1
+  table.
 - **Toolset profiles and aliases (#234, Wave 5).** Operator-facing
   toolset selection is a `RunConfig` concern, not a per-model
   one.
