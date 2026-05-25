@@ -2,11 +2,14 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
 // probeRecorder counts requests to a metadata path vs a completion path so
@@ -167,5 +170,71 @@ func TestBedrockAdapter_Probe_NilCredentials(t *testing.T) {
 	adapter := &BedrockAdapter{}
 	if err := adapter.Probe(context.Background()); err != nil {
 		t.Fatalf("Probe with nil credentials should be a no-op, got: %v", err)
+	}
+}
+
+func TestBedrockAdapter_Probe_CredentialError(t *testing.T) {
+	adapter := &BedrockAdapter{
+		region: "us-east-1",
+		credentials: aws.CredentialsProviderFunc(func(_ context.Context) (aws.Credentials, error) {
+			return aws.Credentials{}, errors.New("STS AssumeRole denied")
+		}),
+	}
+	err := adapter.Probe(context.Background())
+	if err == nil {
+		t.Fatal("Probe: expected credential-resolution error, got nil")
+	}
+	if !strings.Contains(err.Error(), "STS AssumeRole denied") {
+		t.Errorf("error should wrap the credential failure, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "us-east-1") {
+		t.Errorf("error should name the region for diagnosis, got: %v", err)
+	}
+}
+
+func TestProbe_FailureStatuses(t *testing.T) {
+	// 401/error responses from the metadata endpoint must surface as an
+	// error for every dialect, carrying the status and the provider's
+	// diagnostic.
+	newServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"message":"bad key"}}`))
+		}))
+	}
+
+	t.Run("openai-compatible", func(t *testing.T) {
+		srv := newServer()
+		defer srv.Close()
+		a := NewOpenAICompatibleAdapter(staticBearer("bad"), srv.URL+"/v1", OpenAIAuthConfig{}, RetryPolicy{})
+		assertProbeStatusError(t, a.Probe(context.Background()), "openai-compatible")
+	})
+
+	t.Run("openai-responses", func(t *testing.T) {
+		srv := newServer()
+		defer srv.Close()
+		a := NewOpenAIResponsesAdapter(staticBearer("bad"), srv.URL+"/v1", OpenAIAuthConfig{})
+		assertProbeStatusError(t, a.Probe(context.Background()), "openai-responses")
+	})
+
+	t.Run("gemini", func(t *testing.T) {
+		srv := newServer()
+		defer srv.Close()
+		a := NewGeminiAdapter(staticBearer("ya29.bad"), "proj", "us-central1", nil)
+		a.baseURLOverride = srv.URL
+		assertProbeStatusError(t, a.Probe(context.Background()), "gemini")
+	})
+}
+
+func assertProbeStatusError(t *testing.T, err error, providerLabel string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected error for 401, got nil", providerLabel)
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("%s: error should carry the 401 status, got: %v", providerLabel, err)
+	}
+	if !strings.Contains(err.Error(), providerLabel) {
+		t.Errorf("%s: error should name the provider, got: %v", providerLabel, err)
 	}
 }

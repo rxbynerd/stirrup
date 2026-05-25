@@ -1447,8 +1447,10 @@ func runDryRun(cmd *cobra.Command, cfg *types.RunConfig, opts core.PreflightOpti
 	// the context and lets in-flight probes (and any owned resource
 	// cleanup inside Preflight) unwind, matching runWithConfig. Without
 	// this a Cloud Run job cancellation during a dry-run would not
-	// propagate to the probe context.
-	ctx, cancel := context.WithCancel(cmd.Context())
+	// propagate to the probe context. Rooted at context.Background() (as
+	// runWithConfig and job.go are) rather than cmd.Context(), which is
+	// nil for a command constructed outside Cobra's Execute path.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	setupSignalHandler(cancel)
 

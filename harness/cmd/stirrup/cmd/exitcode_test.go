@@ -342,6 +342,17 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 		`"modelRouter":{"type":"static","provider":"anthropic","model":"claude-x"}}`)
 	missingPromptFile := filepath.Join(dir, "absent-brief.txt")
 
+	// A config whose openai-compatible provider points at a refused port,
+	// so a --dry-run provider probe (no --no-probe-provider) fails and the
+	// process exits 1. Port 1 is privileged and never listening, giving a
+	// deterministic connection-refused without depending on DNS or a real
+	// server. execution mode so deny-side-effects (not allow-all) is fine.
+	refusedProviderConfig := filepath.Join(dir, "refused-provider.json")
+	writeFile(t, refusedProviderConfig, `{"runId":"r","mode":"execution","prompt":"hi",`+
+		`"maxTurns":10,"timeout":600,`+
+		`"provider":{"type":"openai-compatible","apiKeyRef":"secret://OPENAI_KEY","baseURL":"http://127.0.0.1:1/v1"},`+
+		`"modelRouter":{"type":"static","provider":"openai-compatible","model":"x"}}`)
+
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -424,6 +435,15 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 			args: []string{"harness", "--config", validConfig, "--no-probe-provider"},
 			want: exitUsage,
 			env:  []string{"ANTHROPIC_API_KEY=sk-ant-test"},
+		},
+		{
+			// #245 dry-run probe failure: the provider probe hits a refused
+			// port, so one step fails and the process exits 1 (not 4 — the
+			// flags are valid; a probe found a real problem).
+			name: "harness dry-run probe failure",
+			args: []string{"harness", "--config", refusedProviderConfig, "--dry-run", "--dry-run-timeout", "5s"},
+			want: 1,
+			env:  []string{"OPENAI_KEY=sk-test"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

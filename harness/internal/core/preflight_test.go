@@ -168,6 +168,172 @@ func TestPreflight_ValidationFailureStopsEarly(t *testing.T) {
 	}
 }
 
+// mcpProbeServer answers MCP tools/list with an empty list (ok) or a 500
+// (fail), so MCP probe paths can be exercised through core.Preflight.
+func mcpProbeServer(t *testing.T, fail bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fail {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte("boom"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`))
+	}))
+}
+
+func TestPreflight_MCP_Skip(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := mcpProbeServer(t, false)
+	defer mcpSrv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL}}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipMCP: true})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	st, ok := stepStatus(report, "mcp:docs")
+	if !ok || st != PreflightSkip {
+		t.Errorf("mcp step = %v (found=%v), want skip", st, ok)
+	}
+}
+
+func TestPreflight_MCP_OK(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := mcpProbeServer(t, false)
+	defer mcpSrv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL}}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	st, ok := stepStatus(report, "mcp:docs")
+	if !ok || st != PreflightOK {
+		t.Errorf("mcp step = %v (found=%v), want ok; steps: %+v", st, ok, report.Steps)
+	}
+}
+
+func TestPreflight_MCP_Fail(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+	mcpSrv := mcpProbeServer(t, true)
+	defer mcpSrv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Tools.MCPServers = []types.MCPServerConfig{{Name: "docs", URI: mcpSrv.URL}}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if report.OK {
+		t.Fatal("a failing MCP probe must fail the report")
+	}
+	st, _ := stepStatus(report, "mcp:docs")
+	if st != PreflightFail {
+		t.Errorf("mcp step = %v, want fail", st)
+	}
+}
+
+func TestPreflight_Egress_Skip(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Executor = types.ExecutorConfig{
+		Type:    "container",
+		Image:   "ubuntu:26.04",
+		Network: &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}},
+	}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipEgress: true})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	st, ok := stepStatus(report, "egress")
+	if !ok || st != PreflightSkip {
+		t.Errorf("egress step = %v (found=%v), want skip", st, ok)
+	}
+}
+
+func TestPreflight_Egress_Fail_MalformedAllowlist(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	// A malformed allowlist entry fails the egress probe deterministically
+	// (a parse error, no DNS) without depending on network resolution.
+	cfg.Executor = types.ExecutorConfig{
+		Type:    "container",
+		Image:   "ubuntu:26.04",
+		Network: &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"bad host with spaces"}},
+	}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	st, ok := stepStatus(report, "egress")
+	if !ok || st != PreflightFail {
+		t.Errorf("egress step = %v (found=%v), want fail", st, ok)
+	}
+}
+
+func TestPreflight_WorkspaceExport_Skip(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1") // no WorkspaceExportTo
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	st, ok := stepStatus(report, "workspace-export")
+	if !ok || st != PreflightSkip {
+		t.Errorf("workspace-export step = %v (found=%v), want skip", st, ok)
+	}
+}
+
+func TestPreflight_NilConfig(t *testing.T) {
+	if _, err := Preflight(context.Background(), nil, PreflightOptions{}); err == nil {
+		t.Fatal("Preflight(nil) should error")
+	}
+}
+
+func TestPreflight_ShortTimeoutSurfacesAsFail(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	// A server that sleeps past a 1ns deadline so the provider probe's
+	// context is already expired — the step must surface a clear fail, not
+	// panic or hang.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	report, err := Preflight(context.Background(), preflightTestConfig(t, srv.URL+"/v1"), PreflightOptions{Timeout: time.Nanosecond})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	if report.OK {
+		t.Fatal("a deadline-exceeded probe must not report OK")
+	}
+}
+
 func TestPreflight_TimeoutDefaulted(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
