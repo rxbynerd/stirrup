@@ -255,18 +255,58 @@ for the supported subset.
 
 ### Judges
 
-A judge decides whether a task passed by inspecting the workspace
-after the harness has run (`eval/judge/judge.go`):
+A judge decides whether a task passed. Most judges inspect the
+workspace after the harness has run; the `tool-trace` judge inspects
+the run's tool-call trace instead (`eval/judge/judge.go`):
 
 | Judge type      | What it checks                                                        |
 |-----------------|-----------------------------------------------------------------------|
 | `test-command`  | Runs a shell command in the workspace; passes on exit code 0. 5 min timeout. |
 | `file-exists`   | At least one of `paths` exists.                                       |
 | `file-contains` | `path` exists and matches the regex in `pattern`.                     |
+| `tool-trace`    | The run's `RunTrace.ToolCalls` satisfy a `tool_trace` block (see below). |
 | `composite`     | Combines child `judges` with `require: "all"` or `require: "any"`.    |
 
 All workspace-relative paths go through symlink-aware containment so
 judges cannot escape the workspace.
+
+#### The `tool-trace` judge
+
+Where the file/command judges confirm the agent reached the right end
+state, `tool-trace` confirms it got there by the expected tool-use
+path — read-before-edit ordering, bounded search, in-loop recovery
+from a renamed-tool miss, a no-tool answer that should or should not
+have occurred. It is the trace-side complement used by the tool-use
+reliability suite (`eval/suites/tooluse.hcl`). A `tool_trace` block
+accepts:
+
+| Field            | Meaning                                                                 |
+|------------------|-------------------------------------------------------------------------|
+| `sequence`       | Ordered list of internal tool names that must each appear, in this relative order (other calls between them are allowed). |
+| `call "<name>"`  | A per-tool block: `min_calls`, `max_calls`, `all_succeeded`. A `max_calls = 0` forbids the tool entirely. |
+| `forbid_unknown` | Fails when a tool call failed under a name that never later succeeds — i.e. an unresolved unknown-/renamed-tool miss. |
+
+Names match the **internal** tool ID (`ToolCallSummary.InternalName`
+when set, falling back to `Name`), so an assertion written against the
+canonical name holds under any toolset-profile alias. Example:
+
+```hcl
+judge {
+  type = "tool-trace"
+  tool_trace {
+    sequence = ["read_file", "edit_file"]
+    call "edit_file" {
+      min_calls     = 1
+      all_succeeded = true
+    }
+  }
+}
+```
+
+The judge receives the run's parsed `RunTrace` through
+`JudgeContext.Trace`, which the runner populates from the per-task
+trace it already parses. A `tool-trace` judge with no trace available
+is an error, not a silent pass.
 
 ### Replay doubles
 
@@ -285,6 +325,18 @@ These let CI run eval suites deterministically against recorded
 traces, and let the `replay` runner re-evaluate old recordings under
 new judge criteria without re-running the harness
 (`eval/runner/replay.go`).
+
+`ReplayProvider` also backs the tool-use reliability suite's
+no-credential gate. The `stirrup-eval run` subcommand spawns the real
+`stirrup harness` binary, which selects a provider from the RunConfig
+and so always needs live credentials; there is no replay-provider
+RunConfig path. To run the tool-use behaviours with no provider and no
+network, `harness/internal/core/tooluse_replay_test.go` drives the
+agentic loop in process with a `ReplayProvider` and a real
+`LocalExecutor` over synthetic workspaces, asserting the same workspace
+state and tool-call traces the HCL suite's judges check. That test is
+the gate; `eval/suites/tooluse.hcl` is its live-provider-comparable
+form.
 
 #### Where recordings come from
 
