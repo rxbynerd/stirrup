@@ -281,8 +281,8 @@ Twelve built-in tools ship in `harness/internal/tool/builtins/`:
 
 The four `git_*` tools are read-only: they neither mutate the
 workspace nor require approval, so the read-only modes (`planning`,
-`review`, `research`, `toil`) enable them by default and can inspect
-a change set without `run_command`. The executor runs commands
+`review`, `research`, `toil`) enable them by default, enabling
+inspection of a change set without `run_command`. The executor runs commands
 through `sh -c`, so each tool builds its git invocation from a fixed
 verb plus single-quoted arguments and validates any `path` (against
 the workspace root) or `ref` (rejecting shell metacharacters and a
