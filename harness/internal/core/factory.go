@@ -1125,6 +1125,20 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	case "multi":
 		return edit.NewMultiStrategy(fuzzyThreshold)
 	default:
+		// Reached only by callers that bypass types.ValidateRunConfig (e.g.
+		// gRPC / embedders constructing a RunConfig directly). The fallback
+		// to multi is intentional defence-in-depth, but a typo'd or
+		// future-but-unwired type silently degrading is worth surfacing so
+		// the mis-configuration is detectable. Uses slog.Default() rather
+		// than threading a logger: this is a should-never-happen path and
+		// the call site (factory.go:123) precedes structured-logger
+		// construction, so the value of run correlation does not justify
+		// widening the signature.
+		slog.Default().Warn("unknown edit strategy type; falling back to multi",
+			slog.String("attempted_type", cfg.Type),
+			slog.String("selected_type", "multi"),
+			slog.String("hint", "route the RunConfig through types.ValidateRunConfig to normalize EditStrategy.Type"),
+		)
 		return edit.NewMultiStrategy(fuzzyThreshold)
 	}
 }
