@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
@@ -172,8 +173,12 @@ func BucketAccessible(ctx context.Context, client *http.Client, opts BucketProbe
 		return fmt.Errorf("acquire bearer token: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/storage/v1/b/%s", strings.TrimRight(endpoint, "/"), opts.Bucket)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// PathEscape the bucket so a name carrying reserved bytes cannot
+	// rewrite the request path. TraceEmitter.Bucket is regex-validated, but
+	// WorkspaceExportTo's bucket has weaker validation, so escape here as
+	// defence-in-depth rather than relying on the caller having checked.
+	reqURL := fmt.Sprintf("%s/storage/v1/b/%s", strings.TrimRight(endpoint, "/"), url.PathEscape(opts.Bucket))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

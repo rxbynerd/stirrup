@@ -6,27 +6,22 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/rxbynerd/stirrup/harness/internal/credential"
 )
 
 // probeBodyLimit caps how much of a non-2xx probe response body is read
-// into the returned error. A metadata endpoint should answer in a few
-// hundred bytes; 4 KiB is generous headroom without letting a hostile or
-// misconfigured intermediary pin a large buffer.
+// into the returned error so a hostile or misconfigured intermediary
+// cannot pin a large buffer just to construct the error message.
 const probeBodyLimit = 4096
 
-// Probe issues a cheap, read-only reachability and authentication check
-// against the Anthropic API. It hits the models metadata endpoint
-// (GET /v1/models) and never the completion path (/v1/messages), so a
-// dry-run cannot spend tokens. A non-2xx status (notably 401 for a bad
-// key) is surfaced as an error; the caller turns that into a failed
-// preflight step.
-//
-// The same httpClient and auth-header selection the Stream path uses are
-// reused so the probe authenticates identically to a real request.
+// Probe hits the models metadata endpoint, never the completion path, so
+// a dry-run cannot spend tokens (issue #245 AC). Auth-header selection
+// mirrors Stream so the probe authenticates identically.
 func (a *AnthropicAdapter) Probe(ctx context.Context) error {
-	apiKey, err := a.bearer(ctx)
+	apiKey, err := resolveBearer(ctx, a.bearer)
 	if err != nil {
-		return fmt.Errorf("resolve bearer token: %w", err)
+		return err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, anthropicModelsURL(a.baseURL), nil)
@@ -48,11 +43,10 @@ func (a *AnthropicAdapter) Probe(ctx context.Context) error {
 	return checkProbeStatus("anthropic", resp)
 }
 
-// anthropicModelsURL derives the models metadata URL from the configured
-// messages base URL by swapping the trailing "/messages" path for
-// "/models". A custom baseURL without that suffix falls back to joining
-// "/models" onto its API root so test servers and gateways still resolve
-// to a metadata path rather than the completion path.
+// anthropicModelsURL derives the models metadata URL from the messages
+// base URL by swapping a trailing "/messages" for "/models", so the probe
+// targets a metadata path rather than the completion path. A custom
+// baseURL without that suffix joins "/models" onto its API root.
 func anthropicModelsURL(baseURL string) string {
 	if strings.HasSuffix(baseURL, "/messages") {
 		return strings.TrimSuffix(baseURL, "/messages") + "/models"
@@ -60,43 +54,35 @@ func anthropicModelsURL(baseURL string) string {
 	return strings.TrimRight(baseURL, "/") + "/models"
 }
 
-// Probe issues a read-only reachability and authentication check against
-// the OpenAI-compatible Chat Completions endpoint. It hits the models
-// metadata endpoint (GET {baseURL}/models) and never /chat/completions,
-// so a dry-run cannot spend tokens. The configured auth header and query
-// parameters are applied exactly as on the Stream path.
+// Probe hits GET {baseURL}/models, never /chat/completions, so a dry-run
+// spends no tokens.
 func (o *OpenAICompatibleAdapter) Probe(ctx context.Context) error {
-	apiKey, err := resolveBearer(ctx, o.bearer)
-	if err != nil {
-		return err
-	}
-	requestURL, err := composeOpenAIURL(o.baseURL, "/models", o.queryParams)
-	if err != nil {
-		return fmt.Errorf("compose request URL: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	setOpenAIAuthHeader(req, apiKey, o.apiKeyHeader)
-
-	resp, err := o.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("execute request: %w", err)
-	}
-	return checkProbeStatus("openai-compatible", resp)
+	return probeOpenAIModels(ctx, "openai-compatible", o.httpClient, o.bearer, o.baseURL, o.apiKeyHeader, o.queryParams)
 }
 
-// Probe issues a read-only reachability and authentication check against
-// the OpenAI Responses endpoint. The Responses API shares the same
-// /models metadata route as Chat Completions, so the probe hits
-// GET {baseURL}/models and never /responses.
+// Probe hits GET {baseURL}/models — the Responses API shares the Chat
+// Completions metadata route — and never /responses, so a dry-run spends
+// no tokens.
 func (o *OpenAIResponsesAdapter) Probe(ctx context.Context) error {
-	apiKey, err := resolveBearer(ctx, o.bearer)
+	return probeOpenAIModels(ctx, "openai-responses", o.httpClient, o.bearer, o.baseURL, o.apiKeyHeader, o.queryParams)
+}
+
+// probeOpenAIModels is the shared models-metadata GET for the two OpenAI
+// dialects: identical auth/URL composition, differing only in the
+// provider label carried into the error.
+func probeOpenAIModels(
+	ctx context.Context,
+	providerLabel string,
+	httpClient *http.Client,
+	bearer credential.BearerTokenFunc,
+	baseURL, apiKeyHeader string,
+	queryParams map[string]string,
+) error {
+	apiKey, err := resolveBearer(ctx, bearer)
 	if err != nil {
 		return err
 	}
-	requestURL, err := composeOpenAIURL(o.baseURL, "/models", o.queryParams)
+	requestURL, err := composeOpenAIURL(baseURL, "/models", queryParams)
 	if err != nil {
 		return fmt.Errorf("compose request URL: %w", err)
 	}
@@ -104,25 +90,22 @@ func (o *OpenAIResponsesAdapter) Probe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	setOpenAIAuthHeader(req, apiKey, o.apiKeyHeader)
+	setOpenAIAuthHeader(req, apiKey, apiKeyHeader)
 
-	resp, err := o.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("execute request: %w", err)
 	}
-	return checkProbeStatus("openai-responses", resp)
+	return checkProbeStatus(providerLabel, resp)
 }
 
-// Probe issues a read-only reachability and authentication check against
-// Vertex AI. It performs a GET on the publisher-model resource
-// (.../publishers/google/models) — the list-models route — rather than
-// the :streamGenerateContent action, so no completion is requested and no
-// tokens are spent. The OAuth2 bearer is acquired through the same
-// closure the Stream path uses.
+// Probe GETs the publisher-model collection rather than the
+// :streamGenerateContent action, so no completion is requested and no
+// tokens are spent.
 func (g *GeminiAdapter) Probe(ctx context.Context) error {
-	token, err := g.bearer(ctx)
+	token, err := resolveBearer(ctx, g.bearer)
 	if err != nil {
-		return fmt.Errorf("resolve bearer token: %w", err)
+		return err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.modelsURL(), nil)
@@ -138,13 +121,15 @@ func (g *GeminiAdapter) Probe(ctx context.Context) error {
 	return checkProbeStatus("gemini", resp)
 }
 
-// checkProbeStatus closes resp.Body and returns nil for a 2xx status. A
-// non-2xx status is rendered into an error carrying up to probeBodyLimit
-// bytes of the body so a 401/403 surfaces the provider's diagnostic
-// without exfiltrating an unbounded payload.
+// checkProbeStatus closes resp.Body and returns nil for a 2xx status,
+// draining the body first so the keep-alive connection can be reused by a
+// subsequent probe on the same client. A non-2xx status carries up to
+// probeBodyLimit bytes of the body so a 401/403 surfaces the provider's
+// diagnostic without exfiltrating an unbounded payload.
 func checkProbeStatus(provider string, resp *http.Response) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, probeBodyLimit))

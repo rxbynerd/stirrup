@@ -72,18 +72,48 @@ type ContainerExecutor struct {
 // silently pulling at run time, which would burn the run's wall-clock on
 // a multi-hundred-megabyte download the operator did not anticipate.
 func (e *ContainerExecutor) Probe(ctx context.Context) error {
-	if err := e.api.ping(ctx); err != nil {
+	return probeContainerEngine(ctx, e.api, e.image)
+}
+
+// ProbeContainerEngine performs the dry-run preflight check for a
+// container executor WITHOUT constructing or starting a container. It
+// builds only the Engine API client (honouring cfg.SocketPath or
+// auto-detecting the socket), pings the daemon, and verifies the image is
+// present locally. Crucially it never calls createContainer/startContainer
+// and never starts the egress proxy, so a `--dry-run` of a container
+// config is truly read-only — unlike NewContainerExecutorWithContext,
+// which creates a live container as a construction side effect. The
+// preflight path (core.Preflight) uses this instead of building a full
+// ContainerExecutor (issue #245 step 7).
+func ProbeContainerEngine(ctx context.Context, cfg ContainerExecutorConfig) error {
+	socketPath := cfg.SocketPath
+	if socketPath == "" {
+		var err error
+		socketPath, err = detectSocket()
+		if err != nil {
+			return fmt.Errorf("detect container socket: %w", err)
+		}
+	}
+	return probeContainerEngine(ctx, newContainerAPIClient(socketPath), cfg.Image)
+}
+
+// probeContainerEngine is the shared ping + image-presence check used by
+// both ContainerExecutor.Probe (already-constructed executor) and
+// ProbeContainerEngine (preflight, no container). An empty image skips the
+// image check — the engine ping alone still confirms reachability.
+func probeContainerEngine(ctx context.Context, api *containerAPIClient, image string) error {
+	if err := api.ping(ctx); err != nil {
 		return fmt.Errorf("container engine unreachable: %w", err)
 	}
-	if e.image == "" {
+	if image == "" {
 		return nil
 	}
-	present, err := e.api.imageExistsLocally(ctx, e.image)
+	present, err := api.imageExistsLocally(ctx, image)
 	if err != nil {
-		return fmt.Errorf("inspect image %q: %w", e.image, err)
+		return fmt.Errorf("inspect image %q: %w", image, err)
 	}
 	if !present {
-		return fmt.Errorf("image %q is not present locally; pull it before the run (e.g. `docker pull %s`)", e.image, e.image)
+		return fmt.Errorf("image %q is not present locally; pull it before the run (e.g. `docker pull %q`)", image, image)
 	}
 	return nil
 }

@@ -1436,12 +1436,37 @@ func dryRunOptionsFromFlags(f *flag.FlagSet) core.PreflightOptions {
 // outputMode "json" emits the structured report to stdout; otherwise a
 // human-readable per-step report goes to stderr (so it does not collide
 // with a captured config on stdout).
+// preflightFn is the seam through which runDryRun invokes the preflight.
+// Production points it at core.Preflight; tests substitute a stub that
+// returns a canned report so the dispatch/output/exit-code branches of
+// runDryRun can be exercised without a live config or network.
+var preflightFn = core.Preflight
+
 func runDryRun(cmd *cobra.Command, cfg *types.RunConfig, opts core.PreflightOptions, outputMode, outputRunConfigPath string) error {
-	report, err := core.Preflight(cmd.Context(), cfg, opts)
+	// Wire signal cancellation so a SIGINT/SIGTERM mid-preflight cancels
+	// the context and lets in-flight probes (and any owned resource
+	// cleanup inside Preflight) unwind, matching runWithConfig. Without
+	// this a Cloud Run job cancellation during a dry-run would not
+	// propagate to the probe context.
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+	setupSignalHandler(cancel)
+
+	report, err := preflightFn(ctx, cfg, opts)
 	if err != nil {
 		return err
 	}
+	return renderAndDispatchPreflight(cmd, report, cfg, outputMode, outputRunConfigPath)
+}
 
+// renderAndDispatchPreflight writes the report (JSON to stdout for
+// --output=json, the human report to stderr otherwise), composes with
+// --output-runconfig when requested, and maps the aggregate to an exit
+// code: a failed --output-runconfig write (exit 3) takes precedence over a
+// probe failure (exit 1) so a broken capture path is not masked by a soft
+// probe failure. Split out from runDryRun so the output/compose/exit
+// branches are unit-testable without invoking the real preflight.
+func renderAndDispatchPreflight(cmd *cobra.Command, report *core.PreflightReport, cfg *types.RunConfig, outputMode, outputRunConfigPath string) error {
 	if outputMode == "json" {
 		if err := writePreflightJSON(cmd.OutOrStdout(), report); err != nil {
 			return ioError(err)
@@ -1450,9 +1475,6 @@ func runDryRun(cmd *cobra.Command, cfg *types.RunConfig, opts core.PreflightOpti
 		writePreflightText(cmd.ErrOrStderr(), report)
 	}
 
-	// Compose with --output-runconfig: capture the config too. A write
-	// failure (exit 3) takes precedence over the probe-failure exit so a
-	// broken capture path is not masked by a soft probe failure.
 	if outputRunConfigPath != "" {
 		if werr := writeOutputRunConfig(outputRunConfigPath, cfg); werr != nil {
 			return werr

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/executor/egressproxy"
 	"github.com/rxbynerd/stirrup/harness/internal/mcp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
@@ -93,6 +95,14 @@ const DefaultPreflightTimeout = 30 * time.Second
 // then probes each constructed component that implements Preflighter and
 // is not gated off by opts.
 //
+// MAINTENANCE INVARIANT: this construction sequence intentionally mirrors
+// BuildLoopWithTransport in factory.go and MUST be updated in lockstep
+// with it. There is no shared construction helper today (a refactor to
+// extract one is a deferred follow-up), so a new component added to
+// BuildLoop that resolves credentials or validates connectivity will be
+// silently ABSENT from the dry-run — giving a false "all OK" — unless a
+// corresponding step is added here. See factory.go:BuildLoopWithTransport.
+//
 // The whole sequence runs under a context.WithTimeout(ctx, opts.Timeout)
 // so a wedged endpoint cannot hang the dry-run past the operator's budget.
 // Owned resources (the executor's container, trace exporters) are closed
@@ -156,21 +166,8 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		preflightProviders(ctx, config, providers, opts, ok, skip, fail)
 	}
 
-	// 4. Executor. Container construction creates and starts a container,
-	// so a failure here already proves the engine is unreachable or the
-	// image is absent; the ContainerExecutor.Probe step that follows is a
-	// secondary socket+image confirmation. local/api executors implement
-	// no Probe and record a skip.
-	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger)
-	if err != nil {
-		fail("executor", err, executorHint(config.Executor.Type))
-	} else {
-		ok("executor", fmt.Sprintf("%s executor constructed", executorTypeName(config.Executor.Type)))
-		probeComponent(ctx, "executor-probe", exec, false, "", ok, skip, fail)
-		if closer, isCloser := exec.(interface{ Close() error }); isCloser {
-			defer func() { _ = closer.Close() }()
-		}
-	}
+	// 4. Executor.
+	preflightExecutor(ctx, config, secrets, secLogger, ok, skip, fail)
 
 	// 5. Permission policy. The policy-engine arm loads + parses the Cedar
 	// file at construction, so a malformed policy fails here; its Probe
@@ -270,11 +267,65 @@ func probeComponent(
 	ok(name, "probe succeeded")
 }
 
+// preflightExecutor checks the configured executor. The container path is
+// deliberately NOT routed through buildExecutor: constructing a
+// ContainerExecutor creates and STARTS a real container (and the egress
+// proxy in allowlist mode) as a side effect, which contradicts the
+// read-only intent of a dry-run (issue #245 step 7). Instead it calls
+// executor.ProbeContainerEngine, which only pings the engine socket and
+// inspects the requested image (no pull, no container, no proxy). local
+// and api executors are cheap to construct and have no live side effects,
+// so they keep the construction path; neither implements a Probe, so the
+// probe step records a skip.
+func preflightExecutor(
+	ctx context.Context,
+	config *types.RunConfig,
+	secrets security.SecretStore,
+	secLogger *security.SecurityLogger,
+	ok func(string, string),
+	skip func(string, string),
+	fail func(string, error, string),
+) {
+	if config.Executor.Type == "container" {
+		if err := executor.ProbeContainerEngine(ctx, containerProbeConfig(config.Executor)); err != nil {
+			fail("executor", err, executorHint("container"))
+			return
+		}
+		ok("executor", "container engine reachable and image present")
+		return
+	}
+
+	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger)
+	if err != nil {
+		fail("executor", err, executorHint(config.Executor.Type))
+		return
+	}
+	ok("executor", fmt.Sprintf("%s executor constructed", executorTypeName(config.Executor.Type)))
+	probeComponent(ctx, "executor-probe", exec, false, "", ok, skip, fail)
+	if closer, isCloser := exec.(interface{ Close() error }); isCloser {
+		_ = closer.Close()
+	}
+}
+
+// containerProbeConfig projects the RunConfig's executor block onto the
+// subset ProbeContainerEngine needs. The socket is left empty so
+// ProbeContainerEngine auto-detects it (RunConfig has no socket override;
+// that field exists only on the test-facing ContainerExecutorConfig).
+func containerProbeConfig(cfg types.ExecutorConfig) executor.ContainerExecutorConfig {
+	return executor.ContainerExecutorConfig{
+		Image:   cfg.Image,
+		Network: cfg.Network,
+		Runtime: cfg.Runtime,
+	}
+}
+
 // preflightProviders probes the default and every named provider adapter
 // for metadata-endpoint reachability. Gated by --no-probe-provider. Each
 // adapter is the raw streaming adapter (the normalizer/batch wrappers are
 // not applied in preflight), so the Probe methods on the concrete adapter
-// types are reached directly.
+// types are reached directly. Provider names are sorted so the report's
+// step order is deterministic for a multi-provider config (reproducible
+// --output=json).
 func preflightProviders(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -284,7 +335,14 @@ func preflightProviders(
 	skip func(string, string),
 	fail func(string, error, string),
 ) {
-	for name, p := range providers {
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		p := providers[name]
 		step := "provider-probe:" + name
 		if opts.SkipProvider {
 			skip(step, "--no-probe-provider set")
@@ -299,8 +357,30 @@ func preflightProviders(
 			fail(step, err, "verify the API key/credential and base URL for this provider")
 			continue
 		}
-		ok(step, "metadata endpoint reachable")
+		ok(step, providerProbeDetail(providerTypeFor(config, name)))
 	}
+}
+
+// providerTypeFor resolves the provider TYPE for a providers-map key. The
+// default provider is keyed by its type; a named entry in
+// config.Providers is keyed by its map name but carries its own Type.
+func providerTypeFor(config *types.RunConfig, name string) string {
+	if cfg, ok := config.Providers[name]; ok {
+		return cfg.Type
+	}
+	return name
+}
+
+// providerProbeDetail returns the success detail for a provider probe.
+// Bedrock is special-cased: its probe resolves the AWS credential chain
+// but contacts no endpoint (bedrockruntime has no zero-cost reachability
+// op), so claiming "metadata endpoint reachable" would mislead an operator
+// diagnosing a Bedrock network/VPC issue.
+func providerProbeDetail(providerType string) string {
+	if providerType == "bedrock" {
+		return "AWS credentials resolved (network reachability not probed — no zero-cost Bedrock metadata endpoint)"
+	}
+	return "metadata endpoint reachable"
 }
 
 // preflightMCP probes every configured MCP server. Gated by

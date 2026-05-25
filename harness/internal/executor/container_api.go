@@ -192,7 +192,7 @@ func (c *containerAPIClient) imageExistsLocally(ctx context.Context, image strin
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("docker API request GET /images/%s/json: %w", image, err)
+		return false, fmt.Errorf("docker API request GET /images/%q/json: %w", image, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch {
@@ -202,9 +202,9 @@ func (c *containerAPIClient) imageExistsLocally(ctx context.Context, image strin
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		var apiErr apiError
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Message != "" {
-			return false, fmt.Errorf("docker API GET /images/%s/json: %s (HTTP %d)", image, apiErr.Message, resp.StatusCode)
+			return false, fmt.Errorf("docker API GET /images/%q/json: %s (HTTP %d)", image, apiErr.Message, resp.StatusCode)
 		}
-		return false, fmt.Errorf("docker API GET /images/%s/json: HTTP %d", image, resp.StatusCode)
+		return false, fmt.Errorf("docker API GET /images/%q/json: HTTP %d", image, resp.StatusCode)
 	default:
 		return true, nil
 	}
