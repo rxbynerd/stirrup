@@ -5,16 +5,11 @@ import (
 	"strings"
 )
 
-// The CLI entry-point usage hints (issue #249) are static, editor-
-// controlled templates rather than Cobra's generated --help. Each
-// entry point speaks to a different audience: the bare root command
-// orients a first-time operator toward the two subcommands, while a
-// bare `stirrup harness` on an interactive terminal teaches the
-// flag-grouping a real run needs. The full Cobra help (`--help`)
-// remains the authoritative, exhaustive reference; these hints are the
-// short, friendly first contact. They live here so the prose is shaped
-// by hand — generating them from the flag list would drift toward the
-// noise the hint is meant to avoid.
+// The CLI entry-point usage hints (issue #249) are hand-authored
+// templates, NOT generated from Cobra's flag list, so the wording is a
+// single deliberate edit rather than a regenerated artifact that drifts
+// toward the noise the hint exists to avoid. `--help` remains the
+// authoritative, exhaustive reference.
 
 // printRootUsageHint writes the bare-`stirrup` two-subcommand hint to w.
 // Plain text only — no ANSI, no boxes, no headings beyond the single
@@ -59,9 +54,6 @@ func printHarnessUsageHint(w io.Writer, color bool) {
 		b.WriteString(colorize(color, ansiBold, s))
 		b.WriteByte('\n')
 	}
-	// dim renders an example's illustrative value (a model name, a path)
-	// so the command shape itself stays prominent. Grey degrades to the
-	// plain string when color is off.
 	dim := func(s string) string {
 		return colorize(color, ansiGrey, s)
 	}

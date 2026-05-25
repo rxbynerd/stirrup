@@ -145,6 +145,13 @@ should use `--transport grpc`.
 `stirrup harness --help` is authoritative. The table below documents
 the same flags grouped by concern.
 
+Without a prompt on an interactive terminal, `stirrup harness` prints a
+curated usage hint — a grouped, example-led subset of the flags below —
+rather than the bare prompt-required error, and a bare `stirrup` prints
+a two-subcommand entry-point hint. Both are first-contact orientation
+only; `stirrup harness --help` remains authoritative for the full flag
+reference.
+
 ### Required
 
 | Flag | Default | Notes |
