@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
 	"github.com/rxbynerd/stirrup/types"
@@ -595,6 +596,14 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("export-workspace-required", false, "")
 	f.String("output-runconfig", "", "")
 	f.StringP("output", "o", "text", "")
+	// Dry-run flags (issue #245). Mirrors the registration in harness.go
+	// init() so flag-combination tests can exercise validateDryRunFlags.
+	f.Bool("dry-run", false, "")
+	f.Bool("no-probe-provider", false, "")
+	f.Bool("no-probe-mcp", false, "")
+	f.Bool("no-probe-trace", false, "")
+	f.Bool("no-probe-egress", false, "")
+	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "")
 	return cmd
 }
 

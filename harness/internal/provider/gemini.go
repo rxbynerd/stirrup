@@ -31,6 +31,11 @@ const (
 	geminiAPIRegionalHost = "%s-aiplatform.googleapis.com"
 	geminiAPIGlobalHost   = "aiplatform.googleapis.com"
 	geminiAPIPathTemplate = "/v1/projects/%s/locations/%s/publishers/google/models/%s:streamGenerateContent?alt=sse"
+	// geminiModelsPathTemplate is the publisher-model collection route used
+	// only by the preflight probe (GeminiAdapter.Probe). It has no model
+	// segment and no :streamGenerateContent action, so a probe GET is a
+	// metadata read that never triggers a completion.
+	geminiModelsPathTemplate = "/v1/projects/%s/locations/%s/publishers/google/models"
 
 	// maxScannerBuffer caps the per-line buffer used for the SSE scanner.
 	// Vertex chunks are typically small, but a final chunk that bundles
@@ -143,6 +148,27 @@ func (g *GeminiAdapter) buildURL(model string) string {
 		host = fmt.Sprintf(geminiAPIRegionalHost, g.location)
 	}
 	path := fmt.Sprintf(geminiAPIPathTemplate, projID, loc, mdl)
+	return "https://" + host + path
+}
+
+// modelsURL renders the publisher-model collection URL for a preflight
+// probe. It mirrors buildURL's host derivation (baseURLOverride for
+// tests, global vs regional subdomain otherwise) but targets the
+// list-models route .../publishers/google/models with no model segment
+// and no :streamGenerateContent action — a metadata GET that spends no
+// tokens.
+func (g *GeminiAdapter) modelsURL() string {
+	projID := url.PathEscape(g.projectID)
+	loc := url.PathEscape(g.location)
+	path := fmt.Sprintf(geminiModelsPathTemplate, projID, loc)
+
+	if g.baseURLOverride != "" {
+		return strings.TrimRight(g.baseURLOverride, "/") + path
+	}
+	host := geminiAPIGlobalHost
+	if g.location != "global" {
+		host = fmt.Sprintf(geminiAPIRegionalHost, g.location)
+	}
 	return "https://" + host + path
 }
 

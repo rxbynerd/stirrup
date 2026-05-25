@@ -39,6 +39,13 @@ type BedrockAdapter struct {
 	client  bedrockConverseStreamer
 	Tracer  oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+
+	// credentials and region are captured from the resolved AWS config so
+	// Probe can validate the credential chain without issuing a billable
+	// request. Both are nil/empty for the test-injected mock-client path
+	// (newBedrockAdapterWithClient), which leaves Probe a no-op skip.
+	credentials aws.CredentialsProvider
+	region      string
 }
 
 // NewBedrockAdapter creates an adapter that uses the ConverseStream API.
@@ -64,7 +71,35 @@ func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvi
 	}
 
 	client := bedrockruntime.NewFromConfig(cfg)
-	return &BedrockAdapter{client: client}, nil
+	return &BedrockAdapter{
+		client:      client,
+		credentials: cfg.Credentials,
+		region:      cfg.Region,
+	}, nil
+}
+
+// Probe validates that the AWS credential chain resolves, as a cheap
+// control-plane reachability check for a dry-run. It deliberately does
+// NOT call a Bedrock API: ConverseStream is billable, and the
+// bedrockruntime client carries no zero-cost reachability operation.
+// Pulling in aws-sdk-go-v2/service/bedrock purely for ListFoundationModels
+// would add a second SDK module to satisfy a preflight check, so the probe
+// settles for credential resolution — the failure mode operators most
+// often hit (missing/expired keys, an unconfigured federation role)
+// surfaces here, while a region typo or a revoked Bedrock-invoke IAM
+// permission would only surface on the first real turn. This limitation
+// is documented for the dry-run report's "skip"/"ok" semantics.
+//
+// A nil credentials provider (the mock-client test path) returns nil so
+// the preflight records the step without a spurious failure.
+func (b *BedrockAdapter) Probe(ctx context.Context) error {
+	if b.credentials == nil {
+		return nil
+	}
+	if _, err := b.credentials.Retrieve(ctx); err != nil {
+		return fmt.Errorf("resolve AWS credentials (region %q): %w", b.region, err)
+	}
+	return nil
 }
 
 // Stream sends a ConverseStream request to Bedrock and returns a channel of

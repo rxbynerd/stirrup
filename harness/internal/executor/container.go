@@ -58,10 +58,64 @@ type ContainerExecutor struct {
 	workspace   string // always containerWorkspace ("/workspace")
 	hostDir     string
 	networkMode string
+	image       string // requested image, retained for the dry-run probe
 	Security    SecurityEventEmitter
 	// proxy, when non-nil, is the in-process egress proxy started for the
 	// allowlist network mode. Close() stops it.
 	proxy *egressproxy.Proxy
+}
+
+// Probe checks the container runtime for a dry-run preflight: it pings
+// the engine socket (GET /_ping) and verifies the requested image is
+// present locally (GET /images/{image}/json) without pulling. An absent
+// image is reported as an error carrying a remediation hint rather than
+// silently pulling at run time, which would burn the run's wall-clock on
+// a multi-hundred-megabyte download the operator did not anticipate.
+func (e *ContainerExecutor) Probe(ctx context.Context) error {
+	return probeContainerEngine(ctx, e.api, e.image)
+}
+
+// ProbeContainerEngine performs the dry-run preflight check for a
+// container executor WITHOUT constructing or starting a container. It
+// builds only the Engine API client (honouring cfg.SocketPath or
+// auto-detecting the socket), pings the daemon, and verifies the image is
+// present locally. Crucially it never calls createContainer/startContainer
+// and never starts the egress proxy, so a `--dry-run` of a container
+// config is truly read-only — unlike NewContainerExecutorWithContext,
+// which creates a live container as a construction side effect. The
+// preflight path (core.Preflight) uses this instead of building a full
+// ContainerExecutor (issue #245 step 7).
+func ProbeContainerEngine(ctx context.Context, cfg ContainerExecutorConfig) error {
+	socketPath := cfg.SocketPath
+	if socketPath == "" {
+		var err error
+		socketPath, err = detectSocket()
+		if err != nil {
+			return fmt.Errorf("detect container socket: %w", err)
+		}
+	}
+	return probeContainerEngine(ctx, newContainerAPIClient(socketPath), cfg.Image)
+}
+
+// probeContainerEngine is the shared ping + image-presence check used by
+// both ContainerExecutor.Probe (already-constructed executor) and
+// ProbeContainerEngine (preflight, no container). An empty image skips the
+// image check — the engine ping alone still confirms reachability.
+func probeContainerEngine(ctx context.Context, api *containerAPIClient, image string) error {
+	if err := api.ping(ctx); err != nil {
+		return fmt.Errorf("container engine unreachable: %w", err)
+	}
+	if image == "" {
+		return nil
+	}
+	present, err := api.imageExistsLocally(ctx, image)
+	if err != nil {
+		return fmt.Errorf("inspect image %q: %w", image, err)
+	}
+	if !present {
+		return fmt.Errorf("image %q is not present locally; pull it before the run (e.g. `docker pull %q`)", image, image)
+	}
+	return nil
 }
 
 // NewContainerExecutor creates and starts a container, returning an executor
@@ -194,6 +248,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		workspace:   containerWorkspace,
 		hostDir:     cfg.HostDir,
 		networkMode: hc.NetworkMode,
+		image:       cfg.Image,
 		Security:    nil,
 		proxy:       proxy,
 	}, nil

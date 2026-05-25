@@ -365,6 +365,48 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 	return nil
 }
 
+// Probe performs a read-only reachability and authentication handshake
+// against a single MCP server for a dry-run preflight: it validates the
+// URI shape, resolves the configured bearer token, and issues the same
+// tools/list request Connect uses — but it does NOT register the
+// discovered tools into the registry. This keeps the probe a pure
+// side-effect-free check that can run before (or instead of) the real
+// Connect, and avoids mutating a registry a non-dry-run path may also be
+// populating.
+//
+// A returned error names the server so the preflight step can point the
+// operator at the specific misconfigured entry.
+func (c *Client) Probe(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) error {
+	if config.Name == "" {
+		return fmt.Errorf("mcp: server config missing required Name field")
+	}
+	if config.URI == "" {
+		return fmt.Errorf("mcp: server %q missing required URI field", config.Name)
+	}
+
+	parsed, err := url.Parse(config.URI)
+	if err != nil {
+		return fmt.Errorf("mcp: invalid URI for server %q: %w", config.Name, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("mcp: server %q URI scheme %q not allowed (must be http or https)", config.Name, parsed.Scheme)
+	}
+
+	var token string
+	if config.APIKeyRef != "" {
+		token, err = secrets.Resolve(ctx, config.APIKeyRef)
+		if err != nil {
+			return fmt.Errorf("mcp: resolve auth for server %q: %w", config.Name, err)
+		}
+	}
+
+	sess := &serverSession{uri: config.URI, token: token}
+	if _, err := c.listTools(ctx, sess); err != nil {
+		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
+	}
+	return nil
+}
+
 // Close releases resources held by the client. Currently a no-op since
 // Streamable HTTP is stateless on the client side, but provides a clean
 // lifecycle boundary for future session teardown (e.g. DELETE request).

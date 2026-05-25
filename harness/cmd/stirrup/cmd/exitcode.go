@@ -10,6 +10,8 @@ import "errors"
 //	1  validation failed (ValidateRunConfig / run-config --validate)
 //	2  parse error (malformed JSON on stdin or in --config)
 //	3  I/O error (stdin/stdout/file read/write)
+//	4  usage error (an invalid flag combination — e.g. a --dry-run probe
+//	   gate supplied without --dry-run)
 //
 // Code 0 is never carried by an exitError — a nil error from a command's
 // RunE is the success path, and Execute() exits 0 implicitly. The
@@ -18,6 +20,7 @@ const (
 	exitValidation = 1
 	exitParse      = 2
 	exitIO         = 3
+	exitUsage      = 4
 )
 
 // exitError wraps a command error with the CLI exit code its failure
@@ -73,6 +76,20 @@ func validationError(err error) error {
 		return nil
 	}
 	return &exitError{code: exitValidation, err: err}
+}
+
+// usageError tags err as an invalid flag-combination failure (exit 4):
+// a flag was supplied in a context where it has no meaning — e.g. a
+// --dry-run probe gate (--no-probe-provider) or --dry-run-timeout
+// without --dry-run. A nil err returns nil so call sites can wrap
+// unconditionally. Distinct from validationError (exit 1, a structurally
+// invalid RunConfig) because the config itself is fine; only the
+// command-line combination is incoherent.
+func usageError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &exitError{code: exitUsage, err: err}
 }
 
 // classifyExitCode maps a command error to its process exit code. It is

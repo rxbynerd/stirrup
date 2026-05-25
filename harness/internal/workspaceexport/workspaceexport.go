@@ -165,6 +165,35 @@ func (e *GCSExporter) Export(ctx context.Context, workspaceDir, destURI string) 
 	return nil
 }
 
+// Probe verifies the export destination is reachable for a dry-run
+// preflight: it parses destURI, resolves the credential, and performs a
+// read-only bucket-metadata GET. It tars nothing and uploads nothing, so
+// a dry-run leaves no artifact behind. A malformed URI, an unresolvable
+// credential, or a bucket the credential cannot see is surfaced so the
+// operator catches it before a real run spends wall-clock building a
+// tarball it cannot upload.
+func (e *GCSExporter) Probe(ctx context.Context, destURI string) error {
+	bucket, _, err := parseGCSURI(destURI)
+	if err != nil {
+		return fmt.Errorf("workspace exporter: %w", err)
+	}
+	resolved, err := e.credentialSource.Resolve(ctx)
+	if err != nil {
+		return fmt.Errorf("workspace exporter: resolve credential: %w", err)
+	}
+	if resolved == nil || resolved.BearerToken == nil {
+		return fmt.Errorf("workspace exporter: credential source produced no bearer token")
+	}
+	if err := gcs.BucketAccessible(ctx, e.httpClient, gcs.BucketProbeOptions{
+		Bucket:          bucket,
+		Bearer:          resolved.BearerToken,
+		EndpointBaseURL: e.endpointBaseURL,
+	}); err != nil {
+		return fmt.Errorf("workspace exporter: %w", err)
+	}
+	return nil
+}
+
 // parseGCSURI splits a gs://bucket/object URI into its parts. The
 // object name must be non-empty so callers cannot accidentally
 // overwrite the bucket root or trigger surprising GCS API behaviour.

@@ -249,6 +249,20 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	return trace, nil
 }
 
+// Probe verifies the credential can access the configured bucket for a
+// dry-run preflight via a read-only bucket-metadata GET. It uploads
+// nothing, so a dry-run leaves no trace object behind. A 403/404/401
+// surfaces with the GCS diagnostic so a missing bucket or an
+// insufficiently-scoped credential is caught before the run ends and
+// silently drops its trace.
+func (e *GCSTraceEmitter) Probe(ctx context.Context) error {
+	return gcs.BucketAccessible(ctx, e.httpClient, gcs.BucketProbeOptions{
+		Bucket:          e.bucket,
+		Bearer:          e.bearer,
+		EndpointBaseURL: e.endpointBaseURL,
+	})
+}
+
 // Close is a no-op — the in-memory buffer is released when the emitter
 // is GC'd, and there is no file handle to release. Implementing Close
 // satisfies the io.Closer protocol that the factory uses to register

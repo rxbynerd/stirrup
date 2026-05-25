@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
@@ -130,6 +131,72 @@ func UploadObject(ctx context.Context, client *http.Client, opts UploadOptions) 
 	const maxErrBody = 4 * 1024
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 	return fmt.Errorf("gcs upload returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+}
+
+// BucketProbeOptions configures a single bucket-access probe.
+type BucketProbeOptions struct {
+	// Bucket is the GCS bucket name to check.
+	Bucket string
+
+	// Bearer returns the current bearer token. Required.
+	Bearer credential.BearerTokenFunc
+
+	// EndpointBaseURL overrides the GCS JSON-API host. Empty means use
+	// DefaultEndpointBaseURL. Tests set this to an httptest.NewServer.
+	EndpointBaseURL string
+}
+
+// BucketAccessible performs a read-only bucket-metadata GET
+// (GET /storage/v1/b/{bucket}) to verify the credential can see the
+// bucket, for a dry-run preflight. A 2xx confirms access without
+// uploading anything; a non-2xx (404 missing bucket, 403 denied, 401 bad
+// credential) is surfaced as an error carrying the GCS diagnostic. This
+// is the cheapest authenticated bucket check the JSON API offers and is
+// shared by the gcs trace emitter and the workspace exporter so both
+// report bucket access identically.
+func BucketAccessible(ctx context.Context, client *http.Client, opts BucketProbeOptions) error {
+	if client == nil {
+		return fmt.Errorf("gcs: http client is required")
+	}
+	if opts.Bucket == "" {
+		return fmt.Errorf("gcs: bucket is required")
+	}
+	if opts.Bearer == nil {
+		return fmt.Errorf("gcs: bearer is required")
+	}
+	endpoint := opts.EndpointBaseURL
+	if endpoint == "" {
+		endpoint = DefaultEndpointBaseURL
+	}
+	token, err := opts.Bearer(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire bearer token: %w", err)
+	}
+
+	// PathEscape the bucket so a name carrying reserved bytes cannot
+	// rewrite the request path. TraceEmitter.Bucket is regex-validated, but
+	// WorkspaceExportTo's bucket has weaker validation, so escape here as
+	// defence-in-depth rather than relying on the caller having checked.
+	reqURL := fmt.Sprintf("%s/storage/v1/b/%s", strings.TrimRight(endpoint, "/"), url.PathEscape(opts.Bucket))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("get gcs bucket metadata: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	const maxErrBody = 4 * 1024
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
+	return fmt.Errorf("gcs bucket %q access returned HTTP %d: %s", opts.Bucket, resp.StatusCode, strings.TrimSpace(string(msg)))
 }
 
 // urlPathEscape escapes an object name for use in the name= query
