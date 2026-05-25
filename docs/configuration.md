@@ -140,6 +140,86 @@ any subsequent control-event input. This matches the batch shape the
 pipeline pattern targets — operators who need interactive control
 should use `--transport grpc`.
 
+## Dry-run preflight
+
+`--output-runconfig` answers "what *would* run?"; `--dry-run` answers
+"*could* it run?". A dry-run takes the resolved `RunConfig` through every
+initialisation step short of the first agentic turn — validate the
+config, construct every component, resolve every credential, and probe
+the reachability of the provider, MCP servers, trace backend, and egress
+allowlist — then prints a per-step report and exits. It is the
+preflight check for the side-channel concerns `ValidateRunConfig` cannot
+see: a missing API key, an unreachable MCP server, a Cedar policy that
+will not parse, a container image that is not pulled, a trace collector
+that is down.
+
+```sh
+stirrup harness --config run.json --dry-run
+```
+
+A dry-run **never spends provider tokens**. Provider probes hit only a
+metadata endpoint — Anthropic and OpenAI `GET /v1/models`, the
+publisher-model list for Vertex AI — and never a completion endpoint.
+The Bedrock probe validates the AWS credential chain rather than calling
+a billable runtime operation.
+
+The report lists each step with one of three statuses:
+
+- `ok` — the component constructed and (where applicable) its probe
+  succeeded.
+- `skip` — the step was intentionally not run: the component has no
+  network probe (a local executor, a `jsonl` trace file), the feature is
+  not configured (no MCP servers, no workspace export), or a
+  `--no-probe-*` gate suppressed it.
+- `fail` — construction or a probe failed. The step names the component,
+  carries the underlying error, and — where a concrete next step is
+  known — a remediation hint.
+
+The human-readable report goes to **stderr**; `--output=json` emits the
+structured report (a `PreflightReport`: a `steps` array plus an `ok`
+boolean) to **stdout** instead, so it can be parsed or stored. Routing
+the report to stderr keeps stdout free for a captured config when
+`--dry-run` is combined with `--output-runconfig`.
+
+### Probe gates
+
+Each network-touching probe can be suppressed for cost-controlled or
+air-gapped environments. A suppressed probe records `skip` and does not
+fail the run:
+
+| Flag | Skips |
+|---|---|
+| `--no-probe-provider` | The provider metadata probe (all configured providers). |
+| `--no-probe-mcp` | The MCP `initialize` / `tools/list` handshake for every configured server. |
+| `--no-probe-trace` | The trace-emitter reachability probe (`otel` flush, `gcs` bucket check). |
+| `--no-probe-egress` | The egress-allowlist DNS resolution (container executor in `allowlist` network mode). |
+| `--dry-run-timeout` | Not a gate — bounds the total preflight wall-clock. Defaults to `30s`. |
+
+A `--no-probe-*` gate or `--dry-run-timeout` supplied **without**
+`--dry-run` is an invalid flag combination and exits `4` (see
+[Exit codes](#exit-codes)). Silently ignoring them would hide an
+operator typo — for example, `--no-probe-provider` on a real run that
+then contacts the provider anyway.
+
+MCP probe failures are treated like every other probe: a configured
+server that does not answer the handshake fails the dry-run. An operator
+who expects a server to be unavailable suppresses its probe with
+`--no-probe-mcp`.
+
+### Exit codes and composition
+
+| Outcome | Exit code |
+|---|---|
+| Every step `ok` or `skip` | `0` |
+| One or more steps `fail` | `1` |
+| Invalid flag combination | `4` |
+
+`--dry-run` composes with `--output-runconfig`: both run. The order is
+validate → preflight → write the captured config → exit, so the resolved
+config is captured alongside the report even when a probe fails (a
+failed `--output-runconfig` write still takes precedence as an I/O error,
+exit `3`).
+
 ## CLI flags
 
 `stirrup harness --help` is authoritative. The table below documents
@@ -328,6 +408,23 @@ stdout. The default JSONL trace writes to a file (or to nothing when
 `STIRRUP_RESULT` line. A future JSONL emitter that writes to stdout
 would conflict with `--output=json`.
 
+### Dry-run
+
+The preflight flags. See [Dry-run preflight](#dry-run-preflight) for the
+full workflow, the per-step report, and how the flags compose.
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--dry-run` | `false` | Run every initialisation step short of the first agentic turn, print a per-step preflight report, then exit. Spends no provider tokens. |
+| `--no-probe-provider` | `false` | Skip the provider metadata probe. Meaningless without `--dry-run` (exit `4`). |
+| `--no-probe-mcp` | `false` | Skip the MCP server handshake probe. Meaningless without `--dry-run` (exit `4`). |
+| `--no-probe-trace` | `false` | Skip the trace-emitter reachability probe. Meaningless without `--dry-run` (exit `4`). |
+| `--no-probe-egress` | `false` | Skip the egress-allowlist DNS probe. Meaningless without `--dry-run` (exit `4`). |
+| `--dry-run-timeout` | `30s` | Total wall-clock budget for the preflight. Meaningless without `--dry-run` (exit `4`). |
+
+`--output=json` (above) emits the `PreflightReport` to stdout when paired
+with `--dry-run`; otherwise the report goes to stderr.
+
 ### Exit codes
 
 The CLI distinguishes failure classes through the process exit code so
@@ -341,6 +438,12 @@ stderr. The scheme is uniform across `harness`, `job`, and
 | `1` | Validation / precondition | `ValidateRunConfig` (or `run-config --validate`) rejected the resolved config; a required prompt had no source; `job` ran without `CONTROL_PLANE_ADDR`. Also the default for any failure not in a more specific class. |
 | `2` | Parse error | The JSON in a `--config` file or piped stdin failed to decode (syntax error, unknown field, type mismatch). |
 | `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure. |
+| `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`) or `--dry-run-timeout` supplied without `--dry-run`. See [Dry-run preflight](#dry-run-preflight). |
+
+A failed `--dry-run` (one or more probes reported `fail`) exits `1` on
+the default path, not `4`: code `4` is reserved for the command-line
+combination itself being incoherent, not for a probe finding a real
+misconfiguration.
 
 A failed or cancelled *run* (as opposed to a configuration failure)
 exits non-zero on the same `1` default path; the `RunResult` on stdout
