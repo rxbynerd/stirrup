@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	flag "github.com/spf13/pflag"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/types"
@@ -762,6 +763,12 @@ func init() {
 	f := harnessCmd.Flags()
 	f.Bool("export-workspace-required", false, "When true, a failed workspace export exits the run non-zero. When false (default), failures are logged and the run's exit code is unchanged.")
 	f.String("output-runconfig", "", "Write the resolved RunConfig as JSON to <path> (use '-' for stdout) and exit without running. Useful for capturing the exact config a flag-only invocation would have used. Validation must pass first; the path is not written on a validator error.")
+	f.Bool("dry-run", false, "Run every initialisation step short of the first agentic turn (validate, construct components, resolve credentials, probe provider/MCP/trace/egress reachability), print a per-step preflight report, then exit. No provider tokens are spent. Exit 0 when all steps pass, 1 when any probe fails, 4 for an invalid flag combination. Composes with --output-runconfig (both run) and --output=json (emits the report as JSON).")
+	f.Bool("no-probe-provider", false, "With --dry-run, skip the provider reachability probe (for cost-controlled environments that do not want any provider contact). Meaningless without --dry-run (exit 4).")
+	f.Bool("no-probe-mcp", false, "With --dry-run, skip the MCP server reachability probe. Meaningless without --dry-run (exit 4).")
+	f.Bool("no-probe-trace", false, "With --dry-run, skip the trace-emitter reachability probe. Meaningless without --dry-run (exit 4).")
+	f.Bool("no-probe-egress", false, "With --dry-run, skip the egress-allowlist DNS probe. Meaningless without --dry-run (exit 4).")
+	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "With --dry-run, the total wall-clock budget for the preflight. Meaningless without --dry-run (exit 4).")
 	f.StringP("output", "o", "text", "Post-run summary format: text (default human-readable summary on stderr), json (structured RunResult JSON on stdout, suppresses stderr summary), none (suppresses both). When json is set together with resultSink.type=stdout-json the line is emitted once (the flag wins); pair json with a trace emitter that does not target stdout (the default jsonl file path is fine).")
 
 	// --output-runconfig accepts a path or "-" for stdout. The .json
@@ -1296,7 +1303,21 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --output-runconfig is a dry-run capture: write the validated
+	// --dry-run preflight (issue #245). The probe gates and the timeout
+	// only make sense alongside --dry-run; supplying one without --dry-run
+	// is an invalid flag combination (exit 4) rather than a silent no-op.
+	// This check runs after BuildRunConfig so a bad config still surfaces
+	// its own (exit 1/2/3) class first.
+	dryRun, _ := f.GetBool("dry-run")
+	if err := validateDryRunFlags(f, dryRun); err != nil {
+		return err
+	}
+	if dryRun {
+		outPath, _ := f.GetString("output-runconfig")
+		return runDryRun(cmd, cfg, dryRunOptionsFromFlags(f), outputMode, outPath)
+	}
+
+	// --output-runconfig is a config capture: write the validated
 	// RunConfig to the named path (or stdout) and exit without
 	// invoking the loop. The validator has already run inside
 	// BuildRunConfig, so reaching this branch with an invalid config
@@ -1352,6 +1373,144 @@ func writeAndCloseRunConfig(wc io.WriteCloser, path string, cfg *types.RunConfig
 		return ioError(fmt.Errorf("closing --output-runconfig %q: %w", path, cerr))
 	}
 	return writeErr
+}
+
+// dryRunProbeGates lists the flags whose only meaning is to gate a
+// --dry-run probe. Supplying any of them without --dry-run is an invalid
+// combination (exit 4). Kept as a table so the error names the offending
+// flag and a future probe gate is one append away.
+var dryRunProbeGates = []string{
+	"no-probe-provider",
+	"no-probe-mcp",
+	"no-probe-trace",
+	"no-probe-egress",
+	"dry-run-timeout",
+}
+
+// validateDryRunFlags rejects a --dry-run probe gate or --dry-run-timeout
+// supplied without --dry-run. Those flags are inert outside a dry-run, so
+// rather than silently ignoring them (which would hide an operator typo
+// such as `--no-probe-provider` on a real run that then contacts the
+// provider anyway) the harness fails with the usage class (exit 4).
+func validateDryRunFlags(f *flag.FlagSet, dryRun bool) error {
+	if dryRun {
+		return nil
+	}
+	for _, name := range dryRunProbeGates {
+		if f.Changed(name) {
+			return usageError(fmt.Errorf("--%s has no effect without --dry-run", name))
+		}
+	}
+	return nil
+}
+
+// dryRunOptionsFromFlags maps the --no-probe-* gates and --dry-run-timeout
+// onto core.PreflightOptions.
+func dryRunOptionsFromFlags(f *flag.FlagSet) core.PreflightOptions {
+	skipProvider, _ := f.GetBool("no-probe-provider")
+	skipMCP, _ := f.GetBool("no-probe-mcp")
+	skipTrace, _ := f.GetBool("no-probe-trace")
+	skipEgress, _ := f.GetBool("no-probe-egress")
+	timeout, _ := f.GetDuration("dry-run-timeout")
+	return core.PreflightOptions{
+		SkipProvider: skipProvider,
+		SkipMCP:      skipMCP,
+		SkipTrace:    skipTrace,
+		SkipEgress:   skipEgress,
+		Timeout:      timeout,
+	}
+}
+
+// runDryRun executes the preflight, renders the report, optionally writes
+// the captured RunConfig (when --output-runconfig is also set, per the
+// issue's compose edge case), and maps the aggregate to an exit code:
+//
+//	all steps ok/skip -> nil (exit 0)
+//	any step failed   -> a plain error (exit 1, the untyped default)
+//
+// Order matches the spec: validate -> preflight -> write config (if
+// requested) -> exit. The config write happens only when the report
+// itself did not fail to produce, so a dry-run that surfaces a
+// misconfiguration still captures the config the operator was probing.
+//
+// outputMode "json" emits the structured report to stdout; otherwise a
+// human-readable per-step report goes to stderr (so it does not collide
+// with a captured config on stdout).
+func runDryRun(cmd *cobra.Command, cfg *types.RunConfig, opts core.PreflightOptions, outputMode, outputRunConfigPath string) error {
+	report, err := core.Preflight(cmd.Context(), cfg, opts)
+	if err != nil {
+		return err
+	}
+
+	if outputMode == "json" {
+		if err := writePreflightJSON(cmd.OutOrStdout(), report); err != nil {
+			return ioError(err)
+		}
+	} else if outputMode != "none" {
+		writePreflightText(cmd.ErrOrStderr(), report)
+	}
+
+	// Compose with --output-runconfig: capture the config too. A write
+	// failure (exit 3) takes precedence over the probe-failure exit so a
+	// broken capture path is not masked by a soft probe failure.
+	if outputRunConfigPath != "" {
+		if werr := writeOutputRunConfig(outputRunConfigPath, cfg); werr != nil {
+			return werr
+		}
+	}
+
+	if !report.OK {
+		return fmt.Errorf("dry-run preflight failed: %d of %d step(s) did not pass", failedStepCount(report), len(report.Steps))
+	}
+	return nil
+}
+
+// failedStepCount counts the failed steps in a report for the summary
+// error message.
+func failedStepCount(report *core.PreflightReport) int {
+	n := 0
+	for _, s := range report.Steps {
+		if s.Status == core.PreflightFail {
+			n++
+		}
+	}
+	return n
+}
+
+// writePreflightJSON emits the report as indented JSON. The report is
+// already secret-free: it carries step names, statuses, and error text
+// (provider/MCP diagnostics), never resolved credentials.
+func writePreflightJSON(w io.Writer, report *core.PreflightReport) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(report); err != nil {
+		return fmt.Errorf("encode preflight report: %w", err)
+	}
+	return nil
+}
+
+// writePreflightText renders a human-readable per-step report to w. Each
+// line leads with the status so an operator scanning the output spots a
+// FAIL immediately; the remediation hint (when present) is indented under
+// the failing step.
+func writePreflightText(w io.Writer, report *core.PreflightReport) {
+	fmt.Fprintln(w, "Dry-run preflight:")
+	for _, s := range report.Steps {
+		label := strings.ToUpper(string(s.Status))
+		if s.Detail != "" {
+			fmt.Fprintf(w, "  [%-4s] %s: %s\n", label, s.Name, s.Detail)
+		} else {
+			fmt.Fprintf(w, "  [%-4s] %s\n", label, s.Name)
+		}
+		if s.Status == core.PreflightFail && s.Hint != "" {
+			fmt.Fprintf(w, "         hint: %s\n", s.Hint)
+		}
+	}
+	if report.OK {
+		fmt.Fprintln(w, "Result: OK (all steps ok or skipped)")
+	} else {
+		fmt.Fprintf(w, "Result: FAIL (%d of %d step(s) did not pass)\n", failedStepCount(report), len(report.Steps))
+	}
 }
 
 // applyAnthropicWIFOverrides folds the Anthropic-WIF flag surface and
