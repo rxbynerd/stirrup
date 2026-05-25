@@ -25,34 +25,19 @@ const (
 	gitTimeout             = 30 * time.Second
 )
 
-// Git tools run through the injected executor.Executor, whose Exec runs the
-// command via `sh -c <string>` (see executor/local.go:Exec and
-// executor/container.go:Exec — both wrap in `sh -c`). A naive
-// `"git " + path` would therefore be a shell-injection vector: a path or ref
-// such as `foo; rm -rf /` would execute. Two defences are applied together:
-//
-//  1. Every argv element is single-quoted with shellQuote before being joined
-//     into the command string, so shell metacharacters in a value are treated
-//     as literal text by sh, never as syntax.
-//  2. Path and ref arguments are additionally validated up front
-//     (validateGitPath / validateGitRef): paths are resolved against the
-//     workspace root and rejected if they escape it; refs are rejected if they
-//     contain shell metacharacters or begin with `-` (option injection, e.g.
-//     `--upload-pack=...`). The `--` end-of-options separator is also used so a
-//     validated value can never be reinterpreted as a git flag.
-//
-// Validation alone would be sufficient given shellQuote, but rejecting hostile
-// input early gives a deterministic, legible error instead of a confusing git
-// failure, and keeps the neutralisation auditable.
-
 // gitMetacharacters are shell-significant runes rejected outright in ref
-// arguments. shellQuote already neutralises them, but a ref legitimately never
-// contains these, so rejecting up front yields a clear error and a smaller
-// trusted surface.
+// arguments. shellQuote already neutralises them (see runGit), but a ref
+// legitimately never contains these, so rejecting up front yields a clear
+// error and a smaller trusted surface. `:` is deliberately absent: it is valid
+// treeish syntax (`HEAD:path/to/file`), and the path portion after the first
+// `:` is validated separately (see git_show) so it cannot smuggle traversal.
 const gitMetacharacters = "\x00\n\r;&|`$()<>!*?[]{}\"'\\ \t"
 
-// validateGitRef rejects refs that could inject shell syntax or git options.
-// An empty ref is rejected by the caller before this is reached.
+// validateGitRef rejects refs that could inject git options. A leading `-`
+// would be read as a flag (e.g. `--upload-pack=...`); shellQuote already stops
+// metacharacters from reaching sh as syntax, but a clean ref never carries
+// them, so rejecting early gives a deterministic, legible error. An empty ref
+// is rejected by the caller before this is reached.
 func validateGitRef(ref string) error {
 	if strings.HasPrefix(ref, "-") {
 		return fmt.Errorf("ref %q must not begin with '-' (option injection)", ref)
@@ -63,13 +48,34 @@ func validateGitRef(ref string) error {
 	return nil
 }
 
+// validateColonRefPath enforces workspace containment on the path portion of a
+// treeish ref of the form `<rev>:<path>` (e.g. `HEAD:.env`). git itself blocks
+// OS-level traversal, but a colon-ref with no separate `path` field would
+// otherwise skip the validateGitPath layer entirely — so containment must not
+// depend on which API field the path arrives in. Refs without a `:` are a
+// no-op here. The leading `:./` and `:N:` (stage) prefixes git accepts are not
+// supported; such a path simply fails validateGitPath, which is acceptable for
+// a read-only inspection tool.
+func validateColonRefPath(exec executor.Executor, ref string) error {
+	colon := strings.IndexByte(ref, ':')
+	if colon < 0 {
+		return nil
+	}
+	pathPart := ref[colon+1:]
+	if pathPart == "" {
+		return nil
+	}
+	if _, err := validateGitPath(exec, pathPart); err != nil {
+		return fmt.Errorf("ref path component: %w", err)
+	}
+	return nil
+}
+
 // validateGitPath resolves a workspace-relative path against the workspace
-// root, rejecting traversal (`..`) and absolute paths that escape it, then
-// returns the path to hand to git. The returned value is the original
-// workspace-relative path (git pathspecs are interpreted relative to the
-// working directory, which is the workspace root); ResolvePath is used purely
-// to enforce containment. A path beginning with `-` is rejected to prevent
-// option injection even though `--` is also used at the call site.
+// root, rejecting traversal (`..`) and absolute paths that escape it, so a
+// path argument cannot reach files outside the workspace. A leading `-` is
+// rejected to prevent option injection even though `--` also separates options
+// at the call site.
 func validateGitPath(exec executor.Executor, path string) (string, error) {
 	if strings.HasPrefix(path, "-") {
 		return "", fmt.Errorf("path %q must not begin with '-' (option injection)", path)
@@ -77,12 +83,20 @@ func validateGitPath(exec executor.Executor, path string) (string, error) {
 	if _, err := exec.ResolvePath(path); err != nil {
 		return "", fmt.Errorf("invalid path: %w", err)
 	}
+	// Hand git the original relative form, not the resolved absolute path:
+	// git interprets a pathspec relative to the working directory (the
+	// workspace root) and re-enforces containment itself, so re-resolving here
+	// would only risk a TOCTOU mismatch between the checked and used value for
+	// no gain. ResolvePath above is used purely as the containment gate.
 	return path, nil
 }
 
 // runGit builds a `sh -c`-safe command from a fixed git verb plus already-
-// validated arguments and executes it. Every element is shellQuote'd so no
-// value can break out of its argument position. ensureGitRepo must be called
+// validated arguments and executes it. The injected executor runs every
+// command via `sh -c <string>` (executor/local.go:Exec, container.go:Exec), so
+// an unquoted `"git " + path` would be a shell-injection vector. Every element
+// is single-quoted with shellQuote so a value such as `foo; rm -rf /` is
+// treated as literal text by sh, never as syntax. ensureGitRepo must be called
 // before any data-returning git invocation so a non-git workspace yields a
 // clear error rather than a raw git failure.
 func runGit(ctx context.Context, exec executor.Executor, args ...string) (*executor.ExecResult, error) {
@@ -109,11 +123,15 @@ func ensureGitRepo(ctx context.Context, exec executor.Executor) error {
 	return nil
 }
 
-// currentBranch returns the current branch name, or "HEAD (detached)" when the
-// repository is in detached-HEAD state, or "(unborn)" before the first commit.
+// currentBranch reports the branch for git_status. A non-zero exit (no commit
+// yet) is reported as "(unborn)"; an executor error (e.g. context cancel) is
+// distinct and reported as "(unknown)" so the two are not conflated.
 func currentBranch(ctx context.Context, exec executor.Executor) string {
 	res, err := runGit(ctx, exec, "rev-parse", "--abbrev-ref", "HEAD")
-	if err != nil || res.ExitCode != 0 {
+	if err != nil {
+		return "(unknown)"
+	}
+	if res.ExitCode != 0 {
 		return "(unborn)"
 	}
 	name := strings.TrimSpace(res.Stdout)
@@ -125,8 +143,6 @@ func currentBranch(ctx context.Context, exec executor.Executor) string {
 	}
 	return name
 }
-
-// --- git_status ---
 
 var gitStatusSchema = json.RawMessage(`{
 	"type": "object",
@@ -140,7 +156,7 @@ func GitStatusTool(exec executor.Executor) *tool.Tool {
 		Name: "git_status",
 		Description: "Report the git working-tree state (porcelain status) as structured entries with per-path staged/unstaged status letters and the current branch. " +
 			"Use this in read-only review or monitoring runs to see what changed without enabling run_command. " +
-			"Output is bounded; a large change set is capped and flagged truncated. " +
+			"Output is bounded; a large change set is capped at an entry limit and flagged as truncated. " +
 			"Example: {}",
 		InputExamples:     []json.RawMessage{json.RawMessage(`{}`)},
 		InputSchema:       gitStatusSchema,
@@ -172,8 +188,6 @@ func GitStatusTool(exec executor.Executor) *tool.Tool {
 	}
 }
 
-// --- git_changed_files ---
-
 var gitChangedFilesSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
@@ -192,7 +206,7 @@ func GitChangedFilesTool(exec executor.Executor) *tool.Tool {
 		Name: "git_changed_files",
 		Description: "List changed file paths with their git name-status letter (A/M/D/R/C/T). " +
 			"Use this to enumerate which files differ before reading specific diffs; set staged to inspect the index instead of the working tree. " +
-			"Output is bounded; a large change set is capped and flagged truncated. " +
+			"Output is bounded; a large change set is capped at an entry limit and flagged as truncated. " +
 			"Example: {\"staged\": false}",
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"staged": false}`)},
 		InputSchema:       gitChangedFilesSchema,
@@ -234,8 +248,6 @@ func GitChangedFilesTool(exec executor.Executor) *tool.Tool {
 	}
 }
 
-// --- git_diff ---
-
 var gitDiffSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
@@ -257,7 +269,7 @@ func GitDiffTool(exec executor.Executor) *tool.Tool {
 		Name: "git_diff",
 		Description: "Produce a unified diff of the working tree (or the staged changes when staged is true), optionally restricted to one path. " +
 			"Use this to review the exact line-level changes in a read-only run without enabling run_command. " +
-			"Output is bounded by byte and line caps; a large diff is truncated with a sentinel. " +
+			"Output is bounded by byte and line caps; a large diff is truncated and flagged as truncated. " +
 			"Example: {\"path\": \"harness/internal/tool/builtins/git.go\", \"staged\": false}",
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"path": "harness/internal/tool/builtins/git.go", "staged": false}`)},
 		InputSchema:       gitDiffSchema,
@@ -308,8 +320,6 @@ func GitDiffTool(exec executor.Executor) *tool.Tool {
 	}
 }
 
-// --- git_show ---
-
 var gitShowSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
@@ -332,7 +342,7 @@ func GitShowTool(exec executor.Executor) *tool.Tool {
 		Name: "git_show",
 		Description: "Show a specific git revision (commit metadata and diff, or a file's content at that revision when path is given). " +
 			"Use this to inspect a commit or a historical file version in a read-only run; ref must name a revision and must not begin with '-'. " +
-			"Output is bounded by byte and line caps; large output is truncated with a sentinel. " +
+			"Output is bounded by byte and line caps; large output is truncated and flagged as truncated. " +
 			"Example: {\"ref\": \"HEAD\", \"path\": \"README.md\"}",
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"ref": "HEAD", "path": "README.md"}`)},
 		InputSchema:       gitShowSchema,
@@ -350,6 +360,9 @@ func GitShowTool(exec executor.Executor) *tool.Tool {
 				return tool.StructuredResult{}, fmt.Errorf("ref is required")
 			}
 			if err := validateGitRef(params.Ref); err != nil {
+				return tool.StructuredResult{}, err
+			}
+			if err := validateColonRefPath(exec, params.Ref); err != nil {
 				return tool.StructuredResult{}, err
 			}
 			if err := ensureGitRepo(ctx, exec); err != nil {
@@ -383,8 +396,6 @@ func GitShowTool(exec executor.Executor) *tool.Tool {
 		},
 	}
 }
-
-// --- shared helpers ---
 
 // gitErrText returns the most useful error text from a non-zero git result,
 // preferring stderr.
@@ -499,10 +510,29 @@ func splitNUL(s string) []string {
 // boundDiff caps diff/show output on both byte and line counts and appends a
 // sentinel when either bound trims the content, so a huge worktree cannot blow
 // up model context. Mirrors list_directory's visible-sentinel truncation.
+//
+// The executor already buffers the full command output before returning (the
+// local executor caps it post-hoc at 1 MB; see executor/local.go:Exec), so
+// boundDiff is the model-context bound, not a memory bound — a pathological
+// single-file diff is bounded only after the executor has it in memory.
+// Streaming that bound into the local executor would change run_command's
+// output path and is tracked as a separate executor-hardening follow-up.
+//
+// The byte cap trims back to the last newline rather than slicing at an
+// arbitrary offset: a raw byte slice can land mid-rune (json.Marshal would
+// then emit a silent U+FFFD) and mid-line (producing a ragged, invalid unified
+// diff). Trimming to the last \n keeps the output both rune-safe and
+// line-complete. When the capped prefix contains no newline at all the result
+// is empty, which the sentinel still makes visible.
 func boundDiff(s string) (string, bool) {
 	truncated := false
 	if len(s) > gitDiffMaxBytes {
 		s = s[:gitDiffMaxBytes]
+		if nl := strings.LastIndexByte(s, '\n'); nl >= 0 {
+			s = s[:nl+1]
+		} else {
+			s = ""
+		}
 		truncated = true
 	}
 	lines := strings.Split(s, "\n")
