@@ -90,7 +90,32 @@ func DefaultRegistry() *Registry {
 // Resolve is safe to call concurrently; the registry's rule slice is
 // read-only after NewRegistry, and the returned ProviderQuirks is a
 // value type with freshly allocated maps and slices.
+//
+// Resolve delegates to ResolveWithRules and discards the contributing
+// rule list. Call ResolveWithRules directly when the caller also needs
+// to log or surface which rules fired (e.g. the per-Stream debug line
+// in the OpenAI adapters that pins which rule caused a suppression).
 func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
+	q, _ := r.ResolveWithRules(providerType, model)
+	return q
+}
+
+// ResolveWithRules is Resolve plus the ordered list of rules that
+// actually contributed to the result. The returned []Rule is sorted
+// in the same specificity-then-declaration order that Apply was
+// invoked in, so the last entry is the rule whose writes won on
+// overlapping fields. Rules with a nil Apply are filtered out — they
+// did not run, so reporting them as "applied" would be a lie that
+// undermines the trace-attribute use case.
+//
+// The slice is freshly allocated on every call and safe for the
+// caller to mutate; the registry's internal rule slice is not
+// shared.
+//
+// Use this when the caller needs to surface contributing rules in
+// trace attributes, debug logs, or CLI introspection. Use Resolve
+// when the rule list is not needed.
+func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks, []Rule) {
 	q := ProviderQuirks{
 		FieldRenames:   map[string]string{},
 		OmitFields:     []string{},
@@ -104,7 +129,7 @@ func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
 		},
 	}
 	if r == nil {
-		return q
+		return q, nil
 	}
 
 	// Collect (originalIndex, rule) pairs for every matching rule, then
@@ -130,13 +155,15 @@ func (r *Registry) Resolve(providerType, model string) ProviderQuirks {
 		}
 		return matches[i].idx < matches[j].idx
 	})
+	applied := make([]Rule, 0, len(matches))
 	for _, m := range matches {
 		if m.rule.Apply == nil {
 			continue
 		}
 		m.rule.Apply(&q)
+		applied = append(applied, m.rule)
 	}
-	return q
+	return q, applied
 }
 
 // RuleMatches reports whether the rule fires for the given (provider,

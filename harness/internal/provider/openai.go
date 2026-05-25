@@ -18,6 +18,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -62,6 +63,13 @@ type OpenAICompatibleAdapter struct {
 	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
 	RetryPolicy  RetryPolicy            // optional, set by factory; zero value disables retry
 	Logger       *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
+	// Registry resolves per-(provider, model) wire-shape and behaviour
+	// overrides at the top of every Stream call. The constructor seeds
+	// this with quirks.DefaultRegistry() so callers that ignore the
+	// field still get the built-in rule set. Tests and the factory's
+	// compat-profile injection path overwrite it directly; the public
+	// API of the adapter does not need a WithRegistry option.
+	Registry *quirks.Registry
 }
 
 // NewOpenAICompatibleAdapter creates an adapter for an OpenAI-compatible
@@ -99,6 +107,7 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 		apiKeyHeader: auth.APIKeyHeader,
 		queryParams:  auth.QueryParams,
 		RetryPolicy:  retry,
+		Registry:     quirks.DefaultRegistry(),
 	}
 }
 
@@ -119,13 +128,218 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 // explicit 0.0 for greedy decoding. This mirrors the upstream
 // StreamParams.Temperature pointer type so the unset-vs-explicit-zero
 // distinction survives marshalling. See issue #200.
+//
+// TokenField and OmitSamplingParams carry the resolved quirks for
+// this request and drive MarshalJSON, which is the single point that
+// translates the canonical struct into the wire-shape selected by the
+// rule. The field name mirrors quirks.OpenAIBehaviourFlags.OmitSamplingParams
+// so a search for either form finds both sides of the projection.
+// ExtraBodyFields carries provider-specific top-level keys (e.g.
+// Z.ai's "tool_stream") that are merged after the canonical fields.
+// None of these three are serialised under their own JSON keys —
+// they steer the MarshalJSON projection only.
 type openaiRequest struct {
-	Model               string          `json:"model"`
-	Messages            []openaiMessage `json:"messages"`
-	Tools               []openaiTool    `json:"tools,omitempty"`
-	MaxCompletionTokens int             `json:"max_completion_tokens"`
-	Temperature         *float64        `json:"temperature,omitempty"`
-	Stream              bool            `json:"stream"`
+	Model              string          `json:"-"`
+	Messages           []openaiMessage `json:"-"`
+	Tools              []openaiTool    `json:"-"`
+	MaxTokens          int             `json:"-"`
+	Temperature        *float64        `json:"-"`
+	Stream             bool            `json:"-"`
+	TokenField         quirks.OpenAITokenField
+	OmitSamplingParams bool
+	ExtraBodyFields    map[string]any
+}
+
+// MarshalJSON projects the canonical openaiRequest into the wire body
+// the resolved quirks selected. The projection rules are:
+//
+//   - "model", "messages", "stream" — always emitted.
+//   - "tools" — emitted only when non-empty (matches the prior
+//     omitempty behaviour).
+//   - The token-budget field uses the key selected by TokenField:
+//     "max_completion_tokens" (default) or "max_tokens" (Z.ai compat
+//     and similar legacy gateways). The value is always emitted, even
+//     at zero, matching the prior struct-tag behaviour.
+//   - "temperature" — emitted only when both OmitSamplingParams is
+//     false AND Temperature is non-nil. OmitSamplingParams = true
+//     guarantees the field is suppressed even when the caller supplied
+//     a non-nil value (per design risk 2, the adapter's Stream call
+//     logs a warning when this suppression fires).
+//   - Other sampling params (top_p, presence_penalty,
+//     frequency_penalty, logprobs, top_logprobs, logit_bias) are not
+//     yet first-class struct fields; they will be omitted by default
+//     once added if OmitSamplingParams is true. The flag's contract is
+//     declared in OpenAIBehaviourFlags doc comments.
+//   - ExtraBodyFields — merged into the body after canonical fields.
+//     Key collision with a canonical key is rejected as an error
+//     (a misconfigured rule should fail loudly rather than silently
+//     overwrite a struct field). The collision set is the canonical
+//     OpenAI Chat Completions field surface this adapter emits.
+func (r openaiRequest) MarshalJSON() ([]byte, error) {
+	tokenKey := openAIWireTokenKey(r.TokenField)
+	out := map[string]any{
+		"model":    r.Model,
+		"messages": r.Messages,
+		"stream":   r.Stream,
+		tokenKey:   r.MaxTokens,
+	}
+	if len(r.Tools) > 0 {
+		out["tools"] = r.Tools
+	}
+	if !r.OmitSamplingParams && r.Temperature != nil {
+		out["temperature"] = *r.Temperature
+	}
+	for k, v := range r.ExtraBodyFields {
+		if _, exists := out[k]; exists {
+			return nil, fmt.Errorf("openai quirk extra body field %q collides with canonical request field", k)
+		}
+		// Also reject collisions against canonical fields we elide
+		// above (temperature when suppressed, tools when empty): the
+		// rule author shouldn't be able to sneak a field past via the
+		// extras map.
+		if isCanonicalOpenAIField(k) {
+			return nil, fmt.Errorf("openai quirk extra body field %q collides with canonical request field", k)
+		}
+		out[k] = v
+	}
+	return json.Marshal(out)
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON: it reads either
+// "max_completion_tokens" or "max_tokens" into MaxTokens (setting
+// TokenField accordingly) and populates the canonical fields. Used by
+// tests that round-trip the wire body through the same struct that
+// produced it. Any non-canonical top-level keys are collected into
+// ExtraBodyFields so the round-trip is loss-free.
+func (r *openaiRequest) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	// Canonical fields with simple types.
+	if v, ok := raw["model"]; ok {
+		if err := json.Unmarshal(v, &r.Model); err != nil {
+			return fmt.Errorf("openaiRequest.model: %w", err)
+		}
+		delete(raw, "model")
+	}
+	if v, ok := raw["messages"]; ok {
+		if err := json.Unmarshal(v, &r.Messages); err != nil {
+			return fmt.Errorf("openaiRequest.messages: %w", err)
+		}
+		delete(raw, "messages")
+	}
+	if v, ok := raw["tools"]; ok {
+		if err := json.Unmarshal(v, &r.Tools); err != nil {
+			return fmt.Errorf("openaiRequest.tools: %w", err)
+		}
+		delete(raw, "tools")
+	}
+	if v, ok := raw["stream"]; ok {
+		if err := json.Unmarshal(v, &r.Stream); err != nil {
+			return fmt.Errorf("openaiRequest.stream: %w", err)
+		}
+		delete(raw, "stream")
+	}
+	if v, ok := raw["temperature"]; ok {
+		var t float64
+		if err := json.Unmarshal(v, &t); err != nil {
+			return fmt.Errorf("openaiRequest.temperature: %w", err)
+		}
+		r.Temperature = &t
+		delete(raw, "temperature")
+	}
+	// Token budget: accept either canonical key. MarshalJSON emits
+	// exactly one key, so a valid request body should not contain
+	// both simultaneously. If both are present the input is a caller
+	// error (likely a hand-crafted body or a misconfigured rule) and
+	// is rejected here rather than silently letting one overwrite the
+	// other; without this guard the second decode would clobber the
+	// first depending on decode order.
+	_, hasMCT := raw["max_completion_tokens"]
+	_, hasMT := raw["max_tokens"]
+	if hasMCT && hasMT {
+		return fmt.Errorf("openaiRequest: both max_completion_tokens and max_tokens present")
+	}
+	if v, ok := raw["max_completion_tokens"]; ok {
+		if err := json.Unmarshal(v, &r.MaxTokens); err != nil {
+			return fmt.Errorf("openaiRequest.max_completion_tokens: %w", err)
+		}
+		r.TokenField = quirks.TokenFieldMaxCompletionTokens
+		delete(raw, "max_completion_tokens")
+	}
+	if v, ok := raw["max_tokens"]; ok {
+		if err := json.Unmarshal(v, &r.MaxTokens); err != nil {
+			return fmt.Errorf("openaiRequest.max_tokens: %w", err)
+		}
+		r.TokenField = quirks.TokenFieldMaxTokens
+		delete(raw, "max_tokens")
+	}
+	// Remaining keys are provider-specific extras.
+	if len(raw) > 0 {
+		extra := make(map[string]any, len(raw))
+		for k, v := range raw {
+			var anyV any
+			if err := json.Unmarshal(v, &anyV); err != nil {
+				return fmt.Errorf("openaiRequest.%s: %w", k, err)
+			}
+			extra[k] = anyV
+		}
+		r.ExtraBodyFields = extra
+	}
+	return nil
+}
+
+// openAIWireTokenKey returns the wire JSON key for the resolved token
+// field. Defaults to "max_completion_tokens" — the zero value of
+// OpenAITokenField — to preserve the established behaviour of openai.go
+// on main. TestNoRegressionMaxCompletionTokensDefault pins this.
+func openAIWireTokenKey(f quirks.OpenAITokenField) string {
+	if f == quirks.TokenFieldMaxTokens {
+		return "max_tokens"
+	}
+	return "max_completion_tokens"
+}
+
+// ruleDescriptions returns the Description field of each rule in the
+// supplied slice, preserving order. Returned as a non-nil empty slice
+// when the input is empty so the slog.Any attribute renders as `[]`
+// rather than `null` — easier to grep and parse downstream.
+func ruleDescriptions(rules []quirks.Rule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.Description)
+	}
+	return out
+}
+
+// canonicalOpenAIFields enumerates the top-level Chat Completions
+// request fields the adapter knows how to emit. ExtraBodyFields rules
+// must not collide with any of these — the registry self-test guards
+// the relationship at build time.
+var canonicalOpenAIFields = map[string]struct{}{
+	"model":                 {},
+	"messages":              {},
+	"tools":                 {},
+	"max_completion_tokens": {},
+	"max_tokens":            {},
+	"temperature":           {},
+	"top_p":                 {},
+	"presence_penalty":      {},
+	"frequency_penalty":     {},
+	"logprobs":              {},
+	"top_logprobs":          {},
+	"logit_bias":            {},
+	"stream":                {},
+}
+
+// isCanonicalOpenAIField reports whether the given top-level request
+// key is owned by the canonical openaiRequest projection. The check
+// gates ExtraBodyFields merges to prevent a rule from overriding a
+// struct-mediated field by way of the extras map.
+func isCanonicalOpenAIField(k string) bool {
+	_, ok := canonicalOpenAIFields[k]
+	return ok
 }
 
 // openaiMessage is a single message in OpenAI's Chat Completions format.
@@ -341,18 +555,28 @@ func mapFinishReason(reason string) string {
 // non-streaming caller (batch submission, phase 2 of issue #133) can reuse
 // the same projection without duplicating field-by-field copying.
 //
+// q carries the resolved quirks for the (provider, model) pair. The zero
+// value reproduces today's behaviour: max_completion_tokens emitted,
+// temperature handled by Temperature *float64 omitempty semantics, no
+// extra body fields. Pass quirks.DefaultRegistry().Resolve(...) at call
+// sites that have access to a registry; the zero-value path remains
+// valid for callers that intentionally skip resolution.
+//
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. top_p on Responses, equivalent constraints on Chat
 // Completions), change the return type to (json.RawMessage, error) and
 // apply a batch-specific projection here.
-func buildOpenAIRequest(params types.StreamParams, stream bool) openaiRequest {
+func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks) openaiRequest {
 	return openaiRequest{
-		Model:               params.Model,
-		Messages:            translateMessages(params.System, params.Messages),
-		Tools:               translateTools(params.Tools),
-		MaxCompletionTokens: params.MaxTokens,
-		Temperature:         params.Temperature,
-		Stream:              stream,
+		Model:              params.Model,
+		Messages:           translateMessages(params.System, params.Messages),
+		Tools:              translateTools(params.Tools),
+		MaxTokens:          params.MaxTokens,
+		Temperature:        params.Temperature,
+		Stream:             stream,
+		TokenField:         q.BehaviourFlags.OpenAI.TokenField,
+		OmitSamplingParams: q.BehaviourFlags.OpenAI.OmitSamplingParams,
+		ExtraBodyFields:    q.BehaviourFlags.OpenAI.ExtraBodyFields,
 	}
 }
 
@@ -366,7 +590,54 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		attribute.String("provider.model", params.Model),
 	)
 
-	reqBody := buildOpenAIRequest(params, true)
+	// Resolve quirks for this (provider, model) pair. The registry is
+	// per-stream by design (D4): the same run can switch models turn
+	// to turn under a dynamic router. The zero-value Registry shouldn't
+	// happen for adapters built through the factory, but tolerate it
+	// for callers that construct the adapter directly without going
+	// through NewOpenAICompatibleAdapter.
+	registry := o.Registry
+	if registry == nil {
+		registry = quirks.DefaultRegistry()
+	}
+	q, appliedRules := registry.ResolveWithRules("openai-compatible", params.Model)
+
+	logger := o.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	// Debug-level log lists the descriptions of every rule that
+	// contributed to this resolution (design §5). Emitted even when
+	// the list is empty so an operator grepping for the line knows
+	// the resolution ran; an absent entry would be ambiguous between
+	// "no rule fired" and "the log line was suppressed". The list is
+	// in apply order — the last entry is the rule that won on
+	// overlapping fields.
+	logger.DebugContext(ctx, "openai quirks resolved",
+		slog.String("provider.type", "openai-compatible"),
+		slog.String("provider.model", params.Model),
+		slog.Any("rules", ruleDescriptions(appliedRules)),
+	)
+
+	// Warn-level log when a caller-supplied non-nil Temperature is
+	// suppressed by a quirk rule (design risk 2, §9). The reasoning-
+	// class rules omit temperature outright; without this signal an
+	// operator who set --temperature would silently observe greedy
+	// decoding. The rule descriptions are attached so the operator
+	// can name the rule that fired without grepping the source. The
+	// suppressed value itself is intentionally NOT logged — it is the
+	// caller's input and surfacing it here would leak the value into
+	// any log sink that captures warn-level records.
+	if q.BehaviourFlags.OpenAI.OmitSamplingParams && params.Temperature != nil {
+		logger.WarnContext(ctx, "openai quirks suppressed caller temperature",
+			slog.String("provider.type", "openai-compatible"),
+			slog.String("provider.model", params.Model),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
+		)
+	}
+
+	reqBody := buildOpenAIRequest(params, true, q)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

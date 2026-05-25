@@ -1,0 +1,13 @@
+# synthetic: derived from buildOpenAIRequest + DefaultRegistry().Resolve because gpt-5-chat-latest is a moving alias; the canonical key set pins that the gpt-5-chat carve-out reverses the reasoning-class omission so temperature is transmitted.
+{
+  "model": "gpt-5-chat-latest",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello"
+    }
+  ],
+  "max_completion_tokens": 4096,
+  "temperature": 0.5,
+  "stream": true
+}

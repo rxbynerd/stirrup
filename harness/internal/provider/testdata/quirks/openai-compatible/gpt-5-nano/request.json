@@ -1,0 +1,12 @@
+# synthetic: derived from buildOpenAIRequest + DefaultRegistry().Resolve because gpt-5-nano is not yet generally available; the canonical key set and the omission of sampling params are pinned by the gpt-5* reasoning-class rule in builtin.go.
+{
+  "model": "gpt-5-nano",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello"
+    }
+  ],
+  "max_completion_tokens": 4096,
+  "stream": true
+}

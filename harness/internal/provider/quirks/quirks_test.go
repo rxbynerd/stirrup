@@ -1,8 +1,11 @@
 package quirks
 
 import (
+	"bufio"
 	"encoding/json"
+	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -57,14 +60,38 @@ func TestResolveEmptyRegistry(t *testing.T) {
 	}
 }
 
+// canonicalOpenAIFieldNames mirrors the canonical Chat Completions
+// field surface enumerated by harness/internal/provider/openai.go's
+// isCanonicalOpenAIField. The duplication is intentional: a rule's
+// FieldRenames key set must be a subset of this; the source-of-truth
+// is the adapter, but the test cross-checks rules without crossing
+// the package boundary (the adapter's set is unexported).
+//
+// When the adapter learns a new canonical field, add it here too.
+// TestBuiltinRulesValidate catches a rule that renames a field
+// neither side knows about, so the asymmetry stays observable.
+var canonicalOpenAIFieldNames = map[string]bool{
+	"model":                 true,
+	"messages":              true,
+	"tools":                 true,
+	"max_completion_tokens": true,
+	"max_tokens":            true,
+	"temperature":           true,
+	"top_p":                 true,
+	"presence_penalty":      true,
+	"frequency_penalty":     true,
+	"logprobs":              true,
+	"top_logprobs":          true,
+	"logit_bias":            true,
+	"stream":                true,
+}
+
 // TestBuiltinRulesValidate asserts every rule baked into the registry
 // passes a structural validity check: required metadata is populated
 // (Description, LastVerified, Apply) so trace attributes and the CLI
-// introspection surface have something to report.
-//
-// Step 1 ships an empty rule set so this loop runs zero iterations;
-// the test still validates that BuiltinRules returns a usable value
-// (the for-range over the slice is the assertion).
+// introspection surface have something to report, and every
+// FieldRenames key is in the declared canonical field surface so a
+// typo in a rule cannot silently rename a non-existent field.
 func TestBuiltinRulesValidate(t *testing.T) {
 	for i, rule := range BuiltinRules() {
 		if rule.Description == "" {
@@ -76,7 +103,228 @@ func TestBuiltinRulesValidate(t *testing.T) {
 		if rule.Apply == nil {
 			t.Errorf("BuiltinRules()[%d] (%q): Apply is required", i, rule.Description)
 		}
+		// Canonical-field check: materialise the rule's effect on a
+		// fresh ProviderQuirks and assert every FieldRenames key
+		// (the source side of the rename) is in the canonical set.
+		// Rules that don't touch FieldRenames are no-ops here.
+		if rule.Apply == nil {
+			continue
+		}
+		if rule.ProviderType != "openai-compatible" {
+			// Per-provider canonical sets will arrive when Gemini/
+			// Anthropic-targeted rules land in Step 3. Until then,
+			// the openai-compatible set is the only one to enforce.
+			continue
+		}
+		q := ProviderQuirks{
+			FieldRenames:   map[string]string{},
+			OmitFields:     []string{},
+			ValueOverrides: map[string]Value{},
+			EnumCoercions:  map[string]map[string]string{},
+			ReplayFields:   []string{},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
+		}
+		rule.Apply(&q)
+		for key := range q.FieldRenames {
+			if !canonicalOpenAIFieldNames[key] {
+				t.Errorf("BuiltinRules()[%d] (%q): FieldRenames key %q is not in the canonical openai field set", i, rule.Description, key)
+			}
+		}
 	}
+}
+
+// TestBuiltinRulesExtraBodyFieldsNoSecrets pins design risk 4:
+// ExtraBodyFields values must not carry secret:// references. The
+// map is serialised directly into the request body; a rule that
+// accidentally stored a secret reference there would bypass
+// RunConfig.Redact() entirely. This test materialises every rule's
+// effect and walks the resulting ExtraBodyFields for string values
+// that contain the secret:// prefix.
+//
+// The current Z.ai rule stores a bool (tool_stream: true) so the
+// check is trivially satisfied today; the test is structural
+// insurance for future rules.
+func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
+	for i, rule := range BuiltinRules() {
+		if rule.Apply == nil {
+			continue
+		}
+		q := ProviderQuirks{
+			FieldRenames:   map[string]string{},
+			OmitFields:     []string{},
+			ValueOverrides: map[string]Value{},
+			EnumCoercions:  map[string]map[string]string{},
+			ReplayFields:   []string{},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
+		}
+		rule.Apply(&q)
+		for k, v := range q.BehaviourFlags.OpenAI.ExtraBodyFields {
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			if strings.Contains(s, "secret://") {
+				t.Errorf("BuiltinRules()[%d] (%q): ExtraBodyFields[%q] = %q contains a secret:// reference", i, rule.Description, k, s)
+			}
+		}
+	}
+}
+
+// TestRemoveFromOmit_ReservedHelper covers the helper's three
+// observable states: removing an entry that is present, a no-op
+// when absent, and a no-op when the slice is nil. The helper is
+// kept available for future OmitFields-driven carve-outs even
+// though Step 2's only carve-out toggles OmitSamplingParams
+// directly. The test exists primarily so the linter does not flag
+// the helper as dead code; the "ReservedHelper" suffix on the test
+// name signals this to a future reader who wonders why a tested
+// helper has no production caller, so they don't delete the
+// function thinking it is genuinely unused.
+func TestRemoveFromOmit_ReservedHelper(t *testing.T) {
+	t.Run("removes present entry", func(t *testing.T) {
+		q := &ProviderQuirks{OmitFields: []string{"temperature", "top_p", "logprobs"}}
+		removeFromOmit(q, "top_p")
+		got := strings.Join(q.OmitFields, ",")
+		want := "temperature,logprobs"
+		if got != want {
+			t.Errorf("OmitFields = %q, want %q", got, want)
+		}
+	})
+	t.Run("no-op when absent", func(t *testing.T) {
+		q := &ProviderQuirks{OmitFields: []string{"temperature"}}
+		removeFromOmit(q, "top_p")
+		if len(q.OmitFields) != 1 || q.OmitFields[0] != "temperature" {
+			t.Errorf("OmitFields = %v, want [temperature]", q.OmitFields)
+		}
+	})
+	t.Run("no-op when nil slice", func(t *testing.T) {
+		q := &ProviderQuirks{}
+		removeFromOmit(q, "top_p")
+		if len(q.OmitFields) != 0 {
+			t.Errorf("OmitFields = %v, want empty", q.OmitFields)
+		}
+	})
+}
+
+// TestRuleCarveOuts pins the gpt-5-chat carve-out behaviour. The
+// gpt-5* reasoning-class rule sets OmitSamplingParams=true; the
+// gpt-5-chat* rule overrides it back to false because chat-class
+// models accept sampling params. Specificity ordering (D10) is
+// load-bearing: if a future edit reorders the rules or weakens the
+// glob, this test fails loudly rather than silently breaking the
+// gpt-5-chat-latest wire shape.
+func TestRuleCarveOuts(t *testing.T) {
+	t.Run("gpt-5-chat-latest keeps sampling params", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-chat-latest")
+		if q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("gpt-5-chat-latest: OmitSamplingParams = true after carve-out; expected false")
+		}
+	})
+	t.Run("gpt-5-nano omits sampling params", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-nano")
+		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("gpt-5-nano: OmitSamplingParams = false; expected true (gpt-5* rule should fire)")
+		}
+	})
+	t.Run("gpt-5-chat-mini also keeps sampling params", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-chat-mini")
+		if q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("gpt-5-chat-mini: OmitSamplingParams = true; expected false (carve-out should cover the family)")
+		}
+	})
+	// Bare o-series aliases (o1, o3, o4) are shipped by OpenAI as
+	// production model IDs alongside their dash-suffixed variants. The
+	// glob "o[1-9]*" must cover both forms; a previous "o[1-9]-*"
+	// dash-required form silently bypassed the rule for the bare form
+	// and produced HTTP 400 responses. Each bare ID is asserted
+	// individually so a regression names the specific alias.
+	for _, bare := range []string{"o1", "o3", "o4"} {
+		bare := bare
+		t.Run("bare "+bare+" omits sampling params", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("openai-compatible", bare)
+			if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+				t.Errorf("%s: OmitSamplingParams = false; expected true (o-series rule must cover the bare alias)", bare)
+			}
+		})
+	}
+	// Two-digit series (e.g. o10-mini) match the "o[1-9]*" glob because
+	// [1-9] consumes the leading "1" and the trailing "*" consumes
+	// "0-mini". This is the safer default for forward-compatibility:
+	// any future o10+ alias that ships will inherit the reasoning-class
+	// behaviour rather than silently regressing to greedy decoding +
+	// HTTP 400. Pinned so a future tightening of the glob is a
+	// deliberate edit that breaks this test rather than a silent
+	// behaviour change.
+	t.Run("o10-mini also omits sampling params (forward-compat)", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "o10-mini")
+		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("o10-mini: OmitSamplingParams = false; expected true (o[1-9]* should match two-digit aliases)")
+		}
+	})
+}
+
+// TestNoMetacharsInKnownModelIDs reads the catalogue at
+// testdata/model-ids.txt and asserts every entry is a literal model
+// identifier — no glob metacharacters. The catalogue exists to spot-
+// check that the rules in builtin.go don't accidentally glob-match
+// real model names with `[`, `?`, or `*` in them; an entry with a
+// metachar in it is either a typo or a model name that breaks the
+// path.Match dispatch. Either case should fail the test loudly.
+func TestNoMetacharsInKnownModelIDs(t *testing.T) {
+	f, err := os.Open("testdata/model-ids.txt")
+	if err != nil {
+		t.Fatalf("open model-ids.txt: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.ContainsAny(line, "*?[]") {
+			t.Errorf("testdata/model-ids.txt:%d: model id %q contains a glob metachar", lineNo, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan model-ids.txt: %v", err)
+	}
+}
+
+// rulesMatchAtLeastOne sanity-checks that the catalogue and the rule
+// set agree: every model id in testdata/model-ids.txt that matches a
+// builtin rule resolves to a non-zero ProviderQuirks state. This is
+// a forward-compatible smoke test for the catalogue, not a contract
+// — entries that match no rule (e.g. gpt-4o, claude-3-*) are
+// expected and produce a zero-value ProviderQuirks.
+//
+// Not promoted to a load-bearing assertion because the catalogue's
+// purpose is the metachar guard above; the resolution count is
+// informational only and surfaces via t.Logf rather than t.Errorf.
+func TestKnownModelIDsResolutionSmoke(t *testing.T) {
+	f, err := os.Open("testdata/model-ids.txt")
+	if err != nil {
+		t.Skip("model-ids.txt unavailable")
+	}
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	provs := []string{"openai-compatible", "gemini", "anthropic"}
+	resolved := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, prov := range provs {
+			q := DefaultRegistry().Resolve(prov, line)
+			if q.BehaviourFlags.OpenAI.OmitSamplingParams || q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxCompletionTokens || q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != StreamArgsOff {
+				resolved++
+			}
+		}
+	}
+	t.Logf("rule resolution smoke: %d (provider,model) pairs produced a non-default ProviderQuirks", resolved)
 }
 
 // TestRuleStaleness logs (does not fail) any rule whose LastVerified

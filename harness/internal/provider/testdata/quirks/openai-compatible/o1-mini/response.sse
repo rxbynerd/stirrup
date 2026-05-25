@@ -1,0 +1,9 @@
+# synthetic: derived from a typical Chat Completions streaming response because the harness does not yet have a live o1-mini capture; the SSE shape mirrors gpt-4o because OpenAI uses the same wire format across Chat Completions models.
+data: {"id":"chatcmpl-o1mini-test","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-o1mini-test","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-o1mini-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":1}}
+
+data: [DONE]
+

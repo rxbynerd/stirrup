@@ -196,7 +196,9 @@ func TestCollectAppliedRules_FiltersAndFlagsCorrectly(t *testing.T) {
 		},
 	}
 
-	got := collectAppliedRules(rules, "openai-compatible", "gpt-4o")
+	reg := quirks.NewRegistry(rules)
+	_, applied := reg.ResolveWithRules("openai-compatible", "gpt-4o")
+	got := formatAppliedRules(applied)
 
 	// Expected, in specificity order:
 	//   1. "wildcard openai-compatible"            (glob length 1)
@@ -243,11 +245,11 @@ func TestCollectAppliedRules_FiltersAndFlagsCorrectly(t *testing.T) {
 // behaviour the JSON output depends on: an empty rule slice returns a
 // non-nil empty slice so the encoded JSON is `[]` rather than `null`.
 func TestCollectAppliedRules_EmptyRules(t *testing.T) {
-	got := collectAppliedRules(nil, "openai-compatible", "gpt-4o")
+	got := formatAppliedRules(nil)
 	if got == nil {
-		t.Fatal("collectAppliedRules(nil, ...) returned nil; want non-nil empty slice")
+		t.Fatal("formatAppliedRules(nil) returned nil; want non-nil empty slice")
 	}
 	if len(got) != 0 {
-		t.Errorf("collectAppliedRules(nil, ...) = %+v, want empty", got)
+		t.Errorf("formatAppliedRules(nil) = %+v, want empty", got)
 	}
 }

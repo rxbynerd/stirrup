@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
@@ -150,6 +151,16 @@ type BatchAdapter struct {
 	provType  string
 	runID     string
 	turnCount atomic.Int64
+	// Registry resolves per-(provider, model) quirks for the request
+	// body marshalling path. The factory plumbs the compat-profile-
+	// aware registry from the wrapped streaming adapter here so a
+	// batch run against a compat-profile provider sees the same
+	// wire shape the streaming path would have produced. Nil falls
+	// back to quirks.DefaultRegistry() so tests and callers that do
+	// not depend on a compat profile get the built-in rule set
+	// without setting the field. Exported (not a constructor arg)
+	// to avoid churn on every NewBatchAdapter call site in tests.
+	Registry *quirks.Registry
 	// lastBatchID stores the provider-assigned batch identifier from the
 	// most recent successful Submit. The agentic loop reads it via
 	// LastBatchID() after streamEventsToResult returns to populate
@@ -235,12 +246,26 @@ func (a *BatchAdapter) LastBatchID() string {
 // marshalRequestBody projects params into the wire body for the
 // configured provider type. Unsupported provider types surface as a
 // marshal-time error so the caller can emit a single error StreamEvent.
+//
+// The Registry field, set by the factory from the wrapped streaming
+// adapter, drives the openai-compatible projection. When a compat
+// profile is active (e.g. CompatProfile=zai-glm) the registry carries
+// the compat rule, so a batch body emitted here uses the same wire
+// shape the streaming path would have produced. Nil falls back to
+// quirks.DefaultRegistry() — the built-in rule set only — which is
+// the correct behaviour for the v1 allow-listed batch providers
+// (anthropic plus the two OpenAI dialects without a compat profile).
 func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMessage, error) {
 	switch a.provType {
 	case "anthropic":
 		return json.Marshal(buildAnthropicRequest(params, false))
 	case "openai-compatible":
-		return json.Marshal(buildOpenAIRequest(params, false))
+		registry := a.Registry
+		if registry == nil {
+			registry = quirks.DefaultRegistry()
+		}
+		q := registry.Resolve("openai-compatible", params.Model)
+		return json.Marshal(buildOpenAIRequest(params, false, q))
 	case "openai-responses":
 		return json.Marshal(buildResponsesRequest(params))
 	default:

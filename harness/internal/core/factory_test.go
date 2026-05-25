@@ -28,6 +28,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -2008,6 +2009,71 @@ func TestBuildProvider_OpenAICompatibleWithRetryConfig(t *testing.T) {
 	}
 	if got, want := adapter.RetryPolicy.WallClockBudget, 60*time.Second; got != want {
 		t.Errorf("RetryPolicy.WallClockBudget = %v, want %v", got, want)
+	}
+}
+
+// TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI pins the
+// factory's resolveCompatProfile dispatch for the openai-compatible
+// + CompatProfile="zai-glm" combination. Without this test the
+// production injection path is uncovered (the zai package's own
+// test mounts the rule on a hand-rolled registry rather than going
+// through the factory), so a regression that drops the
+// resolveCompatProfile call from buildProvider would not be caught.
+//
+// The assertion uses the adapter's exported Registry field to
+// resolve the GLM model end-to-end: the registry returned by the
+// factory must include zai.CompatRule, so a glm-4-plus resolution
+// produces TokenFieldMaxTokens and the tool_stream extra body field.
+func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:          "openai-compatible",
+		APIKeyRef:     "secret://OPENAI_KEY",
+		BaseURL:       "https://api.z.ai/api/coding/paas/v4",
+		CompatProfile: "zai-glm",
+	}, secrets)
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	adapter, ok := prov.(*provider.OpenAICompatibleAdapter)
+	if !ok {
+		t.Fatalf("buildProvider type = %T, want *provider.OpenAICompatibleAdapter", prov)
+	}
+	if adapter.Registry == nil {
+		t.Fatal("adapter.Registry is nil; factory should have injected a registry containing the Z.ai compat rule")
+	}
+	q := adapter.Registry.Resolve("openai-compatible", "glm-4-plus")
+	if got, want := q.BehaviourFlags.OpenAI.TokenField, quirks.TokenFieldMaxTokens; got != want {
+		t.Errorf("glm-4-plus resolution: TokenField = %v, want %v (Z.ai compat rule did not fire — check resolveCompatProfile dispatch)", got, want)
+	}
+	v, ok := q.BehaviourFlags.OpenAI.ExtraBodyFields["tool_stream"]
+	if !ok {
+		t.Errorf("glm-4-plus resolution: ExtraBodyFields[tool_stream] missing; Z.ai rule should set it")
+	} else if b, isBool := v.(bool); !isBool || !b {
+		t.Errorf("glm-4-plus resolution: ExtraBodyFields[tool_stream] = %v (type %T), want true", v, v)
+	}
+}
+
+// TestBuildProvider_OpenAICompatibleWithUnknownCompatProfile_Errors
+// pins the defence-in-depth arm in resolveCompatProfile. The validator
+// at types/runconfig.go rejects unknown compatProfile values at
+// startup, but the factory still has a switch that returns an error
+// for an unrecognised name (in case a non-CLI caller bypasses the
+// validator). This test exercises that arm so a regression replacing
+// it with a silent fallthrough is caught.
+func TestBuildProvider_OpenAICompatibleWithUnknownCompatProfile_Errors(t *testing.T) {
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+	_, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:          "openai-compatible",
+		APIKeyRef:     "secret://OPENAI_KEY",
+		BaseURL:       "https://api.example.com/v1",
+		CompatProfile: "not-a-real-profile",
+	}, secrets)
+	if err == nil {
+		t.Fatal("buildProvider with unknown compatProfile returned nil error; expected dispatch failure")
+	}
+	if !strings.Contains(err.Error(), "not-a-real-profile") {
+		t.Errorf("error %q does not name the bad profile; operator could not locate the misconfiguration", err.Error())
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -308,8 +309,11 @@ func TestOpenAIAdapter_RequestBody(t *testing.T) {
 	if received.Model != "gpt-4o" {
 		t.Errorf("model = %q, want gpt-4o", received.Model)
 	}
-	if received.MaxCompletionTokens != 4096 {
-		t.Errorf("max_completion_tokens = %d, want 4096", received.MaxCompletionTokens)
+	if received.MaxTokens != 4096 {
+		t.Errorf("max_completion_tokens = %d, want 4096", received.MaxTokens)
+	}
+	if received.TokenField != quirks.TokenFieldMaxCompletionTokens {
+		t.Errorf("token field = %v, want max_completion_tokens (default)", received.TokenField)
 	}
 	if received.Temperature == nil || *received.Temperature != 0.5 {
 		t.Errorf("temperature = %v, want *=0.5", received.Temperature)
@@ -406,8 +410,15 @@ func TestOpenAIAdapter_RawBodyShape(t *testing.T) {
 
 			adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
 
+			// Use gpt-4o so the test exercises the no-quirk default
+			// path: the openai-compatible reasoning-class rules apply to
+			// gpt-5* and o[1-9]-*, which would suppress temperature
+			// (the intended new behaviour). The shape pins the
+			// max_completion_tokens default and the nil-vs-pointer
+			// Temperature semantics, both of which must survive on
+			// non-reasoning models exactly as before #200.
 			ch, err := adapter.Stream(context.Background(), types.StreamParams{
-				Model:       "gpt-5.4",
+				Model:       "gpt-4o",
 				MaxTokens:   tc.maxTokens,
 				Temperature: tc.temperature,
 			})

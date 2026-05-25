@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -53,6 +55,13 @@ type OpenAIResponsesAdapter struct {
 	queryParams  map[string]string
 	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	Logger       *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
+	// Registry resolves per-(provider, model) quirks at the top of
+	// every Stream call. No rules target openai-responses in v1; the
+	// field exists so the integration point is in place when a
+	// Responses-specific divergence is added (design §7 Step 4). The
+	// constructor defaults it to quirks.DefaultRegistry().
+	Registry *quirks.Registry
 }
 
 // NewOpenAIResponsesAdapter creates an adapter for the OpenAI Responses API.
@@ -85,6 +94,7 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 		baseURL:      baseURL,
 		apiKeyHeader: auth.APIKeyHeader,
 		queryParams:  auth.QueryParams,
+		Registry:     quirks.DefaultRegistry(),
 	}
 }
 
@@ -482,6 +492,31 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	metricAttrs := metric.WithAttributes(
 		attribute.String("provider.type", "openai-responses"),
 		attribute.String("provider.model", params.Model),
+	)
+
+	// Resolve quirks for this (provider, model) pair. No rule
+	// targets openai-responses in v1, but the resolution is wired
+	// here so a future rule (e.g. a Responses-specific sampling-param
+	// omission) lands without re-shaping the Stream method.
+	registry := o.Registry
+	if registry == nil {
+		registry = quirks.DefaultRegistry()
+	}
+	_, appliedRules := registry.ResolveWithRules("openai-responses", params.Model)
+
+	logger := o.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	// Debug-level log mirrors the chat adapter so an operator gets the
+	// same trace surface regardless of which OpenAI endpoint is in
+	// use. Empty rules list today (no openai-responses rule); the line
+	// fires anyway so a future rule landing here is immediately
+	// visible in debug output.
+	logger.DebugContext(ctx, "openai-responses quirks resolved",
+		slog.String("provider.type", "openai-responses"),
+		slog.String("provider.model", params.Model),
+		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 
 	reqBody := buildResponsesRequest(params)
