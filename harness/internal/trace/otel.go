@@ -465,11 +465,16 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 //
 // The probe span carries no run data and is not the root span, so it does
 // not perturb the run trace; Start has not been called at preflight time.
+// It does, however, reach the operator's live OTLP collector — this is the
+// only way to confirm reachability — so it is tagged stirrup.preflight=true
+// so dashboards and alert rules can filter out the synthetic span.
+// Operators who want zero collector contact pass --no-probe-trace.
 func (e *OTelTraceEmitter) Probe(ctx context.Context) error {
 	if e.provider == nil {
 		return nil
 	}
-	_, span := e.tracer.Start(ctx, "stirrup.preflight.probe")
+	_, span := e.tracer.Start(ctx, "stirrup.preflight.probe",
+		oteltrace.WithAttributes(attribute.Bool("stirrup.preflight", true)))
 	span.End()
 	if err := e.provider.ForceFlush(ctx); err != nil {
 		return fmt.Errorf("OTLP exporter flush failed: %w", err)

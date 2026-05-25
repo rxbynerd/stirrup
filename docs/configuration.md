@@ -161,7 +161,21 @@ A dry-run **never spends provider tokens**. Provider probes hit only a
 metadata endpoint — Anthropic and OpenAI `GET /v1/models`, the
 publisher-model list for Vertex AI — and never a completion endpoint.
 The Bedrock probe validates the AWS credential chain rather than calling
-a billable runtime operation.
+a billable runtime operation (so it confirms credentials resolve, not
+that the Bedrock endpoint is reachable). A container-executor dry-run is
+read-only: it pings the engine socket and checks the image is present
+locally without creating a container, starting the egress proxy, or
+pulling the image.
+
+The trace probe is the one step that reaches a live backend: for
+`traceEmitter.type=otel` it exports a single throwaway span (tagged
+`stirrup.preflight=true` so dashboards and alert rules can filter it) to
+confirm the collector is reachable. Pass `--no-probe-trace` to suppress
+all collector contact. The workspace-export probe (`gs://` destinations)
+and the `gcs` trace probe authenticate via the same
+`gcp-workload-identity` default the real run uses, so both fail outside a
+GCP runtime that provides a metadata server unless an explicit credential
+is configured.
 
 The report lists each step with one of three statuses:
 
