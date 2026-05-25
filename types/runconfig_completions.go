@@ -82,6 +82,13 @@ func ValidGuardRailTypeValues() []string { return sortedKeys(validGuardRailTypes
 // typeable values.
 func ValidCompatProfileValues() []string { return sortedNonEmptyKeys(validCompatProfiles) }
 
+// ValidToolsProfileValues returns the toolset profiles accepted on
+// RunConfig.Tools.Profile (issue #234). The "" (default/no-aliasing)
+// entry is filtered out so the completion list contains only the
+// typeable values; "default" is retained because it is a typeable
+// synonym for the empty value.
+func ValidToolsProfileValues() []string { return sortedNonEmptyKeys(validToolsProfiles) }
+
 func sortedKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

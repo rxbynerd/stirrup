@@ -116,6 +116,12 @@ type harnessCLIOptions struct {
 	// flag is empty by default so a bare invocation does not opt into a
 	// compat shape.
 	CompatProfile string
+
+	// ToolsProfile selects the model-facing toolset profile (issue #234).
+	// Closed set, validated by ValidateRunConfig. Empty by default, which
+	// is the identity presentation: a bare invocation presents tools under
+	// their internal names exactly as before.
+	ToolsProfile  string
 	Model         string
 	Workspace     string
 	MaxTurns      int
@@ -376,6 +382,11 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		EditStrategy: types.EditStrategyConfig{Type: editStrategyType},
 		Verifier:     types.VerifierConfig{Type: verifierType},
 		GitStrategy:  types.GitStrategyConfig{Type: gitStrategyType},
+		// Tools.BuiltIn is left empty here (the validator treats an empty
+		// list as "all built-ins"); only the model-facing profile is set
+		// from the flag. applyModeDefaults fills BuiltIn for read-only
+		// modes afterwards and leaves Profile untouched.
+		Tools:        types.ToolsConfig{Profile: opts.ToolsProfile},
 		Transport:    types.TransportConfig{Type: opts.TransportType, Address: opts.TransportAddr},
 		TraceEmitter: traceEmitter,
 		MaxTurns:     opts.MaxTurns,
@@ -872,6 +883,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("provider-compat-profile") {
 		cfg.Provider.CompatProfile, _ = f.GetString("provider-compat-profile")
+	}
+	if changed("tools-profile") {
+		cfg.Tools.Profile, _ = f.GetString("tools-profile")
 	}
 	if changed("gcp-project") {
 		cfg.Provider.GCPProject, _ = f.GetString("gcp-project")

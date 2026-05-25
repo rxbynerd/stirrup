@@ -32,15 +32,22 @@ const unknownToolMetricName = "__unknown__"
 // the WaitGroup happens-before relation publishes them to the caller of
 // planAndDispatch.
 type pendingCall struct {
-	call        types.ToolCall
-	span        oteltrace.Span
-	spanCtx     context.Context //nolint:containedctx // span parent ctx threaded into dispatch
-	startedAt   time.Time
-	output      string
-	structured  structuredOutput // optional typed result payload + kind (issue #231); zero value for text-only tools and every failure path
-	success     bool
-	errorReason string // guard-deny reason; written to trace (apply security.Scrub before setting)
-	denied      bool   // PhasePreTool deny path; takes priority over (output, success)
+	call      types.ToolCall
+	span      oteltrace.Span
+	spanCtx   context.Context //nolint:containedctx // span parent ctx threaded into dispatch
+	startedAt time.Time
+	// internalName is the canonical internal tool ID call.Name resolved to
+	// under the active toolset profile (issue #234). call.Name is the
+	// model-facing alias; both are recorded in the trace. Equal to
+	// call.Name under the default profile and for unknown tools (no
+	// registry entry), so the trace's InternalName mirrors Name in those
+	// cases and omitempty keeps the wire shape unchanged.
+	internalName string
+	output       string
+	structured   structuredOutput // optional typed result payload + kind (issue #231); zero value for text-only tools and every failure path
+	success      bool
+	errorReason  string // guard-deny reason; written to trace (apply security.Scrub before setting)
+	denied       bool   // PhasePreTool deny path; takes priority over (output, success)
 	// failureCategory is the bounded ToolFailureCategory describing why
 	// this call failed. Always empty when success is true; one of the
 	// observability.ToolFailureCategory enum values otherwise. Read in
@@ -119,6 +126,32 @@ func (l *AgenticLoop) planAndDispatch(
 			span:      toolSpan,
 			spanCtx:   toolSpanCtx,
 			startedAt: callStart,
+			// Default the internal name to the model-facing name; it is
+			// refined to the resolved tool's internal ID below once the
+			// registry lookup succeeds. Denied and unknown-tool calls keep
+			// this default (alias == internal), which is the correct trace
+			// shape for both.
+			internalName: call.Name,
+		}
+
+		// Resolve up front so every gating surface below keys on the
+		// internal tool ID rather than the model-facing alias (issue #234).
+		// Resolve is a pure lookup; an Unknown tool resolves to nil and
+		// falls through to dispatchToolCall, which fails fast as today.
+		t := l.Tools.Resolve(call.Name)
+		// guardToolName is the name the guardrail classifier sees: the
+		// internal ID when resolved, falling back to the model-supplied
+		// name for an unknown tool. A guardrail rule written against an
+		// internal name must fire under any toolset profile.
+		guardToolName := call.Name
+		if t != nil {
+			// Record the canonical internal tool ID resolved from the
+			// model-facing name. Under a toolset profile call.Name is an
+			// alias; t.Name is always the internal identity (Resolve
+			// returns the underlying tool unchanged), so this is the
+			// alias→internal binding the trace captures.
+			plan[i].internalName = t.Name
+			guardToolName = t.Name
 		}
 
 		// PhasePreTool guard: same semantics as the sequential code. A
@@ -128,7 +161,7 @@ func (l *AgenticLoop) planAndDispatch(
 			Phase:     guard.PhasePreTool,
 			Content:   string(call.Input),
 			Source:    "tool_call:" + call.Name,
-			ToolName:  call.Name,
+			ToolName:  guardToolName,
 			ToolInput: call.Input,
 			Mode:      config.Mode,
 			RunID:     config.RunID,
@@ -154,10 +187,6 @@ func (l *AgenticLoop) planAndDispatch(
 			continue
 		}
 
-		// Resolve to decide sync vs async. An Unknown tool falls through
-		// to dispatchToolCall which fails fast with the same error path
-		// as today — treat it as sync.
-		t := l.Tools.Resolve(call.Name)
 		if t != nil && t.AsyncHandler != nil {
 			asyncIndices = append(asyncIndices, i)
 			continue
@@ -281,8 +310,17 @@ func (l *AgenticLoop) planAndDispatch(
 		case !p.success:
 			errorReason = security.Scrub(p.output)
 		}
+		// Emit InternalName only when an alias was actually resolved (it
+		// differs from the model-facing name). Under the default profile
+		// the two are equal, so the field stays empty and omitempty keeps
+		// the trace wire shape byte-identical to the pre-profile behaviour.
+		internalForTrace := ""
+		if p.internalName != p.call.Name {
+			internalForTrace = p.internalName
+		}
 		l.Trace.RecordToolCall(types.ToolCallTrace{
 			Name:          p.call.Name,
+			InternalName:  internalForTrace,
 			DurationMs:    callDuration.Milliseconds(),
 			Success:       p.success,
 			ErrorReason:   errorReason,
@@ -339,14 +377,15 @@ func (l *AgenticLoop) planAndDispatch(
 		// RecordTurnRecord call after planAndDispatch returns is a pure
 		// data hand-off.
 		toolRecords[i] = types.ToolCallRecord{
-			ID:         p.call.ID,
-			Name:       p.call.Name,
-			Input:      p.call.Input,
-			Output:     p.output,
-			DurationMs: callDuration.Milliseconds(),
-			Success:    p.success,
-			Structured: p.structured.payload,
-			Kind:       p.structured.kind,
+			ID:           p.call.ID,
+			Name:         p.call.Name,
+			InternalName: internalForTrace,
+			Input:        p.call.Input,
+			Output:       p.output,
+			DurationMs:   callDuration.Milliseconds(),
+			Success:      p.success,
+			Structured:   p.structured.payload,
+			Kind:         p.structured.kind,
 		}
 
 		if err := l.Transport.Emit(types.HarnessEvent{

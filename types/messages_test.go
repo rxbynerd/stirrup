@@ -65,3 +65,48 @@ func TestToolCallRecord_StructuredOmitempty(t *testing.T) {
 		t.Errorf("empty Kind must be omitted from ToolCallRecord, got: %s", got)
 	}
 }
+
+// TestToolCall_InternalNameOmittedOnWire pins the issue #234 back-compat
+// guarantee at the WIRE level (not just in memory): under the default
+// profile InternalName is empty and the "internalName" key must be
+// physically absent from the marshalled JSON of every tool-call trace
+// shape, so a default-profile trace is byte-compatible with pre-profile
+// consumers. The positive case confirms the key appears when set.
+func TestToolCall_InternalNameOmittedOnWire(t *testing.T) {
+	t.Run("summary", func(t *testing.T) {
+		b, err := json.Marshal(ToolCallSummary{Name: "grep_files", Success: true})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(b), "internalName") {
+			t.Errorf("empty InternalName must be omitted from ToolCallSummary, got: %s", b)
+		}
+	})
+	t.Run("trace", func(t *testing.T) {
+		b, err := json.Marshal(ToolCallTrace{Name: "grep_files", Success: true})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(b), "internalName") {
+			t.Errorf("empty InternalName must be omitted from ToolCallTrace, got: %s", b)
+		}
+	})
+	t.Run("record", func(t *testing.T) {
+		b, err := json.Marshal(ToolCallRecord{ID: "id", Name: "grep_files", Input: json.RawMessage(`{}`), Output: "x", Success: true})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(b), "internalName") {
+			t.Errorf("empty InternalName must be omitted from ToolCallRecord, got: %s", b)
+		}
+	})
+	t.Run("present_when_set", func(t *testing.T) {
+		b, err := json.Marshal(ToolCallTrace{Name: "grep", InternalName: "grep_files", Success: true})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(b), `"internalName":"grep_files"`) {
+			t.Errorf("a set InternalName must appear on the wire, got: %s", b)
+		}
+	})
+}

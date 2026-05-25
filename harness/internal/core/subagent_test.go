@@ -290,6 +290,65 @@ func TestFilterToolRegistry_ExcludesSpawnAgent(t *testing.T) {
 	}
 }
 
+// The recursion guard must exclude spawn_agent by its INTERNAL id even
+// when the source registry is a Presenter that aliases spawn_agent to a
+// different model-facing name. Filtering on the presented (alias) name
+// would let the child loop inherit spawn_agent and defeat the guard
+// (issue #234 B1). Here a test profile aliases spawn_agent → "agent";
+// the filtered child must still exclude it and keep the other tools.
+func TestFilterToolRegistry_ExcludesAliasedSpawnAgent(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:        "spawn_agent",
+		Description: "Spawn a sub-agent",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Handler:     func(_ context.Context, _ json.RawMessage) (string, error) { return "", nil },
+	})
+	registry.Register(&tool.Tool{
+		Name:        "run_command",
+		Description: "Run a command",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Handler:     func(_ context.Context, _ json.RawMessage) (string, error) { return "", nil },
+	})
+
+	// Profile aliases spawn_agent to "agent" (and run_command to "bash").
+	profile := tool.NewProfile("alias-spawn", map[string]string{
+		"spawn_agent": "agent",
+		"run_command": "bash",
+	}, nil)
+	presenter, err := tool.NewPresenter(registry, profile)
+	if err != nil {
+		t.Fatalf("NewPresenter: %v", err)
+	}
+
+	// Sanity: the presenter does present spawn_agent under its alias, so
+	// this test would catch the alias-keyed bug.
+	var sawAlias bool
+	for _, d := range presenter.List() {
+		if d.Name == "agent" {
+			sawAlias = true
+		}
+	}
+	if !sawAlias {
+		t.Fatal("precondition failed: presenter did not alias spawn_agent to 'agent'")
+	}
+
+	filtered := filterToolRegistry(presenter, "spawn_agent")
+
+	if filtered.Resolve("spawn_agent") != nil {
+		t.Error("aliased spawn_agent leaked past the recursion guard (by internal name)")
+	}
+	if filtered.Resolve("agent") != nil {
+		t.Error("aliased spawn_agent leaked past the recursion guard (by alias name)")
+	}
+	if filtered.Resolve("run_command") == nil {
+		t.Error("run_command should survive filtering")
+	}
+	if len(filtered.List()) != 1 {
+		t.Errorf("expected exactly run_command to remain, got %d tools", len(filtered.List()))
+	}
+}
+
 func TestSpawnSubAgent_InheritsParentMode(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{

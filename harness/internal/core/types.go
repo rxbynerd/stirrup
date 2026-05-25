@@ -56,12 +56,19 @@ const asyncResultTruncationSuffix = "... [truncated by harness]"
 // fields — the loop has no imports from concrete implementations, no environment
 // variable reads, no direct file system access.
 type AgenticLoop struct {
-	Provider     provider.ProviderAdapter
-	Providers    map[string]provider.ProviderAdapter
-	Router       router.ModelRouter
-	Prompt       prompt.PromptBuilder
-	Context      contextpkg.ContextStrategy
-	Tools        tool.ToolRegistry
+	Provider  provider.ProviderAdapter
+	Providers map[string]provider.ProviderAdapter
+	Router    router.ModelRouter
+	Prompt    prompt.PromptBuilder
+	Context   contextpkg.ContextStrategy
+	Tools     tool.ToolRegistry
+	// ToolProfile is the resolved toolset-profile presentation applied to
+	// Tools (issue #234). Nil means the default (identity) profile. Held on
+	// the loop so SpawnSubAgent can re-present the filtered child registry
+	// under the same profile, keeping parent and child tool names
+	// consistent. The factory always sets Tools to a *tool.Presenter built
+	// with this profile.
+	ToolProfile  *tool.Profile
 	Executor     executor.Executor
 	Edit         edit.EditStrategy
 	Verifier     verifier.Verifier
@@ -295,7 +302,12 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 		return fmt.Sprintf("Invalid input for %s: %v", call.Name, err), false, observability.ToolFailureSchemaValidation, structuredOutput{}
 	}
 
-	if findings := security.GuardToolCall(call.Name, t.WorkspaceMutating, call.Input); len(findings) > 0 {
+	// Key the write-target guard on the internal tool ID (t.Name), not the
+	// model-facing alias (call.Name): a guard rule written against the
+	// internal name must fire under any toolset profile (issue #234). t is
+	// resolved above; the gating layers (permission policy, mutating-tool
+	// set, this guard) all uniformly key on internal identity.
+	if findings := security.GuardToolCall(t.Name, t.WorkspaceMutating, call.Input); len(findings) > 0 {
 		if l.Security != nil {
 			l.Security.ToolCallGuardTriggered(call.Name, findings)
 		}

@@ -33,13 +33,28 @@ type RunTrace struct {
 }
 
 // ToolCallSummary records a single tool call's outcome for the trace.
+//
+// Name is the model-facing name the call arrived under: under a toolset
+// profile (issue #234) this is the alias presented to the model.
+// InternalName is the canonical internal tool ID the alias dispatched to.
+// Under the default profile (no aliasing) the two are equal, and
+// InternalName is omitted from the wire to keep the existing trace shape
+// byte-identical; a non-default profile records both so a trace is
+// auditable and the alias→internal binding is recoverable.
+//
+// An empty InternalName is ambiguous in isolation: it means the tool was
+// called by its internal name under the default profile, OR the name did
+// not resolve to a known tool under a non-default profile. The active
+// profile is recorded in the run's RunConfig (tools.profile); read it
+// alongside the record to disambiguate.
 type ToolCallSummary struct {
-	Name        string `json:"name"`
-	DurationMs  int64  `json:"durationMs"`
-	Success     bool   `json:"success"`
-	ErrorReason string `json:"errorReason,omitempty"`
-	InputSize   int    `json:"inputSize,omitempty"`
-	OutputSize  int    `json:"outputSize,omitempty"`
+	Name         string `json:"name"`
+	InternalName string `json:"internalName,omitempty"`
+	DurationMs   int64  `json:"durationMs"`
+	Success      bool   `json:"success"`
+	ErrorReason  string `json:"errorReason,omitempty"`
+	InputSize    int    `json:"inputSize,omitempty"`
+	OutputSize   int    `json:"outputSize,omitempty"`
 	// RunID identifies the run that produced this tool call. Populated only
 	// when the call originated in a sub-agent run forwarded to a parent
 	// emitter; absent (omitempty) on parent-emitted events to preserve
@@ -108,13 +123,20 @@ func (t TurnTrace) IsBatch() bool {
 //
 // Field order MUST match ToolCallSummary so the cast in trace emitters
 // (types.ToolCallSummary(tc)) remains valid.
+//
+// Name is the model-facing name (the alias under a toolset profile);
+// InternalName is the internal tool ID it dispatched to (issue #234).
+// See ToolCallSummary for the omitempty rationale and the empty-value
+// ambiguity (default profile vs unresolved name under a non-default
+// profile).
 type ToolCallTrace struct {
-	Name        string `json:"name"`
-	DurationMs  int64  `json:"durationMs"`
-	Success     bool   `json:"success"`
-	ErrorReason string `json:"errorReason,omitempty"`
-	InputSize   int    `json:"inputSize,omitempty"`
-	OutputSize  int    `json:"outputSize,omitempty"`
+	Name         string `json:"name"`
+	InternalName string `json:"internalName,omitempty"`
+	DurationMs   int64  `json:"durationMs"`
+	Success      bool   `json:"success"`
+	ErrorReason  string `json:"errorReason,omitempty"`
+	InputSize    int    `json:"inputSize,omitempty"`
+	OutputSize   int    `json:"outputSize,omitempty"`
 	// RunID identifies the run that produced this tool call. Populated only
 	// when the call originated in a sub-agent run forwarded to a parent
 	// emitter; absent (omitempty) on parent-emitted events to preserve
@@ -156,14 +178,18 @@ type ModelInput struct {
 // Kind names the Structured payload's shape (see ToolResult.Kind); empty and
 // omitted for text-only calls.
 type ToolCallRecord struct {
-	ID         string          `json:"id"`
-	Name       string          `json:"name"`
-	Input      json.RawMessage `json:"input"`
-	Output     string          `json:"output"`
-	DurationMs int64           `json:"durationMs"`
-	Success    bool            `json:"success"`
-	Structured json.RawMessage `json:"structured,omitempty"`
-	Kind       string          `json:"kind,omitempty"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// InternalName is the canonical internal tool ID the model-facing Name
+	// dispatched to under a toolset profile (issue #234). Equal to Name and
+	// omitted from the wire under the default (no-alias) profile.
+	InternalName string          `json:"internalName,omitempty"`
+	Input        json.RawMessage `json:"input"`
+	Output       string          `json:"output"`
+	DurationMs   int64           `json:"durationMs"`
+	Success      bool            `json:"success"`
+	Structured   json.RawMessage `json:"structured,omitempty"`
+	Kind         string          `json:"kind,omitempty"`
 }
 
 // RunRecording is a full recording of a run.

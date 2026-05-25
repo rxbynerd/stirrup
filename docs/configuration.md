@@ -268,6 +268,7 @@ Walkthrough: [`azure-workload-identity.md`](azure-workload-identity.md).
 | `--git-strategy` | `none` | One of `none`, `deterministic`. |
 | `--permission-policy-file` | (none) | Path to a Cedar policy file. When set and the policy type is unset elsewhere, implies `permissionPolicy.type=policy-engine`. Starters live under [`examples/policies/`](../examples/policies/). |
 | `--code-scanner` | (none) | One of `none`, `patterns`, `semgrep`. `composite` is accepted only via `--config` (it requires `codeScanner.scanners`). Empty defers to the mode-aware default (`patterns` for execution, `none` for read-only modes). |
+| `--tools-profile` | (none) | Model-facing toolset profile. Closed enum: `""`/`default` (no aliasing, internal tool names) or `coding-classic` (terse coding-CLI aliases). Changes only the names the model sees; dispatch identities and gating are unchanged. JSON path: `tools.profile`. See [Toolset profiles](#toolset-profiles). |
 
 ### Transport
 
@@ -391,6 +392,58 @@ The read-only modes differ from each other only in prompt template:
 `planning` for "describe and reason before acting" first-touch use,
 `review` for change-review tasks, `research` for investigation across
 a codebase or the web, and `toil` for structured-briefing workflows.
+
+## Toolset profiles
+
+`tools.profile` selects the *model-facing presentation* of the tool
+set — the names and descriptions a model sees on the wire — without
+changing the tools the harness dispatches to. It is a closed enum:
+
+| Value | Presentation |
+|---|---|
+| `""` / `default` | Identity. Tools present under their internal names (`grep_files`, `find_files`, `run_command`, `edit_file`, …). This is the zero value, so a config that omits the field behaves exactly as before profiles existed. |
+| `coding-classic` | Presents the terse coding-CLI aliases some models call by reflex: `grep_files` → `grep`, `find_files` → `find`, `run_command` → `bash`. Tools not in the alias table (including `read_file`, `edit_file`, and every MCP tool) present unchanged. |
+
+An alias changes only the name. The internal dispatch identity is
+untouched: a model that calls `grep` reaches the same `grep_files`
+handler, the permission policy still gates it as `grep_files`, and the
+security guard still keys on `grep_files`. Aliasing therefore cannot
+broaden capability — it cannot surface a tool the registry did not
+register, and an alias for a tool a read-only mode excluded does not
+exist because the excluded tool is never registered to alias.
+
+Every gating and guard surface keys on the internal tool ID, never the
+alias: the permission policy, the workspace-mutation guard, the
+guardrail's `PhasePreTool` classifier input, and the sub-agent
+recursion filter all see `grep_files`, not `grep`. **Cedar policies and
+permission configs must reference internal tool IDs** (`run_command`,
+`grep_files`, `edit_file`, …), not profile aliases. A Cedar rule that
+forbids `"bash"` under the `coding-classic` profile matches nothing —
+the policy engine is never shown the alias. Write the rule against
+`run_command`.
+
+Existing configs keep working. Because the default profile is the
+identity presentation, a config that names tools by their internal IDs
+in `tools.builtIn` (or a model that calls them by those IDs) continues
+to resolve under any profile — the internal name is always accepted in
+addition to the alias.
+
+Alias collisions — two tools whose profile aliases land on the same
+string — are resolved by the same deterministic normalization the
+provider function-name layer uses (see
+[`provider-quirks.md`](provider-quirks.md) and the `toolname` package):
+one keeps the bare alias, the other gains a short stable hash suffix, so
+the binding never silently routes a call to the wrong handler.
+
+Traces record both names. Each tool-call trace and record carries the
+model-facing `name` and, when an alias was resolved, the internal
+`internalName`; under the default profile the two coincide and
+`internalName` is omitted, keeping the trace wire shape unchanged. An
+absent `internalName` is therefore ambiguous in isolation — it means
+either "called by internal name under the default profile" or "the name
+did not resolve to a known tool under a non-default profile". The active
+`tools.profile` is recorded in the trace's attached `RunConfig`, so the
+two cases are distinguishable by reading it alongside the record.
 
 ## Limits and budgets
 

@@ -68,8 +68,35 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		mode = parentConfig.Mode
 	}
 
-	// Build a child tool registry that excludes spawn_agent to prevent recursion.
-	childTools := filterToolRegistry(parent.Tools, "spawn_agent")
+	// Build a child tool registry that excludes spawn_agent to prevent
+	// recursion. filterToolRegistry rebuilds a plain registry keyed by the
+	// internal tool IDs (Resolve returns tools whose Name is the internal
+	// identity), so the child starts from internal names regardless of the
+	// parent's presentation. Re-wrap it under the parent's toolset profile
+	// (issue #234) so a sub-agent sees the same aliases the parent does;
+	// NewPresenter on a default/nil profile is the identity presentation,
+	// so the non-profile path is unchanged. A presenter build failure here
+	// would only arise from an alias collision the parent already resolved,
+	// so fall back to the unaliased child registry rather than aborting the
+	// spawn.
+	var childTools tool.ToolRegistry = filterToolRegistry(parent.Tools, "spawn_agent")
+	if presenter, err := tool.NewPresenter(childTools, parent.ToolProfile); err == nil {
+		childTools = presenter
+	} else {
+		// A build failure here only arises from an alias collision in the
+		// child tool set — which the parent's presenter already resolved
+		// over a superset, so it should not recur. Degrade to the unaliased
+		// child registry rather than aborting the spawn, but never silently:
+		// the child would then run with internal tool names while the
+		// parent context and the model's prior turns used aliases, breaking
+		// tool-name continuity. Surface it so the divergence is auditable.
+		profileName := ""
+		if parent.ToolProfile != nil {
+			profileName = parent.ToolProfile.Name
+		}
+		parent.Logger.Warn("child presenter build failed; sub-agent will use internal tool names",
+			"err", err, "profile", profileName)
+	}
 
 	// Use a capture transport to collect the sub-agent's text output.
 	// The capture transport wraps a NullTransport, recording text_delta
@@ -117,6 +144,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Prompt:      parent.Prompt,
 		Context:     contextpkg.NewSlidingWindowStrategy(),
 		Tools:       childTools,
+		ToolProfile: parent.ToolProfile,
 		Executor:    parent.Executor,
 		Edit:        parent.Edit,
 		Verifier:    verifier.NewNoneVerifier(),
@@ -247,7 +275,17 @@ func capSubAgentMaxTurns(requested, parentMaxTurns int) int {
 }
 
 // filterToolRegistry creates a new Registry containing all tools from the
-// source except those whose names match any of the excluded names.
+// source except those whose internal tool IDs match any of the excluded
+// names.
+//
+// Exclusion is checked against the resolved tool's internal Name, not the
+// name from source.List(): when source is a *Presenter (the production
+// case after factory wiring), List() yields the model-facing alias while
+// excludedNames are internal IDs (e.g. "spawn_agent"). Keying the check on
+// def.Name would let a profile that aliases an excluded tool slip it past
+// the filter — defeating the spawn_agent recursion guard. Resolve returns
+// the underlying tool whose Name is always the internal identity, so the
+// check is profile-independent.
 func filterToolRegistry(source tool.ToolRegistry, excludedNames ...string) *tool.Registry {
 	excluded := make(map[string]bool, len(excludedNames))
 	for _, name := range excludedNames {
@@ -256,13 +294,11 @@ func filterToolRegistry(source tool.ToolRegistry, excludedNames ...string) *tool
 
 	filtered := tool.NewRegistry()
 	for _, def := range source.List() {
-		if excluded[def.Name] {
+		t := source.Resolve(def.Name)
+		if t == nil || excluded[t.Name] {
 			continue
 		}
-		t := source.Resolve(def.Name)
-		if t != nil {
-			filtered.Register(t)
-		}
+		filtered.Register(t)
 	}
 	return filtered
 }
