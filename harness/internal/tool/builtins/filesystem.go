@@ -108,8 +108,12 @@ const (
 // hard error here trains them to over-read whole files instead of probing.
 func ReadFileTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:              "read_file",
-		Description:       "Read the contents of a file from the workspace. Returns line-numbered output. Use start_line and limit to read a specific range; otherwise the first 2000 lines are returned.",
+		Name: "read_file",
+		Description: "Read the contents of a file from the workspace. Returns line-numbered output (\"123\\tcontent\") so subsequent edits can refer to specific lines. " +
+			"Use this when the exact content of a known file is needed; prefer grep_files when searching for a string across many files. " +
+			"start_line is 1-indexed and limit caps the lines returned (default 2000, max 5000). " +
+			"When start_line is past end-of-file the tool returns a notice rather than an error, so probing with a guessed start_line is safe. " +
+			"Example: {\"path\": \"path/to/file.go\", \"start_line\": 100, \"limit\": 50}",
 		InputSchema:       readFileSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
@@ -197,8 +201,11 @@ func formatReadFile(content string, startLine, limit int) string {
 // WriteFileTool returns a tool that writes content to a file in the workspace.
 func WriteFileTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:              "write_file",
-		Description:       "Write content to a file in the workspace. Creates parent directories as needed.",
+		Name: "write_file",
+		Description: "Create or overwrite a file in the workspace, writing content verbatim. Parent directories are created automatically. " +
+			"Use this when authoring a new file or when a wholesale rewrite is simpler than a targeted change. " +
+			"Do not use for small edits to existing files — prefer edit_file with operation 'replace' or 'patch' so unrelated lines stay untouched. " +
+			"Example: {\"path\": \"cmd/cli/main.go\", \"content\": \"package main\\n\\nfunc main() {}\\n\"}",
 		InputSchema:       writeFileSchema,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
@@ -227,8 +234,11 @@ func WriteFileTool(exec executor.Executor) *tool.Tool {
 // carry a trailing slash so models can spot them at a glance.
 func ListDirectoryTool(exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:              "list_directory",
-		Description:       "List the contents of a directory in the workspace. Directories have a trailing slash. Set recursive=true to walk subdirectories up to max_depth (default 3, max 10). Results are capped at max_entries (default 1000, max 10000).",
+		Name: "list_directory",
+		Description: "List the contents of a directory in the workspace. Directory entries carry a trailing slash so they are visually distinguishable from files. " +
+			"Use this to discover the shape of an unfamiliar tree; prefer find_files when the goal is to locate files by name across the workspace. " +
+			"Set recursive=true to walk subdirectories up to max_depth (default 3, max 10). Results are capped at max_entries (default 1000, max 10000) and a truncation sentinel is appended when the cap is hit. " +
+			"Example: {\"path\": \"harness/internal\", \"recursive\": true, \"max_depth\": 2}",
 		InputSchema:       listDirectorySchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,

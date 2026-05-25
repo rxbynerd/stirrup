@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -65,6 +66,175 @@ func TestMultiStrategy_ToolDefinition(t *testing.T) {
 	}
 	if !hasOperation {
 		t.Error("operation should be listed in required")
+	}
+}
+
+// maxEditFileDescriptionLen mirrors the cap used for built-in tool
+// descriptions in harness/internal/tool/builtins. Kept local rather than
+// reaching across packages so the two test suites stay independently
+// runnable.
+const maxEditFileDescriptionLen = 2000
+
+// TestMultiStrategy_DescriptionEnrichedShape asserts that the edit_file
+// description carries the #227 contract — when-to-use guidance, an
+// example labelled "Example", and a bounded length. The example is
+// extracted by finding the rightmost "Example" marker and walking the
+// brace balance to capture the JSON object, matching the helper in
+// harness/internal/tool/builtins/builtins_test.go.
+func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
+	m := NewMultiStrategy(defaultFuzzyThreshold)
+	def := m.ToolDefinition()
+
+	if len(def.Description) > maxEditFileDescriptionLen {
+		t.Errorf("description length %d exceeds cap %d", len(def.Description), maxEditFileDescriptionLen)
+	}
+	// hasPositiveUseThis rejects negated matches (a description
+	// containing only "Do not use this..." would otherwise pass an
+	// unguarded strings.Contains check). Mirrors the helper in
+	// harness/internal/tool/builtins/builtins_test.go.
+	if !hasPositiveUseThis(def.Description) {
+		t.Errorf("description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
+	}
+	example, ok := extractEditFileJSONExample(def.Description)
+	if !ok {
+		t.Fatalf("description missing JSON example after \"Example\" marker; got: %s", def.Description)
+	}
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(example), &probe); err != nil {
+		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+	}
+}
+
+// hasPositiveUseThis reports whether desc contains a "Use this" clause
+// that is NOT negated. Mirrors the helper in
+// harness/internal/tool/builtins/builtins_test.go; the two packages
+// keep independent copies so each test suite stays self-contained.
+func hasPositiveUseThis(desc string) bool {
+	lower := strings.ToLower(desc)
+	idx := 0
+	for {
+		hit := strings.Index(lower[idx:], "use this")
+		if hit < 0 {
+			return false
+		}
+		pos := idx + hit
+		start := pos - 8
+		if start < 0 {
+			start = 0
+		}
+		prefix := lower[start:pos]
+		if !strings.HasSuffix(prefix, "not ") && !strings.HasSuffix(prefix, "'t ") {
+			return true
+		}
+		idx = pos + len("use this")
+	}
+}
+
+// extractEditFileJSONExample locates the rightmost "Example" marker in
+// desc, then walks brace balance from the first '{' that follows to find
+// the matching '}'. String literals are skipped so embedded braces in
+// quoted values cannot terminate the scan early.
+//
+// Contract: descriptions must contain at least one capital-`E` "Example"
+// marker followed by a valid JSON object. The rightmost such marker is
+// the one parsed. A future #222 migration that extracts examples into a
+// structured InputExamples []any field on types.ToolDefinition relies on
+// this contract — the helper here is the seam it would replace. The
+// duplicate of this helper in harness/internal/tool/builtins/builtins_test.go
+// carries the same contract.
+func extractEditFileJSONExample(desc string) (string, bool) {
+	marker := strings.LastIndex(desc, "Example")
+	if marker < 0 {
+		return "", false
+	}
+	rest := desc[marker:]
+	open := strings.Index(rest, "{")
+	if open < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := open; i < len(rest); i++ {
+		c := rest[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch c {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[open : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// TestExtractEditFileJSONExample locks the contract of the
+// extractEditFileJSONExample helper directly. The helper duplicates the
+// extractJSONExample helper in harness/internal/tool/builtins; the two
+// suites run independently so the duplication is intentional. A future
+// #222 migration to a structured InputExamples []any field on
+// types.ToolDefinition would replace both helpers — this test pins the
+// edge-case behaviour so the migration stays mechanical.
+func TestExtractEditFileJSONExample(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "no marker",
+			input:  "This description has no marker",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "two markers rightmost wins",
+			input:  "Example: {\"a\": 1}\n\nExample: {\"b\": 2}",
+			want:   "{\"b\": 2}",
+			wantOK: true,
+		},
+		{
+			name:   "malformed json after marker",
+			input:  "Example: {not valid",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "standard happy path",
+			input:  "Use this for targeted edits. Example: {\"path\": \"x\"}",
+			want:   "{\"path\": \"x\"}",
+			wantOK: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractEditFileJSONExample(tc.input)
+			if ok != tc.wantOK {
+				t.Errorf("ok mismatch: got %v, want %v", ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("value mismatch: got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

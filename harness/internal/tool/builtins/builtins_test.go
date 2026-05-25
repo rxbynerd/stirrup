@@ -637,3 +637,262 @@ func TestRegisterBuiltins(t *testing.T) {
 		t.Error("search_files must not be registered (split into grep_files and find_files)")
 	}
 }
+
+// maxToolDescriptionLen caps each enriched description so a worst-case
+// system prompt with every tool registered stays bounded. 2000 chars per
+// tool is generous — the longest description today is well under 1000.
+const maxToolDescriptionLen = 2000
+
+// hasPositiveUseThis reports whether desc contains a "Use this" clause
+// that is NOT negated. A description containing only "Do not use this..."
+// or "Don't use this..." would slip past a plain substring check on
+// "Use this"; this helper walks every occurrence and rejects those whose
+// immediately preceding text ends in "not " or "'t ", returning true
+// only if at least one *positive* when-to-use clause is present.
+// Case-insensitive: both "Use this" and "use this" count.
+func hasPositiveUseThis(desc string) bool {
+	lower := strings.ToLower(desc)
+	idx := 0
+	for {
+		hit := strings.Index(lower[idx:], "use this")
+		if hit < 0 {
+			return false
+		}
+		pos := idx + hit
+		// Inspect the immediately preceding context (up to 8 chars) for
+		// negative-guidance prefixes. "Do not " / "don't " / " not "
+		// all end in "not " or "'t " before "use this".
+		start := pos - 8
+		if start < 0 {
+			start = 0
+		}
+		prefix := lower[start:pos]
+		if !strings.HasSuffix(prefix, "not ") && !strings.HasSuffix(prefix, "'t ") {
+			return true
+		}
+		idx = pos + len("use this")
+	}
+}
+
+// extractJSONExample pulls the JSON object that follows the rightmost
+// "Example" marker in a tool description and returns the raw bytes.
+// Matching from the rightmost marker keeps tools with multiple worked
+// examples (e.g. edit_file's "Example (replace): ...") working without
+// the test having to know each tool's example label. The boundary is the
+// matching '}' for the first '{' after the marker, walking the brace
+// balance so embedded objects do not terminate the scan early.
+//
+// Contract: descriptions must contain at least one capital-`E` "Example"
+// marker followed by a valid JSON object. The rightmost such marker is
+// the one parsed. A future #222 migration that extracts examples into a
+// structured InputExamples []any field on types.ToolDefinition relies on
+// this contract — the helper here is the seam it would replace.
+func extractJSONExample(desc string) (string, bool) {
+	marker := strings.LastIndex(desc, "Example")
+	if marker < 0 {
+		return "", false
+	}
+	rest := desc[marker:]
+	open := strings.Index(rest, "{")
+	if open < 0 {
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := open; i < len(rest); i++ {
+		c := rest[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch c {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return rest[open : i+1], true
+			}
+		}
+	}
+	return "", false
+}
+
+// TestBuiltinDescriptions_EnrichedShape asserts that every registered
+// built-in tool description satisfies the #227 contract: when-to-use
+// guidance, a syntactically valid JSON example, and a length below the
+// system-prompt budget cap. Failures here mean a future contributor
+// pared a description back below the agreed shape — the test exists to
+// surface that regression before the change ships.
+func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
+	mock := &mockExecutor{}
+	registry := tool.NewRegistry()
+	RegisterBuiltins(registry, mock)
+
+	for _, def := range registry.List() {
+		t.Run(def.Name, func(t *testing.T) {
+			if len(def.Description) > maxToolDescriptionLen {
+				t.Errorf("description length %d exceeds cap %d", len(def.Description), maxToolDescriptionLen)
+			}
+			// "Use this" is the canonical when-to-use opener used across
+			// the enriched descriptions. Asserting on it (rather than a
+			// hand-curated per-tool phrase) keeps the contract uniform
+			// and forces future tools to adopt the same convention.
+			// hasPositiveUseThis rejects matches that are negated (a
+			// description containing only "Do not use this..." would
+			// otherwise pass an unguarded strings.Contains).
+			if !hasPositiveUseThis(def.Description) {
+				t.Errorf("description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
+			}
+			example, ok := extractJSONExample(def.Description)
+			if !ok {
+				t.Fatalf("description missing JSON example after \"Example\" marker; got: %s", def.Description)
+			}
+			var probe map[string]any
+			if err := json.Unmarshal([]byte(example), &probe); err != nil {
+				t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+			}
+		})
+	}
+}
+
+// TestHasPositiveUseThis confirms the tightened when-to-use check
+// rejects descriptions whose only "Use this" appears inside a negation
+// (Do not / Don't / not) while still passing descriptions that carry
+// both a negation and a genuine positive clause. Locks the contract so
+// a future loosening of the helper trips a clear failure.
+func TestHasPositiveUseThis(t *testing.T) {
+	cases := []struct {
+		name string
+		desc string
+		want bool
+	}{
+		{
+			name: "only negated do not",
+			desc: "Do not use this for X.",
+			want: false,
+		},
+		{
+			name: "only negated don't",
+			desc: "Don't use this for X.",
+			want: false,
+		},
+		{
+			name: "only negated bare not",
+			desc: "We do not use this approach.",
+			want: false,
+		},
+		{
+			name: "positive only",
+			desc: "Use this when reading a known file.",
+			want: true,
+		},
+		{
+			name: "both negated and positive",
+			desc: "Use this for X. Do not use this for Y.",
+			want: true,
+		},
+		{
+			name: "no use this at all",
+			desc: "Some unrelated description.",
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasPositiveUseThis(tc.desc); got != tc.want {
+				t.Errorf("hasPositiveUseThis(%q) = %v, want %v", tc.desc, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtractJSONExample locks the contract of the extractJSONExample
+// helper directly, independent of any real tool description. The helper
+// is the seam a future #222 migration to a structured InputExamples
+// []any field on types.ToolDefinition would replace; pinning the
+// edge-case behaviour here keeps that migration mechanical instead of
+// archaeological.
+func TestExtractJSONExample(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "no marker",
+			input:  "This description has no marker",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "two markers rightmost wins",
+			input:  "Example: {\"a\": 1}\n\nExample: {\"b\": 2}",
+			want:   "{\"b\": 2}",
+			wantOK: true,
+		},
+		{
+			name:   "malformed json after marker",
+			input:  "Example: {not valid",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "standard happy path",
+			input:  "Use this when reading a known file. Example: {\"path\": \"x\"}",
+			want:   "{\"path\": \"x\"}",
+			wantOK: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := extractJSONExample(tc.input)
+			if ok != tc.wantOK {
+				t.Errorf("ok mismatch: got %v, want %v", ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("value mismatch: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSpawnAgentTool_EnrichedShape applies the same description contract
+// to spawn_agent, which is wired separately from RegisterBuiltins (the
+// factory injects a real spawner closure). A trivial spawner suffices
+// because only the static tool definition is under test.
+func TestSpawnAgentTool_EnrichedShape(t *testing.T) {
+	noopSpawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
+		return json.RawMessage("{}"), nil
+	}
+	def := SpawnAgentTool(noopSpawner)
+	if len(def.Description) > maxToolDescriptionLen {
+		t.Errorf("description length %d exceeds cap %d", len(def.Description), maxToolDescriptionLen)
+	}
+	if !hasPositiveUseThis(def.Description) {
+		t.Errorf("description missing positive when-to-use guidance (expected non-negated \"Use this\" clause)")
+	}
+	example, ok := extractJSONExample(def.Description)
+	if !ok {
+		t.Fatalf("description missing JSON example after \"Example\" marker")
+	}
+	var probe map[string]any
+	if err := json.Unmarshal([]byte(example), &probe); err != nil {
+		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+	}
+}

@@ -57,8 +57,12 @@ func newWebFetchTool(opts webFetchOptions) *tool.Tool {
 	}
 
 	return &tool.Tool{
-		Name:        "web_fetch",
-		Description: "Fetch a URL via HTTP GET and return the response body as text. Response is truncated at 100KB.",
+		Name: "web_fetch",
+		Description: "Fetch a URL via HTTP GET and return the response body as text. The body is truncated at 100KB and a notice is appended when truncation occurred. " +
+			"Use this when external documentation, an issue body, a release note, or another public web resource is needed to complete the task. " +
+			"Do not use to read files from disk (use read_file) or to call internal services — only http:// and https:// schemes are accepted and private / loopback / link-local hosts are refused. " +
+			"Non-2xx responses are returned as errors. " +
+			"Example: {\"url\": \"https://pkg.go.dev/encoding/json\"}",
 		InputSchema: webFetchSchema,
 		// web_fetch does not mutate the workspace, but it makes outbound
 		// network requests on the user's behalf — gate it behind
