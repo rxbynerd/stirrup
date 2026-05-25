@@ -82,8 +82,9 @@ func TestSanitize_LeadingDigitWhenAllowed(t *testing.T) {
 func TestSanitize_NonASCIIReplaced(t *testing.T) {
 	p := Policy{MaxLen: 64, AllowHyphen: true, AllowLeadingDigit: true}
 	got := sanitize("café_tool", p)
-	// "é" is two bytes in UTF-8; sanitize replaces each invalid byte
-	// with one underscore, so multi-byte runes flatten to underscores.
+	// "é" is a single non-ASCII rune; sanitize replaces it with one
+	// underscore regardless of its byte width (the range loop yields
+	// runes, not bytes).
 	if !strings.HasPrefix(got, "caf") || !strings.HasSuffix(got, "_tool") {
 		t.Errorf("got %q, want non-ASCII rune substituted", got)
 	}

@@ -377,6 +377,11 @@ Effective rules per provider type:
   (Gemini's) so a new adapter cannot regress until its policy is
   added.
 
+The Bedrock entry is the conservative union of the Anthropic and
+OpenAI-compatible rules — chosen because Bedrock fronts both
+Anthropic-backed and Mistral/Llama-backed models — not a validated
+Converse API guarantee. Per-model constraints land in Wave 2 (#221).
+
 Substitution replaces every disallowed character with `_`. Names that
 exceed the length cap are hard-truncated; names that collide after
 sanitization gain a deterministic six-hex-character SHA-256 suffix
