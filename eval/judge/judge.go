@@ -32,6 +32,7 @@ func KnownJudgeTypes() []string {
 		"file-exists",
 		"file-contains",
 		"diff-review",
+		"tool-trace",
 		"composite",
 	}
 }
@@ -39,6 +40,14 @@ func KnownJudgeTypes() []string {
 // JudgeContext provides the environment for judging a run's outcome.
 type JudgeContext struct {
 	WorkspaceDir string // path to the workspace after the run
+
+	// Trace is the run's parsed RunTrace, used by the "tool-trace" judge
+	// to assert on tool-call behaviour. Nil for callers that judge only
+	// workspace state (the file/command judges ignore it); the runner
+	// populates it from the per-task trace it already parses. A
+	// tool-trace judge errors rather than silently passing when this is
+	// nil — see evaluateToolTrace.
+	Trace *types.RunTrace
 }
 
 // Evaluate applies the judge criteria to the workspace and returns a verdict.
@@ -52,6 +61,8 @@ func Evaluate(ctx context.Context, j types.EvalJudge, jctx JudgeContext) (eval.J
 		return evaluateFileContains(j, jctx)
 	case "diff-review":
 		return evaluateDiffReview(ctx, j, jctx)
+	case "tool-trace":
+		return evaluateToolTrace(j, jctx)
 	case "composite":
 		return evaluateComposite(ctx, j, jctx)
 	default:

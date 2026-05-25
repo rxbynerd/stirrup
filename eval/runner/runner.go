@@ -452,6 +452,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		// Harness failed but left a trace — use it for the result.
 		verdict, judgeErr := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 			WorkspaceDir: workspaceDir,
+			Trace:        trace,
 		})
 		if judgeErr != nil {
 			return errorResult(task.ID, start, fmt.Errorf("judge failed after harness error: %w", judgeErr))
@@ -466,6 +467,7 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 
 	verdict, err := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 		WorkspaceDir: workspaceDir,
+		Trace:        trace,
 	})
 	if err != nil {
 		return errorResult(task.ID, start, fmt.Errorf("judge failed: %w", err))

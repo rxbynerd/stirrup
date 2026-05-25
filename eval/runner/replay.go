@@ -18,8 +18,10 @@ import (
 func ReplayRecording(ctx context.Context, recording types.RunRecording, task types.EvalTask, workspaceDir string) (eval.TaskResult, error) {
 	start := time.Now()
 
+	trace := &recording.FinalOutcome
 	verdict, err := judge.Evaluate(ctx, task.Judge, judge.JudgeContext{
 		WorkspaceDir: workspaceDir,
+		Trace:        trace,
 	})
 	if err != nil {
 		return eval.TaskResult{}, err
@@ -29,8 +31,6 @@ func ReplayRecording(ctx context.Context, recording types.RunRecording, task typ
 	if verdict.Passed {
 		outcome = "pass"
 	}
-
-	trace := &recording.FinalOutcome
 	return eval.TaskResult{
 		TaskID:       task.ID,
 		Outcome:      outcome,

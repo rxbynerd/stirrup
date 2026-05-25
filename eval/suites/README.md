@@ -17,6 +17,55 @@ For the suite schema and the per-task contract see
 | `dogfood-seed.hcl` | Hand-authored (#13) | Starter suite for the v0.1 eval-gate. Targets harness behaviours stirrup's maintainers actually rely on; judges are deterministic. Replace with the mined output once the dogfood recording loop is established. |
 | `guardrail.hcl` | Hand-authored (#43) | Red-team suite for the GuardRail component. Requires a vLLM endpoint with Granite Guardian loaded. |
 | `openai-responses-empty-tool-output.hcl` | Hand-authored | Regression pin for a provider edge case. |
+| `tooluse.hcl` | Hand-authored (#233) | Tool-use reliability regression for the Wave 1-5 tool redesign. Judges check both workspace state and tool-call trace. See below for the no-credential gate. |
+
+## Tool-use reliability suite (`tooluse.hcl`)
+
+`tooluse.hcl` gives the tool redesign (schema redesign, MCP name
+normalization, tool-choice escalation, structured results, toolset
+profiles) end-to-end regression coverage. Each task is a small
+synthetic repo exercising one behaviour, judged on both the final
+workspace state (`file-exists` / `file-contains`) and the tool-call
+path (`tool-trace`, documented in [`docs/eval.md`](../../docs/eval.md)).
+
+### Running without provider credentials (the default gate)
+
+The acceptance criterion is that the suite runs locally with no live
+provider and no network. `stirrup-eval run` spawns the real `stirrup
+harness` binary, which has no replay-provider path, so that subcommand
+is the live-provider form. The no-credential gate is instead the
+in-process replay regression at
+`harness/internal/core/tooluse_replay_test.go`: it drives the same
+behaviours through the agentic loop with a `ReplayProvider` and a real
+`LocalExecutor` over synthetic workspaces, asserting the same workspace
+state and tool-call traces the HCL judges check. It runs under:
+
+```sh
+go test ./harness/internal/core/ -run TestToolUse
+```
+
+No `ANTHROPIC_API_KEY`, no network, deterministic.
+
+### Running against a live provider (opt-in)
+
+To measure a real model, pin the provider/model with a suite-level
+`run_config` block (or a `--config` baseline) supplying the credential
+as a `secret://` reference, then:
+
+```sh
+ANTHROPIC_API_KEY=... ./stirrup-eval run \
+    --suite eval/suites/tooluse.hcl \
+    --output results/tooluse
+```
+
+To compare models, run the suite once per model — swap the
+`model_router` model, or layer a per-task `run_config_overrides`
+`model_router` block — and diff the `result.json` files with
+`stirrup-eval compare`. Live-provider runs are slow and spend credits;
+they are an explicit opt-in and are not part of default CI. No baseline
+ships for this suite, so the eval-gate's `compare` step skips it until
+an operator promotes one (see "Promoting a mined suite" for the
+baseline workflow).
 
 ## Promoting a mined suite
 

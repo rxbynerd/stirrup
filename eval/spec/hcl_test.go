@@ -173,6 +173,107 @@ suite "c" {
 	}
 }
 
+// TestLoadSuiteHCL_ToolTraceJudge parses a tool-trace judge with a
+// sequence, two per-tool call expectations, and forbid_unknown, asserting
+// the block decodes into types.ToolTraceCriteria with the call labels and
+// bounds preserved.
+func TestLoadSuiteHCL_ToolTraceJudge(t *testing.T) {
+	src := `
+suite "tt" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type = "tool-trace"
+      tool_trace {
+        sequence       = ["read_file", "edit_file"]
+        forbid_unknown = true
+        call "edit_file" {
+          min_calls     = 1
+          all_succeeded = true
+        }
+        call "write_file" {
+          max_calls = 0
+        }
+      }
+    }
+  }
+}
+`
+	path := writeTemp(t, "tooltrace.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	j := got.Tasks[0].Judge
+	if j.Type != "tool-trace" {
+		t.Fatalf("judge type = %q, want tool-trace", j.Type)
+	}
+	if j.ToolTrace == nil {
+		t.Fatal("ToolTrace is nil")
+	}
+	if len(j.ToolTrace.Sequence) != 2 || j.ToolTrace.Sequence[0] != "read_file" || j.ToolTrace.Sequence[1] != "edit_file" {
+		t.Errorf("Sequence = %v", j.ToolTrace.Sequence)
+	}
+	if !j.ToolTrace.ForbidUnknown {
+		t.Error("ForbidUnknown = false, want true")
+	}
+	if len(j.ToolTrace.Calls) != 2 {
+		t.Fatalf("got %d call expectations, want 2", len(j.ToolTrace.Calls))
+	}
+	if j.ToolTrace.Calls[0].Name != "edit_file" || j.ToolTrace.Calls[0].MinCalls != 1 || !j.ToolTrace.Calls[0].AllSucceeded {
+		t.Errorf("Calls[0] = %#v", j.ToolTrace.Calls[0])
+	}
+	if j.ToolTrace.Calls[1].Name != "write_file" || j.ToolTrace.Calls[1].MaxCalls == nil || *j.ToolTrace.Calls[1].MaxCalls != 0 {
+		t.Errorf("Calls[1] = %#v", j.ToolTrace.Calls[1])
+	}
+}
+
+// TestLoadSuiteHCL_ToolTraceRejectedOnWrongType asserts a tool_trace block
+// under a non-tool-trace judge type is a parse error, mirroring the nested
+// judge-block guard.
+func TestLoadSuiteHCL_ToolTraceRejectedOnWrongType(t *testing.T) {
+	src := `
+suite "tt" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type = "file-exists"
+      paths = ["a.txt"]
+      tool_trace {
+        sequence = ["read_file"]
+      }
+    }
+  }
+}
+`
+	path := writeTemp(t, "tooltrace-bad.hcl", src)
+	if _, err := LoadSuiteHCL(path); err == nil {
+		t.Fatal("expected error for tool_trace block on file-exists judge, got none")
+	}
+}
+
+// TestLoadSuiteHCL_ToolTraceRequiresBlock asserts a tool-trace judge with
+// no tool_trace block is rejected at parse time.
+func TestLoadSuiteHCL_ToolTraceRequiresBlock(t *testing.T) {
+	src := `
+suite "tt" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type = "tool-trace"
+    }
+  }
+}
+`
+	path := writeTemp(t, "tooltrace-empty.hcl", src)
+	if _, err := LoadSuiteHCL(path); err == nil {
+		t.Fatal("expected error for tool-trace judge with no tool_trace block, got none")
+	}
+}
+
 // TestLoadSuiteHCL_ValidationErrors covers all the guard-rails: missing
 // suite ID, missing task ID, no tasks, invalid judge.type, invalid
 // composite require value, and recursive convertJudge errors surfacing
