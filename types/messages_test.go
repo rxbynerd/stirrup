@@ -110,3 +110,73 @@ func TestToolCall_InternalNameOmittedOnWire(t *testing.T) {
 		}
 	})
 }
+
+// TestToolDefinition_PresentationByteIdentical pins the issue #222 invariant
+// that the additive Presentation bundle is invisible on the default JSON
+// encoding: a tool definition with no Presentation must serialise byte-for-byte
+// the way it did before the field existed, and a tool WITH Presentation must
+// still omit it (json:"-") so the Anthropic verbatim path never leaks unknown
+// keys onto the wire. Adapters surface Presentation by reading it explicitly,
+// never via the default encoding.
+func TestToolDefinition_PresentationByteIdentical(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object"}`)
+	bare := ToolDefinition{Name: "demo", Description: "d", InputSchema: schema}
+	bareBytes, err := json.Marshal(bare)
+	if err != nil {
+		t.Fatalf("marshal bare: %v", err)
+	}
+
+	withPres := ToolDefinition{
+		Name:        "demo",
+		Description: "d",
+		InputSchema: schema,
+		Presentation: &ToolPresentation{
+			InputExamples: []json.RawMessage{json.RawMessage(`{"a":1}`)},
+			Annotations:   &ToolAnnotations{Title: "Demo"},
+		},
+	}
+	withBytes, err := json.Marshal(withPres)
+	if err != nil {
+		t.Fatalf("marshal with presentation: %v", err)
+	}
+
+	if string(bareBytes) != string(withBytes) {
+		t.Errorf("Presentation leaked onto the wire:\n bare = %s\n with = %s", bareBytes, withBytes)
+	}
+	if strings.Contains(string(withBytes), "Presentation") || strings.Contains(string(withBytes), "inputExamples") || strings.Contains(string(withBytes), "annotations") {
+		t.Errorf("Presentation fields must not appear on the default encoding, got: %s", withBytes)
+	}
+}
+
+// TestToolPresentation_RoundTrip confirms ToolPresentation and ToolAnnotations
+// marshal and unmarshal losslessly when serialised directly (e.g. by an
+// adapter that opts to project them), including the *bool unset-vs-false
+// distinction on the annotation hints.
+func TestToolPresentation_RoundTrip(t *testing.T) {
+	readOnly := true
+	pres := ToolPresentation{
+		InputExamples: []json.RawMessage{json.RawMessage(`{"x":"y"}`)},
+		Annotations: &ToolAnnotations{
+			Title:        "Title",
+			ReadOnlyHint: &readOnly,
+			// DestructiveHint deliberately left unset.
+		},
+	}
+	b, err := json.Marshal(pres)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got ToolPresentation
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Annotations == nil || got.Annotations.ReadOnlyHint == nil || !*got.Annotations.ReadOnlyHint {
+		t.Errorf("ReadOnlyHint did not round-trip: %+v", got.Annotations)
+	}
+	if got.Annotations.DestructiveHint != nil {
+		t.Errorf("unset DestructiveHint must stay nil, got %v", *got.Annotations.DestructiveHint)
+	}
+	if len(got.InputExamples) != 1 || string(got.InputExamples[0]) != `{"x":"y"}` {
+		t.Errorf("InputExamples did not round-trip: %v", got.InputExamples)
+	}
+}
