@@ -387,6 +387,17 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	providerRetryWallClockBudget, _ := f.GetDuration("provider-retry-wall-clock")
 	workspaceExportTo, _ := f.GetString("export-workspace-to")
 	toolDispatchMaxParallel, _ := f.GetInt("max-tool-parallel")
+	escalateToolChoice, _ := f.GetBool("escalate-tool-choice")
+	// Read the retry cap only when the operator set it explicitly. Mirrors
+	// the applyOverrides Changed() discipline: forwarding the flag's
+	// default (0) unconditionally would clobber a base-config MaxRetries
+	// with 0. The clobber is benign today (0 resolves to the library
+	// default) but a future non-zero-default knob would silently override
+	// a file value otherwise.
+	escalateToolChoiceMaxRetries := 0
+	if f.Changed("escalate-tool-choice-max-retries") {
+		escalateToolChoiceMaxRetries, _ = f.GetInt("escalate-tool-choice-max-retries")
+	}
 	batch, _ := f.GetBool("batch")
 
 	var queryParams map[string]string
@@ -465,6 +476,8 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		ProviderRetryWallClockBudget: providerRetryWallClockBudget,
 		WorkspaceExportTo:            workspaceExportTo,
 		ToolDispatchMaxParallel:      toolDispatchMaxParallel,
+		EscalateToolChoice:           escalateToolChoice,
+		EscalateToolChoiceMaxRetries: escalateToolChoiceMaxRetries,
 		Batch:                        batch,
 	})
 }

@@ -487,6 +487,16 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 	providers = wrappedProviders
 
+	// Tool-choice escalation policy (#230). OFF by default: when the
+	// operator did not opt in via RunConfig.ToolChoiceEscalation,
+	// EffectiveToolChoiceEscalationMaxRetries returns 0 and
+	// buildEscalationPolicy returns nil, so the loop's escalation path is
+	// inert and a bare run is unchanged. The capability resolver is the
+	// quirks registry the default provider adapter resolves against, so
+	// the native-vs-prompt choice matches the wire shape the adapter would
+	// actually serialise (including a compat profile's registry).
+	escalation := buildEscalationPolicy(config.EffectiveToolChoiceEscalationMaxRetries(), prov)
+
 	loop := &AgenticLoop{
 		Provider:     prov,
 		Providers:    providers,
@@ -500,6 +510,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Permissions:  pp,
 		Git:          gs,
 		GuardRail:    gr,
+		Escalation:   escalation,
 		Transport:    tp,
 		Trace:        te,
 		Tracer:       tracer,
@@ -541,6 +552,28 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 
 	return loop, nil
+}
+
+// buildEscalationPolicy constructs the tool-choice escalation policy
+// (#230) injected into the loop. A maxRetries <= 0 returns nil — the
+// OFF-by-default case where the loop's escalation path is a no-op — so the
+// only way to enable escalation is an explicit RunConfig.ToolChoiceEscalation
+// with Enabled:true (which makes EffectiveToolChoiceEscalationMaxRetries
+// positive).
+//
+// The capability resolver is quirks.DefaultRegistry(): tool-choice support
+// is a cross-provider capability declared by each provider type's base
+// rule, and no compat profile overrides it, so the default registry is the
+// authoritative source for the native-vs-prompt fallback decision and
+// matches what every adapter resolves against. The _ provider argument is
+// reserved so a future per-provider registry (e.g. a compat profile that
+// disables required tool choice for a specific gateway) can be threaded in
+// without changing the call site.
+func buildEscalationPolicy(maxRetries int, _ provider.ProviderAdapter) EscalationPolicy {
+	if maxRetries <= 0 {
+		return nil
+	}
+	return newDefaultEscalationPolicy(maxRetries, quirks.DefaultRegistry())
 }
 
 func buildProviders(ctx context.Context, config *types.RunConfig, secrets security.SecretStore) (provider.ProviderAdapter, map[string]provider.ProviderAdapter, error) {

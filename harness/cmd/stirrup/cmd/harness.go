@@ -241,6 +241,16 @@ type harnessCLIOptions struct {
 	// EffectiveToolDispatchMaxParallel.
 	ToolDispatchMaxParallel int
 
+	// EscalateToolChoice opts the run into the missed-tool recovery
+	// (issue #230). When false (the default) no
+	// ToolChoiceEscalation sub-config is persisted, so the loop's
+	// escalation path stays inert. EscalateToolChoiceMaxRetries tunes the
+	// per-inner-loop retry cap; zero defers to the library default
+	// (DefaultToolChoiceEscalationMaxRetries) and is ignored entirely
+	// unless EscalateToolChoice is set.
+	EscalateToolChoice           bool
+	EscalateToolChoiceMaxRetries int
+
 	// Batch opts the run into async batch submission (issue #136).
 	// The flag carries only the Enabled bit; operators wanting any of
 	// the other BatchProviderConfig fields (MaxWaitSeconds,
@@ -489,6 +499,19 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 	// that the operator did not voice.
 	if opts.ToolDispatchMaxParallel > 0 {
 		config.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: opts.ToolDispatchMaxParallel}
+	}
+
+	// Tool-choice escalation (issue #230). Only persist the sub-config
+	// when the operator opted in via --escalate-tool-choice; leaving it
+	// nil keeps the loop's escalation path inert so a bare run is
+	// unchanged. The retry-cap flag is carried through verbatim — zero is
+	// legal and resolves to DefaultToolChoiceEscalationMaxRetries via
+	// EffectiveToolChoiceEscalationMaxRetries.
+	if opts.EscalateToolChoice {
+		config.ToolChoiceEscalation = &types.ToolChoiceEscalationConfig{
+			Enabled:    true,
+			MaxRetries: opts.EscalateToolChoiceMaxRetries,
+		}
 	}
 
 	// Batch (issue #136). --batch carries only the Enabled bit; every
@@ -1119,6 +1142,32 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			// the mode-toggle workflow the flag is built for.
 			cfg.Provider.Batch.Enabled = false
 		}
+	}
+
+	// Tool-choice escalation (issue #230). --escalate-tool-choice flips
+	// the Enabled bit, preserving any file-supplied MaxRetries so a
+	// follow-up toggle does not require re-supplying --config (same
+	// mode-toggle rationale as --batch). --escalate-tool-choice-max-retries
+	// pins the cap independently; like --max-tool-parallel an explicit
+	// override only takes effect when set, and the loop resolves an unset
+	// cap to DefaultToolChoiceEscalationMaxRetries.
+	if changed("escalate-tool-choice") {
+		enabled, _ := f.GetBool("escalate-tool-choice")
+		if enabled {
+			if cfg.ToolChoiceEscalation == nil {
+				cfg.ToolChoiceEscalation = &types.ToolChoiceEscalationConfig{}
+			}
+			cfg.ToolChoiceEscalation.Enabled = true
+		} else if cfg.ToolChoiceEscalation != nil {
+			cfg.ToolChoiceEscalation.Enabled = false
+		}
+	}
+	if changed("escalate-tool-choice-max-retries") {
+		mr, _ := f.GetInt("escalate-tool-choice-max-retries")
+		if cfg.ToolChoiceEscalation == nil {
+			cfg.ToolChoiceEscalation = &types.ToolChoiceEscalationConfig{}
+		}
+		cfg.ToolChoiceEscalation.MaxRetries = mr
 	}
 	return nil
 }

@@ -564,6 +564,7 @@ func TestToolFailureCategory_EnumIsValid(t *testing.T) {
 		observability.ToolFailureProviderStream,
 		observability.ToolFailureStallRepeated,
 		observability.ToolFailureStallConsecutiveFailures,
+		observability.ToolFailureNoToolWhenRequired,
 	}
 	for _, c := range known {
 		if !c.IsValid() {

@@ -208,6 +208,15 @@ type RunConfig struct {
 	// fields (per-tool overrides, semaphore strategy) land without a
 	// breaking change.
 	ToolDispatch *ToolDispatchConfig `json:"toolDispatch,omitempty"`
+
+	// ToolChoiceEscalation configures the bounded recovery the loop runs
+	// when the model returns a final answer without calling any tool on a
+	// turn the harness expected tool use (#230). Nil — the default — means
+	// the feature is OFF: a bare run takes no extra turns and is byte-for-
+	// byte unchanged. Set Enabled=true to opt in; see
+	// ToolChoiceEscalationConfig for the per-knob semantics and the
+	// mode-aware policy that decides when a no-tool answer is suspicious.
+	ToolChoiceEscalation *ToolChoiceEscalationConfig `json:"toolChoiceEscalation,omitempty"`
 }
 
 // ObservabilityConfig carries operator-supplied labels that are promoted to
@@ -900,6 +909,65 @@ type ResourceLimits struct {
 // ValidateRunConfig.
 type ToolDispatchConfig struct {
 	MaxParallel int `json:"maxParallel,omitempty"`
+}
+
+// ToolChoiceEscalationConfig configures the missed-tool recovery (#230).
+//
+// The feature is OFF by default: a nil *ToolChoiceEscalationConfig on the
+// RunConfig disables it entirely, and an explicit Enabled:false does the
+// same. When enabled, the loop watches the first assistant turn of an
+// inner-loop run: if tools are available, no tool call has happened yet,
+// and the model returns a final/text answer, the loop treats it as a
+// likely missed-tool failure and retries the turn — forcing native
+// required tool choice when the resolved provider supports it, or
+// injecting a stronger-prompt message otherwise.
+//
+// The trigger is intentionally conservative (see the loop's escalation
+// policy). It never fires when no tools are available, and it never
+// exceeds MaxRetries.
+type ToolChoiceEscalationConfig struct {
+	// Enabled turns the recovery on. Default false (safe): a bare run
+	// must not change behaviour, so the loop only escalates when an
+	// operator explicitly opts in.
+	Enabled bool `json:"enabled,omitempty"`
+
+	// MaxRetries caps the number of forced retries per inner-loop run.
+	// Zero (or a nil config) resolves to DefaultToolChoiceEscalationMaxRetries
+	// via EffectiveToolChoiceEscalationMaxRetries; values outside
+	// [1, MaxToolChoiceEscalationMaxRetries] are rejected by
+	// ValidateRunConfig. The cap bounds the recovery so a model that
+	// keeps refusing to call a tool cannot drive an unbounded retry loop.
+	MaxRetries int `json:"maxRetries,omitempty"`
+}
+
+const (
+	// DefaultToolChoiceEscalationMaxRetries is the per-inner-loop forced
+	// retry cap applied when escalation is enabled but MaxRetries is unset.
+	// One matches the issue #230 default: a single recovery attempt is the
+	// conservative starting point.
+	DefaultToolChoiceEscalationMaxRetries = 1
+
+	// MaxToolChoiceEscalationMaxRetries is the hard ceiling on
+	// ToolChoiceEscalationConfig.MaxRetries enforced by ValidateRunConfig.
+	// Bounds the additional provider calls a single run can spend on
+	// missed-tool recovery.
+	MaxToolChoiceEscalationMaxRetries = 3
+)
+
+// EffectiveToolChoiceEscalationMaxRetries returns the forced-retry cap the
+// loop should apply. Returns 0 when escalation is disabled (nil config or
+// Enabled:false) so the loop's escalation path is a no-op; otherwise
+// returns DefaultToolChoiceEscalationMaxRetries when MaxRetries is unset,
+// or the configured value verbatim (ValidateRunConfig has already bounded
+// it to [1, MaxToolChoiceEscalationMaxRetries]).
+func (rc *RunConfig) EffectiveToolChoiceEscalationMaxRetries() int {
+	if rc == nil || rc.ToolChoiceEscalation == nil || !rc.ToolChoiceEscalation.Enabled {
+		return 0
+	}
+	if rc.ToolChoiceEscalation.MaxRetries == 0 {
+		return DefaultToolChoiceEscalationMaxRetries
+	}
+	return rc.ToolChoiceEscalation.MaxRetries
 }
 
 // EditStrategyConfig selects the edit strategy implementation.
@@ -1720,6 +1788,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateGuardRailConfig(config.GuardRail, "guardRail", false, &errs)
 	validateObservabilityConfig(config.Observability, &errs)
 	validateToolDispatchConfig(config.ToolDispatch, &errs)
+	validateToolChoiceEscalationConfig(config.ToolChoiceEscalation, &errs)
 	validateBatchConfig(config, &errs)
 
 	if len(errs) > 0 {
@@ -2098,6 +2167,24 @@ func validateToolDispatchConfig(cfg *ToolDispatchConfig, errs *[]string) {
 		// have to infer from "between 1 and 16" whether 0 is also
 		// rejected. Zero IS legal and resolves to the library default.
 		*errs = append(*errs, fmt.Sprintf("toolDispatch.maxParallel must be 0 (use default) or between 1 and %d", MaxToolDispatchMaxParallel))
+	}
+}
+
+// validateToolChoiceEscalationConfig bounds
+// ToolChoiceEscalation.MaxRetries to MaxToolChoiceEscalationMaxRetries. A
+// nil config is legal (feature OFF) and so is an explicit zero — both
+// resolve via EffectiveToolChoiceEscalationMaxRetries (to "disabled" and
+// DefaultToolChoiceEscalationMaxRetries respectively), so an unmarshalled
+// empty sub-message survives validation. MaxRetries only matters when
+// Enabled is true, but the bound is enforced regardless so a disabled
+// config carrying a nonsensical value still fails loudly rather than
+// silently surviving until a later enable.
+func validateToolChoiceEscalationConfig(cfg *ToolChoiceEscalationConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	if cfg.MaxRetries < 0 || cfg.MaxRetries > MaxToolChoiceEscalationMaxRetries {
+		*errs = append(*errs, fmt.Sprintf("toolChoiceEscalation.maxRetries must be 0 (use default) or between 1 and %d", MaxToolChoiceEscalationMaxRetries))
 	}
 }
 

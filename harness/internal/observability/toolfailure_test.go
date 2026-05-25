@@ -32,6 +32,7 @@ func TestToolFailureCategory_KnownValuesAreValid(t *testing.T) {
 		ToolFailureProviderStream,
 		ToolFailureStallRepeated,
 		ToolFailureStallConsecutiveFailures,
+		ToolFailureNoToolWhenRequired,
 	}
 	for _, c := range known {
 		if !c.IsValid() {

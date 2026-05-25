@@ -4207,6 +4207,66 @@ func TestApplyOverrides_ToolDispatchMaxParallelDefaultDoesNotOverride(t *testing
 	}
 }
 
+// TestApplyOverrides_EscalateToolChoiceEnables pins that
+// --escalate-tool-choice flips Enabled on cfg.ToolChoiceEscalation (issue
+// #230), allocating the sub-config when the file omitted it.
+func TestApplyOverrides_EscalateToolChoiceEnables(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	if err := cmd.Flags().Set("escalate-tool-choice", "true"); err != nil {
+		t.Fatalf("set escalate-tool-choice: %v", err)
+	}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.ToolChoiceEscalation == nil || !cfg.ToolChoiceEscalation.Enabled {
+		t.Fatalf("--escalate-tool-choice should enable escalation, got %+v", cfg.ToolChoiceEscalation)
+	}
+}
+
+// TestApplyOverrides_EscalateToolChoiceDefaultDoesNotEnable pins the
+// OFF-by-default safety: without the flag, no escalation sub-config is
+// synthesised so a bare run stays inert.
+func TestApplyOverrides_EscalateToolChoiceDefaultDoesNotEnable(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.ToolChoiceEscalation != nil {
+		t.Errorf("escalation must stay nil without the flag, got %+v", cfg.ToolChoiceEscalation)
+	}
+}
+
+// TestApplyOverrides_EscalateToolChoiceMaxRetries pins that the retry-cap
+// flag lands on cfg.ToolChoiceEscalation.MaxRetries, allocating the
+// sub-config when needed.
+func TestApplyOverrides_EscalateToolChoiceMaxRetries(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	if err := cmd.Flags().Set("escalate-tool-choice", "true"); err != nil {
+		t.Fatalf("set escalate-tool-choice: %v", err)
+	}
+	if err := cmd.Flags().Set("escalate-tool-choice-max-retries", "2"); err != nil {
+		t.Fatalf("set escalate-tool-choice-max-retries: %v", err)
+	}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if cfg.ToolChoiceEscalation == nil {
+		t.Fatal("escalation sub-config should be populated")
+	}
+	if cfg.ToolChoiceEscalation.MaxRetries != 2 {
+		t.Errorf("MaxRetries = %d, want 2", cfg.ToolChoiceEscalation.MaxRetries)
+	}
+}
+
 // TestRunHarness_OutputRunConfigWritesFile pins the dry-run capture
 // surface from issue #240: --output-runconfig writes the resolved
 // RunConfig to disk, the loop is not invoked, and the process exits

@@ -110,6 +110,12 @@ const (
 	// maxConsecutiveFailures consecutive failed calls. Fires from
 	// planAndDispatch when stall.recordToolCall returns "tool_failures".
 	ToolFailureStallConsecutiveFailures ToolFailureCategory = "stall_consecutive_failures"
+
+	// ToolFailureNoToolWhenRequired — model returned without calling any
+	// tool when the harness required tool use (Wave 4 / #230). Fires from
+	// the loop's tool-choice escalation path when a first-turn no-tool
+	// answer is detected on a workspace-dependent task.
+	ToolFailureNoToolWhenRequired ToolFailureCategory = "no_tool_when_required"
 )
 
 // allToolFailureCategories is the closed set of valid category values.
@@ -135,6 +141,7 @@ var allToolFailureCategories = map[ToolFailureCategory]struct{}{
 	ToolFailureProviderStream:           {},
 	ToolFailureStallRepeated:            {},
 	ToolFailureStallConsecutiveFailures: {},
+	ToolFailureNoToolWhenRequired:       {},
 }
 
 // IsValid reports whether c is a recognised tool failure category. Used by

@@ -4741,6 +4741,80 @@ func TestValidateRunConfig_ToolDispatchRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_ToolChoiceEscalationRejectsOutOfRange pins the
+// MaxRetries bound (#230): values outside [1, MaxToolChoiceEscalationMaxRetries]
+// are rejected with the "0 (use default)" sentinel called out, mirroring
+// the ToolDispatch bound. The check fires regardless of Enabled so a
+// disabled config carrying a bad value still fails loudly.
+func TestValidateRunConfig_ToolChoiceEscalationRejectsOutOfRange(t *testing.T) {
+	for _, n := range []int{-1, MaxToolChoiceEscalationMaxRetries + 1, 9_000} {
+		t.Run(fmt.Sprintf("max_retries=%d", n), func(t *testing.T) {
+			c := validConfig()
+			c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: true, MaxRetries: n}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for toolChoiceEscalation.maxRetries=%d", n)
+			}
+			if !strings.Contains(err.Error(), "toolChoiceEscalation.maxRetries") {
+				t.Errorf("expected error to mention toolChoiceEscalation.maxRetries, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "0 (use default)") {
+				t.Errorf("expected error to call out the accepted zero sentinel, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_ToolChoiceEscalationAcceptsValid pins the accepted
+// shapes: nil (feature off), an explicit zero (defaults), and a bounded
+// positive cap all pass validation, and the Effective accessor resolves
+// each to the documented value.
+func TestValidateRunConfig_ToolChoiceEscalationAcceptsValid(t *testing.T) {
+	t.Run("nil_disabled", func(t *testing.T) {
+		c := validConfig()
+		c.ToolChoiceEscalation = nil
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("nil escalation must validate: %v", err)
+		}
+		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != 0 {
+			t.Errorf("nil config effective retries = %d, want 0 (disabled)", got)
+		}
+	})
+	t.Run("enabled_default", func(t *testing.T) {
+		c := validConfig()
+		c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: true}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("enabled escalation with zero retries must validate: %v", err)
+		}
+		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != DefaultToolChoiceEscalationMaxRetries {
+			t.Errorf("enabled+zero effective retries = %d, want %d", got, DefaultToolChoiceEscalationMaxRetries)
+		}
+	})
+	t.Run("disabled_with_retries_stays_disabled", func(t *testing.T) {
+		c := validConfig()
+		c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: false, MaxRetries: 2}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("disabled escalation must validate: %v", err)
+		}
+		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != 0 {
+			t.Errorf("disabled effective retries = %d, want 0", got)
+		}
+	})
+	t.Run("explicit_cap_2", func(t *testing.T) {
+		// Exercises the third return branch of
+		// EffectiveToolChoiceEscalationMaxRetries (Enabled && MaxRetries > 0
+		// → return the configured value verbatim).
+		c := validConfig()
+		c.ToolChoiceEscalation = &ToolChoiceEscalationConfig{Enabled: true, MaxRetries: 2}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("enabled escalation with explicit cap must validate: %v", err)
+		}
+		if got := c.EffectiveToolChoiceEscalationMaxRetries(); got != 2 {
+			t.Errorf("explicit cap effective retries = %d, want 2", got)
+		}
+	})
+}
+
 // --- BatchProviderConfig ---
 
 // batchValidConfig is the baseline for the batch suite: a non-execution
