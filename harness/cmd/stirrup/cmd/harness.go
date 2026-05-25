@@ -1492,25 +1492,29 @@ func writePreflightJSON(w io.Writer, report *core.PreflightReport) error {
 // writePreflightText renders a human-readable per-step report to w. Each
 // line leads with the status so an operator scanning the output spots a
 // FAIL immediately; the remediation hint (when present) is indented under
-// the failing step.
+// the failing step. Built into a strings.Builder and written once,
+// matching printHarnessUsageHint — the report is a best-effort stderr
+// surface, so a write failure to stderr is not propagated.
 func writePreflightText(w io.Writer, report *core.PreflightReport) {
-	fmt.Fprintln(w, "Dry-run preflight:")
+	var b strings.Builder
+	b.WriteString("Dry-run preflight:\n")
 	for _, s := range report.Steps {
 		label := strings.ToUpper(string(s.Status))
 		if s.Detail != "" {
-			fmt.Fprintf(w, "  [%-4s] %s: %s\n", label, s.Name, s.Detail)
+			fmt.Fprintf(&b, "  [%-4s] %s: %s\n", label, s.Name, s.Detail)
 		} else {
-			fmt.Fprintf(w, "  [%-4s] %s\n", label, s.Name)
+			fmt.Fprintf(&b, "  [%-4s] %s\n", label, s.Name)
 		}
 		if s.Status == core.PreflightFail && s.Hint != "" {
-			fmt.Fprintf(w, "         hint: %s\n", s.Hint)
+			fmt.Fprintf(&b, "         hint: %s\n", s.Hint)
 		}
 	}
 	if report.OK {
-		fmt.Fprintln(w, "Result: OK (all steps ok or skipped)")
+		b.WriteString("Result: OK (all steps ok or skipped)\n")
 	} else {
-		fmt.Fprintf(w, "Result: FAIL (%d of %d step(s) did not pass)\n", failedStepCount(report), len(report.Steps))
+		fmt.Fprintf(&b, "Result: FAIL (%d of %d step(s) did not pass)\n", failedStepCount(report), len(report.Steps))
 	}
+	_, _ = io.WriteString(w, b.String())
 }
 
 // applyAnthropicWIFOverrides folds the Anthropic-WIF flag surface and
