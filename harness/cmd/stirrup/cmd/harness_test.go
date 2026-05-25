@@ -5479,6 +5479,53 @@ func TestResolvePromptForRun_NonInteractiveReturnsOpaqueError(t *testing.T) {
 	}
 }
 
+// TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint pins the
+// spec edge case (issue #249): even on an interactive terminal, a
+// resolvable prompt must short-circuit before the hint gate. A
+// STIRRUP_PROMPT-supplied prompt fills cfg.Prompt, so resolvePromptForRun
+// returns nil — the hint sentinel must NOT fire.
+func TestResolvePromptForRun_InteractiveWithStirrupPromptNoHint(t *testing.T) {
+	orig := stderrIsInteractive
+	stderrIsInteractive = func() bool { return true }
+	defer func() { stderrIsInteractive = orig }()
+	t.Setenv("STIRRUP_PROMPT", "task from env")
+
+	cmd := newTestHarnessCommand()
+	cfg := &types.RunConfig{}
+	err := resolvePromptForRun(cmd, cfg)
+	if err != nil {
+		t.Fatalf("resolvePromptForRun with STIRRUP_PROMPT on a TTY = %v, want nil (no hint)", err)
+	}
+	if cfg.Prompt != "task from env" {
+		t.Errorf("cfg.Prompt = %q, want the STIRRUP_PROMPT value", cfg.Prompt)
+	}
+}
+
+// TestResolvePromptForRun_InteractiveWithConfigPromptNoHint pins the
+// companion spec edge case: a prompt supplied by a --config file's
+// `prompt` field is already on cfg.Prompt by the time resolvePromptForRun
+// runs (BuildRunConfig loads the base before resolving the prompt chain).
+// The hint sentinel must NOT fire on an interactive terminal when a
+// prompt is already present.
+func TestResolvePromptForRun_InteractiveWithConfigPromptNoHint(t *testing.T) {
+	orig := stderrIsInteractive
+	stderrIsInteractive = func() bool { return true }
+	defer func() { stderrIsInteractive = orig }()
+	t.Setenv("STIRRUP_PROMPT", "")
+
+	cmd := newTestHarnessCommand()
+	// Models a --config file whose `prompt` field landed on cfg before
+	// the prompt-resolution chain runs.
+	cfg := &types.RunConfig{Prompt: "prompt-from-config"}
+	err := resolvePromptForRun(cmd, cfg)
+	if err != nil {
+		t.Fatalf("resolvePromptForRun with a config-supplied prompt on a TTY = %v, want nil (no hint)", err)
+	}
+	if cfg.Prompt != "prompt-from-config" {
+		t.Errorf("cfg.Prompt = %q, want the config value preserved", cfg.Prompt)
+	}
+}
+
 // TestRunHarness_BareInteractivePrintsHintAndExitsZero drives the full
 // runHarness path on a TTY with no prompt: it must print the grouped
 // hint to the command's stderr and return nil (exit 0). The
@@ -5488,14 +5535,15 @@ func TestRunHarness_BareInteractivePrintsHintAndExitsZero(t *testing.T) {
 	orig := stderrIsInteractive
 	stderrIsInteractive = func() bool { return true }
 	defer func() { stderrIsInteractive = orig }()
-	// Force colour off so the captured text is plain and stable
-	// regardless of the test host's NO_COLOR / TTY state — the colour
-	// branch is pinned separately by TestPrintHarnessUsageHint_*.
-	t.Setenv("NO_COLOR", "1")
 
 	cmd := newTestHarnessCommand()
 	var errBuf bytes.Buffer
 	cmd.SetErr(&errBuf)
+	// runHarness now decides colour against cmd.ErrOrStderr() — the
+	// injected *bytes.Buffer is not an *os.File, so shouldColor returns
+	// false and the captured text is plain regardless of the host's TTY /
+	// NO_COLOR state. (The colour branch is pinned by
+	// TestPrintHarnessUsageHint_ColorEmitsAnsi.)
 
 	getOut := captureStdout(t)
 	err := runHarness(cmd, nil)
@@ -5506,6 +5554,11 @@ func TestRunHarness_BareInteractivePrintsHintAndExitsZero(t *testing.T) {
 	hint := errBuf.String()
 	if !strings.Contains(hint, "stirrup harness") || !strings.Contains(hint, "USAGE") {
 		t.Errorf("expected grouped hint on stderr, got: %q", hint)
+	}
+	// A non-*os.File destination must never receive ANSI: deciding colour
+	// off the same writer is the writer-consistency fix this asserts.
+	if strings.Contains(hint, "\x1b[") {
+		t.Errorf("hint written to a non-TTY buffer must not contain ANSI escapes, got: %q", hint)
 	}
 	if stdout != "" {
 		t.Errorf("grouped hint must go to stderr, not stdout; stdout = %q", stdout)
