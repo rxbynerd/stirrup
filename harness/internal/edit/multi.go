@@ -112,6 +112,12 @@ func (m *MultiStrategy) ToolDefinition() types.ToolDefinition {
 			"  - 'patch' applies a unified diff. Requires diff. Useful for multi-hunk edits.\n" +
 			"Example (replace): {\"path\": \"main.go\", \"operation\": \"replace\", \"old_string\": \"return nil\", \"new_string\": \"return err\"}",
 		InputSchema: multiSchema,
+		// #222 structured mirror of the worked example above; editStrategyTool
+		// propagates it onto the registered tool. Pinned to the description by
+		// TestBuiltinInputExamples_MatchDescription.
+		Presentation: &types.ToolPresentation{
+			InputExamples: []json.RawMessage{json.RawMessage(`{"path": "main.go", "operation": "replace", "old_string": "return nil", "new_string": "return err"}`)},
+		},
 	}
 }
 

@@ -165,6 +165,10 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			// JSON example with `\\b`, which JSON parsers then decode to
 			// `\b` for the regex engine.
 			"Example: {\"pattern\": \"func ReadFile\\\\b\", \"include\": [\"*.go\"], \"path\": \"harness/internal\"}",
+		// #222 structured example. The `\\b` here matches the runtime description
+		// substring (the Go source double-escaped it once); pinned by
+		// TestBuiltinInputExamples_MatchDescription.
+		InputExamples:     []json.RawMessage{json.RawMessage(`{"pattern": "func ReadFile\\b", "include": ["*.go"], "path": "harness/internal"}`)},
 		InputSchema:       grepFilesSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,
@@ -303,6 +307,7 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 			"The name field is a glob (filepath.Match syntax) matched against each file's basename only — '*.go', 'handler_*.ts' — not a regex and not a path. The '**' segment is not supported in name; use the include filter to narrow by path. " +
 			"Results are capped by max_results (default 100, max 1000). " +
 			"Example: {\"name\": \"*_test.go\", \"path\": \"harness/internal\", \"exclude\": [\"*/testdata/*\"]}",
+		InputExamples:     []json.RawMessage{json.RawMessage(`{"name": "*_test.go", "path": "harness/internal", "exclude": ["*/testdata/*"]}`)},
 		InputSchema:       findFilesSchema,
 		WorkspaceMutating: false,
 		RequiresApproval:  false,

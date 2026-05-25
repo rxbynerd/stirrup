@@ -697,9 +697,10 @@ func hasPositiveUseThis(desc string) bool {
 //
 // Contract: descriptions must contain at least one capital-`E` "Example"
 // marker followed by a valid JSON object. The rightmost such marker is
-// the one parsed. A future #222 migration that extracts examples into a
-// structured InputExamples []any field on types.ToolDefinition relies on
-// this contract — the helper here is the seam it would replace.
+// the one parsed. The #222 migration has landed — each built-in now carries
+// the same example as structured tool.Tool.InputExamples — so this helper is
+// the oracle TestBuiltinInputExamples_MatchDescription uses to pin those
+// structured examples byte-for-byte to the description.
 func extractJSONExample(desc string) (string, bool) {
 	marker := strings.LastIndex(desc, "Example")
 	if marker < 0 {
@@ -776,6 +777,50 @@ func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 			var probe map[string]any
 			if err := json.Unmarshal([]byte(example), &probe); err != nil {
 				t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
+			}
+		})
+	}
+}
+
+// TestBuiltinInputExamples_MatchDescription pins the #222 invariant that every
+// built-in tool's structured InputExamples is byte-identical to the worked
+// example embedded in its description. The two are authored side by side — the
+// description carries the human-readable example for providers whose schema
+// dialect rejects the `examples` keyword (Gemini), while InputExamples carries
+// the structured form adapters fold into the schema where supported — so this
+// guards against them drifting apart. edit_file is covered separately in the
+// edit package (it is registered via the factory's strategy wrapper).
+func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
+	mock := &mockExecutor{}
+	// Construct directly rather than via RegisterBuiltins so spawn_agent
+	// (registered by the factory in production) is covered here too. The nil
+	// spawner is fine: only Definition() is exercised, not the handler.
+	tools := []*tool.Tool{
+		ReadFileTool(mock),
+		WriteFileTool(mock),
+		ListDirectoryTool(mock),
+		GrepFilesTool(mock),
+		FindFilesTool(mock),
+		RunCommandTool(mock),
+		WebFetchTool(),
+		SpawnAgentTool(nil),
+	}
+	for _, tl := range tools {
+		t.Run(tl.Name, func(t *testing.T) {
+			want, ok := extractJSONExample(tl.Description)
+			if !ok {
+				t.Fatalf("description has no Example marker to mirror")
+			}
+			def := tl.Definition()
+			if def.Presentation == nil || len(def.Presentation.InputExamples) != 1 {
+				t.Fatalf("Definition().Presentation = %+v, want exactly one InputExample", def.Presentation)
+			}
+			if got := string(def.Presentation.InputExamples[0]); got != want {
+				t.Errorf("InputExamples[0] drifted from description:\n got = %s\nwant = %s", got, want)
+			}
+			var probe map[string]any
+			if err := json.Unmarshal(def.Presentation.InputExamples[0], &probe); err != nil {
+				t.Errorf("InputExamples[0] is not valid JSON: %v", err)
 			}
 		})
 	}

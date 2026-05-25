@@ -965,10 +965,19 @@ func editToolEnabled(enabled []string, actualName string) bool {
 
 func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 	definition := es.ToolDefinition()
+	// Carry the strategy's worked example (#222) onto the registered tool so
+	// Definition() folds it into the schema where the provider supports it.
+	// The strategy owns the example next to its description; nil Presentation
+	// (strategies without an example) leaves InputExamples unset.
+	var inputExamples []json.RawMessage
+	if definition.Presentation != nil {
+		inputExamples = definition.Presentation.InputExamples
+	}
 	return &tool.Tool{
 		Name:              definition.Name,
 		Description:       definition.Description,
 		InputSchema:       definition.InputSchema,
+		InputExamples:     inputExamples,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
 		Handler: func(ctx context.Context, input json.RawMessage) (string, error) {

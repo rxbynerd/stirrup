@@ -103,6 +103,17 @@ func TestMultiStrategy_DescriptionEnrichedShape(t *testing.T) {
 	if err := json.Unmarshal([]byte(example), &probe); err != nil {
 		t.Errorf("example is not valid JSON: %v\nexample: %s", err, example)
 	}
+
+	// #222: the structured InputExamples must mirror the description example
+	// byte-for-byte. editStrategyTool propagates this onto the registered
+	// edit_file tool, where adapters fold it into the schema `examples`
+	// keyword for providers that support it.
+	if def.Presentation == nil || len(def.Presentation.InputExamples) != 1 {
+		t.Fatalf("ToolDefinition().Presentation = %+v, want exactly one InputExample", def.Presentation)
+	}
+	if got := string(def.Presentation.InputExamples[0]); got != example {
+		t.Errorf("InputExamples[0] drifted from description:\n got = %s\nwant = %s", got, example)
+	}
 }
 
 // hasPositiveUseThis reports whether desc contains a "Use this" clause
@@ -188,10 +199,11 @@ func extractEditFileJSONExample(desc string) (string, bool) {
 // TestExtractEditFileJSONExample locks the contract of the
 // extractEditFileJSONExample helper directly. The helper duplicates the
 // extractJSONExample helper in harness/internal/tool/builtins; the two
-// suites run independently so the duplication is intentional. A future
-// #222 migration to a structured InputExamples []any field on
-// types.ToolDefinition would replace both helpers — this test pins the
-// edge-case behaviour so the migration stays mechanical.
+// suites run independently so the duplication is intentional. The #222
+// migration has landed — edit_file now carries structured InputExamples on
+// its ToolDefinition.Presentation — and this helper is the oracle
+// TestMultiStrategy_DescriptionEnrichedShape uses to pin that example to the
+// description.
 func TestExtractEditFileJSONExample(t *testing.T) {
 	cases := []struct {
 		name   string
