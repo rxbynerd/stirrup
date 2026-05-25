@@ -126,6 +126,9 @@ func (r *Registry) ResolveWithRules(providerType, model string) (ProviderQuirks,
 			OpenAI: OpenAIBehaviourFlags{
 				ExtraBodyFields: map[string]any{},
 			},
+			Gemini: GeminiBehaviourFlags{
+				SchemaUnsupportedFeatures: []string{},
+			},
 		},
 	}
 	if r == nil {

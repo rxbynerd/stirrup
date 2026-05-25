@@ -49,7 +49,11 @@ func TestOpenAIQuirks_O1MiniOmitsSamplingParams(t *testing.T) {
 	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
 		t.Fatalf("o1-mini: expected OmitSamplingParams=true, got false (rule not firing)")
 	}
-	body, err := json.Marshal(buildOpenAIRequest(params, true, q))
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -65,7 +69,11 @@ func TestOpenAIQuirks_GPT5NanoOmitsSamplingParams(t *testing.T) {
 	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
 		t.Fatalf("gpt-5-nano: expected OmitSamplingParams=true, got false (rule not firing)")
 	}
-	body, err := json.Marshal(buildOpenAIRequest(params, true, q))
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -84,7 +92,11 @@ func TestOpenAIQuirks_GPT5ChatLatestKeepsSamplingParams(t *testing.T) {
 	if q.BehaviourFlags.OpenAI.OmitSamplingParams {
 		t.Fatalf("gpt-5-chat-latest: expected OmitSamplingParams=false after carve-out, got true (specificity order broken)")
 	}
-	body, err := json.Marshal(buildOpenAIRequest(params, true, q))
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -104,7 +116,11 @@ func TestOpenAIQuirks_GPT4oNoQuirksApply(t *testing.T) {
 	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxCompletionTokens {
 		t.Fatalf("gpt-4o: expected TokenField=max_completion_tokens, got %v", q.BehaviourFlags.OpenAI.TokenField)
 	}
-	body, err := json.Marshal(buildOpenAIRequest(params, true, q))
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -140,7 +156,11 @@ func TestNoRegressionMaxCompletionTokensDefault(t *testing.T) {
 		t.Run(model, func(t *testing.T) {
 			params := quirksCanonicalParams(model)
 			q := quirks.DefaultRegistry().Resolve("openai-compatible", model)
-			body, err := json.Marshal(buildOpenAIRequest(params, true, q))
+			req, err := buildOpenAIRequest(params, true, q, nil)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			body, err := json.Marshal(req)
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}

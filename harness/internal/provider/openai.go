@@ -71,6 +71,14 @@ type OpenAICompatibleAdapter struct {
 	// compat-profile injection path overwrite it directly; the public
 	// API of the adapter does not need a WithRegistry option.
 	Registry *quirks.Registry
+
+	// strictSchemas memoises strict-mode schema rewrites within this
+	// adapter's lifetime so repeated turns in the same run do not
+	// re-walk the same JSON schema. Keyed by (model, tool-name,
+	// schema-hash) so a model switch inside a run still hits the
+	// normaliser. nil → no caching (NormalizeStrictSchema runs on
+	// every turn); the constructor initialises a non-nil instance.
+	strictSchemas *strictSchemaCache
 }
 
 // NewOpenAICompatibleAdapter creates an adapter for an OpenAI-compatible
@@ -104,11 +112,12 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
-		baseURL:      baseURL,
-		apiKeyHeader: auth.APIKeyHeader,
-		queryParams:  auth.QueryParams,
-		RetryPolicy:  retry,
-		Registry:     quirks.DefaultRegistry(),
+		baseURL:       baseURL,
+		apiKeyHeader:  auth.APIKeyHeader,
+		queryParams:   auth.QueryParams,
+		RetryPolicy:   retry,
+		Registry:      quirks.DefaultRegistry(),
+		strictSchemas: newStrictSchemaCache(),
 	}
 }
 
@@ -454,10 +463,17 @@ type openaiTool struct {
 }
 
 // openaiToolDefinition is the function definition inside an openaiTool.
+//
+// Strict is a *bool so the zero-value request body omits the field
+// entirely (matching the pre-#228 behaviour) and a quirks rule that
+// pins strict mode emits an explicit `"strict": true`. A pointer keeps
+// the wire shape from accidentally regressing for adapters that do
+// not opt in.
 type openaiToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Parameters  json.RawMessage `json:"parameters"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 // --- SSE chunk types ---
@@ -643,23 +659,41 @@ func translateMessages(system string, messages []types.Message) []openaiMessage 
 	return out
 }
 
-// translateTools converts stirrup ToolDefinitions to OpenAI's function format.
-func translateTools(tools []types.ToolDefinition) []openaiTool {
+// translateTools converts stirrup ToolDefinitions to OpenAI's function
+// format. When strict is true, every tool's Parameters is rewritten by
+// NormalizeStrictSchema and the Strict flag is set on the wire entry;
+// the cache memoises rewrites by (model, tool-name, schema-hash) so
+// repeated turns in the same run skip the recursive walk.
+//
+// Returns an error when strict-mode normalisation rejects a tool's
+// schema — the request must not be sent in that case (design §5
+// fail-closed contract).
+func translateTools(tools []types.ToolDefinition, strict bool, model string, cache *strictSchemaCache) ([]openaiTool, error) {
 	if len(tools) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]openaiTool, len(tools))
 	for i, t := range tools {
+		def := openaiToolDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  t.InputSchema,
+		}
+		if strict {
+			normalised, err := normalizeStrictWithCache(cache, model, t.Name, t.InputSchema)
+			if err != nil {
+				return nil, err
+			}
+			def.Parameters = normalised
+			truthy := true
+			def.Strict = &truthy
+		}
 		out[i] = openaiTool{
-			Type: "function",
-			Function: openaiToolDefinition{
-				Name:        t.Name,
-				Description: t.Description,
-				Parameters:  t.InputSchema,
-			},
+			Type:     "function",
+			Function: def,
 		}
 	}
-	return out
+	return out, nil
 }
 
 // mapFinishReason converts OpenAI's finish_reason to stirrup's stop reason.
@@ -688,22 +722,30 @@ func mapFinishReason(reason string) string {
 // sites that have access to a registry; the zero-value path remains
 // valid for callers that intentionally skip resolution.
 //
+// strictCache memoises strict-mode schema rewrites across turns. Pass nil
+// to disable caching (test/one-shot callers); the per-adapter cache is
+// the production path. Returns an error when a tool's schema fails the
+// strict-mode lint — the caller must NOT send a request in that case.
+//
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. top_p on Responses, equivalent constraints on Chat
-// Completions), change the return type to (json.RawMessage, error) and
-// apply a batch-specific projection here.
-func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks) openaiRequest {
+// Completions), apply a batch-specific projection here.
+func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks, strictCache *strictSchemaCache) (openaiRequest, error) {
+	tools, err := translateTools(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, params.Model, strictCache)
+	if err != nil {
+		return openaiRequest{}, err
+	}
 	return openaiRequest{
 		Model:              params.Model,
 		Messages:           translateMessages(params.System, params.Messages),
-		Tools:              translateTools(params.Tools),
+		Tools:              tools,
 		MaxTokens:          params.MaxTokens,
 		Temperature:        params.Temperature,
 		Stream:             stream,
 		TokenField:         q.BehaviourFlags.OpenAI.TokenField,
 		OmitSamplingParams: q.BehaviourFlags.OpenAI.OmitSamplingParams,
 		ExtraBodyFields:    q.BehaviourFlags.OpenAI.ExtraBodyFields,
-	}
+	}, nil
 }
 
 // Stream sends a streaming request to the OpenAI Chat Completions API and
@@ -777,7 +819,25 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		)
 	}
 
-	reqBody := buildOpenAIRequest(params, true, q)
+	// Debug-level log when strict-mode normalisation fires for this
+	// stream — paired with the rules list so an operator grepping for
+	// the line can name the rule that turned the flag on. The log is
+	// emitted before buildOpenAIRequest so a fail-closed lint error
+	// surfaces against a context that already shows strict-mode was
+	// active.
+	if q.BehaviourFlags.OpenAI.StrictMode {
+		logger.DebugContext(ctx, "openai strict mode applied",
+			slog.String("provider.type", "openai-compatible"),
+			slog.String("provider.model", params.Model),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
+		)
+	}
+
+	reqBody, err := buildOpenAIRequest(params, true, q, o.strictSchemas)
+	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, fmt.Errorf("build request: %w", err)
+	}
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

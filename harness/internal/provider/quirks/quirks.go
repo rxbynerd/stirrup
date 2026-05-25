@@ -92,6 +92,26 @@ type OpenAIBehaviourFlags struct {
 	// Secrets MUST NOT appear here — the registry self-test asserts that no
 	// ExtraBodyField value contains a secret:// reference.
 	ExtraBodyFields map[string]any `json:"extraBodyFields"`
+
+	// StrictMode, when true, instructs the adapter to mark every tool with
+	// `strict: true` and normalise the tool's JSON Schema into the shape
+	// OpenAI's structured-outputs path requires:
+	//
+	//   - every property listed in `required`,
+	//   - optional fields modelled as nullable (`["type","null"]`),
+	//   - `additionalProperties: false` at every object level.
+	//
+	// The normalisation is a pure rewrite: no field is deleted and no type
+	// is narrowed beyond nullability. When a schema contains a construct
+	// that cannot be expressed in strict form (e.g. an unsupported `oneOf`
+	// branch shape) the adapter fails the request before any wire bytes
+	// are sent.
+	//
+	// Opt-in per (provider, model) via quirks rules; operators do not
+	// toggle this directly. The OpenAI structured-outputs documentation
+	// names the models that support it — the BuiltinRules() entries
+	// reflect that surface and grow as it expands.
+	StrictMode bool `json:"strictMode"`
 }
 
 // OpenAITokenField controls which JSON key carries the token budget in an
@@ -153,6 +173,30 @@ type GeminiBehaviourFlags struct {
 	// flag is set to false for all models and no partial-args parsing
 	// occurs. Future rules can model-scope the V2 and V3 shapes.
 	StreamFunctionCallArgsShape GeminiStreamArgsShape `json:"streamFunctionCallArgsShape"`
+
+	// SchemaUnsupportedFeatures lists JSON Schema keywords that Vertex AI's
+	// function-declaration Schema dialect rejects for the resolved model.
+	// The Gemini adapter lints each tool's input schema against this list
+	// before serialising the request; a match fails the request before any
+	// wire bytes are sent.
+	//
+	// Represented as []string (rather than a typed enum) so a rule can name
+	// any JSON Schema keyword without a follow-up code change here.
+	// Recognised entries today: "pattern", "format", "oneOf", "anyOf",
+	// "allOf", "$ref", "patternProperties", "if", "then", "else", "not",
+	// "contains", "minContains", "maxContains", "unevaluatedProperties",
+	// "unevaluatedItems", "dependencies", "dependentRequired",
+	// "dependentSchemas", "propertyNames", "const", "examples".
+	// A linter that sees an entry it does not recognise treats it as
+	// "the keyword name on the schema" and matches by key — extension is
+	// data-only.
+	//
+	// Note: Gemini's Schema implementation also rejects `oneOf`, `anyOf`,
+	// `allOf`, and `$ref` at the structural level; ConvertSchema already
+	// errors on those for any model. The linter is the place to express
+	// model-scoped rejections beyond the structural floor — e.g. some
+	// Gemini families reject `pattern` and `format` outright.
+	SchemaUnsupportedFeatures []string `json:"schemaUnsupportedFeatures"`
 }
 
 // GeminiStreamArgsShape enumerates the streamFunctionCallArguments shapes.

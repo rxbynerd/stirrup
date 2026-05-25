@@ -54,6 +54,9 @@ func TestResolveEmptyRegistry(t *testing.T) {
 		OpenAI: OpenAIBehaviourFlags{
 			ExtraBodyFields: map[string]any{},
 		},
+		Gemini: GeminiBehaviourFlags{
+			SchemaUnsupportedFeatures: []string{},
+		},
 	}
 	if !reflect.DeepEqual(q.BehaviourFlags, want) {
 		t.Errorf("BehaviourFlags = %+v, want %+v", q.BehaviourFlags, want)
@@ -125,7 +128,7 @@ func TestBuiltinRulesValidate(t *testing.T) {
 			ValueOverrides: map[string]Value{},
 			EnumCoercions:  map[string]map[string]string{},
 			ReplayFields:   []string{},
-			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}, Gemini: GeminiBehaviourFlags{SchemaUnsupportedFeatures: []string{}}},
 		}
 		rule.Apply(&q)
 		for key := range q.FieldRenames {
@@ -147,6 +150,14 @@ func TestBuiltinRulesValidate(t *testing.T) {
 // The current Z.ai rule stores a bool (tool_stream: true) so the
 // check is trivially satisfied today; the test is structural
 // insurance for future rules.
+//
+// SchemaUnsupportedFeatures gets the same secret-scan: a future
+// first-party rule that accidentally embedded a dynamic
+// secret-referenced string in its unsupported-features list would
+// surface that string in the lint error path (which names the
+// keyword in the error message), bypassing redaction at the log
+// surface. Today's entries are safe literals ("pattern", "format")
+// so the check is defence-in-depth.
 func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
 	for i, rule := range BuiltinRules() {
 		if rule.Apply == nil {
@@ -158,7 +169,7 @@ func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
 			ValueOverrides: map[string]Value{},
 			EnumCoercions:  map[string]map[string]string{},
 			ReplayFields:   []string{},
-			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}, Gemini: GeminiBehaviourFlags{SchemaUnsupportedFeatures: []string{}}},
 		}
 		rule.Apply(&q)
 		for k, v := range q.BehaviourFlags.OpenAI.ExtraBodyFields {
@@ -168,6 +179,86 @@ func TestBuiltinRulesExtraBodyFieldsNoSecrets(t *testing.T) {
 			}
 			if strings.Contains(s, "secret://") {
 				t.Errorf("BuiltinRules()[%d] (%q): ExtraBodyFields[%q] = %q contains a secret:// reference", i, rule.Description, k, s)
+			}
+		}
+		for j, s := range q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures {
+			if strings.Contains(s, "secret://") {
+				t.Errorf("BuiltinRules()[%d] (%q): SchemaUnsupportedFeatures[%d] = %q contains a secret:// reference", i, rule.Description, j, s)
+			}
+		}
+	}
+}
+
+// knownJSONSchemaKeywords is the allow-set
+// TestBuiltinRulesSchemaUnsupportedFeaturesKeywords cross-checks every
+// SchemaUnsupportedFeatures entry against. Entries here are the JSON
+// Schema keywords a rule might plausibly declare as Gemini-unsupported.
+// A typo in builtin.go (e.g. "patern" for "pattern") would silently
+// pass the existing lint at runtime — the linter does a literal key
+// match so the unsupported keyword would never fire — and this test
+// is the only structural defence against that.
+//
+// Update when adding a new JSON Schema keyword to any rule's
+// SchemaUnsupportedFeatures list. The set is intentionally broad
+// (covers the OpenAI structured-outputs strict-mode rejection set as
+// well as the Gemini lint's plausible surface) so a deliberate
+// addition only needs one entry rather than a churn of tests.
+var knownJSONSchemaKeywords = map[string]struct{}{
+	"oneOf":             {},
+	"anyOf":             {},
+	"allOf":             {},
+	"not":               {},
+	"pattern":           {},
+	"patternProperties": {},
+	"minProperties":     {},
+	"maxProperties":     {},
+	"format":            {},
+	"minLength":         {},
+	"maxLength":         {},
+	"minimum":           {},
+	"maximum":           {},
+	"exclusiveMinimum":  {},
+	"exclusiveMaximum":  {},
+	"multipleOf":        {},
+	"uniqueItems":       {},
+	"minItems":          {},
+	"maxItems":          {},
+	"minContains":       {},
+	"maxContains":       {},
+	"contains":          {},
+	"if":                {},
+	"then":              {},
+	"else":              {},
+	"dependentSchemas":  {},
+	"dependentRequired": {},
+	"$ref":              {},
+	"$defs":             {},
+}
+
+// TestBuiltinRulesSchemaUnsupportedFeaturesKeywords pins that every
+// string in any rule's SchemaUnsupportedFeatures list is a known JSON
+// Schema keyword (per knownJSONSchemaKeywords). A typo such as "onOf"
+// for "oneOf" would trivially pass all other tests — the lint walker
+// only matches keys present on the schema, so an unsupported entry
+// that never matches anything is silently ineffective — but this test
+// catches the typo as a build-time failure rather than a runtime gap.
+func TestBuiltinRulesSchemaUnsupportedFeaturesKeywords(t *testing.T) {
+	for i, rule := range BuiltinRules() {
+		if rule.Apply == nil {
+			continue
+		}
+		q := ProviderQuirks{
+			FieldRenames:   map[string]string{},
+			OmitFields:     []string{},
+			ValueOverrides: map[string]Value{},
+			EnumCoercions:  map[string]map[string]string{},
+			ReplayFields:   []string{},
+			BehaviourFlags: ProviderBehaviourFlags{OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}}, Gemini: GeminiBehaviourFlags{SchemaUnsupportedFeatures: []string{}}},
+		}
+		rule.Apply(&q)
+		for j, kw := range q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures {
+			if _, ok := knownJSONSchemaKeywords[kw]; !ok {
+				t.Errorf("BuiltinRules()[%d] (%q): SchemaUnsupportedFeatures[%d] = %q is not a known JSON Schema keyword (typo? or add to knownJSONSchemaKeywords if deliberate)", i, rule.Description, j, kw)
 			}
 		}
 	}
@@ -223,6 +314,18 @@ func TestRuleCarveOuts(t *testing.T) {
 			t.Errorf("gpt-5-chat-latest: OmitSamplingParams = true after carve-out; expected false")
 		}
 	})
+	// The carve-out clears OmitSamplingParams but deliberately leaves
+	// StrictMode set (the gpt-5* strict-mode rule fired earlier in the
+	// resolution order). An accidental edit that adds
+	// `q.BehaviourFlags.OpenAI.StrictMode = false` to the carve-out's
+	// Apply would silently regress strict-mode coverage for
+	// gpt-5-chat-latest; this assertion pins the composition.
+	t.Run("gpt-5-chat-latest retains strict mode", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-chat-latest")
+		if !q.BehaviourFlags.OpenAI.StrictMode {
+			t.Errorf("gpt-5-chat-latest: StrictMode = false after carve-out; expected true (carve-out must not clear strict mode)")
+		}
+	})
 	t.Run("gpt-5-nano omits sampling params", func(t *testing.T) {
 		q := DefaultRegistry().Resolve("openai-compatible", "gpt-5-nano")
 		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
@@ -262,6 +365,73 @@ func TestRuleCarveOuts(t *testing.T) {
 		q := DefaultRegistry().Resolve("openai-compatible", "o10-mini")
 		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
 			t.Errorf("o10-mini: OmitSamplingParams = false; expected true (o[1-9]* should match two-digit aliases)")
+		}
+	})
+}
+
+// TestBuiltinRulesStrictMode exercises the strict-mode rule wiring
+// through DefaultRegistry rather than a synthetic test registry. The
+// OpenAI strict-mode integration tests in the provider package use
+// strictRegistryFor(...) to pin the flag without depending on the
+// production globs, so a glob typo in builtin.go (e.g.
+// `gpt-4o-mini*` → `gpt-4o-mini-*`, which would drop the bare
+// `gpt-4o-mini` from coverage) would not fail any provider-level test.
+// This test closes that gap by asserting the resolved
+// BehaviourFlags.OpenAI.StrictMode through DefaultRegistry for each
+// model the built-in rules are documented to cover, plus pinned
+// negative cases that share the same provider type but are not meant
+// to enable strict mode.
+//
+// The positive set is derived from builtin.go's three strict-mode
+// rules: `gpt-4o-mini*`, `gpt-4.1*`, and `gpt-5*` (which composes
+// through the `gpt-5-chat*` carve-out without clearing StrictMode).
+// The negative set guards against false positives: a future rule
+// landing strict mode on a bare gpt-4o or on an o-series reasoning
+// model would either be a deliberate widening (update the test) or
+// a bug (the test catches it).
+func TestBuiltinRulesStrictMode(t *testing.T) {
+	positives := []string{
+		"gpt-4o-mini",
+		"gpt-4o-mini-2024-07-18",
+		"gpt-4.1",
+		"gpt-4.1-mini",
+		"gpt-4.1-nano",
+		"gpt-5-nano",
+		// gpt-5-chat-latest: carve-out clears OmitSamplingParams but
+		// must NOT clear StrictMode. Redundant with the dedicated
+		// sub-test in TestRuleCarveOuts; pinning both adds defence in
+		// depth because the failure surfaces under each test name.
+		"gpt-5-chat-latest",
+	}
+	for _, model := range positives {
+		model := model
+		t.Run(model+" enables strict mode", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("openai-compatible", model)
+			if !q.BehaviourFlags.OpenAI.StrictMode {
+				t.Errorf("%s: StrictMode = false (built-in rule did not fire)", model)
+			}
+		})
+	}
+
+	// Negative cases. Bare `gpt-4o` is documented by OpenAI as
+	// supporting strict mode but no rule covers it today (the rule
+	// glob `gpt-4o-mini*` is deliberately narrower; see
+	// quirks/builtin.go for the rationale). Pin the current state so
+	// a future opt-in is a deliberate edit. `o1-mini` matches the
+	// reasoning-class rule but not any strict-mode rule.
+	t.Run("gpt-4o does not enable strict mode", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+		if q.BehaviourFlags.OpenAI.StrictMode {
+			t.Errorf("gpt-4o: StrictMode = true; expected false (no built-in rule covers bare gpt-4o today)")
+		}
+	})
+	t.Run("o1-mini omits sampling params but does not enable strict mode", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "o1-mini")
+		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("o1-mini: OmitSamplingParams = false (reasoning-class rule should fire)")
+		}
+		if q.BehaviourFlags.OpenAI.StrictMode {
+			t.Errorf("o1-mini: StrictMode = true; expected false (no rule enables strict mode on o-series)")
 		}
 	})
 }

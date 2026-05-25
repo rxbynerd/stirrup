@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -139,7 +140,11 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 			}
 			captured := <-capturedCh
 
-			built := buildResponsesRequest(tc.params)
+			q := quirks.DefaultRegistry().Resolve("openai-responses", tc.params.Model)
+			built, err := buildResponsesRequest(tc.params, q, nil)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
 			built.Stream = true
 			builtBytes, err := json.Marshal(built)
 			if err != nil {
@@ -150,6 +155,94 @@ func TestBuildResponsesRequest_MatchesStream(t *testing.T) {
 				t.Errorf("builder vs Stream body mismatch\n builder: %s\n stream:  %s", builtBytes, captured)
 			}
 		})
+	}
+}
+
+// TestResponsesStrictMode_WireBodyShape exercises the Responses API's
+// strict-mode wiring through the builder. No built-in rule currently
+// enables StrictMode for openai-responses, so the wiring is dormant in
+// v1; this test pins that the moment a rule does enable it, the
+// rewrite path produces the expected wire shape (`strict: true` on
+// each tool entry, properties expanded into a fully-required nullable
+// shape).
+//
+// Mirrors TestOpenAIStrictMode_WireBodyShape on the Chat Completions
+// side. One test is sufficient because both adapters share the same
+// underlying NormalizeStrictSchema and per-adapter cache; the shape
+// of the Responses wire entry (flat `name` + `parameters` + `strict`)
+// is what differs and is what this test pins.
+func TestResponsesStrictMode_WireBodyShape(t *testing.T) {
+	q := quirks.NewRegistry([]quirks.Rule{
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-4o-mini",
+			Description:  "test: pin strict mode for gpt-4o-mini on openai-responses",
+			LastVerified: quirks.Date("2026-05-24"),
+			Apply: func(q *quirks.ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.StrictMode = true
+			},
+		},
+	}).Resolve("openai-responses", "gpt-4o-mini")
+
+	params := types.StreamParams{
+		Model:     "gpt-4o-mini",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+		Tools: []types.ToolDefinition{
+			{
+				Name:        "search",
+				Description: "search",
+				InputSchema: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"path":  {"type": "string"},
+						"limit": {"type": "integer"}
+					},
+					"required": ["path"]
+				}`),
+			},
+		},
+	}
+	got, err := buildResponsesRequest(params, q, nil)
+	if err != nil {
+		t.Fatalf("buildResponsesRequest: %v", err)
+	}
+	if len(got.Tools) != 1 {
+		t.Fatalf("got %d tools, want 1", len(got.Tools))
+	}
+	tool := got.Tools[0]
+	if tool.Strict == nil || !*tool.Strict {
+		t.Errorf("tool.Strict = %v, want true", tool.Strict)
+	}
+
+	var params2 map[string]any
+	if uerr := json.Unmarshal(tool.Parameters, &params2); uerr != nil {
+		t.Fatalf("unmarshal tool.Parameters: %v", uerr)
+	}
+	if params2["additionalProperties"] != false {
+		t.Errorf("parameters.additionalProperties = %v, want false", params2["additionalProperties"])
+	}
+	required, ok := params2["required"].([]any)
+	if !ok || len(required) != 2 {
+		t.Errorf("parameters.required = %v, want both properties listed", params2["required"])
+	}
+	props := params2["properties"].(map[string]any)
+	// limit was optional → nullable-wrapped.
+	limitType, ok := props["limit"].(map[string]any)["type"].([]any)
+	if !ok {
+		t.Errorf("limit.type = %v, want array form", props["limit"].(map[string]any)["type"])
+	} else {
+		hasNull := false
+		for _, v := range limitType {
+			if s, ok := v.(string); ok && s == "null" {
+				hasNull = true
+			}
+		}
+		if !hasNull {
+			t.Errorf("limit.type = %v, want it to contain 'null'", limitType)
+		}
 	}
 }
 
@@ -166,7 +259,11 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
-	got := buildResponsesRequest(params)
+	q := quirks.DefaultRegistry().Resolve("openai-responses", params.Model)
+	got, err := buildResponsesRequest(params, q, nil)
+	if err != nil {
+		t.Fatalf("buildResponsesRequest: %v", err)
+	}
 	if got.Stream != false {
 		t.Errorf("builder default: Stream = %v, want false", got.Stream)
 	}

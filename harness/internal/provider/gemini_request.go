@@ -79,20 +79,29 @@ func BuildGenerateContentRequest(
 		}
 	}
 
-	// Tools: convert each schema; emit a single Tools entry containing all
-	// declarations. ConvertSchema errors include the tool name in the
-	// returned message so failures point at the right declaration.
+	// Tools: lint each schema against the resolved Gemini model's
+	// unsupported-features list (a fail-closed gate, design §5), then
+	// convert. The lint runs before ConvertSchema so the operator sees
+	// the model-scoped policy rejection rather than a structural rewrite
+	// reason for the same shape. ConvertSchema errors include the tool
+	// name in the returned message so failures still point at the right
+	// declaration when structural rewrite fails on a feature the policy
+	// did not call out.
 	if len(params.Tools) > 0 {
+		unsupported := q.BehaviourFlags.Gemini.SchemaUnsupportedFeatures
 		decls := make([]geminiFunctionDeclaration, 0, len(params.Tools))
 		for _, t := range params.Tools {
-			params, err := ConvertSchema(t.InputSchema)
+			if err := LintGeminiSchema(t.Name, t.InputSchema, unsupported); err != nil {
+				return nil, nil, err
+			}
+			converted, err := ConvertSchema(t.InputSchema)
 			if err != nil {
 				return nil, nil, fmt.Errorf("tool %q: %w", t.Name, err)
 			}
 			decls = append(decls, geminiFunctionDeclaration{
 				Name:        t.Name,
 				Description: t.Description,
-				Parameters:  params,
+				Parameters:  converted,
 			})
 		}
 		req.Tools = []geminiTools{{FunctionDeclarations: decls}}

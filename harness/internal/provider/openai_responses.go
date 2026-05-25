@@ -62,6 +62,12 @@ type OpenAIResponsesAdapter struct {
 	// Responses-specific divergence is added (design §7 Step 4). The
 	// constructor defaults it to quirks.DefaultRegistry().
 	Registry *quirks.Registry
+
+	// strictSchemas memoises strict-mode schema rewrites within this
+	// adapter's lifetime. See OpenAICompatibleAdapter.strictSchemas
+	// for the full rationale; the Responses path shares the same cache
+	// shape because the underlying schema rewrite is identical.
+	strictSchemas *strictSchemaCache
 }
 
 // NewOpenAIResponsesAdapter creates an adapter for the OpenAI Responses API.
@@ -91,10 +97,11 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
-		baseURL:      baseURL,
-		apiKeyHeader: auth.APIKeyHeader,
-		queryParams:  auth.QueryParams,
-		Registry:     quirks.DefaultRegistry(),
+		baseURL:       baseURL,
+		apiKeyHeader:  auth.APIKeyHeader,
+		queryParams:   auth.QueryParams,
+		Registry:      quirks.DefaultRegistry(),
+		strictSchemas: newStrictSchemaCache(),
 	}
 }
 
@@ -288,11 +295,17 @@ type responsesContentBlock struct {
 
 // responsesTool describes a tool in the Responses API's flatter format.
 // (Compare with Chat Completions, which nests under a "function" object.)
+//
+// Strict is a *bool so the zero-value body omits the field; a quirks
+// rule that pins strict mode causes the adapter to emit an explicit
+// `"strict": true` on every tool entry. See openaiToolDefinition for
+// the equivalent on the Chat Completions side.
 type responsesTool struct {
 	Type        string          `json:"type"` // "function"
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
 // --- SSE event payload types ---
@@ -448,20 +461,37 @@ func translateMessagesResponses(messages []types.Message) []responsesInput {
 // Responses API's flatter tool schema. Unlike Chat Completions, there is no
 // nested "function" object — the name/description/parameters live directly
 // on the tool item.
-func translateToolsResponses(tools []types.ToolDefinition) []responsesTool {
+//
+// strict / model / cache behave the same way as translateTools on the
+// Chat Completions side: when strict is true, every tool's schema is
+// rewritten by NormalizeStrictSchema and the wire entry carries
+// strict=true; the cache memoises rewrites within the adapter's
+// lifetime. A schema that fails the lint surfaces as an error here,
+// and the caller MUST NOT send a request.
+func translateToolsResponses(tools []types.ToolDefinition, strict bool, model string, cache *strictSchemaCache) ([]responsesTool, error) {
 	if len(tools) == 0 {
-		return nil
+		return nil, nil
 	}
 	out := make([]responsesTool, len(tools))
 	for i, t := range tools {
-		out[i] = responsesTool{
+		entry := responsesTool{
 			Type:        "function",
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  t.InputSchema,
 		}
+		if strict {
+			normalised, err := normalizeStrictWithCache(cache, model, t.Name, t.InputSchema)
+			if err != nil {
+				return nil, err
+			}
+			entry.Parameters = normalised
+			truthy := true
+			entry.Strict = &truthy
+		}
+		out[i] = entry
 	}
-	return out
+	return out, nil
 }
 
 // buildResponsesRequest projects a StreamParams into the Responses API wire
@@ -470,18 +500,28 @@ func translateToolsResponses(tools []types.ToolDefinition) []responsesTool {
 // on omitempty on the responsesRequest.Stream struct tag). Phase-0 refactor
 // for issue #133.
 //
+// q carries the resolved quirks for the (provider, model) pair; the
+// OpenAI strict-mode flag (if set by a future openai-responses rule)
+// drives strict-mode schema normalisation through cache. Errors from
+// the lint surface here so the caller can fail-closed before any HTTP
+// request is issued.
+//
 // TODO(batch): consider returning json.RawMessage if endpoint-contract drift
 // becomes a maintenance burden.
-func buildResponsesRequest(params types.StreamParams) responsesRequest {
+func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache) (responsesRequest, error) {
+	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, params.Model, strictCache)
+	if err != nil {
+		return responsesRequest{}, err
+	}
 	return responsesRequest{
 		Model:           params.Model,
 		Instructions:    params.System,
 		Input:           translateMessagesResponses(params.Messages),
-		Tools:           translateToolsResponses(params.Tools),
+		Tools:           tools,
 		MaxOutputTokens: params.MaxTokens,
 		Temperature:     params.Temperature,
 		Store:           false,
-	}
+	}, nil
 }
 
 // Stream sends a streaming request to the OpenAI Responses API and returns
@@ -502,7 +542,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	_, appliedRules := registry.ResolveWithRules("openai-responses", params.Model)
+	q, appliedRules := registry.ResolveWithRules("openai-responses", params.Model)
 
 	logger := o.Logger
 	if logger == nil {
@@ -519,7 +559,26 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 
-	reqBody := buildResponsesRequest(params)
+	if q.BehaviourFlags.OpenAI.StrictMode {
+		// Dormant in v1: no built-in rule currently sets
+		// StrictMode=true for any openai-responses model, so this
+		// branch is forward-compat scaffolding. It runs in tests that
+		// inject a synthetic registry (see
+		// TestResponsesStrictMode_WireBodyShape in
+		// openai_responses_builder_test.go) and would activate the
+		// moment a builtin rule targets openai-responses.
+		logger.DebugContext(ctx, "openai-responses strict mode applied",
+			slog.String("provider.type", "openai-responses"),
+			slog.String("provider.model", params.Model),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
+		)
+	}
+
+	reqBody, err := buildResponsesRequest(params, q, o.strictSchemas)
+	if err != nil {
+		o.recordLatency(ctx, start, metricAttrs)
+		return nil, fmt.Errorf("build request: %w", err)
+	}
 	reqBody.Stream = true
 
 	bodyBytes, err := json.Marshal(reqBody)
