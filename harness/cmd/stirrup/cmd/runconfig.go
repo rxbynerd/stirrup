@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"io"
 	"os"
 
@@ -76,6 +77,17 @@ func runRunConfigWithIO(cmd *cobra.Command, args []string, stdin io.Reader, stdo
 		Resolve:    resolve,
 	})
 	if err != nil {
+		// The interactive usage-hint sentinel is a harness-only affordance
+		// (issue #249): a bare `stirrup harness` on a TTY gets the grouped
+		// hint. run-config has no such hint, so reaching here with the
+		// sentinel — `stirrup run-config --validate` on a TTY with no
+		// prompt — must surface the plain, actionable prompt-required
+		// error instead of leaking the sentinel's internal string to
+		// cobra (which would print "Error: stirrup: interactive prompt
+		// hint requested" and exit non-zero).
+		if errors.Is(err, errPromptHintRequested) {
+			return errPromptRequired
+		}
 		return err
 	}
 

@@ -136,6 +136,36 @@ func TestRunRunConfig_ValidateAcceptsValidConfig(t *testing.T) {
 	}
 }
 
+// TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError pins the
+// fix for the run-config sentinel leak (issue #249 review): the
+// interactive harness usage-hint must NOT fire for run-config. When
+// `stirrup run-config --validate` reaches the prompt-required gate on a
+// TTY with no prompt, resolvePromptForRun returns errPromptHintRequested
+// — runRunConfigWithIO must substitute the actionable plain
+// "prompt is required: ..." error rather than leaking the sentinel's
+// internal "interactive prompt hint requested" string to the operator.
+func TestRunRunConfig_ValidateInteractiveNoPromptShowsPlainError(t *testing.T) {
+	orig := stderrIsInteractive
+	stderrIsInteractive = func() bool { return true }
+	defer func() { stderrIsInteractive = orig }()
+	t.Setenv("STIRRUP_PROMPT", "")
+
+	_, err := runRunConfigForTest(t, []string{
+		"--validate",
+		"--mode", "execution",
+	}, "")
+	if err == nil {
+		t.Fatal("run-config --validate with no prompt should fail")
+	}
+	if !strings.Contains(err.Error(), "prompt is required") {
+		t.Errorf("error should be the actionable prompt-required message, got: %v", err)
+	}
+	// The sentinel's internal string must never reach the operator.
+	if strings.Contains(err.Error(), "interactive prompt hint requested") {
+		t.Errorf("run-config leaked the harness usage-hint sentinel: %v", err)
+	}
+}
+
 // TestRunRunConfig_CompactProducesSingleLine pins acceptance of the
 // --compact flag: the body is a single JSON line (no indentation),
 // still terminated by a newline so shell pipelines see a clean EOF.
