@@ -1,0 +1,38 @@
+# synthetic: derived from buildAnthropicRequest + DefaultRegistry().Resolve because the harness does not yet carry a live capture. Pins the tool-enabled Anthropic Messages request shape: the tools array carries name/description/input_schema, tool_choice projects ToolChoiceRequired onto {"type":"any"}, and content is a typed block array. See testdata/quirks/README.md to refresh.
+{
+  "model": "claude-sonnet-4-6",
+  "system": "You are helpful.",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "weather in Paris?"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get the current weather for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "max_tokens": 4096,
+  "temperature": 0.5,
+  "tool_choice": {
+    "type": "any"
+  },
+  "stream": true
+}
