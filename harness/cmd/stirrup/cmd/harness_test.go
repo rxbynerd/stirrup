@@ -1591,8 +1591,10 @@ func TestRunHarness_ConfigValidationFailurePropagates(t *testing.T) {
 
 // TestLoadRunConfigFile_EmptyFile pins the error path for an empty (zero-
 // byte) file. encoding/json would otherwise return io.EOF, which is
-// unhelpful out of context — we want a message that names the path and
-// the parsing stage so the user can find the typo.
+// unhelpful out of context — we want a message that names the path so
+// the user can find the mistake. The prefix is "reading" (not
+// "parsing"): an empty file never reached the decoder, so the wording
+// matches its I/O exit class (3).
 func TestLoadRunConfigFile_EmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.json")
@@ -1603,7 +1605,7 @@ func TestLoadRunConfigFile_EmptyFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for empty file, got nil")
 	}
-	if !strings.Contains(err.Error(), "parsing config file") || !strings.Contains(err.Error(), "empty") {
+	if !strings.Contains(err.Error(), "reading config file") || !strings.Contains(err.Error(), "empty") {
 		t.Errorf("error should describe empty file, got: %v", err)
 	}
 }

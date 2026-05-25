@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,11 +32,16 @@ func TestClassifyExitCode(t *testing.T) {
 			want: 1, // a plain re-string loses the wrapper; default applies
 		},
 		{
-			name: "fmt.Errorf %w preserves the class",
+			name: "errors.Join wrapping preserves the class",
 			want: exitIO,
 			err: func() error {
 				return errors.Join(errors.New("context"), ioError(errors.New("disk full")))
 			}(),
+		},
+		{
+			name: "fmt.Errorf %w preserves the class",
+			want: exitIO,
+			err:  fmt.Errorf("context: %w", ioError(errors.New("disk full"))),
 		},
 		{name: "untyped error defaults to 1", err: errors.New("something else"), want: 1},
 	} {
@@ -105,6 +111,33 @@ func TestLoadRunConfigFile_ExitClasses(t *testing.T) {
 			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
 		}
 	})
+	t.Run("directory path is I/O", func(t *testing.T) {
+		_, err := loadRunConfigFile(t.TempDir())
+		if got := classifyExitCode(err); got != exitIO {
+			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
+		}
+	})
+	t.Run("oversize file is I/O", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "big.json")
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		// A sparse file one byte over the cap trips the size guard without
+		// writing a megabyte to disk: Truncate extends the file to the
+		// length, which os.Stat reports as Size() > maxConfigFileBytes.
+		if err := f.Truncate(maxConfigFileBytes + 1); err != nil {
+			_ = f.Close()
+			t.Fatalf("truncate: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		_, err = loadRunConfigFile(path)
+		if got := classifyExitCode(err); got != exitIO {
+			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
+		}
+	})
 }
 
 // TestReadRunConfigFromReader_ExitClasses pins the stdin reader's
@@ -124,6 +157,26 @@ func TestReadRunConfigFromReader_ExitClasses(t *testing.T) {
 			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
 		}
 	})
+	t.Run("read failure is I/O", func(t *testing.T) {
+		// The io.ReadAll-failure branch is unreachable via strings.Reader
+		// (it never errors), so inject a reader that fails on first Read.
+		_, err := readRunConfigFromReader(&errReader{err: errors.New("broken pipe")}, "<stdin>")
+		if got := classifyExitCode(err); got != exitIO {
+			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
+		}
+	})
+}
+
+// errReader is an io.Reader that returns a configured error on the first
+// Read. It exercises the readRunConfigFromReader io.ReadAll-failure
+// branch, which no in-memory reader (strings.Reader, bytes.Reader) can
+// reach because those never error.
+type errReader struct {
+	err error
+}
+
+func (r *errReader) Read([]byte) (int, error) {
+	return 0, r.err
 }
 
 // TestReadPromptFile_ExitClassIsIO pins that every --prompt-file failure
@@ -146,6 +199,31 @@ func TestReadPromptFile_ExitClassIsIO(t *testing.T) {
 			t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
 		}
 	})
+}
+
+// TestBuildRunConfig_MissingPromptFileExitClass pins the I/O class for
+// the longest --prompt-file propagation chain in process: readPromptFile
+// → resolvePromptForRun → BuildRunConfig. A nonexistent --prompt-file
+// must classify as I/O (exit 3), not be flattened to the validation
+// default by a stray wrapper anywhere on that chain. ResolveAll is used
+// because resolvePromptForRun only runs on the loop-ready path.
+func TestBuildRunConfig_MissingPromptFileExitClass(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	missing := filepath.Join(t.TempDir(), "absent-brief.txt")
+	if err := cmd.Flags().Set("prompt-file", missing); err != nil {
+		t.Fatalf("set --prompt-file: %v", err)
+	}
+
+	_, err := BuildRunConfig(RunConfigSources{
+		Cmd:     cmd,
+		Resolve: ResolveAll,
+	})
+	if err == nil {
+		t.Fatal("expected an error for a missing --prompt-file, got nil")
+	}
+	if got := classifyExitCode(err); got != exitIO {
+		t.Errorf("classifyExitCode = %d, want %d (I/O); err=%v", got, exitIO, err)
+	}
 }
 
 // TestBuildRunConfig_ValidationExitClass pins that a read-only mode with
@@ -213,13 +291,14 @@ func TestRunRunConfig_PromptRequiredExitClass(t *testing.T) {
 // TestCLIExitCodes_EndToEnd pins the real os.Exit codes the built binary
 // produces for each failure class. A type-check pass does not prove the
 // Execute() → classifyExitCode → os.Exit wiring fires, so this builds
-// the binary once and execs it with stdin attached to a pipe (never a
+// the binary once and execs it with stdin attached to /dev/null (never a
 // TTY under `go test`), exercising harness and run-config:
 //
-//	success            -> 0
-//	validation failure -> 1
-//	malformed --config -> 2
-//	missing  --config  -> 3
+//	success                 -> 0
+//	validation failure       -> 1
+//	malformed --config        -> 2
+//	missing --config          -> 3
+//	missing --prompt-file     -> 3 (the longest I/O propagation chain)
 func TestCLIExitCodes_EndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping binary build + exec in -short mode")
@@ -251,6 +330,18 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 
 	missingConfig := filepath.Join(dir, "does-not-exist.json")
 
+	// A config that parses and would validate, but supplies no prompt —
+	// so resolution reaches the --prompt-file gate. Paired with a missing
+	// --prompt-file it exercises the longest I/O chain end-to-end:
+	// readPromptFile → resolvePromptForRun → BuildRunConfig → runHarness
+	// → Execute → classifyExitCode.
+	noPromptConfig := filepath.Join(dir, "no-prompt.json")
+	writeFile(t, noPromptConfig, `{"runId":"r","mode":"planning",`+
+		`"maxTurns":10,"timeout":600,`+
+		`"provider":{"type":"anthropic","apiKeyRef":"secret://ANTHROPIC_API_KEY"},`+
+		`"modelRouter":{"type":"static","provider":"anthropic","model":"claude-x"}}`)
+	missingPromptFile := filepath.Join(dir, "absent-brief.txt")
+
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -259,6 +350,15 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 		{
 			name: "run-config valid succeeds",
 			args: []string{"run-config", "--validate", "--config", validConfig},
+			want: 0,
+		},
+		{
+			// Cheap regression guard for the harness success path; the
+			// only other e2e zero-case is run-config above. dry-run via
+			// --output-runconfig=- so the loop never starts (no provider
+			// call, no network) yet Execute() still returns nil → exit 0.
+			name: "harness valid succeeds",
+			args: []string{"harness", "--config", validConfig, "--output-runconfig", "-"},
 			want: 0,
 		},
 		{
@@ -289,6 +389,16 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 		{
 			name: "harness missing file",
 			args: []string{"harness", "--config", missingConfig},
+			want: exitIO,
+		},
+		{
+			// Longest I/O chain: a valid no-prompt config + a missing
+			// --prompt-file. readPromptFile fails before validation runs,
+			// so the failure must surface as I/O (3), not the validation
+			// default — a stray validationError wrapper anywhere on the
+			// chain would flip this to 1 and only this case would catch it.
+			name: "harness missing prompt-file",
+			args: []string{"harness", "--config", noPromptConfig, "--prompt-file", missingPromptFile},
 			want: exitIO,
 		},
 	} {
