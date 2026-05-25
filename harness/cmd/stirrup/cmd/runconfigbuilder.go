@@ -149,7 +149,7 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	}
 
 	if err := types.ValidateRunConfig(cfg); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
+		return nil, validationError(fmt.Errorf("invalid config: %w", err))
 	}
 	return cfg, nil
 }
@@ -301,19 +301,24 @@ func readRunConfigFromReader(r io.Reader, source string) (*types.RunConfig, erro
 	// readPromptFile helper above.
 	data, err := io.ReadAll(io.LimitReader(r, maxConfigFileBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading config from %s: %w", source, err)
+		// Read failure on the stream itself (a broken pipe, a flaky
+		// redirected file) is an I/O error (exit 3), not a parse error:
+		// the bytes never reached the decoder.
+		return nil, ioError(fmt.Errorf("reading config from %s: %w", source, err))
 	}
 	if int64(len(data)) > maxConfigFileBytes {
-		return nil, fmt.Errorf("reading config from %s: exceeds %d byte cap", source, maxConfigFileBytes)
+		return nil, ioError(fmt.Errorf("reading config from %s: exceeds %d byte cap", source, maxConfigFileBytes))
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("reading config from %s: input is empty; pass --config <path> or remove the redirection", source)
+		return nil, ioError(fmt.Errorf("reading config from %s: input is empty; pass --config <path> or remove the redirection", source))
 	}
 	var cfg types.RunConfig
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parsing config from %s: %w", source, err)
+		// Malformed JSON (syntax error, unknown field, type mismatch) is
+		// a parse error (exit 2): the input was read but did not decode.
+		return nil, parseError(fmt.Errorf("parsing config from %s: %w", source, err))
 	}
 	return &cfg, nil
 }
@@ -537,9 +542,20 @@ func resolvePromptForRun(cmd *cobra.Command, cfg *types.RunConfig) error {
 	}
 	if cfg.Prompt == "" {
 		if stderrIsInteractive() {
+			// errPromptHintRequested is intercepted by runHarness (prints
+			// the grouped hint, exits 0) and by run-config (remapped to
+			// the plain errPromptRequired). It is NEVER classified here:
+			// wrapping it in an exitError would let it reach
+			// classifyExitCode as a non-zero failure on the interactive
+			// success path. Return the bare sentinel.
 			return errPromptHintRequested
 		}
-		return errPromptRequired
+		// A scripted (non-TTY) run with no prompt anywhere is a
+		// precondition / validation-class failure (exit 1, issue #253).
+		// errors.Is still matches the sentinel through the exitError
+		// wrapper, so the run-config remap and existing fixtures are
+		// unaffected.
+		return validationError(errPromptRequired)
 	}
 	return nil
 }
@@ -560,13 +576,16 @@ func writeRunConfigJSON(w io.Writer, cfg *types.RunConfig, compact bool) error {
 		data, err = json.MarshalIndent(cfg, "", "  ")
 	}
 	if err != nil {
+		// A RunConfig that fails to marshal is an internal bug, not an
+		// operator-facing I/O or input failure; leave it untyped so it
+		// takes the default exit 1 rather than masquerading as exit 3.
 		return fmt.Errorf("marshal RunConfig: %w", err)
 	}
 	if _, err := w.Write(data); err != nil {
-		return fmt.Errorf("write RunConfig: %w", err)
+		return ioError(fmt.Errorf("write RunConfig: %w", err))
 	}
 	if _, err := w.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("write RunConfig: %w", err)
+		return ioError(fmt.Errorf("write RunConfig: %w", err))
 	}
 	return nil
 }

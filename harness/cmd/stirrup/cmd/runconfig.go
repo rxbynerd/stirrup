@@ -86,7 +86,12 @@ func runRunConfigWithIO(cmd *cobra.Command, args []string, stdin io.Reader, stdo
 		// cobra (which would print "Error: stirrup: interactive prompt
 		// hint requested" and exit non-zero).
 		if errors.Is(err, errPromptHintRequested) {
-			return errPromptRequired
+			// A missing prompt is a precondition / validation-class
+			// failure (exit 1, issue #253): the config could not be
+			// completed because a required field had no source. The plain
+			// errPromptRequired message replaces the internal sentinel
+			// string so the operator sees an actionable error.
+			return validationError(errPromptRequired)
 		}
 		return err
 	}
