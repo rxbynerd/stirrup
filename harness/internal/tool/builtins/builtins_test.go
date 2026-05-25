@@ -622,6 +622,10 @@ func TestRegisterBuiltins(t *testing.T) {
 		"grep_files",
 		"find_files",
 		"run_command",
+		"git_status",
+		"git_changed_files",
+		"git_diff",
+		"git_show",
 		"web_fetch",
 	}
 
@@ -802,6 +806,10 @@ func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
 		GrepFilesTool(mock),
 		FindFilesTool(mock),
 		RunCommandTool(mock),
+		GitStatusTool(mock),
+		GitChangedFilesTool(mock),
+		GitDiffTool(mock),
+		GitShowTool(mock),
 		WebFetchTool(),
 		SpawnAgentTool(nil),
 	}
