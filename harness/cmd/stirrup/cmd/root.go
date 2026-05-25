@@ -23,6 +23,19 @@ var rootCmd = &cobra.Command{
 	Short:   "A coding agent harness",
 	Long:    "Stirrup is a coding agent harness with swappable components that can be composed via RunConfig.",
 	Version: version.Full(),
+	// Args is NoArgs so a mistyped subcommand (`stirrup harnes`) still
+	// errors via Cobra's unknown-command path rather than silently
+	// printing the orientation hint. A bare `stirrup` (no args, no
+	// --help / --version, which Cobra intercepts before Run) lands here.
+	Args: cobra.NoArgs,
+	// Run (not RunE) so a bare invocation prints the short two-subcommand
+	// orientation hint to stdout and exits 0. Returning an error would
+	// make Cobra append its full usage block — the opposite of the terse
+	// hint issue #249 asks for. --help still reaches Cobra's full help
+	// because the flag is handled before Run fires.
+	Run: func(cmd *cobra.Command, _ []string) {
+		printRootUsageHint(cmd.OutOrStdout())
+	},
 }
 
 // Execute runs the root command. Called from main().

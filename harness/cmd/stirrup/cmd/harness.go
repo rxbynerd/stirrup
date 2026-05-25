@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1262,6 +1263,19 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		Resolve:    ResolveAll,
 	})
 	if err != nil {
+		// A bare `stirrup harness` on an interactive terminal reaches the
+		// prompt-required gate with this sentinel (issue #249). Print the
+		// grouped, example-led hint to stderr and exit 0 — returning nil
+		// so Cobra appends neither its error line nor its full usage
+		// block. Colour is auto-detected on stderr (honours NO_COLOR);
+		// piping stderr through `cat` strips ANSI because the destination
+		// is no longer a TTY. Non-TTY callers never produce this sentinel
+		// (resolvePromptForRun returns the opaque errPromptRequired
+		// instead), so scripted use keeps its terse, non-zero failure.
+		if errors.Is(err, errPromptHintRequested) {
+			printHarnessUsageHint(cmd.ErrOrStderr(), shouldColor(colorAuto, os.Stderr))
+			return nil
+		}
 		return err
 	}
 

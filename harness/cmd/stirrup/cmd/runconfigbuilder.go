@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -484,11 +485,40 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	})
 }
 
+// errPromptHintRequested is a sentinel returned by resolvePromptForRun
+// when a bare `stirrup harness` reaches the prompt-required gate on an
+// interactive terminal (issue #249). It is not an operator-facing error
+// — runHarness recognises it, prints the grouped usage hint to stderr,
+// and exits 0. Scripted (non-TTY) invocations never see it: they get the
+// opaque errPromptRequired message and a non-zero exit so log
+// aggregators are not flooded with a multi-line template.
+var errPromptHintRequested = errors.New("stirrup: interactive prompt hint requested")
+
+// errPromptRequired is the opaque "no prompt anywhere" error surfaced to
+// scripted (non-TTY) callers. Kept as a sentinel so the message lives in
+// one place; the verbatim text matches the pre-#249 paths so
+// harness_test.go's existing fixtures continue to match.
+var errPromptRequired = errors.New("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
+
+// stderrIsInteractive reports whether the prompt-required gate should
+// show the grouped hint instead of the opaque error. It is a package
+// variable, not a direct os.Stderr probe, so tests can pin both branches
+// without allocating a PTY — mirroring how the trace tests inject a
+// colorMode rather than a real terminal. Production points it at
+// os.Stderr's fd.
+var stderrIsInteractive = func() bool {
+	return term.IsTerminal(int(os.Stderr.Fd()))
+}
+
 // resolvePromptForRun fills cfg.Prompt from the lower-precedence sources
 // (--prompt-file, STIRRUP_PROMPT) when the higher-precedence ones
-// (--prompt, positional, base RunConfig.prompt) left it empty. Returns
-// the "prompt is required" error verbatim from the pre-refactor paths
-// so harness_test.go's existing fixtures continue to match the message.
+// (--prompt, positional, base RunConfig.prompt) left it empty. When no
+// source supplies a prompt the function distinguishes two callers:
+// reaching the gate on an interactive terminal returns
+// errPromptHintRequested (runHarness then prints the grouped hint and
+// exits 0); a non-TTY caller gets errPromptRequired verbatim so
+// harness_test.go's existing fixtures and scripted automation continue
+// to match the pre-#249 message.
 func resolvePromptForRun(cmd *cobra.Command, cfg *types.RunConfig) error {
 	if cfg.Prompt != "" {
 		return nil
@@ -506,7 +536,10 @@ func resolvePromptForRun(cmd *cobra.Command, cfg *types.RunConfig) error {
 		}
 	}
 	if cfg.Prompt == "" {
-		return fmt.Errorf("prompt is required: pass via --prompt flag, as a positional argument, --prompt-file, STIRRUP_PROMPT env var, or the prompt field in --config")
+		if stderrIsInteractive() {
+			return errPromptHintRequested
+		}
+		return errPromptRequired
 	}
 	return nil
 }
