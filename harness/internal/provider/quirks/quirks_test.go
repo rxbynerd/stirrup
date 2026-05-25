@@ -88,6 +88,7 @@ var canonicalOpenAIFieldNames = map[string]bool{
 	"top_logprobs":          true,
 	"logit_bias":            true,
 	"stream":                true,
+	"parallel_tool_calls":   true,
 }
 
 // TestBuiltinRulesValidate asserts every rule baked into the registry

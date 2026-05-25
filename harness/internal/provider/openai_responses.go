@@ -139,6 +139,12 @@ type responsesRequest struct {
 	// but omission is the safer default until that verification lands.
 	Stream bool `json:"stream,omitempty"`
 	Store  bool `json:"store"`
+	// ParallelToolCalls carries the top-level parallel_tool_calls bool (#222),
+	// shared with the Chat Completions API. A nil pointer omits the key so the
+	// body is byte-identical to the pre-#222 shape; buildResponsesRequest sets
+	// it only when the caller requested the control and the resolved capability
+	// advertises support.
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 }
 
 // responsesInput is one item in the Responses API input array. The Type
@@ -468,7 +474,7 @@ func translateMessagesResponses(messages []types.Message) []responsesInput {
 // strict=true; the cache memoises rewrites within the adapter's
 // lifetime. A schema that fails the lint surfaces as an error here,
 // and the caller MUST NOT send a request.
-func translateToolsResponses(tools []types.ToolDefinition, strict bool, model string, cache *strictSchemaCache) ([]responsesTool, error) {
+func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool, model string, cache *strictSchemaCache) ([]responsesTool, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
@@ -488,6 +494,15 @@ func translateToolsResponses(tools []types.ToolDefinition, strict bool, model st
 			entry.Parameters = normalised
 			truthy := true
 			entry.Strict = &truthy
+		} else if examples {
+			// Fold worked examples (#222) into the schema, but only for
+			// non-strict tools: the structured-outputs subset rejects the
+			// `examples` keyword, identical to the Chat Completions side.
+			merged, err := mergeSchemaExamples(entry.Parameters, toolInputExamples(t))
+			if err != nil {
+				return nil, fmt.Errorf("tool %q: merge examples: %w", t.Name, err)
+			}
+			entry.Parameters = merged
 		}
 		out[i] = entry
 	}
@@ -509,18 +524,19 @@ func translateToolsResponses(tools []types.ToolDefinition, strict bool, model st
 // TODO(batch): consider returning json.RawMessage if endpoint-contract drift
 // becomes a maintenance burden.
 func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, strictCache *strictSchemaCache) (responsesRequest, error) {
-	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, params.Model, strictCache)
+	tools, err := translateToolsResponses(params.Tools, q.BehaviourFlags.OpenAI.StrictMode, q.ToolExamples.Supported, params.Model, strictCache)
 	if err != nil {
 		return responsesRequest{}, err
 	}
 	return responsesRequest{
-		Model:           params.Model,
-		Instructions:    params.System,
-		Input:           translateMessagesResponses(params.Messages),
-		Tools:           tools,
-		MaxOutputTokens: params.MaxTokens,
-		Temperature:     params.Temperature,
-		Store:           false,
+		Model:             params.Model,
+		Instructions:      params.System,
+		Input:             translateMessagesResponses(params.Messages),
+		Tools:             tools,
+		MaxOutputTokens:   params.MaxTokens,
+		Temperature:       params.Temperature,
+		Store:             false,
+		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
 	}, nil
 }
 
