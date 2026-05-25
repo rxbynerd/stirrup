@@ -346,6 +346,7 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 		name string
 		args []string
 		want int
+		env  []string // extra environment for the subprocess
 	}{
 		{
 			name: "run-config valid succeeds",
@@ -401,9 +402,32 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 			args: []string{"harness", "--config", noPromptConfig, "--prompt-file", missingPromptFile},
 			want: exitIO,
 		},
+		{
+			// #245 dry-run success: every component constructs and the only
+			// network-touching probe (provider) is suppressed, so all steps
+			// are ok/skip and Execute() returns nil → exit 0. Provider creds
+			// come from the secret:// env ref, which is unset here but never
+			// resolved on the --no-probe-provider path because credential
+			// resolution happens during provider construction... which still
+			// runs. So set the env var via the config's static ref instead:
+			// validConfig references ANTHROPIC_API_KEY; export it for the run.
+			name: "harness dry-run all-ok",
+			args: []string{"harness", "--config", validConfig, "--dry-run", "--no-probe-provider"},
+			want: 0,
+			env:  []string{"ANTHROPIC_API_KEY=sk-ant-test"},
+		},
+		{
+			// #245 invalid flag combination: a probe gate without --dry-run
+			// is meaningless and must classify as usage (exit 4), not be
+			// silently ignored.
+			name: "harness probe gate without dry-run",
+			args: []string{"harness", "--config", validConfig, "--no-probe-provider"},
+			want: exitUsage,
+			env:  []string{"ANTHROPIC_API_KEY=sk-ant-test"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := runExit(t, bin, tc.args)
+			got := runExit(t, bin, tc.args, tc.env...)
 			if got != tc.want {
 				t.Errorf("exit code = %d, want %d (args: %v)", got, tc.want, tc.args)
 			}
@@ -445,7 +469,7 @@ func buildStirrupBinary(t *testing.T) string {
 // treats as "not piped" (issue #249), so a --config <path> argument is
 // not rejected as ambiguous against a phantom piped base. A non-ExitError
 // failure (binary missing, signal) fails the test.
-func runExit(t *testing.T, bin string, args []string) int {
+func runExit(t *testing.T, bin string, args []string, extraEnv ...string) int {
 	t.Helper()
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
@@ -457,6 +481,9 @@ func runExit(t *testing.T, bin string, args []string) int {
 	cmd.Stdin = devNull
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	runErr := cmd.Run()
 	if runErr == nil {
 		return 0
