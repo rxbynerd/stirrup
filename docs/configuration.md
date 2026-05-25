@@ -127,7 +127,12 @@ because its purpose is exact replay; pipe through
   redirection (`< config.json`). Other non-TTY shapes — including
   `< /dev/null` and the stdin handed to tests by `go test` — fall
   through to flag-only construction so the harness does not trap
-  noninteractive automation.
+  noninteractive automation. The auto-stdin trigger fires only for
+  named-pipe and regular-file redirects; a character-device or empty
+  stdin such as `stirrup harness < /dev/null` deliberately falls
+  through to flag-only construction rather than erroring, so an
+  operator who needs stdin treated as a config source must opt in
+  explicitly with `--config -`.
 
 Piping a config into `stirrup harness` consumes stdin at startup,
 before transport initialisation, so the stdio transport sees EOF for
@@ -139,6 +144,13 @@ should use `--transport grpc`.
 
 `stirrup harness --help` is authoritative. The table below documents
 the same flags grouped by concern.
+
+Without a prompt on an interactive terminal, `stirrup harness` prints a
+curated usage hint — a grouped, example-led subset of the flags below —
+rather than the bare prompt-required error, and a bare `stirrup` prints
+a two-subcommand entry-point hint. Both are first-contact orientation
+only; `stirrup harness --help` remains authoritative for the full flag
+reference.
 
 ### Required
 

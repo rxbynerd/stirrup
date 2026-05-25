@@ -391,6 +391,15 @@ func TestBuildRunConfig_ResolveBaseSkipsModeDefaults(t *testing.T) {
 // builder. The message text matches harness_test.go's existing prompt
 // fixtures so the error string is part of the API contract.
 func TestBuildRunConfig_ResolveAllRequiresPrompt(t *testing.T) {
+	// Pin the interactive seam to false: resolvePromptForRun returns the
+	// errPromptHintRequested sentinel (not the documented message) when
+	// stderr is a TTY (issue #249). Without this override the test passes
+	// in CI but fails on a developer's interactive terminal, which would
+	// receive the sentinel rather than the "prompt is required" string.
+	orig := stderrIsInteractive
+	stderrIsInteractive = func() bool { return false }
+	defer func() { stderrIsInteractive = orig }()
+
 	cmd := newTestHarnessCommand()
 	if err := cmd.ParseFlags([]string{"--mode", "execution"}); err != nil {
 		t.Fatalf("ParseFlags: %v", err)
