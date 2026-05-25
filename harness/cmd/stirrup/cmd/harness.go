@@ -667,9 +667,9 @@ const maxConfigFileBytes int64 = 1 << 20 // 1 MiB
 func loadRunConfigFile(path string) (*types.RunConfig, error) {
 	// A missing / unreadable / oversize / empty file is an I/O failure
 	// (exit 3): the bytes never reached the JSON decoder. Only the decode
-	// step below is a parse failure (exit 2). The two classes share the
-	// "reading config file" / "parsing config file" message prefixes so
-	// the operator-facing text is unchanged.
+	// step below is a parse failure (exit 2). I/O-class errors use the
+	// "reading config file" prefix and parse-class errors use "parsing
+	// config file" so the operator-facing wording matches the exit code.
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, ioError(fmt.Errorf("reading config file %q: %w", path, err))
@@ -685,7 +685,11 @@ func loadRunConfigFile(path string) (*types.RunConfig, error) {
 		return nil, ioError(fmt.Errorf("reading config file %q: %w", path, err))
 	}
 	if len(data) == 0 {
-		return nil, ioError(fmt.Errorf("parsing config file %q: file is empty", path))
+		// "reading", not "parsing": an empty file never reached the JSON
+		// decoder, so the I/O exit class (3) and the wording agree. The
+		// parallel readRunConfigFromReader empty-stdin path already says
+		// "reading", so this aligns the two.
+		return nil, ioError(fmt.Errorf("reading config file %q: file is empty", path))
 	}
 	var cfg types.RunConfig
 	dec := json.NewDecoder(bytes.NewReader(data))

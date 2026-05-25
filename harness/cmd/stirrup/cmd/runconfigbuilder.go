@@ -195,11 +195,18 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		}
 	}
 
+	// The base-source preconditions below are configuration mistakes the
+	// operator must resolve before any input is read — ambiguous sources,
+	// or --config -/STIRRUP_CONFIG=- without a usable piped stdin. They
+	// are validation-class (exit 1): nothing was parsed and no I/O
+	// failed. Declaring the class explicitly keeps every validation-class
+	// error in this package self-describing rather than relying on the
+	// classifyExitCode default.
 	if filePath != "" && stdinPiped {
 		if envConfigSourced {
-			return nil, fmt.Errorf("ambiguous config sources: both env var STIRRUP_CONFIG=%q and piped stdin specify a base config; pick one", filePath)
+			return nil, validationError(fmt.Errorf("ambiguous config sources: both env var STIRRUP_CONFIG=%q and piped stdin specify a base config; pick one", filePath))
 		}
-		return nil, fmt.Errorf("ambiguous config sources: --config %q and piped stdin are both present; pick one", filePath)
+		return nil, validationError(fmt.Errorf("ambiguous config sources: --config %q and piped stdin are both present; pick one", filePath))
 	}
 
 	switch {
@@ -207,11 +214,11 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		if !stdinPiped {
 			if envConfigSourced {
 				if sources.Stdin == nil {
-					return nil, fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but no stdin reader was provided")
+					return nil, validationError(fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but no stdin reader was provided"))
 				}
-				return nil, fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but stdin is a terminal")
+				return nil, validationError(fmt.Errorf("STIRRUP_CONFIG=- requires piped stdin but stdin is a terminal"))
 			}
-			return nil, fmt.Errorf("--config - requires piped stdin but stdin is a terminal")
+			return nil, validationError(fmt.Errorf("--config - requires piped stdin but stdin is a terminal"))
 		}
 		if envConfigSourced {
 			slog.Debug("using STIRRUP_CONFIG as base RunConfig source", "path", "-")
@@ -552,9 +559,11 @@ func resolvePromptForRun(cmd *cobra.Command, cfg *types.RunConfig) error {
 		}
 		// A scripted (non-TTY) run with no prompt anywhere is a
 		// precondition / validation-class failure (exit 1, issue #253).
-		// errors.Is still matches the sentinel through the exitError
-		// wrapper, so the run-config remap and existing fixtures are
-		// unaffected.
+		// errors.Is still matches errPromptRequired through the exitError
+		// wrapper (the wrapper is transparent via Unwrap), so the
+		// run-config remap and existing fixtures are unaffected. Note this
+		// wraps errPromptRequired, NOT the errPromptHintRequested sentinel
+		// above — that one is returned bare on purpose.
 		return validationError(errPromptRequired)
 	}
 	return nil
