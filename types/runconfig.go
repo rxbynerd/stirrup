@@ -1596,17 +1596,21 @@ const (
 )
 
 var validBuiltInToolNames = map[string]bool{
-	"read_file":      true,
-	"write_file":     true,
-	"search_replace": true,
-	"apply_diff":     true,
-	"edit_file":      true,
-	"list_directory": true,
-	"grep_files":     true,
-	"find_files":     true,
-	"run_command":    true,
-	"web_fetch":      true,
-	"spawn_agent":    true,
+	"read_file":         true,
+	"write_file":        true,
+	"search_replace":    true,
+	"apply_diff":        true,
+	"edit_file":         true,
+	"list_directory":    true,
+	"grep_files":        true,
+	"find_files":        true,
+	"run_command":       true,
+	"web_fetch":         true,
+	"spawn_agent":       true,
+	"git_status":        true,
+	"git_changed_files": true,
+	"git_diff":          true,
+	"git_show":          true,
 }
 
 // validRunModes is the closed set of values accepted on RunConfig.Mode.
@@ -1644,6 +1648,10 @@ func DefaultReadOnlyBuiltInTools() []string {
 		"list_directory",
 		"grep_files",
 		"find_files",
+		"git_status",
+		"git_changed_files",
+		"git_diff",
+		"git_show",
 		"web_fetch",
 		"spawn_agent",
 	}
