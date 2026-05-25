@@ -337,38 +337,7 @@ func (l *AgenticLoop) planAndDispatch(
 			ErrorCategory: errorCategory,
 		})
 
-		// Sentinel substitution for the unknown_tool path: p.call.Name
-		// is model-supplied and unbounded when no registry entry
-		// resolves, so it MUST NOT flow into a TSDB label. An attacker-
-		// or malfunctioning-model loop emitting tool_use blocks with
-		// high-entropy unique names would create O(n) unique
-		// timeseries on stirrup.harness.tool_{calls,errors,failures,
-		// call_duration} (CWE-400). Trace records (ErrorReason,
-		// ToolCallTrace.Name above) retain the raw name for debugging.
-		metricToolName := p.call.Name
-		if p.failureCategory == observability.ToolFailureUnknownTool {
-			metricToolName = unknownToolMetricName
-		}
-		toolNameAttr := l.metricAttrs(attribute.String("tool.name", metricToolName))
-		l.Metrics.ToolCalls.Add(ctx, 1, toolNameAttr)
-		l.Metrics.ToolCallDuration.Record(ctx, float64(callDuration.Milliseconds()), toolNameAttr)
-		if !p.success {
-			l.Metrics.ToolErrors.Add(ctx, 1, toolNameAttr)
-			// Failure-category breakdown for dashboards. Validity is
-			// re-checked here so a producer that forgets to set a
-			// category (Success=false with empty category) still bumps
-			// ToolErrors but does not silently widen ToolFailures
-			// label cardinality with an empty string.
-			if p.failureCategory.IsValid() {
-				l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
-					attribute.String("tool.name", metricToolName),
-					attribute.String("category", p.failureCategory.String()),
-					attribute.String("provider.type", providerType),
-					attribute.String("provider.model", providerModel),
-					attribute.String("run.mode", config.Mode),
-				))
-			}
-		}
+		metricToolName := l.emitToolCallMetrics(ctx, p, callDuration, providerType, providerModel, config.Mode)
 
 		toolResults[i] = types.ToolResult{
 			ToolUseID:  p.call.ID,
@@ -455,4 +424,62 @@ func (l *AgenticLoop) planAndDispatch(
 	}
 
 	return toolResults, toolRecords, ""
+}
+
+// emitToolCallMetrics records the per-call observability counters for a
+// completed pendingCall: tool_calls, tool_call_duration, and (on failure)
+// tool_errors plus the failure-category breakdown tool_failures. It
+// returns the bounded metric tool name — the unknown_tool sentinel
+// substitution applied here — so the caller can reuse it for the stall
+// co-emission without re-deriving the substitution.
+//
+// Two cardinality bounds live here and are the reason this is a single
+// seam rather than inline code: the unknown_tool name substitution
+// (model-supplied names must not flow into a TSDB label, CWE-400) and the
+// failureCategory.IsValid() guard on tool_failures (a producer that sets
+// Success=false with an unrecognised category still bumps tool_errors but
+// MUST NOT widen the bounded tool_failures category label). The IsValid()
+// guard in particular has no model-facing trigger, so it is exercised via
+// a synthetic pendingCall in tool_failure_metrics_test.go.
+func (l *AgenticLoop) emitToolCallMetrics(
+	ctx context.Context,
+	p *pendingCall,
+	callDuration time.Duration,
+	providerType string,
+	providerModel string,
+	mode string,
+) string {
+	// Sentinel substitution for the unknown_tool path: p.call.Name is
+	// model-supplied and unbounded when no registry entry resolves, so it
+	// MUST NOT flow into a TSDB label. An attacker- or malfunctioning-
+	// model loop emitting tool_use blocks with high-entropy unique names
+	// would create O(n) unique timeseries on
+	// stirrup.harness.tool_{calls,errors,failures,call_duration}
+	// (CWE-400). Trace records (ErrorReason, ToolCallTrace.Name) retain
+	// the raw name for debugging.
+	metricToolName := p.call.Name
+	if p.failureCategory == observability.ToolFailureUnknownTool {
+		metricToolName = unknownToolMetricName
+	}
+	toolNameAttr := l.metricAttrs(attribute.String("tool.name", metricToolName))
+	l.Metrics.ToolCalls.Add(ctx, 1, toolNameAttr)
+	l.Metrics.ToolCallDuration.Record(ctx, float64(callDuration.Milliseconds()), toolNameAttr)
+	if !p.success {
+		l.Metrics.ToolErrors.Add(ctx, 1, toolNameAttr)
+		// Failure-category breakdown for dashboards. Validity is re-checked
+		// here so a producer that forgets to set a category (Success=false
+		// with empty category) — or sets a free-form one — still bumps
+		// ToolErrors but does not silently widen ToolFailures label
+		// cardinality past the bounded enum.
+		if p.failureCategory.IsValid() {
+			l.Metrics.ToolFailures.Add(ctx, 1, l.metricAttrs(
+				attribute.String("tool.name", metricToolName),
+				attribute.String("category", p.failureCategory.String()),
+				attribute.String("provider.type", providerType),
+				attribute.String("provider.model", providerModel),
+				attribute.String("run.mode", mode),
+			))
+		}
+	}
+	return metricToolName
 }

@@ -107,6 +107,16 @@ type AgenticLoop struct {
 	// going through Once.Do.
 	asyncOnce       sync.Once
 	asyncCorrelator atomic.Pointer[transport.Correlator]
+
+	// asyncExtractorOverride, when non-nil, is attached to the async
+	// correlator in place of extractAsyncToolResult. It exists solely as a
+	// test seam: the production path has no way to deliver a non-
+	// asyncToolResult payload to dispatchAsyncToolCall (extractAsyncToolResult
+	// only ever produces asyncToolResult), so the defensive
+	// async_internal_error branch is otherwise unreachable. Tests set this
+	// via withAsyncExtractor before the first dispatch to exercise that
+	// branch. Never set in production wiring.
+	asyncExtractorOverride transport.PayloadExtractor
 }
 
 // asyncToolResult carries the resolved payload of an async tool call from
@@ -150,10 +160,25 @@ func (l *AgenticLoop) ensureAsyncCorrelator() *transport.Correlator {
 	}
 	l.asyncOnce.Do(func() {
 		c := transport.NewCorrelator("async-tool")
-		c.AttachTo(l.Transport, extractAsyncToolResult)
+		extract := extractAsyncToolResult
+		if l.asyncExtractorOverride != nil {
+			extract = l.asyncExtractorOverride
+		}
+		c.AttachTo(l.Transport, extract)
 		l.asyncCorrelator.Store(c)
 	})
 	return l.asyncCorrelator.Load()
+}
+
+// withAsyncExtractor installs a test-only PayloadExtractor override on the
+// async correlator-attach path, used to deliver a payload other than
+// asyncToolResult and exercise dispatchAsyncToolCall's defensive
+// async_internal_error branch. Must be called before the first async
+// dispatch (the correlator is constructed once, lazily). Returns the loop
+// for call-chaining in test setup.
+func (l *AgenticLoop) withAsyncExtractor(extract transport.PayloadExtractor) *AgenticLoop {
+	l.asyncExtractorOverride = extract
+	return l
 }
 
 // asyncCorrelatorForTest returns the loop's async tool correlator if it
@@ -471,13 +496,8 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		// Defensive: extractAsyncToolResult only ever delivers
 		// asyncToolResult, so reaching this branch means the correlator
 		// was wired with a different extractor. Treat as a hard error.
-		//
-		// TODO(#229-followup): no dispatch-site test covers this
-		// emission because the production wiring exposes no seam to
-		// inject a non-asyncToolResult payload — ensureAsyncCorrelator
-		// always attaches extractAsyncToolResult. Gap deferred per
-		// the wave-1-issue-229 synthesis brief; revisit if a future
-		// refactor exposes a way to swap the extractor for tests.
+		// Exercised by TestToolFailureMetrics_AsyncInternalError via the
+		// withAsyncExtractor test seam (issue #312).
 		return fmt.Sprintf("async tool %s internal error: unexpected payload type %T", call.Name, payload), false, observability.ToolFailureAsyncInternal
 	}
 	if resp.isError {
