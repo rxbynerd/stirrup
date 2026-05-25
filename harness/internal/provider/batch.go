@@ -258,7 +258,12 @@ func (a *BatchAdapter) LastBatchID() string {
 func (a *BatchAdapter) marshalRequestBody(params types.StreamParams) (json.RawMessage, error) {
 	switch a.provType {
 	case "anthropic":
-		return json.Marshal(buildAnthropicRequest(params, false))
+		registry := a.Registry
+		if registry == nil {
+			registry = quirks.DefaultRegistry()
+		}
+		q := registry.Resolve("anthropic", params.Model)
+		return json.Marshal(buildAnthropicRequest(params, false, q))
 	case "openai-compatible":
 		registry := a.Registry
 		if registry == nil {

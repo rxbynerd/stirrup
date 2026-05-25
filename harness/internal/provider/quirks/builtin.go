@@ -238,6 +238,73 @@ func BuiltinRules() []Rule {
 				)
 			},
 		},
+		// --- Tool-choice capability rules (#230, Wave 4 A1) ---
+		//
+		// tool_choice is a cross-provider capability, so the resolved
+		// flag lives on the top-level ProviderQuirks.ToolChoice field
+		// rather than under a provider sub-struct. Each first-party
+		// provider declares a base "*" rule advertising the modes its
+		// API supports; adapters gate serialisation on the resolved
+		// flag and emit nothing when Supported is false. The escalation
+		// chunk (A2) consumes the StreamParams.ToolChoice control these
+		// rules make safe to serialise.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "*",
+			Description:  "Anthropic: native tool_choice (auto/any/tool); no native none",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// Anthropic's Messages API accepts a tool_choice object
+				// with type "auto", "any", or "tool". There is no native
+				// "none" — a no-tools turn is expressed by omitting the
+				// tools array — so None stays false and the adapter
+				// handles ToolChoiceNone structurally.
+				q.ToolChoice = ToolChoiceCapability{
+					Supported: true,
+					Auto:      true,
+					Required:  true,
+					None:      false,
+					NamedTool: true,
+				}
+			},
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*",
+			Description:  "OpenAI-compatible: native tool_choice (auto/required/none/function)",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// OpenAI Chat Completions accepts tool_choice as a string
+				// ("auto"/"required"/"none") or an object naming a
+				// specific function. The full surface is supported.
+				q.ToolChoice = ToolChoiceCapability{
+					Supported: true,
+					Auto:      true,
+					Required:  true,
+					None:      true,
+					NamedTool: true,
+				}
+			},
+		},
+		{
+			ProviderType: "gemini",
+			ModelMatch:   "*",
+			Description:  "Gemini: native functionCallingConfig.mode (AUTO/ANY/NONE)",
+			LastVerified: Date("2026-05-24"),
+			Apply: func(q *ProviderQuirks) {
+				// Gemini expresses tool choice via
+				// toolConfig.functionCallingConfig.mode (AUTO/ANY/NONE)
+				// and a specific tool via ANY + allowedFunctionNames, so
+				// every mode maps onto a native shape.
+				q.ToolChoice = ToolChoiceCapability{
+					Supported: true,
+					Auto:      true,
+					Required:  true,
+					None:      true,
+					NamedTool: true,
+				}
+			},
+		},
 		{
 			ProviderType: "gemini",
 			ModelMatch:   "gemini-3*",

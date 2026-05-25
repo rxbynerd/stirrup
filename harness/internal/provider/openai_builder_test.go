@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -152,6 +154,222 @@ func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 				t.Errorf("builder vs Stream body mismatch\n builder: %s\n stream:  %s", builtBytes, captured)
 			}
 		})
+	}
+}
+
+// TestBuildOpenAIRequest_ToolChoice pins the tool_choice projection gated
+// on the resolved capability. OpenAI's base rule advertises every mode,
+// so:
+//   - ToolChoiceAuto (zero) emits no tool_choice field;
+//   - ToolChoiceRequired emits "tool_choice":"required";
+//   - ToolChoiceNone emits "tool_choice":"none";
+//   - ToolChoiceTool emits the typed function object (deterministic key
+//     order: "type" before "function");
+//   - ToolChoiceTool with no name, an invalid name, or an over-length
+//     name degrades to auto (no field).
+func TestBuildOpenAIRequest_ToolChoice(t *testing.T) {
+	base := types.StreamParams{
+		Model:     "gpt-4o",
+		MaxTokens: 256,
+		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+		Tools: []types.ToolDefinition{
+			{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", base.Model)
+
+	cases := []struct {
+		name       string
+		choice     types.ToolChoiceMode
+		toolName   string
+		wantSubstr string // empty means "no tool_choice field"
+	}{
+		{"auto omits field", types.ToolChoiceAuto, "", ""},
+		{"required emits required", types.ToolChoiceRequired, "", `"tool_choice":"required"`},
+		{"none emits none", types.ToolChoiceNone, "", `"tool_choice":"none"`},
+		// The typed openAINamedToolChoice fixes key order: "type" before
+		// "function", deterministic across processes (B1).
+		{"tool emits typed function object", types.ToolChoiceTool, "read_file", `"tool_choice":{"type":"function","function":{"name":"read_file"}}`},
+		{"tool without name degrades to auto", types.ToolChoiceTool, "", ""},
+		{"tool with invalid name degrades to auto", types.ToolChoiceTool, "bad name!", ""},
+		{"tool with over-length name degrades to auto", types.ToolChoiceTool, strings.Repeat("a", 65), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := base
+			params.ToolChoice = tc.choice
+			params.ToolChoiceName = tc.toolName
+			req, err := buildOpenAIRequest(params, true, q, nil)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if tc.wantSubstr == "" {
+				if strings.Contains(string(body), "tool_choice") {
+					t.Errorf("expected no tool_choice field, got body: %s", body)
+				}
+				return
+			}
+			if !strings.Contains(string(body), tc.wantSubstr) {
+				t.Errorf("expected %s in body, got: %s", tc.wantSubstr, body)
+			}
+		})
+	}
+}
+
+// TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder pins B1: the
+// named-tool object is a typed struct, not a map[string]any, so its JSON
+// key order is identical on every run. The map form produced
+// process-dependent ordering (Go's randomised map hash seed), which made
+// the fixture pin flaky. Marshalling the same request many times must
+// yield byte-identical output.
+func TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder(t *testing.T) {
+	params := types.StreamParams{
+		Model:          "gpt-4o",
+		MaxTokens:      256,
+		ToolChoice:     types.ToolChoiceTool,
+		ToolChoiceName: "read_file",
+		Messages:       []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+		Tools:          []types.ToolDefinition{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	}
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+
+	var first string
+	for i := 0; i < 20; i++ {
+		req, err := buildOpenAIRequest(params, true, q, nil)
+		if err != nil {
+			t.Fatalf("build (iter %d): %v", i, err)
+		}
+		body, err := json.Marshal(req)
+		if err != nil {
+			t.Fatalf("marshal (iter %d): %v", i, err)
+		}
+		if i == 0 {
+			first = string(body)
+			continue
+		}
+		if string(body) != first {
+			t.Fatalf("non-deterministic body on iter %d:\n first: %s\n now:   %s", i, first, body)
+		}
+	}
+}
+
+// TestBuildOpenAIRequest_ToolChoice_PartialCapability exercises the
+// per-mode guard branches (B2) that today's full-support builtin rules
+// never reach: a capability with Supported=true but a specific mode
+// disabled must omit the field rather than fail open and emit the
+// disallowed mode on the wire.
+func TestBuildOpenAIRequest_ToolChoice_PartialCapability(t *testing.T) {
+	t.Run("required disabled", func(t *testing.T) {
+		params := types.StreamParams{
+			Model:      "gpt-4o",
+			MaxTokens:  256,
+			ToolChoice: types.ToolChoiceRequired,
+			Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+		}
+		q := quirks.ProviderQuirks{ToolChoice: quirks.ToolChoiceCapability{Supported: true, Required: false}}
+		assertNoToolChoice(t, params, q)
+	})
+	t.Run("none disabled", func(t *testing.T) {
+		params := types.StreamParams{
+			Model:      "gpt-4o",
+			MaxTokens:  256,
+			ToolChoice: types.ToolChoiceNone,
+			Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+		}
+		q := quirks.ProviderQuirks{ToolChoice: quirks.ToolChoiceCapability{Supported: true, None: false}}
+		assertNoToolChoice(t, params, q)
+	})
+}
+
+// TestToolChoiceName_InvalidEmitsWarn pins B3's observability half: an
+// invalid named-tool name degrades to auto AND emits a slog.Warn that
+// carries the grammar but NOT the offending name (which could carry
+// log-injection bytes). The shared warnInvalidToolChoiceName helper is
+// exercised through the openai projection; a single test covers the
+// helper for all three adapters since they call the same function.
+func TestToolChoiceName_InvalidEmitsWarn(t *testing.T) {
+	prevDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prevDefault) })
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
+	const badName = "bad name!\ninjected"
+	params := types.StreamParams{
+		Model:          "gpt-4o",
+		MaxTokens:      256,
+		ToolChoice:     types.ToolChoiceTool,
+		ToolChoiceName: badName,
+		Messages:       []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+		Tools:          []types.ToolDefinition{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	}
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "tool_choice") {
+		t.Errorf("invalid name must degrade to auto, got: %s", body)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "failed validation") {
+		t.Errorf("expected a validation warn, got log: %s", logged)
+	}
+	// The raw name must NOT appear in the log line — only its length and
+	// the grammar are safe to surface.
+	if strings.Contains(logged, "bad name!") || strings.Contains(logged, "injected") {
+		t.Errorf("warn leaked the offending name into the log: %s", logged)
+	}
+	if !strings.Contains(logged, `"grammar"`) {
+		t.Errorf("warn missing the grammar attribute: %s", logged)
+	}
+}
+
+// assertNoToolChoice builds the request and fails if the marshalled body
+// carries a tool_choice field.
+func assertNoToolChoice(t *testing.T, params types.StreamParams, q quirks.ProviderQuirks) {
+	t.Helper()
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "tool_choice") {
+		t.Errorf("expected no tool_choice field, got body: %s", body)
+	}
+}
+
+// TestBuildOpenAIRequest_ToolChoiceUnsupportedCapability pins the
+// graceful no-op: a zero-value capability emits no tool_choice field
+// even for a ToolChoiceRequired request.
+func TestBuildOpenAIRequest_ToolChoiceUnsupportedCapability(t *testing.T) {
+	params := types.StreamParams{
+		Model:      "gpt-4o",
+		MaxTokens:  256,
+		ToolChoice: types.ToolChoiceRequired,
+		Messages:   []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
+	}
+	req, err := buildOpenAIRequest(params, true, quirks.ProviderQuirks{}, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "tool_choice") {
+		t.Errorf("zero-value capability must emit no tool_choice field, got: %s", body)
 	}
 }
 

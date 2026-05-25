@@ -127,11 +127,14 @@ type geminiToolConfig struct {
 
 // geminiFunctionCallingConfig selects the tool-calling mode and streaming
 // behaviour. Mode "AUTO" lets the model choose whether to call a tool;
-// "ANY" / "NONE" exist on the API but the harness does not currently
-// expose them.
+// "ANY" forces a tool call, "NONE" forbids one. AllowedFunctionNames
+// restricts an ANY-mode turn to a specific subset — the harness uses it
+// to express a single-named-tool choice (StreamParams.ToolChoiceTool).
+// It is omitempty so AUTO/NONE and an unrestricted ANY emit no array.
 type geminiFunctionCallingConfig struct {
-	Mode                        string `json:"mode"`
-	StreamFunctionCallArguments bool   `json:"streamFunctionCallArguments,omitempty"`
+	Mode                        string   `json:"mode"`
+	AllowedFunctionNames        []string `json:"allowedFunctionNames,omitempty"`
+	StreamFunctionCallArguments bool     `json:"streamFunctionCallArguments,omitempty"`
 }
 
 // geminiSafetySetting is the wire-format struct (HARM_CATEGORY_*,

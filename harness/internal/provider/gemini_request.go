@@ -36,14 +36,19 @@ var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 // defaultGeminiSafetyThresholds for the full list.
 //
 // q carries the resolved per-(provider, model) quirks for this stream.
-// Today its only load-bearing field for the request-build path is
-// BehaviourFlags.Gemini.StreamFunctionCallArgsShape, which selects the
-// value emitted at functionCallingConfig.streamFunctionCallArguments.
+// The request-build path reads two fields from it:
+//   - BehaviourFlags.Gemini.StreamFunctionCallArgsShape selects the value
+//     emitted at functionCallingConfig.streamFunctionCallArguments.
+//   - ToolChoice (the cross-provider capability) gates whether
+//     StreamParams.ToolChoice is projected onto
+//     functionCallingConfig.mode / allowedFunctionNames.
+//
 // A zero-value q reproduces today's post-#191 behaviour (StreamArgsOff
-// → false on the wire), so callers that do not yet route through the
-// registry continue to work. Future Gemini quirks (3.x V3Deltas pilot,
-// model-specific tool-config flags) are added by extending the switch
-// rather than threading new parameters.
+// → false on the wire, and mode AUTO with no allow-list because the
+// capability advertises no support), so callers that do not yet route
+// through the registry continue to work. Future Gemini quirks (3.x
+// V3Deltas pilot, model-specific tool-config flags) are added by
+// extending the switch rather than threading new parameters.
 //
 // Errors fall into three categories:
 //
@@ -104,10 +109,12 @@ func BuildGenerateContentRequest(
 				Parameters:  converted,
 			})
 		}
+		mode, allowed := geminiToolChoiceFromParams(params, q.ToolChoice)
 		req.Tools = []geminiTools{{FunctionDeclarations: decls}}
 		req.ToolConfig = &geminiToolConfig{
 			FunctionCallingConfig: geminiFunctionCallingConfig{
-				Mode:                        "AUTO",
+				Mode:                        mode,
+				AllowedFunctionNames:        allowed,
 				StreamFunctionCallArguments: streamFunctionCallArgsFromQuirks(q),
 			},
 		}
@@ -321,6 +328,48 @@ func normaliseToolArgs(in json.RawMessage) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return in
+}
+
+// geminiToolChoiceFromParams projects the provider-neutral
+// StreamParams.ToolChoice onto Gemini's functionCallingConfig.mode and,
+// for the named-tool form, allowedFunctionNames. It is gated on the
+// resolved capability and falls back to "AUTO" (the historical default
+// emitted whenever tools were present) for the auto mode, for any
+// unsupported mode, and for a named-tool choice with no name. Returning
+// "AUTO" with a nil allow-list keeps the wire body byte-identical to the
+// pre-#230 shape in every non-escalated turn.
+func geminiToolChoiceFromParams(params types.StreamParams, capability quirks.ToolChoiceCapability) (mode string, allowedFunctionNames []string) {
+	if !capability.Supported {
+		return "AUTO", nil
+	}
+	switch params.ToolChoice {
+	case types.ToolChoiceRequired:
+		if !capability.Required {
+			return "AUTO", nil
+		}
+		return "ANY", nil
+	case types.ToolChoiceNone:
+		if !capability.None {
+			return "AUTO", nil
+		}
+		return "NONE", nil
+	case types.ToolChoiceTool:
+		// Gemini expresses "force this one tool" as ANY mode restricted to
+		// a single allowed function name. A choice with no name is not
+		// expressible, so fall back to AUTO.
+		if !capability.NamedTool || params.ToolChoiceName == "" {
+			return "AUTO", nil
+		}
+		// Defense-in-depth at the wire boundary (#230 B3): reject any name
+		// outside the providers' shared grammar and degrade to AUTO.
+		if err := types.ValidateToolChoiceName(params.ToolChoiceName); err != nil {
+			warnInvalidToolChoiceName("gemini", params.Model, len(params.ToolChoiceName))
+			return "AUTO", nil
+		}
+		return "ANY", []string{params.ToolChoiceName}
+	default:
+		return "AUTO", nil
+	}
 }
 
 // streamFunctionCallArgsFromQuirks projects the resolved

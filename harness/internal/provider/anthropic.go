@@ -17,6 +17,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -59,6 +60,17 @@ type AnthropicAdapter struct {
 	baseURL    string                 // overridable for testing
 	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics    *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+
+	// Registry resolves per-(provider, model) quirks at the top of every
+	// Stream call. The constructor seeds it with quirks.DefaultRegistry()
+	// so callers that ignore the field still get the built-in rule set;
+	// the nil-Registry guard in Stream tolerates direct construction. The
+	// Anthropic adapter only reads the cross-provider ToolChoice
+	// capability today (Anthropic has no wire-shape or sampling-param
+	// divergences StreamParams cannot already express), but resolving
+	// through the registry keeps the tool-choice gating consistent with
+	// the OpenAI and Gemini adapters.
+	Registry *quirks.Registry
 }
 
 // NewAnthropicAdapter creates an adapter for the Anthropic Messages API.
@@ -88,7 +100,8 @@ func NewAnthropicAdapter(bearer credential.BearerTokenFunc, authMode AuthMode) *
 				IdleConnTimeout:       90 * time.Second,
 			},
 		},
-		baseURL: anthropicAPIURL,
+		baseURL:  anthropicAPIURL,
+		Registry: quirks.DefaultRegistry(),
 	}
 }
 
@@ -127,7 +140,60 @@ type anthropicRequest struct {
 	Tools       []types.ToolDefinition `json:"tools,omitempty"`
 	MaxTokens   int                    `json:"max_tokens"`
 	Temperature *float64               `json:"temperature,omitempty"`
-	Stream      bool                   `json:"stream"`
+	// ToolChoice is the Anthropic tool_choice object. A nil pointer omits
+	// the field entirely so a request that does not pin tool choice is
+	// byte-identical to the pre-#230 shape; this is the zero-value
+	// ToolChoiceAuto path. Populated only when the resolved quirks
+	// advertise native support for the requested mode.
+	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
+	Stream     bool                 `json:"stream"`
+}
+
+// anthropicToolChoice is the Anthropic Messages API tool_choice object.
+// Type is one of "auto", "any", or "tool"; Name is set only for "tool".
+// Anthropic has no native "none" — a no-tools turn is expressed by
+// omitting the tools array — so ToolChoiceNone never produces this
+// struct.
+type anthropicToolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name,omitempty"`
+}
+
+// anthropicToolChoiceFromParams projects the provider-neutral
+// StreamParams.ToolChoice onto the Anthropic tool_choice object, gated on
+// the resolved capability. Returns nil — meaning "emit no field" — for the
+// auto mode, for an unsupported mode, and for the structural "none" case
+// (Anthropic expresses none by omitting tools, not via tool_choice).
+func anthropicToolChoiceFromParams(params types.StreamParams, cap quirks.ToolChoiceCapability) *anthropicToolChoice {
+	if !cap.Supported {
+		return nil
+	}
+	switch params.ToolChoice {
+	case types.ToolChoiceRequired:
+		if !cap.Required {
+			return nil
+		}
+		return &anthropicToolChoice{Type: "any"}
+	case types.ToolChoiceTool:
+		// A named-tool choice with no name is not expressible; treat it
+		// as auto (emit nothing) rather than send an invalid object.
+		if !cap.NamedTool || params.ToolChoiceName == "" {
+			return nil
+		}
+		// Defense-in-depth at the wire boundary (#230 B3): A2 will feed
+		// model-influenced names through ToolChoiceName, so reject any
+		// name outside the providers' shared grammar and degrade to auto.
+		if err := types.ValidateToolChoiceName(params.ToolChoiceName); err != nil {
+			warnInvalidToolChoiceName("anthropic", params.Model, len(params.ToolChoiceName))
+			return nil
+		}
+		return &anthropicToolChoice{Type: "tool", Name: params.ToolChoiceName}
+	default:
+		// ToolChoiceAuto (zero value) and ToolChoiceNone both emit no
+		// tool_choice field: auto is the wire default, and Anthropic has
+		// no native none.
+		return nil
+	}
 }
 
 // anthropicMessage is the Anthropic-side wire shape for a single message.
@@ -232,10 +298,17 @@ type sseMessageDelta struct {
 // non-streaming caller (batch submission, phase 2 of issue #133) can reuse
 // the same projection without duplicating field-by-field copying.
 //
+// q carries the resolved per-(provider, model) quirks. Today the only
+// load-bearing field for the Anthropic build path is the cross-provider
+// ToolChoice capability, which gates whether StreamParams.ToolChoice is
+// projected onto the tool_choice object. A zero-value q (Supported=false)
+// emits no tool_choice field, so callers that do not route through the
+// registry produce the pre-#230 wire shape.
+//
 // TODO(batch): if the batch endpoint rejects fields the streaming endpoint
 // accepts (e.g. thinking_config), change the return type to
 // (json.RawMessage, error) and apply a batch-specific projection here.
-func buildAnthropicRequest(params types.StreamParams, stream bool) anthropicRequest {
+func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks) anthropicRequest {
 	return anthropicRequest{
 		Model:    params.Model,
 		System:   params.System,
@@ -250,6 +323,7 @@ func buildAnthropicRequest(params types.StreamParams, stream bool) anthropicRequ
 		Tools:       slices.Clone(params.Tools),
 		MaxTokens:   params.MaxTokens,
 		Temperature: params.Temperature,
+		ToolChoice:  anthropicToolChoiceFromParams(params, q.ToolChoice),
 		Stream:      stream,
 	}
 }
@@ -264,7 +338,17 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 		attribute.String("provider.model", params.Model),
 	)
 
-	reqBody := buildAnthropicRequest(params, true)
+	// Resolve quirks for this (provider, model) pair. Per design D4 the
+	// resolution is per-stream. The nil-Registry guard tolerates callers
+	// that build the adapter outside the factory without going through
+	// NewAnthropicAdapter.
+	registry := a.Registry
+	if registry == nil {
+		registry = quirks.DefaultRegistry()
+	}
+	q := registry.Resolve("anthropic", params.Model)
+
+	reqBody := buildAnthropicRequest(params, true, q)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

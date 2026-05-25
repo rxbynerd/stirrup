@@ -77,6 +77,7 @@ var canonicalOpenAIFieldNames = map[string]bool{
 	"model":                 true,
 	"messages":              true,
 	"tools":                 true,
+	"tool_choice":           true,
 	"max_completion_tokens": true,
 	"max_tokens":            true,
 	"temperature":           true,
@@ -492,7 +493,7 @@ func TestKnownModelIDsResolutionSmoke(t *testing.T) {
 		}
 		for _, prov := range provs {
 			q := DefaultRegistry().Resolve(prov, line)
-			if q.BehaviourFlags.OpenAI.OmitSamplingParams || q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxCompletionTokens || q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != StreamArgsOff {
+			if q.BehaviourFlags.OpenAI.OmitSamplingParams || q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxCompletionTokens || q.BehaviourFlags.Gemini.StreamFunctionCallArgsShape != StreamArgsOff || q.ToolChoice.Supported {
 				resolved++
 			}
 		}
@@ -533,6 +534,88 @@ func TestGeminiRule_NoMatchOnOpenAICompatProvider(t *testing.T) {
 	}
 	if q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxCompletionTokens {
 		t.Errorf("openai-compatible/gemini-2.5-pro: OpenAI.TokenField = %v, want TokenFieldMaxCompletionTokens (zero default)", q.BehaviourFlags.OpenAI.TokenField)
+	}
+}
+
+// TestToolChoiceCapabilityRules pins that each first-party provider's
+// base rule advertises the tool-choice modes its API supports, that the
+// capability lands on the top-level ProviderQuirks.ToolChoice field, and
+// that a provider with no rule resolves the zero value (no support). The
+// Anthropic-specific assertion guards the one asymmetry: Anthropic has no
+// native "none", so None must stay false while the cross-provider modes
+// are true.
+func TestToolChoiceCapabilityRules(t *testing.T) {
+	t.Run("anthropic advertises auto/required/named but not none", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
+		if !q.ToolChoice.Supported {
+			t.Fatalf("anthropic: ToolChoice.Supported = false, want true")
+		}
+		if !q.ToolChoice.Auto || !q.ToolChoice.Required || !q.ToolChoice.NamedTool {
+			t.Errorf("anthropic: ToolChoice = %+v, want Auto/Required/NamedTool all true", q.ToolChoice)
+		}
+		if q.ToolChoice.None {
+			t.Errorf("anthropic: ToolChoice.None = true, want false (no native none mode)")
+		}
+	})
+
+	t.Run("openai-compatible advertises every mode", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("openai-compatible", "gpt-4o")
+		want := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true}
+		if q.ToolChoice != want {
+			t.Errorf("openai-compatible: ToolChoice = %+v, want %+v", q.ToolChoice, want)
+		}
+	})
+
+	t.Run("gemini advertises every mode", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("gemini", "gemini-2.5-pro")
+		want := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true}
+		if q.ToolChoice != want {
+			t.Errorf("gemini: ToolChoice = %+v, want %+v", q.ToolChoice, want)
+		}
+	})
+
+	t.Run("unknown provider resolves zero (no support)", func(t *testing.T) {
+		q := DefaultRegistry().Resolve("mystery-provider", "some-model")
+		if q.ToolChoice != (ToolChoiceCapability{}) {
+			t.Errorf("unknown provider: ToolChoice = %+v, want zero value (no native support)", q.ToolChoice)
+		}
+	})
+}
+
+// TestToolChoiceRulesSetSupportedWhenAnyMode pins the structural
+// relationship the adapters depend on: any first-party rule that turns on
+// a per-mode tool-choice bool must also set Supported. An adapter checks
+// Supported as the master gate, so a rule that set Required without
+// Supported would silently disable the feature it intended to enable.
+func TestToolChoiceRulesSetSupportedWhenAnyMode(t *testing.T) {
+	for i, rule := range BuiltinRules() {
+		if rule.Apply == nil {
+			continue
+		}
+		q := freshQuirks()
+		rule.Apply(&q)
+		tc := q.ToolChoice
+		anyMode := tc.Auto || tc.Required || tc.None || tc.NamedTool
+		if anyMode && !tc.Supported {
+			t.Errorf("BuiltinRules()[%d] (%q): a tool-choice mode is set but Supported is false", i, rule.Description)
+		}
+	}
+}
+
+// freshQuirks returns a ProviderQuirks with the same map/slice
+// pre-initialisation Resolve performs, for rule-materialisation tests
+// that call Apply directly.
+func freshQuirks() ProviderQuirks {
+	return ProviderQuirks{
+		FieldRenames:   map[string]string{},
+		OmitFields:     []string{},
+		ValueOverrides: map[string]Value{},
+		EnumCoercions:  map[string]map[string]string{},
+		ReplayFields:   []string{},
+		BehaviourFlags: ProviderBehaviourFlags{
+			OpenAI: OpenAIBehaviourFlags{ExtraBodyFields: map[string]any{}},
+			Gemini: GeminiBehaviourFlags{SchemaUnsupportedFeatures: []string{}},
+		},
 	}
 }
 

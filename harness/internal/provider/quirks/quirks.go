@@ -43,6 +43,20 @@ type ProviderQuirks struct {
 	// a follow-up. Paths use dot-separated keys with [] for array-of-objects.
 	ReplayFields []string `json:"replayFields"`
 
+	// --- Capabilities ---
+
+	// ToolChoice declares whether and how the resolved (provider, model)
+	// supports a native tool-choice control. It is a TOP-LEVEL capability
+	// rather than a per-provider behaviour flag because tool_choice is a
+	// cross-provider concept: Anthropic, OpenAI-compatible, and Gemini all
+	// expose some form (tool_choice / functionCallingConfig). Modelling it
+	// under one provider's sub-struct would force the other adapters to
+	// reach across family boundaries to read it, which the BehaviourFlags
+	// ownership rule forbids. The zero value advertises no support, so an
+	// adapter for a provider with no rule emits no tool-choice field — the
+	// graceful no-op the StreamParams.ToolChoice contract requires.
+	ToolChoice ToolChoiceCapability `json:"toolChoice"`
+
 	// --- Behaviour flags ---
 
 	// BehaviourFlags carries adapter-internal behaviour flags that cannot be
