@@ -177,6 +177,129 @@ func TestToolTrace_ForbidUnknownRecovers(t *testing.T) {
 	}
 }
 
+// TestToolTrace_ForbidUnknownTrailingFailureFails pins the B-1 forward-scan
+// semantics: a success EARLIER in the trace must not resolve a LATER failure
+// of the same tool. `[edit_file:success, edit_file:fail]` is a trailing
+// failure nothing recovered and must FAIL — a set-membership "ever succeeded"
+// test would wrongly pass it.
+func TestToolTrace_ForbidUnknownTrailingFailureFails(t *testing.T) {
+	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
+		ForbidUnknown: true,
+	}}
+	tr := traceFromCalls(
+		call("edit_file", true),
+		call("edit_file", false),
+	)
+	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v.Passed {
+		t.Fatal("expected fail: trailing edit_file failure was never followed by a success")
+	}
+}
+
+// TestToolTrace_ForbidUnknownFailThenSuccessPasses is the recovery pair to the
+// trailing-failure case: a failure followed by a later success is resolved.
+func TestToolTrace_ForbidUnknownFailThenSuccessPasses(t *testing.T) {
+	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
+		ForbidUnknown: true,
+	}}
+	tr := traceFromCalls(
+		call("edit_file", false),
+		call("edit_file", true),
+	)
+	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !v.Passed {
+		t.Fatalf("expected pass: edit_file failure recovered by a later success, got fail: %s", v.Reason)
+	}
+}
+
+// TestToolTrace_ForbidUnknownEmptyTraceFails pins the R-1 fail-closed guard:
+// forbid_unknown against a zero-call trace cannot demonstrate recovery and
+// must FAIL rather than pass vacuously.
+func TestToolTrace_ForbidUnknownEmptyTraceFails(t *testing.T) {
+	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
+		ForbidUnknown: true,
+	}}
+	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: traceFromCalls()})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v.Passed {
+		t.Fatal("expected fail: forbid_unknown against an empty trace must not pass vacuously")
+	}
+}
+
+// TestToolTrace_AllSucceededZeroCallsFails pins the R-1 fail-closed guard on
+// the all_succeeded axis: a tool absent from the trace with all_succeeded set
+// and no min_calls must FAIL rather than pass vacuously.
+func TestToolTrace_AllSucceededZeroCallsFails(t *testing.T) {
+	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
+		Calls: []types.ToolCallExpectation{{Name: "edit_file", AllSucceeded: true}},
+	}}
+	tr := traceFromCalls(call("read_file", true))
+	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v.Passed {
+		t.Fatal("expected fail: all_succeeded with no matching call and no min_calls must not pass vacuously")
+	}
+}
+
+// TestToolTrace_AllSucceeded_Pass is the R-2 pass-direction counterpart to
+// TestToolTrace_AllSucceeded: two successful calls with all_succeeded pass.
+func TestToolTrace_AllSucceeded_Pass(t *testing.T) {
+	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
+		Calls: []types.ToolCallExpectation{{Name: "edit_file", MinCalls: 1, AllSucceeded: true}},
+	}}
+	tr := traceFromCalls(call("edit_file", true), call("edit_file", true))
+	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !v.Passed {
+		t.Fatalf("expected pass when all edit_file calls succeeded, got fail: %s", v.Reason)
+	}
+}
+
+// TestToolTrace_CallMinCalls_Pass is the R-2 pass-direction counterpart to
+// TestToolTrace_CallMinCalls.
+func TestToolTrace_CallMinCalls_Pass(t *testing.T) {
+	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
+		Calls: []types.ToolCallExpectation{{Name: "edit_file", MinCalls: 2}},
+	}}
+	tr := traceFromCalls(call("edit_file", true), call("edit_file", true))
+	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !v.Passed {
+		t.Fatalf("expected pass when min_calls met, got fail: %s", v.Reason)
+	}
+}
+
+// TestToolTrace_CallMaxCalls_Pass is the R-2 coverage for a non-zero upper
+// bound being respected (neither direction was tested before).
+func TestToolTrace_CallMaxCalls_Pass(t *testing.T) {
+	two := 2
+	j := types.EvalJudge{Type: "tool-trace", ToolTrace: &types.ToolTraceCriteria{
+		Calls: []types.ToolCallExpectation{{Name: "edit_file", MaxCalls: &two}},
+	}}
+	tr := traceFromCalls(call("edit_file", true))
+	v, err := Evaluate(context.Background(), j, JudgeContext{Trace: tr})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !v.Passed {
+		t.Fatalf("expected pass when calls within max, got fail: %s", v.Reason)
+	}
+}
+
 func TestToolTrace_CompositeWithFileJudge(t *testing.T) {
 	// The composite path threads JudgeContext (including Trace) to every
 	// sub-judge, so a tool-trace sub-judge sees the trace.

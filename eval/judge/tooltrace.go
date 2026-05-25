@@ -116,6 +116,19 @@ func checkExpectation(exp types.ToolCallExpectation, calls []types.ToolCallSumma
 			Reason: fmt.Sprintf("tool %q called %d time(s), expected at most %d", exp.Name, matched, *exp.MaxCalls),
 		}, false
 	}
+	// Fail closed when all_succeeded is asserted but no call matched and no
+	// lower bound forces one to exist. Without this guard the predicate is
+	// vacuously true (zero failures among zero matches), so a run where the
+	// model never called the tool would silently pass an expectation that
+	// was meant to gate on the tool succeeding (CWE-754). Authors who want
+	// to allow zero calls should not set all_succeeded; authors who want to
+	// require the tool set min_calls >= 1, which this branch points them to.
+	if exp.AllSucceeded && matched == 0 && exp.MinCalls == 0 {
+		return eval.JudgeVerdict{
+			Passed: false,
+			Reason: fmt.Sprintf("tool %q: all_succeeded set but no calls matched; pair with min_calls >= 1 to assert the tool was invoked", exp.Name),
+		}, false
+	}
 	if exp.AllSucceeded && failed > 0 {
 		return eval.JudgeVerdict{
 			Passed: false,
@@ -125,27 +138,38 @@ func checkExpectation(exp types.ToolCallExpectation, calls []types.ToolCallSumma
 	return eval.JudgeVerdict{}, true
 }
 
-// checkNoUnresolvedUnknown fails when the run recorded an unknown-tool /
-// renamed-tool miss (a failed call whose name never resolved) that was not
-// followed by at least one successful call. The heuristic: any failed call
-// whose name is never the name of a *successful* call later in the trace is
-// treated as an unresolved unknown-tool miss. This is what asserts in-loop
-// recovery from a renamed-tool hint actually produced a working call.
+// checkNoUnresolvedUnknown fails when the run recorded a failed call that was
+// not followed *later in the trace* by a successful call to the same tool —
+// an unresolved unknown-tool / renamed-tool miss. Recovery is positional: a
+// failure is resolved only by a success that occurs strictly after it, so
+// `[edit_file:fail, edit_file:success]` is acceptable recovery while
+// `[edit_file:success, edit_file:fail]` is a trailing failure that nothing
+// recovered and must FAIL. A set-membership test over "ever succeeded" would
+// wrongly pass the latter — masking exactly the recovery regressions this
+// check exists to catch — so the scan is forward-only.
 func checkNoUnresolvedUnknown(calls []types.ToolCallSummary) (eval.JudgeVerdict, bool) {
-	succeeded := make(map[string]struct{}, len(calls))
-	for _, c := range calls {
-		if c.Success {
-			succeeded[internalName(c)] = struct{}{}
-		}
+	// Fail closed on an empty trace: forbid_unknown is meant to gate on the
+	// recovery path having run, and a run with no tool calls (harness crash,
+	// early exit, no model output) cannot demonstrate recovery. A vacuous
+	// pass here would make the judge useless as a gate (CWE-754).
+	if len(calls) == 0 {
+		return eval.JudgeVerdict{
+			Passed: false,
+			Reason: "forbid_unknown: no tool calls recorded; cannot assert unknown-tool recovery",
+		}, false
 	}
-	for _, c := range calls {
+	for i, c := range calls {
 		if c.Success {
 			continue
 		}
-		// A failed call that was eventually retried successfully under the
-		// same name is acceptable recovery. A failed call whose name never
-		// succeeds is an unresolved miss.
-		if _, ok := succeeded[internalName(c)]; !ok {
+		resolved := false
+		for _, later := range calls[i+1:] {
+			if later.Success && internalName(later) == internalName(c) {
+				resolved = true
+				break
+			}
+		}
+		if !resolved {
 			return eval.JudgeVerdict{
 				Passed: false,
 				Reason: fmt.Sprintf("tool %q failed and was never followed by a successful call (unresolved unknown-tool miss)", internalName(c)),
