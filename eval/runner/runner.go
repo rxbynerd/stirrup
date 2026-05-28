@@ -114,6 +114,23 @@ func RunSuite(ctx context.Context, suite types.EvalSuite, cfg RunConfig) (eval.S
 		cfg.HarnessPath = "stirrup"
 	}
 
+	// Resolve a relative, separator-bearing harness path to absolute. Each
+	// task runs the harness with cmd.Dir set to its per-task temp workspace
+	// (see runTask), and the OS resolves a relative exec path against the
+	// child's working directory — so a path like "./stirrup" would be looked
+	// up inside the temp workspace, not the caller's CWD, and fail with
+	// "fork/exec ./stirrup: no such file or directory". Anchoring to an
+	// absolute path here keeps the lookup independent of cmd.Dir. Bare names
+	// (no separator) are left alone so PATH resolution via exec.LookPath
+	// still works; already-absolute paths are unchanged.
+	if strings.ContainsRune(cfg.HarnessPath, os.PathSeparator) && !filepath.IsAbs(cfg.HarnessPath) {
+		abs, err := filepath.Abs(cfg.HarnessPath)
+		if err != nil {
+			return eval.SuiteResult{}, fmt.Errorf("resolving harness path %q: %w", cfg.HarnessPath, err)
+		}
+		cfg.HarnessPath = abs
+	}
+
 	suiteArtifactDir := ""
 	if cfg.OutputDir != "" {
 		if err := os.MkdirAll(cfg.OutputDir, 0o755); err != nil {

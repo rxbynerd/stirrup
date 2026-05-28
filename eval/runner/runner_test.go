@@ -134,6 +134,73 @@ fi
 	t.Logf("task outcome: %s, verdict: %s", result.Tasks[0].Outcome, result.Tasks[0].JudgeVerdict.Reason)
 }
 
+// TestRunSuite_RelativeHarnessPath guards against the regression where a
+// relative, separator-bearing harness path (e.g. "./stirrup", as the CI
+// eval gate passes) was execed against each task's temp workspace
+// (cmd.Dir) rather than the caller's CWD, failing every task with
+// "fork/exec ./stirrup: no such file or directory". RunSuite now anchors
+// such a path to absolute before invoking the harness.
+func TestRunSuite_RelativeHarnessPath(t *testing.T) {
+	dir := t.TempDir()
+	// Fake harness: create the judged file in its CWD (the per-task
+	// workspace, since runTask sets cmd.Dir) and write the trace the
+	// runner parses.
+	script := `#!/bin/sh
+shift
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+echo hello > output.txt
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
+fi
+`
+	if err := os.WriteFile(filepath.Join(dir, "fake-harness"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run with CWD = dir so "./fake-harness" resolves the way the CI
+	// workflow's "./stirrup" does relative to GITHUB_WORKSPACE. t.Chdir
+	// restores the original working directory on cleanup (before the
+	// TempDir is removed, since cleanups run LIFO).
+	t.Chdir(dir)
+
+	suite := types.EvalSuite{
+		ID: "relative-harness-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "task-relative-harness",
+				Prompt: "create output.txt",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"output.txt"},
+				},
+			},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: "./fake-harness",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	got := result.Tasks[0]
+	if got.Outcome == "error" {
+		t.Fatalf("task errored (relative harness path not resolved to absolute?): %s", got.Error)
+	}
+	if got.Outcome != "pass" {
+		t.Errorf("outcome = %q, want %q (reason: %s)", got.Outcome, "pass", got.JudgeVerdict.Reason)
+	}
+}
+
 func TestReplayRecording_Passing(t *testing.T) {
 	workspace := t.TempDir()
 	// Create the file the judge will look for.

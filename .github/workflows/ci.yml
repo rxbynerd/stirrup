@@ -128,9 +128,15 @@ jobs:
             # exchanges the GitHub Actions OIDC token for an Anthropic
             # access token inside the subprocess; no static key is in
             # scope.
+            #
+            # --harness is absolute: the runner execs it with cmd.Dir set
+            # to each task's temp workspace, so a relative path would be
+            # resolved against that workspace and fail. The runner also
+            # anchors relative paths to absolute defensively, but passing
+            # an absolute path here keeps the intent obvious.
             ./stirrup-eval run \
               --suite "$suite" \
-              --harness ./stirrup \
+              --harness "$GITHUB_WORKSPACE/stirrup" \
               --output "eval/results/${name}" \
               --junit "eval/results/${name}/junit.xml" \
               --anthropic-federation-rule-id fdrl_01QJMFE86qFDdWzQXEekhYjY \
