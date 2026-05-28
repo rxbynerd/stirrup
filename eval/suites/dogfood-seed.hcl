@@ -42,11 +42,28 @@ suite "dogfood-seed" {
   description = "Hand-curated starter suite for the v0.1 eval-gate (#13). Replaces with mined output once the dogfood recording loop is established."
 
   task "summarise-readme-to-file" {
-    description = "Agent reads README.md and writes a 1-paragraph summary to summary.md. Judge confirms the file exists and contains a domain keyword. Exercises: read_file, write_file, basic prose generation in execution mode."
+    description = "Agent reads a seeded README.md and writes a 1-paragraph summary to summary.md. Judge confirms the file exists and contains a domain keyword. Exercises: read_file, write_file, basic prose generation in execution mode. The README is seeded into the workspace via the file block below — the task runs with repo = \"\" (empty workspace), so without the seed there would be nothing to read."
     repo        = ""
     ref         = ""
     mode        = "execution"
     prompt      = "Read README.md and write a one-paragraph summary (no more than 4 sentences) to a new file called summary.md. The summary should mention what the project does."
+
+    file "README.md" {
+      content = <<-EOT
+        # Stirrup
+
+        Stirrup is a coding-agent harness: it drives a configured large
+        language model through software-engineering tasks inside an
+        isolated workspace, mediating every file read, file edit, and
+        shell command through a permission layer and recording the run as
+        a structured trace.
+
+        It is built as a Go workspace and exposes the agentic loop,
+        provider adapters, tools, and operator-configurable safety rings
+        behind a single RunConfig, so the same binary can run locally, in
+        CI as an eval gate, or as a serverless job.
+      EOT
+    }
 
     judge {
       type    = "composite"

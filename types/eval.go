@@ -79,6 +79,14 @@ type EvalTask struct {
 	Mode        string    `json:"mode"`
 	Judge       EvalJudge `json:"judge"`
 
+	// Files seeds the per-task workspace before the harness runs. Keys are
+	// workspace-relative paths (may include subdirectories); values are the
+	// file contents. The runner writes them after any repo clone and before
+	// invoking the harness. This lets a task operate on pre-existing files
+	// — e.g. "read README.md and summarise it" — without depending on a
+	// cloned repo or on artefacts that happen to leak into the workspace.
+	Files map[string]string `json:"files,omitempty"`
+
 	// RunConfigOverrides is a sparse per-task overlay applied on top of
 	// the suite-level RunConfig baseline (EvalSuite.RunConfigFile or
 	// EvalSuite.RunConfig). Nil means "no per-task overrides"; only set

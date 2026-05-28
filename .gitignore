@@ -6,6 +6,11 @@
 /stirrup-eval
 tmp/*
 
+# Transient eval run output (per-task traces, harness stdout/stderr, JUnit).
+# CI writes this tree and uploads it as an artifact; baselines under
+# eval/baselines/ are the committed reference, not these run results.
+/eval/results/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

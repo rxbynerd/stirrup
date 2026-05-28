@@ -134,6 +134,142 @@ fi
 	t.Logf("task outcome: %s, verdict: %s", result.Tasks[0].Outcome, result.Tasks[0].JudgeVerdict.Reason)
 }
 
+// TestRunSuite_RelativeHarnessPath guards against the regression where a
+// relative, separator-bearing harness path (e.g. "./stirrup", as the CI
+// eval gate passes) was execed against each task's temp workspace
+// (cmd.Dir) rather than the caller's CWD, failing every task with
+// "fork/exec ./stirrup: no such file or directory". RunSuite now anchors
+// such a path to absolute before invoking the harness.
+func TestRunSuite_RelativeHarnessPath(t *testing.T) {
+	dir := t.TempDir()
+	// Fake harness: create the judged file in its CWD (the per-task
+	// workspace, since runTask sets cmd.Dir) and write the trace the
+	// runner parses.
+	script := `#!/bin/sh
+shift
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+echo hello > output.txt
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
+fi
+`
+	if err := os.WriteFile(filepath.Join(dir, "fake-harness"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run with CWD = dir so "./fake-harness" resolves the way the CI
+	// workflow's "./stirrup" does relative to GITHUB_WORKSPACE. t.Chdir
+	// restores the original working directory on cleanup (before the
+	// TempDir is removed, since cleanups run LIFO).
+	t.Chdir(dir)
+
+	suite := types.EvalSuite{
+		ID: "relative-harness-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "task-relative-harness",
+				Prompt: "create output.txt",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"output.txt"},
+				},
+			},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: "./fake-harness",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("got %d tasks, want 1", len(result.Tasks))
+	}
+	got := result.Tasks[0]
+	if got.Outcome == "error" {
+		t.Fatalf("task errored (relative harness path not resolved to absolute?): %s", got.Error)
+	}
+	if got.Outcome != "pass" {
+		t.Errorf("outcome = %q, want %q (reason: %s)", got.Outcome, "pass", got.JudgeVerdict.Reason)
+	}
+}
+
+// TestRunSuite_SeedsFilesAndHidesTrace asserts two coupled behaviours:
+// (1) task.Files are written into the workspace before the harness runs,
+// so the agent operates on pre-existing content; and (2) the per-task
+// trace file is NOT in the workspace, so the agent cannot list/read
+// harness internals (the hermeticity bug that let a "summarise README"
+// task pass by summarising the leaked trace). The fake harness lists its
+// working directory to stdout; the retained harness.stdout.txt is then
+// asserted to contain the seed file and not the trace.
+func TestRunSuite_SeedsFilesAndHidesTrace(t *testing.T) {
+	harnessDir := t.TempDir()
+	harnessPath := filepath.Join(harnessDir, "fake-harness")
+	script := `#!/bin/sh
+shift
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+ls -a .
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.0,"outcome":"success"}' > "$TRACE"
+fi
+`
+	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	outputDir := t.TempDir()
+	suite := types.EvalSuite{
+		ID: "seed-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "seed-task",
+				Prompt: "summarise README.md",
+				Files:  map[string]string{"README.md": "# Stirrup\nA coding-agent harness.\n"},
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"README.md"},
+				},
+			},
+		},
+	}
+
+	result, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+		OutputDir:   outputDir,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := result.Tasks[0].Outcome; got != "pass" {
+		t.Fatalf("outcome = %q, want pass (seed file should exist for the judge)", got)
+	}
+
+	stdout, err := os.ReadFile(filepath.Join(outputDir, "seed-suite", "seed-task", "harness.stdout.txt"))
+	if err != nil {
+		t.Fatalf("reading retained stdout: %v", err)
+	}
+	listing := string(stdout)
+	if !strings.Contains(listing, "README.md") {
+		t.Errorf("workspace listing %q does not contain seeded README.md", listing)
+	}
+	if strings.Contains(listing, "trace.jsonl") {
+		t.Errorf("trace.jsonl leaked into the workspace; listing = %q", listing)
+	}
+}
+
 func TestReplayRecording_Passing(t *testing.T) {
 	workspace := t.TempDir()
 	// Create the file the judge will look for.
