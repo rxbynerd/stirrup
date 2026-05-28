@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type BedrockAdapter struct {
 	client  bedrockConverseStreamer
 	Tracer  oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	Logger  *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
 
 	// credentials and region are captured from the resolved AWS config so
 	// Probe can validate the credential chain without issuing a billable
@@ -110,6 +112,24 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 		attribute.String("provider.type", "bedrock"),
 		attribute.String("provider.model", params.Model),
 	)
+
+	// buildConverseStreamInput does not project ToolChoice onto the
+	// ConverseStream request, so a non-auto ToolChoice requested against
+	// this adapter is silently downgraded to auto. Warn so the downgrade
+	// is observable (#343). Only the static mode integer and the adapter /
+	// model identifiers are logged — never message content or any
+	// secret-derived value.
+	if params.ToolChoice != types.ToolChoiceAuto {
+		logger := b.Logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.WarnContext(ctx, "bedrock tool-choice downgraded to auto: adapter does not support tool-choice",
+			slog.String("provider.type", "bedrock"),
+			slog.String("provider.model", params.Model),
+			slog.Int("tool_choice", int(params.ToolChoice)),
+		)
+	}
 
 	input, err := buildConverseStreamInput(params)
 	if err != nil {
