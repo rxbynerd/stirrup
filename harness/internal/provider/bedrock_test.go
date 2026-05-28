@@ -722,6 +722,11 @@ func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 	if strings.Contains(out, "secret-prompt-text") {
 		t.Errorf("warn log leaked message content: %s", out)
 	}
+	// The downgrade is log-only: the request body must never carry a tool
+	// choice, mirroring the openai-responses wire-body guard.
+	if input := client.capturedInput; input != nil && input.ToolConfig != nil && input.ToolConfig.ToolChoice != nil {
+		t.Errorf("request must not project ToolChoice onto ConverseStreamInput, got: %#v", input.ToolConfig.ToolChoice)
+	}
 }
 
 // TestBedrock_ToolChoiceAuto_NoWarn pins the negative: the zero-value

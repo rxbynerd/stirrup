@@ -2761,6 +2761,52 @@ func TestBuildLoopWithTransport_NormalizingAdapterWrapsBedrockProvider(t *testin
 	}
 }
 
+// TestBuildLoopWithTransport_BedrockAdapterHasLogger asserts that
+// BuildLoopWithTransport injects a non-nil Logger into the BedrockAdapter,
+// so its tool-choice downgrade warn runs through the factory's
+// ScrubHandler-backed logger (carrying run/trace correlation) rather than
+// the slog.Default fallback. A future deletion of the `pa.Logger = logger`
+// line in the *provider.BedrockAdapter factory arm would silently regress
+// the scrub and correlation invariants for that warn; this test surfaces
+// the regression at the assembly seam.
+func TestBuildLoopWithTransport_BedrockAdapterHasLogger(t *testing.T) {
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-bedrock-logger",
+		Mode:             "planning",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "bedrock", Region: "us-east-1"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "bedrock", Model: "anthropic.claude-3-5-sonnet-20241022-v2:0"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	adapter, ok := unwrapNormalizer(loop.Provider).(*provider.BedrockAdapter)
+	if !ok {
+		t.Fatalf("loop.Provider (after unwrap) type = %T, want *provider.BedrockAdapter", unwrapNormalizer(loop.Provider))
+	}
+	if adapter.Logger == nil {
+		t.Error("BedrockAdapter.Logger is nil; factory should inject the ScrubHandler-backed logger so the tool-choice downgrade warn keeps run/trace correlation and scrubbing")
+	}
+}
+
 // --- stubSecretStore ---
 
 type stubSecretStore struct {
