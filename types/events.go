@@ -147,12 +147,23 @@ func (m ToolChoiceMode) IsValid() bool {
 // Providers never serialise a ToolChoiceMode onto a request body — they
 // project the enum value directly onto their native tool_choice shape —
 // so the string form does not alter any outbound provider request.
-// An out-of-range value is rejected rather than coerced.
+// An out-of-range value is rejected rather than coerced. The explicit
+// switch (rather than delegating to String) mirrors the sibling enums
+// OpenAITokenField and GeminiStreamArgsShape, keeping one marshalling
+// style across the project's closed enums.
 func (m ToolChoiceMode) MarshalJSON() ([]byte, error) {
-	if !m.IsValid() {
+	switch m {
+	case ToolChoiceAuto:
+		return []byte(`"auto"`), nil
+	case ToolChoiceRequired:
+		return []byte(`"required"`), nil
+	case ToolChoiceNone:
+		return []byte(`"none"`), nil
+	case ToolChoiceTool:
+		return []byte(`"tool"`), nil
+	default:
 		return nil, fmt.Errorf("types: invalid ToolChoiceMode %d", int(m))
 	}
-	return []byte(`"` + m.String() + `"`), nil
 }
 
 // UnmarshalJSON is the inverse of MarshalJSON. It accepts only the defined
