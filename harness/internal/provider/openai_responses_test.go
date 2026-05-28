@@ -740,6 +740,48 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	}
 }
 
+// TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField pins the
+// wire-level half of #343: even when a non-auto ToolChoice is requested, the
+// Responses request body must never carry a "tool_choice" field, because the
+// adapter does not support it and silently downgrades to auto. A regression
+// that accidentally serialised the field would be invisible to the warn tests
+// above, which only observe the log.
+func TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField(t *testing.T) {
+	var rawBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`))
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:      "gpt-4.1",
+		MaxTokens:  1024,
+		ToolChoice: types.ToolChoiceRequired,
+		Tools: []types.ToolDefinition{
+			{
+				Name:        "read_file",
+				Description: "Read a file",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for range ch {
+	}
+
+	if strings.Contains(string(rawBody), `"tool_choice"`) {
+		t.Errorf("request body must not contain 'tool_choice' for non-auto input — the Responses adapter downgrades to auto: %s", rawBody)
+	}
+}
+
 func TestOpenAIResponsesAdapter_RequestBody_EmptyToolResult(t *testing.T) {
 	// End-to-end pin for #172: drives Stream() with an empty tool_result
 	// block and asserts on the raw HTTP body the adapter actually sends.
