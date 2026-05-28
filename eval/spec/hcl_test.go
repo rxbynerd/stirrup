@@ -128,6 +128,46 @@ func TestLoadSuiteHCL_HeredocPreserved(t *testing.T) {
 	}
 }
 
+// TestLoadSuiteHCL_SeedFiles asserts that labelled `file` blocks decode
+// into EvalTask.Files keyed by the (cleaned) workspace-relative path, with
+// the heredoc content preserved and nested paths supported.
+func TestLoadSuiteHCL_SeedFiles(t *testing.T) {
+	src := "suite \"seed\" {\n" +
+		"  task \"t1\" {\n" +
+		"    mode   = \"execution\"\n" +
+		"    prompt = \"p\"\n" +
+		"    file \"README.md\" {\n" +
+		"      content = <<-EOT\n" +
+		"        # Title\n" +
+		"        body\n" +
+		"      EOT\n" +
+		"    }\n" +
+		"    file \"docs/guide.txt\" {\n" +
+		"      content = \"hello\"\n" +
+		"    }\n" +
+		"    judge {\n" +
+		"      type    = \"test-command\"\n" +
+		"      command = \"true\"\n" +
+		"    }\n" +
+		"  }\n" +
+		"}\n"
+	path := writeTemp(t, "seed.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	files := got.Tasks[0].Files
+	if len(files) != 2 {
+		t.Fatalf("Files len = %d, want 2 (%v)", len(files), files)
+	}
+	if files["README.md"] != "# Title\nbody\n" {
+		t.Errorf("README.md = %q, want %q", files["README.md"], "# Title\nbody\n")
+	}
+	if files["docs/guide.txt"] != "hello" {
+		t.Errorf("docs/guide.txt = %q, want %q", files["docs/guide.txt"], "hello")
+	}
+}
+
 // TestLoadSuiteHCL_CompositeChildrenOrdered asserts that composite
 // judges with two `judge` child blocks decode to a Judges slice of
 // length 2 in source order.
@@ -372,6 +412,55 @@ suite "s" {
 			// error with its context-prefixed path so authors can find
 			// the offending nested judge by index.
 			wantErrFrags: []string{"invalid judge.type", "judge[0]"},
+		},
+		{
+			name: "seed file with absolute path",
+			src: `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    file "/etc/passwd" { content = "x" }
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}`,
+			wantErrFrags: []string{"must be relative"},
+		},
+		{
+			name: "seed file escaping via traversal",
+			src: `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    file "../escape.txt" { content = "x" }
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}`,
+			wantErrFrags: []string{"escapes the workspace"},
+		},
+		{
+			name: "duplicate seed file path",
+			src: `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    file "a.txt" { content = "one" }
+    file "a.txt" { content = "two" }
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}`,
+			wantErrFrags: []string{"duplicate file path"},
 		},
 	}
 

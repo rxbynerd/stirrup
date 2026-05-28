@@ -354,7 +354,26 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		}
 	}
 
-	traceFile := filepath.Join(tmpDir, "trace.jsonl")
+	// Seed declared workspace files after any clone (so a seed can override
+	// a cloned file) and before the harness runs.
+	if err := seedWorkspaceFiles(workspaceDir, task.Files); err != nil {
+		return errorResult(task.ID, start, err)
+	}
+
+	// The trace file lives OUTSIDE the workspace. Writing it into
+	// workspaceDir would expose harness internals to the agent — a
+	// list_directory or read_file of the in-progress trace.jsonl — which
+	// breaks task hermeticity and can manufacture spurious judge passes
+	// (a task asked to "read README.md and summarise it" in an empty
+	// workspace summarised the leaked trace instead). A sibling temp dir
+	// keeps the trace retrievable for artifact retention without polluting
+	// the agent's view of its workspace.
+	traceDir, err := os.MkdirTemp("", "eval-trace-"+task.ID+"-")
+	if err != nil {
+		return errorResult(task.ID, start, fmt.Errorf("creating trace directory: %w", err))
+	}
+	defer func() { _ = os.RemoveAll(traceDir) }()
+	traceFile := filepath.Join(traceDir, "trace.jsonl")
 
 	// Merge baseline + per-task overrides into a fresh RunConfig and
 	// write it next to the workspace. A nil baseline (suite declared no
@@ -547,6 +566,39 @@ func retainArtifacts(suiteArtifactDir, taskID, traceFile string, stdout, stderr 
 	if err := os.WriteFile(filepath.Join(taskDir, "harness.stderr.txt"), stderr, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "eval: artifact retention failed for task %q: stderr: %v\n", taskID, err)
 	}
+}
+
+// seedWorkspaceFiles writes each declared seed file into the workspace
+// before the harness runs. Paths were validated as workspace-relative and
+// non-escaping at suite load time (spec.convertSeedFiles); the containment
+// re-check here is defence-in-depth for callers that build EvalTask
+// directly (tests, future programmatic suites) and bypass the HCL loader.
+// Parent directories are created as needed. Files are written 0o644 — they
+// are fixture content, not secrets.
+func seedWorkspaceFiles(workspaceDir string, files map[string]string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	absWorkspace, err := filepath.Abs(workspaceDir)
+	if err != nil {
+		return fmt.Errorf("resolving workspace dir: %w", err)
+	}
+	for rel, content := range files {
+		if filepath.IsAbs(rel) {
+			return fmt.Errorf("seed file path %q must be relative to the workspace", rel)
+		}
+		dest := filepath.Join(absWorkspace, rel)
+		if dest != absWorkspace && !strings.HasPrefix(dest, absWorkspace+string(filepath.Separator)) {
+			return fmt.Errorf("seed file path %q escapes the workspace", rel)
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return fmt.Errorf("creating directory for seed file %q: %w", rel, err)
+		}
+		if err := os.WriteFile(dest, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("writing seed file %q: %w", rel, err)
+		}
+	}
+	return nil
 }
 
 // cloneRepo clones a git repository at the given ref into the target directory.

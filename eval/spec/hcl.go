@@ -148,8 +148,20 @@ type taskSpec struct {
 	Ref                string                  `hcl:"ref,optional"`
 	Mode               string                  `hcl:"mode,optional"`
 	Prompt             string                  `hcl:"prompt,optional"`
+	Files              []fileSpec              `hcl:"file,block"`
 	RunConfigOverrides *runConfigOverridesSpec `hcl:"run_config_overrides,block"`
 	Judge              judgeSpec               `hcl:"judge,block"`
+}
+
+// fileSpec is a single workspace seed file. The label is the
+// workspace-relative path the runner writes to; content is the literal
+// file body (commonly a heredoc). Repeated `file` blocks within a task
+// populate EvalTask.Files. Using a labelled block mirrors the grammar's
+// other labelled blocks (task, call) and lets the path carry characters
+// — dots, slashes — that a native HCL attribute name cannot.
+type fileSpec struct {
+	Path    string `hcl:"path,label"`
+	Content string `hcl:"content"`
 }
 
 type judgeSpec struct {
@@ -316,6 +328,10 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		if err := validateInlineAPIKeyRefs(nil, taskOverrides); err != nil {
 			return types.EvalSuite{}, fmt.Errorf("task %q: %w", t.ID, err)
 		}
+		files, err := convertSeedFiles(t.Files, t.ID)
+		if err != nil {
+			return types.EvalSuite{}, err
+		}
 		tasks = append(tasks, types.EvalTask{
 			ID:                 t.ID,
 			Description:        t.Description,
@@ -323,6 +339,7 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 			Ref:                t.Ref,
 			Prompt:             t.Prompt,
 			Mode:               t.Mode,
+			Files:              files,
 			Judge:              j,
 			RunConfigOverrides: taskOverrides,
 		})
@@ -344,6 +361,38 @@ func convertSuite(s suiteSpec) (types.EvalSuite, error) {
 		RunConfig:       suiteRunConfig,
 		QuarantineFlags: quarantineFlags,
 	}, nil
+}
+
+// convertSeedFiles materialises a task's `file` blocks into the
+// EvalTask.Files map, rejecting paths that are not safe workspace-relative
+// targets. The runner writes these into each task's temp workspace, so a
+// path that is absolute or escapes via `..` would let a suite author write
+// outside the sandbox; reject those at author time with a clear message
+// rather than relying solely on the runner's write-time guard. Returns nil
+// (not an empty map) when the task declares no files so the legacy shape is
+// unchanged for the common case.
+func convertSeedFiles(specs []fileSpec, taskID string) (map[string]string, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	files := make(map[string]string, len(specs))
+	for _, f := range specs {
+		if f.Path == "" {
+			return nil, fmt.Errorf("task %q: file block has an empty path label", taskID)
+		}
+		if filepath.IsAbs(f.Path) {
+			return nil, fmt.Errorf("task %q: file path %q must be relative to the workspace, not absolute", taskID, f.Path)
+		}
+		clean := filepath.Clean(f.Path)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("task %q: file path %q escapes the workspace via traversal", taskID, f.Path)
+		}
+		if _, dup := files[clean]; dup {
+			return nil, fmt.Errorf("task %q: duplicate file path %q", taskID, clean)
+		}
+		files[clean] = f.Content
+	}
+	return files, nil
 }
 
 // convertJudge recursively translates a judgeSpec into types.EvalJudge,
