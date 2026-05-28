@@ -130,15 +130,15 @@ func collectFailures(t *testing.T, reader *sdkmetric.ManualReader) []failureData
 				for _, kv := range dp.Attributes.ToSlice() {
 					switch string(kv.Key) {
 					case "tool.name":
-						fp.tool = kv.Value.Emit()
+						fp.tool = kv.Value.String()
 					case "category":
-						fp.category = kv.Value.Emit()
+						fp.category = kv.Value.String()
 					case "provider.type":
-						fp.provider = kv.Value.Emit()
+						fp.provider = kv.Value.String()
 					case "provider.model":
-						fp.model = kv.Value.Emit()
+						fp.model = kv.Value.String()
 					case "run.mode":
-						fp.mode = kv.Value.Emit()
+						fp.mode = kv.Value.String()
 					}
 				}
 				out = append(out, fp)

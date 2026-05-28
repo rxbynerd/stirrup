@@ -203,7 +203,7 @@ func collectInt64Counters(t *testing.T, rm metricdata.ResourceMetrics, name stri
 			for _, dp := range sum.DataPoints {
 				attrs := make(map[string]string)
 				for _, kv := range dp.Attributes.ToSlice() {
-					attrs[string(kv.Key)] = kv.Value.Emit()
+					attrs[string(kv.Key)] = kv.Value.String()
 				}
 				out = append(out, counterDataPoint{value: dp.Value, attrs: attrs})
 			}

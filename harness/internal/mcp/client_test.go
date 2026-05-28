@@ -797,7 +797,7 @@ func findInt64Counter(t *testing.T, rm metricdata.ResourceMetrics, name string) 
 			dp := sum.DataPoints[0]
 			attrs := make(map[string]string)
 			for _, kv := range dp.Attributes.ToSlice() {
-				attrs[string(kv.Key)] = kv.Value.Emit()
+				attrs[string(kv.Key)] = kv.Value.String()
 			}
 			return counterDataPoint{total: dp.Value, attrs: attrs}
 		}
@@ -828,7 +828,7 @@ func findFloat64Histogram(t *testing.T, rm metricdata.ResourceMetrics, name stri
 			dp := h.DataPoints[0]
 			attrs := make(map[string]string)
 			for _, kv := range dp.Attributes.ToSlice() {
-				attrs[string(kv.Key)] = kv.Value.Emit()
+				attrs[string(kv.Key)] = kv.Value.String()
 			}
 			return histogramDataPoint{count: dp.Count, attrs: attrs}
 		}
