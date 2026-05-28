@@ -792,7 +792,7 @@ func findSubagentCounter(t *testing.T, rm metricdata.ResourceMetrics, name strin
 			dp := sum.DataPoints[0]
 			out := subagentCounterDP{total: dp.Value, attrs: make(map[string]string)}
 			for _, kv := range dp.Attributes.ToSlice() {
-				out.attrs[string(kv.Key)] = kv.Value.Emit()
+				out.attrs[string(kv.Key)] = kv.Value.String()
 			}
 			return out
 		}

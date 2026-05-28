@@ -186,7 +186,7 @@ func countNoToolWhenRequired(t *testing.T, reader *sdkmetric.ManualReader) int64
 			for _, dp := range sum.DataPoints {
 				for _, kv := range dp.Attributes.ToSlice() {
 					if string(kv.Key) == "category" &&
-						kv.Value.Emit() == observability.ToolFailureNoToolWhenRequired.String() {
+						kv.Value.String() == observability.ToolFailureNoToolWhenRequired.String() {
 						total += dp.Value
 					}
 				}
