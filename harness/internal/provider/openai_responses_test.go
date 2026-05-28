@@ -158,6 +158,15 @@ func TestOpenAIResponsesAdapter_ToolChoiceAuto_NoWarn(t *testing.T) {
 	}
 }
 
+// TODO(#343): add a sibling test asserting a non-auto ToolChoice does NOT
+// warn once q.ToolChoice.Supported is true. No built-in rule sets Supported
+// for openai-responses today, so the !q.ToolChoice.Supported branch in
+// Stream is unreachable and its suppressed path is untested. Wire this in
+// when the first openai-responses native tool-choice quirk rule lands —
+// inject a synthetic registry that resolves Supported=true (mirroring
+// TestResponsesStrictMode_WireBodyShape) and assert the downgrade warn is
+// absent.
+
 func TestOpenAIResponsesAdapter_StreamToolCall(t *testing.T) {
 	body := strings.Join([]string{
 		makeResponsesEvent("response.output_item.added", `{"output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"call_abc","name":"read_file"}}`),

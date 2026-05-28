@@ -583,6 +583,12 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	// secret-derived value. q.ToolChoice.Supported is always false today
 	// (no openai-responses tool-choice rule), but the flag is checked so a
 	// future rule that adds native support suppresses the warning.
+	//
+	// TODO(#343): add a suppression test asserting this warning does NOT
+	// fire when q.ToolChoice.Supported is true, once the first
+	// openai-responses native tool-choice quirk rule lands. The
+	// !q.ToolChoice.Supported branch is unreachable until then, so no test
+	// exercises the suppressed path today.
 	if params.ToolChoice != types.ToolChoiceAuto && !q.ToolChoice.Supported {
 		logger.WarnContext(ctx, "openai-responses tool-choice downgraded to auto: adapter does not support tool-choice",
 			slog.String("provider.type", "openai-responses"),
