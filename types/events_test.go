@@ -131,3 +131,14 @@ func TestToolChoiceModeIsValid(t *testing.T) {
 		}
 	}
 }
+
+// TestToolChoiceModeMarshalRejects guards the serialisation hardening:
+// an out-of-range value must surface a marshal error rather than emit
+// the "unknown(N)" String() fallback onto a trace or recording.
+func TestToolChoiceModeMarshalRejects(t *testing.T) {
+	for _, m := range []ToolChoiceMode{99, -1} {
+		if _, err := json.Marshal(m); err == nil {
+			t.Errorf("Marshal(%d) = nil error, want rejection", int(m))
+		}
+	}
+}
