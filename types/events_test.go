@@ -64,3 +64,70 @@ func TestStreamParamsToolChoiceOmitempty(t *testing.T) {
 		t.Errorf("non-auto ToolChoice must appear in JSON, got: %s", b)
 	}
 }
+
+// TestToolChoiceModeRoundTrip pins the MarshalJSON/UnmarshalJSON
+// inverse: every defined member marshals to its lowercase string form
+// and unmarshals back to the same value.
+func TestToolChoiceModeRoundTrip(t *testing.T) {
+	cases := []struct {
+		mode ToolChoiceMode
+		json string
+	}{
+		{ToolChoiceAuto, `"auto"`},
+		{ToolChoiceRequired, `"required"`},
+		{ToolChoiceNone, `"none"`},
+		{ToolChoiceTool, `"tool"`},
+	}
+	for _, tc := range cases {
+		b, err := json.Marshal(tc.mode)
+		if err != nil {
+			t.Fatalf("marshal %v: %v", tc.mode, err)
+		}
+		if string(b) != tc.json {
+			t.Errorf("marshal %v = %s, want %s", tc.mode, b, tc.json)
+		}
+		var got ToolChoiceMode
+		if err := json.Unmarshal(b, &got); err != nil {
+			t.Fatalf("unmarshal %s: %v", b, err)
+		}
+		if got != tc.mode {
+			t.Errorf("round-trip %s = %v, want %v", b, got, tc.mode)
+		}
+	}
+}
+
+// TestToolChoiceModeUnmarshalRejects guards the deserialisation
+// hardening: an unknown string and an out-of-range integer-as-string
+// both error rather than being silently coerced to ToolChoiceAuto.
+func TestToolChoiceModeUnmarshalRejects(t *testing.T) {
+	bad := []string{
+		`"any"`,        // OpenAI/Anthropic native token, not a ToolChoiceMode form
+		`"AUTO"`,       // case-sensitive
+		`"unknown(9)"`, // the String() fallback form must not round-trip
+		`4`,            // out-of-range integer
+		`"4"`,          // out-of-range as a string
+		`""`,           // empty
+		`null`,         // not a defined form
+	}
+	for _, in := range bad {
+		var m ToolChoiceMode
+		if err := json.Unmarshal([]byte(in), &m); err == nil {
+			t.Errorf("Unmarshal(%s) = nil error, want rejection", in)
+		}
+	}
+}
+
+// TestToolChoiceModeIsValid checks the predicate is true for defined
+// members and false for out-of-range values.
+func TestToolChoiceModeIsValid(t *testing.T) {
+	for _, m := range []ToolChoiceMode{ToolChoiceAuto, ToolChoiceRequired, ToolChoiceNone, ToolChoiceTool} {
+		if !m.IsValid() {
+			t.Errorf("IsValid(%v) = false, want true", m)
+		}
+	}
+	for _, m := range []ToolChoiceMode{-1, 4, 100} {
+		if m.IsValid() {
+			t.Errorf("IsValid(%d) = true, want false", int(m))
+		}
+	}
+}
