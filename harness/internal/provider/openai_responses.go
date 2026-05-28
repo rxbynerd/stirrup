@@ -575,6 +575,22 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		slog.Any("rules", ruleDescriptions(appliedRules)),
 	)
 
+	// The Responses request body carries no tool_choice field, so a
+	// non-auto ToolChoice requested against this adapter is silently
+	// downgraded to auto. Warn once per Stream call so the downgrade is
+	// observable (#343). Only the static mode integer and the adapter /
+	// model identifiers are logged — never message content or any
+	// secret-derived value. q.ToolChoice.Supported is always false today
+	// (no openai-responses tool-choice rule), but the flag is checked so a
+	// future rule that adds native support suppresses the warning.
+	if params.ToolChoice != types.ToolChoiceAuto && !q.ToolChoice.Supported {
+		logger.WarnContext(ctx, "openai-responses tool-choice downgraded to auto: adapter does not support tool-choice",
+			slog.String("provider.type", "openai-responses"),
+			slog.String("provider.model", params.Model),
+			slog.Int("tool_choice", int(params.ToolChoice)),
+		)
+	}
+
 	if q.BehaviourFlags.OpenAI.StrictMode {
 		// Dormant in v1: no built-in rule currently sets
 		// StrictMode=true for any openai-responses model, so this
