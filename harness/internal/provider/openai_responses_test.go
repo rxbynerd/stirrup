@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -74,6 +75,86 @@ func TestOpenAIResponsesAdapter_StreamTextDelta(t *testing.T) {
 	}
 	if events[2].OutputTokens != 5 {
 		t.Errorf("event[2].OutputTokens = %d, want 5", events[2].OutputTokens)
+	}
+}
+
+// responsesWarnStubServer is a minimal Responses stub that returns a single
+// response.completed event, used by the tool-choice downgrade warn tests.
+func responsesWarnStubServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	body := makeResponsesEvent("response.completed", `{"response":{"id":"resp_1","status":"completed","output":[{"type":"message","id":"msg_1"}],"usage":{"input_tokens":1,"output_tokens":1}}}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestOpenAIResponsesAdapter_ToolChoiceNonAuto_WarnsDowngrade pins #343: the
+// Responses request body carries no tool_choice field, so a non-auto
+// ToolChoice is silently downgraded to auto. The warn must fire (so the
+// downgrade is observable) and must NOT leak message content or any
+// secret-derived value — only the static mode integer and the adapter /
+// model identifiers.
+func TestOpenAIResponsesAdapter_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
+	srv := responsesWarnStubServer(t)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:      "gpt-4.1",
+		MaxTokens:  1024,
+		ToolChoice: types.ToolChoiceRequired,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "secret-prompt-text"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	collectEvents(t, ch)
+
+	out := buf.String()
+	if !strings.Contains(out, "openai-responses tool-choice downgraded to auto") {
+		t.Errorf("expected tool-choice downgrade warn, got: %s", out)
+	}
+	if !strings.Contains(out, "gpt-4.1") {
+		t.Errorf("warn log missing model identifier: %s", out)
+	}
+	if strings.Contains(out, "secret-prompt-text") {
+		t.Errorf("warn log leaked message content: %s", out)
+	}
+}
+
+// TestOpenAIResponsesAdapter_ToolChoiceAuto_NoWarn pins the negative: the
+// zero-value ToolChoiceAuto must not emit the downgrade warn.
+func TestOpenAIResponsesAdapter_ToolChoiceAuto_NoWarn(t *testing.T) {
+	srv := responsesWarnStubServer(t)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:      "gpt-4.1",
+		MaxTokens:  1024,
+		ToolChoice: types.ToolChoiceAuto,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	collectEvents(t, ch)
+
+	if out := buf.String(); strings.Contains(out, "tool-choice downgraded") {
+		t.Errorf("auto tool-choice must not warn, got: %s", out)
 	}
 }
 
@@ -656,6 +737,48 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	}
 	if strings.Contains(string(rawBody), `"function":{"name"`) {
 		t.Error("request body contains nested 'function' object — Responses API uses a flat tool shape")
+	}
+}
+
+// TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField pins the
+// wire-level half of #343: even when a non-auto ToolChoice is requested, the
+// Responses request body must never carry a "tool_choice" field, because the
+// adapter does not support it and silently downgrades to auto. A regression
+// that accidentally serialised the field would be invisible to the warn tests
+// above, which only observe the log.
+func TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField(t *testing.T) {
+	var rawBody []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`))
+	}))
+	defer srv.Close()
+
+	adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:      "gpt-4.1",
+		MaxTokens:  1024,
+		ToolChoice: types.ToolChoiceRequired,
+		Tools: []types.ToolDefinition{
+			{
+				Name:        "read_file",
+				Description: "Read a file",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	for range ch {
+	}
+
+	if strings.Contains(string(rawBody), `"tool_choice"`) {
+		t.Errorf("request body must not contain 'tool_choice' for non-auto input — the Responses adapter downgrades to auto: %s", rawBody)
 	}
 }
 

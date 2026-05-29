@@ -1,9 +1,11 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -684,6 +686,67 @@ func TestBedrock_APIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "access denied") {
 		t.Errorf("error = %q, want to contain 'access denied'", err)
+	}
+}
+
+// TestBedrock_ToolChoiceNonAuto_WarnsDowngrade pins #343: Bedrock's
+// ConverseStream request carries no tool-choice field, so a non-auto
+// ToolChoice is silently downgraded to auto. The warn must fire (so the
+// downgrade is observable) and must NOT leak message content or any
+// secret-derived value — only the static mode integer and the adapter /
+// model identifiers. The mock client's deliberate error is irrelevant:
+// the warn is emitted before the build/client call.
+func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	client := &mockBedrockClient{apiErr: fmt.Errorf("mock")}
+	adapter := &BedrockAdapter{client: client, Logger: logger}
+
+	_, _ = adapter.Stream(context.Background(), types.StreamParams{
+		Model:      "anthropic.claude-sonnet-4-6-v1",
+		MaxTokens:  1024,
+		ToolChoice: types.ToolChoiceRequired,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "secret-prompt-text"}}},
+		},
+	})
+
+	out := buf.String()
+	if !strings.Contains(out, "bedrock tool-choice downgraded to auto") {
+		t.Errorf("expected tool-choice downgrade warn, got: %s", out)
+	}
+	if !strings.Contains(out, "anthropic.claude-sonnet-4-6-v1") {
+		t.Errorf("warn log missing model identifier: %s", out)
+	}
+	if strings.Contains(out, "secret-prompt-text") {
+		t.Errorf("warn log leaked message content: %s", out)
+	}
+	// The downgrade is log-only: the request body must never carry a tool
+	// choice, mirroring the openai-responses wire-body guard.
+	if input := client.capturedInput; input != nil && input.ToolConfig != nil && input.ToolConfig.ToolChoice != nil {
+		t.Errorf("request must not project ToolChoice onto ConverseStreamInput, got: %#v", input.ToolConfig.ToolChoice)
+	}
+}
+
+// TestBedrock_ToolChoiceAuto_NoWarn pins the negative: the zero-value
+// ToolChoiceAuto must not emit the downgrade warn (the auto case is the
+// always-satisfied no-op).
+func TestBedrock_ToolChoiceAuto_NoWarn(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	client := &mockBedrockClient{apiErr: fmt.Errorf("mock")}
+	adapter := &BedrockAdapter{client: client, Logger: logger}
+
+	_, _ = adapter.Stream(context.Background(), types.StreamParams{
+		Model:      "anthropic.claude-sonnet-4-6-v1",
+		MaxTokens:  1024,
+		ToolChoice: types.ToolChoiceAuto,
+	})
+
+	if out := buf.String(); strings.Contains(out, "tool-choice downgraded") {
+		t.Errorf("auto tool-choice must not warn, got: %s", out)
 	}
 }
 
