@@ -105,6 +105,88 @@ const (
 // ToolChoiceAuto fails to compile the moment ToolChoiceAuto is non-zero.
 var _ = [1]struct{}{}[ToolChoiceAuto]
 
+// String renders ToolChoiceMode as its stable lowercase wire form. These
+// are the same tokens MarshalJSON/UnmarshalJSON round-trip through, so a
+// trace or log line names the mode rather than an opaque integer. An
+// out-of-range value renders as "unknown(N)" — String never returns an
+// error, so it stays usable in fmt verbs; IsValid is the predicate that
+// rejects such values, and MarshalJSON refuses to emit them.
+func (m ToolChoiceMode) String() string {
+	switch m {
+	case ToolChoiceAuto:
+		return "auto"
+	case ToolChoiceRequired:
+		return "required"
+	case ToolChoiceNone:
+		return "none"
+	case ToolChoiceTool:
+		return "tool"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(m))
+	}
+}
+
+// IsValid reports whether m is one of the defined ToolChoiceMode members.
+// Out-of-range integers (e.g. from a corrupt trace or a hostile JSON
+// payload) are rejected rather than coerced to a default.
+func (m ToolChoiceMode) IsValid() bool {
+	switch m {
+	case ToolChoiceAuto, ToolChoiceRequired, ToolChoiceNone, ToolChoiceTool:
+		return true
+	default:
+		return false
+	}
+}
+
+// MarshalJSON emits the lowercase string form so ToolChoice is
+// self-documenting wherever a StreamParams is serialised for a trace or
+// recording. omitempty on StreamParams.ToolChoice still suppresses the
+// zero value (ToolChoiceAuto): encoding/json tests the Go zero value
+// before invoking MarshalJSON, so the field stays off the wire for the
+// default and this method is only reached for explicitly-set modes.
+// Providers never serialise a ToolChoiceMode onto a request body — they
+// project the enum value directly onto their native tool_choice shape —
+// so the string form does not alter any outbound provider request.
+// An out-of-range value is rejected rather than coerced. The explicit
+// switch (rather than delegating to String) mirrors the sibling enums
+// OpenAITokenField and GeminiStreamArgsShape, keeping one marshalling
+// style across the project's closed enums.
+func (m ToolChoiceMode) MarshalJSON() ([]byte, error) {
+	switch m {
+	case ToolChoiceAuto:
+		return []byte(`"auto"`), nil
+	case ToolChoiceRequired:
+		return []byte(`"required"`), nil
+	case ToolChoiceNone:
+		return []byte(`"none"`), nil
+	case ToolChoiceTool:
+		return []byte(`"tool"`), nil
+	default:
+		return nil, fmt.Errorf("types: invalid ToolChoiceMode %d", int(m))
+	}
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON. It accepts only the defined
+// string forms; an unknown string or out-of-range value is rejected with
+// an error rather than silently mapped to ToolChoiceAuto. Permissive
+// coercion here would defeat the closed-enum contract and let malformed
+// trace/config input flow into StreamParams unchecked.
+func (m *ToolChoiceMode) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case `"auto"`:
+		*m = ToolChoiceAuto
+	case `"required"`:
+		*m = ToolChoiceRequired
+	case `"none"`:
+		*m = ToolChoiceNone
+	case `"tool"`:
+		*m = ToolChoiceTool
+	default:
+		return fmt.Errorf("types: unknown ToolChoiceMode %s", data)
+	}
+	return nil
+}
+
 // toolChoiceNamePattern is the character-set and length bound enforced on
 // StreamParams.ToolChoiceName before it is serialised onto any provider
 // wire. It is the intersection of the three providers' documented
