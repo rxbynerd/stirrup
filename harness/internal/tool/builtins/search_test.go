@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
 // fsExecutor is a minimal Executor that resolves paths to a real temp dir
@@ -750,5 +751,168 @@ func TestFindFilesTool_DoubleStarGlob(t *testing.T) {
 	}
 	if !strings.Contains(out, filepath.Join("pkg", "deep", "x.go")) {
 		t.Errorf("nested .go should pass pkg/** include, got %q", out)
+	}
+}
+
+// --- Truncated boundary coverage (issue #341) ---
+
+// decodeSearchResult pulls the structured searchResult envelope out of a grep
+// invocation, asserting the Kind is the search-result kind.
+func decodeSearchResult(t *testing.T, tl *tool.Tool, input json.RawMessage) searchResult {
+	t.Helper()
+	res, err := tl.StructuredHandler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Kind != kindSearchResult {
+		t.Fatalf("expected kind %q, got %q", kindSearchResult, res.Kind)
+	}
+	var sr searchResult
+	if err := json.Unmarshal(res.Structured, &sr); err != nil {
+		t.Fatalf("unmarshal searchResult: %v", err)
+	}
+	return sr
+}
+
+// decodeFindResult is the find-side analogue of decodeSearchResult.
+func decodeFindResult(t *testing.T, tl *tool.Tool, input json.RawMessage) findResult {
+	t.Helper()
+	res, err := tl.StructuredHandler(context.Background(), input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Kind != kindFindResult {
+		t.Fatalf("expected kind %q, got %q", kindFindResult, res.Kind)
+	}
+	var fr findResult
+	if err := json.Unmarshal(res.Structured, &fr); err != nil {
+		t.Fatalf("unmarshal findResult: %v", err)
+	}
+	return fr
+}
+
+// rgMatchEvents builds an rg --json stdout stream of n distinct match events,
+// one per synthetic file, so a stubbed executor can drive the count the
+// look-ahead probe sees on the ripgrep path.
+func rgMatchEvents(n int) string {
+	var b strings.Builder
+	for i := 0; i < n; i++ {
+		b.WriteString(`{"type":"match","data":{"path":{"text":"f`)
+		b.WriteString(string(rune('a' + i%26)))
+		b.WriteString(`.go"},"lines":{"text":"hit\n"},"line_number":1}}` + "\n")
+	}
+	return b.String()
+}
+
+// TestGrepFilesTool_TruncatedBoundary_Native exercises the look-ahead probe on
+// the Go-native walker: a count landing exactly on max_results must report
+// Truncated:false, one past must report true and trim the probe element, and a
+// count below the cap must report false (issue #341).
+func TestGrepFilesTool_TruncatedBoundary_Native(t *testing.T) {
+	withRipgrepProbe(t, false)
+	const maxResults = 3
+	cases := []struct {
+		name          string
+		files         int
+		wantTruncated bool
+		wantMatches   int
+	}{
+		{"below cap", maxResults - 1, false, maxResults - 1},
+		{"exactly at cap", maxResults, false, maxResults},
+		{"one past cap", maxResults + 1, true, maxResults},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for i := 0; i < tc.files; i++ {
+				path := filepath.Join(dir, "file"+string(rune('a'+i))+".txt")
+				if err := os.WriteFile(path, []byte("needle\n"), 0o644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+			}
+			grep := GrepFilesTool(&fsExecutor{root: dir})
+			input, _ := json.Marshal(map[string]any{"pattern": "needle", "max_results": maxResults})
+			sr := decodeSearchResult(t, grep, input)
+			if sr.Truncated != tc.wantTruncated {
+				t.Errorf("Truncated = %v, want %v", sr.Truncated, tc.wantTruncated)
+			}
+			if len(sr.Matches) != tc.wantMatches {
+				t.Errorf("len(Matches) = %d, want %d", len(sr.Matches), tc.wantMatches)
+			}
+		})
+	}
+}
+
+// TestGrepFilesTool_TruncatedBoundary_Ripgrep is the symmetric boundary
+// coverage for the ripgrep path. The stubbed executor returns a configurable
+// number of match events so the look-ahead probe (parseRipgrepJSON capped at
+// maxResults+1) is what distinguishes a clean fit from genuine truncation.
+func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
+	withRipgrepProbe(t, true)
+	const maxResults = 3
+	cases := []struct {
+		name          string
+		events        int
+		wantTruncated bool
+		wantMatches   int
+	}{
+		{"below cap", maxResults - 1, false, maxResults - 1},
+		{"exactly at cap", maxResults, false, maxResults},
+		{"one past cap", maxResults + 1, true, maxResults},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := &fsExecutor{
+				root:    t.TempDir(),
+				canExec: true,
+				execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+					return &executor.ExecResult{ExitCode: 0, Stdout: rgMatchEvents(tc.events)}, nil
+				},
+			}
+			grep := GrepFilesTool(fe)
+			input, _ := json.Marshal(map[string]any{"pattern": "hit", "max_results": maxResults})
+			sr := decodeSearchResult(t, grep, input)
+			if sr.Truncated != tc.wantTruncated {
+				t.Errorf("Truncated = %v, want %v", sr.Truncated, tc.wantTruncated)
+			}
+			if len(sr.Matches) != tc.wantMatches {
+				t.Errorf("len(Matches) = %d, want %d", len(sr.Matches), tc.wantMatches)
+			}
+		})
+	}
+}
+
+// TestFindFilesTool_TruncatedBoundary exercises the look-ahead probe on the
+// find walker across the same three boundary cases (issue #341).
+func TestFindFilesTool_TruncatedBoundary(t *testing.T) {
+	const maxResults = 3
+	cases := []struct {
+		name          string
+		files         int
+		wantTruncated bool
+		wantPaths     int
+	}{
+		{"below cap", maxResults - 1, false, maxResults - 1},
+		{"exactly at cap", maxResults, false, maxResults},
+		{"one past cap", maxResults + 1, true, maxResults},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for i := 0; i < tc.files; i++ {
+				if err := os.WriteFile(filepath.Join(dir, "f"+string(rune('a'+i))+".go"), []byte("x"), 0o644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+			}
+			find := FindFilesTool(&fsExecutor{root: dir})
+			input, _ := json.Marshal(map[string]any{"name": "*.go", "max_results": maxResults})
+			fr := decodeFindResult(t, find, input)
+			if fr.Truncated != tc.wantTruncated {
+				t.Errorf("Truncated = %v, want %v", fr.Truncated, tc.wantTruncated)
+			}
+			if len(fr.Paths) != tc.wantPaths {
+				t.Errorf("len(Paths) = %d, want %d", len(fr.Paths), tc.wantPaths)
+			}
+		})
 	}
 }

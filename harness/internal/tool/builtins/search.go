@@ -219,10 +219,17 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 			// structured match (issue #231). The text rendering is derived from
 			// the same matches afterwards and stays byte-identical to the
 			// historical "path:line:text" format.
+			// Collect one element past maxResults so genuine truncation is
+			// distinguishable from a result count that lands exactly on the
+			// cap: with a probe element, len(matches) > maxResults proves more
+			// matches existed, whereas == maxResults is a clean fit. The probe
+			// is trimmed before serialization so the caller never sees it
+			// (issue #341).
+			probeMax := maxResults + 1
 			var matches []searchMatch
 			gotResult := false
 			if defaultRipgrepDetector.detect() && exec.Capabilities().CanExec {
-				rgMatches, ok, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, maxResults)
+				rgMatches, ok, rgErr := grepViaRipgrep(ctx, exec, resolvedDir, params.Pattern, params.Include, params.Exclude, probeMax)
 				switch {
 				case rgErr != nil && (errors.Is(rgErr, context.Canceled) || errors.Is(rgErr, context.DeadlineExceeded)):
 					// Context-cancellation must propagate — the caller asked
@@ -244,16 +251,21 @@ func GrepFilesTool(exec executor.Executor) *tool.Tool {
 				// caller still gets an answer.
 			}
 			if !gotResult {
-				nativeMatches, nativeErr := grepNative(resolvedDir, re, params.Include, params.Exclude, maxResults)
+				nativeMatches, nativeErr := grepNative(resolvedDir, re, params.Include, params.Exclude, probeMax)
 				if nativeErr != nil {
 					return tool.StructuredResult{}, nativeErr
 				}
 				matches = nativeMatches
 			}
 
+			truncated := len(matches) > maxResults
+			if truncated {
+				matches = matches[:maxResults]
+			}
+
 			structured, marshalErr := json.Marshal(searchResult{
 				Matches:   matchesOrEmpty(matches),
-				Truncated: len(matches) >= maxResults,
+				Truncated: truncated,
 			})
 			if marshalErr != nil {
 				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
@@ -353,14 +365,22 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 			// findNative returns the typed path list directly; the text is
 			// derived from it so a path containing a newline-free colon (or any
 			// other char) cannot diverge the two representations (issue #231).
-			paths, err := findNative(resolvedDir, params.Name, params.Include, params.Exclude, maxResults)
+			// Collect one path past maxResults so a count landing exactly on
+			// the cap is not misreported as truncated; the probe path is
+			// trimmed before serialization (issue #341).
+			paths, err := findNative(resolvedDir, params.Name, params.Include, params.Exclude, maxResults+1)
 			if err != nil {
 				return tool.StructuredResult{}, err
 			}
 
+			truncated := len(paths) > maxResults
+			if truncated {
+				paths = paths[:maxResults]
+			}
+
 			structured, marshalErr := json.Marshal(findResult{
 				Paths:     pathsOrEmpty(paths),
-				Truncated: len(paths) >= maxResults,
+				Truncated: truncated,
 			})
 			if marshalErr != nil {
 				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
