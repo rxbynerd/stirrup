@@ -414,7 +414,7 @@ func collectInt64DataPoints(t *testing.T, rm metricdata.ResourceMetrics, name st
 			for _, dp := range sum.DataPoints {
 				attrs := make(map[string]string)
 				for _, kv := range dp.Attributes.ToSlice() {
-					attrs[string(kv.Key)] = kv.Value.Emit()
+					attrs[string(kv.Key)] = kv.Value.String()
 				}
 				out = append(out, int64DataPoint{value: dp.Value, attrs: attrs})
 			}
