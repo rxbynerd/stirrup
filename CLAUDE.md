@@ -171,6 +171,15 @@ there is no native output channel. Operator walkthrough at
 - **Don't claim a UI / CLI feature is done from a passing build.**
   Type-check passes ≠ feature works. If the change is observable,
   drive it end-to-end before reporting completion.
+- **Don't act on an issue's `file:line` citations without
+  re-verifying.** The backlog tracks deferred work in detail
+  ("Deferred from #NNN … becomes load-bearing when …"), so issue
+  bodies and their line references drift as the code moves around
+  them. Before creating a task or implementing from an issue,
+  confirm each cited symbol/line against current `main`: issues are
+  routinely already-resolved or refactored past, and the closing
+  PR is often discoverable via `git log -L` or `git blame` on the
+  cited lines. Cross-reference that PR before assuming work remains.
 
 ## Known false positives
 
