@@ -390,6 +390,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	k8sNamespace, _ := f.GetString("k8s-namespace")
 	k8sKubeconfig, _ := f.GetString("k8s-kubeconfig")
 	k8sServiceAccount, _ := f.GetString("k8s-service-account")
+	k8sEgressProxyURL, _ := f.GetString("k8s-egress-proxy-url")
 	k8sNodeSelectorRaw, _ := f.GetStringArray("k8s-node-selector")
 	permissionPolicyFile, _ := f.GetString("permission-policy-file")
 	codeScannerType, _ := f.GetString("code-scanner")
@@ -496,6 +497,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		K8sNamespace:                 k8sNamespace,
 		K8sKubeconfig:                k8sKubeconfig,
 		K8sServiceAccount:            k8sServiceAccount,
+		K8sEgressProxyURL:            k8sEgressProxyURL,
 		K8sNodeSelector:              k8sNodeSelector,
 		PermissionPolicyFile:         permissionPolicyFile,
 		CodeScannerType:              codeScannerType,

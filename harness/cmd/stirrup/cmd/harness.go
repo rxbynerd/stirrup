@@ -213,6 +213,7 @@ type harnessCLIOptions struct {
 	K8sKubeconfig     string
 	K8sServiceAccount string
 	K8sNodeSelector   map[string]string
+	K8sEgressProxyURL string
 
 	// GuardRail escape hatches (issue #43). When any of these is non-zero
 	// the flag-only path constructs a GuardRailConfig; an entirely-zero
@@ -399,6 +400,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 			K8sKubeconfig:     opts.K8sKubeconfig,
 			K8sNodeSelector:   opts.K8sNodeSelector,
 			K8sServiceAccount: opts.K8sServiceAccount,
+			K8sEgressProxyURL: opts.K8sEgressProxyURL,
 		},
 		EditStrategy: types.EditStrategyConfig{Type: editStrategyType},
 		Verifier:     types.VerifierConfig{Type: verifierType},
@@ -1066,6 +1068,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("k8s-service-account") {
 		cfg.Executor.K8sServiceAccount, _ = f.GetString("k8s-service-account")
+	}
+	if changed("k8s-egress-proxy-url") {
+		cfg.Executor.K8sEgressProxyURL, _ = f.GetString("k8s-egress-proxy-url")
 	}
 	if changed("k8s-node-selector") {
 		raw, _ := f.GetStringArray("k8s-node-selector")
