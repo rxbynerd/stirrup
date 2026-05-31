@@ -90,6 +90,14 @@ const maxMCPToolNameLen = 128
 // misconfigured servers.
 const maxMCPToolsPerServer = 64
 
+// maxMCPSessionIDLen caps the length of the Mcp-Session-Id value accepted from
+// a server response. The captured value is echoed back verbatim on every
+// subsequent request header, so an unbounded server-controlled string would
+// let a hostile or buggy server grow the harness's outbound request size
+// without limit. A session ID past this cap is rejected (not stored) and the
+// prior value is kept. 512 bytes is well above any legitimate opaque token.
+const maxMCPSessionIDLen = 512
+
 // sanitizeMCPToolName truncates a remote tool name to maxMCPToolNameLen
 // runes. Returns the input unchanged when it is already within the cap.
 //
@@ -441,9 +449,10 @@ func (c *Client) listTools(ctx context.Context, sess *serverSession) ([]mcpTool,
 // intent rather than transport target.
 //
 // The returned structured envelope is the marshalled mcpStructuredResult or
-// nil for a text-only result. It is NOT scrubbed here: scrubbing happens on
-// the same footing as the text Content in the core dispatch path (the value
-// flows back through tool.StructuredResult → dispatch → trace scrub). Size
+// nil for a text-only result. It is NOT scrubbed here: scrubbing is applied at
+// the trace-emission boundary, when the trace emitter's RecordTurnRecord runs
+// the payload through scrubRawJSON before writing each line (the value flows
+// back through tool.StructuredResult → dispatch → RecordTurnRecord). Size
 // bounding, however, is enforced here at the trust boundary so an oversized
 // untrusted payload is never materialised into the loop in the first place.
 func (c *Client) callTool(ctx context.Context, sess *serverSession, serverName, name string, arguments json.RawMessage) (string, json.RawMessage, error) {
@@ -702,11 +711,18 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Capture session ID from response.
+	// Capture session ID from response. Reject an over-cap value rather than
+	// store it: the ID is echoed back on every later request, so an unbounded
+	// server-controlled string would inflate outbound headers indefinitely.
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
-		c.mu.Lock()
-		sess.sessionID = sid
-		c.mu.Unlock()
+		if len(sid) > maxMCPSessionIDLen {
+			c.warn("mcp session ID exceeded cap; ignoring",
+				"server", sess.uri, "len", len(sid), "cap", maxMCPSessionIDLen)
+		} else {
+			c.mu.Lock()
+			sess.sessionID = sid
+			c.mu.Unlock()
+		}
 	}
 
 	if resp.StatusCode != http.StatusOK {
