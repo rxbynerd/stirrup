@@ -1138,3 +1138,47 @@ func mustHost(t *testing.T, raw string) string {
 	}
 	return u.Hostname()
 }
+
+// TestConnect_LocalhostNameDefaultTransport drives a full tool call to an
+// http://localhost server through the DEFAULT transport
+// (LoopbackAwareDialContext), pinning the review-wave-1 regression: a loopback
+// NAME (which net.ParseIP cannot recognise as loopback) must be admitted at
+// dial time, not refused by the SSRF guard. Reaching the registered tool's
+// result is the proof the dial succeeded.
+func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
+	tools := []mcpTool{{Name: "ping", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch req.Method {
+		case "tools/list":
+			writeJSONRPCResult(w, req.ID, toolsListResult{Tools: tools})
+		case "tools/call":
+			writeJSONRPCResult(w, req.ID, toolsCallResult{Content: []contentItem{{Type: "text", Text: "pong"}}})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// httptest binds 127.0.0.1; rewrite to the localhost NAME so the dial
+	// exercises the name path rather than the IP-literal path.
+	uri := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
+
+	registry := tool.NewRegistry()
+	client := NewClient(registry, nil) // default transport: LoopbackAwareDialContext
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "local", URI: uri}, secrets); err != nil {
+		t.Fatalf("Connect to %s: %v", uri, err)
+	}
+	resolved := registry.Resolve("mcp_local_ping")
+	if resolved == nil {
+		t.Fatal("tool not registered")
+	}
+	out, err := resolved.StructuredHandler(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("tool call through loopback-name dial failed: %v", err)
+	}
+	if out.Text != "pong" {
+		t.Fatalf("tool result = %q, want pong", out.Text)
+	}
+}
