@@ -368,7 +368,8 @@ func FindFilesTool(exec executor.Executor) *tool.Tool {
 			// Collect one path past maxResults so a count landing exactly on
 			// the cap is not misreported as truncated; the probe path is
 			// trimmed before serialization (issue #341).
-			paths, err := findNative(resolvedDir, params.Name, params.Include, params.Exclude, maxResults+1)
+			probeMax := maxResults + 1
+			paths, err := findNative(resolvedDir, params.Name, params.Include, params.Exclude, probeMax)
 			if err != nil {
 				return tool.StructuredResult{}, err
 			}
@@ -493,9 +494,11 @@ func grepViaRipgrep(ctx context.Context, exec executor.Executor, dir, pattern st
 }
 
 // parseRipgrepJSON walks rg's newline-delimited JSON event stream and collects
-// the "match" events into searchMatch structs, capped at maxResults. rg's
-// --max-count is per-file, so a workspace with many files can exceed the global
-// bound; the cap here enforces it. Non-"match" events (begin/end/summary) and
+// the "match" events into searchMatch structs, capped at maxResults (callers
+// pass probeMax = userMax+1 so the one-past-the-cap probe element survives here
+// and is detectable by the caller). rg's --max-count is per-file, so a
+// workspace with many files can exceed the global bound; the cap here enforces
+// it. Non-"match" events (begin/end/summary) and
 // any line that does not parse as a JSON object are skipped — rg only emits
 // well-formed objects, so a parse miss is a defensive no-op, never a dropped
 // match for a colon-bearing path.
