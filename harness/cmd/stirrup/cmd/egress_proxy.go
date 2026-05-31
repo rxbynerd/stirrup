@@ -57,7 +57,14 @@ func init() {
 // driveable from a test with a cancelable context (the CLI path supplies a
 // signal-cancelled one).
 type egressProxyOptions struct {
-	listen    string
+	// listen is the host:port to bind when listener is nil. Ignored when a
+	// pre-bound listener is supplied.
+	listen string
+	// listener, when non-nil, is used directly instead of binding listen.
+	// The CLI leaves it nil and binds listen; tests pass a pre-bound listener
+	// to avoid a free-port-then-rebind TOCTOU that can flake under parallel
+	// runs. serveEgressProxy owns closing it on the Start-failure path.
+	listener  net.Listener
 	allowlist []string
 	level     slog.Level
 }
@@ -110,10 +117,15 @@ func serveEgressProxy(ctx context.Context, opts egressProxyOptions, logW io.Writ
 
 	// Bind the listener explicitly so listen-host overrides (default ":8080")
 	// take effect; egressproxy.Start only opens its own loopback listener when
-	// none is supplied, which would ignore the listen flag.
-	listener, err := net.Listen("tcp", opts.listen)
-	if err != nil {
-		return ioError(fmt.Errorf("listen on %q: %w", opts.listen, err))
+	// none is supplied, which would ignore the listen flag. A caller-supplied
+	// listener (tests) is used as-is.
+	listener := opts.listener
+	if listener == nil {
+		var err error
+		listener, err = net.Listen("tcp", opts.listen)
+		if err != nil {
+			return ioError(fmt.Errorf("listen on %q: %w", opts.listen, err))
+		}
 	}
 
 	proxy, err := egressproxy.Start(ctx, egressproxy.Config{
@@ -148,10 +160,17 @@ func serveEgressProxy(ctx context.Context, opts egressProxyOptions, logW io.Writ
 	return nil
 }
 
+// maxAllowlistFileBytes caps the --allowlist-file read at 1 MiB — far more
+// than thousands of FQDN entries need, and consistent with the project's
+// other bounded file reads (RunConfig 1 MiB, prompt 10 MiB). The cap defends
+// against a runaway or hostile file exhausting memory at startup.
+const maxAllowlistFileBytes int64 = 1 << 20 // 1 MiB
+
 // readAllowlistFile reads one allowlist entry per line, skipping blank lines
 // and #-prefixed comments. Trailing inline comments are NOT stripped — an
 // FQDN never contains '#', and stripping mid-line could silently truncate a
-// malformed entry the matcher should reject loudly.
+// malformed entry the matcher should reject loudly. The read is capped at
+// maxAllowlistFileBytes.
 func readAllowlistFile(path string) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -159,8 +178,19 @@ func readAllowlistFile(path string) ([]string, error) {
 	}
 	defer func() { _ = file.Close() }()
 
+	// Bound the read with io.LimitReader (cap+1 so an exactly-at-cap file is
+	// allowed while an over-cap file is detectable). The scanner draws from
+	// the limited reader, so no more than cap+1 bytes ever reach memory.
+	limited := &countingReader{r: io.LimitReader(file, maxAllowlistFileBytes+1)}
+
 	var entries []string
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(limited)
+	// Raise the scanner's max token size to the cap so a single long line is
+	// drawn through the LimitReader (and counted) rather than tripping the
+	// default 64 KiB token limit with a confusing "token too long" before the
+	// byte-cap check below can govern. The LimitReader still bounds total
+	// memory at cap+1 bytes.
+	scanner.Buffer(make([]byte, 0, 64*1024), int(maxAllowlistFileBytes)+1)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -168,8 +198,27 @@ func readAllowlistFile(path string) ([]string, error) {
 		}
 		entries = append(entries, line)
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read allowlist file %q: %w", path, err)
+	scanErr := scanner.Err()
+	// The cap check takes precedence over any scanner error: a file past the
+	// cap must surface as the byte-cap error.
+	if limited.n > maxAllowlistFileBytes {
+		return nil, fmt.Errorf("allowlist file %q exceeds %d byte cap", path, maxAllowlistFileBytes)
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("read allowlist file %q: %w", path, scanErr)
 	}
 	return entries, nil
+}
+
+// countingReader tallies bytes read so the caller can detect that an
+// io.LimitReader hit its ceiling (read cap+1 bytes) versus stopped at EOF.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }

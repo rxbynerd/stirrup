@@ -19,36 +19,36 @@ import (
 	"time"
 )
 
-// freeLoopbackAddr returns a currently-unused 127.0.0.1:port. It opens and
-// immediately closes a listener to learn a free port, then hands the address
-// to the proxy under test. There is a small TOCTOU window between close and
-// re-bind, acceptable for a local test that does not run concurrently against
-// itself.
-func freeLoopbackAddr(t *testing.T) string {
+// boundLoopbackListener opens a listener on an ephemeral 127.0.0.1 port and
+// returns it. Passing this listener straight into serveEgressProxy (via
+// egressProxyOptions.listener) avoids the close-and-rebind TOCTOU that a
+// free-port-then-rebind helper would carry, so the tests stay stable under
+// parallel runs.
+func boundLoopbackListener(t *testing.T) net.Listener {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("reserve free port: %v", err)
+		t.Fatalf("bind loopback listener: %v", err)
 	}
-	addr := l.Addr().String()
-	_ = l.Close()
-	return addr
+	return l
 }
 
-// startTestEgressProxy runs serveEgressProxy in a goroutine against a free
-// loopback port, waits for it to accept connections, and registers cleanup
-// that cancels the context and waits for a clean shutdown. The returned addr
-// is the bound host:port. This drives the real subcommand serve path end to
-// end without a never-returning blocking call on the global rootCmd.
+// startTestEgressProxy runs serveEgressProxy in a goroutine against a
+// pre-bound loopback listener, waits for it to accept connections, and
+// registers cleanup that cancels the context and waits for a clean shutdown.
+// The returned addr is the bound host:port. This drives the real subcommand
+// serve path end to end without a never-returning blocking call on the global
+// rootCmd.
 func startTestEgressProxy(t *testing.T, allowlist []string) (addr string) {
 	t.Helper()
-	addr = freeLoopbackAddr(t)
+	listener := boundLoopbackListener(t)
+	addr = listener.Addr().String()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
 		done <- serveEgressProxy(ctx, egressProxyOptions{
-			listen:    addr,
+			listener:  listener,
 			allowlist: allowlist,
 			level:     slog.LevelError,
 		}, io.Discard)
@@ -222,12 +222,59 @@ func TestEgressProxy_AllowlistFile(t *testing.T) {
 	}
 }
 
+// TestReadAllowlistFile_SizeCap asserts the 1 MiB read cap fires on an
+// oversized allowlist file rather than reading it all into memory. A file at
+// exactly the cap is accepted; one byte over is rejected.
+func TestReadAllowlistFile_SizeCap(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("over cap rejected", func(t *testing.T) {
+		file := filepath.Join(dir, "over.txt")
+		// One byte past the cap. Content shape is irrelevant — the read is
+		// bounded before any parsing.
+		big := bytes.Repeat([]byte("a"), int(maxAllowlistFileBytes)+1)
+		if err := os.WriteFile(file, big, 0o600); err != nil {
+			t.Fatalf("write oversize file: %v", err)
+		}
+		_, err := readAllowlistFile(file)
+		if err == nil {
+			t.Fatal("expected error for an over-cap allowlist file")
+		}
+		if !strings.Contains(err.Error(), "cap") {
+			t.Errorf("error %q should mention the byte cap", err)
+		}
+	})
+
+	t.Run("at cap accepted", func(t *testing.T) {
+		file := filepath.Join(dir, "atcap.txt")
+		// Fill exactly to the cap with a single valid entry followed by
+		// padding comment bytes so the parse yields one entry.
+		entry := "example.com\n"
+		pad := bytes.Repeat([]byte("#x\n"), (int(maxAllowlistFileBytes)-len(entry))/3)
+		content := append([]byte(entry), pad...)
+		// Trim to be at most the cap.
+		if int64(len(content)) > maxAllowlistFileBytes {
+			content = content[:maxAllowlistFileBytes]
+		}
+		if err := os.WriteFile(file, content, 0o600); err != nil {
+			t.Fatalf("write at-cap file: %v", err)
+		}
+		entries, err := readAllowlistFile(file)
+		if err != nil {
+			t.Fatalf("at-cap file should be accepted, got: %v", err)
+		}
+		if len(entries) == 0 || entries[0] != "example.com" {
+			t.Errorf("entries = %v, want it to contain example.com", entries)
+		}
+	})
+}
+
 // TestEgressProxy_BadAllowlistFails asserts a malformed allowlist entry makes
-// serveEgressProxy return an error rather than serving.
+// serveEgressProxy return an error rather than serving. serveEgressProxy
+// closes the supplied listener on the Start-failure path, so no leak.
 func TestEgressProxy_BadAllowlistFails(t *testing.T) {
-	addr := freeLoopbackAddr(t)
 	err := serveEgressProxy(context.Background(), egressProxyOptions{
-		listen: addr,
+		listener: boundLoopbackListener(t),
 		// A non-numeric port is rejected by the matcher at Start.
 		allowlist: []string{"bad.example.com:notaport"},
 		level:     slog.LevelError,
