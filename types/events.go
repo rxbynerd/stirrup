@@ -182,7 +182,7 @@ func (m *ToolChoiceMode) UnmarshalJSON(data []byte) error {
 	case `"tool"`:
 		*m = ToolChoiceTool
 	default:
-		return fmt.Errorf("types: unknown ToolChoiceMode %s", data)
+		return fmt.Errorf("types: unknown ToolChoiceMode %.64s", data)
 	}
 	return nil
 }
