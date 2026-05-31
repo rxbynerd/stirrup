@@ -738,6 +738,43 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	if strings.Contains(string(rawBody), `"function":{"name"`) {
 		t.Error("request body contains nested 'function' object — Responses API uses a flat tool shape")
 	}
+
+	// The default case above exercises ToolChoiceAuto (the zero value). Drive
+	// the same request shape with a non-auto ToolChoice and confirm the raw
+	// body still omits "tool_choice": the adapter downgrades to auto and must
+	// never serialise the field. This pins the omission inside the primary
+	// request-body test, independently of the warn-focused tests.
+	t.Run("ToolChoiceRequired", func(t *testing.T) {
+		var rawBody []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rawBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, makeResponsesEvent("response.completed", `{"response":{"status":"completed"}}`))
+		}))
+		defer srv.Close()
+
+		adapter := NewOpenAIResponsesAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{})
+
+		ch, err := adapter.Stream(context.Background(), types.StreamParams{
+			Model:      "gpt-4.1",
+			MaxTokens:  4096,
+			ToolChoice: types.ToolChoiceRequired,
+			Tools:      tools,
+			Messages: []types.Message{
+				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "Hello"}}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Stream() error: %v", err)
+		}
+		for range ch {
+		}
+
+		if strings.Contains(string(rawBody), `"tool_choice"`) {
+			t.Errorf("request body must not contain 'tool_choice' for non-auto input — the Responses adapter downgrades to auto: %s", rawBody)
+		}
+	})
 }
 
 // TestOpenAIResponsesAdapter_RequestBody_NonAutoToolChoiceOmitsField pins the

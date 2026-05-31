@@ -703,10 +703,21 @@ func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 	client := &mockBedrockClient{apiErr: fmt.Errorf("mock")}
 	adapter := &BedrockAdapter{client: client, Logger: logger}
 
+	// Tools are supplied so buildConverseStreamInput populates ToolConfig.
+	// Without a tool the ToolConfig is nil and the wire-body assertion below
+	// would pass vacuously, never exercising the "ToolChoice not projected"
+	// invariant it is meant to pin.
 	_, _ = adapter.Stream(context.Background(), types.StreamParams{
 		Model:      "anthropic.claude-sonnet-4-6-v1",
 		MaxTokens:  1024,
 		ToolChoice: types.ToolChoiceRequired,
+		Tools: []types.ToolDefinition{
+			{
+				Name:        "read_file",
+				Description: "Read a file",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+			},
+		},
 		Messages: []types.Message{
 			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "secret-prompt-text"}}},
 		},
@@ -723,8 +734,18 @@ func TestBedrock_ToolChoiceNonAuto_WarnsDowngrade(t *testing.T) {
 		t.Errorf("warn log leaked message content: %s", out)
 	}
 	// The downgrade is log-only: the request body must never carry a tool
-	// choice, mirroring the openai-responses wire-body guard.
-	if input := client.capturedInput; input != nil && input.ToolConfig != nil && input.ToolConfig.ToolChoice != nil {
+	// choice, mirroring the openai-responses wire-body guard. The mock
+	// captures the input before its apiErr fires, so capturedInput reflects
+	// the body the adapter built; with Tools present ToolConfig is non-nil,
+	// so the ToolChoice check below is exercised rather than skipped.
+	input := client.capturedInput
+	if input == nil {
+		t.Fatal("client never reached: buildConverseStreamInput must succeed so the wire body can be inspected")
+	}
+	if input.ToolConfig == nil {
+		t.Fatal("ToolConfig must be populated (Tools were supplied) for the ToolChoice assertion to be meaningful")
+	}
+	if input.ToolConfig.ToolChoice != nil {
 		t.Errorf("request must not project ToolChoice onto ConverseStreamInput, got: %#v", input.ToolConfig.ToolChoice)
 	}
 }
