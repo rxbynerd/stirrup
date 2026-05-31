@@ -204,7 +204,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		cleanup()
 		return nil, fmt.Errorf("resolve trace emitter headers: %w", err)
 	}
-	components, err := buildComponents(ctx, config, secrets, secLogger, registry, tp, exec, resolvedHeaders, resourceOpts)
+	// exec was built (and its closer registered) above; wrap it so
+	// buildComponents threads it onto the component set. The nil sink means
+	// no per-component construction steps are emitted (those are a dry-run
+	// concern only).
+	components, err := buildComponents(ctx, config, secrets, secLogger, registry, tp, executorBuildResult{exec: exec}, resolvedHeaders, resourceOpts, nil)
 	if err != nil {
 		cleanup()
 		// buildComponents already prefixes the failing component

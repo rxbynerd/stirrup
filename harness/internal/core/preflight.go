@@ -167,72 +167,50 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	}
 	ok("secret-store", "secret store constructed")
 
-	// Assemble the probe-eligible component set with per-component
-	// construction so each failure is an isolated step. The successfully
-	// built components populate `bc`, whose probeSteps drives the probe
-	// phase below — the same enumeration BuildLoop's buildComponents
-	// produces.
-	bc := &builtComponents{}
+	// 3. Decide the dry-run executor (read-only: nil for container, built
+	// for local/api). Its construction step is emitted by buildComponents,
+	// not here, so the executor step stays a property of the shared
+	// constructor.
+	execResult := preflightExecutorConstruct(ctx, config, secrets, secLogger)
 
-	// 3. Providers + credential resolution. buildProviders resolves the
-	// credential source for every provider (default + named) inline, so a
-	// failure here is the credential/auth-config surface. Reported as a
-	// "credentials" step to match the issue's step naming.
-	prov, providers, err := buildProviders(ctx, config, secrets)
-	if err != nil {
-		fail("credentials", err, "verify the credential source resolves (env var set, federation rule valid, key present)")
-	} else {
-		ok("credentials", "all provider credentials resolved")
-		bc.defaultProvider = prov
-		bc.providers = providers
-	}
-
-	// 4. Executor construction. The container path is deliberately NOT
-	// routed through buildExecutor (which would create and START a real
-	// container); preflightExecutorConstruct returns nil for container and
-	// the engine is probed read-only in the probe phase. local/api executors
-	// are cheap and side-effect-free to construct, so they are built here
-	// and probed (they expose no Probe → skip).
-	bc.executor = preflightExecutorConstruct(ctx, config, secrets, secLogger, ok, fail)
-
-	// 5. Permission policy. The policy-engine arm loads + parses the Cedar
-	// file at construction, so a malformed policy fails here; its Probe
-	// then smoke-tests evaluation. Other policy types implement no Probe.
-	// An empty registry and nil transport match the dry-run intent: the
-	// construction (and any Cedar parse) is what is being validated, not the
-	// run's tool set or upstream approval channel.
-	pp, err := buildPermissionPolicy(config, tool.NewRegistry(), nil, secLogger)
-	if err != nil {
-		fail("permission-policy", err, "check permissionPolicy.policyFile parses as Cedar")
-	} else {
-		ok("permission-policy", fmt.Sprintf("%s policy constructed", config.PermissionPolicy.Type))
-		bc.permissionPolicy = pp
-	}
-
-	// 6. Trace emitter. Built via the same buildTraceEmitter path BuildLoop
-	// uses so the preflight exercises the real construction (secret://
-	// header resolution included).
+	// 4. Resolve trace-emitter headers up front so a secret:// resolution
+	// failure surfaces as its own dedicated step rather than as an opaque
+	// trace-emitter construction error inside buildComponents.
 	resolvedHeaders, hdrErr := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
 	if hdrErr != nil {
 		fail("trace-emitter", hdrErr, "resolve secret:// references in traceEmitter.headers")
-	} else {
-		te, err := buildTraceEmitter(ctx, config.TraceEmitter, resolvedHeaders, resourceOptionsFromConfig(config))
-		if err != nil {
-			fail("trace-emitter", err, traceHint(config.TraceEmitter.Type))
-		} else {
-			ok("trace-emitter", fmt.Sprintf("%s trace emitter constructed", traceTypeName(config.TraceEmitter.Type)))
-			bc.traceEmitter = te
-			if closer, isCloser := te.(interface{ Close() error }); isCloser {
-				defer func() { _ = closer.Close() }()
-			}
-		}
+		report.finalise()
+		return report, nil
 	}
 
-	// 7. Probe phase. Drive off the SHARED probe enumeration so the set of
+	// 5. Construct the probe-eligible component set through buildComponents —
+	// the SAME constructor BuildLoopWithTransport calls. This is what makes
+	// the parity structural: a component cannot be built for a real run
+	// without also being built (and step-reported, and probe-enumerated) in
+	// the dry-run. The sink emits each component's construction step; a
+	// construction failure stops the dry-run at the first error (an
+	// acceptable trade for a single shared construction path — every later
+	// step depends on this one anyway, and a valid config builds the whole
+	// set so its report is unchanged).
+	//
+	// An empty registry and nil transport match the dry-run intent for the
+	// permission policy: the construction (and any Cedar parse) is what is
+	// validated, not the run's tool set or upstream approval channel.
+	sink := &componentStepSink{ok: ok, failStep: fail}
+	bc, err := buildComponents(ctx, config, secrets, secLogger, tool.NewRegistry(), nil, execResult, resolvedHeaders, resourceOptionsFromConfig(config), sink)
+	if err != nil {
+		// The sink already recorded the failed construction step; the
+		// wrapped error is for internal logging only and does not become a
+		// second report step.
+		report.finalise()
+		return report, nil
+	}
+	if closer, isCloser := bc.traceEmitter.(interface{ Close() error }); isCloser {
+		defer func() { _ = closer.Close() }()
+	}
+
+	// 6. Probe phase. Drive off the SHARED probe enumeration so the set of
 	// things probed here is exactly the set BuildLoop's components satisfy.
-	// A component that failed construction above is nil in `bc` and records
-	// a skip ("not constructed") rather than a second failure — its
-	// construction failure already failed the report.
 	for _, step := range bc.probeSteps() {
 		runProbeStep(ctx, config, step, opts, ok, skip, fail)
 	}
@@ -364,45 +342,45 @@ func isNilComponent(component any) bool {
 	}
 }
 
-// preflightExecutorConstruct records the "executor" construction step and
-// returns the constructed executor for the probe phase, or nil. The
-// container path is deliberately NOT routed through buildExecutor:
+// preflightExecutorConstruct decides the dry-run executor and returns it as
+// an executorBuildResult for buildComponents to thread onto the component set
+// and emit as the "executor" construction step. It does NOT emit the step
+// itself — buildComponents owns step emission so the construction-step set is
+// a property of the shared constructor.
+//
+// The container path is deliberately NOT routed through buildExecutor:
 // constructing a ContainerExecutor creates and STARTS a real container (and
 // the egress proxy in allowlist mode) as a side effect, which contradicts
 // the read-only intent of a dry-run (issue #245 step 7). For container it
-// returns nil with a construction-step note that the engine is probed
+// returns a nil executor with an ok note that the engine is checked
 // read-only in preflightExecutorProbe rather than built here. local and api
 // executors are cheap to construct and have no live side effects, so they
 // are built here and returned for the probe phase (neither implements a
 // Probe → the probe step records a skip).
 //
 // A returned local/api executor needs no Close: it holds no live resource,
-// so the dry-run leaves nothing running. The container path, which would,
-// is never constructed.
+// so the dry-run leaves nothing running. The container path, which would, is
+// never constructed.
 func preflightExecutorConstruct(
 	ctx context.Context,
 	config *types.RunConfig,
 	secrets security.SecretStore,
 	secLogger *security.SecurityLogger,
-	ok func(string, string),
-	fail func(string, error, string),
-) executor.Executor {
+) executorBuildResult {
 	if config.Executor.Type == "container" {
-		// No ContainerExecutor object is built in a dry-run (that would start
-		// a container); the engine is checked read-only in the executor-probe
-		// step. Record an honest construction note rather than claiming a
-		// build that did not happen.
-		ok("executor", "container executor not constructed in dry-run; engine checked in executor-probe")
-		return nil
+		return executorBuildResult{
+			detail: "container executor not constructed in dry-run; engine checked in executor-probe",
+		}
 	}
 
 	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger)
 	if err != nil {
-		fail("executor", err, executorHint(config.Executor.Type))
-		return nil
+		return executorBuildResult{err: err, hint: executorHint(config.Executor.Type)}
 	}
-	ok("executor", fmt.Sprintf("%s executor constructed", executorTypeName(config.Executor.Type)))
-	return exec
+	return executorBuildResult{
+		exec:   exec,
+		detail: fmt.Sprintf("%s executor constructed", executorTypeName(config.Executor.Type)),
+	}
 }
 
 // preflightExecutorProbe runs the "executor-probe" step. For the container
