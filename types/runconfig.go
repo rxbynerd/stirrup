@@ -1135,11 +1135,11 @@ type MCPServerConfig struct {
 
 	// AllowedTools optionally restricts which advertised tools the harness
 	// will register from this server. When non-empty it is an allowlist
-	// matched against the server-reported (unprefixed) tool name: any tool
-	// the server advertises that is not listed is refused at registration,
-	// so a compromised or misconfigured server cannot smuggle in unexpected
-	// tools. An empty/unset list registers every advertised tool (the
-	// historical behaviour) and is backward-compatible.
+	// matched case-sensitively against the server-reported (unprefixed) tool
+	// name — the exact name the server advertises: any tool not listed is
+	// refused at registration, so a compromised or misconfigured server
+	// cannot smuggle in unexpected tools. An empty/unset list registers every
+	// advertised tool (the historical behaviour) and is backward-compatible.
 	AllowedTools []string `json:"allowedTools,omitempty"`
 
 	// AllowedMCPHosts optionally pins the set of hostnames this server's URI
@@ -2579,13 +2579,26 @@ func validateMCPServers(servers []MCPServerConfig, errs *[]string) {
 			}
 		}
 		for j, host := range server.AllowedMCPHosts {
-			if strings.TrimSpace(host) == "" {
+			trimmed := strings.TrimSpace(host)
+			if trimmed == "" {
 				*errs = append(*errs, fmt.Sprintf("%s.allowedMCPHosts[%d] must not be empty", path, j))
 				continue
 			}
-			if host != strings.TrimSpace(host) || strings.ContainsAny(host, "/:") {
+			// An IP literal (including IPv6, which legitimately contains
+			// colons) is a valid bare host; only apply the no-scheme/port/path
+			// check to non-IP names so "::1" or "2001:db8::1" is not rejected
+			// as if the colons were a port separator.
+			if net.ParseIP(trimmed) != nil {
+				continue
+			}
+			if host != trimmed || strings.ContainsAny(host, "/:") {
 				*errs = append(*errs, fmt.Sprintf(
-					"%s.allowedMCPHosts[%d] %q must be a bare hostname (no scheme, port, or path)", path, j, host))
+					"%s.allowedMCPHosts[%d] %q must be a bare hostname or IP literal (no scheme, port, or path)", path, j, host))
+			}
+		}
+		for j, name := range server.AllowedTools {
+			if strings.TrimSpace(name) == "" {
+				*errs = append(*errs, fmt.Sprintf("%s.allowedTools[%d] must not be empty", path, j))
 			}
 		}
 	}

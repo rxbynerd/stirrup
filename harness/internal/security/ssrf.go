@@ -51,9 +51,40 @@ func ValidatePublicHost(host string) error {
 	return nil
 }
 
+// cgnatNet is the RFC 6598 carrier-grade-NAT shared address space
+// (100.64.0.0/10). Go's net.IP.IsPrivate covers only RFC 1918 and RFC 4193,
+// not this range, so it is checked explicitly: on a deployment target such as
+// GCP Cloud Run that routes 100.64/10 to internal subnets, a host in this
+// range is a private target an SSRF should not reach.
+var cgnatNet = func() *net.IPNet {
+	_, n, _ := net.ParseCIDR("100.64.0.0/10")
+	return n
+}()
+
+// IsLoopbackHost reports whether host is a loopback target — the literal
+// "localhost"/"*.localhost" names or a loopback IP literal. It is the single
+// definition shared by every loopback-exemption site (the MCP connect-time
+// gate and the MCP dial-time guard) so the two cannot drift; net.ParseIP does
+// not resolve the "localhost" name, which is why a name check is required in
+// addition to the IP check.
+func IsLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // IsPublicIP reports whether ip is a globally routable unicast address —
-// i.e. not loopback, private, multicast, link-local, or unspecified.
+// i.e. not loopback, private (incl. RFC 6598 CGNAT), multicast, link-local,
+// or unspecified.
 func IsPublicIP(ip net.IP) bool {
+	if v4 := ip.To4(); v4 != nil && cgnatNet.Contains(v4) {
+		return false
+	}
 	return !ip.IsLoopback() &&
 		!ip.IsPrivate() &&
 		!ip.IsMulticast() &&
@@ -100,7 +131,7 @@ func LoopbackAwareDialContext(timeout time.Duration) func(context.Context, strin
 		if err != nil {
 			return nil, err
 		}
-		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		if !IsLoopbackHost(host) {
 			if err := ValidatePublicHost(host); err != nil {
 				return nil, err
 			}
