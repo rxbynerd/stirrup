@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -196,6 +197,17 @@ func TestEgressPolicyFor(t *testing.T) {
 		}
 		if proxy.To[0].PodSelector.MatchLabels["app"] != "stirrup-egress-proxy" {
 			t.Errorf("proxy peer selector = %v, want app=stirrup-egress-proxy", proxy.To[0].PodSelector.MatchLabels)
+		}
+		// The proxy rule must confine egress to the proxy's listen port so an
+		// enforcing CNI does not permit reaching the proxy Pod on any port.
+		if len(proxy.Ports) != 1 {
+			t.Fatalf("proxy rule ports = %d, want 1 (TCP %d)", len(proxy.Ports), k8sEgressProxyPort)
+		}
+		if proxy.Ports[0].Protocol == nil || *proxy.Ports[0].Protocol != corev1.ProtocolTCP {
+			t.Errorf("proxy rule protocol = %v, want TCP", proxy.Ports[0].Protocol)
+		}
+		if proxy.Ports[0].Port == nil || proxy.Ports[0].Port.IntValue() != k8sEgressProxyPort {
+			t.Errorf("proxy rule port = %v, want %d", proxy.Ports[0].Port, k8sEgressProxyPort)
 		}
 	})
 }

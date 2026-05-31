@@ -28,6 +28,20 @@ const (
 	// traffic still need DNS resolution to function, so the allowlist policy
 	// opens UDP/TCP 53 to kube-dns alongside the proxy.
 	k8sDNSPort = 53
+
+	// k8sEgressProxyLabel is the label the egress proxy Deployment carries
+	// (app=stirrup-egress-proxy) and the value the allowlist policy's egress
+	// peer selects on. It is part of the executor↔manifest contract: the
+	// sample manifests in examples/k8s/egress-proxy/ set this label, and #84's
+	// sample Pod set must keep it stable.
+	k8sEgressProxyLabel = "stirrup-egress-proxy"
+
+	// k8sEgressProxyPort is the port the egress proxy listens on — the default
+	// of the `stirrup egress-proxy` --listen flag (8080). The allowlist policy
+	// confines egress to the proxy to THIS port so an enforcing CNI does not
+	// permit the sandbox to reach the proxy Pod on any other port. It must
+	// match the proxy Service/Deployment containerPort in the manifests.
+	k8sEgressProxyPort = 8080
 )
 
 // podLabels returns the label set applied to every sandbox Pod. The sandbox
@@ -92,8 +106,14 @@ func denyAllEgressPolicy(namespace, podName string) *networkingv1.NetworkPolicy 
 //
 // CAVEAT: as with denyAllEgressPolicy, enforcement depends on a
 // NetworkPolicy-enforcing CNI. On kindnet the policy is accepted but inert.
+// The proxy egress rule selects the proxy by PodSelector with NO
+// NamespaceSelector, so it matches only proxy Pods in the SAME namespace as
+// the sandbox Pod. The egress proxy Deployment must therefore run in the
+// sandbox's namespace; a cross-namespace proxy is denied (more restrictive,
+// not a bypass) and is a confusing misconfiguration to avoid.
 func allowlistEgressPolicy(namespace, podName string) *networkingv1.NetworkPolicy {
 	dnsPort := intstr.FromInt32(k8sDNSPort)
+	proxyPort := intstr.FromInt32(k8sEgressProxyPort)
 	udp := corev1.ProtocolUDP
 	tcp := corev1.ProtocolTCP
 
@@ -120,13 +140,21 @@ func allowlistEgressPolicy(namespace, podName string) *networkingv1.NetworkPolic
 				},
 				{
 					// Egress to the proxy Deployment, selected by the label
-					// the proxy manifests set. The proxy then enforces the
-					// FQDN allowlist on the operator's behalf.
+					// the proxy manifests set, and confined to the proxy's
+					// listen port. Without the Ports restriction an enforcing
+					// CNI would let the sandbox reach the proxy Pod on ANY
+					// port; pinning TCP 8080 matches the standing
+					// network-policy.yaml and the proxy's --listen default.
+					// The proxy then enforces the FQDN allowlist on the
+					// operator's behalf.
+					Ports: []networkingv1.NetworkPolicyPort{
+						{Protocol: &tcp, Port: &proxyPort},
+					},
 					To: []networkingv1.NetworkPolicyPeer{
 						{
 							PodSelector: &metav1.LabelSelector{
 								MatchLabels: map[string]string{
-									"app": "stirrup-egress-proxy",
+									"app": k8sEgressProxyLabel,
 								},
 							},
 						},
