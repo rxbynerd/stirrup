@@ -867,6 +867,14 @@ type ExecutorConfig struct {
 	K8sNodeSelector   map[string]string `json:"k8sNodeSelector,omitempty"`
 	K8sServiceAccount string            `json:"k8sServiceAccount,omitempty"`
 
+	// K8sEgressProxyURL is the URL the sandbox Pod's HTTP_PROXY / HTTPS_PROXY
+	// point at when Network.Mode == "allowlist". The k8s executor installs an
+	// egress NetworkPolicy that confines the Pod to the proxy (plus DNS), so
+	// this URL is required in allowlist mode and rejected otherwise. The proxy
+	// runs as a separate Deployment — see examples/k8s/egress-proxy/ and the
+	// `stirrup egress-proxy` subcommand. Ignored for every non-"k8s" Type.
+	K8sEgressProxyURL string `json:"k8sEgressProxyUrl,omitempty"`
+
 	// Runtime selects the OCI sandbox runtime. Empty string means "use the
 	// platform default". The closed set of accepted values is enforced by
 	// ValidateRunConfig and is per-Type (see validK8sRuntimes /
@@ -3787,6 +3795,31 @@ func validateK8sExecutor(cfg ExecutorConfig, errs *[]string) {
 	}
 	if cfg.Workspace != "" {
 		*errs = append(*errs, "executor.workspace is not valid for executor.type=\"k8s\" (the Pod workspace is fixed at /workspace)")
+	}
+	validateK8sEgressProxy(cfg, errs)
+}
+
+// validateK8sEgressProxy enforces the cross-field requirement that ties the
+// k8s egress proxy URL to the allowlist network mode. The k8s executor
+// installs a NetworkPolicy that confines an allowlist-mode Pod to the proxy,
+// so the URL is mandatory in that mode (the run would otherwise have no route
+// to the network) and pointless otherwise. The executor itself fails closed
+// at construction; surfacing the mismatch here gives the operator a config-
+// load error rather than a runtime one. Called only for executor.type=="k8s".
+func validateK8sEgressProxy(cfg ExecutorConfig, errs *[]string) {
+	mode := ""
+	if cfg.Network != nil {
+		mode = cfg.Network.Mode
+	}
+	switch mode {
+	case "allowlist":
+		if cfg.K8sEgressProxyURL == "" {
+			*errs = append(*errs, "executor.k8sEgressProxyUrl is required when executor.network.mode is \"allowlist\" for executor.type=\"k8s\"")
+		}
+	default:
+		if cfg.K8sEgressProxyURL != "" {
+			*errs = append(*errs, "executor.k8sEgressProxyUrl is only valid when executor.network.mode is \"allowlist\"")
+		}
 	}
 }
 

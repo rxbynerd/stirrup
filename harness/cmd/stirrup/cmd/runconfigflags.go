@@ -69,6 +69,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("k8s-kubeconfig", "", "Path to a kubeconfig file for the k8s executor. Empty prefers in-cluster config, then $KUBECONFIG. Mirrors executor.k8sKubeconfig.")
 	f.StringArray("k8s-node-selector", nil, "Repeatable key=value nodeSelector label constraining where the k8s executor's Pod schedules (e.g. --k8s-node-selector disktype=ssd). Mirrors executor.k8sNodeSelector.")
 	f.String("k8s-service-account", "", "ServiceAccount name for the k8s executor's Pod. Empty uses the namespace default. The token is never automounted regardless. Mirrors executor.k8sServiceAccount.")
+	f.String("k8s-egress-proxy-url", "", "URL of the egress proxy the k8s sandbox Pod routes HTTP_PROXY/HTTPS_PROXY through. Required when --executor=k8s and the network mode is \"allowlist\"; rejected otherwise. Deploy the proxy from examples/k8s/egress-proxy/. Mirrors executor.k8sEgressProxyUrl.")
 	f.String("permission-policy-file", "", "Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and --permission-policy is unset elsewhere, also implies permissionPolicy.type=policy-engine. See examples/policies/ for starters.")
 	f.String("code-scanner", "", "CodeScanner type: none, patterns, semgrep, composite. Composite requires --config (codeScanner.scanners). Empty defers to the mode-aware default (patterns for execution, none for read-only modes).")
 

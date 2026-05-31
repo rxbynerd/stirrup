@@ -906,6 +906,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			ServiceAccountName: cfg.K8sServiceAccount,
 			Resources:          cfg.Resources,
 			Network:            cfg.Network,
+			EgressProxyURL:     cfg.K8sEgressProxyURL,
 			Security:           secLogger,
 		})
 	case "api":

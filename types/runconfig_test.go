@@ -1683,6 +1683,50 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 			wantErr:     true,
 			errContains: "executor.workspace is not valid",
 		},
+		{
+			name: "allowlist mode with proxy url is valid",
+			exec: ExecutorConfig{
+				Type:              "k8s",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				Network:           &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
+				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
+			},
+		},
+		{
+			name: "allowlist mode without proxy url rejected",
+			exec: ExecutorConfig{
+				Type:         "k8s",
+				Image:        "img",
+				K8sNamespace: "ns",
+				Network:      &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
+			},
+			wantErr:     true,
+			errContains: "executor.k8sEgressProxyUrl is required",
+		},
+		{
+			name: "proxy url set with none mode rejected",
+			exec: ExecutorConfig{
+				Type:              "k8s",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				Network:           &NetworkConfig{Mode: "none"},
+				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
+			},
+			wantErr:     true,
+			errContains: "executor.k8sEgressProxyUrl is only valid",
+		},
+		{
+			name: "proxy url set with no network rejected",
+			exec: ExecutorConfig{
+				Type:              "k8s",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
+			},
+			wantErr:     true,
+			errContains: "executor.k8sEgressProxyUrl is only valid",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
