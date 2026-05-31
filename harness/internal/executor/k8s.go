@@ -72,10 +72,20 @@ var errK8sOutputCap = errors.New("output exceeded 10 MB cap")
 // is applied to the Pod container (CPU/memory requests+limits, ephemeral
 // storage limit; see resourcesToPodResources).
 //
-// Network is held for Capabilities reporting but egress is not yet
-// enforced — NetworkPolicy wiring is deferred to #178/#83. Until then a
-// Pod with Network == nil reports CanNetwork=false while retaining the
-// cluster-default egress in reality (tracked on Capabilities).
+// Network is REQUIRED (fail-closed): NewK8sExecutor rejects a nil Network
+// at construction, mirroring the container executor's explicit network
+// posture. Mode=="none" installs a deny-all egress NetworkPolicy alongside
+// the Pod; Mode=="allowlist" installs a policy permitting egress only to the
+// egress proxy (plus DNS) and injects HTTP_PROXY/HTTPS_PROXY/NO_PROXY pointing
+// at EgressProxyURL. Capabilities().CanNetwork reflects the installed policy.
+//
+// CAVEAT: NetworkPolicy enforcement depends on the cluster CNI. kindnet (the
+// default kind CNI) accepts the policy object but does NOT enforce it, so on
+// a stock kind cluster the deny/allowlist is inert and the Pod retains
+// cluster-default egress. A NetworkPolicy-enforcing CNI (Cilium, Calico) is
+// required for the posture to hold — see examples/k8s/egress-proxy/README.md.
+// This is the k8s analogue of the container executor's honest fail-open note
+// around host.docker.internal.
 type K8sExecutorConfig struct {
 	// Image is the container image for the agent Pod. It must ship a
 	// POSIX shell at /bin/sh plus the `tar` and `ls` utilities on PATH:
@@ -90,6 +100,13 @@ type K8sExecutorConfig struct {
 	ServiceAccountName string
 	Resources          *types.ResourceLimits
 	Network            *types.NetworkConfig
+	// EgressProxyURL is the URL the sandbox container's HTTP_PROXY /
+	// HTTPS_PROXY point at when Network.Mode == "allowlist". It is required
+	// in that mode (a Pod with an enforced allowlist NetworkPolicy can reach
+	// the network only via the proxy) and ignored for Mode == "none". The
+	// proxy itself runs as a separate Deployment — see
+	// examples/k8s/egress-proxy/ and the `stirrup egress-proxy` subcommand.
+	EgressProxyURL string
 	// Security, when non-nil, receives structured security events
 	// (path-traversal blocks, file-size-limit and output-cap hits) so they
 	// reach the same monitoring surface as the container and local
@@ -110,7 +127,11 @@ type K8sExecutor struct {
 	namespace  string
 	podName    string
 	network    *types.NetworkConfig
-	logger     *slog.Logger
+	// networkPolicyName is the name of the egress NetworkPolicy installed
+	// alongside the Pod. Empty only on a zero-value executor (unit tests);
+	// NewK8sExecutor always installs one. Close() deletes it best-effort.
+	networkPolicyName string
+	logger            *slog.Logger
 	// Security, when non-nil, receives structured security events. It is
 	// nil-checked at every call site so a zero-value executor (used in
 	// unit tests) emits nothing.
@@ -128,6 +149,20 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 	}
 	if cfg.Namespace == "" {
 		return nil, fmt.Errorf("k8s executor requires a namespace")
+	}
+	// Fail-closed: a nil Network leaves egress posture undefined. Rejecting
+	// it here (rather than defaulting to "deny" or "open") forces the caller
+	// to declare intent, matching the container executor's explicit network
+	// handling and keeping CanNetwork honest against an installed policy.
+	if cfg.Network == nil {
+		return nil, fmt.Errorf("k8s executor requires a network config (set executor.network.mode to \"none\" or \"allowlist\")")
+	}
+	// Compute the proxy env and validate the allowlist→URL requirement BEFORE
+	// creating any cluster objects, so a misconfigured allowlist run fails
+	// without leaving an orphaned Pod behind.
+	proxyEnv, err := proxyEnvFor(cfg.Network, cfg.EgressProxyURL)
+	if err != nil {
+		return nil, err
 	}
 
 	restCfg, err := buildRESTConfig(cfg.Kubeconfig)
@@ -168,6 +203,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: cfg.Namespace,
+			Labels:    podLabels(podName),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:      corev1.RestartPolicyNever,
@@ -185,6 +221,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 					Image:      cfg.Image,
 					Command:    []string{"/bin/sh", "-c", "sleep infinity"},
 					WorkingDir: k8sWorkspace,
+					Env:        proxyEnv,
 					Resources:  resourcesToPodResources(cfg.Resources),
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: ptr.To(false),
@@ -217,14 +254,30 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		return nil, fmt.Errorf("pod %s/%s not ready: %w", cfg.Namespace, created.Name, err)
 	}
 
+	// Install the egress NetworkPolicy that backs the declared network mode.
+	// proxyEnvFor already validated the mode above, so egressPolicyFor cannot
+	// hit its default arm here. A failure to install the policy is fatal: a
+	// Pod whose egress is meant to be denied/allowlisted but is not must not
+	// be handed back to the caller. Tear the Pod down before returning.
+	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, created.Name)
+	if err != nil {
+		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
+		return nil, err
+	}
+	if _, err := clientset.NetworkingV1().NetworkPolicies(cfg.Namespace).Create(ctx, policy, metav1.CreateOptions{}); err != nil {
+		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
+		return nil, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, created.Name, err)
+	}
+
 	return &K8sExecutor{
-		clientset:  clientset,
-		restConfig: restCfg,
-		namespace:  cfg.Namespace,
-		podName:    created.Name,
-		network:    cfg.Network,
-		logger:     logger,
-		Security:   cfg.Security,
+		clientset:         clientset,
+		restConfig:        restCfg,
+		namespace:         cfg.Namespace,
+		podName:           created.Name,
+		network:           cfg.Network,
+		networkPolicyName: policy.Name,
+		logger:            logger,
+		Security:          cfg.Security,
 	}, nil
 }
 
@@ -235,6 +288,20 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 func (e *K8sExecutor) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
 	defer cancel()
+
+	// Delete the egress NetworkPolicy first, best-effort: a leftover policy
+	// is harmless once the Pod it selects is gone (NetworkPolicy with a
+	// podSelector that matches nothing is inert), but leaking one per run
+	// clutters the namespace. A NotFound is success. Any other error is
+	// logged but does not block Pod deletion — the Pod is the resource that
+	// actually costs the operator, so its removal must not hinge on the
+	// policy delete succeeding.
+	if e.networkPolicyName != "" {
+		npErr := e.clientset.NetworkingV1().NetworkPolicies(e.namespace).Delete(ctx, e.networkPolicyName, metav1.DeleteOptions{})
+		if npErr != nil && !apierrors.IsNotFound(npErr) {
+			e.logger.Warn("k8s executor networkpolicy delete failed", "namespace", e.namespace, "networkpolicy", e.networkPolicyName, "err", npErr)
+		}
+	}
 
 	err := e.clientset.CoreV1().Pods(e.namespace).Delete(ctx, e.podName, metav1.DeleteOptions{
 		GracePeriodSeconds: ptr.To(int64(0)),
@@ -623,14 +690,16 @@ func (w *writeCapBuffer) Write(p []byte) (int, error) {
 func (w *writeCapBuffer) Bytes() []byte  { return w.buf.Bytes() }
 func (w *writeCapBuffer) String() string { return w.buf.String() }
 
-// TODO(#178): CanNetwork's accuracy depends on a NetworkPolicy
-// being enforced for the Pod. Until that wiring lands, a Pod with
-// cfg.Network == nil reports CanNetwork=false but has cluster-default
-// egress in reality. Tracked in #178.
+// Capabilities advertises the executor's capabilities. CanNetwork reflects
+// the egress NetworkPolicy installed alongside the Pod (#178): Mode=="none"
+// installs a deny-all policy (CanNetwork=false) and Mode=="allowlist"
+// installs a proxy-only egress policy (CanNetwork=true). The report is honest
+// against the installed object — with the standing CNI caveat that kindnet
+// accepts but does not enforce NetworkPolicy (see K8sExecutorConfig).
 //
-// Capabilities advertises the executor's capabilities. CanNetwork is
-// derived from the held NetworkConfig so callers can branch on the
-// declared policy even while egress enforcement is deferred.
+// A zero-value executor (nil network, used in some unit tests) reports
+// CanNetwork=false; NewK8sExecutor never produces one because it fails-closed
+// on a nil network.
 //
 // MaxTimeout deliberately mirrors container.go and local.go (maxTimeout =
 // 5 min). Returning 0 would silently disable timeout clamping in callers
