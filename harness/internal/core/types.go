@@ -68,6 +68,14 @@ type AgenticLoop struct {
 	// under the same profile, keeping parent and child tool names
 	// consistent. The factory always sets Tools to a *tool.Presenter built
 	// with this profile.
+	//
+	// Invariant: when Tools is a *tool.Presenter, its Profile() must equal
+	// ToolProfile. The factory guarantees this by construction; a caller
+	// assembling an AgenticLoop by hand (tests, embedders) must uphold it
+	// or SpawnSubAgent will re-present children under a profile that
+	// disagrees with the parent's presented names. There is no runtime
+	// guard — compare Tools.(*tool.Presenter).Profile() against ToolProfile
+	// at construction if the wiring is not obviously consistent.
 	ToolProfile  *tool.Profile
 	Executor     executor.Executor
 	Edit         edit.EditStrategy
