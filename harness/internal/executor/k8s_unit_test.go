@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	utilexec "k8s.io/client-go/util/exec"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -405,3 +408,52 @@ func (r *recordingSecurityEmitter) OutputTruncated(command string, originalSize,
 }
 
 var _ SecurityEventEmitter = (*recordingSecurityEmitter)(nil)
+
+// TestClassifyPodCreateError covers the RuntimeClass-aware error wrap. An
+// IsInvalid admission error with a non-empty RuntimeClass gets the
+// friendly hint; an empty RuntimeClass or a non-Invalid error falls
+// through to the plain "create pod" wrap. The original error must remain
+// reachable via errors.Is/As in every case.
+func TestClassifyPodCreateError(t *testing.T) {
+	invalid := apierrors.NewInvalid(
+		schema.GroupKind{Group: "", Kind: "Pod"},
+		"stirrup-abc",
+		field.ErrorList{field.Invalid(
+			field.NewPath("spec", "runtimeClassName"), "gvisor", "not found",
+		)},
+	)
+	transport := errors.New("connection refused")
+
+	t.Run("invalid with runtime class gets hint", func(t *testing.T) {
+		err := classifyPodCreateError("gvisor", invalid)
+		if !strings.Contains(err.Error(), "RuntimeClass \"gvisor\"") {
+			t.Errorf("expected RuntimeClass hint, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "kubectl get runtimeclass") {
+			t.Errorf("expected actionable hint, got: %v", err)
+		}
+		if !apierrors.IsInvalid(err) {
+			t.Errorf("wrapped error must still be IsInvalid (errors.As), got: %v", err)
+		}
+	})
+
+	t.Run("invalid without runtime class is plain", func(t *testing.T) {
+		err := classifyPodCreateError("", invalid)
+		if strings.Contains(err.Error(), "RuntimeClass") {
+			t.Errorf("empty runtime class must not add the RuntimeClass hint, got: %v", err)
+		}
+		if !strings.HasPrefix(err.Error(), "create pod:") {
+			t.Errorf("expected plain create-pod wrap, got: %v", err)
+		}
+	})
+
+	t.Run("non-invalid error with runtime class is plain", func(t *testing.T) {
+		err := classifyPodCreateError("gvisor", transport)
+		if strings.Contains(err.Error(), "RuntimeClass") {
+			t.Errorf("a non-Invalid error must not get the RuntimeClass hint, got: %v", err)
+		}
+		if !errors.Is(err, transport) {
+			t.Errorf("original error must remain wrapped, got: %v", err)
+		}
+	})
+}

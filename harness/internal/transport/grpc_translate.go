@@ -396,11 +396,15 @@ func modelRouterConfigFromProto(pc *pb.ModelRouterConfig) types.ModelRouterConfi
 
 func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 	ec := types.ExecutorConfig{
-		Type:      pc.Type,
-		Workspace: pc.Workspace,
-		Image:     pc.Image,
-		Proxy:     pc.Proxy,
-		Runtime:   pc.Runtime,
+		Type:              pc.Type,
+		Workspace:         pc.Workspace,
+		Image:             pc.Image,
+		Proxy:             pc.Proxy,
+		Runtime:           pc.Runtime,
+		K8sNamespace:      pc.K8SNamespace,
+		K8sKubeconfig:     pc.K8SKubeconfig,
+		K8sNodeSelector:   pc.K8SNodeSelector,
+		K8sServiceAccount: pc.K8SServiceAccount,
 	}
 	if pc.VcsBackend != nil {
 		ec.VcsBackend = &types.VcsBackendConfig{

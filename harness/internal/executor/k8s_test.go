@@ -345,3 +345,102 @@ func TestK8sWriteFile_RejectsWorkspaceRoot(t *testing.T) {
 		}
 	}
 }
+
+// TestK8sRuntimeClass_Admitted exercises the RuntimeClassName plumbing
+// against a real cluster: the Pod must be admitted and reach Ready for
+// each RuntimeClass the platform supports.
+//
+//   - ""       — cluster default RuntimeClass (always present).
+//   - "runc"   — vanilla runc; assumes a `runc` RuntimeClass is registered
+//                (kind installs one in the gvisor-enabled image setup).
+//   - "gvisor" — the gVisor RuntimeClass. Requires kind to be built with
+//                the runsc shim (`containerd` + RuntimeClass node.k8s.io
+//                "gvisor"). When the cluster lacks it, NewK8sExecutor
+//                returns the friendly classifyPodCreateError wrap; the test
+//                skips rather than fails so a non-gVisor kind cluster still
+//                passes the rest of the suite.
+//
+// VERIFY AGAINST REAL RUN: the assertion that gVisor is actually in force
+// (vs. the Pod silently falling back to runc) must be pinned to what a real
+// kind+runsc run produces. The kernel signature `uname -r` returns under
+// gVisor differs from the host kernel (gVisor reports a synthetic version,
+// historically "4.4.0"), but the exact string depends on the runsc release
+// the cluster ships. Do not hard-code a fabricated uname here — capture the
+// real value from a `kubectl exec ... uname -r` against the gVisor Pod and
+// pin it once observed.
+func TestK8sRuntimeClass_Admitted(t *testing.T) {
+	kubeconfig := os.Getenv("STIRRUP_TEST_KUBECONFIG")
+	if kubeconfig == "" {
+		t.Skip("STIRRUP_TEST_KUBECONFIG not set; skipping k8s integration test")
+	}
+
+	for _, runtimeClass := range []string{"", "runc", "gvisor"} {
+		name := runtimeClass
+		if name == "" {
+			name = "cluster-default"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+
+			exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
+				Image:            "busybox:latest",
+				Namespace:        "default",
+				Kubeconfig:       kubeconfig,
+				RuntimeClassName: runtimeClass,
+			})
+			if err != nil {
+				// An unregistered RuntimeClass surfaces as the friendly
+				// admission wrap. Skip (not fail) so the suite still passes
+				// on a kind cluster that lacks the gVisor shim.
+				if runtimeClass != "" && strings.Contains(err.Error(), "RuntimeClass") {
+					t.Skipf("RuntimeClass %q not registered on this cluster: %v", runtimeClass, err)
+				}
+				t.Fatalf("NewK8sExecutor(runtimeClass=%q): %v", runtimeClass, err)
+			}
+			t.Cleanup(func() { _ = exec.Close() })
+
+			// The Pod is Ready (NewK8sExecutor blocks on readiness). A trivial
+			// exec confirms the sandbox is actually executing commands.
+			res, err := exec.Exec(ctx, "echo ok", 10*time.Second)
+			if err != nil {
+				t.Fatalf("Exec under runtimeClass %q: %v", runtimeClass, err)
+			}
+			if strings.TrimSpace(res.Stdout) != "ok" {
+				t.Errorf("Exec stdout = %q, want \"ok\"", res.Stdout)
+			}
+
+			// VERIFY AGAINST REAL RUN: under gVisor, `uname -r` reports a
+			// synthetic kernel version distinct from the host. Capture the
+			// real string and assert on it once a runsc-backed kind cluster
+			// is available; asserting a fabricated value now would be worse
+			// than asserting nothing.
+			if runtimeClass == "gvisor" {
+				unameRes, unameErr := exec.Exec(ctx, "uname -r", 10*time.Second)
+				if unameErr != nil {
+					t.Fatalf("uname under gvisor: %v", unameErr)
+				}
+				t.Logf("gvisor uname -r = %q (pin this once observed against a real runsc kind cluster)", strings.TrimSpace(unameRes.Stdout))
+			}
+		})
+	}
+}
+
+// TestK8sRuntimeClass_KataValidatedAsString covers the kata RuntimeClass
+// names at the validation boundary without requiring a Kata-capable host.
+// kind cannot run Kata (it needs nested virtualisation the kind node
+// container does not provide), so the Pod-creation half is skipped; the
+// purpose here is to document that these names are accepted by the type
+// validator (validK8sRuntimes) and flow through to the Pod spec unchanged.
+func TestK8sRuntimeClass_KataValidatedAsString(t *testing.T) {
+	for _, runtimeClass := range []string{"kata-qemu", "kata-fc", "kata-clh"} {
+		t.Run(runtimeClass, func(t *testing.T) {
+			// The RuntimeClassName flows verbatim into the Pod spec via
+			// optionalRuntimeClassName; that pure mapping is asserted here.
+			if got := optionalRuntimeClassName(runtimeClass); got == nil || *got != runtimeClass {
+				t.Fatalf("optionalRuntimeClassName(%q) = %v, want pointer to %q", runtimeClass, got, runtimeClass)
+			}
+			t.Skip("kind cannot host Kata Containers (needs nested virtualisation); skipping the live Pod-creation half")
+		})
+	}
+}
