@@ -410,10 +410,10 @@ func (r *recordingSecurityEmitter) OutputTruncated(command string, originalSize,
 var _ SecurityEventEmitter = (*recordingSecurityEmitter)(nil)
 
 // TestClassifyPodCreateError covers the RuntimeClass-aware error wrap. An
-// IsInvalid admission error with a non-empty RuntimeClass gets the
-// friendly hint; an empty RuntimeClass or a non-Invalid error falls
-// through to the plain "create pod" wrap. The original error must remain
-// reachable via errors.Is/As in every case.
+// IsInvalid (built-in admission) or IsForbidden (webhook/OPA) error with a
+// non-empty RuntimeClass gets the friendly hint; an empty RuntimeClass or
+// an unrelated error falls through to the plain "create pod" wrap. The
+// original error must remain reachable via errors.Is/As in every case.
 func TestClassifyPodCreateError(t *testing.T) {
 	invalid := apierrors.NewInvalid(
 		schema.GroupKind{Group: "", Kind: "Pod"},
@@ -421,6 +421,11 @@ func TestClassifyPodCreateError(t *testing.T) {
 		field.ErrorList{field.Invalid(
 			field.NewPath("spec", "runtimeClassName"), "gvisor", "not found",
 		)},
+	)
+	forbidden := apierrors.NewForbidden(
+		schema.GroupResource{Group: "", Resource: "pods"},
+		"stirrup-abc",
+		errors.New("RuntimeClass \"gvisor\" is not allowed by policy"),
 	)
 	transport := errors.New("connection refused")
 
@@ -434,6 +439,32 @@ func TestClassifyPodCreateError(t *testing.T) {
 		}
 		if !apierrors.IsInvalid(err) {
 			t.Errorf("wrapped error must still be IsInvalid (errors.As), got: %v", err)
+		}
+	})
+
+	t.Run("forbidden with runtime class gets hint", func(t *testing.T) {
+		err := classifyPodCreateError("gvisor", forbidden)
+		if !strings.Contains(err.Error(), "RuntimeClass \"gvisor\"") {
+			t.Errorf("expected RuntimeClass hint, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "kubectl get runtimeclass") {
+			t.Errorf("expected actionable hint, got: %v", err)
+		}
+		if !apierrors.IsForbidden(err) {
+			t.Errorf("wrapped error must still be IsForbidden (errors.As), got: %v", err)
+		}
+	})
+
+	t.Run("forbidden without runtime class is plain", func(t *testing.T) {
+		err := classifyPodCreateError("", forbidden)
+		// The synthetic forbidden error carries "RuntimeClass" in its own
+		// text, so assert on the hint phrase the wrapper adds rather than
+		// the bare word.
+		if strings.Contains(err.Error(), "kubectl get runtimeclass") {
+			t.Errorf("empty runtime class must not add the RuntimeClass hint, got: %v", err)
+		}
+		if !apierrors.IsForbidden(err) {
+			t.Errorf("wrapped error must still be IsForbidden, got: %v", err)
 		}
 	})
 

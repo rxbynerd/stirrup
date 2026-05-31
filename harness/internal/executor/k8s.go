@@ -64,16 +64,18 @@ const (
 // without string comparison.
 var errK8sOutputCap = errors.New("output exceeded 10 MB cap")
 
-// K8sExecutorConfig configures a K8sExecutor. The container runtime,
-// resources, and network policy fields are accepted but not yet enforced
-// in this scaffold — the full mapping arrives in follow-up issues. The
-// scaffold's job is the create/wait/delete lifecycle only.
+// K8sExecutorConfig configures a K8sExecutor. The type is wired through
+// the executor factory under ExecutorConfig.Type == "k8s": ValidateRunConfig
+// enforces the required Image and Namespace and rejects a non-empty
+// workspace, and buildExecutor maps the run's ExecutorConfig onto these
+// fields. RuntimeClassName maps from the shared Runtime field and Resources
+// is applied to the Pod container (CPU/memory requests+limits, ephemeral
+// storage limit; see resourcesToPodResources).
 //
-// This type is intentionally not wired into ExecutorConfig.Type or the
-// executor factory yet; that wiring lands in the follow-up factory issue.
-// When it does, ValidateRunConfig must grow a "k8s" arm that validates
-// the required Image and Namespace fields (mirroring the "container" arm),
-// and the factory must add a corresponding "k8s" Type case.
+// Network is held for Capabilities reporting but egress is not yet
+// enforced — NetworkPolicy wiring is deferred to #178/#83. Until then a
+// Pod with Network == nil reports CanNetwork=false while retaining the
+// cluster-default egress in reality (tracked on Capabilities).
 type K8sExecutorConfig struct {
 	// Image is the container image for the agent Pod. It must ship a
 	// POSIX shell at /bin/sh plus the `tar` and `ls` utilities on PATH:
@@ -139,6 +141,18 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 	}
 
 	logger := slog.Default()
+
+	// An empty RuntimeClassName leaves RuntimeClassName=nil on the Pod,
+	// which selects the cluster-default RuntimeClass. That default may be
+	// plain runc with no user-space-kernel or VM isolation, so the operator
+	// is silently running unsandboxed. Warn so the opt-out is visible; a
+	// caller wanting isolation must set executor.runtime explicitly.
+	if cfg.RuntimeClassName == "" {
+		logger.Warn(
+			"k8s executor running with the cluster-default RuntimeClass; sandbox isolation is not guaranteed — set executor.runtime (e.g. gvisor) for a sandboxed RuntimeClass",
+			"namespace", cfg.Namespace,
+		)
+	}
 
 	podName, err := generatePodName()
 	if err != nil {
@@ -669,16 +683,22 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 }
 
 // classifyPodCreateError wraps a Pod-create failure with a friendlier
-// message when the API server rejects the spec as invalid AND a non-empty
-// RuntimeClass was requested. An unregistered RuntimeClass surfaces as an
-// apierrors.IsInvalid admission error whose raw text ("...RuntimeClass.node.k8s.io
-// \"gvisor\" not found...") is opaque to an operator who simply typed a
-// runtime name the cluster does not have installed. The original error is
-// wrapped (not replaced) so callers can still errors.As it.
+// message when the API server rejects the spec AND a non-empty
+// RuntimeClass was requested. Two rejection shapes are covered:
+//   - apierrors.IsInvalid — the built-in admission check for an
+//     unregistered RuntimeClass ("...RuntimeClass.node.k8s.io \"gvisor\"
+//     not found...").
+//   - apierrors.IsForbidden — an admission webhook (OPA/Gatekeeper, or a
+//     RuntimeClass-restricting policy) returning 403 for a RuntimeClass
+//     the operator may not use.
+//
+// Both raw texts are opaque to an operator who simply typed a runtime name
+// the cluster does not have or does not allow. The original error is
+// wrapped (not replaced) so callers can still errors.As / errors.Is it.
 func classifyPodCreateError(runtimeClass string, err error) error {
-	if runtimeClass != "" && apierrors.IsInvalid(err) {
+	if runtimeClass != "" && (apierrors.IsInvalid(err) || apierrors.IsForbidden(err)) {
 		return fmt.Errorf(
-			"create pod: RuntimeClass %q was rejected by the cluster — confirm a RuntimeClass with that name is registered (kubectl get runtimeclass): %w",
+			"create pod: RuntimeClass %q was rejected by the cluster — confirm a RuntimeClass with that name is registered and permitted (kubectl get runtimeclass): %w",
 			runtimeClass, err,
 		)
 	}
@@ -770,11 +790,21 @@ func resourcesToPodResources(limits *types.ResourceLimits) corev1.ResourceRequir
 // ("500m" for 0.5) so the emitted Pod spec is readable rather than an
 // opaque scaled value. The milli-CPU rounding matches Kubernetes' own
 // internal CPU granularity (1m = 0.001 core).
+//
+// A positive but sub-millicore share (e.g. 0.0004 core) rounds to zero
+// millis. "0m" is rejected by resource.MustParse (Kubernetes forbids an
+// explicitly-zero milli quantity), which would panic, so any positive
+// input is clamped to a 1m floor. Callers only reach this with cpus > 0
+// (resourcesToPodResources guards the zero/negative case), so the floor
+// turns a would-be panic into the smallest representable reservation.
 func cpuQuantity(cpus float64) resource.Quantity {
 	if cpus == math.Trunc(cpus) {
 		return resource.MustParse(fmt.Sprintf("%d", int64(cpus)))
 	}
 	milli := int64(math.Round(cpus * 1000))
+	if milli < 1 {
+		milli = 1
+	}
 	return resource.MustParse(fmt.Sprintf("%dm", milli))
 }
 
