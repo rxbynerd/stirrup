@@ -81,11 +81,16 @@ func checkSequence(want []string, calls []types.ToolCallSummary) (eval.JudgeVerd
 	if idx == len(want) {
 		return eval.JudgeVerdict{}, true
 	}
+	// Everything from idx onward failed to match in order: idx is the first
+	// element with no in-order occurrence, and the greedy scan above could
+	// not advance past it, so the whole tail is unsatisfied. Naming only
+	// want[idx] hides the rest and makes a multi-step gap look like a
+	// single missing call.
 	return eval.JudgeVerdict{
 		Passed: false,
 		Reason: fmt.Sprintf(
-			"expected tool-call sequence %s; matched %d of %d (missing %q or out of order)",
-			strings.Join(want, " -> "), idx, len(want), want[idx],
+			"expected tool-call sequence %s; matched %d of %d (missing or out of order: %s)",
+			strings.Join(want, " -> "), idx, len(want), strings.Join(want[idx:], ", "),
 		),
 	}, false
 }
