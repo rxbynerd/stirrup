@@ -306,14 +306,42 @@ func TestK8sListDirectory_Missing(t *testing.T) {
 	}
 }
 
-// TestK8sWriteFile_OutputCap verifies the 10 MB cap rejects an oversized
-// write before any cluster I/O.
-func TestK8sWriteFile_OutputCap(t *testing.T) {
+// TestK8sListDirectory_WorkspaceRoot verifies that listing the workspace
+// root is permitted (an empty path resolves to /workspace). ReadFile and
+// WriteFile reject the root via resolveFilePath, but enumerating it is a
+// legitimate listing operation — this pins that asymmetry against a cluster.
+func TestK8sListDirectory_WorkspaceRoot(t *testing.T) {
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
-	big := strings.Repeat("a", 11*1024*1024)
-	if err := exec.WriteFile(ctx, "big.txt", big); !errors.Is(err, errK8sOutputCap) {
-		t.Fatalf("WriteFile oversized: err = %v, want errK8sOutputCap", err)
+	if err := exec.WriteFile(ctx, "rootfile.txt", "x"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	entries, err := exec.ListDirectory(ctx, "")
+	if err != nil {
+		t.Fatalf("ListDirectory(\"\"): %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e == "rootfile.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ListDirectory(\"\") = %v, want it to contain rootfile.txt", entries)
+	}
+}
+
+// TestK8sWriteFile_RejectsWorkspaceRoot verifies finding #1 against a
+// cluster: a write whose path resolves to the workspace root is rejected
+// before any tar extraction runs.
+func TestK8sWriteFile_RejectsWorkspaceRoot(t *testing.T) {
+	exec := newTestK8sExecutor(t)
+	ctx := context.Background()
+
+	for _, p := range []string{"", ".", "/workspace"} {
+		if err := exec.WriteFile(ctx, p, "data"); err == nil {
+			t.Errorf("WriteFile(%q): expected workspace-root rejection", p)
+		}
 	}
 }

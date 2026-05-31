@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path"
 	"strings"
@@ -43,9 +44,18 @@ const (
 	// 65532 matches the distroless "nonroot" convention and lets RunAsNonRoot
 	// be enforced without requiring the image to declare its own USER.
 	k8sRunAsUserUID int64 = 65532
-	// k8sMaxOutput caps both exec output and file I/O at 10 MB, mirroring the
-	// container executor's maxDockerFrameSize / maxFileSize discipline.
+	// k8sMaxOutput caps both exec output and file I/O at 10 MB. This mirrors
+	// the container executor (maxDockerFrameSize / maxFileSize), NOT the
+	// local executor's tighter 1 MB limit: a sandboxed Pod, like a
+	// container, is the boundary that justifies the larger budget, whereas
+	// the local executor shares the host filesystem and stays conservative.
 	k8sMaxOutput int64 = 10 * 1024 * 1024
+	// k8sFileIOTimeout bounds a single ReadFile/WriteFile/ListDirectory
+	// operation. Exec clamps its own deadline; file I/O has no caller-supplied
+	// timeout, and an established SPDY stream is not bounded by
+	// rest.Config.Timeout, so a hung Pod would otherwise wedge a goroutine
+	// indefinitely.
+	k8sFileIOTimeout = 60 * time.Second
 )
 
 // errK8sOutputCap is returned when exec output or a file payload exceeds
@@ -77,6 +87,11 @@ type K8sExecutorConfig struct {
 	ServiceAccountName string
 	Resources          *types.ResourceLimits
 	Network            *types.NetworkConfig
+	// Security, when non-nil, receives structured security events
+	// (path-traversal blocks, file-size-limit and output-cap hits) so they
+	// reach the same monitoring surface as the container and local
+	// executors. The factory (issue #16) passes the run's emitter through.
+	Security SecurityEventEmitter
 }
 
 // K8sExecutor implements Executor by running operations inside a sandbox
@@ -93,6 +108,10 @@ type K8sExecutor struct {
 	podName    string
 	network    *types.NetworkConfig
 	logger     *slog.Logger
+	// Security, when non-nil, receives structured security events. It is
+	// nil-checked at every call site so a zero-value executor (used in
+	// unit tests) emits nothing.
+	Security SecurityEventEmitter
 }
 
 // NewK8sExecutor builds a kubernetes clientset, creates a sandbox Pod, and
@@ -175,7 +194,11 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 
 	if err := waitForPodReady(ctx, clientset, cfg.Namespace, created.Name); err != nil {
 		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
-		return nil, fmt.Errorf("pod %s/%s not ready after %s: %w", cfg.Namespace, created.Name, k8sReadyTimeout, err)
+		// The duration is intentionally omitted: readiness can end on either
+		// k8sReadyTimeout or a shorter caller-context deadline, and a
+		// hardcoded "after 1m0s" would misreport the latter. The wrapped
+		// error (context.DeadlineExceeded or a Get failure) carries the cause.
+		return nil, fmt.Errorf("pod %s/%s not ready: %w", cfg.Namespace, created.Name, err)
 	}
 
 	return &K8sExecutor{
@@ -185,6 +208,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		podName:    created.Name,
 		network:    cfg.Network,
 		logger:     logger,
+		Security:   cfg.Security,
 	}, nil
 }
 
@@ -221,7 +245,27 @@ func (e *K8sExecutor) ResolvePath(relativePath string) (string, error) {
 	}
 
 	if resolved != k8sWorkspace && !strings.HasPrefix(resolved, k8sWorkspace+"/") {
+		if e.Security != nil {
+			e.Security.PathTraversalBlocked(relativePath, k8sWorkspace)
+		}
 		return "", fmt.Errorf("path escapes workspace: %s", relativePath)
+	}
+	return resolved, nil
+}
+
+// resolveFilePath is ResolvePath with the additional guard that the result
+// is not the workspace root itself. ReadFile/WriteFile/ListDirectory all
+// expect a path *inside* the workspace; an empty, ".", or "/workspace"
+// argument would otherwise resolve to "/workspace" and drive
+// `mkdir -p /` / `tar -C / ...` with member name "workspace" — confusing
+// today and a latent overwrite-of-workspace risk under a looser image.
+func (e *K8sExecutor) resolveFilePath(relativePath string) (string, error) {
+	resolved, err := e.ResolvePath(relativePath)
+	if err != nil {
+		return "", err
+	}
+	if resolved == k8sWorkspace {
+		return "", fmt.Errorf("path resolves to workspace root: %q", relativePath)
 	}
 	return resolved, nil
 }
@@ -231,21 +275,27 @@ func (e *K8sExecutor) ResolvePath(relativePath string) (string, error) {
 // to fs.ErrNotExist; a directory target is rejected. Content is capped at
 // 10 MB.
 func (e *K8sExecutor) ReadFile(ctx context.Context, filePath string) (string, error) {
-	resolved, err := e.ResolvePath(filePath)
+	resolved, err := e.resolveFilePath(filePath)
 	if err != nil {
 		return "", err
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	defer cancel()
 
 	var stdout writeCapBuffer
 	stdout.limit = k8sMaxOutput
 	var stderr bytes.Buffer
 
-	// `tar -C / -cf - <abs-path-without-leading-slash>` archives the single
-	// file. Stripping the leading slash keeps tar from warning about
+	// `tar -C / -cf - -- <abs-path-without-leading-slash>` archives the
+	// single file. Stripping the leading slash keeps tar from warning about
 	// "removing leading /" on stderr and yields a predictable archive name.
+	// The `--` terminator stops a path that ever starts with `-` from being
+	// parsed as a tar option (e.g. --checkpoint-action=exec).
 	arcPath := strings.TrimPrefix(resolved, "/")
-	execErr := e.streamExec(ctx, []string{"tar", "-C", "/", "-cf", "-", arcPath}, nil, &stdout, &stderr)
+	execErr := e.streamExec(ctx, []string{"tar", "-C", "/", "-cf", "-", "--", arcPath}, nil, &stdout, &stderr)
 	if stdout.exceeded {
+		e.emitFileSizeLimit(filePath, k8sMaxOutput)
 		return "", errK8sOutputCap
 	}
 	if execErr != nil {
@@ -268,15 +318,25 @@ func (e *K8sExecutor) ReadFile(ctx context.Context, filePath string) (string, er
 		return "", fmt.Errorf("read file %s: is a directory", filePath)
 	}
 	if header.Size > k8sMaxOutput {
+		e.emitFileSizeLimit(filePath, header.Size)
 		return "", errK8sOutputCap
 	}
 
+	// Read one byte past the cap so an over-cap payload is detectable by
+	// length (a file of exactly k8sMaxOutput bytes is still allowed). The
+	// stdout streaming-cap branch above already caught the case where the
+	// whole archive overflowed; this guards a file whose tar header
+	// under-reported its size, where the read itself crosses the cap (and
+	// may surface as io.ErrUnexpectedEOF on the truncated buffer). Either
+	// signal maps to errK8sOutputCap so callers branch consistently with
+	// the other cap paths instead of on an opaque "unexpected EOF".
 	data, err := io.ReadAll(io.LimitReader(tr, k8sMaxOutput+1))
+	if int64(len(data)) > k8sMaxOutput || (errors.Is(err, io.ErrUnexpectedEOF) && int64(len(data)) >= k8sMaxOutput) {
+		e.emitFileSizeLimit(filePath, int64(len(data)))
+		return "", errK8sOutputCap
+	}
 	if err != nil {
 		return "", fmt.Errorf("read file from tar: %w", err)
-	}
-	if int64(len(data)) > k8sMaxOutput {
-		return "", errK8sOutputCap
 	}
 	return string(data), nil
 }
@@ -287,17 +347,21 @@ func (e *K8sExecutor) ReadFile(ctx context.Context, filePath string) (string, er
 // at 10 MB.
 func (e *K8sExecutor) WriteFile(ctx context.Context, filePath string, content string) error {
 	if int64(len(content)) > k8sMaxOutput {
+		e.emitFileSizeLimit(filePath, int64(len(content)))
 		return errK8sOutputCap
 	}
 
-	resolved, err := e.ResolvePath(filePath)
+	resolved, err := e.resolveFilePath(filePath)
 	if err != nil {
 		return err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	defer cancel()
+
 	dir := path.Dir(resolved)
 	var mkOut, mkErr bytes.Buffer
-	if mkErrRun := e.streamExec(ctx, []string{"mkdir", "-p", dir}, nil, &mkOut, &mkErr); mkErrRun != nil {
+	if mkErrRun := e.streamExec(ctx, []string{"mkdir", "-p", "--", dir}, nil, &mkOut, &mkErr); mkErrRun != nil {
 		if code, ok := extractExitCode(mkErrRun); ok && code != 0 {
 			return fmt.Errorf("create parent directory %s: %s", dir, strings.TrimSpace(mkErr.String()))
 		}
@@ -334,16 +398,23 @@ func (e *K8sExecutor) WriteFile(ctx context.Context, filePath string, content st
 // emits one name per line excluding "." and "..". A missing directory maps
 // to fs.ErrNotExist.
 func (e *K8sExecutor) ListDirectory(ctx context.Context, dirPath string) ([]string, error) {
+	// Unlike ReadFile/WriteFile, the workspace root is a legitimate listing
+	// target (it is what an agent enumerates first), so this uses the plain
+	// ResolvePath rather than resolveFilePath. This matches LocalExecutor,
+	// which lists "/workspace" for an empty argument.
 	resolved, err := e.ResolvePath(dirPath)
 	if err != nil {
 		return nil, err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	defer cancel()
+
 	var stdout writeCapBuffer
 	stdout.limit = k8sMaxOutput
 	var stderr bytes.Buffer
 
-	execErr := e.streamExec(ctx, []string{"ls", "-A1", resolved}, nil, &stdout, &stderr)
+	execErr := e.streamExec(ctx, []string{"ls", "-A1", "--", resolved}, nil, &stdout, &stderr)
 	if stdout.exceeded {
 		return nil, errK8sOutputCap
 	}
@@ -392,6 +463,12 @@ func (e *K8sExecutor) Exec(ctx context.Context, command string, timeout time.Dur
 		return nil, ctxErr
 	}
 	if stdout.exceeded || stderr.exceeded {
+		if e.Security != nil {
+			// The exact overflow size is unknown (the cap stops buffering),
+			// so report the floor: cap+1 bytes were seen on the overflowing
+			// stream. clampInt avoids an int64->int wrap on 32-bit builds.
+			e.Security.OutputTruncated(command, clampInt(k8sMaxOutput+1), clampInt(k8sMaxOutput))
+		}
 		return nil, errK8sOutputCap
 	}
 
@@ -451,6 +528,12 @@ func (e *K8sExecutor) streamExec(ctx context.Context, command []string, stdin io
 // transport-level error (no exit status) returns (0, false). A nil error is
 // treated as a clean exit (0, true). This helper is pure and unit-testable
 // without a cluster.
+//
+// Limitation: the v1/v2 streaming protocols do not carry a structured exit
+// status — a non-zero exit there arrives as a plain error string ("error
+// executing remote command: ..."), which has no ExitError and so returns
+// (0, false). Modern API servers negotiate v4/v5, which do carry the code;
+// callers that get (0, false) treat it as a transport/protocol error.
 func extractExitCode(err error) (int, bool) {
 	if err == nil {
 		return 0, true
@@ -460,6 +543,24 @@ func extractExitCode(err error) (int, bool) {
 		return exitErr.ExitStatus(), true
 	}
 	return 0, false
+}
+
+// emitFileSizeLimit reports a file-size-limit hit to the security emitter
+// when one is wired. size is the observed (or floor) byte count.
+func (e *K8sExecutor) emitFileSizeLimit(filePath string, size int64) {
+	if e.Security != nil {
+		e.Security.FileSizeLimitExceeded(filePath, size, k8sMaxOutput)
+	}
+}
+
+// clampInt narrows an int64 to int without wrapping on 32-bit platforms,
+// saturating at math.MaxInt. The security emitter takes int sizes; the cap
+// fits in an int on 64-bit but the conversion is guarded for portability.
+func clampInt(v int64) int {
+	if v > int64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(v)
 }
 
 // classifyTarError maps the stderr of a failed tar/ls invocation to a
