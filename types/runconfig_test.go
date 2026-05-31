@@ -1793,6 +1793,99 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_ResourceLimits covers the shared negative-bound
+// rejection. A negative limit silently maps to "no limit" in both the
+// container and k8s executors, so the validator must reject it on either
+// type. The valid cases (nil, zero, positive) must pass through unchanged.
+func TestValidateRunConfig_ResourceLimits(t *testing.T) {
+	cases := []struct {
+		name        string
+		execType    string
+		resources   *ResourceLimits
+		image       string
+		k8sNS       string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:      "nil resources valid",
+			execType:  "container",
+			resources: nil,
+			image:     "img",
+		},
+		{
+			name:      "all-zero resources valid",
+			execType:  "container",
+			resources: &ResourceLimits{},
+			image:     "img",
+		},
+		{
+			name:      "positive resources valid",
+			execType:  "container",
+			resources: &ResourceLimits{CPUs: 2, MemoryMB: 512, DiskMB: 1024, PIDs: 256},
+			image:     "img",
+		},
+		{
+			name:        "negative cpus rejected (container)",
+			execType:    "container",
+			resources:   &ResourceLimits{CPUs: -2},
+			image:       "img",
+			wantErr:     true,
+			errContains: "executor.resources.cpus must not be negative",
+		},
+		{
+			name:        "negative memory rejected (container)",
+			execType:    "container",
+			resources:   &ResourceLimits{MemoryMB: -512},
+			image:       "img",
+			wantErr:     true,
+			errContains: "executor.resources.memoryMb must not be negative",
+		},
+		{
+			name:        "negative disk rejected (k8s)",
+			execType:    "k8s",
+			resources:   &ResourceLimits{DiskMB: -1},
+			image:       "img",
+			k8sNS:       "ns",
+			wantErr:     true,
+			errContains: "executor.resources.diskMb must not be negative",
+		},
+		{
+			name:        "negative pids rejected (k8s)",
+			execType:    "k8s",
+			resources:   &ResourceLimits{PIDs: -1},
+			image:       "img",
+			k8sNS:       "ns",
+			wantErr:     true,
+			errContains: "executor.resources.pids must not be negative",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = ExecutorConfig{
+				Type:         tc.execType,
+				Image:        tc.image,
+				K8sNamespace: tc.k8sNS,
+				Resources:    tc.resources,
+			}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {
 	cases := map[string]string{
 		"contains colon":      "api-key:",

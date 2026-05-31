@@ -1822,6 +1822,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateExecutorRegistryAllowlist(config.Executor, &errs)
 	validateExecutorRuntime(config.Executor, &errs)
 	validateK8sExecutor(config.Executor, &errs)
+	validateResourceLimits(config.Executor.Resources, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
 	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
@@ -3903,6 +3904,31 @@ func validateK8sExecutor(cfg ExecutorConfig, errs *[]string) {
 	}
 	if cfg.Workspace != "" {
 		*errs = append(*errs, "executor.workspace is not valid for executor.type=\"k8s\" (the Pod workspace is fixed at /workspace)")
+	}
+}
+
+// validateResourceLimits rejects negative resource bounds. A negative
+// value silently maps to "no limit" in both the container and k8s
+// executors (the mapping helpers guard on > 0), so an operator who typed
+// cpus:-2 would believe they had capped the workload while in fact the Pod
+// or container runs unbounded. Shared across executor types so the same
+// floor applies wherever Resources is honoured. A nil block is valid (the
+// executor inherits platform defaults).
+func validateResourceLimits(r *ResourceLimits, errs *[]string) {
+	if r == nil {
+		return
+	}
+	if r.CPUs < 0 {
+		*errs = append(*errs, fmt.Sprintf("executor.resources.cpus must not be negative (got %v)", r.CPUs))
+	}
+	if r.MemoryMB < 0 {
+		*errs = append(*errs, fmt.Sprintf("executor.resources.memoryMb must not be negative (got %d)", r.MemoryMB))
+	}
+	if r.DiskMB < 0 {
+		*errs = append(*errs, fmt.Sprintf("executor.resources.diskMb must not be negative (got %d)", r.DiskMB))
+	}
+	if r.PIDs < 0 {
+		*errs = append(*errs, fmt.Sprintf("executor.resources.pids must not be negative (got %d)", r.PIDs))
 	}
 }
 
