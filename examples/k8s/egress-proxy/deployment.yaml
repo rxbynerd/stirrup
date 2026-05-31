@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stirrup-egress-proxy
+  namespace: default
+  labels:
+    app: stirrup-egress-proxy
+spec:
+  # SCOPE NOTE: a single replica is intentional for this example. A
+  # production deployment should run replicas >= 2 behind a
+  # PodDisruptionBudget so a node drain or rollout does not sever every
+  # sandbox's only egress path at once. HA is out of scope here — the
+  # sample keeps the moving parts minimal.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stirrup-egress-proxy
+  template:
+    metadata:
+      labels:
+        # This label is the NetworkPolicy peer the sandbox Pod's egress
+        # policy selects (allowlistEgressPolicy in the k8s executor). Keep it
+        # in sync with that selector if either side changes.
+        app: stirrup-egress-proxy
+    spec:
+      # The proxy needs no Kubernetes API access. Refuse the token mount so a
+      # compromised proxy cannot reach the API server.
+      automountServiceAccountToken: false
+      containers:
+        - name: egress-proxy
+          # Replace with the published stirrup image. The proxy is the same
+          # binary as the harness, invoked with the egress-proxy subcommand.
+          image: ghcr.io/rxbynerd/stirrup:latest
+          args:
+            - egress-proxy
+            - --listen
+            - ":8080"
+            - --allowlist-file
+            - /etc/stirrup/allowlist.txt
+            - --log-level
+            - info
+          ports:
+            - name: proxy
+              containerPort: 8080
+          volumeMounts:
+            - name: allowlist
+              mountPath: /etc/stirrup
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+      volumes:
+        - name: allowlist
+          configMap:
+            name: stirrup-egress-allowlist
