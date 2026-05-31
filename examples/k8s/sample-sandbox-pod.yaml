@@ -1,0 +1,122 @@
+# Reference: what a real stirrup sandbox Pod looks like.
+#
+# This is DOCUMENTATION, not a manifest to apply. The k8s executor CREATES this
+# Pod at runtime (NewK8sExecutor in harness/internal/executor/k8s.go); applying
+# this file by hand would create a static Pod the executor does not manage, with
+# a name it cannot guess. The value of the file is the annotated, field-by-field
+# record of the exact spec the executor produces, so an operator can reason about
+# RBAC, NetworkPolicy, PodSecurity, and RuntimeClass against a concrete object.
+#
+# Every field below is cross-checked against k8s.go / k8s_netpol.go. Where the
+# executor derives a value (the Pod name, proxy env, resources, runtimeClassName)
+# the source is called out inline. The shape shown is the network "allowlist"
+# mode (the proxy env vars are present); under mode "none" the env block is empty
+# and a deny-all NetworkPolicy replaces the allowlist policy.
+apiVersion: v1
+kind: Pod
+metadata:
+  # Generated as "stirrup-<12 hex chars>" by generatePodName(). Client-side
+  # deterministic (ObjectMeta.Name, not GenerateName) so the per-Pod
+  # NetworkPolicy can target it before the Pod exists. Shown here with a
+  # placeholder suffix.
+  name: stirrup-0a1b2c3d4e5f
+  # The namespace from --k8s-namespace / executor.k8sNamespace. Must match the
+  # egress proxy's namespace (see examples/k8s/egress-proxy/) — the allowlist
+  # NetworkPolicy selects the proxy with no NamespaceSelector.
+  namespace: stirrup-sandbox
+  labels:
+    # podLabels() in k8s_netpol.go applies exactly these two labels:
+    #   stirrup-sandbox=true  — the stable marker every sandbox Pod carries;
+    #                           operator policies and the namespace baseline
+    #                           NetworkPolicy select on it.
+    #   stirrup.dev/pod=<name> — the per-Pod label the runtime NetworkPolicy
+    #                           binds to (metadata.name is not selectable by a
+    #                           LabelSelector, so the name is mirrored here).
+    stirrup-sandbox: "true"
+    stirrup.dev/pod: stirrup-0a1b2c3d4e5f
+spec:
+  # RestartPolicy: Never (corev1.RestartPolicyNever). The Pod is a one-shot
+  # sandbox; the executor deletes it on Close().
+  restartPolicy: Never
+  # serviceAccountName from --k8s-service-account / executor.k8sServiceAccount,
+  # or "default" when unset. The sandbox needs NO API access — see the token
+  # mount below — so the account is effectively just an identity.
+  serviceAccountName: default
+  # ALWAYS false (ptr.To(false) in NewK8sExecutor, even when a ServiceAccount is
+  # named). A sandbox Pod must not be able to reach the Kubernetes API, so the
+  # token is never mounted. Do not rely on the orchestrator's RBAC leaking in.
+  automountServiceAccountToken: false
+  # runtimeClassName from executor.runtime, mapped through the closed set
+  # {runc, gvisor, kata-qemu, kata-fc, kata-clh}. OMITTED entirely when runtime
+  # is empty (optionalRuntimeClassName returns nil), which selects the
+  # cluster-default RuntimeClass and logs an isolation warning. gvisor is shown
+  # here as the recommended sandbox runtime — see examples/k8s/runtimeclass.yaml.
+  runtimeClassName: gvisor
+  # nodeSelector from --k8s-node-selector / executor.k8sNodeSelector. Empty
+  # (omitted) unless the operator sets one. The gvisor/kata RuntimeClasses also
+  # contribute their own scheduling.nodeSelector, which is merged in.
+  containers:
+    - # The container name is the constant "agent" (k8sAgentContainer). Exec and
+      # file I/O target this container by name over the pods/exec subresource, so
+      # the name is load-bearing, not cosmetic.
+      name: agent
+      # image from --image / executor.image. MUST ship /bin/sh, tar, and ls:
+      # Exec runs `/bin/sh -c`, file I/O streams tar, and ListDirectory runs ls.
+      # A shell-less distroless static image will not work.
+      image: ghcr.io/rxbynerd/stirrup-sandbox:latest
+      # The executor holds the container open with a sleep; all real work runs
+      # via subsequent exec calls, not as the entrypoint.
+      command: ["/bin/sh", "-c", "sleep infinity"]
+      # workingDir is the constant "/workspace" (k8sWorkspace). ResolvePath
+      # confines all file I/O beneath it.
+      workingDir: /workspace
+      # env is populated by proxyEnvFor ONLY in network mode "allowlist".
+      # HTTP_PROXY/HTTPS_PROXY are the --k8s-egress-proxy-url value; NO_PROXY is
+      # the fixed loopback set. Under mode "none" this whole block is absent.
+      env:
+        - name: HTTP_PROXY
+          value: http://stirrup-egress-proxy.stirrup-sandbox.svc:8080
+        - name: HTTPS_PROXY
+          value: http://stirrup-egress-proxy.stirrup-sandbox.svc:8080
+        - name: NO_PROXY
+          value: localhost,127.0.0.1,::1
+      # securityContext — every field below is fixed by NewK8sExecutor and does
+      # not vary with config. This is the hardened posture the namespace's
+      # `restricted` PodSecurity admission also expects.
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        runAsNonRoot: true
+        # 65532 (k8sRunAsUserUID), the distroless "nonroot" UID. An explicit UID
+        # lets runAsNonRoot be enforced without the image declaring its own USER.
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      # resources from resourcesToPodResources(executor.resources). OMITTED when
+      # resources is nil/all-zero (the Pod then inherits namespace defaults).
+      # Mapping, when set:
+      #   cpus     -> requests.cpu AND limits.cpu (whole cores "2", fractional
+      #               cores milli "500m")
+      #   memoryMB -> requests.memory AND limits.memory (Mi)
+      #   diskMB   -> limits.ephemeral-storage ONLY (Mi); no request
+      #   pids     -> logged and IGNORED (per-Pod PID limits are a kubelet flag,
+      #               not a container resource field)
+      # The values shown are illustrative of a resources block with cpus=2,
+      # memoryMB=2048, diskMB=4096.
+      resources:
+        requests:
+          cpu: "2"
+          memory: 2048Mi
+        limits:
+          cpu: "2"
+          memory: 2048Mi
+          ephemeral-storage: 4096Mi
+# The egress side of this Pod is enforced by a per-Pod NetworkPolicy the
+# executor installs BEFORE the Pod (named "<pod-name>-egress"), plus optionally
+# the standing namespace baseline in examples/k8s/egress-proxy/network-policy.yaml.
+# In mode "allowlist" that policy permits egress only to DNS (53/UDP+TCP) and to
+# the proxy Pod (app=stirrup-egress-proxy) on TCP 8080; in mode "none" it permits
+# no egress at all. See examples/k8s/egress-proxy/ for the proxy Deployment whose
+# `app=stirrup-egress-proxy` label these policies select.
