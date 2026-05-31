@@ -283,6 +283,89 @@ func TestExec_OutputTruncation(t *testing.T) {
 	}
 }
 
+// TestExec_OutputStreamingBounded asserts that streaming far more than the cap
+// does not retain more than maxOutputSize bytes of payload — peak memory is
+// bounded, not proportional to total output.
+func TestExec_OutputStreamingBounded(t *testing.T) {
+	exec, _ := newTestExecutor(t)
+
+	// 16 MB of stdout, well past the 1 MB cap.
+	result, err := exec.Exec(context.Background(), "head -c 16777216 /dev/zero", 30*time.Second)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	payload := strings.TrimSuffix(result.Stdout, truncatedSuffix)
+	if len(payload) != maxOutputSize {
+		t.Errorf("retained payload = %d bytes, want exactly cap %d", len(payload), maxOutputSize)
+	}
+	if !strings.HasSuffix(result.Stdout, truncatedSuffix) {
+		t.Errorf("expected truncation suffix on over-cap output")
+	}
+}
+
+func TestCappedWriter(t *testing.T) {
+	t.Run("retains all bytes under the cap", func(t *testing.T) {
+		w := &cappedWriter{limit: 100}
+		n, err := w.Write([]byte("hello"))
+		if err != nil || n != 5 {
+			t.Fatalf("Write = (%d, %v), want (5, nil)", n, err)
+		}
+		if w.truncated {
+			t.Error("under-cap write must not mark truncated")
+		}
+		if got := w.result(); got != "hello" {
+			t.Errorf("result = %q, want %q", got, "hello")
+		}
+	})
+
+	t.Run("exact-fit is not truncated", func(t *testing.T) {
+		w := &cappedWriter{limit: 5}
+		_, _ = w.Write([]byte("hello"))
+		if w.truncated {
+			t.Error("filling exactly to the cap must not mark truncated")
+		}
+		if got := w.result(); got != "hello" {
+			t.Errorf("result = %q, want %q", got, "hello")
+		}
+	})
+
+	t.Run("stops retaining past the cap but accepts all bytes", func(t *testing.T) {
+		w := &cappedWriter{limit: 4}
+		// A single oversized write: the writer must report it fully consumed so
+		// the producer never blocks, while retaining only the first limit bytes.
+		n, err := w.Write([]byte("abcdefghij"))
+		if err != nil || n != 10 {
+			t.Fatalf("Write = (%d, %v), want (10, nil)", n, err)
+		}
+		if !w.truncated {
+			t.Error("over-cap write must mark truncated")
+		}
+		if w.retained() != 4 {
+			t.Errorf("retained = %d, want cap 4", w.retained())
+		}
+		if got := w.result(); got != "abcd"+truncatedSuffix {
+			t.Errorf("result = %q, want %q", got, "abcd"+truncatedSuffix)
+		}
+	})
+
+	t.Run("drops bytes across multiple writes once full", func(t *testing.T) {
+		w := &cappedWriter{limit: 4}
+		_, _ = w.Write([]byte("ab"))
+		_, _ = w.Write([]byte("cd"))
+		// Now full; further writes are accepted but discarded.
+		n, err := w.Write([]byte("efgh"))
+		if err != nil || n != 4 {
+			t.Fatalf("post-fill Write = (%d, %v), want (4, nil)", n, err)
+		}
+		if !w.truncated {
+			t.Error("write past a full buffer must mark truncated")
+		}
+		if w.retained() != 4 {
+			t.Errorf("retained = %d, want cap 4", w.retained())
+		}
+	})
+}
+
 func TestExec_WorkingDirectory(t *testing.T) {
 	exec, dir := newTestExecutor(t)
 

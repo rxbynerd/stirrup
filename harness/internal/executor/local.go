@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -209,22 +208,31 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 	cmd.Dir = e.workspace
 	cmd.Env = filteredCommandEnv()
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Stream into capped writers so peak memory is bounded to ~maxOutputSize
+	// per stream rather than buffering all output. This mirrors
+	// ContainerExecutor.demuxDockerStream's drain-on-cap behaviour: bytes past
+	// the cap are accepted (so the process never blocks on a full pipe) but not
+	// retained. The reported "original size" is therefore the retained, capped
+	// size — matching the container path, which likewise discards drained bytes
+	// without counting them.
+	stdout := &cappedWriter{limit: maxOutputSize}
+	stderr := &cappedWriter{limit: maxOutputSize}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	err := cmd.Run()
 
 	result := &ExecResult{
-		Stdout: truncate(stdout.String(), maxOutputSize),
-		Stderr: truncate(stderr.String(), maxOutputSize),
+		Stdout: stdout.result(),
+		Stderr: stderr.result(),
 	}
 
-	if e.Security != nil {
-		combinedSize := stdout.Len() + stderr.Len()
-		if combinedSize > maxOutputSize {
-			e.Security.OutputTruncated(command, combinedSize, maxOutputSize)
-		}
+	if e.Security != nil && (stdout.truncated || stderr.truncated) {
+		// Report the retained (capped) size as the original size. The true
+		// pre-cap byte count is not tracked: it is discarded unbuffered to bound
+		// peak memory, matching ContainerExecutor which likewise reports its
+		// retained size rather than the drained total.
+		e.Security.OutputTruncated(command, stdout.retained()+stderr.retained(), maxOutputSize)
 	}
 
 	if err != nil {
@@ -350,4 +358,41 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + truncatedSuffix
+}
+
+// cappedWriter is an io.Writer that retains at most limit bytes. Writes past
+// the cap are accepted and reported as fully written — so a process streaming
+// into it never blocks on a full pipe — but their bytes are discarded rather
+// than buffered, bounding peak memory to ~limit. Once the cap is reached the
+// writer records that truncation occurred. It is not safe for concurrent use;
+// exec.Cmd serialises writes per stream.
+type cappedWriter struct {
+	limit     int
+	buf       []byte
+	truncated bool
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	remaining := w.limit - len(w.buf)
+	take := len(p)
+	if take > remaining {
+		take = remaining
+		w.truncated = true
+	}
+	if take > 0 {
+		w.buf = append(w.buf, p[:take]...)
+	}
+	return len(p), nil
+}
+
+// retained reports the number of bytes currently buffered (at most limit).
+func (w *cappedWriter) retained() int { return len(w.buf) }
+
+// result returns the retained output, appending the truncation notice when
+// bytes were dropped.
+func (w *cappedWriter) result() string {
+	if w.truncated {
+		return string(w.buf) + truncatedSuffix
+	}
+	return string(w.buf)
 }
