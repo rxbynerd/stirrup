@@ -209,19 +209,30 @@ The container executor applies these defaults regardless of what
   rejected before a container is created. Operators widen or
   replace the set via `executor.registryAllowlist` (a list of
   globs over the normalised `host/repo` reference, tag/digest
-  stripped). An explicit list *replaces* the default rather than
-  extending it. Digest-pinned references (`@sha256:…`) are accepted
-  and preferred; cryptographic verification of the digest
+  stripped, with the `index.docker.io` / `registry-1.docker.io`
+  pull aliases folded to `docker.io`). Globs follow `path.Match`
+  semantics, so `*` matches one path segment and does not cross
+  `/`: `ghcr.io/stirrup/*` admits `ghcr.io/stirrup/base` but not
+  `ghcr.io/stirrup/team/base` (use `ghcr.io/stirrup/*/*` for the
+  deeper namespace). An explicit list *replaces* the default rather
+  than extending it. Digest-pinned references (`@sha256:…`) are
+  accepted and preferred; cryptographic verification of the digest
   (cosign/Sigstore) is a deferred follow-up.
 - API keys and `secret://` references are resolved on the *host*
   before tool dispatch; they never enter the container's
   environment.
 
-The workspace bind is *not* mounted `nosuid,nodev,noexec`: the
-Engine API exposes those options for tmpfs mounts but not for bind
-mounts, and the run must be able to execute tooling it writes into
-the workspace. Defence there rests on the dropped capabilities,
-`no-new-privileges`, and the non-root user rather than mount flags.
+The workspace bind is *not* mounted `nosuid,nodev,noexec`. The
+legacy `Binds` string form can express those options to the kernel,
+so this is a functional choice, not an Engine-API limitation: the
+run must be able to execute tooling it writes into `/workspace`
+(build outputs, test binaries, vendored scripts), and `noexec`
+there would break that. The compensating controls cover the gap a
+missing `nosuid` would otherwise leave — `CapDrop: ["ALL"]` removes
+`CAP_SETUID` and `CAP_FOWNER`, and `no-new-privileges` blocks the
+setuid bit from elevating, so a setuid binary planted in
+`/workspace` cannot escalate even though the bind permits suid
+mounts.
 
 Optional kernel-isolation runtime selection (`runc`, `runsc`, `kata*`)
 is documented in [`safety-rings.md`](safety-rings.md).
