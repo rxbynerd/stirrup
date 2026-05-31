@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -662,8 +663,8 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	if !received.Stream {
 		t.Error("expected stream=true")
 	}
-	if received.Store {
-		t.Error("expected store=false in request body")
+	if received.StoreMode != quirks.StoreFalse {
+		t.Errorf("store mode = %v, want StoreFalse (store:false in request body)", received.StoreMode)
 	}
 	if received.Instructions != "You are helpful." {
 		t.Errorf("instructions = %q, want 'You are helpful.'", received.Instructions)
@@ -671,8 +672,8 @@ func TestOpenAIResponsesAdapter_RequestBody(t *testing.T) {
 	if received.Model != "gpt-4.1" {
 		t.Errorf("model = %q, want gpt-4.1", received.Model)
 	}
-	if received.MaxOutputTokens != 4096 {
-		t.Errorf("max_output_tokens = %d, want 4096", received.MaxOutputTokens)
+	if received.MaxTokens != 4096 {
+		t.Errorf("max_output_tokens = %d, want 4096", received.MaxTokens)
 	}
 	if received.Temperature == nil || *received.Temperature != 0.5 {
 		t.Errorf("temperature = %v, want *=0.5", received.Temperature)

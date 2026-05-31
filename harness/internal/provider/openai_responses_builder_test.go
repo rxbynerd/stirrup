@@ -267,8 +267,8 @@ func TestBuildResponsesRequest_StreamDefaultFalse(t *testing.T) {
 	if got.Stream != false {
 		t.Errorf("builder default: Stream = %v, want false", got.Stream)
 	}
-	if got.Store != false {
-		t.Errorf("builder default: Store = %v, want false", got.Store)
+	if got.StoreMode != quirks.StoreFalse {
+		t.Errorf("builder default: StoreMode = %v, want StoreFalse", got.StoreMode)
 	}
 	body, err := json.Marshal(got)
 	if err != nil {

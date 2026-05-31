@@ -109,42 +109,241 @@ func NewOpenAIResponsesAdapter(bearer credential.BearerTokenFunc, baseURL string
 
 // responsesRequest is the JSON body sent to POST /v1/responses.
 //
-// The `store` field is set explicitly to false: stirrup manages its own
-// conversation history and does not rely on OpenAI-side state. Leaving
-// `store` unset would default to server-side persistence on some endpoints
-// (a privacy concern for self-hosted gateways and a billing concern for
-// long-running runs).
+// Like the Chat Completions openaiRequest, the canonical fields carry no
+// JSON struct tag (json:"-"): MarshalJSON is the single point that projects
+// the struct into the wire body the resolved quirks selected. The resolved
+// Responses behaviour flags (TokenField / StoreMode / InputItemShape) steer
+// that projection — they are the single source of truth for the Responses
+// send path (the Codec invariant), replacing the hard-coded field tags this
+// struct previously carried.
 type responsesRequest struct {
-	Model           string           `json:"model"`
-	Instructions    string           `json:"instructions,omitempty"`
-	Input           []responsesInput `json:"input"`
-	Tools           []responsesTool  `json:"tools,omitempty"`
-	MaxOutputTokens int              `json:"max_output_tokens,omitempty"`
-	// Temperature is *float64 with omitempty: a nil pointer omits the
-	// key entirely (the Responses API rejects "temperature" outright on
-	// reasoning models — the same class-wide rejection that motivated
-	// #200 on the Chat Completions adapter). A non-nil pointer transmits
-	// the dereferenced value verbatim, including an explicit 0.0 for
-	// greedy decoding. This mirrors the upstream StreamParams.Temperature
-	// pointer type so the unset-vs-explicit-zero distinction survives
-	// marshalling.
-	Temperature *float64 `json:"temperature,omitempty"`
-	// Stream carries omitempty so that buildResponsesRequest, which leaves
-	// the field at its zero value, produces a wire body with no "stream"
-	// key at all. The streaming caller sets reqBody.Stream = true after
-	// the builder returns, which serialises "stream":true. A future batch
-	// caller can marshal the helper output directly and be sure the field
-	// is absent — the Anthropic Messages Batches API explicitly rejects
-	// the field; the Responses batch endpoint's contract is unverified
-	// but omission is the safer default until that verification lands.
-	Stream bool `json:"stream,omitempty"`
-	Store  bool `json:"store"`
+	Model        string           `json:"-"`
+	Instructions string           `json:"-"`
+	Input        []responsesInput `json:"-"`
+	Tools        []responsesTool  `json:"-"`
+	MaxTokens    int              `json:"-"`
+	// Temperature is *float64: a nil pointer omits the key entirely (the
+	// Responses API rejects "temperature" outright on reasoning models —
+	// the same class-wide rejection that motivated #200 on the Chat
+	// Completions adapter). A non-nil pointer transmits the dereferenced
+	// value verbatim, including an explicit 0.0 for greedy decoding. This
+	// mirrors the upstream StreamParams.Temperature pointer type so the
+	// unset-vs-explicit-zero distinction survives marshalling.
+	Temperature *float64 `json:"-"`
+	// Stream is omitted from the wire body when false so buildResponsesRequest,
+	// which leaves it at its zero value, produces a body with no "stream" key
+	// at all. The streaming caller sets reqBody.Stream = true after the builder
+	// returns, which serialises "stream":true. A future batch caller can
+	// marshal the helper output directly and be sure the field is absent — the
+	// Anthropic Messages Batches API explicitly rejects the field; the
+	// Responses batch endpoint's contract is unverified but omission is the
+	// safer default until that verification lands.
+	Stream bool `json:"-"`
 	// ParallelToolCalls carries the top-level parallel_tool_calls bool (#222),
 	// shared with the Chat Completions API. A nil pointer omits the key so the
 	// body is byte-identical to the pre-#222 shape; buildResponsesRequest sets
 	// it only when the caller requested the control and the resolved capability
 	// advertises support.
-	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
+	ParallelToolCalls *bool `json:"-"`
+
+	// TokenField / StoreMode / InputItemShape carry the resolved Responses
+	// quirks for this request and steer MarshalJSON; none is serialised under
+	// its own JSON key. The zero value of each reproduces the adapter's
+	// pre-quirks hard-coded shape, so a request built with no rule is
+	// byte-identical.
+	TokenField     quirks.OpenAIResponsesTokenField `json:"-"`
+	StoreMode      quirks.OpenAIResponsesStoreMode  `json:"-"`
+	InputItemShape quirks.OpenAIResponsesInputShape `json:"-"`
+}
+
+// MarshalJSON projects the canonical responsesRequest into the Responses
+// wire body the resolved quirks selected. Keys are emitted in the exact
+// order the prior struct-tag marshalling produced — model, instructions,
+// input, tools, <token key>, temperature, stream, store, parallel_tool_calls
+// — so the body is byte-identical to the pre-quirks shape; the projection
+// merely moves the key-selection decisions (token-budget key, store field)
+// out of static struct tags and behind the resolved behaviour flags.
+//
+// Projection rules (matching the prior omitempty / non-omitempty tags):
+//   - "model" — always.
+//   - "instructions" — omitted when empty (system prompt absent).
+//   - "input" — always (even an empty array).
+//   - "tools" — omitted when empty.
+//   - the token-budget field uses the key selected by TokenField
+//     ("max_output_tokens"); omitted when zero, matching the prior
+//     omitempty tag.
+//   - "temperature" — omitted when nil.
+//   - "stream" — omitted when false.
+//   - "store" — always emitted; StoreMode selects the value (false today).
+//   - "parallel_tool_calls" — omitted when nil.
+func (r responsesRequest) MarshalJSON() ([]byte, error) {
+	if r.InputItemShape != quirks.TypedInputItems {
+		return nil, fmt.Errorf("responsesRequest: unsupported input-item shape %v", r.InputItemShape)
+	}
+
+	var buf strings.Builder
+	buf.WriteByte('{')
+
+	writeKey := func(first bool, key string) bool {
+		if !first {
+			buf.WriteByte(',')
+		}
+		kb, _ := json.Marshal(key)
+		buf.Write(kb)
+		buf.WriteByte(':')
+		return false
+	}
+	writeRaw := func(key string, v any) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		buf.Write(b)
+		return nil
+	}
+
+	first := true
+
+	first = writeKey(first, "model")
+	if err := writeRaw("model", r.Model); err != nil {
+		return nil, err
+	}
+
+	if r.Instructions != "" {
+		first = writeKey(first, "instructions")
+		if err := writeRaw("instructions", r.Instructions); err != nil {
+			return nil, err
+		}
+	}
+
+	first = writeKey(first, "input")
+	if err := writeRaw("input", r.Input); err != nil {
+		return nil, err
+	}
+
+	if len(r.Tools) > 0 {
+		first = writeKey(first, "tools")
+		if err := writeRaw("tools", r.Tools); err != nil {
+			return nil, err
+		}
+	}
+
+	if r.MaxTokens != 0 {
+		first = writeKey(first, responsesWireTokenKey(r.TokenField))
+		if err := writeRaw("max_tokens", r.MaxTokens); err != nil {
+			return nil, err
+		}
+	}
+
+	if r.Temperature != nil {
+		first = writeKey(first, "temperature")
+		if err := writeRaw("temperature", *r.Temperature); err != nil {
+			return nil, err
+		}
+	}
+
+	if r.Stream {
+		first = writeKey(first, "stream")
+		if err := writeRaw("stream", r.Stream); err != nil {
+			return nil, err
+		}
+	}
+
+	first = writeKey(first, "store")
+	if err := writeRaw("store", responsesStoreValue(r.StoreMode)); err != nil {
+		return nil, err
+	}
+
+	if r.ParallelToolCalls != nil {
+		first = writeKey(first, "parallel_tool_calls")
+		if err := writeRaw("parallel_tool_calls", *r.ParallelToolCalls); err != nil {
+			return nil, err
+		}
+	}
+	_ = first
+
+	buf.WriteByte('}')
+	return []byte(buf.String()), nil
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON: it accepts the wire body and
+// populates the canonical fields plus the steering flags it can infer from
+// the wire (the token key implies TokenField). Used by tests that round-trip
+// the body through the same struct that produced it.
+func (r *responsesRequest) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["model"]; ok {
+		if err := json.Unmarshal(v, &r.Model); err != nil {
+			return fmt.Errorf("responsesRequest.model: %w", err)
+		}
+	}
+	if v, ok := raw["instructions"]; ok {
+		if err := json.Unmarshal(v, &r.Instructions); err != nil {
+			return fmt.Errorf("responsesRequest.instructions: %w", err)
+		}
+	}
+	if v, ok := raw["input"]; ok {
+		if err := json.Unmarshal(v, &r.Input); err != nil {
+			return fmt.Errorf("responsesRequest.input: %w", err)
+		}
+	}
+	if v, ok := raw["tools"]; ok {
+		if err := json.Unmarshal(v, &r.Tools); err != nil {
+			return fmt.Errorf("responsesRequest.tools: %w", err)
+		}
+	}
+	if v, ok := raw["max_output_tokens"]; ok {
+		if err := json.Unmarshal(v, &r.MaxTokens); err != nil {
+			return fmt.Errorf("responsesRequest.max_output_tokens: %w", err)
+		}
+		r.TokenField = quirks.TokenFieldMaxOutputTokens
+	}
+	if v, ok := raw["temperature"]; ok {
+		var t float64
+		if err := json.Unmarshal(v, &t); err != nil {
+			return fmt.Errorf("responsesRequest.temperature: %w", err)
+		}
+		r.Temperature = &t
+	}
+	if v, ok := raw["stream"]; ok {
+		if err := json.Unmarshal(v, &r.Stream); err != nil {
+			return fmt.Errorf("responsesRequest.stream: %w", err)
+		}
+	}
+	if v, ok := raw["store"]; ok {
+		var store bool
+		if err := json.Unmarshal(v, &store); err != nil {
+			return fmt.Errorf("responsesRequest.store: %w", err)
+		}
+		// MarshalJSON only ever emits store:false today; StoreFalse is the
+		// sole mode, so the inferred mode is StoreFalse regardless of value.
+		r.StoreMode = quirks.StoreFalse
+	}
+	if v, ok := raw["parallel_tool_calls"]; ok {
+		var b bool
+		if err := json.Unmarshal(v, &b); err != nil {
+			return fmt.Errorf("responsesRequest.parallel_tool_calls: %w", err)
+		}
+		r.ParallelToolCalls = &b
+	}
+	return nil
+}
+
+// responsesWireTokenKey returns the wire JSON key for the resolved token
+// field. Defaults to "max_output_tokens" — the zero value of
+// OpenAIResponsesTokenField — preserving the established Responses
+// behaviour.
+func responsesWireTokenKey(quirks.OpenAIResponsesTokenField) string {
+	return "max_output_tokens"
+}
+
+// responsesStoreValue returns the wire value of the `store` field for the
+// resolved store mode. StoreFalse (the zero value) emits false.
+func responsesStoreValue(quirks.OpenAIResponsesStoreMode) bool {
+	return false
 }
 
 // responsesInput is one item in the Responses API input array. The Type
@@ -511,15 +710,16 @@ func translateToolsResponses(tools []types.ToolDefinition, strict, examples bool
 
 // buildResponsesRequest projects a StreamParams into the Responses API wire
 // body. The Stream field is set by the streaming caller after this returns;
-// the builder leaves it false so batch callers get an omitted field (relies
-// on omitempty on the responsesRequest.Stream struct tag). Phase-0 refactor
-// for issue #133.
+// the builder leaves it false so batch callers get an omitted field (MarshalJSON
+// omits "stream" when false). Phase-0 refactor for issue #133.
 //
-// q carries the resolved quirks for the (provider, model) pair; the
-// OpenAI strict-mode flag (if set by a future openai-responses rule)
-// drives strict-mode schema normalisation through cache. Errors from
-// the lint surface here so the caller can fail-closed before any HTTP
-// request is issued.
+// q carries the resolved quirks for the (provider, model) pair. The Responses
+// behaviour flags (TokenField / StoreMode / InputItemShape) are threaded onto
+// the request struct so MarshalJSON projects the body the resolved quirks
+// selected — the single source of truth for the Responses send path. The
+// OpenAI strict-mode flag (if set by a future openai-responses rule) drives
+// strict-mode schema normalisation through cache; lint errors surface here so
+// the caller can fail-closed before any HTTP request is issued.
 //
 // TODO(batch): consider returning json.RawMessage if endpoint-contract drift
 // becomes a maintenance burden.
@@ -533,10 +733,12 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 		Instructions:      params.System,
 		Input:             translateMessagesResponses(params.Messages),
 		Tools:             tools,
-		MaxOutputTokens:   params.MaxTokens,
+		MaxTokens:         params.MaxTokens,
 		Temperature:       params.Temperature,
-		Store:             false,
 		ParallelToolCalls: openAIParallelFromParams(params, q.ParallelToolCalls),
+		TokenField:        q.BehaviourFlags.OpenAIResponses.TokenField,
+		StoreMode:         q.BehaviourFlags.OpenAIResponses.StoreMode,
+		InputItemShape:    q.BehaviourFlags.OpenAIResponses.InputItemShape,
 	}, nil
 }
 
