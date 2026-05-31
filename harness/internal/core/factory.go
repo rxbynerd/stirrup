@@ -85,19 +85,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("build secret store: %w", err)
 	}
 
-	// 1. Provider adapters.
-	prov, providers, err := buildProviders(ctx, config, secrets)
-	if err != nil {
-		return nil, fmt.Errorf("build providers: %w", err)
-	}
-
-	// 2. Model router.
+	// 1. Model router. Needs only the provider TYPE (a string), not the
+	// constructed adapter, so it precedes buildComponents.
 	rtr := buildRouter(config.ModelRouter, config.Provider.Type)
 
-	// 3. Prompt builder.
+	// 2. Prompt builder.
 	pb := buildPromptBuilder(config.PromptBuilder, config.SystemPromptOverride)
 
-	// 4. Executor (built early because context strategy may need it).
+	// 3. Executor (built early because context strategy may need it).
 	// Thread the security logger into the container executor so the
 	// in-process egress proxy (started when network.mode == "allowlist")
 	// can emit egress_allowed / egress_blocked events through the same
@@ -110,10 +105,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, closer)
 	}
 
-	// 5. Context strategy.
-	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
-
-	// 6. Tool registry.
+	// 4. Tool registry.
 	// The base edit strategy is constructed first, then optionally wrapped
 	// with a CodeScanner pass when one is configured. ValidateRunConfig
 	// fills CodeScanner with a sensible default per mode (patterns for
@@ -146,7 +138,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		logger = logger.With("sessionName", config.SessionName)
 	}
 
-	// 6b. MCP tool discovery — connect to remote MCP servers and register
+	// 5. MCP tool discovery — connect to remote MCP servers and register
 	// their tools into the registry alongside the built-in tools.
 	// Connection failures are non-fatal: the server's tools are skipped
 	// so the harness can still operate with its built-in tools.
@@ -172,24 +164,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 	}
 
-	// 7. Verifier. Declared here so step 8+ can reference it, but actual
-	// construction is deferred to step 13 (line ~296) once the run's
-	// metrics instance exists. buildVerifier wraps its result in a
-	// metric-recorder when metrics is non-nil, so calling it twice (once
-	// without metrics here, once with) would discard the first build —
-	// hence the deferred single construction.
-	var v verifier.Verifier
-
-	// 8. GuardRail. Constructed AFTER providers are built so cloud-judge
-	// can reuse the default ProviderAdapter. Returns guard.NewNoop() when
-	// no guard is configured, so the loop's call sites are unconditional.
-	gr, err := buildGuardRail(config.GuardRail, providers, prov)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("build guardrail: %w", err)
-	}
-
-	// 9. Transport — use the injected one if provided, otherwise build from config.
+	// 6. Transport — use the injected one if provided, otherwise build from
+	// config. Built before buildComponents because the ask-upstream
+	// permission policy needs it.
 	if tp == nil {
 		tp, err = buildTransport(ctx, config.Transport)
 		if err != nil {
@@ -208,52 +185,64 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		t.Security = secLogger
 	}
 
-	// 10. Permission policy. The raw policy is built once here; the
-	// metric-recording wrapper is applied below after the run's
-	// observability.Metrics instance is constructed. Splitting these
-	// steps avoids re-reading the Cedar policy file on the rebuild
-	// path — the previous double-call made the factory parse the
-	// policy file twice on every policy-engine run, which both cost
-	// extra latency and opened a TOCTOU window on workspace-relative
-	// paths between the two reads (CWE-367).
-	pp, err := buildPermissionPolicy(config, registry, tp, secLogger)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("build permission policy: %w", err)
-	}
-
-	// 11. Git strategy.
-	gs := buildGitStrategy(config.GitStrategy)
-
-	// 12. Trace emitter.
-	// resourceOpts captures the run-scoped attributes that ride on the
-	// OTel Resource (deployment.environment, service.namespace,
-	// harness.run.mode). Threaded into both the trace emitter and the
-	// metrics provider so the two signals share a consistent resource
-	// identity — without that, a Grafana query that joins traces to
-	// metrics on resource attributes would silently miss rows when the
-	// two providers carried different defaults.
+	// 7. Probe-eligible components — providers, permission policy, trace
+	// emitter — through the SHARED construction path buildComponents, which
+	// Preflight also calls. This is the structural parity seam (issue #356):
+	// a probe-eligible component cannot be added to a real run without also
+	// surfacing in the dry-run, because both paths construct the set here.
+	// See builtComponents.probeSteps and TestPreflightParity.
 	//
-	// resolvedHeaders dereferences any "secret://" values in
-	// TraceEmitter.Headers via the SecretStore so neither the OTel SDK
-	// nor any downstream code path sees the raw reference. Resolving
-	// once here (rather than separately for traces and metrics) keeps
-	// both signals authenticated identically and ensures a missing-env
-	// failure surfaces with one error instead of two.
+	// resourceOpts captures the run-scoped OTel Resource attributes
+	// (deployment.environment, service.namespace, harness.run.mode), threaded
+	// into both the trace emitter and the metrics provider so the two signals
+	// share a consistent resource identity. resolvedHeaders dereferences any
+	// "secret://" values in TraceEmitter.Headers once and is reused for the
+	// metrics exporter so traces and metrics authenticate identically.
 	resourceOpts := resourceOptionsFromConfig(config)
 	resolvedHeaders, err := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("resolve trace emitter headers: %w", err)
 	}
-	te, err := buildTraceEmitter(ctx, config.TraceEmitter, resolvedHeaders, resourceOpts)
+	components, err := buildComponents(ctx, config, secrets, secLogger, registry, tp, exec, resolvedHeaders, resourceOpts)
 	if err != nil {
 		cleanup()
-		return nil, fmt.Errorf("build trace emitter: %w", err)
+		// buildComponents already prefixes the failing component
+		// ("build providers" / "build permission policy" / "build trace
+		// emitter"), matching BuildLoop's historical inline messages.
+		return nil, err
 	}
+	prov := components.defaultProvider
+	providers := components.providers
+	pp := components.permissionPolicy
+	te := components.traceEmitter
 	if closer, ok := te.(io.Closer); ok {
 		ownedClosers = append(ownedClosers, closer)
 	}
+
+	// 8. Context strategy. Built after buildComponents because the
+	// "summarise" strategy needs the default provider adapter.
+	cs := buildContextStrategy(config.ContextStrategy, prov, config.ModelRouter.Model, exec)
+
+	// 9. Verifier. Declared here so later steps can reference it, but actual
+	// construction is deferred to step 13 (line ~296) once the run's
+	// metrics instance exists. buildVerifier wraps its result in a
+	// metric-recorder when metrics is non-nil, so calling it twice (once
+	// without metrics here, once with) would discard the first build —
+	// hence the deferred single construction.
+	var v verifier.Verifier
+
+	// 10. GuardRail. Constructed AFTER providers are built so cloud-judge
+	// can reuse the default ProviderAdapter. Returns guard.NewNoop() when
+	// no guard is configured, so the loop's call sites are unconditional.
+	gr, err := buildGuardRail(config.GuardRail, providers, prov)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("build guardrail: %w", err)
+	}
+
+	// 11. Git strategy.
+	gs := buildGitStrategy(config.GitStrategy)
 
 	// 13. OTel metrics.
 	var metrics *observability.Metrics
