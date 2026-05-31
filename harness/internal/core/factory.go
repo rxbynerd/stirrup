@@ -880,6 +880,28 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			Runtime:        cfg.Runtime,
 			EgressSecurity: secLogger,
 		})
+	case "k8s":
+		// ValidateRunConfig already enforces Image and K8sNamespace for
+		// type "k8s"; the guards here keep buildExecutor self-contained for
+		// callers that construct a RunConfig without going through the
+		// validator (gRPC translate, embedding).
+		if cfg.Image == "" {
+			return nil, fmt.Errorf("k8s executor requires image")
+		}
+		if cfg.K8sNamespace == "" {
+			return nil, fmt.Errorf("k8s executor requires k8sNamespace")
+		}
+		return executor.NewK8sExecutor(ctx, executor.K8sExecutorConfig{
+			Image:              cfg.Image,
+			Namespace:          cfg.K8sNamespace,
+			Kubeconfig:         cfg.K8sKubeconfig,
+			NodeSelector:       cfg.K8sNodeSelector,
+			RuntimeClassName:   cfg.Runtime,
+			ServiceAccountName: cfg.K8sServiceAccount,
+			Resources:          cfg.Resources,
+			Network:            cfg.Network,
+			Security:           secLogger,
+		})
 	case "api":
 		if cfg.VcsBackend == nil {
 			return nil, fmt.Errorf("api executor requires vcsBackend configuration")
@@ -894,7 +916,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 		}
 		return executor.NewAPIExecutor(token, parts[0], parts[1], cfg.VcsBackend.Ref), nil
 	default:
-		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, api)", cfg.Type)
+		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, k8s, api)", cfg.Type)
 	}
 }
 

@@ -848,7 +848,7 @@ type ContextStrategyConfig struct {
 
 // ExecutorConfig selects the executor implementation.
 type ExecutorConfig struct {
-	Type       string            `json:"type"`                 // "api" | "local" | "container" | "microvm"
+	Type       string            `json:"type"`                 // "api" | "local" | "container" | "k8s"
 	VcsBackend *VcsBackendConfig `json:"vcsBackend,omitempty"` // type: "api"
 	Workspace  string            `json:"workspace,omitempty"`
 	Image      string            `json:"image,omitempty"`
@@ -856,16 +856,43 @@ type ExecutorConfig struct {
 	Resources  *ResourceLimits   `json:"resources,omitempty"`
 	Proxy      string            `json:"proxy,omitempty"`
 
-	// Runtime selects the OCI runtime for the container executor. Empty
-	// string means "use the engine default" — i.e. the harness does not
-	// pass a Runtime field on the create-container request. The closed set
-	// of accepted values is enforced by ValidateRunConfig.
+	// K8s* fields configure the "k8s" executor, which runs the agent in a
+	// sandbox Pod. They are ignored for every other Type. K8sNamespace is
+	// required for type "k8s"; the rest are optional. The Pod's container
+	// image comes from the shared Image field (required for type "k8s")
+	// and the OCI sandbox is selected via the shared Runtime field, which
+	// maps to the Pod's RuntimeClassName.
+	K8sNamespace      string            `json:"k8sNamespace,omitempty"`
+	K8sKubeconfig     string            `json:"k8sKubeconfig,omitempty"`
+	K8sNodeSelector   map[string]string `json:"k8sNodeSelector,omitempty"`
+	K8sServiceAccount string            `json:"k8sServiceAccount,omitempty"`
+
+	// Runtime selects the OCI sandbox runtime. Empty string means "use the
+	// platform default". The closed set of accepted values is enforced by
+	// ValidateRunConfig and is per-Type (see validK8sRuntimes /
+	// validContainerRuntimes): the names differ between the container and
+	// k8s executors because they reference different things.
+	//
+	// For type "container" it is the engine's OCI runtime name and the
+	// harness omits the field on the create-container request when empty:
 	//   ""           — engine default (typically runc)
 	//   "runc"       — vanilla runc
 	//   "runsc"      — gVisor (user-space kernel)
 	//   "kata"       — Kata Containers (default flavour)
 	//   "kata-qemu"  — Kata Containers backed by QEMU
 	//   "kata-fc"    — Kata Containers backed by Firecracker
+	//   "kata-clh"   — Kata Containers backed by Cloud Hypervisor
+	//
+	// For type "k8s" it is the Pod's RuntimeClassName and the harness omits
+	// the field on the Pod spec when empty. The cluster must have a matching
+	// RuntimeClass registered:
+	//   ""           — cluster default RuntimeClass
+	//   "runc"       — vanilla runc
+	//   "gvisor"     — gVisor (the conventional RuntimeClass name; the
+	//                  underlying handler is runsc)
+	//   "kata-qemu"  — Kata Containers backed by QEMU
+	//   "kata-fc"    — Kata Containers backed by Firecracker
+	//   "kata-clh"   — Kata Containers backed by Cloud Hypervisor
 	Runtime string `json:"runtime,omitempty"`
 
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
@@ -1292,20 +1319,43 @@ var validExecutorTypes = map[string]bool{
 	"api":       true,
 	"local":     true,
 	"container": true,
+	"k8s":       true,
 }
 
-// validExecutorRuntimes is the closed set of OCI runtimes the container
+// validContainerRuntimes is the closed set of OCI runtimes the container
 // executor may select. The empty string is accepted and means "use the
 // engine default" — the harness omits the Runtime field on the create
 // request. Adding a new runtime here is the only supported way to extend
 // the set; ValidateRunConfig rejects everything else.
-var validExecutorRuntimes = map[string]bool{
+//
+// The runtime set is split per executor Type rather than shared: the
+// container and k8s executors name different things (engine OCI runtime
+// vs. Pod RuntimeClass), so a single flat set would let one executor
+// accept a name that is only meaningful to the other (e.g. "gvisor" is a
+// k8s RuntimeClass, not a Docker OCI runtime — that is "runsc").
+var validContainerRuntimes = map[string]bool{
 	"":          true,
 	"runc":      true,
 	"runsc":     true,
 	"kata":      true,
 	"kata-qemu": true,
 	"kata-fc":   true,
+	"kata-clh":  true,
+}
+
+// validK8sRuntimes is the closed set of RuntimeClass names the k8s
+// executor may select via Runtime. The empty string is accepted and
+// means "use the cluster default RuntimeClass" — the harness omits the
+// Pod's RuntimeClassName when empty. These are RuntimeClass names, not
+// OCI runtime names: gVisor's conventional RuntimeClass is "gvisor"
+// (its handler is runsc), so "runsc" is intentionally absent here.
+var validK8sRuntimes = map[string]bool{
+	"":          true,
+	"runc":      true,
+	"gvisor":    true,
+	"kata-qemu": true,
+	"kata-fc":   true,
+	"kata-clh":  true,
 }
 
 var validEditStrategyTypes = map[string]bool{
@@ -1726,16 +1776,8 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
 	validateOptionalType("contextStrategy", config.ContextStrategy.Type, validContextStrategyTypes, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
-	if !validExecutorRuntimes[config.Executor.Runtime] {
-		errs = append(errs, fmt.Sprintf("unsupported executor.runtime %q", config.Executor.Runtime))
-	}
-	// executor.runtime only changes behaviour for the container executor;
-	// silently dropping it on a "local" or "api" run lets an operator
-	// believe they have gVisor isolation when in fact the workload is
-	// running on the host (S8).
-	if config.Executor.Runtime != "" && config.Executor.Type != "container" && config.Executor.Type != "" {
-		errs = append(errs, "executor.runtime is only valid when executor.type is \"container\"")
-	}
+	validateExecutorRuntime(config.Executor, &errs)
+	validateK8sExecutor(config.Executor, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
 	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
@@ -3697,6 +3739,53 @@ func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
 			"resultSink.attributes is only valid when type is \"gcp-pubsub\" (got type %q)",
 			cfg.Type,
 		))
+	}
+}
+
+// validateExecutorRuntime enforces the per-Type closed set of runtime
+// names on Executor.Runtime. The container and k8s executors name
+// different things (OCI runtime vs. Pod RuntimeClass) so the accepted
+// sets differ; an empty runtime is always valid and any other Type
+// (local, api) rejects a non-empty runtime outright — silently dropping
+// it would let an operator believe they have sandbox isolation while the
+// workload runs on the host (S8).
+func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
+	if cfg.Runtime == "" {
+		return
+	}
+	switch cfg.Type {
+	case "container":
+		if !validContainerRuntimes[cfg.Runtime] {
+			*errs = append(*errs, fmt.Sprintf(
+				"unsupported executor.runtime %q for executor.type=\"container\"", cfg.Runtime))
+		}
+	case "k8s":
+		if !validK8sRuntimes[cfg.Runtime] {
+			*errs = append(*errs, fmt.Sprintf(
+				"unsupported executor.runtime %q for executor.type=\"k8s\"", cfg.Runtime))
+		}
+	default:
+		*errs = append(*errs, "executor.runtime is only valid when executor.type is \"container\" or \"k8s\"")
+	}
+}
+
+// validateK8sExecutor enforces the cross-field requirements of the "k8s"
+// executor: a container Image and a target K8sNamespace are mandatory,
+// and Workspace must be empty because the workspace lives inside the Pod
+// at a fixed path (/workspace) rather than mapping a host directory. The
+// fields are a no-op for every other Type.
+func validateK8sExecutor(cfg ExecutorConfig, errs *[]string) {
+	if cfg.Type != "k8s" {
+		return
+	}
+	if cfg.Image == "" {
+		*errs = append(*errs, "executor.image is required for executor.type=\"k8s\"")
+	}
+	if cfg.K8sNamespace == "" {
+		*errs = append(*errs, "executor.k8sNamespace is required for executor.type=\"k8s\"")
+	}
+	if cfg.Workspace != "" {
+		*errs = append(*errs, "executor.workspace is not valid for executor.type=\"k8s\" (the Pod workspace is fixed at /workspace)")
 	}
 }
 
