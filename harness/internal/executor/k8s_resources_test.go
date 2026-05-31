@@ -129,12 +129,17 @@ func TestResourcesToPodResources(t *testing.T) {
 // the surrounding ResourceRequirements assembly.
 func TestCPUQuantity(t *testing.T) {
 	cases := map[float64]string{
-		1:     "1",
-		2:     "2",
-		0.5:   "500m",
-		0.25:  "250m",
-		1.5:   "1500m",
-		0.001: "1m",
+		1:    "1",
+		2:    "2",
+		0.5:  "500m",
+		0.25: "250m",
+		1.5:  "1500m",
+		// A positive sub-millicore share rounds to zero millis; the 1m
+		// floor turns what would be a MustParse("0m") panic into the
+		// smallest representable reservation.
+		0.001:  "1m",
+		0.0004: "1m",
+		0.0001: "1m",
 	}
 	for in, want := range cases {
 		got := cpuQuantity(in)
@@ -146,5 +151,19 @@ func TestCPUQuantity(t *testing.T) {
 		if _, err := resource.ParseQuantity(got.String()); err != nil {
 			t.Errorf("cpuQuantity(%v) produced unparseable quantity %q: %v", in, got.String(), err)
 		}
+	}
+}
+
+// TestResourcesToPodResources_SubMillicoreCPU is the regression guard for
+// the panic path: a positive CPU value that rounds below 1m must not
+// panic inside resource.MustParse and must surface as a 1m floor on both
+// requests and limits.
+func TestResourcesToPodResources_SubMillicoreCPU(t *testing.T) {
+	got := resourcesToPodResources(&types.ResourceLimits{CPUs: 0.0004})
+	if !quantityEquals(t, got.Requests, corev1.ResourceCPU, "1m") {
+		t.Errorf("requests.cpu = %v, want 1m", got.Requests[corev1.ResourceCPU])
+	}
+	if !quantityEquals(t, got.Limits, corev1.ResourceCPU, "1m") {
+		t.Errorf("limits.cpu = %v, want 1m", got.Limits[corev1.ResourceCPU])
 	}
 }
