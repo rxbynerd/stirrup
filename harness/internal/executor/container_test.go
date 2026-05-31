@@ -1016,6 +1016,211 @@ func TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast(t *testing.T) {
 	}
 }
 
+// TestContainerExecutor_HardeningProfile asserts that the create-container
+// request carries the full sandbox-hardening profile: a read-only rootfs, a
+// sized /tmp tmpfs and /dev/shm, the nobody uid:gid, nosuid/nodev/noexec on
+// the tmpfs scratch mounts, and the retained PidsLimit. The mock engine only
+// captures the request, so this proves what stirrup puts on the wire — not
+// that a live daemon honours every flag (see the report's end-to-end note).
+func TestContainerExecutor_HardeningProfile(t *testing.T) {
+	var receivedBody containerCreateRequest
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	defer cleanup()
+
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:      "ubuntu:26.04",
+		HostDir:    "/tmp/workspace",
+		SocketPath: sock,
+		Resources:  &types.ResourceLimits{PIDs: 256},
+	})
+	if err != nil {
+		t.Fatalf("NewContainerExecutor: %v", err)
+	}
+	defer func() { _ = exec.Close() }()
+
+	hc := receivedBody.HostConfig
+	if !hc.ReadonlyRootfs {
+		t.Error("ReadonlyRootfs: got false, want true")
+	}
+	if receivedBody.User != "65534:65534" {
+		t.Errorf("User: got %q, want %q", receivedBody.User, "65534:65534")
+	}
+	if hc.ShmSize != 64*1024*1024 {
+		t.Errorf("ShmSize: got %d, want %d", hc.ShmSize, 64*1024*1024)
+	}
+	if hc.PidsLimit == nil || *hc.PidsLimit != 256 {
+		t.Errorf("PidsLimit: got %v, want 256", hc.PidsLimit)
+	}
+
+	tmpOpts, ok := hc.Tmpfs["/tmp"]
+	if !ok {
+		t.Fatalf("Tmpfs missing /tmp entry; got %v", hc.Tmpfs)
+	}
+	for _, want := range []string{"nosuid", "nodev", "noexec", "size=268435456"} {
+		if !strings.Contains(tmpOpts, want) {
+			t.Errorf("/tmp tmpfs opts %q missing %q", tmpOpts, want)
+		}
+	}
+	shmOpts, ok := hc.Tmpfs["/dev/shm"]
+	if !ok {
+		t.Fatalf("Tmpfs missing /dev/shm entry; got %v", hc.Tmpfs)
+	}
+	for _, want := range []string{"nosuid", "nodev", "noexec", "size=67108864"} {
+		if !strings.Contains(shmOpts, want) {
+			t.Errorf("/dev/shm tmpfs opts %q missing %q", shmOpts, want)
+		}
+	}
+
+	// The hardening profile must not displace the existing baseline.
+	if hc.NetworkMode != "none" {
+		t.Errorf("NetworkMode: got %q, want %q", hc.NetworkMode, "none")
+	}
+	if len(hc.CapDrop) != 1 || hc.CapDrop[0] != "ALL" {
+		t.Errorf("CapDrop: got %v, want [ALL]", hc.CapDrop)
+	}
+	if len(hc.SecurityOpt) != 1 || hc.SecurityOpt[0] != "no-new-privileges" {
+		t.Errorf("SecurityOpt: got %v, want [no-new-privileges]", hc.SecurityOpt)
+	}
+}
+
+// TestContainerExecutor_RegistryAllowlist_Default verifies the built-in
+// allowlist: a Docker Hub official image (library/*) and a ghcr.io/stirrup
+// image construct, while a third-party reference is rejected before any
+// container is created.
+func TestContainerExecutor_RegistryAllowlist_Default(t *testing.T) {
+	createCalled := false
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			createCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	defer cleanup()
+
+	allowed := []string{"ubuntu:26.04", "docker.io/library/alpine", "ghcr.io/stirrup/base:latest"}
+	for _, img := range allowed {
+		exec, err := NewContainerExecutor(ContainerExecutorConfig{
+			Image:      img,
+			HostDir:    "/tmp/workspace",
+			SocketPath: sock,
+		})
+		if err != nil {
+			t.Errorf("image %q should be allowed by default, got: %v", img, err)
+			continue
+		}
+		_ = exec.Close()
+	}
+
+	createCalled = false
+	denied := []string{"evil.example.com/malware:latest", "docker.io/someuser/app", "ghcr.io/attacker/img"}
+	for _, img := range denied {
+		_, err := NewContainerExecutor(ContainerExecutorConfig{
+			Image:      img,
+			HostDir:    "/tmp/workspace",
+			SocketPath: sock,
+		})
+		if err == nil {
+			t.Errorf("image %q should be rejected by the default allowlist", img)
+		}
+		if createCalled {
+			t.Errorf("image %q: container must not be created when the image is disallowed", img)
+		}
+	}
+}
+
+// TestContainerExecutor_RegistryAllowlist_Override verifies an operator can
+// widen the allowlist, and that the override fully replaces (does not extend)
+// the default set.
+func TestContainerExecutor_RegistryAllowlist_Override(t *testing.T) {
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
+		},
+		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	defer cleanup()
+
+	// A custom registry the operator trusts.
+	exec, err := NewContainerExecutor(ContainerExecutorConfig{
+		Image:             "registry.internal:5000/team/runner@sha256:" + strings.Repeat("a", 64),
+		HostDir:           "/tmp/workspace",
+		SocketPath:        sock,
+		RegistryAllowlist: []string{"registry.internal:5000/team/*"},
+	})
+	if err != nil {
+		t.Fatalf("custom-registry image should be allowed by override: %v", err)
+	}
+	_ = exec.Close()
+
+	// The override replaces the default, so a previously-default image is now
+	// rejected.
+	_, err = NewContainerExecutor(ContainerExecutorConfig{
+		Image:             "ubuntu:26.04",
+		HostDir:           "/tmp/workspace",
+		SocketPath:        sock,
+		RegistryAllowlist: []string{"registry.internal:5000/team/*"},
+	})
+	if err == nil {
+		t.Error("ubuntu:26.04 should be rejected when the override does not include docker.io/library/*")
+	}
+}
+
+func TestNormaliseImageRef(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"ubuntu", "docker.io/library/ubuntu"},
+		{"ubuntu:26.04", "docker.io/library/ubuntu"},
+		{"myorg/app:tag", "docker.io/myorg/app"},
+		{"ghcr.io/stirrup/base", "ghcr.io/stirrup/base"},
+		{"ghcr.io/stirrup/base:latest", "ghcr.io/stirrup/base"},
+		{"registry:5000/team/img@sha256:" + strings.Repeat("b", 64), "registry:5000/team/img"},
+		{"localhost/dev", "localhost/dev"},
+		{"localhost:5000/dev:tag", "localhost:5000/dev"},
+		{"docker.io/library/alpine", "docker.io/library/alpine"},
+	}
+	for _, tt := range tests {
+		if got := normaliseImageRef(tt.in); got != tt.want {
+			t.Errorf("normaliseImageRef(%q): got %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestNewContainerExecutor_MissingImage(t *testing.T) {
 	_, err := NewContainerExecutor(ContainerExecutorConfig{
 		HostDir: "/tmp/workspace",

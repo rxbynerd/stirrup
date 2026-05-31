@@ -868,6 +868,16 @@ type ExecutorConfig struct {
 	//   "kata-fc"    — Kata Containers backed by Firecracker
 	Runtime string `json:"runtime,omitempty"`
 
+	// RegistryAllowlist constrains which container image references the
+	// container executor may run. Each entry is a glob over the normalised
+	// reference (registry host + repository path, tag/digest stripped) —
+	// e.g. "ghcr.io/stirrup/*" or "docker.io/library/*". An empty list lets
+	// the executor fall back to its built-in default (the project's own
+	// ghcr.io/stirrup images plus Docker Hub official "library/*" images).
+	// A reference matching no pattern is rejected before any container is
+	// created. Only meaningful for executor.type == "container".
+	RegistryAllowlist []string `json:"registryAllowlist,omitempty"`
+
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
 	// executor's workspace at end-of-run and upload it to the named URI.
 	// Currently only "gs://bucket/path" is accepted. The "api" executor
@@ -1736,6 +1746,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	if config.Executor.Runtime != "" && config.Executor.Type != "container" && config.Executor.Type != "" {
 		errs = append(errs, "executor.runtime is only valid when executor.type is \"container\"")
 	}
+	validateExecutorRegistryAllowlist(config.Executor, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
 	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
@@ -3738,5 +3749,28 @@ func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
 			"executor.workspaceExportTo %q must contain a non-empty bucket path after gs://",
 			cfg.WorkspaceExportTo,
 		))
+	}
+}
+
+// validateExecutorRegistryAllowlist checks the optional
+// Executor.RegistryAllowlist: every entry must be a syntactically valid glob
+// and the field is only meaningful for the container executor. An empty list
+// is valid — the executor falls back to its built-in default — so this only
+// rejects malformed patterns and misplacement on a non-container executor.
+func validateExecutorRegistryAllowlist(cfg ExecutorConfig, errs *[]string) {
+	if len(cfg.RegistryAllowlist) == 0 {
+		return
+	}
+	if cfg.Type != "container" && cfg.Type != "" {
+		*errs = append(*errs, "executor.registryAllowlist is only valid when executor.type is \"container\"")
+	}
+	for _, pattern := range cfg.RegistryAllowlist {
+		if pattern == "" {
+			*errs = append(*errs, "executor.registryAllowlist entries must be non-empty")
+			continue
+		}
+		if _, err := filepath.Match(pattern, ""); err != nil {
+			*errs = append(*errs, fmt.Sprintf("executor.registryAllowlist pattern %q is not a valid glob: %v", pattern, err))
+		}
 	}
 }

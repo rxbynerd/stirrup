@@ -107,6 +107,10 @@ type containerCreateRequest struct {
 	// when an egress proxy is in front of the container.
 	Env        []string    `json:"Env,omitempty"`
 	HostConfig *hostConfig `json:"HostConfig"`
+	// User runs the container's main process as the given uid[:gid]. The
+	// hardened profile sets "65534:65534" (nobody:nogroup) so a container
+	// escape lands on an unprivileged identity rather than root.
+	User string `json:"User,omitempty"`
 }
 
 type hostConfig struct {
@@ -117,6 +121,20 @@ type hostConfig struct {
 	PidsLimit   *int64   `json:"PidsLimit,omitempty"`
 	CapDrop     []string `json:"CapDrop,omitempty"`
 	SecurityOpt []string `json:"SecurityOpt,omitempty"`
+	// ReadonlyRootfs makes the container's root filesystem read-only. All
+	// writable scratch space is then confined to the workspace bind and the
+	// explicit Tmpfs mounts below, shrinking the attack surface to the paths
+	// the run actually needs.
+	ReadonlyRootfs bool `json:"ReadonlyRootfs,omitempty"`
+	// Tmpfs maps an in-container path to a comma-separated mount-option
+	// string (e.g. "rw,noexec,nosuid,nodev,size=256m"). With a read-only
+	// rootfs the run still needs writable, non-executable scratch at /tmp
+	// and a sized /dev/shm; the option string is the Engine API vehicle for
+	// nosuid/nodev/noexec on a tmpfs, which top-level Binds cannot carry.
+	Tmpfs map[string]string `json:"Tmpfs,omitempty"`
+	// ShmSize bounds /dev/shm in bytes. The engine default (64m) is made
+	// explicit so the hardened profile does not depend on daemon defaults.
+	ShmSize int64 `json:"ShmSize,omitempty"`
 	// Runtime selects the OCI runtime (e.g. "runsc" for gVisor,
 	// "kata-qemu" for Kata Containers). Empty means "use the engine
 	// default", in which case the field is omitted from the wire so the

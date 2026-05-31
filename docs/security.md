@@ -187,12 +187,41 @@ The container executor applies these defaults regardless of what
 
 - `CapDrop: ["ALL"]`
 - `SecurityOpt: ["no-new-privileges"]`
+- `ReadonlyRootfs: true` — the container's root filesystem is
+  immutable. All writable scratch is confined to the workspace
+  bind and the explicit tmpfs mounts below, so a compromised run
+  cannot persist a payload outside the paths it actually needs.
+- `User: "65534:65534"` (nobody:nogroup) — the main process and
+  every `run_command` exec run unprivileged, so a container escape
+  lands on a non-root identity rather than uid 0.
+- A 256 MiB `/tmp` tmpfs and a 64 MiB `/dev/shm`, each mounted
+  `nosuid,nodev,noexec`. These provide the writable, non-executable
+  scratch a read-only rootfs otherwise denies; `noexec` stops a
+  dropped binary from being run out of scratch.
+- `PidsLimit` from `resources.pids` (fork-bomb containment),
+  alongside the CPU and memory limits from `resources`.
 - `NetworkMode: "none"` (overridden to `"bridge"` only when
   `network.mode == "allowlist"`, in which case the egress proxy
   enforces FQDN allowlisting on the way out)
+- A registry allowlist on `executor.image`. The default admits
+  only the project's own `ghcr.io/stirrup/*` images and Docker Hub
+  official `docker.io/library/*` images; any other reference is
+  rejected before a container is created. Operators widen or
+  replace the set via `executor.registryAllowlist` (a list of
+  globs over the normalised `host/repo` reference, tag/digest
+  stripped). An explicit list *replaces* the default rather than
+  extending it. Digest-pinned references (`@sha256:…`) are accepted
+  and preferred; cryptographic verification of the digest
+  (cosign/Sigstore) is a deferred follow-up.
 - API keys and `secret://` references are resolved on the *host*
   before tool dispatch; they never enter the container's
   environment.
+
+The workspace bind is *not* mounted `nosuid,nodev,noexec`: the
+Engine API exposes those options for tmpfs mounts but not for bind
+mounts, and the run must be able to execute tooling it writes into
+the workspace. Defence there rests on the dropped capabilities,
+`no-new-privileges`, and the non-root user rather than mount flags.
 
 Optional kernel-isolation runtime selection (`runc`, `runsc`, `kata*`)
 is documented in [`safety-rings.md`](safety-rings.md).

@@ -873,12 +873,13 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			}
 		}
 		return executor.NewContainerExecutorWithContext(ctx, executor.ContainerExecutorConfig{
-			Image:          cfg.Image,
-			HostDir:        workspace,
-			Network:        cfg.Network,
-			Resources:      cfg.Resources,
-			Runtime:        cfg.Runtime,
-			EgressSecurity: secLogger,
+			Image:             cfg.Image,
+			HostDir:           workspace,
+			Network:           cfg.Network,
+			Resources:         cfg.Resources,
+			Runtime:           cfg.Runtime,
+			RegistryAllowlist: cfg.RegistryAllowlist,
+			EgressSecurity:    secLogger,
 		})
 	case "api":
 		if cfg.VcsBackend == nil {
