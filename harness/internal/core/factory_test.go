@@ -2820,3 +2820,52 @@ func (s *stubSecretStore) Resolve(_ context.Context, ref string) (string, error)
 	}
 	return v, nil
 }
+
+// TestBuildLoopWithTransport_OpenAIResponsesAdapterHasLogger asserts that
+// BuildLoopWithTransport injects a non-nil Logger into the
+// OpenAIResponsesAdapter, so its quirks-resolution debug log and
+// tool-choice downgrade warn run through the factory's ScrubHandler-backed
+// logger rather than the slog.Default fallback. A future deletion of the
+// `pa.Logger = logger` line in the *provider.OpenAIResponsesAdapter factory
+// arm would silently regress the scrub and correlation invariants for that
+// output; this test surfaces the regression at the assembly seam, mirroring
+// the Bedrock and OpenAICompatible equivalents.
+func TestBuildLoopWithTransport_OpenAIResponsesAdapterHasLogger(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-responses-logger",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-responses", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-responses", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	adapter, ok := unwrapNormalizer(loop.Provider).(*provider.OpenAIResponsesAdapter)
+	if !ok {
+		t.Fatalf("loop.Provider (after unwrap) type = %T, want *provider.OpenAIResponsesAdapter", unwrapNormalizer(loop.Provider))
+	}
+	if adapter.Logger == nil {
+		t.Error("OpenAIResponsesAdapter.Logger is nil; factory should inject the ScrubHandler-backed logger so the quirks debug log and tool-choice downgrade warn keep run/trace correlation and scrubbing")
+	}
+}
