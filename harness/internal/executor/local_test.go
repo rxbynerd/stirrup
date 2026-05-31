@@ -283,13 +283,34 @@ func TestExec_OutputTruncation(t *testing.T) {
 	}
 }
 
+// capturingEmitter records the originalSize argument of the most recent
+// OutputTruncated call so tests can assert the true pre-truncation byte count.
+type capturingEmitter struct {
+	outputTruncCount int
+	lastOriginalSize int
+}
+
+func (e *capturingEmitter) PathTraversalBlocked(_, _ string)           {}
+func (e *capturingEmitter) FileSizeLimitExceeded(_ string, _, _ int64) {}
+func (e *capturingEmitter) OutputTruncated(_ string, originalSize, _ int) {
+	e.outputTruncCount++
+	e.lastOriginalSize = originalSize
+}
+
+var _ SecurityEventEmitter = (*capturingEmitter)(nil)
+
 // TestExec_OutputStreamingBounded asserts that streaming far more than the cap
 // does not retain more than maxOutputSize bytes of payload — peak memory is
-// bounded, not proportional to total output.
+// bounded, not proportional to total output — while the OutputTruncated event
+// still reports the TRUE pre-truncation byte count, matching the container path.
 func TestExec_OutputStreamingBounded(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
+	emitter := &capturingEmitter{}
+	exec.Security = emitter
+
 	// 16 MB of stdout, well past the 1 MB cap.
+	const totalBytes = 16777216
 	result, err := exec.Exec(context.Background(), "head -c 16777216 /dev/zero", 30*time.Second)
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
@@ -301,17 +322,55 @@ func TestExec_OutputStreamingBounded(t *testing.T) {
 	if !strings.HasSuffix(result.Stdout, truncatedSuffix) {
 		t.Errorf("expected truncation suffix on over-cap output")
 	}
+	if emitter.outputTruncCount != 1 {
+		t.Errorf("OutputTruncated fired %d times, want 1", emitter.outputTruncCount)
+	}
+	if emitter.lastOriginalSize != totalBytes {
+		t.Errorf("OutputTruncated originalSize = %d, want true total %d (not the capped %d)",
+			emitter.lastOriginalSize, totalBytes, maxOutputSize)
+	}
+}
+
+// TestExec_OutputTruncated_CombinedAcrossStreams locks in the trigger
+// alignment: stdout and stderr each under the 1 MB cap but together over it
+// must fire OutputTruncated, matching the container path's combined-size
+// trigger. Neither stream is individually truncated, so a per-stream trigger
+// would miss this.
+func TestExec_OutputTruncated_CombinedAcrossStreams(t *testing.T) {
+	exec, _ := newTestExecutor(t)
+
+	emitter := &capturingEmitter{}
+	exec.Security = emitter
+
+	// 600 KB to stdout + 600 KB to stderr = 1.2 MB combined, each under 1 MB.
+	const perStream = 600 * 1024
+	cmd := "head -c 614400 /dev/zero; head -c 614400 /dev/zero 1>&2"
+	if _, err := exec.Exec(context.Background(), cmd, 30*time.Second); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if emitter.outputTruncCount != 1 {
+		t.Fatalf("OutputTruncated fired %d times, want 1 (combined streams exceed cap)", emitter.outputTruncCount)
+	}
+	if want := 2 * perStream; emitter.lastOriginalSize != want {
+		t.Errorf("OutputTruncated originalSize = %d, want combined total %d", emitter.lastOriginalSize, want)
+	}
+}
+
+// retainedLen returns the number of payload bytes a cappedWriter currently
+// holds, excluding any appended truncation suffix.
+func retainedLen(w *cappedWriter) int {
+	return len(strings.TrimSuffix(w.result(), truncatedSuffix))
 }
 
 func TestCappedWriter(t *testing.T) {
 	t.Run("retains all bytes under the cap", func(t *testing.T) {
-		w := &cappedWriter{limit: 100}
+		w := newCappedWriter(100)
 		n, err := w.Write([]byte("hello"))
 		if err != nil || n != 5 {
 			t.Fatalf("Write = (%d, %v), want (5, nil)", n, err)
 		}
-		if w.truncated {
-			t.Error("under-cap write must not mark truncated")
+		if w.seen() != 5 {
+			t.Errorf("seen = %d, want 5", w.seen())
 		}
 		if got := w.result(); got != "hello" {
 			t.Errorf("result = %q, want %q", got, "hello")
@@ -319,29 +378,30 @@ func TestCappedWriter(t *testing.T) {
 	})
 
 	t.Run("exact-fit is not truncated", func(t *testing.T) {
-		w := &cappedWriter{limit: 5}
+		w := newCappedWriter(5)
 		_, _ = w.Write([]byte("hello"))
-		if w.truncated {
-			t.Error("filling exactly to the cap must not mark truncated")
+		if w.seen() != 5 {
+			t.Errorf("seen = %d, want 5", w.seen())
 		}
 		if got := w.result(); got != "hello" {
-			t.Errorf("result = %q, want %q", got, "hello")
+			t.Errorf("filling exactly to the cap must not append suffix: result = %q", got)
 		}
 	})
 
-	t.Run("stops retaining past the cap but accepts all bytes", func(t *testing.T) {
-		w := &cappedWriter{limit: 4}
+	t.Run("stops retaining past the cap but accepts and counts all bytes", func(t *testing.T) {
+		w := newCappedWriter(4)
 		// A single oversized write: the writer must report it fully consumed so
-		// the producer never blocks, while retaining only the first limit bytes.
+		// the producer never blocks, while retaining only the first limit bytes
+		// and counting the true total.
 		n, err := w.Write([]byte("abcdefghij"))
 		if err != nil || n != 10 {
 			t.Fatalf("Write = (%d, %v), want (10, nil)", n, err)
 		}
-		if !w.truncated {
-			t.Error("over-cap write must mark truncated")
+		if w.seen() != 10 {
+			t.Errorf("seen = %d, want true total 10", w.seen())
 		}
-		if w.retained() != 4 {
-			t.Errorf("retained = %d, want cap 4", w.retained())
+		if rl := retainedLen(w); rl != 4 {
+			t.Errorf("retained = %d, want cap 4", rl)
 		}
 		if got := w.result(); got != "abcd"+truncatedSuffix {
 			t.Errorf("result = %q, want %q", got, "abcd"+truncatedSuffix)
@@ -349,19 +409,22 @@ func TestCappedWriter(t *testing.T) {
 	})
 
 	t.Run("drops bytes across multiple writes once full", func(t *testing.T) {
-		w := &cappedWriter{limit: 4}
+		w := newCappedWriter(4)
 		_, _ = w.Write([]byte("ab"))
 		_, _ = w.Write([]byte("cd"))
-		// Now full; further writes are accepted but discarded.
+		// Now full; further writes are accepted, counted, but discarded.
 		n, err := w.Write([]byte("efgh"))
 		if err != nil || n != 4 {
 			t.Fatalf("post-fill Write = (%d, %v), want (4, nil)", n, err)
 		}
-		if !w.truncated {
-			t.Error("write past a full buffer must mark truncated")
+		if w.seen() != 8 {
+			t.Errorf("seen = %d, want true total 8", w.seen())
 		}
-		if w.retained() != 4 {
-			t.Errorf("retained = %d, want cap 4", w.retained())
+		if rl := retainedLen(w); rl != 4 {
+			t.Errorf("retained = %d, want cap 4", rl)
+		}
+		if got := w.result(); got != "abcd"+truncatedSuffix {
+			t.Errorf("result must append truncation suffix once full: got %q, want %q", got, "abcd"+truncatedSuffix)
 		}
 	})
 }

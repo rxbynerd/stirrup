@@ -212,11 +212,11 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 	// per stream rather than buffering all output. This mirrors
 	// ContainerExecutor.demuxDockerStream's drain-on-cap behaviour: bytes past
 	// the cap are accepted (so the process never blocks on a full pipe) but not
-	// retained. The reported "original size" is therefore the retained, capped
-	// size — matching the container path, which likewise discards drained bytes
-	// without counting them.
-	stdout := &cappedWriter{limit: maxOutputSize}
-	stderr := &cappedWriter{limit: maxOutputSize}
+	// retained. Each writer still counts every byte it sees, so the true
+	// pre-truncation size and trigger condition reported to OutputTruncated
+	// match the container path byte-for-byte.
+	stdout := newCappedWriter(maxOutputSize)
+	stderr := newCappedWriter(maxOutputSize)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
@@ -227,12 +227,11 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 		Stderr: stderr.result(),
 	}
 
-	if e.Security != nil && (stdout.truncated || stderr.truncated) {
-		// Report the retained (capped) size as the original size. The true
-		// pre-cap byte count is not tracked: it is discarded unbuffered to bound
-		// peak memory, matching ContainerExecutor which likewise reports its
-		// retained size rather than the drained total.
-		e.Security.OutputTruncated(command, stdout.retained()+stderr.retained(), maxOutputSize)
+	if e.Security != nil {
+		combinedSize := stdout.seen() + stderr.seen()
+		if combinedSize > maxOutputSize {
+			e.Security.OutputTruncated(command, combinedSize, maxOutputSize)
+		}
 	}
 
 	if err != nil {
@@ -363,35 +362,47 @@ func truncate(s string, maxLen int) string {
 // cappedWriter is an io.Writer that retains at most limit bytes. Writes past
 // the cap are accepted and reported as fully written — so a process streaming
 // into it never blocks on a full pipe — but their bytes are discarded rather
-// than buffered, bounding peak memory to ~limit. Once the cap is reached the
-// writer records that truncation occurred. It is not safe for concurrent use;
-// exec.Cmd serialises writes per stream.
+// than buffered, bounding peak memory to ~limit. It counts every byte seen in
+// total so the true pre-truncation size can be reported, matching the
+// container path which buffers everything and reports its full length.
+//
+// Not safe for concurrent use. exec.Cmd copies stdout and stderr on separate
+// goroutines that run concurrently, so each stream must use its own distinct
+// cappedWriter instance; sharing a single instance across both streams would
+// race.
 type cappedWriter struct {
-	limit     int
-	buf       []byte
-	truncated bool
+	limit int
+	buf   []byte
+	total int
+}
+
+// newCappedWriter returns a cappedWriter that retains up to limit bytes. The
+// retained buffer is pre-allocated to limit so append growth does not
+// transiently allocate roughly twice the cap.
+func newCappedWriter(limit int) *cappedWriter {
+	return &cappedWriter{limit: limit, buf: make([]byte, 0, limit)}
 }
 
 func (w *cappedWriter) Write(p []byte) (int, error) {
-	remaining := w.limit - len(w.buf)
-	take := len(p)
-	if take > remaining {
-		take = remaining
-		w.truncated = true
-	}
-	if take > 0 {
+	w.total += len(p)
+	if remaining := w.limit - len(w.buf); remaining > 0 {
+		take := len(p)
+		if take > remaining {
+			take = remaining
+		}
 		w.buf = append(w.buf, p[:take]...)
 	}
 	return len(p), nil
 }
 
-// retained reports the number of bytes currently buffered (at most limit).
-func (w *cappedWriter) retained() int { return len(w.buf) }
+// seen reports the total number of bytes written, including bytes dropped past
+// the cap. This is the true pre-truncation size.
+func (w *cappedWriter) seen() int { return w.total }
 
 // result returns the retained output, appending the truncation notice when
-// bytes were dropped.
+// bytes were dropped past the cap.
 func (w *cappedWriter) result() string {
-	if w.truncated {
+	if w.total > w.limit {
 		return string(w.buf) + truncatedSuffix
 	}
 	return string(w.buf)
