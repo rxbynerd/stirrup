@@ -603,6 +603,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("no-probe-mcp", false, "")
 	f.Bool("no-probe-trace", false, "")
 	f.Bool("no-probe-egress", false, "")
+	f.Bool("no-probe-executor", false, "")
 	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "")
 	return cmd
 }

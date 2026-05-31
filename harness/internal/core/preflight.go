@@ -357,7 +357,7 @@ func isNilComponent(component any) bool {
 	}
 	v := reflect.ValueOf(component)
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
 		return v.IsNil()
 	default:
 		return false
@@ -370,14 +370,15 @@ func isNilComponent(component any) bool {
 // constructing a ContainerExecutor creates and STARTS a real container (and
 // the egress proxy in allowlist mode) as a side effect, which contradicts
 // the read-only intent of a dry-run (issue #245 step 7). For container it
-// records the construction step as a skip and returns nil; the engine is
-// probed read-only in preflightExecutorProbe. local and api executors are
-// cheap to construct and have no live side effects, so they are built here
-// and returned for the probe phase (neither implements a Probe → skip).
+// returns nil with a construction-step note that the engine is probed
+// read-only in preflightExecutorProbe rather than built here. local and api
+// executors are cheap to construct and have no live side effects, so they
+// are built here and returned for the probe phase (neither implements a
+// Probe → the probe step records a skip).
 //
-// A returned executor is closed by the caller's defer chain is unnecessary:
-// local/api executors hold no live resource, so the dry-run leaves nothing
-// running. (The container path, which would, is never constructed.)
+// A returned local/api executor needs no Close: it holds no live resource,
+// so the dry-run leaves nothing running. The container path, which would,
+// is never constructed.
 func preflightExecutorConstruct(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -387,10 +388,11 @@ func preflightExecutorConstruct(
 	fail func(string, error, string),
 ) executor.Executor {
 	if config.Executor.Type == "container" {
-		// The container engine is probed read-only in the probe phase, not
-		// constructed here. Record the construction step as a skip so the
-		// report is honest that no executor object was built.
-		ok("executor", "container engine probed read-only (executor not constructed in dry-run)")
+		// No ContainerExecutor object is built in a dry-run (that would start
+		// a container); the engine is checked read-only in the executor-probe
+		// step. Record an honest construction note rather than claiming a
+		// build that did not happen.
+		ok("executor", "container executor not constructed in dry-run; engine checked in executor-probe")
 		return nil
 	}
 

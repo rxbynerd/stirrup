@@ -189,6 +189,7 @@ func TestDryRunOptionsFromFlags(t *testing.T) {
 	f := cmd.Flags()
 	_ = f.Set("no-probe-provider", "true")
 	_ = f.Set("no-probe-egress", "true")
+	_ = f.Set("no-probe-executor", "true")
 	_ = f.Set("dry-run-timeout", "12s")
 
 	opts := dryRunOptionsFromFlags(f)
@@ -200,6 +201,9 @@ func TestDryRunOptionsFromFlags(t *testing.T) {
 	}
 	if !opts.SkipEgress {
 		t.Error("SkipEgress should be true")
+	}
+	if !opts.SkipExecutor {
+		t.Error("SkipExecutor should be true")
 	}
 	if opts.Timeout.String() != "12s" {
 		t.Errorf("Timeout = %v, want 12s", opts.Timeout)
