@@ -19,6 +19,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -170,6 +171,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 					Image:      cfg.Image,
 					Command:    []string{"/bin/sh", "-c", "sleep infinity"},
 					WorkingDir: k8sWorkspace,
+					Resources:  resourcesToPodResources(cfg.Resources),
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: ptr.To(false),
 						Capabilities: &corev1.Capabilities{
@@ -684,6 +686,79 @@ func optionalRuntimeClassName(name string) *string {
 		return nil
 	}
 	return &name
+}
+
+// resourcesToPodResources maps the harness-neutral ResourceLimits onto a
+// Pod container's ResourceRequirements. A nil limits (or an all-zero one)
+// yields an empty requirements block so the Pod inherits namespace
+// defaults rather than pinning a tiny request.
+//
+// Mapping rationale:
+//   - CPUs go on BOTH requests and limits so the scheduler reserves what
+//     the workload may use (no burst beyond the declared share). Fractional
+//     cores render as milli-CPU ("500m" for 0.5); whole cores render as a
+//     plain integer ("2") for readability.
+//   - MemoryMB goes on both requests and limits (Mi) for the same reason:
+//     a memory limit without a matching request lets the scheduler
+//     over-commit the node.
+//   - DiskMB maps to limits.ephemeral-storage ONLY. A request would force
+//     the scheduler to find a node with that much free scratch space even
+//     when the workload never fills it; the limit alone is the eviction
+//     ceiling, which is the behaviour operators expect from a disk cap.
+//   - PIDs is intentionally NOT enforced here. Pod-level PID limits are a
+//     kubelet setting (--pod-max-pids / SupportPodPidsLimit), not a
+//     per-container resource field, so the value is logged-and-ignored
+//     rather than silently dropped.
+func resourcesToPodResources(limits *types.ResourceLimits) corev1.ResourceRequirements {
+	req := corev1.ResourceRequirements{}
+	if limits == nil {
+		return req
+	}
+
+	requests := corev1.ResourceList{}
+	caps := corev1.ResourceList{}
+
+	if limits.CPUs > 0 {
+		cpu := cpuQuantity(limits.CPUs)
+		requests[corev1.ResourceCPU] = cpu
+		caps[corev1.ResourceCPU] = cpu
+	}
+	if limits.MemoryMB > 0 {
+		mem := resource.MustParse(fmt.Sprintf("%dMi", limits.MemoryMB))
+		requests[corev1.ResourceMemory] = mem
+		caps[corev1.ResourceMemory] = mem
+	}
+	if limits.DiskMB > 0 {
+		caps[corev1.ResourceEphemeralStorage] = resource.MustParse(fmt.Sprintf("%dMi", limits.DiskMB))
+	}
+	if limits.PIDs > 0 {
+		slog.Default().Debug(
+			"k8s executor: resources.pids ignored",
+			"pids", limits.PIDs,
+			"reason", "per-Pod PID limits require the kubelet --pod-max-pids flag, not a container resource field",
+		)
+	}
+
+	if len(requests) > 0 {
+		req.Requests = requests
+	}
+	if len(caps) > 0 {
+		req.Limits = caps
+	}
+	return req
+}
+
+// cpuQuantity renders a CPU share as a Kubernetes quantity. Whole cores
+// become a plain integer ("2") and fractional cores become milli-CPU
+// ("500m" for 0.5) so the emitted Pod spec is readable rather than an
+// opaque scaled value. The milli-CPU rounding matches Kubernetes' own
+// internal CPU granularity (1m = 0.001 core).
+func cpuQuantity(cpus float64) resource.Quantity {
+	if cpus == math.Trunc(cpus) {
+		return resource.MustParse(fmt.Sprintf("%d", int64(cpus)))
+	}
+	milli := int64(math.Round(cpus * 1000))
+	return resource.MustParse(fmt.Sprintf("%dm", milli))
 }
 
 // waitForPodReady polls until the Pod's phase is Running AND the agent
