@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -797,9 +798,9 @@ func decodeFindResult(t *testing.T, tl *tool.Tool, input json.RawMessage) findRe
 func rgMatchEvents(n int) string {
 	var b strings.Builder
 	for i := 0; i < n; i++ {
-		b.WriteString(`{"type":"match","data":{"path":{"text":"f`)
-		b.WriteString(string(rune('a' + i%26)))
-		b.WriteString(`.go"},"lines":{"text":"hit\n"},"line_number":1}}` + "\n")
+		// Distinct path per event so n > 26 cannot collapse onto duplicate
+		// paths the way an 'a'+i%26 rune cycle would (issue #367).
+		fmt.Fprintf(&b, `{"type":"match","data":{"path":{"text":"f%d.go"},"lines":{"text":"hit\n"},"line_number":1}}`+"\n", i)
 	}
 	return b.String()
 }
@@ -862,16 +863,26 @@ func TestGrepFilesTool_TruncatedBoundary_Ripgrep(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			var gotCmd string
 			fe := &fsExecutor{
 				root:    t.TempDir(),
 				canExec: true,
-				execFn: func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+				execFn: func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
+					gotCmd = command
 					return &executor.ExecResult{ExitCode: 0, Stdout: rgMatchEvents(tc.events)}, nil
 				},
 			}
 			grep := GrepFilesTool(fe)
 			input, _ := json.Marshal(map[string]any{"pattern": "hit", "max_results": maxResults})
 			sr := decodeSearchResult(t, grep, input)
+			// The look-ahead probe lives in --max-count: rg must be asked for
+			// maxResults+1 so a count landing exactly on the cap stays
+			// distinguishable from genuine truncation. Pinning the literal
+			// catches a revert to plain maxResults (issue #366).
+			wantMaxCount := fmt.Sprintf("--max-count %d", maxResults+1)
+			if !strings.Contains(gotCmd, wantMaxCount) {
+				t.Errorf("rg command = %q, want it to contain %q", gotCmd, wantMaxCount)
+			}
 			if sr.Truncated != tc.wantTruncated {
 				t.Errorf("Truncated = %v, want %v", sr.Truncated, tc.wantTruncated)
 			}
