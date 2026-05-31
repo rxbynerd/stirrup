@@ -98,6 +98,14 @@ type ProviderQuirks struct {
 type ProviderBehaviourFlags struct {
 	OpenAI OpenAIBehaviourFlags `json:"openai"`
 	Gemini GeminiBehaviourFlags `json:"gemini"`
+	// OpenAIResponses carries the wire divergences of the OpenAI Responses
+	// API (POST /v1/responses) that the Chat Completions OpenAIBehaviourFlags
+	// cannot express: a different token-budget key, the always-explicit
+	// `store` field, and the typed input-item discriminated union. The
+	// Responses adapter owns this sub-struct; the Chat adapter never reads
+	// it. The zero value reproduces the adapter's pre-quirks hard-coded
+	// behaviour so a Responses request with no rule is byte-identical.
+	OpenAIResponses OpenAIResponsesBehaviourFlags `json:"openaiResponses"`
 	// Future: Anthropic AnthropicBehaviourFlags (reserved; Anthropic v1 has no
 	// structural divergences beyond what StreamParams already encodes).
 }
@@ -199,6 +207,140 @@ func (f *OpenAITokenField) UnmarshalJSON(data []byte) error {
 		*f = TokenFieldMaxTokens
 	default:
 		return fmt.Errorf("quirks: unknown OpenAITokenField %.64s", data)
+	}
+	return nil
+}
+
+// OpenAIResponsesBehaviourFlags covers the wire divergences of the OpenAI
+// Responses API. The zero value reproduces the Responses adapter's
+// pre-quirks hard-coded behaviour, so the builtin "openai-responses / *"
+// rule pins these values explicitly (matching the Gemini base-rule
+// pattern) without changing the emitted bytes.
+type OpenAIResponsesBehaviourFlags struct {
+	// TokenField selects which JSON key carries the token budget. The
+	// Responses API uses "max_output_tokens" (the zero value), distinct
+	// from Chat Completions' "max_completion_tokens"/"max_tokens" — which
+	// is why this is a separate enum from OpenAITokenField rather than a
+	// shared one.
+	TokenField OpenAIResponsesTokenField `json:"tokenField"`
+
+	// StoreMode controls the top-level `store` field. The Responses adapter
+	// sends an explicit `store:false` (the zero value) because stirrup
+	// manages its own conversation history and does not rely on OpenAI-side
+	// state — leaving the key unset would default to server-side
+	// persistence on some endpoints (a privacy concern for self-hosted
+	// gateways and a billing concern for long-running runs).
+	StoreMode OpenAIResponsesStoreMode `json:"storeMode"`
+
+	// InputItemShape selects how conversation history is serialised into the
+	// Responses `input` array. The zero value (TypedInputItems) emits the
+	// discriminated-union shape with per-variant wire structs: this is the
+	// structural fix for #199 (stricter validators reject "output":"" on
+	// message / function_call items) and preserves the #172 invariant
+	// (function_call_output always carries the "output" key, even empty).
+	// No alternative shape ships in v1; the flag exists so the resolved
+	// quirks struct is the single source of truth for the input-item
+	// decision and a future divergent gateway shape branches here rather
+	// than re-shaping the adapter.
+	InputItemShape OpenAIResponsesInputShape `json:"inputItemShape"`
+}
+
+// OpenAIResponsesTokenField controls which JSON key carries the token
+// budget in a Responses API request.
+type OpenAIResponsesTokenField int
+
+const (
+	// TokenFieldMaxOutputTokens emits "max_output_tokens", the key the
+	// Responses API requires. Zero value = default.
+	TokenFieldMaxOutputTokens OpenAIResponsesTokenField = 0
+)
+
+// MarshalJSON renders OpenAIResponsesTokenField as the wire key it selects
+// so the CLI introspection output names the key rather than an opaque int.
+// Unknown values render as "unknown(N)" so a newer harness's output still
+// parses.
+func (f OpenAIResponsesTokenField) MarshalJSON() ([]byte, error) {
+	switch f {
+	case TokenFieldMaxOutputTokens:
+		return []byte(`"max_output_tokens"`), nil
+	default:
+		return []byte(fmt.Sprintf(`"unknown(%d)"`, int(f))), nil
+	}
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON. Unknown strings are
+// rejected rather than silently zero-ing the field.
+func (f *OpenAIResponsesTokenField) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case `"max_output_tokens"`:
+		*f = TokenFieldMaxOutputTokens
+	default:
+		return fmt.Errorf("quirks: unknown OpenAIResponsesTokenField %.64s", data)
+	}
+	return nil
+}
+
+// OpenAIResponsesStoreMode controls the top-level `store` field of a
+// Responses request.
+type OpenAIResponsesStoreMode int
+
+const (
+	// StoreFalse emits an explicit `"store":false`. Zero value = default;
+	// stirrup manages its own history and never opts into server-side state.
+	StoreFalse OpenAIResponsesStoreMode = 0
+)
+
+// MarshalJSON renders OpenAIResponsesStoreMode as a human-readable string
+// for the CLI introspection surface.
+func (s OpenAIResponsesStoreMode) MarshalJSON() ([]byte, error) {
+	switch s {
+	case StoreFalse:
+		return []byte(`"store_false"`), nil
+	default:
+		return []byte(fmt.Sprintf(`"unknown(%d)"`, int(s))), nil
+	}
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON.
+func (s *OpenAIResponsesStoreMode) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case `"store_false"`:
+		*s = StoreFalse
+	default:
+		return fmt.Errorf("quirks: unknown OpenAIResponsesStoreMode %.64s", data)
+	}
+	return nil
+}
+
+// OpenAIResponsesInputShape enumerates the supported serialisations of the
+// Responses `input` array.
+type OpenAIResponsesInputShape int
+
+const (
+	// TypedInputItems emits the per-variant discriminated-union shape
+	// (message / function_call / function_call_output). Zero value =
+	// default; carries the #172 + #199 fixes. No other shape ships in v1.
+	TypedInputItems OpenAIResponsesInputShape = 0
+)
+
+// MarshalJSON renders OpenAIResponsesInputShape as a human-readable string
+// for the CLI introspection surface.
+func (s OpenAIResponsesInputShape) MarshalJSON() ([]byte, error) {
+	switch s {
+	case TypedInputItems:
+		return []byte(`"typed_input_items"`), nil
+	default:
+		return []byte(fmt.Sprintf(`"unknown(%d)"`, int(s))), nil
+	}
+}
+
+// UnmarshalJSON is the inverse of MarshalJSON.
+func (s *OpenAIResponsesInputShape) UnmarshalJSON(data []byte) error {
+	switch string(data) {
+	case `"typed_input_items"`:
+		*s = TypedInputItems
+	default:
+		return fmt.Errorf("quirks: unknown OpenAIResponsesInputShape %.64s", data)
 	}
 	return nil
 }

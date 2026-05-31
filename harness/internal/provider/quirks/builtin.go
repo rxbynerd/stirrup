@@ -435,15 +435,24 @@ func BuiltinRules() []Rule {
 		{
 			ProviderType: "openai-responses",
 			ModelMatch:   "*",
-			Description:  "OpenAI Responses: top-level parallel_tool_calls; accepts schema examples",
+			Description:  "OpenAI Responses: typed input items, max_output_tokens, store:false; top-level parallel_tool_calls; accepts schema examples",
 			LastVerified: Date("2026-05-24"),
 			Apply: func(q *ProviderQuirks) {
 				// The Responses API shares the Chat Completions
-				// `parallel_tool_calls` bool and schema passthrough. This is
-				// the first builtin rule for the openai-responses provider
-				// type — it previously resolved an empty quirks set.
+				// `parallel_tool_calls` bool and schema passthrough.
 				q.ParallelToolCalls = ParallelToolCallsCapability{Supported: true, Disable: true}
 				q.ToolExamples = ToolExamplesCapability{Supported: true}
+				// Pin the Responses-specific wire divergences so the
+				// resolved quirks struct is the single source of truth for
+				// the adapter's send path (the Codec invariant that already
+				// holds for Chat/Anthropic/Gemini). Each value is the zero
+				// value of its enum, so the write is a no-op functionally and
+				// the emitted bytes are byte-identical to the pre-quirks
+				// hard-coded shape — the pin documents the decision and gives
+				// a future model-scoped rule somewhere to override.
+				q.BehaviourFlags.OpenAIResponses.TokenField = TokenFieldMaxOutputTokens
+				q.BehaviourFlags.OpenAIResponses.StoreMode = StoreFalse
+				q.BehaviourFlags.OpenAIResponses.InputItemShape = TypedInputItems
 			},
 		},
 	}

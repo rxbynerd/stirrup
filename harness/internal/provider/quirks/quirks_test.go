@@ -742,6 +742,35 @@ func TestToolExamplesCapabilityRules(t *testing.T) {
 	}
 }
 
+// TestOpenAIResponsesBehaviourFlags pins the Responses-specific wire
+// divergences the builtin "openai-responses / *" rule resolves (#332). The
+// resolved ProviderQuirks is the single source of truth for the Responses
+// send path (the Codec invariant), so the adapter reads these flags rather
+// than hard-coding the divergences. Each value is the zero value of its enum
+// — the rule pins them explicitly so a future model-scoped rule has somewhere
+// to override and a dropped pin is caught here.
+func TestOpenAIResponsesBehaviourFlags(t *testing.T) {
+	q := DefaultRegistry().Resolve("openai-responses", "gpt-4o")
+	rf := q.BehaviourFlags.OpenAIResponses
+	if rf.TokenField != TokenFieldMaxOutputTokens {
+		t.Errorf("TokenField = %v, want TokenFieldMaxOutputTokens", rf.TokenField)
+	}
+	if rf.StoreMode != StoreFalse {
+		t.Errorf("StoreMode = %v, want StoreFalse", rf.StoreMode)
+	}
+	if rf.InputItemShape != TypedInputItems {
+		t.Errorf("InputItemShape = %v, want TypedInputItems", rf.InputItemShape)
+	}
+
+	// A provider with no rule resolves the same zero-value flags, so the
+	// adapter falls through to today's byte-identical behaviour even when
+	// the registry is empty for the (provider, model) pair.
+	empty := NewRegistry(nil).Resolve("openai-responses", "gpt-4o")
+	if empty.BehaviourFlags.OpenAIResponses != (OpenAIResponsesBehaviourFlags{}) {
+		t.Errorf("empty registry: OpenAIResponses = %+v, want zero value", empty.BehaviourFlags.OpenAIResponses)
+	}
+}
+
 // TestParallelToolCallsRulesSetSupportedWhenDisable pins the structural
 // relationship the adapters depend on: any rule that turns on the Disable bool
 // must also set Supported. An adapter checks Supported as the master gate, so
