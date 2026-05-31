@@ -113,6 +113,19 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 		attribute.String("provider.model", params.Model),
 	)
 
+	// Resolve the logger once at the top so it is available on every
+	// early-return path, not only inside the tool-choice branch below.
+	logger := b.Logger
+	if logger == nil {
+		// The slog.Default() fallback bypasses the ScrubHandler-backed
+		// logger the factory injects. On the production path the factory
+		// always supplies a real logger (guarded by
+		// TestBuildLoopWithTransport_BedrockAdapterHasLogger); only direct
+		// struct-literal construction reaches this branch, where the
+		// default handler is unscrubbable.
+		logger = slog.Default()
+	}
+
 	// buildConverseStreamInput does not project ToolChoice onto the
 	// ConverseStream request, so a non-auto ToolChoice requested against
 	// this adapter is silently downgraded to auto. Warn so the downgrade
@@ -120,10 +133,6 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 	// model identifiers are logged — never message content or any
 	// secret-derived value.
 	if params.ToolChoice != types.ToolChoiceAuto {
-		logger := b.Logger
-		if logger == nil {
-			logger = slog.Default()
-		}
 		logger.WarnContext(ctx, "bedrock tool-choice downgraded to auto: adapter does not support tool-choice",
 			slog.String("provider.type", "bedrock"),
 			slog.String("provider.model", params.Model),

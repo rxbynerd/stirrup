@@ -562,6 +562,11 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 
 	logger := o.Logger
 	if logger == nil {
+		// The slog.Default() fallback bypasses the ScrubHandler-backed
+		// logger the factory injects. On the production path the factory
+		// always supplies a real logger; only direct struct-literal
+		// construction reaches this branch, where the default handler is
+		// unscrubbable.
 		logger = slog.Default()
 	}
 	// Debug-level log mirrors the chat adapter so an operator gets the
