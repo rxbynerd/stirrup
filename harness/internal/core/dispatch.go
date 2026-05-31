@@ -1,7 +1,9 @@
 package core
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"runtime/debug"
 	"sync"
@@ -339,11 +341,18 @@ func (l *AgenticLoop) planAndDispatch(
 
 		metricToolName := l.emitToolCallMetrics(ctx, p, callDuration, providerType, providerModel, config.Mode)
 
+		// p.structured.payload is a json.RawMessage ([]byte) consumed by both
+		// the ToolResult below and the ToolCallRecord further down. Hand each
+		// struct its own copy so the two trace surfaces never alias the same
+		// backing slice: a downstream in-place edit (scrub, redaction) to one
+		// must not silently mutate the other.
+		structuredForResult := cloneRawMessage(p.structured.payload)
+		structuredForRecord := cloneRawMessage(p.structured.payload)
 		toolResults[i] = types.ToolResult{
 			ToolUseID:  p.call.ID,
 			Content:    p.output,
 			IsError:    !p.success,
-			Structured: p.structured.payload,
+			Structured: structuredForResult,
 			Kind:       p.structured.kind,
 		}
 		// Full record carries raw input/output for the turn transcript.
@@ -361,7 +370,7 @@ func (l *AgenticLoop) planAndDispatch(
 			Output:       p.output,
 			DurationMs:   callDuration.Milliseconds(),
 			Success:      p.success,
-			Structured:   p.structured.payload,
+			Structured:   structuredForRecord,
 			Kind:         p.structured.kind,
 		}
 
@@ -482,4 +491,13 @@ func (l *AgenticLoop) emitToolCallMetrics(
 		}
 	}
 	return metricToolName
+}
+
+// cloneRawMessage returns an independent copy of a json.RawMessage so two
+// trace structs derived from the same dispatch result do not alias one
+// backing slice. bytes.Clone preserves the nil/empty distinction: a nil
+// payload (the "no structured data" case) stays nil rather than becoming an
+// empty non-nil slice, keeping the trace wire shape unchanged.
+func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	return bytes.Clone(raw)
 }
