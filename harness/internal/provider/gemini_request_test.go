@@ -999,3 +999,52 @@ func TestGeminiThoughtSignatureFullRoundTrip(t *testing.T) {
 		t.Errorf("round-tripped request body missing thoughtSignature=%q\nbody=%s", sig, body)
 	}
 }
+
+// TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured covers the
+// error return of geminiToolResultResponse. The structured envelope is a
+// json.RawMessage, so a malformed payload makes json.Marshal fail when it
+// validates the embedded raw bytes. The function must surface that as a wrapped
+// error rather than emit a broken functionResponse body onto the wire.
+func TestGeminiToolResultResponse_MarshalErrorOnInvalidStructured(t *testing.T) {
+	block := types.ContentBlock{
+		Type:       "tool_result",
+		ToolUseID:  "c1",
+		Content:    "ok",
+		Structured: json.RawMessage(`{not json`),
+		Kind:       "file_excerpt",
+	}
+	cap := quirks.StructuredToolResultCapability{Supported: true, ObjectResponse: true}
+
+	if _, err := geminiToolResultResponse(block, cap); err == nil {
+		t.Fatal("expected marshal error for invalid Structured payload, got nil")
+	}
+}
+
+// TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured pins
+// the companion path: the same invalid Structured payload does NOT reach
+// json.Marshal when the capability withholds the object-response shape, so a
+// text-only result still marshals cleanly. This guards that the capability gate
+// — not the payload — decides whether Structured is embedded.
+func TestGeminiToolResultResponse_TextOnlyWhenCapabilityWithholdsStructured(t *testing.T) {
+	block := types.ContentBlock{
+		Type:       "tool_result",
+		ToolUseID:  "c1",
+		Content:    "ok",
+		Structured: json.RawMessage(`{not json`),
+		Kind:       "file_excerpt",
+	}
+	raw, err := geminiToolResultResponse(block, quirks.StructuredToolResultCapability{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("text-only body should be valid JSON: %v (raw=%s)", err, raw)
+	}
+	if body["content"] != "ok" {
+		t.Errorf("content = %v, want ok", body["content"])
+	}
+	if _, ok := body["structured"]; ok {
+		t.Errorf("structured must be absent when capability withholds it, got %v", body["structured"])
+	}
+}

@@ -437,3 +437,52 @@ func TestJSONLTraceEmitter_PartialStream(t *testing.T) {
 		t.Errorf("turn_record Turn: got %d, want 1", events[1].Turn)
 	}
 }
+
+// TestScrubRawJSON_WrapsWhenScrubBreaksValidity exercises the branch where the
+// scrubbed byte stream is no longer valid JSON. The "[REDACTED]" placeholder is
+// a bare token, so a secret that was sitting as an unquoted JSON value leaves
+// the document unparseable after replacement. scrubRawJSON must then re-wrap
+// the scrubbed text as a JSON string literal so the on-disk line stays valid,
+// rather than emitting raw broken JSON.
+func TestScrubRawJSON_WrapsWhenScrubBreaksValidity(t *testing.T) {
+	// secret:// matches the secret_ref pattern; sitting as an unquoted value it
+	// is replaced by the bare "[REDACTED]" token, breaking JSON validity.
+	in := json.RawMessage(`{"a":secret://leaked}`)
+	out := scrubRawJSON(in)
+
+	if !json.Valid(out) {
+		t.Fatalf("scrubRawJSON output is not valid JSON: %s", out)
+	}
+	// The wrap path encodes the scrubbed text as a JSON string. Decoding it
+	// back must yield the scrubbed-but-invalid intermediate, with the secret
+	// gone.
+	var decoded string
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("wrapped output should decode as a JSON string: %v (out=%s)", err, out)
+	}
+	if strings.Contains(decoded, "secret://leaked") {
+		t.Errorf("secret survived scrub: %q", decoded)
+	}
+	if !strings.Contains(decoded, "[REDACTED]") {
+		t.Errorf("expected redaction marker in wrapped text, got %q", decoded)
+	}
+}
+
+// TestScrubRawJSON_PreservesValidJSON guards the common path: a secret embedded
+// in a well-formed JSON string is scrubbed in place and the result stays valid
+// JSON without the string-wrap fallback.
+func TestScrubRawJSON_PreservesValidJSON(t *testing.T) {
+	in := json.RawMessage(`{"token":"ghp_deadbeefcafef00d"}`)
+	out := scrubRawJSON(in)
+
+	if !json.Valid(out) {
+		t.Fatalf("scrubRawJSON output is not valid JSON: %s", out)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal(out, &decoded); err != nil {
+		t.Fatalf("scrubbed output should decode as an object: %v (out=%s)", err, out)
+	}
+	if decoded["token"] != "[REDACTED]" {
+		t.Errorf("token field = %q, want [REDACTED]", decoded["token"])
+	}
+}

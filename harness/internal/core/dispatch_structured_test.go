@@ -118,3 +118,36 @@ func TestPlanAndDispatch_StructuredFlowsToResult(t *testing.T) {
 		t.Errorf("ToolCallRecord.Kind mismatch: %q", records[0].Kind)
 	}
 }
+
+// TestPlanAndDispatch_StructuredResultAndRecordDoNotAlias pins that the
+// ToolResult and ToolCallRecord receive independent copies of the structured
+// payload rather than aliasing one backing slice. The two flow to different
+// surfaces (model-facing result vs. trace record), and a later in-place edit
+// (scrub, redaction) to one must not silently mutate the other.
+func TestPlanAndDispatch_StructuredResultAndRecordDoNotAlias(t *testing.T) {
+	tr := newAsyncTestTransport()
+	loop := buildAsyncTestLoop(t, tr, structuredEchoTool())
+
+	results, records, stall := loop.planAndDispatch(
+		context.Background(),
+		&types.RunConfig{Mode: "execution"},
+		[]types.ToolCall{{ID: "tc1", Name: "structured_echo", Input: json.RawMessage(`{}`)}},
+		&stallDetector{},
+		"anthropic",
+		"claude-sonnet-4-6",
+	)
+	if stall != "" {
+		t.Fatalf("unexpected stall outcome: %q", stall)
+	}
+	if len(results) != 1 || len(records) != 1 {
+		t.Fatalf("expected 1 result/record, got %d/%d", len(results), len(records))
+	}
+	if len(results[0].Structured) == 0 || len(records[0].Structured) == 0 {
+		t.Fatalf("both structured payloads must be populated")
+	}
+	// Mutate the result's payload in place; the record's copy must be unaffected.
+	results[0].Structured[0] = 'X'
+	if string(records[0].Structured) != `{"field":"value"}` {
+		t.Errorf("record payload mutated via result alias: %s", records[0].Structured)
+	}
+}

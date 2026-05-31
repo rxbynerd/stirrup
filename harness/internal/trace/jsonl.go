@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -367,8 +368,13 @@ func scrubRawJSON(raw json.RawMessage) json.RawMessage {
 	// any embedded quotes/backslashes so the result is always valid.
 	wrapped, err := json.Marshal(scrubbed)
 	if err != nil {
-		// json.Marshal on a string cannot fail in practice; fall back
-		// to a defensive empty-object literal so the line stays valid.
+		// json.Marshal on a string cannot fail in practice, so this branch
+		// is effectively dead. Warn if it is ever reached: it would mean an
+		// invariant about encoding/json broke, and the empty-object fallback
+		// silently discards the scrubbed tool payload from the recording.
+		slog.Default().Warn("scrubRawJSON string marshal failed; dropping payload to empty object",
+			"error", err)
+		// Fall back to a defensive empty-object literal so the line stays valid.
 		return json.RawMessage(`{}`)
 	}
 	return json.RawMessage(wrapped)

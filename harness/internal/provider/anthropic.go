@@ -252,6 +252,14 @@ func anthropicToolChoiceFromParams(params types.StreamParams, cap quirks.ToolCho
 		// ToolChoiceAuto (zero value) and ToolChoiceNone both emit no
 		// tool_choice field: auto is the wire default, and Anthropic has
 		// no native none.
+		//
+		// Degradation of ToolChoiceNone: this adapter does not also strip
+		// the tools array, so a "none" turn still ships the tool
+		// definitions with no tool_choice field. Anthropic therefore
+		// treats it as auto and the model may emit a tool_use block the
+		// caller asked to suppress. Honouring none strictly would require
+		// dropping tools from the request body (a larger change in
+		// buildAnthropicRequest); until then "none" is best-effort.
 		return nil
 	}
 }

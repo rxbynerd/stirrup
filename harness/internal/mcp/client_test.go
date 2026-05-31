@@ -328,6 +328,40 @@ func TestConnect_SessionIDManagement(t *testing.T) {
 	}
 }
 
+// TestConnect_RejectsOversizedSessionID pins the maxMCPSessionIDLen cap: a
+// server that returns an Mcp-Session-Id longer than the cap must not have that
+// value stored or echoed back, since the ID rides on every later request and an
+// unbounded value would inflate outbound headers without limit.
+func TestConnect_RejectsOversizedSessionID(t *testing.T) {
+	oversized := strings.Repeat("x", maxMCPSessionIDLen+1)
+	tools := []mcpTool{
+		{Name: "ping", Description: "Ping", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+
+	srv, log := fakeMCPServer(t, tools, oversized)
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+	config := types.MCPServerConfig{Name: "sess", URI: srv.URL}
+
+	if err := client.Connect(context.Background(), config, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	resolved := registry.Resolve("mcp_sess_ping")
+	if resolved == nil {
+		t.Fatal("tool not found")
+	}
+	_, _ = callMCPText(t, resolved, json.RawMessage(`{}`))
+
+	for i, r := range log.get() {
+		if r.SessionID != "" {
+			t.Errorf("request %d carried a session ID %q; oversized ID should have been rejected", i, r.SessionID)
+		}
+	}
+}
+
 func TestConnect_AuthHeader(t *testing.T) {
 	tools := []mcpTool{}
 

@@ -183,6 +183,11 @@ func readFileExcerpt(path, content string, startLine, limit int) fileExcerpt {
 	}
 	totalLines := len(lines)
 	if startLine > totalLines {
+		// PastEOF deliberately yields StartLine > EndLine: StartLine echoes the
+		// out-of-range request while EndLine reports the true last line. The
+		// usual StartLine <= EndLine invariant does not hold here, and that
+		// inversion is itself the sentinel — consumers should branch on PastEOF
+		// rather than treating the line range as a normal window.
 		return fileExcerpt{
 			Path:      path,
 			StartLine: startLine,
