@@ -590,6 +590,12 @@ func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
 	if len(np.Spec.Egress) != 2 {
 		t.Fatalf("allowlist policy egress rules = %d, want 2 (dns + proxy)", len(np.Spec.Egress))
 	}
+	// The proxy egress rule must be port-confined to the proxy's listen port,
+	// not open to every port on the proxy Pod.
+	proxyRule := np.Spec.Egress[1]
+	if len(proxyRule.Ports) != 1 || proxyRule.Ports[0].Port == nil || proxyRule.Ports[0].Port.IntValue() != k8sEgressProxyPort {
+		t.Errorf("proxy egress rule ports = %v, want a single TCP %d", proxyRule.Ports, k8sEgressProxyPort)
+	}
 }
 
 // TestK8sEgress_AllowlistRequiresProxyURL verifies the construction guard

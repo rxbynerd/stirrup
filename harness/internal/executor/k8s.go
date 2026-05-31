@@ -138,11 +138,13 @@ type K8sExecutor struct {
 	Security SecurityEventEmitter
 }
 
-// NewK8sExecutor builds a kubernetes clientset, creates a sandbox Pod, and
-// waits for it to become Ready before returning. On any failure after the
-// Pod is created (including readiness-poll failures) the Pod is deleted
-// best-effort before the error is returned, so callers do not have to
-// reason about partial state.
+// NewK8sExecutor builds a kubernetes clientset, installs the egress
+// NetworkPolicy, creates a sandbox Pod, and waits for it to become Ready
+// before returning. The policy is installed BEFORE the Pod so the Pod never
+// runs with unrestricted egress (the Pod name is client-side deterministic,
+// so the policy can target it ahead of time). On any failure the partially
+// created objects (policy and/or Pod) are deleted best-effort before the
+// error is returned, so callers do not have to reason about partial state.
 func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("k8s executor requires an image")
@@ -240,33 +242,42 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		},
 	}
 
+	// Install the egress NetworkPolicy BEFORE creating the Pod. The Pod name
+	// is client-side deterministic (generatePodName sets ObjectMeta.Name, not
+	// GenerateName) and the policy selects on the stirrup.dev/pod=<name> +
+	// stirrup-sandbox=true labels, both known here — so the policy can be in
+	// place before the Pod exists. Installing AFTER readiness would leave a
+	// Running Pod with cluster-default (unrestricted) egress in the
+	// Ready→policy window, defeating the deny-all/allowlist posture. A failure
+	// to install is fatal: a Pod whose egress is meant to be denied/allowlisted
+	// but is not must never be created.
+	//
+	// proxyEnvFor already validated the mode above, so egressPolicyFor cannot
+	// hit its default arm here.
+	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, podName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := clientset.NetworkingV1().NetworkPolicies(cfg.Namespace).Create(ctx, policy, metav1.CreateOptions{}); err != nil {
+		return nil, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, podName, err)
+	}
+
 	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
+		// The policy is already installed; remove it so a failed construction
+		// leaves no orphaned policy behind.
+		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
 		return nil, classifyPodCreateError(cfg.RuntimeClassName, err)
 	}
 
 	if err := waitForPodReady(ctx, clientset, cfg.Namespace, created.Name); err != nil {
 		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
+		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
 		// The duration is intentionally omitted: readiness can end on either
 		// k8sReadyTimeout or a shorter caller-context deadline, and a
 		// hardcoded "after 1m0s" would misreport the latter. The wrapped
 		// error (context.DeadlineExceeded or a Get failure) carries the cause.
 		return nil, fmt.Errorf("pod %s/%s not ready: %w", cfg.Namespace, created.Name, err)
-	}
-
-	// Install the egress NetworkPolicy that backs the declared network mode.
-	// proxyEnvFor already validated the mode above, so egressPolicyFor cannot
-	// hit its default arm here. A failure to install the policy is fatal: a
-	// Pod whose egress is meant to be denied/allowlisted but is not must not
-	// be handed back to the caller. Tear the Pod down before returning.
-	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, created.Name)
-	if err != nil {
-		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
-		return nil, err
-	}
-	if _, err := clientset.NetworkingV1().NetworkPolicies(cfg.Namespace).Create(ctx, policy, metav1.CreateOptions{}); err != nil {
-		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
-		return nil, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, created.Name, err)
 	}
 
 	return &K8sExecutor{
@@ -281,21 +292,27 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 	}, nil
 }
 
-// Close deletes the sandbox Pod with zero grace period. It uses its own
-// background context so cleanup proceeds even if the caller's context is
-// already cancelled — matching the Docker executor's Close discipline.
-// A NotFound result is treated as success (idempotent).
+// Close deletes the sandbox Pod with zero grace period, then the egress
+// NetworkPolicy. It uses its own background context so cleanup proceeds even
+// if the caller's context is already cancelled — matching the Docker
+// executor's Close discipline. A NotFound result is treated as success
+// (idempotent).
+//
+// Ordering matters: the Pod is deleted FIRST so kubelet begins terminating it
+// immediately, then the policy is removed. Deleting the policy first would
+// reopen unrestricted egress for the still-running Pod during termination —
+// the same Ready→policy window the constructor closes by installing the
+// policy first. The policy delete is best-effort: a leftover policy is inert
+// once the Pod it selects is gone (its podSelector matches nothing), so a
+// failed policy delete must not surface as a Close error or block Pod removal.
 func (e *K8sExecutor) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
 	defer cancel()
 
-	// Delete the egress NetworkPolicy first, best-effort: a leftover policy
-	// is harmless once the Pod it selects is gone (NetworkPolicy with a
-	// podSelector that matches nothing is inert), but leaking one per run
-	// clutters the namespace. A NotFound is success. Any other error is
-	// logged but does not block Pod deletion — the Pod is the resource that
-	// actually costs the operator, so its removal must not hinge on the
-	// policy delete succeeding.
+	podErr := e.clientset.CoreV1().Pods(e.namespace).Delete(ctx, e.podName, metav1.DeleteOptions{
+		GracePeriodSeconds: ptr.To(int64(0)),
+	})
+
 	if e.networkPolicyName != "" {
 		npErr := e.clientset.NetworkingV1().NetworkPolicies(e.namespace).Delete(ctx, e.networkPolicyName, metav1.DeleteOptions{})
 		if npErr != nil && !apierrors.IsNotFound(npErr) {
@@ -303,15 +320,12 @@ func (e *K8sExecutor) Close() error {
 		}
 	}
 
-	err := e.clientset.CoreV1().Pods(e.namespace).Delete(ctx, e.podName, metav1.DeleteOptions{
-		GracePeriodSeconds: ptr.To(int64(0)),
-	})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
+	if podErr != nil {
+		if apierrors.IsNotFound(podErr) {
 			e.logger.Debug("k8s executor pod already gone", "namespace", e.namespace, "pod", e.podName)
 			return nil
 		}
-		return fmt.Errorf("delete pod: %w", err)
+		return fmt.Errorf("delete pod: %w", podErr)
 	}
 	return nil
 }
@@ -909,6 +923,19 @@ func deletePodBestEffort(clientset kubernetes.Interface, namespace, name string,
 	})
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Warn("k8s executor cleanup delete failed", "namespace", namespace, "pod", name, "err", err)
+	}
+}
+
+// deleteNetworkPolicyBestEffort attempts to delete the egress NetworkPolicy,
+// logging (but not returning) any error. Used on constructor error paths to
+// undo a policy that was installed before the Pod-create / readiness step
+// failed, so a failed construction leaves no orphaned policy behind.
+func deleteNetworkPolicyBestEffort(clientset kubernetes.Interface, namespace, name string, logger *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
+	defer cancel()
+	err := clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		logger.Warn("k8s executor cleanup networkpolicy delete failed", "namespace", namespace, "networkpolicy", name, "err", err)
 	}
 }
 
