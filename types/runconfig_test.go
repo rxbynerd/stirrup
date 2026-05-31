@@ -383,6 +383,11 @@ func TestValidateRunConfig_MCPServers(t *testing.T) {
 			wantErr: "tools.mcpServers[0].name is required",
 		},
 		{
+			name:    "missing_uri",
+			server:  MCPServerConfig{Name: "x"},
+			wantErr: "tools.mcpServers[0].uri is required",
+		},
+		{
 			name:    "bad_scheme",
 			server:  MCPServerConfig{Name: "x", URI: "file:///etc/passwd"},
 			wantErr: "scheme",
@@ -403,8 +408,21 @@ func TestValidateRunConfig_MCPServers(t *testing.T) {
 			wantErr: "allowedMCPHosts[0]",
 		},
 		{
+			name:   "allowedhost_ipv6_literal_valid",
+			server: MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{"::1", "2001:db8::1"}},
+		},
+		{
+			name:   "allowedhost_bare_name_valid",
+			server: MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{"mcp.example.com"}},
+		},
+		{
 			name:   "allowedtools_set_validates",
 			server: MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedTools: []string{"search"}},
+		},
+		{
+			name:    "allowedtools_empty_entry",
+			server:  MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedTools: []string{"search", "  "}},
+			wantErr: "allowedTools[1]",
 		},
 	}
 

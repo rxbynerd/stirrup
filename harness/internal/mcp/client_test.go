@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -431,7 +432,7 @@ func TestConnect_JSONRPCError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Connect")
 	}
-	if got := err.Error(); !contains(got, "JSON-RPC error") {
+	if got := err.Error(); !strings.Contains(got, "JSON-RPC error") {
 		t.Errorf("error = %q, want it to contain 'JSON-RPC error'", got)
 	}
 }
@@ -480,7 +481,7 @@ func TestConnect_MultipleServers(t *testing.T) {
 	// Both servers share an http client that can reach both test servers.
 	// Since httptest servers use different ports, we need to use the default
 	// transport which can reach any local address.
-	client := NewClient(registry, &http.Client{})
+	client := NewClient(registry, &http.Client{Timeout: 30 * time.Second})
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	configA := types.MCPServerConfig{Name: "alpha", URI: srvA.URL}
@@ -574,7 +575,7 @@ func TestConnect_ToolCallError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from tool call")
 	}
-	if !contains(err.Error(), "something went wrong") {
+	if !strings.Contains(err.Error(), "something went wrong") {
 		t.Errorf("error = %q, want it to contain 'something went wrong'", err.Error())
 	}
 }
@@ -603,19 +604,6 @@ func TestClose(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
-}
-
-func containsSubstr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
 func TestConnect_RejectsFileSchemeURI(t *testing.T) {
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
@@ -628,7 +616,7 @@ func TestConnect_RejectsFileSchemeURI(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for file:// URI scheme")
 	}
-	if !contains(err.Error(), "not allowed") {
+	if !strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("error = %q, want it to contain 'not allowed'", err.Error())
 	}
 }
@@ -645,7 +633,7 @@ func TestConnect_RejectsNoSchemeURI(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for URI without http/https scheme")
 	}
-	if !contains(err.Error(), "not allowed") {
+	if !strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("error = %q, want it to contain 'not allowed'", err.Error())
 	}
 }
@@ -1069,7 +1057,7 @@ func TestConnect_RejectsNonHTTPSRemote(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-https remote URI")
 	}
-	if !contains(err.Error(), "https") {
+	if !strings.Contains(err.Error(), "https") {
 		t.Errorf("error = %q, want it to mention https", err.Error())
 	}
 }
@@ -1096,7 +1084,7 @@ func TestConnect_RejectsPrivateIPURI(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected SSRF rejection for %q", tc.uri)
 			}
-			if !contains(err.Error(), "private host") {
+			if !strings.Contains(err.Error(), "private host") {
 				t.Errorf("error = %q, want it to mention 'private host'", err.Error())
 			}
 		})
@@ -1122,7 +1110,7 @@ func TestConnect_AllowedMCPHostsPin(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection: host not in allowedMCPHosts")
 	}
-	if !contains(err.Error(), "allowedMCPHosts") {
+	if !strings.Contains(err.Error(), "allowedMCPHosts") {
 		t.Errorf("error = %q, want it to mention allowedMCPHosts", err.Error())
 	}
 

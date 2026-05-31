@@ -136,10 +136,12 @@ out:
    `gopher://`, no other URL schemes.
 2. **DNS resolution:** the hostname is resolved before the request is
    issued; the resolved IP is checked against the blocklist.
-3. **IP block list:** RFC 1918 private ranges, loopback (127/8),
-   link-local (169.254/16), and multicast (224/4 and similar) are
-   rejected. This prevents cloud-metadata exfiltration
-   (`169.254.169.254`) and lateral movement to internal services.
+3. **IP block list:** RFC 1918 private ranges, RFC 6598 carrier-grade
+   NAT (`100.64.0.0/10`), loopback (127/8), link-local (169.254/16),
+   and multicast (224/4 and similar) are rejected. This prevents
+   cloud-metadata exfiltration (`169.254.169.254`) and lateral
+   movement to internal services — including deployment targets that
+   route the CGNAT range to internal subnets.
 4. **Response cap:** 100 KB. Larger responses are truncated; the
    truncation is visible to the model.
 
