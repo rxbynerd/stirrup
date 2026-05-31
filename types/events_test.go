@@ -165,3 +165,23 @@ func TestToolChoiceModeMarshalRejects(t *testing.T) {
 		}
 	}
 }
+
+// TestToolChoiceModeUnmarshalErrorTruncates pins the bounded, escaped
+// rendering of hostile input: an unknown value far longer than the
+// 64-byte cap surfaces a quoted, ellipsis-terminated excerpt rather than
+// the full raw payload, so the error stays log-safe and bounded.
+func TestToolChoiceModeUnmarshalErrorTruncates(t *testing.T) {
+	long := `"` + strings.Repeat("x", 200) + `"`
+	var m ToolChoiceMode
+	err := json.Unmarshal([]byte(long), &m)
+	if err == nil {
+		t.Fatal("expected error for unknown ToolChoiceMode, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "…") {
+		t.Errorf("error must mark truncation with an ellipsis, got: %s", msg)
+	}
+	if len(msg) > 120 {
+		t.Errorf("error message must stay bounded, got %d bytes: %s", len(msg), msg)
+	}
+}
