@@ -193,7 +193,7 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 		buf.WriteByte(':')
 		return false
 	}
-	writeRaw := func(key string, v any) error {
+	writeRaw := func(v any) error {
 		b, err := json.Marshal(v)
 		if err != nil {
 			return err
@@ -205,58 +205,58 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 	first := true
 
 	first = writeKey(first, "model")
-	if err := writeRaw("model", r.Model); err != nil {
+	if err := writeRaw(r.Model); err != nil {
 		return nil, err
 	}
 
 	if r.Instructions != "" {
 		first = writeKey(first, "instructions")
-		if err := writeRaw("instructions", r.Instructions); err != nil {
+		if err := writeRaw(r.Instructions); err != nil {
 			return nil, err
 		}
 	}
 
 	first = writeKey(first, "input")
-	if err := writeRaw("input", r.Input); err != nil {
+	if err := writeRaw(r.Input); err != nil {
 		return nil, err
 	}
 
 	if len(r.Tools) > 0 {
 		first = writeKey(first, "tools")
-		if err := writeRaw("tools", r.Tools); err != nil {
+		if err := writeRaw(r.Tools); err != nil {
 			return nil, err
 		}
 	}
 
 	if r.MaxTokens != 0 {
 		first = writeKey(first, responsesWireTokenKey(r.TokenField))
-		if err := writeRaw("max_tokens", r.MaxTokens); err != nil {
+		if err := writeRaw(r.MaxTokens); err != nil {
 			return nil, err
 		}
 	}
 
 	if r.Temperature != nil {
 		first = writeKey(first, "temperature")
-		if err := writeRaw("temperature", *r.Temperature); err != nil {
+		if err := writeRaw(*r.Temperature); err != nil {
 			return nil, err
 		}
 	}
 
 	if r.Stream {
 		first = writeKey(first, "stream")
-		if err := writeRaw("stream", r.Stream); err != nil {
+		if err := writeRaw(r.Stream); err != nil {
 			return nil, err
 		}
 	}
 
 	first = writeKey(first, "store")
-	if err := writeRaw("store", responsesStoreValue(r.StoreMode)); err != nil {
+	if err := writeRaw(responsesStoreValue(r.StoreMode)); err != nil {
 		return nil, err
 	}
 
 	if r.ParallelToolCalls != nil {
 		first = writeKey(first, "parallel_tool_calls")
-		if err := writeRaw("parallel_tool_calls", *r.ParallelToolCalls); err != nil {
+		if err := writeRaw(*r.ParallelToolCalls); err != nil {
 			return nil, err
 		}
 	}
@@ -266,9 +266,12 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 	return []byte(buf.String()), nil
 }
 
-// UnmarshalJSON is the inverse of MarshalJSON: it accepts the wire body and
-// populates the canonical fields plus the steering flags it can infer from
-// the wire (the token key implies TokenField). Used by tests that round-trip
+// UnmarshalJSON recovers the canonical fields and the steering flags that the
+// wire makes unambiguous: the token key implies TokenField. It is a near-, not
+// exact, inverse of MarshalJSON — StoreMode is the one asymmetry. MarshalJSON
+// emits "store":false for the sole modelled mode (StoreFalse), so the recovered
+// store value carries no extra information and is intentionally not mapped back
+// onto StoreMode (see the store branch below). Used by tests that round-trip
 // the body through the same struct that produced it.
 func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
@@ -318,9 +321,11 @@ func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(v, &store); err != nil {
 			return fmt.Errorf("responsesRequest.store: %w", err)
 		}
-		// MarshalJSON only ever emits store:false today; StoreFalse is the
-		// sole mode, so the inferred mode is StoreFalse regardless of value.
-		r.StoreMode = quirks.StoreFalse
+		// The decoded store value is intentionally discarded: StoreFalse is the
+		// only modelled mode, so there is no enum value to recover it into. The
+		// decode still runs to reject a malformed (non-bool) store field rather
+		// than silently ignoring it. StoreMode keeps its zero value (StoreFalse).
+		_ = store
 	}
 	if v, ok := raw["parallel_tool_calls"]; ok {
 		var b bool
@@ -333,17 +338,32 @@ func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 }
 
 // responsesWireTokenKey returns the wire JSON key for the resolved token
-// field. Defaults to "max_output_tokens" — the zero value of
-// OpenAIResponsesTokenField — preserving the established Responses
-// behaviour.
-func responsesWireTokenKey(quirks.OpenAIResponsesTokenField) string {
-	return "max_output_tokens"
+// field. The switch is exhaustive over the OpenAIResponsesTokenField enum so
+// that adding a second value (e.g. a gateway that wants max_completion_tokens)
+// forces a wire-key here rather than silently emitting the zero-value key —
+// the resolved quirk would otherwise change without the body following. A
+// value outside the enum is a programmer error (a flag resolved but never
+// wired) and panics rather than emitting a wrong key.
+func responsesWireTokenKey(f quirks.OpenAIResponsesTokenField) string {
+	switch f {
+	case quirks.TokenFieldMaxOutputTokens:
+		return "max_output_tokens"
+	default:
+		panic(fmt.Sprintf("responsesRequest: unwired OpenAIResponsesTokenField %v", f))
+	}
 }
 
 // responsesStoreValue returns the wire value of the `store` field for the
-// resolved store mode. StoreFalse (the zero value) emits false.
-func responsesStoreValue(quirks.OpenAIResponsesStoreMode) bool {
-	return false
+// resolved store mode. Exhaustive over the OpenAIResponsesStoreMode enum for
+// the same reason as responsesWireTokenKey: a future StoreTrue must change the
+// emitted value here, not resolve in ProviderQuirks and be silently dropped.
+func responsesStoreValue(m quirks.OpenAIResponsesStoreMode) bool {
+	switch m {
+	case quirks.StoreFalse:
+		return false
+	default:
+		panic(fmt.Sprintf("responsesRequest: unwired OpenAIResponsesStoreMode %v", m))
+	}
 }
 
 // responsesInput is one item in the Responses API input array. The Type

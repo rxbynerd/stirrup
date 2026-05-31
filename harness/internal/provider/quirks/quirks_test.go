@@ -1188,6 +1188,140 @@ func TestGeminiStreamArgsShapeMarshalJSON(t *testing.T) {
 	})
 }
 
+// TestOpenAIResponsesTokenFieldMarshalJSON mirrors
+// TestOpenAITokenFieldMarshalJSON for the Responses token-field enum,
+// locking the wire-key string against a future typo the rest of the
+// suite would not catch.
+func TestOpenAIResponsesTokenFieldMarshalJSON(t *testing.T) {
+	cases := []struct {
+		val  OpenAIResponsesTokenField
+		want string
+	}{
+		{TokenFieldMaxOutputTokens, `"max_output_tokens"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%v) = %s, want %s", tc.val, got, tc.want)
+			}
+			var round OpenAIResponsesTokenField
+			if err := json.Unmarshal(got, &round); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if round != tc.val {
+				t.Errorf("round-trip: got %v, want %v", round, tc.val)
+			}
+		})
+	}
+	t.Run("unknown-marshal", func(t *testing.T) {
+		got, err := json.Marshal(OpenAIResponsesTokenField(99))
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(got) != `"unknown(99)"` {
+			t.Errorf("Marshal(99) = %s, want %q", got, `"unknown(99)"`)
+		}
+	})
+	t.Run("unknown-unmarshal", func(t *testing.T) {
+		var f OpenAIResponsesTokenField
+		if err := json.Unmarshal([]byte(`"bogus"`), &f); err == nil {
+			t.Error("Unmarshal of unknown string must return an error")
+		}
+	})
+}
+
+// TestOpenAIResponsesStoreModeMarshalJSON mirrors the pattern for the
+// Responses store-mode enum.
+func TestOpenAIResponsesStoreModeMarshalJSON(t *testing.T) {
+	cases := []struct {
+		val  OpenAIResponsesStoreMode
+		want string
+	}{
+		{StoreFalse, `"store_false"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%v) = %s, want %s", tc.val, got, tc.want)
+			}
+			var round OpenAIResponsesStoreMode
+			if err := json.Unmarshal(got, &round); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if round != tc.val {
+				t.Errorf("round-trip: got %v, want %v", round, tc.val)
+			}
+		})
+	}
+	t.Run("unknown-marshal", func(t *testing.T) {
+		got, err := json.Marshal(OpenAIResponsesStoreMode(99))
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(got) != `"unknown(99)"` {
+			t.Errorf("Marshal(99) = %s, want %q", got, `"unknown(99)"`)
+		}
+	})
+	t.Run("unknown-unmarshal", func(t *testing.T) {
+		var s OpenAIResponsesStoreMode
+		if err := json.Unmarshal([]byte(`"bogus"`), &s); err == nil {
+			t.Error("Unmarshal of unknown string must return an error")
+		}
+	})
+}
+
+// TestOpenAIResponsesInputShapeMarshalJSON mirrors the pattern for the
+// Responses input-item shape enum.
+func TestOpenAIResponsesInputShapeMarshalJSON(t *testing.T) {
+	cases := []struct {
+		val  OpenAIResponsesInputShape
+		want string
+	}{
+		{TypedInputItems, `"typed_input_items"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%v) = %s, want %s", tc.val, got, tc.want)
+			}
+			var round OpenAIResponsesInputShape
+			if err := json.Unmarshal(got, &round); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if round != tc.val {
+				t.Errorf("round-trip: got %v, want %v", round, tc.val)
+			}
+		})
+	}
+	t.Run("unknown-marshal", func(t *testing.T) {
+		got, err := json.Marshal(OpenAIResponsesInputShape(99))
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(got) != `"unknown(99)"` {
+			t.Errorf("Marshal(99) = %s, want %q", got, `"unknown(99)"`)
+		}
+	})
+	t.Run("unknown-unmarshal", func(t *testing.T) {
+		var s OpenAIResponsesInputShape
+		if err := json.Unmarshal([]byte(`"bogus"`), &s); err == nil {
+			t.Error("Unmarshal of unknown string must return an error")
+		}
+	})
+}
+
 // TestValueJSONTags pins the camelCase JSON keys + omitempty on the
 // Value struct. Operators read CLI output as JSON; the shape needs to
 // stay stable across the empty-rule-set baseline and the first Step 2
