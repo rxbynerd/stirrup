@@ -82,3 +82,29 @@ func SafeDialContext(allowPrivateHosts bool, timeout time.Duration) func(context
 		return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
 	}
 }
+
+// LoopbackAwareDialContext returns a DialContext that admits loopback
+// addresses (for local-dev servers reached over http://localhost) but
+// re-runs the SSRF guard against every other dialled address. It is the
+// MCP-client variant of SafeDialContext: a remote server URI that passed the
+// connect-time host check but whose DNS later rebinds to a non-loopback
+// private/reserved address (10.0.0.0/8, the 169.254.169.254 metadata
+// endpoint, …) is refused at dial time, while a legitimately-local server is
+// not. Loopback is the only relaxation because a remote http:// URI is
+// already rejected upstream, so any non-loopback target here is a remote one
+// that must be public.
+func LoopbackAwareDialContext(timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: timeout}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			if err := ValidatePublicHost(host); err != nil {
+				return nil, err
+			}
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+	}
+}
