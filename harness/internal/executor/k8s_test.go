@@ -352,13 +352,13 @@ func TestK8sWriteFile_RejectsWorkspaceRoot(t *testing.T) {
 //
 //   - ""       — cluster default RuntimeClass (always present).
 //   - "runc"   — vanilla runc; assumes a `runc` RuntimeClass is registered
-//                (kind installs one in the gvisor-enabled image setup).
+//     (kind installs one in the gvisor-enabled image setup).
 //   - "gvisor" — the gVisor RuntimeClass. Requires kind to be built with
-//                the runsc shim (`containerd` + RuntimeClass node.k8s.io
-//                "gvisor"). When the cluster lacks it, NewK8sExecutor
-//                returns the friendly classifyPodCreateError wrap; the test
-//                skips rather than fails so a non-gVisor kind cluster still
-//                passes the rest of the suite.
+//     the runsc shim (`containerd` + RuntimeClass node.k8s.io
+//     "gvisor"). When the cluster lacks it, NewK8sExecutor
+//     returns the friendly classifyPodCreateError wrap; the test
+//     skips rather than fails so a non-gVisor kind cluster still
+//     passes the rest of the suite.
 //
 // VERIFY AGAINST REAL RUN: the assertion that gVisor is actually in force
 // (vs. the Pod silently falling back to runc) must be pinned to what a real
