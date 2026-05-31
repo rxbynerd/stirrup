@@ -1,0 +1,58 @@
+# Isolating sandbox Pods onto dedicated nodes with a taint + toleration.
+#
+# A taint on a node repels every Pod that does not carry a matching toleration.
+# Tainting a pool of nodes for sandbox use keeps untrusted sandbox workloads off
+# the nodes that run trusted/system workloads — a useful blast-radius control to
+# pair with a sandbox RuntimeClass (gvisor/kata) and the egress NetworkPolicy.
+#
+# ──────────────────────────────────────────────────────────────────────────
+# IMPORTANT — the executor does NOT add tolerations.
+#
+# NewK8sExecutor builds the Pod spec with no spec.tolerations field (see
+# harness/internal/executor/k8s.go). A sandbox Pod therefore tolerates nothing
+# beyond the cluster defaults and will NOT schedule onto a tainted node. Tainting
+# nodes is purely an operator concern, and there is currently no executor flag or
+# RunConfig field to inject a toleration. Until one exists, this is a documented
+# follow-up: tainting sandbox nodes is only viable once the executor can emit the
+# matching toleration. The manifest below shows the intended pattern so the shape
+# is settled when that wiring lands.
+# ──────────────────────────────────────────────────────────────────────────
+#
+# This file is documentation, not a directly-appliable object: a Pod is not a
+# standing manifest (the executor creates Pods at runtime), and the taint is
+# applied with `kubectl taint`, not `kubectl apply`. The Node stanza is shown
+# only to illustrate the matching key/value/effect.
+
+# 1. Taint the sandbox node pool. Apply with kubectl, not kubectl apply:
+#
+#      kubectl taint nodes <node> stirrup.dev/sandbox=true:NoSchedule
+#
+#    NoSchedule refuses new Pods without the toleration but leaves already
+#    running Pods in place. Use NoExecute instead to also evict running Pods
+#    that do not tolerate the taint. The taint a node carries looks like:
+#
+#    apiVersion: v1
+#    kind: Node
+#    metadata:
+#      name: <node>
+#    spec:
+#      taints:
+#        - key: stirrup.dev/sandbox
+#          value: "true"
+#          effect: NoSchedule
+
+# 2. The matching toleration the sandbox Pod would need. This is the field the
+#    executor must learn to inject (see the note above); it is shown here as the
+#    fragment that would be merged into the sandbox Pod's spec.tolerations:
+#
+#    tolerations:
+#      - key: stirrup.dev/sandbox
+#        operator: Equal
+#        value: "true"
+#        effect: NoSchedule
+#
+#    Pair the toleration with a nodeSelector / nodeAffinity (e.g. the
+#    stirrup.dev/runtime-gvisor label from runtimeclass.yaml) so the Pod is not
+#    only PERMITTED on the sandbox nodes but ATTRACTED to them: a toleration
+#    alone lets a Pod schedule onto a tainted node but does not prevent it from
+#    landing on an untainted one.
