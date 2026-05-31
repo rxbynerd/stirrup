@@ -182,9 +182,22 @@ func (m *ToolChoiceMode) UnmarshalJSON(data []byte) error {
 	case `"tool"`:
 		*m = ToolChoiceTool
 	default:
-		return fmt.Errorf("types: unknown ToolChoiceMode %s", data)
+		return fmt.Errorf("types: unknown ToolChoiceMode %s", truncateForError(data))
 	}
 	return nil
+}
+
+// truncateForError renders raw unmarshal input safely for an error
+// surfaced into structured logs: control bytes are escaped (the value is
+// quoted), and an over-long value is capped at 64 bytes with a trailing
+// marker so a truncated value is visibly distinct from a complete one.
+// The 64-byte cap simply keeps the error message bounded; valid mode
+// forms are far shorter, so only hostile or malformed input is truncated.
+func truncateForError(data []byte) string {
+	if len(data) > 64 {
+		return fmt.Sprintf("%q…", data[:64])
+	}
+	return fmt.Sprintf("%q", data)
 }
 
 // toolChoiceNamePattern is the character-set and length bound enforced on

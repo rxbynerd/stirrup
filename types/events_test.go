@@ -60,8 +60,8 @@ func TestStreamParamsToolChoiceOmitempty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal required: %v", err)
 	}
-	if !strings.Contains(string(b), "toolChoice") {
-		t.Errorf("non-auto ToolChoice must appear in JSON, got: %s", b)
+	if !strings.Contains(string(b), `"toolChoice":"required"`) {
+		t.Errorf("non-auto ToolChoice must marshal to its string form, got: %s", b)
 	}
 }
 
@@ -92,6 +92,29 @@ func TestToolChoiceModeRoundTrip(t *testing.T) {
 		}
 		if got != tc.mode {
 			t.Errorf("round-trip %s = %v, want %v", b, got, tc.mode)
+		}
+	}
+}
+
+// TestToolChoiceModeString documents that String stays usable on
+// out-of-range values: unlike MarshalJSON (which rejects them), String
+// never errors so it remains safe in fmt verbs and log lines. The
+// default branch renders "unknown(N)".
+func TestToolChoiceModeString(t *testing.T) {
+	cases := []struct {
+		mode ToolChoiceMode
+		want string
+	}{
+		{ToolChoiceAuto, "auto"},
+		{ToolChoiceRequired, "required"},
+		{ToolChoiceNone, "none"},
+		{ToolChoiceTool, "tool"},
+		{ToolChoiceMode(99), "unknown(99)"},
+		{ToolChoiceMode(-1), "unknown(-1)"},
+	}
+	for _, tc := range cases {
+		if got := tc.mode.String(); got != tc.want {
+			t.Errorf("ToolChoiceMode(%d).String() = %q, want %q", int(tc.mode), got, tc.want)
 		}
 	}
 }
@@ -140,5 +163,25 @@ func TestToolChoiceModeMarshalRejects(t *testing.T) {
 		if _, err := json.Marshal(m); err == nil {
 			t.Errorf("Marshal(%d) = nil error, want rejection", int(m))
 		}
+	}
+}
+
+// TestToolChoiceModeUnmarshalErrorTruncates pins the bounded, escaped
+// rendering of hostile input: an unknown value far longer than the
+// 64-byte cap surfaces a quoted, ellipsis-terminated excerpt rather than
+// the full raw payload, so the error stays log-safe and bounded.
+func TestToolChoiceModeUnmarshalErrorTruncates(t *testing.T) {
+	long := `"` + strings.Repeat("x", 200) + `"`
+	var m ToolChoiceMode
+	err := json.Unmarshal([]byte(long), &m)
+	if err == nil {
+		t.Fatal("expected error for unknown ToolChoiceMode, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "…") {
+		t.Errorf("error must mark truncation with an ellipsis, got: %s", msg)
+	}
+	if len(msg) > 120 {
+		t.Errorf("error message must stay bounded, got %d bytes: %s", len(msg), msg)
 	}
 }

@@ -198,7 +198,7 @@ func (f *OpenAITokenField) UnmarshalJSON(data []byte) error {
 	case `"max_tokens"`:
 		*f = TokenFieldMaxTokens
 	default:
-		return fmt.Errorf("quirks: unknown OpenAITokenField %s", data)
+		return fmt.Errorf("quirks: unknown OpenAITokenField %.64s", data)
 	}
 	return nil
 }
@@ -277,7 +277,7 @@ func (s *GeminiStreamArgsShape) UnmarshalJSON(data []byte) error {
 	case `"v3_deltas"`:
 		*s = StreamArgsV3Deltas
 	default:
-		return fmt.Errorf("quirks: unknown GeminiStreamArgsShape %s", data)
+		return fmt.Errorf("quirks: unknown GeminiStreamArgsShape %.64s", data)
 	}
 	return nil
 }
