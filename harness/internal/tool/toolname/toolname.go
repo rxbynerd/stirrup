@@ -214,11 +214,16 @@ func BuildFromCandidates(keys, candidates []string, policy Policy) (*Mapping, er
 	for i, ext := range candidates {
 		key := keys[i]
 		if existing, taken := used[ext]; taken && existing != key {
+			// Capture the pre-disambiguation candidate so the irresolvable
+			// error names the alias the author actually wrote, not the
+			// SHA-suffixed form disambiguate derived (which appears nowhere
+			// in their input and would misdirect the fix).
+			origExt := ext
 			ext = disambiguate(ext, key, policy)
 			if other, stillCollides := used[ext]; stillCollides && other != key {
 				return nil, fmt.Errorf(
 					"toolname: cannot resolve collision between %q and %q (both normalise to %q under policy MaxLen=%d AllowHyphen=%v AllowLeadingDigit=%v)",
-					key, other, ext, policy.MaxLen, policy.AllowHyphen, policy.AllowLeadingDigit,
+					key, other, origExt, policy.MaxLen, policy.AllowHyphen, policy.AllowLeadingDigit,
 				)
 			}
 		}

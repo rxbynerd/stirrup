@@ -58,6 +58,11 @@ var codingClassicProfile = &Profile{
 		"find_files":  "find",
 		"run_command": "bash",
 	},
+	// Renames only — the registered descriptions already read well under
+	// the terser names, so no override is needed. Initialised empty (not
+	// left nil) to match aliases and to signal the omission is deliberate
+	// rather than a forgotten field.
+	descriptions: map[string]string{},
 }
 
 // NewProfile constructs a Profile from an internal-ID→alias map and an
@@ -273,6 +278,15 @@ func (p *Presenter) Resolve(name string) *Tool {
 // binding is honoured; Unwrap is an escape hatch, not the common path.
 func (p *Presenter) Unwrap() ToolRegistry {
 	return p.inner
+}
+
+// Profile returns the Profile this presenter applies. It is never nil —
+// NewPresenter substitutes the default profile for a nil argument. Exposed
+// so a caller assembling an AgenticLoop outside the factory can assert the
+// loop's ToolProfile matches the profile baked into its Tools presenter,
+// the consistency invariant documented on AgenticLoop.
+func (p *Presenter) Profile() *Profile {
+	return p.profile
 }
 
 // InternalName returns the internal tool ID for a model-facing name,
