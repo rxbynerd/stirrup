@@ -319,6 +319,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	cs = wrapContextStrategy(cs, config.ContextStrategy, metrics)
 
 	// Wire security logger into executor if it supports it.
+	//
+	// K8sExecutor is intentionally absent: its Security emitter is set at
+	// construction (buildExecutor passes secLogger into K8sExecutorConfig),
+	// not re-wired here. If executor construction ever splits into a
+	// separate init phase that defers Security wiring, add a *K8sExecutor
+	// case here too.
 	switch e := exec.(type) {
 	case *executor.LocalExecutor:
 		e.Security = secLogger

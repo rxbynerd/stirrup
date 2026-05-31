@@ -19,7 +19,7 @@ import "sort"
 // test loop flaky.
 //
 // The empty-string entry that some maps carry (e.g.
-// validExecutorRuntimes, validTraceEmitterProtocols) is filtered out
+// validContainerRuntimes, validTraceEmitterProtocols) is filtered out
 // here because a completion value of "" is not useful to a tab-
 // completing operator — it offers no character to type.
 
