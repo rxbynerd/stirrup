@@ -115,6 +115,39 @@ func TestProbeContainerEngine_ImageAbsent(t *testing.T) {
 	}
 }
 
+// TestProbeContainerEngine_DisallowedImage asserts the dry-run preflight
+// enforces the registry allowlist too, and fails fast before pinging the
+// engine — so a misconfigured image is caught without a false-clean dry-run.
+func TestProbeContainerEngine_DisallowedImage(t *testing.T) {
+	var pingHits atomic.Int64
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {
+			pingHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+		},
+		"GET /images/*/json": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"Id":"sha256:abc"}`))
+		},
+	})
+	defer cleanup()
+
+	err := ProbeContainerEngine(context.Background(), ContainerExecutorConfig{
+		Image:      "evil.example.com/malware:latest",
+		SocketPath: sock,
+	})
+	if err == nil {
+		t.Fatal("ProbeContainerEngine: expected error for disallowed image")
+	}
+	if !strings.Contains(err.Error(), "registry allowlist") {
+		t.Errorf("error should mention the registry allowlist, got: %v", err)
+	}
+	if got := pingHits.Load(); got != 0 {
+		t.Errorf("engine pinged %d times; a disallowed image must be rejected before any engine call", got)
+	}
+}
+
 func TestContainerExecutor_Probe_EngineUnreachable(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {

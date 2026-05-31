@@ -121,20 +121,22 @@ type hostConfig struct {
 	PidsLimit   *int64   `json:"PidsLimit,omitempty"`
 	CapDrop     []string `json:"CapDrop,omitempty"`
 	SecurityOpt []string `json:"SecurityOpt,omitempty"`
-	// ReadonlyRootfs makes the container's root filesystem read-only. All
-	// writable scratch space is then confined to the workspace bind and the
-	// explicit Tmpfs mounts below, shrinking the attack surface to the paths
-	// the run actually needs.
-	ReadonlyRootfs bool `json:"ReadonlyRootfs,omitempty"`
+	// ReadonlyRootfs makes the container's root filesystem read-only. The
+	// field is security-critical and deliberately carries no omitempty: a
+	// bool with omitempty drops false from the wire, so a future caller that
+	// forgot to set it would silently get a writable rootfs with no error.
+	// Emitting the field unconditionally fails loud instead.
+	ReadonlyRootfs bool `json:"ReadonlyRootfs"`
 	// Tmpfs maps an in-container path to a comma-separated mount-option
-	// string (e.g. "rw,noexec,nosuid,nodev,size=256m"). With a read-only
-	// rootfs the run still needs writable, non-executable scratch at /tmp
-	// and a sized /dev/shm; the option string is the Engine API vehicle for
-	// nosuid/nodev/noexec on a tmpfs, which top-level Binds cannot carry.
+	// string. The size is expressed in raw bytes (e.g.
+	// "rw,nosuid,nodev,noexec,size=268435456" for 256 MiB). With a read-only
+	// rootfs the run still needs writable, non-executable scratch at /tmp and
+	// /dev/shm; the option string is the Engine API vehicle for
+	// nosuid/nodev/noexec on a tmpfs, which top-level Binds cannot carry. The
+	// /dev/shm entry's size replaces the separate ShmSize field so the size
+	// and the nosuid/nodev/noexec flags travel together as one mount — a
+	// split ShmSize could win on some engines and silently drop noexec.
 	Tmpfs map[string]string `json:"Tmpfs,omitempty"`
-	// ShmSize bounds /dev/shm in bytes. The engine default (64m) is made
-	// explicit so the hardened profile does not depend on daemon defaults.
-	ShmSize int64 `json:"ShmSize,omitempty"`
 	// Runtime selects the OCI runtime (e.g. "runsc" for gVisor,
 	// "kata-qemu" for Kata Containers). Empty means "use the engine
 	// default", in which case the field is omitted from the wire so the

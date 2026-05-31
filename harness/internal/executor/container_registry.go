@@ -29,6 +29,13 @@ func checkImageAllowed(image string, allowlist []string) error {
 	}
 
 	ref := normaliseImageRef(image)
+	// A normalised ref ending in "/" has an empty final path segment (e.g.
+	// "ghcr.io/stirrup/"), which "ghcr.io/stirrup/*" would match because the
+	// glob "*" accepts the empty string. Reject it here with a clear message
+	// rather than handing a malformed reference to the engine to fail on.
+	if strings.HasSuffix(ref, "/") {
+		return fmt.Errorf("image %q (resolved to %q) has an empty repository name", image, ref)
+	}
 	for _, pattern := range allowlist {
 		ok, err := path.Match(pattern, ref)
 		if err != nil {
@@ -52,7 +59,10 @@ func checkImageAllowed(image string, allowlist []string) error {
 //
 // A registry host is recognised by a "." or ":" in the first path segment, or
 // the literal "localhost"; otherwise the reference is treated as a Docker Hub
-// short name and the docker.io default registry is prepended.
+// short name and the docker.io default registry is prepended. The Docker Hub
+// pull aliases "index.docker.io" and "registry-1.docker.io" are canonicalised
+// to "docker.io" so an explicit "index.docker.io/library/ubuntu" still matches
+// a "docker.io/library/*" allowlist pattern.
 func normaliseImageRef(image string) string {
 	ref := image
 
@@ -73,6 +83,12 @@ func normaliseImageRef(image string) string {
 			host = candidate
 			rest = ref[slash+1:]
 		}
+	}
+
+	// Canonicalise the Docker Hub pull aliases to the registry's display name
+	// so all three forms collapse onto the same allowlist namespace.
+	if host == "index.docker.io" || host == "registry-1.docker.io" {
+		host = "docker.io"
 	}
 
 	// Strip the tag from the repository path. A ":" only delimits a tag once

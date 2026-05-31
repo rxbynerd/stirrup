@@ -28,8 +28,9 @@ const (
 
 	// tmpfsTmpSize and shmSize size the two writable scratch mounts the
 	// read-only rootfs profile provides. /tmp is the catch-all scratch
-	// directory many tools assume is writable; /dev/shm is sized explicitly
-	// rather than inherited from the daemon default. Both carry
+	// directory many tools assume is writable; /dev/shm is sized via its own
+	// tmpfs entry rather than the separate ShmSize host-config field so the
+	// size and the nosuid/nodev/noexec flags stay on one mount. Both carry
 	// nosuid,nodev,noexec so a dropped binary cannot be executed from them.
 	tmpfsTmpSize = 256 * 1024 * 1024 // 256 MiB
 	shmSize      = 64 * 1024 * 1024  // 64 MiB
@@ -192,7 +193,6 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		SecurityOpt:    []string{"no-new-privileges"},
 		Runtime:        cfg.Runtime,
 		ReadonlyRootfs: true,
-		ShmSize:        shmSize,
 		Tmpfs: map[string]string{
 			"/tmp":     fmt.Sprintf("%s,size=%d", tmpfsMountOpts, tmpfsTmpSize),
 			"/dev/shm": fmt.Sprintf("%s,size=%d", tmpfsMountOpts, shmSize),
