@@ -618,6 +618,7 @@ func TestToolUse_StreamingToolCallParsing(t *testing.T) {
 	// Turn 1 streams a tool_calls delta with the function name in the first
 	// chunk and the arguments split across two subsequent chunks, so the
 	// adapter's accumulator is exercised. Turn 2 is the final answer.
+	var requestBodies []string
 	server := newOpenAIServer(t, nil, []string{
 		openAIChunk(`{"id":"t1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search_replace","arguments":"{\"path\":\"target.txt\",\"old"}}]},"finish_reason":null}]}`) +
 			openAIChunk(`{"id":"t1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"_string\":\"old\",\"new_string\":\"new\"}"}}]},"finish_reason":null}]}`) +
@@ -626,8 +627,7 @@ func TestToolUse_StreamingToolCallParsing(t *testing.T) {
 		openAIChunk(`{"id":"t2","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":null}]}`) +
 			openAIChunk(`{"id":"t2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`) +
 			"data: [DONE]\n\n",
-	}, nil)
-	defer server.Close()
+	}, &requestBodies)
 
 	timeout := 30
 	enforce := false
@@ -655,6 +655,12 @@ func TestToolUse_StreamingToolCallParsing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildLoopWithTransport: %v", err)
 	}
+	// Order matters: defers run LIFO, so server.Close() is registered first
+	// and loop.Close() second, ensuring the loop tears down its provider
+	// transport before the httptest server stops listening. Closing the
+	// server first would race the in-flight HTTP teardown and emit spurious
+	// connection-error logs.
+	defer server.Close()
 	defer func() { _ = loop.Close() }()
 
 	runTrace, err := loop.Run(context.Background(), config)
@@ -674,5 +680,16 @@ func TestToolUse_StreamingToolCallParsing(t *testing.T) {
 	}
 	if total, failed := countCalls(runTrace, "search_replace"); total != 1 || failed != 0 {
 		t.Fatalf("search_replace calls: total=%d failed=%d, want 1/0", total, failed)
+	}
+	// Assert the tool reached the wire: the first request must advertise
+	// search_replace in its tools payload. Without this, a regression that
+	// dropped the tool from the request body could still pass on the
+	// streamed-response parse alone (the canned response names the tool
+	// regardless of what was sent).
+	if len(requestBodies) == 0 {
+		t.Fatalf("no provider requests captured")
+	}
+	if !strings.Contains(requestBodies[0], "search_replace") {
+		t.Fatalf("first request body does not advertise search_replace tool:\n%s", requestBodies[0])
 	}
 }

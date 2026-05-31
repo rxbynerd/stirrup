@@ -454,7 +454,11 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 				context,
 			)
 		}
-		out.ToolTrace = toolTraceSpecToType(j.ToolTrace)
+		tt, err := toolTraceSpecToType(j.ToolTrace, context)
+		if err != nil {
+			return types.EvalJudge{}, err
+		}
+		out.ToolTrace = tt
 	}
 
 	if j.Type == "composite" {
@@ -499,14 +503,28 @@ func convertJudge(j judgeSpec, context string, depth int) (types.EvalJudge, erro
 // canonical types.ToolTraceCriteria. The HCL `call` blocks carry the
 // matched internal tool name as a block label; everything else is an
 // optional attribute.
-func toolTraceSpecToType(s *toolTraceSpec) *types.ToolTraceCriteria {
+//
+// Two `call` blocks sharing a label are rejected: a per-tool expectation
+// keys on the tool name, so a duplicate is either a copy-paste mistake or
+// a silently-shadowed second expectation. The HCL grammar permits repeated
+// labels (the binding gathers them into a slice), so the constraint is
+// enforced here rather than by the decoder.
+func toolTraceSpecToType(s *toolTraceSpec, context string) (*types.ToolTraceCriteria, error) {
 	out := &types.ToolTraceCriteria{
 		Sequence:      s.Sequence,
 		ForbidUnknown: s.ForbidUnknown,
 	}
 	if len(s.Calls) > 0 {
 		out.Calls = make([]types.ToolCallExpectation, 0, len(s.Calls))
+		seen := make(map[string]struct{}, len(s.Calls))
 		for _, c := range s.Calls {
+			if _, dup := seen[c.Name]; dup {
+				return nil, fmt.Errorf(
+					"%s: duplicate call block for tool %q in tool_trace; merge the expectations into one",
+					context, c.Name,
+				)
+			}
+			seen[c.Name] = struct{}{}
 			out.Calls = append(out.Calls, types.ToolCallExpectation{
 				Name:         c.Name,
 				MinCalls:     c.MinCalls,
@@ -515,7 +533,7 @@ func toolTraceSpecToType(s *toolTraceSpec) *types.ToolTraceCriteria {
 			})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // formatDiagnostics renders an hcl.Diagnostics into a single wrapped

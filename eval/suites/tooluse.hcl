@@ -40,7 +40,7 @@
 # credential note.
 
 suite "tooluse-reliability" {
-  description = "Tool-use reliability regression for the Wave 1-5 tool redesign (#233). Each task is a small synthetic repo exercising one behaviour — read/search/edit loops, read-before-edit, line-range reads, bounded search, invalid-argument recovery, renamed-tool recovery, no-tool-answer escalation, multi-tool turns, MCP name normalization — with judges asserting both workspace state and tool-call trace. The default no-credential gate is the in-process replay regression in harness/internal/core/tooluse_replay_test.go; this HCL form is the live-provider-comparable suite (opt-in, needs a provider credential since stirrup-eval run spawns the real harness)."
+  description = "Tool-use reliability regression for the Wave 1-5 tool redesign (#233); see the file header for the full per-behaviour breakdown and the run/compare workflow."
 
   task "read-search-edit-loop" {
     description = "Search for a function, read the file, edit it. Judge confirms the edit landed AND the trace shows grep_files -> read_file -> edit_file in order. Regression-covers the #225 grep_files/read_file/edit_file split and the core coding loop."

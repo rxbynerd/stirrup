@@ -138,9 +138,17 @@ type ToolTraceCriteria struct {
 	Calls []ToolCallExpectation `json:"calls,omitempty"`
 
 	// ForbidUnknown, when true, fails the judge if any tool call recorded
-	// an unknown-tool / renamed-tool failure that was never followed by a
-	// successful call to the named replacement. Used to assert in-loop
-	// recovery from a renamed-tool miss actually happened.
+	// a failure that was never followed by a later successful call to the
+	// same tool. Used to assert in-loop recovery from a renamed-tool miss
+	// actually happened.
+	//
+	// Warning: the check is a heuristic keyed on call success, not on the
+	// failure's cause. It fires on ANY unrecovered failure — a permission
+	// denial, an invalid-argument error, a handler error — not only on
+	// renamed- or unknown-tool misses, and it also fails on an empty trace
+	// (no calls cannot demonstrate recovery). Reserve it for tasks whose
+	// expected trace contains no deliberate terminal failures, or those
+	// failures will be misreported as unresolved unknown-tool misses.
 	ForbidUnknown bool `json:"forbidUnknown,omitempty"`
 }
 

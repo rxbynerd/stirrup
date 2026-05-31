@@ -462,6 +462,24 @@ suite "s" {
 }`,
 			wantErrFrags: []string{"duplicate file path"},
 		},
+		{
+			name: "duplicate tool_trace call block",
+			src: `
+suite "s" {
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type = "tool-trace"
+      tool_trace {
+        call "edit_file" { min_calls = 1 }
+        call "edit_file" { max_calls = 2 }
+      }
+    }
+  }
+}`,
+			wantErrFrags: []string{"duplicate call block", "edit_file"},
+		},
 	}
 
 	for _, tc := range cases {
