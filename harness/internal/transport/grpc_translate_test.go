@@ -153,6 +153,46 @@ func TestRunConfigFromProto_TranslatesNewSafetyFields(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_TranslatesK8sExecutorFields pins that the k8s
+// executor's namespace, kubeconfig, nodeSelector, and serviceAccount
+// fields survive the gRPC translate layer. Without this, a control plane
+// that dispatches a k8s run gets a Pod with no namespace and validation
+// fails downstream with no visible cause on the wire.
+func TestRunConfigFromProto_TranslatesK8sExecutorFields(t *testing.T) {
+	pc := &pb.RunConfig{
+		Executor: &pb.ExecutorConfig{
+			Type:              "k8s",
+			Image:             "ghcr.io/rxbynerd/stirrup:latest",
+			Runtime:           "gvisor",
+			K8SNamespace:      "agents",
+			K8SKubeconfig:     "/home/u/.kube/config",
+			K8SNodeSelector:   map[string]string{"disktype": "ssd"},
+			K8SServiceAccount: "agent-sa",
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.Executor.Type != "k8s" {
+		t.Errorf("Executor.Type: got %q, want k8s", rc.Executor.Type)
+	}
+	if rc.Executor.Runtime != "gvisor" {
+		t.Errorf("Executor.Runtime: got %q, want gvisor", rc.Executor.Runtime)
+	}
+	if rc.Executor.K8sNamespace != "agents" {
+		t.Errorf("K8sNamespace: got %q, want agents", rc.Executor.K8sNamespace)
+	}
+	if rc.Executor.K8sKubeconfig != "/home/u/.kube/config" {
+		t.Errorf("K8sKubeconfig: got %q", rc.Executor.K8sKubeconfig)
+	}
+	if rc.Executor.K8sServiceAccount != "agent-sa" {
+		t.Errorf("K8sServiceAccount: got %q, want agent-sa", rc.Executor.K8sServiceAccount)
+	}
+	if got := rc.Executor.K8sNodeSelector["disktype"]; got != "ssd" {
+		t.Errorf("K8sNodeSelector[disktype]: got %q, want ssd", got)
+	}
+}
+
 // TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved pins the M1 fix:
 // the gRPC RunConfig path used by `stirrup job` must carry the gcs
 // trace emitter's Bucket and ObjectPrefix into the internal RunConfig.

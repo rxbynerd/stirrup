@@ -2637,6 +2637,8 @@ type ExecutorConfig struct {
 	//	"local"     — direct filesystem and subprocess access (default).
 	//	"container" — Docker/Podman container sandbox (hardened: CapDrop ALL,
 	//	              no-new-privileges, NetworkMode none by default).
+	//	"k8s"       — Kubernetes sandbox Pod (hardened: CapDrop ALL,
+	//	              RunAsNonRoot, seccomp RuntimeDefault, no token automount).
 	//	"api"       — read-only, backed by a VCS API (e.g. GitHub Contents).
 	//	              WriteFile and Exec return errors.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
@@ -2655,14 +2657,28 @@ type ExecutorConfig struct {
 	Resources *ResourceLimits `protobuf:"bytes,6,opt,name=resources,proto3" json:"resources,omitempty"`
 	// For "container": HTTP proxy URL for network requests inside the container.
 	Proxy string `protobuf:"bytes,7,opt,name=proxy,proto3" json:"proxy,omitempty"`
-	// Optional. OCI runtime override for the container executor.
-	// Empty string means "engine default" (typically runc) and the
-	// harness omits the Runtime field on the create-container request.
-	// Closed set: "", "runc", "runsc" (gVisor), "kata", "kata-qemu",
-	// "kata-fc". ValidateRunConfig rejects every other value.
-	Runtime       string `protobuf:"bytes,8,opt,name=runtime,proto3" json:"runtime,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Optional. OCI sandbox runtime override. For "container" this is the
+	// engine OCI runtime name (closed set: "", "runc", "runsc" (gVisor),
+	// "kata", "kata-qemu", "kata-fc", "kata-clh") and the harness omits the
+	// field on the create-container request when empty. For "k8s" this is
+	// the Pod RuntimeClassName (closed set: "", "runc", "gvisor",
+	// "kata-qemu", "kata-fc", "kata-clh"). The two sets differ because they
+	// name different things. ValidateRunConfig rejects every other value
+	// per executor type.
+	Runtime string `protobuf:"bytes,8,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	// For "k8s": the Kubernetes namespace for the sandbox Pod. Required when
+	// type is "k8s".
+	K8SNamespace string `protobuf:"bytes,9,opt,name=k8s_namespace,json=k8sNamespace,proto3" json:"k8s_namespace,omitempty"`
+	// For "k8s": path to a kubeconfig file. Empty prefers in-cluster config,
+	// then $KUBECONFIG.
+	K8SKubeconfig string `protobuf:"bytes,10,opt,name=k8s_kubeconfig,json=k8sKubeconfig,proto3" json:"k8s_kubeconfig,omitempty"`
+	// For "k8s": nodeSelector labels constraining where the Pod schedules.
+	K8SNodeSelector map[string]string `protobuf:"bytes,11,rep,name=k8s_node_selector,json=k8sNodeSelector,proto3" json:"k8s_node_selector,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// For "k8s": the ServiceAccount name for the Pod. Empty uses the
+	// namespace default. The token is never automounted regardless.
+	K8SServiceAccount string `protobuf:"bytes,12,opt,name=k8s_service_account,json=k8sServiceAccount,proto3" json:"k8s_service_account,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ExecutorConfig) Reset() {
@@ -2747,6 +2763,34 @@ func (x *ExecutorConfig) GetProxy() string {
 func (x *ExecutorConfig) GetRuntime() string {
 	if x != nil {
 		return x.Runtime
+	}
+	return ""
+}
+
+func (x *ExecutorConfig) GetK8SNamespace() string {
+	if x != nil {
+		return x.K8SNamespace
+	}
+	return ""
+}
+
+func (x *ExecutorConfig) GetK8SKubeconfig() string {
+	if x != nil {
+		return x.K8SKubeconfig
+	}
+	return ""
+}
+
+func (x *ExecutorConfig) GetK8SNodeSelector() map[string]string {
+	if x != nil {
+		return x.K8SNodeSelector
+	}
+	return nil
+}
+
+func (x *ExecutorConfig) GetK8SServiceAccount() string {
+	if x != nil {
+		return x.K8SServiceAccount
 	}
 	return ""
 }
@@ -2969,6 +3013,8 @@ type EditStrategyConfig struct {
 	//	"multi"          — unified edit_file tool that auto-routes to the
 	//	                   appropriate strategy based on which fields the model
 	//	                   provides, with automatic fallback on failure.
+	//
+	// An empty value resolves to "multi" during ValidateRunConfig.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// For "udiff" and "multi": minimum similarity ratio for fuzzy matching
 	// when applying diffs. Range: 0.0-1.0. Default: 0.80.
@@ -3775,7 +3821,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x15ContextStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1d\n" +
 	"\n" +
-	"max_tokens\x18\x02 \x01(\x05R\tmaxTokens\"\xce\x02\n" +
+	"max_tokens\x18\x02 \x01(\x05R\tmaxTokens\"\xf3\x04\n" +
 	"\x0eExecutorConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12E\n" +
 	"\vvcs_backend\x18\x02 \x01(\v2$.stirrup.harness.v1.VcsBackendConfigR\n" +
@@ -3785,7 +3831,15 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\anetwork\x18\x05 \x01(\v2!.stirrup.harness.v1.NetworkConfigR\anetwork\x12@\n" +
 	"\tresources\x18\x06 \x01(\v2\".stirrup.harness.v1.ResourceLimitsR\tresources\x12\x14\n" +
 	"\x05proxy\x18\a \x01(\tR\x05proxy\x12\x18\n" +
-	"\aruntime\x18\b \x01(\tR\aruntime\"l\n" +
+	"\aruntime\x18\b \x01(\tR\aruntime\x12#\n" +
+	"\rk8s_namespace\x18\t \x01(\tR\fk8sNamespace\x12%\n" +
+	"\x0ek8s_kubeconfig\x18\n" +
+	" \x01(\tR\rk8sKubeconfig\x12c\n" +
+	"\x11k8s_node_selector\x18\v \x03(\v27.stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntryR\x0fk8sNodeSelector\x12.\n" +
+	"\x13k8s_service_account\x18\f \x01(\tR\x11k8sServiceAccount\x1aB\n" +
+	"\x14K8sNodeSelectorEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"l\n" +
 	"\x10VcsBackendConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x12\n" +
@@ -3854,7 +3908,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),           // 0: stirrup.harness.v1.HarnessEvent
 	(*ControlEvent)(nil),           // 1: stirrup.harness.v1.ControlEvent
@@ -3892,7 +3946,8 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	nil,                            // 33: stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
 	nil,                            // 34: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
 	nil,                            // 35: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
-	nil,                            // 36: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	nil,                            // 36: stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	nil,                            // 37: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	10, // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
@@ -3929,18 +3984,19 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	21, // 31: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
 	22, // 32: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
 	23, // 33: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
-	25, // 34: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
-	36, // 35: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	30, // 36: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	4,  // 37: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
-	11, // 38: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 39: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	1,  // 40: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	40, // [40:41] is the sub-list for method output_type
-	39, // [39:40] is the sub-list for method input_type
-	39, // [39:39] is the sub-list for extension type_name
-	39, // [39:39] is the sub-list for extension extendee
-	0,  // [0:39] is the sub-list for field type_name
+	36, // 34: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	25, // 35: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
+	37, // 36: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	30, // 37: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	4,  // 38: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
+	11, // 39: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 40: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	1,  // 41: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	41, // [41:42] is the sub-list for method output_type
+	40, // [40:41] is the sub-list for method input_type
+	40, // [40:40] is the sub-list for extension type_name
+	40, // [40:40] is the sub-list for extension extendee
+	0,  // [0:40] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -3960,7 +4016,7 @@ func file_harness_v1_harness_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   37,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -1036,6 +1036,55 @@ func TestBuildExecutor_UnsupportedType(t *testing.T) {
 	}
 }
 
+func TestBuildExecutor_K8s_MissingImage(t *testing.T) {
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
+		Type:         "k8s",
+		K8sNamespace: "default",
+	}, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for k8s without image")
+	}
+	if !strings.Contains(err.Error(), "requires image") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildExecutor_K8s_MissingNamespace(t *testing.T) {
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
+		Type:  "k8s",
+		Image: "busybox",
+	}, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for k8s without namespace")
+	}
+	if !strings.Contains(err.Error(), "requires k8sNamespace") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBuildExecutor_K8s_TakesK8sPath confirms the "k8s" case is reached
+// (not the default "unsupported" arm) when Image and K8sNamespace are
+// present. Without a cluster, NewK8sExecutor fails downstream at REST
+// config / Pod creation — the error must therefore be a k8s-construction
+// failure, never "unsupported executor type". A bogus kubeconfig path
+// forces a deterministic, cluster-free failure.
+func TestBuildExecutor_K8s_TakesK8sPath(t *testing.T) {
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
+		Type:          "k8s",
+		Image:         "busybox",
+		K8sNamespace:  "default",
+		K8sKubeconfig: filepath.Join(t.TempDir(), "does-not-exist.kubeconfig"),
+	}, nil, nil)
+	if err == nil {
+		// A success would mean a cluster was reachable; that is fine but not
+		// the cluster-free case this test targets.
+		t.Skip("k8s executor unexpectedly constructed (a cluster appears reachable); skipping the no-cluster assertion")
+	}
+	if strings.Contains(err.Error(), "unsupported executor type") {
+		t.Fatalf("k8s type fell through to the default arm: %v", err)
+	}
+}
+
 // --- buildTransport ---
 
 func TestBuildTransport_Stdio(t *testing.T) {

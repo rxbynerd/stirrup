@@ -191,7 +191,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 
 	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("create pod: %w", err)
+		return nil, classifyPodCreateError(cfg.RuntimeClassName, err)
 	}
 
 	if err := waitForPodReady(ctx, clientset, cfg.Namespace, created.Name); err != nil {
@@ -666,6 +666,23 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 	}
 	cfg.Timeout = k8sAPITimeout
 	return cfg, nil
+}
+
+// classifyPodCreateError wraps a Pod-create failure with a friendlier
+// message when the API server rejects the spec as invalid AND a non-empty
+// RuntimeClass was requested. An unregistered RuntimeClass surfaces as an
+// apierrors.IsInvalid admission error whose raw text ("...RuntimeClass.node.k8s.io
+// \"gvisor\" not found...") is opaque to an operator who simply typed a
+// runtime name the cluster does not have installed. The original error is
+// wrapped (not replaced) so callers can still errors.As it.
+func classifyPodCreateError(runtimeClass string, err error) error {
+	if runtimeClass != "" && apierrors.IsInvalid(err) {
+		return fmt.Errorf(
+			"create pod: RuntimeClass %q was rejected by the cluster — confirm a RuntimeClass with that name is registered (kubectl get runtimeclass): %w",
+			runtimeClass, err,
+		)
+	}
+	return fmt.Errorf("create pod: %w", err)
 }
 
 // generatePodName returns "stirrup-<12-hex-chars>". 6 random bytes give 48
