@@ -61,6 +61,15 @@ network mode. The executor injects `HTTP_PROXY` / `HTTPS_PROXY` into the
 sandbox container and installs a per-Pod NetworkPolicy confining egress to the
 proxy (plus DNS).
 
+The proxy Deployment must run in the **same namespace** as the sandbox Pod.
+The egress NetworkPolicy selects the proxy by a `PodSelector` with no
+`NamespaceSelector`, so it matches only proxy Pods in the sandbox's own
+namespace. A proxy in a different namespace is denied (more restrictive, not a
+bypass) — a confusing misconfiguration that leaves the sandbox unable to reach
+the network at all under an enforcing CNI. Set `--k8s-namespace` and the
+proxy's namespace to the same value, and point `--k8s-egress-proxy-url` at the
+`<service>.<namespace>.svc` name.
+
 From the CLI:
 
 ```sh

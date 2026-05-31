@@ -1689,16 +1689,17 @@ func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 		runtime     string
 		image       string
 		k8sNS       string
+		network     *NetworkConfig
 		wantErr     bool
 		errContains string
 	}{
 		{name: "container accepts runsc", execType: "container", runtime: "runsc", image: "img", wantErr: false},
 		{name: "container accepts kata-clh", execType: "container", runtime: "kata-clh", image: "img", wantErr: false},
 		{name: "container rejects gvisor", execType: "container", runtime: "gvisor", image: "img", wantErr: true, errContains: "gvisor"},
-		{name: "k8s accepts gvisor", execType: "k8s", runtime: "gvisor", image: "img", k8sNS: "ns", wantErr: false},
-		{name: "k8s accepts kata-clh", execType: "k8s", runtime: "kata-clh", image: "img", k8sNS: "ns", wantErr: false},
-		{name: "k8s rejects runsc", execType: "k8s", runtime: "runsc", image: "img", k8sNS: "ns", wantErr: true, errContains: "runsc"},
-		{name: "k8s rejects kata bare", execType: "k8s", runtime: "kata", image: "img", k8sNS: "ns", wantErr: true, errContains: "kata"},
+		{name: "k8s accepts gvisor", execType: "k8s", runtime: "gvisor", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
+		{name: "k8s accepts kata-clh", execType: "k8s", runtime: "kata-clh", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
+		{name: "k8s rejects runsc", execType: "k8s", runtime: "runsc", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "runsc"},
+		{name: "k8s rejects kata bare", execType: "k8s", runtime: "kata", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "kata"},
 		{name: "local rejects any runtime", execType: "local", runtime: "runc", wantErr: true, errContains: "only valid"},
 	}
 	for _, tc := range cases {
@@ -1709,6 +1710,7 @@ func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 				Runtime:      tc.runtime,
 				Image:        tc.image,
 				K8sNamespace: tc.k8sNS,
+				Network:      tc.network,
 			}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
@@ -1739,7 +1741,7 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 	}{
 		{
 			name: "valid minimal",
-			exec: ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns"},
+			exec: ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}},
 		},
 		{
 			name: "valid with optional fields",
@@ -1751,25 +1753,32 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 				K8sNodeSelector:   map[string]string{"disktype": "ssd"},
 				K8sServiceAccount: "agent-sa",
 				Runtime:           "gvisor",
+				Network:           &NetworkConfig{Mode: "none"},
 			},
 		},
 		{
 			name:        "missing image",
-			exec:        ExecutorConfig{Type: "k8s", K8sNamespace: "ns"},
+			exec:        ExecutorConfig{Type: "k8s", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}},
 			wantErr:     true,
 			errContains: "executor.image is required",
 		},
 		{
 			name:        "missing namespace",
-			exec:        ExecutorConfig{Type: "k8s", Image: "img"},
+			exec:        ExecutorConfig{Type: "k8s", Image: "img", Network: &NetworkConfig{Mode: "none"}},
 			wantErr:     true,
 			errContains: "executor.k8sNamespace is required",
 		},
 		{
 			name:        "workspace rejected",
-			exec:        ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns", Workspace: "/ws"},
+			exec:        ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns", Workspace: "/ws", Network: &NetworkConfig{Mode: "none"}},
 			wantErr:     true,
 			errContains: "executor.workspace is not valid",
+		},
+		{
+			name:        "nil network rejected",
+			exec:        ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns"},
+			wantErr:     true,
+			errContains: "executor.network is required for executor.type=\"k8s\"",
 		},
 		{
 			name: "allowlist mode with proxy url is valid",
@@ -1805,7 +1814,10 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 			errContains: "executor.k8sEgressProxyUrl is only valid",
 		},
 		{
-			name: "proxy url set with no network rejected",
+			// A nil network is the primary error; the egress-proxy cross-field
+			// check is skipped (the nil-network error is the signal), so the
+			// reported error is the network-required one, not the proxy one.
+			name: "proxy url set with no network reports network-required",
 			exec: ExecutorConfig{
 				Type:              "k8s",
 				Image:             "img",
@@ -1813,7 +1825,7 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
 			},
 			wantErr:     true,
-			errContains: "executor.k8sEgressProxyUrl is only valid",
+			errContains: "executor.network is required for executor.type=\"k8s\"",
 		},
 	}
 	for _, tc := range cases {

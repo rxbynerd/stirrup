@@ -106,6 +106,11 @@ type K8sExecutorConfig struct {
 	// the network only via the proxy) and ignored for Mode == "none". The
 	// proxy itself runs as a separate Deployment — see
 	// examples/k8s/egress-proxy/ and the `stirrup egress-proxy` subcommand.
+	//
+	// The egress proxy Deployment MUST run in the same namespace as the
+	// sandbox Pod: the allowlist NetworkPolicy selects the proxy by
+	// PodSelector with no NamespaceSelector, so a cross-namespace proxy is
+	// denied (more restrictive, not a bypass) and a confusing misconfig.
 	EgressProxyURL string
 	// Security, when non-nil, receives structured security events
 	// (path-traversal blocks, file-size-limit and output-cap hits) so they
