@@ -172,8 +172,9 @@ section of the architecture doc for the per-provider wire shapes.
 
 ```go
 type ProviderBehaviourFlags struct {
-    OpenAI OpenAIBehaviourFlags
-    Gemini GeminiBehaviourFlags
+    OpenAI          OpenAIBehaviourFlags
+    Gemini          GeminiBehaviourFlags
+    OpenAIResponses OpenAIResponsesBehaviourFlags
 }
 ```
 
@@ -193,12 +194,53 @@ type OpenAIBehaviourFlags struct {
 type GeminiBehaviourFlags struct {
     StreamFunctionCallArgsShape GeminiStreamArgsShape // off (post-#191 default) / v2_snapshot / v3_deltas
 }
+
+type OpenAIResponsesBehaviourFlags struct {
+    TokenField     OpenAIResponsesTokenField // max_output_tokens (default; distinct from Chat's keys)
+    StoreMode      OpenAIResponsesStoreMode  // store_false (default): always emit explicit store:false
+    InputItemShape OpenAIResponsesInputShape // typed_input_items (default): #172 + #199 discriminated union
+}
 ```
 
 The typed per-adapter sub-struct is the design choice that replaces
 PR #196's original `StructuralFlags any`: it preserves compile-time
 type safety and removes the runtime type-assertion every adapter
 would otherwise need.
+
+`OpenAIResponsesBehaviourFlags` carries the wire divergences the OpenAI
+Responses API (`POST /v1/responses`) has over Chat Completions that the
+`OpenAIBehaviourFlags` sub-struct cannot express (#332). It is owned by
+the Responses adapter; the Chat adapter never reads it. The zero value
+of every field reproduces the adapter's pre-quirks hard-coded shape, so
+a Responses request resolved with no rule is byte-identical:
+
+- `TokenField` selects the token-budget key. The Responses API uses
+  `max_output_tokens` — a distinct key from Chat Completions'
+  `max_completion_tokens` / `max_tokens`, which is why it is a separate
+  enum rather than a shared `OpenAITokenField`.
+- `StoreMode` controls the top-level `store` field, always emitted
+  explicitly. `store_false` (the default) sends `"store":false` because
+  the harness manages its own conversation history and never opts into
+  server-side state — leaving the key unset would default to
+  persistence on some endpoints (a privacy concern for self-hosted
+  gateways, a billing concern for long-running runs).
+- `InputItemShape` selects how conversation history is serialised into
+  the `input` array. `typed_input_items` (the default) emits the
+  per-variant discriminated-union shape — the structural fix for #199
+  (stricter validators reject `"output":""` on message / function_call
+  items) that preserves the #172 invariant (a `function_call_output`
+  item always carries the `output` key, even when empty). No alternative
+  shape ships in v1; the flag exists so the resolved quirks struct is
+  the single source of truth for the input-item decision and a future
+  divergent gateway shape branches in the adapter's `MarshalJSON` rather
+  than re-shaping the adapter.
+
+Like the Chat Completions `openaiRequest`, the Responses adapter's
+`responsesRequest` carries the resolved flags as steering fields and a
+`MarshalJSON` that projects the wire body they select — the Codec
+invariant (one resolved quirks struct drives both the send and parse
+paths) now holds for Responses as it does for Chat, Anthropic, and
+Gemini.
 
 ### 2.2 Rule and Registry
 
@@ -264,6 +306,13 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: preserve `reasoning_content` (parse-side only)          |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
+| `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
+
+The `openai-responses / *` rule pins the Responses-specific behaviour
+flags (`OpenAIResponsesBehaviourFlags`) to their zero values so the
+resolved struct, not the adapter, is the source of truth for the
+Responses send path; the pinned values reproduce the adapter's prior
+hard-coded shape byte-for-byte. See [§2.1](#21-providerquirks).
 
 The compat profile rule for Z.ai GLM is registered separately via
 `harness/internal/provider/compat/zai/CompatRule()`; it is not in
