@@ -35,10 +35,12 @@ func ValidProviderTypeValues() []string { return sortedKeys(validProviderTypes) 
 func ValidExecutorTypeValues() []string { return sortedKeys(validExecutorTypes) }
 
 // ValidExecutorRuntimeValues returns the OCI runtimes accepted on
-// RunConfig.Executor.Runtime. The "" (engine-default) entry is
+// RunConfig.Executor.Runtime for the container executor (the set that
+// backs the --container-runtime flag). The "" (engine-default) entry is
 // filtered out so the completion list contains only the typeable
-// runtimes.
-func ValidExecutorRuntimeValues() []string { return sortedNonEmptyKeys(validExecutorRuntimes) }
+// runtimes. The k8s executor's RuntimeClass names are a different closed
+// set (validK8sRuntimes) and are not surfaced through this flag.
+func ValidExecutorRuntimeValues() []string { return sortedNonEmptyKeys(validContainerRuntimes) }
 
 // ValidEditStrategyTypeValues returns the edit-strategy types accepted
 // on RunConfig.EditStrategy.Type.

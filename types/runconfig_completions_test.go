@@ -70,7 +70,7 @@ func TestCompletionValues_TrackValidatorMaps(t *testing.T) {
 		{name: "run modes", backing: validRunModes, got: ValidRunModeValues()},
 		{name: "provider types", backing: validProviderTypes, got: ValidProviderTypeValues()},
 		{name: "executor types", backing: validExecutorTypes, got: ValidExecutorTypeValues()},
-		{name: "executor runtimes", backing: validExecutorRuntimes, got: ValidExecutorRuntimeValues(), filterEmpty: true},
+		{name: "executor runtimes", backing: validContainerRuntimes, got: ValidExecutorRuntimeValues(), filterEmpty: true},
 		{name: "edit strategies", backing: validEditStrategyTypes, got: ValidEditStrategyTypeValues()},
 		{name: "verifiers", backing: validVerifierTypes, got: ValidVerifierTypeValues()},
 		{name: "git strategies", backing: validGitStrategyTypes, got: ValidGitStrategyTypeValues()},

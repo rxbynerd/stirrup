@@ -204,6 +204,16 @@ type harnessCLIOptions struct {
 	PermissionPolicyFile string
 	CodeScannerType      string
 
+	// K8s executor escape hatches (issue #80). These set the
+	// Executor.K8s* fields when --executor=k8s. K8sNamespace is required
+	// for a k8s run; the rest are optional. The Pod image comes from the
+	// shared Image field and the sandbox runtime from ContainerRuntime
+	// (mapped to the Pod RuntimeClassName).
+	K8sNamespace      string
+	K8sKubeconfig     string
+	K8sServiceAccount string
+	K8sNodeSelector   map[string]string
+
 	// GuardRail escape hatches (issue #43). When any of these is non-zero
 	// the flag-only path constructs a GuardRailConfig; an entirely-zero
 	// trio leaves config.GuardRail nil so the factory installs the
@@ -385,6 +395,10 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 			Workspace:         opts.Workspace,
 			Runtime:           opts.ContainerRuntime,
 			WorkspaceExportTo: opts.WorkspaceExportTo,
+			K8sNamespace:      opts.K8sNamespace,
+			K8sKubeconfig:     opts.K8sKubeconfig,
+			K8sNodeSelector:   opts.K8sNodeSelector,
+			K8sServiceAccount: opts.K8sServiceAccount,
 		},
 		EditStrategy: types.EditStrategyConfig{Type: editStrategyType},
 		Verifier:     types.VerifierConfig{Type: verifierType},
@@ -1043,6 +1057,30 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("container-runtime") {
 		cfg.Executor.Runtime, _ = f.GetString("container-runtime")
+	}
+	if changed("k8s-namespace") {
+		cfg.Executor.K8sNamespace, _ = f.GetString("k8s-namespace")
+	}
+	if changed("k8s-kubeconfig") {
+		cfg.Executor.K8sKubeconfig, _ = f.GetString("k8s-kubeconfig")
+	}
+	if changed("k8s-service-account") {
+		cfg.Executor.K8sServiceAccount, _ = f.GetString("k8s-service-account")
+	}
+	if changed("k8s-node-selector") {
+		raw, _ := f.GetStringArray("k8s-node-selector")
+		var selector map[string]string
+		for _, entry := range raw {
+			k, v, err := parseQueryParam(entry)
+			if err != nil {
+				return fmt.Errorf("--k8s-node-selector %q: %w", entry, err)
+			}
+			if selector == nil {
+				selector = map[string]string{}
+			}
+			selector[k] = v
+		}
+		cfg.Executor.K8sNodeSelector = selector
 	}
 	if changed("permission-policy-file") {
 		path, _ := f.GetString("permission-policy-file")

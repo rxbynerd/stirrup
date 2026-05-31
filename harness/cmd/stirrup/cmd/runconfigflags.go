@@ -56,7 +56,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("prompt-file", "", "Path to a file whose contents become the prompt. Read from CWD when relative. Trailing newlines are trimmed; the file is capped at 10 MiB and must be non-empty. Lower precedence than --prompt and the positional argument; higher than STIRRUP_PROMPT.")
 	f.String("name", "", "Human-readable session label (metadata only, not injected into prompt)")
 
-	f.String("executor", "local", "Executor: local, container, api")
+	f.String("executor", "local", "Executor: local, container, k8s, api")
 	f.String("edit-strategy", "", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config). Defaults to multi when unset.")
 	f.String("verifier", "none", "Verifier: none, test-runner, llm-judge (composite available only via --config)")
 	f.String("git-strategy", "none", "Git strategy: none, deterministic")
@@ -64,7 +64,11 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("otel-endpoint", "", "OTLP endpoint for the otel trace emitter (default: localhost:4317 for grpc; full URL ending in the gateway base path for http/protobuf, e.g. https://otlp-gateway-prod-us-east-0.grafana.net/otlp)")
 	f.String("otel-protocol", "", "OTLP wire protocol for the otel trace emitter: \"\" (default — grpc), grpc, http/protobuf. HTTP/JSON is not supported; managed gateways like Grafana Cloud use http/protobuf. See docs/observability-cloud.md.")
 
-	f.String("container-runtime", "", "OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc. Empty means engine default (typically runc). Requires the runtime to be registered with the host Docker/Podman daemon — see docs/safety-rings.md.")
+	f.String("container-runtime", "", "OCI runtime for the container executor: runc, runsc (gVisor), kata, kata-qemu, kata-fc, kata-clh. Empty means engine default (typically runc). Requires the runtime to be registered with the host Docker/Podman daemon — see docs/safety-rings.md. For the k8s executor this same field maps to the Pod RuntimeClassName (closed set: runc, gvisor, kata-qemu, kata-fc, kata-clh).")
+	f.String("k8s-namespace", "", "Kubernetes namespace for the k8s executor's sandbox Pod. Required when --executor=k8s. Mirrors executor.k8sNamespace.")
+	f.String("k8s-kubeconfig", "", "Path to a kubeconfig file for the k8s executor. Empty prefers in-cluster config, then $KUBECONFIG. Mirrors executor.k8sKubeconfig.")
+	f.StringArray("k8s-node-selector", nil, "Repeatable key=value nodeSelector label constraining where the k8s executor's Pod schedules (e.g. --k8s-node-selector disktype=ssd). Mirrors executor.k8sNodeSelector.")
+	f.String("k8s-service-account", "", "ServiceAccount name for the k8s executor's Pod. Empty uses the namespace default. The token is never automounted regardless. Mirrors executor.k8sServiceAccount.")
 	f.String("permission-policy-file", "", "Path to a Cedar policy file for the policy-engine PermissionPolicy. When set and --permission-policy is unset elsewhere, also implies permissionPolicy.type=policy-engine. See examples/policies/ for starters.")
 	f.String("code-scanner", "", "CodeScanner type: none, patterns, semgrep, composite. Composite requires --config (codeScanner.scanners). Empty defers to the mode-aware default (patterns for execution, none for read-only modes).")
 
