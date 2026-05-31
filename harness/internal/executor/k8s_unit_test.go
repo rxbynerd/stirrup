@@ -2,9 +2,14 @@ package executor
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
 	"regexp"
 	"strings"
 	"testing"
+
+	utilexec "k8s.io/client-go/util/exec"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -137,38 +142,103 @@ func TestGeneratePodName_Format(t *testing.T) {
 	}
 }
 
-// TestK8sExecutor_StubMethodsReturnNotImplemented locks the documented
-// "not implemented" contract on the four stub methods. The constructor
-// is bypassed so no cluster is needed.
-func TestK8sExecutor_StubMethodsReturnNotImplemented(t *testing.T) {
-	exec := &K8sExecutor{}
-	ctx := context.Background()
+// TestExtractExitCode is the cluster-free unit test for the pure exit-code
+// helper that Exec and the file-I/O methods rely on. It covers the three
+// cases that matter: a clean (nil) exit, a non-zero CodeExitError carrying a
+// status, and a transport-level error that carries no exit status. The
+// helper must stay robust to the value/pointer wrapping that errors.As
+// performs, so both forms are exercised.
+func TestExtractExitCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantOK   bool
+	}{
+		{"nil is clean exit", nil, 0, true},
+		{"code exit 7", utilexec.CodeExitError{Err: errors.New("command terminated with exit code 7"), Code: 7}, 7, true},
+		{"code exit 0 explicit", utilexec.CodeExitError{Err: errors.New("ok"), Code: 0}, 0, true},
+		{"wrapped code exit", fmt.Errorf("stream: %w", utilexec.CodeExitError{Err: errors.New("boom"), Code: 3}), 3, true},
+		{"transport error has no status", errors.New("dial tcp: connection refused"), 0, false},
+	}
 
-	t.Run("ReadFile", func(t *testing.T) {
-		_, err := exec.ReadFile(ctx, "x")
-		if err == nil || !strings.Contains(err.Error(), "not implemented") {
-			t.Errorf("ReadFile: got %v, want error containing 'not implemented'", err)
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			code, ok := extractExitCode(tt.err)
+			if ok != tt.wantOK {
+				t.Fatalf("extractExitCode(%v): ok=%v, want %v", tt.err, ok, tt.wantOK)
+			}
+			if code != tt.wantCode {
+				t.Errorf("extractExitCode(%v): code=%d, want %d", tt.err, code, tt.wantCode)
+			}
+		})
+	}
+}
+
+// TestWriteCapBuffer verifies the 10 MB streaming cap: writes below the
+// limit accumulate, a write that crosses the limit is truncated and flags
+// exceeded, and post-limit writes are silently dropped (the SPDY stream
+// keeps draining). The Writer always reports the full slice as consumed so
+// remotecommand never errors mid-stream on a capped buffer.
+func TestWriteCapBuffer(t *testing.T) {
+	t.Run("under limit accumulates", func(t *testing.T) {
+		w := writeCapBuffer{limit: 16}
+		n, err := w.Write([]byte("hello"))
+		if err != nil || n != 5 {
+			t.Fatalf("Write: n=%d err=%v, want 5/nil", n, err)
+		}
+		if w.exceeded {
+			t.Error("exceeded set below limit")
+		}
+		if w.String() != "hello" {
+			t.Errorf("buffer = %q, want %q", w.String(), "hello")
 		}
 	})
 
-	t.Run("WriteFile", func(t *testing.T) {
-		err := exec.WriteFile(ctx, "x", "y")
-		if err == nil || !strings.Contains(err.Error(), "not implemented") {
-			t.Errorf("WriteFile: got %v, want error containing 'not implemented'", err)
+	t.Run("crossing limit truncates and flags", func(t *testing.T) {
+		w := writeCapBuffer{limit: 4}
+		n, err := w.Write([]byte("abcdefgh"))
+		if err != nil || n != 8 {
+			t.Fatalf("Write: n=%d err=%v, want 8/nil (full slice claimed)", n, err)
+		}
+		if !w.exceeded {
+			t.Error("exceeded not set after crossing limit")
+		}
+		if w.String() != "abcd" {
+			t.Errorf("buffer = %q, want %q (truncated at limit)", w.String(), "abcd")
 		}
 	})
 
-	t.Run("ListDirectory", func(t *testing.T) {
-		_, err := exec.ListDirectory(ctx, "x")
-		if err == nil || !strings.Contains(err.Error(), "not implemented") {
-			t.Errorf("ListDirectory: got %v, want error containing 'not implemented'", err)
+	t.Run("post-limit writes dropped", func(t *testing.T) {
+		w := writeCapBuffer{limit: 4}
+		_, _ = w.Write([]byte("abcd"))
+		_, _ = w.Write([]byte("more"))
+		n, err := w.Write([]byte("xyz"))
+		if err != nil || n != 3 {
+			t.Fatalf("Write after cap: n=%d err=%v, want 3/nil", n, err)
+		}
+		if w.String() != "abcd" {
+			t.Errorf("buffer = %q, want %q (no growth after cap)", w.String(), "abcd")
 		}
 	})
+}
 
-	t.Run("Exec", func(t *testing.T) {
-		_, err := exec.Exec(ctx, "echo", 0)
-		if err == nil || !strings.Contains(err.Error(), "not implemented") {
-			t.Errorf("Exec: got %v, want error containing 'not implemented'", err)
-		}
-	})
+// TestClassifyTarError covers the missing-file mapping that ReadFile and
+// ListDirectory depend on: a tar/ls "No such file or directory" stderr must
+// surface as fs.ErrNotExist so callers can branch with errors.Is. Other
+// stderr is passed through.
+func TestClassifyTarError(t *testing.T) {
+	notExist := classifyTarError("missing.txt", "tar: missing.txt: No such file or directory")
+	if !errors.Is(notExist, fs.ErrNotExist) {
+		t.Errorf("missing-file stderr: got %v, want fs.ErrNotExist", notExist)
+	}
+
+	other := classifyTarError("x", "tar: permission denied")
+	if errors.Is(other, fs.ErrNotExist) {
+		t.Errorf("non-missing stderr should not map to fs.ErrNotExist: %v", other)
+	}
+	if !strings.Contains(other.Error(), "permission denied") {
+		t.Errorf("non-missing stderr should be surfaced verbatim: %v", other)
+	}
 }
