@@ -1,0 +1,47 @@
+# Namespace-wide egress baseline for stirrup sandbox Pods.
+#
+# The k8s executor ALSO installs a per-Pod egress NetworkPolicy at runtime
+# (deny-all for network mode "none", proxy+DNS allowlist for "allowlist"),
+# selecting that single Pod by its unique stirrup.dev/pod label. This manifest
+# is a complementary standing baseline an operator can apply once: it selects
+# every Pod carrying stirrup-sandbox=true and confines its egress to DNS plus
+# the egress proxy. Applying both is additive and safe — NetworkPolicy egress
+# rules across policies that select the same Pod are OR-combined, and both
+# encode the same allowed peers.
+#
+# ENFORCEMENT CAVEAT: NetworkPolicy is only enforced by a CNI that implements
+# it. kindnet — the default CNI for `kind` clusters — ACCEPTS NetworkPolicy
+# objects but does NOT enforce them, so on a stock kind cluster this policy is
+# inert and the sandbox Pod retains cluster-default egress. Use a
+# NetworkPolicy-enforcing CNI (Cilium, Calico) for the confinement to hold.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stirrup-sandbox-egress
+  namespace: default
+  labels:
+    app: stirrup-egress-proxy
+spec:
+  podSelector:
+    matchLabels:
+      stirrup-sandbox: "true"
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution. The in-Pod client must resolve the proxy's Service name,
+    # and the proxy resolves upstream names; 53/UDP and 53/TCP are opened to
+    # whichever Pod/CIDR hosts the cluster DNS.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Egress to the egress proxy. The proxy enforces the FQDN allowlist; this
+    # rule guarantees the sandbox cannot reach the network except via it.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: stirrup-egress-proxy
+      ports:
+        - protocol: TCP
+          port: 8080

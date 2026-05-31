@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stirrup-egress-allowlist
+  namespace: default
+  labels:
+    app: stirrup-egress-proxy
+data:
+  # One FQDN allowlist entry per line. Blank lines and lines starting with #
+  # are ignored. Entry syntax matches the executor allowlist:
+  #   example.com           exact match on example.com:443
+  #   *.example.com         any subdomain of example.com on :443
+  #   example.com:80        exact match on example.com:80
+  # An empty allowlist denies every destination (fail closed).
+  allowlist.txt: |
+    # Anthropic API
+    api.anthropic.com
+    # GitHub (clone/fetch over HTTPS)
+    github.com
+    *.githubusercontent.com
