@@ -872,7 +872,9 @@ type ExecutorConfig struct {
 	// egress NetworkPolicy that confines the Pod to the proxy (plus DNS), so
 	// this URL is required in allowlist mode and rejected otherwise. The proxy
 	// runs as a separate Deployment — see examples/k8s/egress-proxy/ and the
-	// `stirrup egress-proxy` subcommand. Ignored for every non-"k8s" Type.
+	// `stirrup egress-proxy` subcommand. The proxy MUST run in the same
+	// namespace as the sandbox Pod (the policy selects it by PodSelector with
+	// no NamespaceSelector). Ignored for every non-"k8s" Type.
 	K8sEgressProxyURL string `json:"k8sEgressProxyUrl,omitempty"`
 
 	// Runtime selects the OCI sandbox runtime. Empty string means "use the
@@ -3796,6 +3798,16 @@ func validateK8sExecutor(cfg ExecutorConfig, errs *[]string) {
 	if cfg.Workspace != "" {
 		*errs = append(*errs, "executor.workspace is not valid for executor.type=\"k8s\" (the Pod workspace is fixed at /workspace)")
 	}
+	// A nil network leaves egress posture undefined. NewK8sExecutor fails
+	// closed on it, but ValidateRunConfig would otherwise report a false
+	// "valid config"; surface the same requirement at config-load time. When
+	// network is nil the egress-proxy cross-field check is skipped — the nil
+	// error is the primary signal and a second "k8sEgressProxyUrl is only
+	// valid when ..." line would be noise.
+	if cfg.Network == nil {
+		*errs = append(*errs, "executor.network is required for executor.type=\"k8s\" (set mode to \"none\" or \"allowlist\")")
+		return
+	}
 	validateK8sEgressProxy(cfg, errs)
 }
 
@@ -3805,13 +3817,10 @@ func validateK8sExecutor(cfg ExecutorConfig, errs *[]string) {
 // so the URL is mandatory in that mode (the run would otherwise have no route
 // to the network) and pointless otherwise. The executor itself fails closed
 // at construction; surfacing the mismatch here gives the operator a config-
-// load error rather than a runtime one. Called only for executor.type=="k8s".
+// load error rather than a runtime one. Called only for executor.type=="k8s"
+// with a non-nil Network (the caller handles the nil-network case).
 func validateK8sEgressProxy(cfg ExecutorConfig, errs *[]string) {
-	mode := ""
-	if cfg.Network != nil {
-		mode = cfg.Network.Mode
-	}
-	switch mode {
+	switch cfg.Network.Mode {
 	case "allowlist":
 		if cfg.K8sEgressProxyURL == "" {
 			*errs = append(*errs, "executor.k8sEgressProxyUrl is required when executor.network.mode is \"allowlist\" for executor.type=\"k8s\"")
