@@ -43,6 +43,80 @@ guardian-smoke:
 clean:
     rm -f stirrup stirrup-eval
 
+# === Provider integration tests (issue #47) ===
+#
+# Validate each supported provider end-to-end by running `stirrup
+# harness` with a minimal probe prompt. Credentials are injected at
+# recipe runtime from 1Password via `op run --env-file .env.int-test`;
+# nothing here runs in CI. Prerequisites on the host:
+#   - `jq` installed.
+#   - `op` (1Password CLI) installed and authenticated (`op signin`
+#     or biometric unlock).
+#   - `.env.int-test` populated with op:// references for each
+#     credential the targeted recipe needs.
+#   - For Bedrock: the IAM user behind AWS_ACCESS_KEY_ID must hold
+#     `bedrock:InvokeModelWithResponseStream` for the model in the
+#     config's region.
+#
+# Each probe asks the model to reply with the single word "ok". The
+# text-only answer needs no tools, so the default read-only `planning`
+# mode is sufficient for the three flag-driven providers; the Bedrock
+# config opts into `execution` because it carries an `allow-all`
+# permission policy in the file (read-only modes reject allow-all).
+#
+# Validation reads the run_finished event from the streaming JSONL
+# trace and asserts its embedded RunTrace outcome is "success". The
+# outcome lives at `.trace.outcome` on the run_finished line (not at
+# the top level, and not on every line — the file is multi-line
+# JSONL); `select(.kind == "run_finished")` isolates that line so
+# `jq -e` exits non-zero on a non-success outcome OR on a run that
+# never reached run_finished (crash / SIGKILL leaves no such line).
+
+# Run every provider integration test in sequence; stops on first failure.
+int-test: int-test-anthropic int-test-bedrock int-test-openai-chat int-test-openai-responses
+
+int-test-anthropic: build
+    op run --env-file .env.int-test -- \
+    ./stirrup harness \
+        --provider anthropic \
+        --api-key-ref secret://ANTHROPIC_API_KEY \
+        --model claude-haiku-4-5-20251001 \
+        --max-turns 2 \
+        --trace /tmp/stirrup-int-test-anthropic.jsonl \
+        --prompt "Reply with the single word 'ok' and nothing else."
+    jq -e 'select(.kind == "run_finished") | .trace.outcome == "success"' /tmp/stirrup-int-test-anthropic.jsonl
+
+int-test-bedrock: build
+    op run --env-file .env.int-test -- \
+    ./stirrup harness \
+        --config examples/runconfig/int-test-bedrock.json \
+        --max-turns 2 \
+        --trace /tmp/stirrup-int-test-bedrock.jsonl \
+        --prompt "Reply with the single word 'ok' and nothing else."
+    jq -e 'select(.kind == "run_finished") | .trace.outcome == "success"' /tmp/stirrup-int-test-bedrock.jsonl
+
+int-test-openai-chat: build
+    op run --env-file .env.int-test -- \
+    ./stirrup harness \
+        --provider openai-compatible \
+        --api-key-ref secret://OPENAI_API_KEY \
+        --model gpt-4o-mini \
+        --max-turns 2 \
+        --trace /tmp/stirrup-int-test-openai-chat.jsonl \
+        --prompt "Reply with the single word 'ok' and nothing else."
+    jq -e 'select(.kind == "run_finished") | .trace.outcome == "success"' /tmp/stirrup-int-test-openai-chat.jsonl
+
+int-test-openai-responses: build
+    op run --env-file .env.int-test -- \
+    ./stirrup harness \
+        --provider openai-responses \
+        --api-key-ref secret://OPENAI_API_KEY \
+        --model gpt-4o-mini \
+        --max-turns 2 \
+        --trace /tmp/stirrup-int-test-openai-responses.jsonl \
+        --prompt "Reply with the single word 'ok' and nothing else."
+    jq -e 'select(.kind == "run_finished") | .trace.outcome == "success"' /tmp/stirrup-int-test-openai-responses.jsonl
+
 # Remove every local worktree whose branch has been merged into origin/main,
 # then delete the now-orphaned local branch. Fetches first so the merged
 # check reflects the current state of the remote.
