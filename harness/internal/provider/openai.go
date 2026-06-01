@@ -20,6 +20,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -1030,7 +1031,10 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	})
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
-		return nil, fmt.Errorf("execute request: %w", err)
+		// DoWithRetry surfaces the raw transport *url.Error, whose embedded
+		// URL (o.baseURL + o.queryParams) may carry a gateway credential Go
+		// does not query-redact; unwrap before wrapping (CWE-532).
+		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
 
 	// Record HTTP-level metadata on the span from context when OTel is enabled.

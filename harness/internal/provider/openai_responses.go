@@ -20,6 +20,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -872,7 +873,10 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
-		return nil, fmt.Errorf("execute request: %w", err)
+		// The composed URL carries o.baseURL and o.queryParams, either of
+		// which may hold a credential (e.g. a gateway api_key query param);
+		// unwrap the *url.Error so its embedded URL never leaks (CWE-532).
+		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
 
 	if o.Tracer != nil {
