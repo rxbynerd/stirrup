@@ -30,4 +30,11 @@ metadata:
     # admission rejects any Pod that does not — a defence-in-depth backstop
     # for anything scheduled into this namespace by mistake.
     pod-security.kubernetes.io/enforce: restricted
-    pod-security.kubernetes.io/enforce-version: latest
+    # The version is PINNED rather than set to `latest`. `latest` tracks the
+    # apiserver's newest PSS revision, so a cluster upgrade can silently tighten
+    # the policy (start rejecting fields) with no manifest change. Pinning makes
+    # the enforced ruleset explicit and changes only on a deliberate bump; set
+    # this to a version at or below the cluster's Kubernetes minor. Operators who
+    # prefer to always track the newest standard may set it to `latest` instead,
+    # accepting the upgrade-time tightening that comes with it.
+    pod-security.kubernetes.io/enforce-version: v1.30

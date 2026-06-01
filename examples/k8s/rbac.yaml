@@ -39,6 +39,9 @@ metadata:
 # token on its own Pod) rather than relying on an ambient mount.
 automountServiceAccountToken: false
 ---
+# The ServiceAccount above is core/v1; the Role and RoleBinding below are
+# rbac.authorization.k8s.io/v1 — they live in different API groups, which is why
+# the apiVersion changes across the three documents.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

@@ -52,9 +52,15 @@ spec:
   # cluster-default RuntimeClass and logs an isolation warning. gvisor is shown
   # here as the recommended sandbox runtime — see examples/k8s/runtimeclass.yaml.
   runtimeClassName: gvisor
-  # nodeSelector from --k8s-node-selector / executor.k8sNodeSelector. Empty
-  # (omitted) unless the operator sets one. The gvisor/kata RuntimeClasses also
-  # contribute their own scheduling.nodeSelector, which is merged in.
+  # nodeSelector from --k8s-node-selector / executor.k8sNodeSelector. It is
+  # OMITTED in this example because no --k8s-node-selector is configured; the
+  # executor leaves spec.nodeSelector unset, so the Pod is unconstrained beyond
+  # what the RuntimeClass contributes. The gvisor/kata RuntimeClasses carry their
+  # own scheduling.nodeSelector (see runtimeclass.yaml), which Kubernetes merges
+  # into the effective node selection. With a flag such as
+  # --k8s-node-selector disktype=ssd the executor would emit:
+  #   nodeSelector:
+  #     disktype: ssd
   containers:
     - # The container name is the constant "agent" (k8sAgentContainer). Exec and
       # file I/O target this container by name over the pods/exec subresource, so
