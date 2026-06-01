@@ -2,10 +2,12 @@ package transport
 
 import (
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // TestRunConfigFromProto_SessionNamePropagates ensures that a SessionName set
@@ -871,6 +873,49 @@ func TestRunConfigFromProto_TemperatureRoundTrip(t *testing.T) {
 				t.Fatalf("set-on-wire (%v) dropped to nil internal", *tc.set)
 			case tc.set != nil && *rc.Temperature != *tc.set:
 				t.Errorf("Temperature: got %v, want %v", *rc.Temperature, *tc.set)
+			}
+		})
+	}
+}
+
+// TestRunTraceToProto_OutcomePopulated pins #141: the canonical Outcome must
+// land on the proto outcome field verbatim, and stop_reason must mirror it so
+// pre-outcome consumers keep the value they have always read. The full
+// types.RunTrace.Outcome set is the 11-value superset of the loop's stop
+// reasons, so a representative sample including the proto-stop_reason-foreign
+// "success" and "verification_failed" values is exercised.
+func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
+	for _, outcome := range []string{
+		"success", "verification_failed", "max_tokens", "budget_exceeded", "",
+	} {
+		t.Run(outcome, func(t *testing.T) {
+			start := time.Unix(1700000000, 0)
+			tr := &types.RunTrace{
+				ID:          "run-141",
+				Turns:       3,
+				TokenUsage:  types.TokenUsage{Input: 120, Output: 45},
+				StartedAt:   start,
+				CompletedAt: start.Add(2500 * time.Millisecond),
+				Outcome:     outcome,
+			}
+			pt := runTraceToProto(tr)
+			if pt.Outcome != outcome {
+				t.Errorf("Outcome: got %q, want %q", pt.Outcome, outcome)
+			}
+			if pt.StopReason != outcome {
+				t.Errorf("StopReason should mirror Outcome: got %q, want %q", pt.StopReason, outcome)
+			}
+			if pt.RunId != "run-141" {
+				t.Errorf("RunId: got %q, want run-141", pt.RunId)
+			}
+			if pt.Turns != 3 {
+				t.Errorf("Turns: got %d, want 3", pt.Turns)
+			}
+			if pt.InputTokens != 120 || pt.OutputTokens != 45 {
+				t.Errorf("tokens: got in=%d out=%d, want in=120 out=45", pt.InputTokens, pt.OutputTokens)
+			}
+			if pt.DurationMs != 2500 {
+				t.Errorf("DurationMs: got %d, want 2500", pt.DurationMs)
 			}
 		})
 	}

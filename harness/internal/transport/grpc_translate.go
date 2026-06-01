@@ -68,7 +68,11 @@ func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
 		InputTokens:  int32(t.TokenUsage.Input),
 		OutputTokens: int32(t.TokenUsage.Output),
 		DurationMs:   t.CompletedAt.Sub(t.StartedAt).Milliseconds(),
-		StopReason:   t.Outcome,
+		// Outcome is the canonical analytics field (#141). StopReason
+		// carries the same value for backward compatibility with consumers
+		// predating the outcome field.
+		Outcome:    t.Outcome,
+		StopReason: t.Outcome,
 	}
 }
 
