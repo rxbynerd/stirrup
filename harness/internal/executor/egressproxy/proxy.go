@@ -145,14 +145,20 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	// cancelled we trigger Stop with a bounded timeout so the listener
 	// is always released; this defends against early-return paths in
 	// the caller that skip a manual Stop call.
+	//
+	// Capture the shutdown channel locally: Stop() clears p.shutdown
+	// under p.mu, and the goroutine's select must not race that write by
+	// re-reading the struct field. The channel value is stable for the
+	// goroutine's lifetime, and Stop() closes this same channel.
 	if ctx != nil {
+		shutdown := p.shutdown
 		go func() {
 			select {
 			case <-ctx.Done():
 				stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = p.Stop(stopCtx)
-			case <-p.shutdown:
+			case <-shutdown:
 			}
 		}()
 	}
@@ -179,11 +185,13 @@ func (p *Proxy) Stop(ctx context.Context) error {
 	}
 	p.stopped = true
 	// Release the ctx-watcher goroutine started by Start so it does not
-	// linger after Stop returns. Closing under the lock ensures the
-	// "already stopped" early return above never closes twice.
+	// linger after Stop returns. The stopped flag above guards against a
+	// second Stop reaching this close, so the channel is closed exactly
+	// once. We must not nil out p.shutdown here: the ctx-watcher captures
+	// the channel by value, so there is no field to clear, and a write
+	// would only reintroduce a race with that goroutine.
 	if p.shutdown != nil {
 		close(p.shutdown)
-		p.shutdown = nil
 	}
 	p.mu.Unlock()
 
