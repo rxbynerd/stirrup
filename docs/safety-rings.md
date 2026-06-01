@@ -461,9 +461,17 @@ is no silent fallback to `runc`.
 
 ### Kubernetes deployment
 
-On Kubernetes, set `runtimeClassName` on the pod spec rather than
-threading the runtime through stirrup. `--container-runtime` is for
-the local Docker/Podman container executor.
+For the `k8s` executor, `--container-runtime` (`executor.runtime`) maps
+to the sandbox Pod's `spec.runtimeClassName` — the same flag, a
+different closed set (`runc`, `gvisor`, `kata-qemu`, `kata-fc`,
+`kata-clh`; note `gvisor`, not the host OCI name `runsc`). The executor
+sets `runtimeClassName` on the Pod it creates, so the runtime is
+threaded through stirrup rather than hand-set on a static spec. Empty
+selects the cluster-default RuntimeClass and logs an isolation warning.
+See [`docs/executors/k8s.md`](executors/k8s.md#safety-rings-on-kubernetes)
+for the full ring mapping on Kubernetes, and
+[Safety rings on Kubernetes](#safety-rings-on-kubernetes) below for the
+in-document summary.
 
 ## Ring 2 — Egress allowlist proxy (network isolation)
 
@@ -799,6 +807,90 @@ The `editStrategy` field is set out of habit but inert here — no
 `edit_file` tool is registered when `tools.builtIn` excludes it, so
 the strategy never runs. Leaving it set keeps the config copy-paste
 compatible with the other postures.
+
+## Safety rings on Kubernetes
+
+The `k8s` executor runs the agent in a sandbox Pod rather than a host
+container. The five rings still apply, but Rings 1 and 2 are realised
+through Kubernetes primitives. The operator reference for the executor
+is [`docs/executors/k8s.md`](executors/k8s.md); this section is the
+ring-by-ring mapping.
+
+### Ring 1 — runtime class becomes a Pod RuntimeClass
+
+On `k8s`, `executor.runtime` (`--container-runtime`) maps to the Pod's
+`spec.runtimeClassName` rather than a host OCI runtime. The accepted set
+differs because the values name different things: a host OCI runtime for
+the `container` executor versus a registered `RuntimeClass` name for
+`k8s`. The closed `k8s` set is:
+
+| Value | RuntimeClass / isolation | Cluster prerequisite |
+|---|---|---|
+| `""` (default) | cluster-default RuntimeClass — often plain `runc`, **no** sandbox isolation (the executor logs a warning) | none |
+| `runc` | vanilla runc — process isolation only | none |
+| `gvisor` | [gVisor](https://gvisor.dev) user-space kernel (handler `runsc`) | install gVisor on the nodes; register a `gvisor` RuntimeClass |
+| `kata-qemu` | [Kata](https://katacontainers.io) Containers, QEMU VM | install Kata; KVM on the nodes |
+| `kata-fc` | Kata, Firecracker VM | install Kata + a devmapper snapshotter; KVM |
+| `kata-clh` | Kata, Cloud Hypervisor VM | install Kata for Cloud Hypervisor; KVM |
+
+Note the runtime name is `gvisor` (the conventional RuntimeClass name),
+not the OCI runtime name `runsc` used by the `container` executor.
+`ValidateRunConfig` rejects values outside the set, and an unregistered
+or impermissible RuntimeClass surfaces a friendly Pod-create error
+rather than an opaque admission rejection.
+
+Beneath the runtime choice, the executor applies a fixed hardened
+`securityContext` to every sandbox Pod regardless of config:
+`allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`,
+`runAsNonRoot: true`, `runAsUser: 65532`, and `seccompProfile.type:
+RuntimeDefault`. `automountServiceAccountToken` is always `false`, so the
+sandbox has no Kubernetes API access of its own. These are the
+process-level equivalents of the `container` executor's unconditional
+`CapDrop: ALL` + `no-new-privileges`, and they satisfy the `restricted`
+Pod Security Standard the reference namespace enforces.
+
+### Ring 2 — egress proxy becomes a NetworkPolicy + proxy Deployment
+
+A sandbox Pod cannot start its own host-side proxy, so the network ring
+is split: a per-Pod `NetworkPolicy` confines the Pod's egress, and the
+allowlist proxy runs as a separate in-cluster Deployment many Pods
+share. The executor installs the policy **before** the Pod is created,
+so there is no window in which a Running Pod has cluster-default egress.
+
+- `network.mode: none` installs a deny-all egress policy.
+- `network.mode: allowlist` installs a policy permitting egress only to
+  DNS and the proxy (`app=stirrup-egress-proxy` on TCP 8080), and
+  injects `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` pointing at
+  `executor.k8sEgressProxyUrl`. The proxy enforces the FQDN allowlist,
+  exactly as in the `container` case — the NetworkPolicy guarantees the
+  proxy is the Pod's only route off-cluster, while the proxy decides
+  which destinations are reachable.
+
+The proxy MUST run in the **same namespace** as the sandbox Pod: the
+policy selects it by a `PodSelector` with no `NamespaceSelector`, so a
+cross-namespace proxy is denied (more restrictive, not a bypass). Deploy
+it from [`examples/k8s/egress-proxy/`](../examples/k8s/egress-proxy/) or
+run it standalone with `stirrup egress-proxy`.
+
+> **Enforcement depends on the CNI.** kindnet — the default CNI for
+> `kind` — accepts `NetworkPolicy` objects but does **not** enforce
+> them, so on a stock kind cluster the deny/allowlist policy is inert
+> and the Pod keeps cluster-default egress. The confinement holds only
+> on a NetworkPolicy-enforcing CNI such as
+> [Cilium](https://cilium.io/) or
+> [Calico](https://www.tigera.io/project-calico/). This is the K8s
+> analogue of the `container` executor's honest fail-open note around
+> `host.docker.internal`: a kind smoke test proves manifest shape, not
+> that egress is confined.
+
+### Rings 3, 4, 5 are unchanged
+
+Rings 3 (Cedar policy), 4 (Rule of Two), and 5 (code scanner) are
+executor-agnostic and behave identically on `k8s`. Cedar authorization
+and the Rule-of-Two pre-flight run in the orchestrator before the
+executor acts; the code scanner runs around the edit strategy. A
+non-`none` `network.mode` counts toward `canCommunicateExternally` for
+the Rule of Two exactly as it does for the other executors.
 
 ## What these don't catch
 

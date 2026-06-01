@@ -74,6 +74,55 @@ config a flag-only invocation *would* have used — useful for
 post-mortem replays or pinning a stable configuration. See
 [`docs/configuration.md`](docs/configuration.md#building-runconfigs-interactively).
 
+### Executors
+
+The agent runs inside one of four executors, selected with
+`--executor` / `executor.type`:
+
+| Executor | Boundary | Notes |
+|---|---|---|
+| `local` | none (host process) | Trusted local iteration. |
+| `container` | a Docker/Podman container | Single-host sandbox with an in-process egress proxy. |
+| `k8s` | a Pod on a Kubernetes cluster | Pod-per-run with a hardened `securityContext`, per-tenant RuntimeClass, and `NetworkPolicy` egress. See [`docs/executors/k8s.md`](docs/executors/k8s.md). |
+| `api` | no shell (VCS-backed, read-only) | Reviews/plans against a Git host without a workspace. |
+
+The relevant executor flags are:
+
+| Flag | Notes |
+|---|---|
+| `--executor` | `local` (default), `container`, `k8s`, or `api`. |
+| `--image` | Sandbox container image (`container` / `k8s`). |
+| `--container-runtime` | OCI runtime (`container`) or Pod `RuntimeClassName` (`k8s`): `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `runc`. |
+| `--k8s-namespace` | Namespace for the `k8s` sandbox Pod (required for `k8s`). |
+| `--k8s-kubeconfig` | Kubeconfig path; empty prefers in-cluster config then `$KUBECONFIG`. |
+| `--k8s-node-selector` | Repeatable `key=value` Pod `nodeSelector` constraint. |
+| `--k8s-service-account` | ServiceAccount name; the token is never automounted. |
+| `--k8s-egress-proxy-url` | Egress proxy URL (required in `allowlist` network mode). |
+
+#### Running on Kubernetes
+
+```sh
+# Apply the standing objects once per cluster (namespace, RBAC, RuntimeClasses):
+kubectl apply -f examples/k8s/namespace.yaml
+kubectl apply -f examples/k8s/rbac.yaml
+kubectl apply -f examples/k8s/runtimeclass.yaml
+
+# Run the agent in a sandbox Pod under gVisor:
+ANTHROPIC_API_KEY=... ./stirrup harness \
+  --executor k8s \
+  --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
+  --k8s-namespace stirrup-sandbox \
+  --container-runtime gvisor \
+  --mode execution \
+  --prompt "Fix the failing test in main_test.go"
+```
+
+Full reference manifests are under
+[`examples/k8s/`](examples/k8s/) and a local `kind` cluster under
+[`scripts/dev/`](scripts/dev/). The operator guide —
+architecture, config reference, deployment recipes, egress, and
+troubleshooting — is [`docs/executors/k8s.md`](docs/executors/k8s.md).
+
 `stirrup harness --output <text|json|none>` (alias `-o`) selects the
 post-run summary surface. `text` (default) prints today's stderr
 summary, `json` emits a single `STIRRUP_RESULT` line on stdout
@@ -94,6 +143,7 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 | Component model, agentic loop, deep dives | [`docs/architecture.md`](docs/architecture.md) |
 | CLI flags, `RunConfig` precedence, examples | [`docs/configuration.md`](docs/configuration.md) |
 | Production deployment via `stirrup job` (K8s, gRPC) | [`docs/deployment.md`](docs/deployment.md) |
+| Kubernetes executor (Pod-per-run sandbox) | [`docs/executors/k8s.md`](docs/executors/k8s.md) |
 | Running stirrup as a Google Cloud Run job | [`docs/cloud-run-jobs.md`](docs/cloud-run-jobs.md) |
 | Five safety rings (operator guide) | [`docs/safety-rings.md`](docs/safety-rings.md) |
 | In-harness security foundations | [`docs/security.md`](docs/security.md) |
