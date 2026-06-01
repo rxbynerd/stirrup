@@ -62,12 +62,16 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 // runTraceToProto translates the internal RunTrace to a simplified proto
 // wire format suitable for streaming back to the control plane.
 func runTraceToProto(t *types.RunTrace) *pb.RunTrace {
+	// Outcome is the canonical analytics field (#141). StopReason has always
+	// carried t.Outcome too; it keeps doing so for consumers predating the
+	// outcome field.
 	return &pb.RunTrace{
 		RunId:        t.ID,
 		Turns:        int32(t.Turns),
 		InputTokens:  int32(t.TokenUsage.Input),
 		OutputTokens: int32(t.TokenUsage.Output),
 		DurationMs:   t.CompletedAt.Sub(t.StartedAt).Milliseconds(),
+		Outcome:      t.Outcome,
 		StopReason:   t.Outcome,
 	}
 }

@@ -2,10 +2,12 @@ package transport
 
 import (
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // TestRunConfigFromProto_SessionNamePropagates ensures that a SessionName set
@@ -871,6 +873,81 @@ func TestRunConfigFromProto_TemperatureRoundTrip(t *testing.T) {
 				t.Fatalf("set-on-wire (%v) dropped to nil internal", *tc.set)
 			case tc.set != nil && *rc.Temperature != *tc.set:
 				t.Errorf("Temperature: got %v, want %v", *rc.Temperature, *tc.set)
+			}
+		})
+	}
+}
+
+// TestRunTraceToProto_OutcomePopulated pins #141: the canonical Outcome must
+// land on the proto outcome field verbatim, and stop_reason must mirror it so
+// pre-outcome consumers keep the value they have always read. The case set is
+// the full 11-value types.RunTrace.Outcome superset of the loop's stop reasons
+// — including the proto-stop_reason-foreign "success", "verification_failed",
+// "verification_error", and "max_tokens" — plus the empty zero value. The
+// proto.Marshal/Unmarshal round-trip pins the field's wire tag (outcome = 8),
+// which a struct-copy assertion alone would not catch.
+func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome string
+	}{
+		{name: "success", outcome: "success"},
+		{name: "error", outcome: "error"},
+		{name: "max_turns", outcome: "max_turns"},
+		{name: "verification_failed", outcome: "verification_failed"},
+		{name: "verification_error", outcome: "verification_error"},
+		{name: "budget_exceeded", outcome: "budget_exceeded"},
+		{name: "stalled", outcome: "stalled"},
+		{name: "tool_failures", outcome: "tool_failures"},
+		{name: "cancelled", outcome: "cancelled"},
+		{name: "timeout", outcome: "timeout"},
+		{name: "max_tokens", outcome: "max_tokens"},
+		{name: "empty", outcome: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Unix(1700000000, 0)
+			tr := &types.RunTrace{
+				ID:          "run-141",
+				Turns:       3,
+				TokenUsage:  types.TokenUsage{Input: 120, Output: 45},
+				StartedAt:   start,
+				CompletedAt: start.Add(2500 * time.Millisecond),
+				Outcome:     tc.outcome,
+			}
+			pt := runTraceToProto(tr)
+			if pt.Outcome != tc.outcome {
+				t.Errorf("Outcome: got %q, want %q", pt.Outcome, tc.outcome)
+			}
+			if pt.StopReason != tc.outcome {
+				t.Errorf("StopReason should mirror Outcome: got %q, want %q", pt.StopReason, tc.outcome)
+			}
+			if pt.RunId != "run-141" {
+				t.Errorf("RunId: got %q, want run-141", pt.RunId)
+			}
+			if pt.Turns != 3 {
+				t.Errorf("Turns: got %d, want 3", pt.Turns)
+			}
+			if pt.InputTokens != 120 || pt.OutputTokens != 45 {
+				t.Errorf("tokens: got in=%d out=%d, want in=120 out=45", pt.InputTokens, pt.OutputTokens)
+			}
+			if pt.DurationMs != 2500 {
+				t.Errorf("DurationMs: got %d, want 2500", pt.DurationMs)
+			}
+
+			raw, err := proto.Marshal(pt)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded pb.RunTrace
+			if err := proto.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if decoded.Outcome != tc.outcome {
+				t.Errorf("outcome did not survive wire round-trip: got %q, want %q", decoded.Outcome, tc.outcome)
+			}
+			if decoded.StopReason != tc.outcome {
+				t.Errorf("stop_reason did not survive wire round-trip: got %q, want %q", decoded.StopReason, tc.outcome)
 			}
 		})
 	}

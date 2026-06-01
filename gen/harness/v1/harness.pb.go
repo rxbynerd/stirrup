@@ -1421,10 +1421,22 @@ type RunTrace struct {
 	CostUsd float64 `protobuf:"fixed64,5,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	// Wall-clock duration of the run in milliseconds.
 	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	// Why the run ended. Same values as HarnessEvent.stop_reason:
-	// "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
-	// "cancelled", "budget_exceeded".
-	StopReason    string `protobuf:"bytes,7,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	// Deprecated for analytics: retained for backward compatibility. This
+	// field has always carried the run outcome (see `outcome` below), not
+	// the narrower HarnessEvent.stop_reason set, so existing consumers
+	// reading it keep the same value. New consumers should read `outcome`.
+	StopReason string `protobuf:"bytes,7,opt,name=stop_reason,json=stopReason,proto3" json:"stop_reason,omitempty"`
+	// Canonical terminal status of the run, mirroring the Go-side
+	// types.RunTrace.Outcome. Unlike stop_reason (which on the loop's own
+	// events is one of 7 values and has no "success" concept), outcome is
+	// the authoritative field for downstream analytics: a wire-driven
+	// lakehouse writer can persist it directly without inferring it from
+	// stop_reason + verification_results + budget state.
+	// Values: "success", "error", "max_turns", "verification_failed",
+	//
+	//	"verification_error", "budget_exceeded", "stalled",
+	//	"tool_failures", "cancelled", "timeout", "max_tokens".
+	Outcome       string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1504,6 +1516,13 @@ func (x *RunTrace) GetDurationMs() int64 {
 func (x *RunTrace) GetStopReason() string {
 	if x != nil {
 		return x.StopReason
+	}
+	return ""
+}
+
+func (x *RunTrace) GetOutcome() string {
+	if x != nil {
+		return x.Outcome
 	}
 	return ""
 }
@@ -3721,7 +3740,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x06_think\"d\n" +
 	"\x13ObservabilityConfig\x12 \n" +
 	"\venvironment\x18\x01 \x01(\tR\venvironment\x12+\n" +
-	"\x11service_namespace\x18\x02 \x01(\tR\x10serviceNamespace\"\xdc\x01\n" +
+	"\x11service_namespace\x18\x02 \x01(\tR\x10serviceNamespace\"\xf6\x01\n" +
 	"\bRunTrace\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x14\n" +
 	"\x05turns\x18\x02 \x01(\x05R\x05turns\x12!\n" +
@@ -3731,7 +3750,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
 	"durationMs\x12\x1f\n" +
 	"\vstop_reason\x18\a \x01(\tR\n" +
-	"stopReason\"\x9e\x06\n" +
+	"stopReason\x12\x18\n" +
+	"\aoutcome\x18\b \x01(\tR\aoutcome\"\x9e\x06\n" +
 	"\x0eProviderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1e\n" +
 	"\vapi_key_ref\x18\x02 \x01(\tR\tapiKeyRef\x12\x16\n" +
