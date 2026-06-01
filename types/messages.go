@@ -6,7 +6,7 @@ import "encoding/json"
 
 // Message represents a single message in the conversation history.
 type Message struct {
-	Role    string         `json:"role"`    // "user" | "assistant"
+	Role    string         `json:"role"` // "user" | "assistant"
 	Content []ContentBlock `json:"content"`
 
 	// Synthetic marks a harness-injected message that is not genuine user or
