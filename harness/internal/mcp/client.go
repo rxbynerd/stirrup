@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -354,10 +355,15 @@ func (c *Client) filterAllowedTools(config types.MCPServerConfig, tools []mcpToo
 
 // serverSession holds per-server connection state.
 type serverSession struct {
-	name      string // operator-supplied logical name, for log attribution
-	uri       string
-	token     string // bearer token, empty if no auth
-	sessionID string // Mcp-Session-Id from server
+	name string // operator-supplied logical name, for log attribution
+	uri  string
+	// displayURI is uri with userinfo and query string stripped. Logs and
+	// returned errors must use this rather than uri: an operator may embed
+	// credentials in the URI (https://user:pass@host or ?api_key=...), and
+	// RunConfig.Redact() does not cover this path (CWE-532).
+	displayURI string
+	token      string // bearer token, empty if no auth
+	sessionID  string // Mcp-Session-Id from server
 }
 
 const mcpClientTimeout = 30 * time.Second
@@ -491,7 +497,30 @@ func newSession(ctx context.Context, config types.MCPServerConfig, secrets secur
 		}
 	}
 
-	return &serverSession{name: config.Name, uri: config.URI, token: token}, nil
+	return &serverSession{
+		name:       config.Name,
+		uri:        config.URI,
+		displayURI: displaySafeURI(config.URI),
+		token:      token,
+	}, nil
+}
+
+// displaySafeURI strips userinfo and the query string from a URI so it can be
+// logged or returned in an error without leaking credentials an operator may
+// have embedded (https://user:pass@host or ?api_key=...). The full URI is kept
+// on serverSession.uri for the actual request. On a parse failure it returns a
+// fixed sentinel rather than the raw input — validateMCPHost has already
+// rejected unparseable URIs by the time a session is built, so this branch is
+// defence in depth and must not echo the original string.
+func displaySafeURI(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<unparseable mcp uri>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
 }
 
 // Close releases resources held by the client. Currently a no-op since
@@ -786,7 +815,16 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request to %s: %w", sess.uri, err)
+		// *url.Error embeds the full request URL — including any credential
+		// query string, which Go does NOT redact (it only masks userinfo) — in
+		// its message. Unwrap to the transport-level cause so the dial failure
+		// is still reported without leaking the credentialed URI (CWE-532).
+		cause := err
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			cause = urlErr.Err
+		}
+		return nil, fmt.Errorf("HTTP request to %s: %w", sess.displayURI, cause)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -806,7 +844,7 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, sess.uri, string(respBody))
+		return nil, fmt.Errorf("HTTP %d from %s: %s", resp.StatusCode, sess.displayURI, string(respBody))
 	}
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxMCPResponseSize))
