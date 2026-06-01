@@ -1625,6 +1625,65 @@ func TestValidateRunConfig_ExecutorRuntimeRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_RegistryAllowlistAcceptsValidGlobs(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{
+		Type:              "container",
+		Image:             "ghcr.io/stirrup/base:latest",
+		RegistryAllowlist: []string{"ghcr.io/stirrup/*", "docker.io/library/*", "registry.internal:5000/team/*"},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected valid registry allowlist to validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_RegistryAllowlistRejectsBadGlob(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{
+		Type:              "container",
+		Image:             "ghcr.io/stirrup/base:latest",
+		RegistryAllowlist: []string{"ghcr.io/stirrup/["},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for malformed registry allowlist glob")
+	}
+	if !strings.Contains(err.Error(), "registryAllowlist") {
+		t.Errorf("expected error to mention registryAllowlist, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_RegistryAllowlistRejectsEmptyEntry(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{
+		Type:              "container",
+		Image:             "ghcr.io/stirrup/base:latest",
+		RegistryAllowlist: []string{""},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for empty registry allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "registryAllowlist") {
+		t.Errorf("expected error to mention registryAllowlist, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_RegistryAllowlistRequiresContainerExecutor(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{
+		Type:              "local",
+		RegistryAllowlist: []string{"ghcr.io/stirrup/*"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for registryAllowlist on non-container executor")
+	}
+	if !strings.Contains(err.Error(), "registryAllowlist") || !strings.Contains(err.Error(), "container") {
+		t.Errorf("expected error to mention registryAllowlist and container, got: %v", err)
+	}
+}
+
 // --- PermissionPolicyConfig.Type policy-engine ---
 
 func TestValidateRunConfig_PolicyEngineRequiresPolicyFile(t *testing.T) {

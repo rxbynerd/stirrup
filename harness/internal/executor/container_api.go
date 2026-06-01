@@ -107,6 +107,10 @@ type containerCreateRequest struct {
 	// when an egress proxy is in front of the container.
 	Env        []string    `json:"Env,omitempty"`
 	HostConfig *hostConfig `json:"HostConfig"`
+	// User runs the container's main process as the given uid[:gid]. The
+	// hardened profile sets "65534:65534" (nobody:nogroup) so a container
+	// escape lands on an unprivileged identity rather than root.
+	User string `json:"User,omitempty"`
 }
 
 type hostConfig struct {
@@ -117,6 +121,22 @@ type hostConfig struct {
 	PidsLimit   *int64   `json:"PidsLimit,omitempty"`
 	CapDrop     []string `json:"CapDrop,omitempty"`
 	SecurityOpt []string `json:"SecurityOpt,omitempty"`
+	// ReadonlyRootfs makes the container's root filesystem read-only. The
+	// field is security-critical and deliberately carries no omitempty: a
+	// bool with omitempty drops false from the wire, so a future caller that
+	// forgot to set it would silently get a writable rootfs with no error.
+	// Emitting the field unconditionally fails loud instead.
+	ReadonlyRootfs bool `json:"ReadonlyRootfs"`
+	// Tmpfs maps an in-container path to a comma-separated mount-option
+	// string. The size is expressed in raw bytes (e.g.
+	// "rw,nosuid,nodev,noexec,size=268435456" for 256 MiB). With a read-only
+	// rootfs the run still needs writable, non-executable scratch at /tmp and
+	// /dev/shm; the option string is the Engine API vehicle for
+	// nosuid/nodev/noexec on a tmpfs, which top-level Binds cannot carry. The
+	// /dev/shm entry's size replaces the separate ShmSize field so the size
+	// and the nosuid/nodev/noexec flags travel together as one mount — a
+	// split ShmSize could win on some engines and silently drop noexec.
+	Tmpfs map[string]string `json:"Tmpfs,omitempty"`
 	// Runtime selects the OCI runtime (e.g. "runsc" for gVisor,
 	// "kata-qemu" for Kata Containers). Empty means "use the engine
 	// default", in which case the field is omitted from the wire so the

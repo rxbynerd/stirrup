@@ -19,6 +19,26 @@ const (
 	containerWorkspace = "/workspace"
 	maxDockerFrameSize = 10 * 1024 * 1024 // 10 MB cap on Docker stream frames
 
+	// hardenedUser is the uid:gid the container's main process and every
+	// exec run under. 65534:65534 is the conventional nobody:nogroup pair,
+	// so a container escape lands on an unprivileged identity. Writes still
+	// succeed against the workspace bind and the tmpfs scratch mounts; the
+	// read-only rootfs is unaffected by the non-root user.
+	hardenedUser = "65534:65534"
+
+	// tmpfsTmpSize and shmSize size the two writable scratch mounts the
+	// read-only rootfs profile provides. /tmp is the catch-all scratch
+	// directory many tools assume is writable; /dev/shm is sized via its own
+	// tmpfs entry rather than the separate ShmSize host-config field so the
+	// size and the nosuid/nodev/noexec flags stay on one mount. Both carry
+	// nosuid,nodev,noexec so a dropped binary cannot be executed from them.
+	tmpfsTmpSize = 256 * 1024 * 1024 // 256 MiB
+	shmSize      = 64 * 1024 * 1024  // 64 MiB
+
+	// tmpfsMountOpts is the mount-option string applied to both tmpfs
+	// scratch mounts. size is appended per-mount.
+	tmpfsMountOpts = "rw,nosuid,nodev,noexec"
+
 	// hostGatewayHost is the DNS name we add to the container's /etc/hosts
 	// (via ExtraHosts) that resolves to the host's address. Docker Engine
 	// >=20.10 and Podman >=4.0 expand the magic value "host-gateway" into
@@ -34,6 +54,12 @@ type ContainerExecutorConfig struct {
 	Network    *types.NetworkConfig
 	Resources  *types.ResourceLimits
 	SocketPath string // override auto-detection; empty = auto-detect
+	// RegistryAllowlist constrains which image references may be run. Each
+	// entry is a glob over the normalised reference (registry host + repo
+	// path, digest/tag stripped) — e.g. "ghcr.io/stirrup/*". An empty list
+	// falls back to defaultRegistryAllowlist. A reference matching no
+	// pattern is rejected at construction before any container is created.
+	RegistryAllowlist []string
 	// Runtime selects the OCI runtime for the container (e.g. "runsc",
 	// "kata", "kata-qemu", "kata-fc"). Empty means "use the engine
 	// default" — the field is omitted from the create-container request,
@@ -86,6 +112,11 @@ func (e *ContainerExecutor) Probe(ctx context.Context) error {
 // preflight path (core.Preflight) uses this instead of building a full
 // ContainerExecutor (issue #245 step 7).
 func ProbeContainerEngine(ctx context.Context, cfg ContainerExecutorConfig) error {
+	if cfg.Image != "" {
+		if err := checkImageAllowed(cfg.Image, cfg.RegistryAllowlist); err != nil {
+			return err
+		}
+	}
 	socketPath := cfg.SocketPath
 	if socketPath == "" {
 		var err error
@@ -140,6 +171,9 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	if cfg.HostDir == "" {
 		return nil, fmt.Errorf("container executor requires a host directory")
 	}
+	if err := checkImageAllowed(cfg.Image, cfg.RegistryAllowlist); err != nil {
+		return nil, err
+	}
 
 	socketPath := cfg.SocketPath
 	if socketPath == "" {
@@ -153,11 +187,16 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	api := newContainerAPIClient(socketPath)
 
 	hc := &hostConfig{
-		Binds:       []string{fmt.Sprintf("%s:%s", cfg.HostDir, containerWorkspace)},
-		NetworkMode: "none",
-		CapDrop:     []string{"ALL"},
-		SecurityOpt: []string{"no-new-privileges"},
-		Runtime:     cfg.Runtime,
+		Binds:          []string{fmt.Sprintf("%s:%s", cfg.HostDir, containerWorkspace)},
+		NetworkMode:    "none",
+		CapDrop:        []string{"ALL"},
+		SecurityOpt:    []string{"no-new-privileges"},
+		Runtime:        cfg.Runtime,
+		ReadonlyRootfs: true,
+		Tmpfs: map[string]string{
+			"/tmp":     fmt.Sprintf("%s,size=%d", tmpfsMountOpts, tmpfsTmpSize),
+			"/dev/shm": fmt.Sprintf("%s,size=%d", tmpfsMountOpts, shmSize),
+		},
 	}
 
 	var (
@@ -224,6 +263,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		Cmd:        []string{"sleep", "infinity"},
 		WorkingDir: containerWorkspace,
 		Env:        env,
+		User:       hardenedUser,
 		HostConfig: hc,
 	})
 	if err != nil {

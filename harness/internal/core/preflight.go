@@ -313,9 +313,10 @@ func preflightExecutor(
 // that field exists only on the test-facing ContainerExecutorConfig).
 func containerProbeConfig(cfg types.ExecutorConfig) executor.ContainerExecutorConfig {
 	return executor.ContainerExecutorConfig{
-		Image:   cfg.Image,
-		Network: cfg.Network,
-		Runtime: cfg.Runtime,
+		Image:             cfg.Image,
+		Network:           cfg.Network,
+		Runtime:           cfg.Runtime,
+		RegistryAllowlist: cfg.RegistryAllowlist,
 	}
 }
 
