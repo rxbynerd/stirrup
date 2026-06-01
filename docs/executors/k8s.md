@@ -23,7 +23,7 @@ those files.
 - [Architecture](#architecture)
 - [Configuration reference](#configuration-reference)
 - [Deployment recipes](#deployment-recipes)
-- [Per-tenant RuntimeClass selection](#per-tenant-runtimeclass-selection)
+- [RuntimeClass selection per run](#runtimeclass-selection-per-run)
 - [Egress](#egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
 - [Troubleshooting](#troubleshooting)
@@ -49,7 +49,7 @@ host proxy).
 ```mermaid
 flowchart LR
   subgraph Orchestrator["Orchestrator (harness binary)"]
-    SA[ServiceAccount<br/>stirrup-orchestrator]
+    SA[authenticates as<br/>stirrup-orchestrator SA]
   end
   subgraph NS["Sandbox namespace (PodSecurity: restricted)"]
     NP{{Per-Pod egress<br/>NetworkPolicy}}
@@ -67,14 +67,18 @@ flowchart LR
 The pieces and their lifecycle:
 
 - **The orchestrator** is whatever runs the harness (a CI runner, a
-  controller, an operator shell). It authenticates with the cluster via
-  the in-cluster ServiceAccount, the kubeconfig at
-  `executor.k8sKubeconfig`, or `$KUBECONFIG` — resolved in that order
-  (see [`buildRESTConfig`](../../harness/internal/executor/k8s.go)). It
-  holds the RBAC the executor's lifecycle needs:
+  controller, an operator shell). It authenticates with the cluster in
+  this order (see
+  [`buildRESTConfig`](../../harness/internal/executor/k8s.go)): an
+  explicit kubeconfig at `executor.k8sKubeconfig` if set (it wins even
+  when running in-cluster), then the in-cluster ServiceAccount, then
+  `$KUBECONFIG`. It holds the RBAC the executor's lifecycle needs:
   `pods` (create/get/delete), `pods/exec` (create), and
-  `networkpolicies` (create/delete). The reference Role is
-  [`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml).
+  `networkpolicies` (create/delete). The reference Role
+  ([`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml)) also grants
+  `pods/log` (get); the executor does not use it, so it is granted only
+  for operator `kubectl logs` debugging and may be dropped to tighten
+  the Role to the executor's minimum.
 
 - **The sandbox Pod** is created per run with a fixed, config-independent
   hardened `securityContext`: `allowPrivilegeEscalation: false`,
@@ -303,7 +307,7 @@ The RuntimeClass's `scheduling.nodeSelector` and any
 `--k8s-node-selector` the run supplies are merged by Kubernetes into the
 effective node selection.
 
-## Per-tenant RuntimeClass selection
+## RuntimeClass selection per run
 
 `executor.runtime` maps directly to the Pod `RuntimeClassName`, so a
 multi-tenant orchestrator selects the isolation level per run by setting
@@ -349,6 +353,9 @@ HTTPS_PROXY = <k8sEgressProxyUrl>
 NO_PROXY    = localhost,127.0.0.1,::1
 ```
 
+The `NO_PROXY` set (`localhost,127.0.0.1,::1`) is fixed in the executor
+and not flag-configurable.
+
 The `NetworkPolicy` intentionally does **not** encode the FQDN allowlist
 — NetworkPolicy operates on IPs/ports/selectors, not hostnames. The
 hostname allowlist lives in the proxy. The policy's job is the
@@ -371,7 +378,10 @@ stirrup egress-proxy --listen :8080 --allowlist-file ./allowlist.txt
 ```
 
 The proxy reads its allowlist once at startup (no hot reload); roll the
-Deployment to change it.
+Deployment to change it. During a rolling update, in-flight runs keep
+routing through the old Pod (and its old allowlist) until the new Pod is
+Ready; pause runs across the roll if that overlap window is
+unacceptable.
 
 **The proxy MUST run in the same namespace as the sandbox Pod.** The
 allowlist policy selects the proxy by a `PodSelector` with **no**
@@ -419,7 +429,9 @@ Defence-in-depth on K8s additionally relies on cluster-level controls the
 reference manifests configure: the sandbox namespace enforces the
 `restricted` Pod Security Standard (pinned to a version, not `latest`),
 and the orchestrator's RBAC is the minimal `pods` / `pods/exec` /
-`networkpolicies` verb set. The sandbox Pod has no API access of its own
+`networkpolicies` verb set the executor needs (the reference Role adds
+`pods/log` get for operator debugging only; drop it to reach the
+executor's exact minimum). The sandbox Pod has no API access of its own
 (`automountServiceAccountToken: false`).
 
 ## Troubleshooting
@@ -434,7 +446,7 @@ and the orchestrator's RBAC is the minimal `pods` / `pods/exec` /
 | `not in cluster and KUBECONFIG is unset` | No in-cluster config, no kubeconfig. | Set `--k8s-kubeconfig` or `$KUBECONFIG`, or run in-cluster. |
 | Pod scheduling fails / pending forever | RuntimeClass `nodeSelector` matches no node, or the handler is missing. | Label the node for the runtime; confirm the handler is installed. |
 | Egress not actually confined on `kind` | kindnet does not enforce NetworkPolicy. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico) for real confinement. |
-| `pod ... not ready` after 60s | Image lacks `/bin/sh`, or the runtime cannot start the Pod. | Use an image shipping `/bin/sh`, `tar`, `ls`; check `kubectl describe pod`. |
+| `pod ... not ready` after the readiness timeout (default 60 s, or the caller context deadline if shorter) | Image lacks `/bin/sh`, or the runtime cannot start the Pod. | Use an image shipping `/bin/sh`, `tar`, `ls`; check `kubectl describe pod`. |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
 
 ## See also
