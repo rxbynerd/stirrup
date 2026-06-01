@@ -43,6 +43,37 @@ guardian-smoke:
 clean:
     rm -f stirrup stirrup-eval
 
+# Remove every local worktree whose branch has been merged into origin/main,
+# then delete the now-orphaned local branch. Fetches first so the merged
+# check reflects the current state of the remote.
+worktree-clean:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git fetch --prune origin
+    removed=0
+    first=1
+    wt="" branch=""
+    while IFS= read -r line; do
+        if [[ "$line" == worktree\ * ]]; then
+            wt="${line#worktree }"
+        elif [[ "$line" == branch\ * ]]; then
+            branch="${line#branch refs/heads/}"
+        elif [[ -z "$line" ]]; then
+            if [[ $first -eq 1 ]]; then
+                first=0
+            elif [[ -n "${wt:-}" && -n "${branch:-}" ]]; then
+                if git branch -r --merged origin/main | grep -qF "origin/$branch"; then
+                    echo "removing $wt (branch: $branch)"
+                    git worktree remove --force "$wt"
+                    git branch -d "$branch" 2>/dev/null || true
+                    removed=$((removed + 1))
+                fi
+            fi
+            wt="" branch=""
+        fi
+    done < <(git worktree list --porcelain; echo "")
+    echo "removed $removed merged worktree(s)"
+
 # === Kind sandbox ===
 
 # Bring up the local K8sExecutor sandbox cluster (kind + gVisor +
