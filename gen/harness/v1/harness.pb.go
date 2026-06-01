@@ -1429,14 +1429,13 @@ type RunTrace struct {
 	// Canonical terminal status of the run, mirroring the Go-side
 	// types.RunTrace.Outcome. Unlike stop_reason (which on the loop's own
 	// events is one of 7 values and has no "success" concept), outcome is
-	// the authoritative field for downstream analytics and is one of:
+	// the authoritative field for downstream analytics: a wire-driven
+	// lakehouse writer can persist it directly without inferring it from
+	// stop_reason + verification_results + budget state.
+	// Values: "success", "error", "max_turns", "verification_failed",
 	//
-	//	"success" | "error" | "max_turns" | "verification_failed" |
-	//	"verification_error" | "budget_exceeded" | "stalled" |
-	//	"tool_failures" | "cancelled" | "timeout" | "max_tokens".
-	//
-	// A wire-driven lakehouse writer can persist this directly without
-	// inferring it from stop_reason + verification_results + budget state.
+	//	"verification_error", "budget_exceeded", "stalled",
+	//	"tool_failures", "cancelled", "timeout", "max_tokens".
 	Outcome       string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
