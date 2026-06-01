@@ -1,0 +1,91 @@
+# RBAC for the stirrup orchestrator (the process running the k8s executor).
+#
+# The orchestrator is the harness binary holding the kubeconfig / in-cluster
+# ServiceAccount that NewK8sExecutor authenticates as. It is NOT the sandbox
+# Pod: sandbox Pods run with automountServiceAccountToken=false and have no API
+# access of their own. This ServiceAccount is for whatever runs the harness
+# (a CI runner, a controller, an operator's shell).
+#
+# The verbs below are derived from the executor's clientset calls in
+# harness/internal/executor/k8s.go and k8s_netpol.go:
+#
+#   pods                  create  — NewK8sExecutor creates the sandbox Pod
+#                         get     — waitForPodReady polls Pod status
+#                         delete  — Close() / best-effort cleanup paths
+#   pods/exec             create  — Exec + tar-based file I/O POST to the
+#                                   pods/exec subresource (streamExec)
+#   pods/log              get     — NOT used by the executor today; granted so
+#                                   an operator can `kubectl logs` a sandbox Pod
+#                                   for debugging. Drop this verb to tighten the
+#                                   Role to exactly what the executor needs.
+#   networkpolicies       create  — the egress policy is installed BEFORE the
+#                         delete    Pod and removed on Close(); without these
+#                                   two verbs construction fails fail-closed,
+#                                   because a Pod whose egress cannot be
+#                                   confined must never be created.
+#
+# The Role is intentionally namespaced (not a ClusterRole): the orchestrator
+# operates within a single sandbox namespace. Bind one Role per namespace if
+# runs span several.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stirrup-orchestrator
+  namespace: stirrup-sandbox
+  labels:
+    stirrup-sandbox: "true"
+# Refuse a default token automount on the ServiceAccount object itself; the
+# orchestrator is given credentials explicitly (kubeconfig or a projected
+# token on its own Pod) rather than relying on an ambient mount.
+automountServiceAccountToken: false
+---
+# The ServiceAccount above is core/v1; the Role and RoleBinding below are
+# rbac.authorization.k8s.io/v1 — they live in different API groups, which is why
+# the apiVersion changes across the three documents.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stirrup-orchestrator
+  namespace: stirrup-sandbox
+  labels:
+    stirrup-sandbox: "true"
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs:
+      - create
+      - get
+      - delete
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs:
+      - create
+  - apiGroups: [""]
+    resources:
+      - pods/log
+    verbs:
+      - get
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    verbs:
+      - create
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stirrup-orchestrator
+  namespace: stirrup-sandbox
+  labels:
+    stirrup-sandbox: "true"
+subjects:
+  - kind: ServiceAccount
+    name: stirrup-orchestrator
+    namespace: stirrup-sandbox
+roleRef:
+  kind: Role
+  name: stirrup-orchestrator
+  apiGroup: rbac.authorization.k8s.io

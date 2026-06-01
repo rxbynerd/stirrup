@@ -1661,16 +1661,282 @@ func TestValidateRunConfig_APIKeyHeader_Valid(t *testing.T) {
 // --- ExecutorConfig.Runtime ---
 
 // TestValidateRunConfig_ExecutorRuntimeAcceptsClosedSet locks in the
-// closed set of OCI runtimes. Adding a new runtime here without
-// updating validExecutorRuntimes (or vice versa) fails loudly so the
+// closed set of container OCI runtimes. Adding a new runtime here without
+// updating validContainerRuntimes (or vice versa) fails loudly so the
 // validator does not silently accept an unknown runtime string.
 func TestValidateRunConfig_ExecutorRuntimeAcceptsClosedSet(t *testing.T) {
-	for _, runtime := range []string{"", "runc", "runsc", "kata", "kata-qemu", "kata-fc"} {
+	for _, runtime := range []string{"", "runc", "runsc", "kata", "kata-qemu", "kata-fc", "kata-clh"} {
 		t.Run(fmt.Sprintf("runtime_%s", runtime), func(t *testing.T) {
 			c := validConfig()
 			c.Executor = ExecutorConfig{Type: "container", Runtime: runtime}
 			if err := ValidateRunConfig(c); err != nil {
 				t.Fatalf("expected runtime %q to validate, got: %v", runtime, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_RuntimeSetIsPerType pins the per-Type runtime
+// split: a name valid for one executor must be rejected on the other when
+// it is not in that executor's closed set. The trap this guards is naively
+// widening a shared map, which would let "container" accept "gvisor" (a
+// k8s RuntimeClass name, not a Docker OCI runtime) or let "k8s" accept
+// "runsc" (the container name for gVisor).
+func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
+	cases := []struct {
+		name        string
+		execType    string
+		runtime     string
+		image       string
+		k8sNS       string
+		network     *NetworkConfig
+		wantErr     bool
+		errContains string
+	}{
+		{name: "container accepts runsc", execType: "container", runtime: "runsc", image: "img", wantErr: false},
+		{name: "container accepts kata-clh", execType: "container", runtime: "kata-clh", image: "img", wantErr: false},
+		{name: "container rejects gvisor", execType: "container", runtime: "gvisor", image: "img", wantErr: true, errContains: "gvisor"},
+		{name: "k8s accepts gvisor", execType: "k8s", runtime: "gvisor", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
+		{name: "k8s accepts kata-clh", execType: "k8s", runtime: "kata-clh", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
+		{name: "k8s rejects runsc", execType: "k8s", runtime: "runsc", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "runsc"},
+		{name: "k8s rejects kata bare", execType: "k8s", runtime: "kata", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "kata"},
+		{name: "local rejects any runtime", execType: "local", runtime: "runc", wantErr: true, errContains: "only valid"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = ExecutorConfig{
+				Type:         tc.execType,
+				Runtime:      tc.runtime,
+				Image:        tc.image,
+				K8sNamespace: tc.k8sNS,
+				Network:      tc.network,
+			}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %s/%s, got nil", tc.execType, tc.runtime)
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected %s/%s to validate, got: %v", tc.execType, tc.runtime, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_K8sExecutorFields exercises the type-"k8s"
+// cross-field arm: Image and K8sNamespace are required, and Workspace is
+// rejected because the Pod workspace is fixed at /workspace.
+func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
+	cases := []struct {
+		name        string
+		exec        ExecutorConfig
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid minimal",
+			exec: ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}},
+		},
+		{
+			name: "valid with optional fields",
+			exec: ExecutorConfig{
+				Type:              "k8s",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				K8sKubeconfig:     "/home/u/.kube/config",
+				K8sNodeSelector:   map[string]string{"disktype": "ssd"},
+				K8sServiceAccount: "agent-sa",
+				Runtime:           "gvisor",
+				Network:           &NetworkConfig{Mode: "none"},
+			},
+		},
+		{
+			name:        "missing image",
+			exec:        ExecutorConfig{Type: "k8s", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}},
+			wantErr:     true,
+			errContains: "executor.image is required",
+		},
+		{
+			name:        "missing namespace",
+			exec:        ExecutorConfig{Type: "k8s", Image: "img", Network: &NetworkConfig{Mode: "none"}},
+			wantErr:     true,
+			errContains: "executor.k8sNamespace is required",
+		},
+		{
+			name:        "workspace rejected",
+			exec:        ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns", Workspace: "/ws", Network: &NetworkConfig{Mode: "none"}},
+			wantErr:     true,
+			errContains: "executor.workspace is not valid",
+		},
+		{
+			name:        "nil network rejected",
+			exec:        ExecutorConfig{Type: "k8s", Image: "img", K8sNamespace: "ns"},
+			wantErr:     true,
+			errContains: "executor.network is required for executor.type=\"k8s\"",
+		},
+		{
+			name: "allowlist mode with proxy url is valid",
+			exec: ExecutorConfig{
+				Type:              "k8s",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				Network:           &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
+				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
+			},
+		},
+		{
+			name: "allowlist mode without proxy url rejected",
+			exec: ExecutorConfig{
+				Type:         "k8s",
+				Image:        "img",
+				K8sNamespace: "ns",
+				Network:      &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
+			},
+			wantErr:     true,
+			errContains: "executor.k8sEgressProxyUrl is required",
+		},
+		{
+			name: "proxy url set with none mode rejected",
+			exec: ExecutorConfig{
+				Type:              "k8s",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				Network:           &NetworkConfig{Mode: "none"},
+				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
+			},
+			wantErr:     true,
+			errContains: "executor.k8sEgressProxyUrl is only valid",
+		},
+		{
+			// A nil network is the primary error; the egress-proxy cross-field
+			// check is skipped (the nil-network error is the signal), so the
+			// reported error is the network-required one, not the proxy one.
+			name: "proxy url set with no network reports network-required",
+			exec: ExecutorConfig{
+				Type:              "k8s",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
+			},
+			wantErr:     true,
+			errContains: "executor.network is required for executor.type=\"k8s\"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = tc.exec
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_ResourceLimits covers the shared negative-bound
+// rejection. A negative limit silently maps to "no limit" in both the
+// container and k8s executors, so the validator must reject it on either
+// type. The valid cases (nil, zero, positive) must pass through unchanged.
+func TestValidateRunConfig_ResourceLimits(t *testing.T) {
+	cases := []struct {
+		name        string
+		execType    string
+		resources   *ResourceLimits
+		image       string
+		k8sNS       string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:      "nil resources valid",
+			execType:  "container",
+			resources: nil,
+			image:     "img",
+		},
+		{
+			name:      "all-zero resources valid",
+			execType:  "container",
+			resources: &ResourceLimits{},
+			image:     "img",
+		},
+		{
+			name:      "positive resources valid",
+			execType:  "container",
+			resources: &ResourceLimits{CPUs: 2, MemoryMB: 512, DiskMB: 1024, PIDs: 256},
+			image:     "img",
+		},
+		{
+			name:        "negative cpus rejected (container)",
+			execType:    "container",
+			resources:   &ResourceLimits{CPUs: -2},
+			image:       "img",
+			wantErr:     true,
+			errContains: "executor.resources.cpus must not be negative",
+		},
+		{
+			name:        "negative memory rejected (container)",
+			execType:    "container",
+			resources:   &ResourceLimits{MemoryMB: -512},
+			image:       "img",
+			wantErr:     true,
+			errContains: "executor.resources.memoryMb must not be negative",
+		},
+		{
+			name:        "negative disk rejected (k8s)",
+			execType:    "k8s",
+			resources:   &ResourceLimits{DiskMB: -1},
+			image:       "img",
+			k8sNS:       "ns",
+			wantErr:     true,
+			errContains: "executor.resources.diskMb must not be negative",
+		},
+		{
+			name:        "negative pids rejected (k8s)",
+			execType:    "k8s",
+			resources:   &ResourceLimits{PIDs: -1},
+			image:       "img",
+			k8sNS:       "ns",
+			wantErr:     true,
+			errContains: "executor.resources.pids must not be negative",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = ExecutorConfig{
+				Type:         tc.execType,
+				Image:        tc.image,
+				K8sNamespace: tc.k8sNS,
+				Resources:    tc.resources,
+			}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
 			}
 		})
 	}

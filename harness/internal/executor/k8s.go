@@ -19,6 +19,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -63,16 +64,28 @@ const (
 // without string comparison.
 var errK8sOutputCap = errors.New("output exceeded 10 MB cap")
 
-// K8sExecutorConfig configures a K8sExecutor. The container runtime,
-// resources, and network policy fields are accepted but not yet enforced
-// in this scaffold — the full mapping arrives in follow-up issues. The
-// scaffold's job is the create/wait/delete lifecycle only.
+// K8sExecutorConfig configures a K8sExecutor. The type is wired through
+// the executor factory under ExecutorConfig.Type == "k8s": ValidateRunConfig
+// enforces the required Image and Namespace and rejects a non-empty
+// workspace, and buildExecutor maps the run's ExecutorConfig onto these
+// fields. RuntimeClassName maps from the shared Runtime field and Resources
+// is applied to the Pod container (CPU/memory requests+limits, ephemeral
+// storage limit; see resourcesToPodResources).
 //
-// This type is intentionally not wired into ExecutorConfig.Type or the
-// executor factory yet; that wiring lands in the follow-up factory issue.
-// When it does, ValidateRunConfig must grow a "k8s" arm that validates
-// the required Image and Namespace fields (mirroring the "container" arm),
-// and the factory must add a corresponding "k8s" Type case.
+// Network is REQUIRED (fail-closed): NewK8sExecutor rejects a nil Network
+// at construction, mirroring the container executor's explicit network
+// posture. Mode=="none" installs a deny-all egress NetworkPolicy alongside
+// the Pod; Mode=="allowlist" installs a policy permitting egress only to the
+// egress proxy (plus DNS) and injects HTTP_PROXY/HTTPS_PROXY/NO_PROXY pointing
+// at EgressProxyURL. Capabilities().CanNetwork reflects the installed policy.
+//
+// CAVEAT: NetworkPolicy enforcement depends on the cluster CNI. kindnet (the
+// default kind CNI) accepts the policy object but does NOT enforce it, so on
+// a stock kind cluster the deny/allowlist is inert and the Pod retains
+// cluster-default egress. A NetworkPolicy-enforcing CNI (Cilium, Calico) is
+// required for the posture to hold — see examples/k8s/egress-proxy/README.md.
+// This is the k8s analogue of the container executor's honest fail-open note
+// around host.docker.internal.
 type K8sExecutorConfig struct {
 	// Image is the container image for the agent Pod. It must ship a
 	// POSIX shell at /bin/sh plus the `tar` and `ls` utilities on PATH:
@@ -87,6 +100,18 @@ type K8sExecutorConfig struct {
 	ServiceAccountName string
 	Resources          *types.ResourceLimits
 	Network            *types.NetworkConfig
+	// EgressProxyURL is the URL the sandbox container's HTTP_PROXY /
+	// HTTPS_PROXY point at when Network.Mode == "allowlist". It is required
+	// in that mode (a Pod with an enforced allowlist NetworkPolicy can reach
+	// the network only via the proxy) and ignored for Mode == "none". The
+	// proxy itself runs as a separate Deployment — see
+	// examples/k8s/egress-proxy/ and the `stirrup egress-proxy` subcommand.
+	//
+	// The egress proxy Deployment MUST run in the same namespace as the
+	// sandbox Pod: the allowlist NetworkPolicy selects the proxy by
+	// PodSelector with no NamespaceSelector, so a cross-namespace proxy is
+	// denied (more restrictive, not a bypass) and a confusing misconfig.
+	EgressProxyURL string
 	// Security, when non-nil, receives structured security events
 	// (path-traversal blocks, file-size-limit and output-cap hits) so they
 	// reach the same monitoring surface as the container and local
@@ -107,24 +132,44 @@ type K8sExecutor struct {
 	namespace  string
 	podName    string
 	network    *types.NetworkConfig
-	logger     *slog.Logger
+	// networkPolicyName is the name of the egress NetworkPolicy installed
+	// alongside the Pod. Empty only on a zero-value executor (unit tests);
+	// NewK8sExecutor always installs one. Close() deletes it best-effort.
+	networkPolicyName string
+	logger            *slog.Logger
 	// Security, when non-nil, receives structured security events. It is
 	// nil-checked at every call site so a zero-value executor (used in
 	// unit tests) emits nothing.
 	Security SecurityEventEmitter
 }
 
-// NewK8sExecutor builds a kubernetes clientset, creates a sandbox Pod, and
-// waits for it to become Ready before returning. On any failure after the
-// Pod is created (including readiness-poll failures) the Pod is deleted
-// best-effort before the error is returned, so callers do not have to
-// reason about partial state.
+// NewK8sExecutor builds a kubernetes clientset, installs the egress
+// NetworkPolicy, creates a sandbox Pod, and waits for it to become Ready
+// before returning. The policy is installed BEFORE the Pod so the Pod never
+// runs with unrestricted egress (the Pod name is client-side deterministic,
+// so the policy can target it ahead of time). On any failure the partially
+// created objects (policy and/or Pod) are deleted best-effort before the
+// error is returned, so callers do not have to reason about partial state.
 func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("k8s executor requires an image")
 	}
 	if cfg.Namespace == "" {
 		return nil, fmt.Errorf("k8s executor requires a namespace")
+	}
+	// Fail-closed: a nil Network leaves egress posture undefined. Rejecting
+	// it here (rather than defaulting to "deny" or "open") forces the caller
+	// to declare intent, matching the container executor's explicit network
+	// handling and keeping CanNetwork honest against an installed policy.
+	if cfg.Network == nil {
+		return nil, fmt.Errorf("k8s executor requires a network config (set executor.network.mode to \"none\" or \"allowlist\")")
+	}
+	// Compute the proxy env and validate the allowlist→URL requirement BEFORE
+	// creating any cluster objects, so a misconfigured allowlist run fails
+	// without leaving an orphaned Pod behind.
+	proxyEnv, err := proxyEnvFor(cfg.Network, cfg.EgressProxyURL)
+	if err != nil {
+		return nil, err
 	}
 
 	restCfg, err := buildRESTConfig(cfg.Kubeconfig)
@@ -138,6 +183,18 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 	}
 
 	logger := slog.Default()
+
+	// An empty RuntimeClassName leaves RuntimeClassName=nil on the Pod,
+	// which selects the cluster-default RuntimeClass. That default may be
+	// plain runc with no user-space-kernel or VM isolation, so the operator
+	// is silently running unsandboxed. Warn so the opt-out is visible; a
+	// caller wanting isolation must set executor.runtime explicitly.
+	if cfg.RuntimeClassName == "" {
+		logger.Warn(
+			"k8s executor running with the cluster-default RuntimeClass; sandbox isolation is not guaranteed — set executor.runtime (e.g. gvisor) for a sandboxed RuntimeClass",
+			"namespace", cfg.Namespace,
+		)
+	}
 
 	podName, err := generatePodName()
 	if err != nil {
@@ -153,6 +210,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
 			Namespace: cfg.Namespace,
+			Labels:    podLabels(podName),
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:      corev1.RestartPolicyNever,
@@ -170,6 +228,8 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 					Image:      cfg.Image,
 					Command:    []string{"/bin/sh", "-c", "sleep infinity"},
 					WorkingDir: k8sWorkspace,
+					Env:        proxyEnv,
+					Resources:  resourcesToPodResources(cfg.Resources),
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: ptr.To(false),
 						Capabilities: &corev1.Capabilities{
@@ -187,13 +247,37 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		},
 	}
 
+	// Install the egress NetworkPolicy BEFORE creating the Pod. The Pod name
+	// is client-side deterministic (generatePodName sets ObjectMeta.Name, not
+	// GenerateName) and the policy selects on the stirrup.dev/pod=<name> +
+	// stirrup-sandbox=true labels, both known here — so the policy can be in
+	// place before the Pod exists. Installing AFTER readiness would leave a
+	// Running Pod with cluster-default (unrestricted) egress in the
+	// Ready→policy window, defeating the deny-all/allowlist posture. A failure
+	// to install is fatal: a Pod whose egress is meant to be denied/allowlisted
+	// but is not must never be created.
+	//
+	// proxyEnvFor already validated the mode above, so egressPolicyFor cannot
+	// hit its default arm here.
+	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, podName)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := clientset.NetworkingV1().NetworkPolicies(cfg.Namespace).Create(ctx, policy, metav1.CreateOptions{}); err != nil {
+		return nil, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, podName, err)
+	}
+
 	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("create pod: %w", err)
+		// The policy is already installed; remove it so a failed construction
+		// leaves no orphaned policy behind.
+		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
+		return nil, classifyPodCreateError(cfg.RuntimeClassName, err)
 	}
 
 	if err := waitForPodReady(ctx, clientset, cfg.Namespace, created.Name); err != nil {
 		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
+		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
 		// The duration is intentionally omitted: readiness can end on either
 		// k8sReadyTimeout or a shorter caller-context deadline, and a
 		// hardcoded "after 1m0s" would misreport the latter. The wrapped
@@ -202,33 +286,51 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 	}
 
 	return &K8sExecutor{
-		clientset:  clientset,
-		restConfig: restCfg,
-		namespace:  cfg.Namespace,
-		podName:    created.Name,
-		network:    cfg.Network,
-		logger:     logger,
-		Security:   cfg.Security,
+		clientset:         clientset,
+		restConfig:        restCfg,
+		namespace:         cfg.Namespace,
+		podName:           created.Name,
+		network:           cfg.Network,
+		networkPolicyName: policy.Name,
+		logger:            logger,
+		Security:          cfg.Security,
 	}, nil
 }
 
-// Close deletes the sandbox Pod with zero grace period. It uses its own
-// background context so cleanup proceeds even if the caller's context is
-// already cancelled — matching the Docker executor's Close discipline.
-// A NotFound result is treated as success (idempotent).
+// Close deletes the sandbox Pod with zero grace period, then the egress
+// NetworkPolicy. It uses its own background context so cleanup proceeds even
+// if the caller's context is already cancelled — matching the Docker
+// executor's Close discipline. A NotFound result is treated as success
+// (idempotent).
+//
+// Ordering matters: the Pod is deleted FIRST so kubelet begins terminating it
+// immediately, then the policy is removed. Deleting the policy first would
+// reopen unrestricted egress for the still-running Pod during termination —
+// the same Ready→policy window the constructor closes by installing the
+// policy first. The policy delete is best-effort: a leftover policy is inert
+// once the Pod it selects is gone (its podSelector matches nothing), so a
+// failed policy delete must not surface as a Close error or block Pod removal.
 func (e *K8sExecutor) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
 	defer cancel()
 
-	err := e.clientset.CoreV1().Pods(e.namespace).Delete(ctx, e.podName, metav1.DeleteOptions{
+	podErr := e.clientset.CoreV1().Pods(e.namespace).Delete(ctx, e.podName, metav1.DeleteOptions{
 		GracePeriodSeconds: ptr.To(int64(0)),
 	})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
+
+	if e.networkPolicyName != "" {
+		npErr := e.clientset.NetworkingV1().NetworkPolicies(e.namespace).Delete(ctx, e.networkPolicyName, metav1.DeleteOptions{})
+		if npErr != nil && !apierrors.IsNotFound(npErr) {
+			e.logger.Warn("k8s executor networkpolicy delete failed", "namespace", e.namespace, "networkpolicy", e.networkPolicyName, "err", npErr)
+		}
+	}
+
+	if podErr != nil {
+		if apierrors.IsNotFound(podErr) {
 			e.logger.Debug("k8s executor pod already gone", "namespace", e.namespace, "pod", e.podName)
 			return nil
 		}
-		return fmt.Errorf("delete pod: %w", err)
+		return fmt.Errorf("delete pod: %w", podErr)
 	}
 	return nil
 }
@@ -607,14 +709,16 @@ func (w *writeCapBuffer) Write(p []byte) (int, error) {
 func (w *writeCapBuffer) Bytes() []byte  { return w.buf.Bytes() }
 func (w *writeCapBuffer) String() string { return w.buf.String() }
 
-// TODO(#178): CanNetwork's accuracy depends on a NetworkPolicy
-// being enforced for the Pod. Until that wiring lands, a Pod with
-// cfg.Network == nil reports CanNetwork=false but has cluster-default
-// egress in reality. Tracked in #178.
+// Capabilities advertises the executor's capabilities. CanNetwork reflects
+// the egress NetworkPolicy installed alongside the Pod (#178): Mode=="none"
+// installs a deny-all policy (CanNetwork=false) and Mode=="allowlist"
+// installs a proxy-only egress policy (CanNetwork=true). The report is honest
+// against the installed object — with the standing CNI caveat that kindnet
+// accepts but does not enforce NetworkPolicy (see K8sExecutorConfig).
 //
-// Capabilities advertises the executor's capabilities. CanNetwork is
-// derived from the held NetworkConfig so callers can branch on the
-// declared policy even while egress enforcement is deferred.
+// A zero-value executor (nil network, used in some unit tests) reports
+// CanNetwork=false; NewK8sExecutor never produces one because it fails-closed
+// on a nil network.
 //
 // MaxTimeout deliberately mirrors container.go and local.go (maxTimeout =
 // 5 min). Returning 0 would silently disable timeout clamping in callers
@@ -666,6 +770,29 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 	return cfg, nil
 }
 
+// classifyPodCreateError wraps a Pod-create failure with a friendlier
+// message when the API server rejects the spec AND a non-empty
+// RuntimeClass was requested. Two rejection shapes are covered:
+//   - apierrors.IsInvalid — the built-in admission check for an
+//     unregistered RuntimeClass ("...RuntimeClass.node.k8s.io \"gvisor\"
+//     not found...").
+//   - apierrors.IsForbidden — an admission webhook (OPA/Gatekeeper, or a
+//     RuntimeClass-restricting policy) returning 403 for a RuntimeClass
+//     the operator may not use.
+//
+// Both raw texts are opaque to an operator who simply typed a runtime name
+// the cluster does not have or does not allow. The original error is
+// wrapped (not replaced) so callers can still errors.As / errors.Is it.
+func classifyPodCreateError(runtimeClass string, err error) error {
+	if runtimeClass != "" && (apierrors.IsInvalid(err) || apierrors.IsForbidden(err)) {
+		return fmt.Errorf(
+			"create pod: RuntimeClass %q was rejected by the cluster — confirm a RuntimeClass with that name is registered and permitted (kubectl get runtimeclass): %w",
+			runtimeClass, err,
+		)
+	}
+	return fmt.Errorf("create pod: %w", err)
+}
+
 // generatePodName returns "stirrup-<12-hex-chars>". 6 random bytes give 48
 // bits of entropy — ample for collision avoidance within a namespace.
 func generatePodName() (string, error) {
@@ -684,6 +811,89 @@ func optionalRuntimeClassName(name string) *string {
 		return nil
 	}
 	return &name
+}
+
+// resourcesToPodResources maps the harness-neutral ResourceLimits onto a
+// Pod container's ResourceRequirements. A nil limits (or an all-zero one)
+// yields an empty requirements block so the Pod inherits namespace
+// defaults rather than pinning a tiny request.
+//
+// Mapping rationale:
+//   - CPUs go on BOTH requests and limits so the scheduler reserves what
+//     the workload may use (no burst beyond the declared share). Fractional
+//     cores render as milli-CPU ("500m" for 0.5); whole cores render as a
+//     plain integer ("2") for readability.
+//   - MemoryMB goes on both requests and limits (Mi) for the same reason:
+//     a memory limit without a matching request lets the scheduler
+//     over-commit the node.
+//   - DiskMB maps to limits.ephemeral-storage ONLY. A request would force
+//     the scheduler to find a node with that much free scratch space even
+//     when the workload never fills it; the limit alone is the eviction
+//     ceiling, which is the behaviour operators expect from a disk cap.
+//   - PIDs is intentionally NOT enforced here. Pod-level PID limits are a
+//     kubelet setting (--pod-max-pids / SupportPodPidsLimit), not a
+//     per-container resource field, so the value is logged-and-ignored
+//     rather than silently dropped.
+func resourcesToPodResources(limits *types.ResourceLimits) corev1.ResourceRequirements {
+	req := corev1.ResourceRequirements{}
+	if limits == nil {
+		return req
+	}
+
+	requests := corev1.ResourceList{}
+	caps := corev1.ResourceList{}
+
+	if limits.CPUs > 0 {
+		cpu := cpuQuantity(limits.CPUs)
+		requests[corev1.ResourceCPU] = cpu
+		caps[corev1.ResourceCPU] = cpu
+	}
+	if limits.MemoryMB > 0 {
+		mem := resource.MustParse(fmt.Sprintf("%dMi", limits.MemoryMB))
+		requests[corev1.ResourceMemory] = mem
+		caps[corev1.ResourceMemory] = mem
+	}
+	if limits.DiskMB > 0 {
+		caps[corev1.ResourceEphemeralStorage] = resource.MustParse(fmt.Sprintf("%dMi", limits.DiskMB))
+	}
+	if limits.PIDs > 0 {
+		slog.Default().Debug(
+			"k8s executor: resources.pids ignored",
+			"pids", limits.PIDs,
+			"reason", "per-Pod PID limits require the kubelet --pod-max-pids flag, not a container resource field",
+		)
+	}
+
+	if len(requests) > 0 {
+		req.Requests = requests
+	}
+	if len(caps) > 0 {
+		req.Limits = caps
+	}
+	return req
+}
+
+// cpuQuantity renders a CPU share as a Kubernetes quantity. Whole cores
+// become a plain integer ("2") and fractional cores become milli-CPU
+// ("500m" for 0.5) so the emitted Pod spec is readable rather than an
+// opaque scaled value. The milli-CPU rounding matches Kubernetes' own
+// internal CPU granularity (1m = 0.001 core).
+//
+// A positive but sub-millicore share (e.g. 0.0004 core) rounds to zero
+// millis. "0m" is rejected by resource.MustParse (Kubernetes forbids an
+// explicitly-zero milli quantity), which would panic, so any positive
+// input is clamped to a 1m floor. Callers only reach this with cpus > 0
+// (resourcesToPodResources guards the zero/negative case), so the floor
+// turns a would-be panic into the smallest representable reservation.
+func cpuQuantity(cpus float64) resource.Quantity {
+	if cpus == math.Trunc(cpus) {
+		return resource.MustParse(fmt.Sprintf("%d", int64(cpus)))
+	}
+	milli := int64(math.Round(cpus * 1000))
+	if milli < 1 {
+		milli = 1
+	}
+	return resource.MustParse(fmt.Sprintf("%dm", milli))
 }
 
 // waitForPodReady polls until the Pod's phase is Running AND the agent
@@ -718,6 +928,19 @@ func deletePodBestEffort(clientset kubernetes.Interface, namespace, name string,
 	})
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Warn("k8s executor cleanup delete failed", "namespace", namespace, "pod", name, "err", err)
+	}
+}
+
+// deleteNetworkPolicyBestEffort attempts to delete the egress NetworkPolicy,
+// logging (but not returning) any error. Used on constructor error paths to
+// undo a policy that was installed before the Pod-create / readiness step
+// failed, so a failed construction leaves no orphaned policy behind.
+func deleteNetworkPolicyBestEffort(clientset kubernetes.Interface, namespace, name string, logger *slog.Logger) {
+	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
+	defer cancel()
+	err := clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		logger.Warn("k8s executor cleanup networkpolicy delete failed", "namespace", namespace, "networkpolicy", name, "err", err)
 	}
 }
 

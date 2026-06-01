@@ -387,6 +387,11 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	otelEndpoint, _ := f.GetString("otel-endpoint")
 	otelProtocol, _ := f.GetString("otel-protocol")
 	containerRuntime, _ := f.GetString("container-runtime")
+	k8sNamespace, _ := f.GetString("k8s-namespace")
+	k8sKubeconfig, _ := f.GetString("k8s-kubeconfig")
+	k8sServiceAccount, _ := f.GetString("k8s-service-account")
+	k8sEgressProxyURL, _ := f.GetString("k8s-egress-proxy-url")
+	k8sNodeSelectorRaw, _ := f.GetStringArray("k8s-node-selector")
 	permissionPolicyFile, _ := f.GetString("permission-policy-file")
 	codeScannerType, _ := f.GetString("code-scanner")
 	guardRailType, _ := f.GetString("guardrail")
@@ -424,6 +429,18 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 			queryParams = map[string]string{}
 		}
 		queryParams[k] = v
+	}
+
+	var k8sNodeSelector map[string]string
+	for _, entry := range k8sNodeSelectorRaw {
+		k, v, err := parseQueryParam(entry)
+		if err != nil {
+			return nil, fmt.Errorf("--k8s-node-selector %q: %w", entry, err)
+		}
+		if k8sNodeSelector == nil {
+			k8sNodeSelector = map[string]string{}
+		}
+		k8sNodeSelector[k] = v
 	}
 
 	temperature := optionalFloat64Flag(cmd, "temperature")
@@ -477,6 +494,11 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		OTelEndpoint:                 otelEndpoint,
 		OTelProtocol:                 otelProtocol,
 		ContainerRuntime:             containerRuntime,
+		K8sNamespace:                 k8sNamespace,
+		K8sKubeconfig:                k8sKubeconfig,
+		K8sServiceAccount:            k8sServiceAccount,
+		K8sEgressProxyURL:            k8sEgressProxyURL,
+		K8sNodeSelector:              k8sNodeSelector,
 		PermissionPolicyFile:         permissionPolicyFile,
 		CodeScannerType:              codeScannerType,
 		GuardRailType:                guardRailType,

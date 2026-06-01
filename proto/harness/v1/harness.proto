@@ -1104,6 +1104,8 @@ message ExecutorConfig {
   //   "local"     — direct filesystem and subprocess access (default).
   //   "container" — Docker/Podman container sandbox (hardened: CapDrop ALL,
   //                 no-new-privileges, NetworkMode none by default).
+  //   "k8s"       — Kubernetes sandbox Pod (hardened: CapDrop ALL,
+  //                 RunAsNonRoot, seccomp RuntimeDefault, no token automount).
   //   "api"       — read-only, backed by a VCS API (e.g. GitHub Contents).
   //                 WriteFile and Exec return errors.
   string type = 1;
@@ -1129,12 +1131,30 @@ message ExecutorConfig {
   // For "container": HTTP proxy URL for network requests inside the container.
   string proxy = 7;
 
-  // Optional. OCI runtime override for the container executor.
-  // Empty string means "engine default" (typically runc) and the
-  // harness omits the Runtime field on the create-container request.
-  // Closed set: "", "runc", "runsc" (gVisor), "kata", "kata-qemu",
-  // "kata-fc". ValidateRunConfig rejects every other value.
+  // Optional. OCI sandbox runtime override. For "container" this is the
+  // engine OCI runtime name (closed set: "", "runc", "runsc" (gVisor),
+  // "kata", "kata-qemu", "kata-fc", "kata-clh") and the harness omits the
+  // field on the create-container request when empty. For "k8s" this is
+  // the Pod RuntimeClassName (closed set: "", "runc", "gvisor",
+  // "kata-qemu", "kata-fc", "kata-clh"). The two sets differ because they
+  // name different things. ValidateRunConfig rejects every other value
+  // per executor type.
   string runtime = 8;
+
+  // For "k8s": the Kubernetes namespace for the sandbox Pod. Required when
+  // type is "k8s".
+  string k8s_namespace = 9;
+
+  // For "k8s": path to a kubeconfig file. Empty prefers in-cluster config,
+  // then $KUBECONFIG.
+  string k8s_kubeconfig = 10;
+
+  // For "k8s": nodeSelector labels constraining where the Pod schedules.
+  map<string, string> k8s_node_selector = 11;
+
+  // For "k8s": the ServiceAccount name for the Pod. Empty uses the
+  // namespace default. The token is never automounted regardless.
+  string k8s_service_account = 12;
 }
 
 // VcsBackendConfig selects the VCS API backend for the "api" executor.

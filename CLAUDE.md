@@ -17,6 +17,11 @@ docs are:
 - [`docs/security.md`](docs/security.md) and
   [`docs/safety-rings.md`](docs/safety-rings.md) — security
   foundations and the five operator-configurable rings.
+- [`docs/executors/k8s.md`](docs/executors/k8s.md) — the
+  Kubernetes (Pod-per-run) executor: architecture, config
+  reference, deployment recipes, and egress. Reference manifests
+  in [`examples/k8s/`](examples/k8s/); local `kind` cluster in
+  [`scripts/dev/`](scripts/dev/).
 - [`AGENTS.md`](AGENTS.md) — per-package map of `harness/internal/*`.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — build, test, lint,
   commit/PR conventions.
@@ -133,6 +138,9 @@ Quick map for "I need to change X" lookups:
 | Permission gating logic | `harness/internal/permission/<type>.go` |
 | Cedar policy semantics | `harness/internal/permission/policyengine.go` |
 | Container runtime / network mode wiring | `harness/internal/executor/container*.go` |
+| K8s executor (Pod-per-run) + egress NetworkPolicy | `harness/internal/executor/k8s.go`, `k8s_netpol.go` (operator doc: `docs/executors/k8s.md`) |
+| `--k8s-*` CLI flags (`--k8s-namespace`, `--k8s-kubeconfig`, `--k8s-node-selector`, `--k8s-service-account`, `--k8s-egress-proxy-url`) | `harness/cmd/stirrup/cmd/runconfigflags.go` (defs), `harness.go` (mapping) |
+| `stirrup egress-proxy` subcommand | `harness/cmd/stirrup/cmd/egress_proxy.go` |
 | Egress proxy | `harness/internal/executor/egressproxy/` |
 | Code scanner | `harness/internal/security/codescanner/` |
 | Result sink (RunResult payload) | `harness/internal/resultsink/` |

@@ -10,6 +10,11 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	utilexec "k8s.io/client-go/util/exec"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -88,6 +93,174 @@ func TestNewK8sExecutor_MissingNamespace(t *testing.T) {
 	if !strings.Contains(err.Error(), "namespace") {
 		t.Errorf("error %q should mention 'namespace'", err)
 	}
+}
+
+// TestNewK8sExecutor_NilNetworkRejected asserts the fail-closed guard fires
+// before any cluster I/O: a nil Network leaves egress posture undefined and
+// is rejected at construction (issue #178). This pins the acceptance
+// criterion "nil Network rejected at construction".
+func TestNewK8sExecutor_NilNetworkRejected(t *testing.T) {
+	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
+		Image:     "busybox",
+		Namespace: "default",
+	})
+	if err == nil {
+		t.Fatal("expected error for nil network config")
+	}
+	if !strings.Contains(err.Error(), "network") {
+		t.Errorf("error %q should mention 'network'", err)
+	}
+}
+
+// TestNewK8sExecutor_AllowlistRequiresProxyURL asserts the allowlist-mode
+// guard fails closed before any cluster I/O when no EgressProxyURL is set
+// (issue #83). An enforced allowlist NetworkPolicy makes the proxy the only
+// route to the network, so omitting its URL is a misconfiguration.
+func TestNewK8sExecutor_AllowlistRequiresProxyURL(t *testing.T) {
+	_, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
+		Image:     "busybox",
+		Namespace: "default",
+		Network:   &types.NetworkConfig{Mode: "allowlist"},
+	})
+	if err == nil {
+		t.Fatal("expected error for allowlist mode without a proxy URL")
+	}
+	if !strings.Contains(err.Error(), "proxy") {
+		t.Errorf("error %q should mention the missing proxy URL", err)
+	}
+}
+
+// TestEgressPolicyFor covers the pure NetworkPolicy construction for each
+// mode without a cluster: deny-all for "none", proxy+DNS allowlist for
+// "allowlist", and an error for a nil or unsupported mode. The shape
+// assertions here are the cluster-free half of the manifest-shape contract
+// that the integration tests pin against a real API server.
+func TestEgressPolicyFor(t *testing.T) {
+	const ns, pod = "default", "stirrup-abc123"
+
+	t.Run("nil network is rejected", func(t *testing.T) {
+		if _, err := egressPolicyFor(nil, ns, pod); err == nil {
+			t.Fatal("expected error for nil network")
+		}
+	})
+
+	t.Run("unsupported mode is rejected", func(t *testing.T) {
+		if _, err := egressPolicyFor(&types.NetworkConfig{Mode: "bridge"}, ns, pod); err == nil {
+			t.Fatal("expected error for unsupported mode")
+		}
+	})
+
+	t.Run("none yields deny-all egress", func(t *testing.T) {
+		np, err := egressPolicyFor(&types.NetworkConfig{Mode: "none"}, ns, pod)
+		if err != nil {
+			t.Fatalf("egressPolicyFor(none): %v", err)
+		}
+		if np.Name != networkPolicyName(pod) || np.Namespace != ns {
+			t.Errorf("policy name/ns = %s/%s, want %s/%s", np.Name, np.Namespace, networkPolicyName(pod), ns)
+		}
+		if np.Spec.PodSelector.MatchLabels[k8sPodNameLabel] != pod {
+			t.Errorf("podSelector = %v, want it to select %s=%s", np.Spec.PodSelector.MatchLabels, k8sPodNameLabel, pod)
+		}
+		if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeEgress {
+			t.Errorf("policyTypes = %v, want [Egress]", np.Spec.PolicyTypes)
+		}
+		if len(np.Spec.Egress) != 0 {
+			t.Errorf("deny-all must have zero egress rules, got %d", len(np.Spec.Egress))
+		}
+	})
+
+	t.Run("allowlist yields dns + proxy egress", func(t *testing.T) {
+		np, err := egressPolicyFor(&types.NetworkConfig{Mode: "allowlist"}, ns, pod)
+		if err != nil {
+			t.Fatalf("egressPolicyFor(allowlist): %v", err)
+		}
+		if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeEgress {
+			t.Errorf("policyTypes = %v, want [Egress]", np.Spec.PolicyTypes)
+		}
+		if len(np.Spec.Egress) != 2 {
+			t.Fatalf("allowlist egress rules = %d, want 2 (dns + proxy)", len(np.Spec.Egress))
+		}
+		// First rule is DNS: two ports (UDP/TCP 53), no peer restriction.
+		dns := np.Spec.Egress[0]
+		if len(dns.Ports) != 2 {
+			t.Errorf("dns rule ports = %d, want 2 (udp+tcp)", len(dns.Ports))
+		}
+		for _, p := range dns.Ports {
+			if p.Port == nil || p.Port.IntValue() != k8sDNSPort {
+				t.Errorf("dns rule port = %v, want %d", p.Port, k8sDNSPort)
+			}
+		}
+		// Second rule selects the egress proxy by label.
+		proxy := np.Spec.Egress[1]
+		if len(proxy.To) != 1 || proxy.To[0].PodSelector == nil {
+			t.Fatalf("proxy rule must select the proxy pod, got %+v", proxy.To)
+		}
+		if proxy.To[0].PodSelector.MatchLabels["app"] != "stirrup-egress-proxy" {
+			t.Errorf("proxy peer selector = %v, want app=stirrup-egress-proxy", proxy.To[0].PodSelector.MatchLabels)
+		}
+		// The proxy rule must confine egress to the proxy's listen port so an
+		// enforcing CNI does not permit reaching the proxy Pod on any port.
+		if len(proxy.Ports) != 1 {
+			t.Fatalf("proxy rule ports = %d, want 1 (TCP %d)", len(proxy.Ports), k8sEgressProxyPort)
+		}
+		if proxy.Ports[0].Protocol == nil || *proxy.Ports[0].Protocol != corev1.ProtocolTCP {
+			t.Errorf("proxy rule protocol = %v, want TCP", proxy.Ports[0].Protocol)
+		}
+		if proxy.Ports[0].Port == nil || proxy.Ports[0].Port.IntValue() != k8sEgressProxyPort {
+			t.Errorf("proxy rule port = %v, want %d", proxy.Ports[0].Port, k8sEgressProxyPort)
+		}
+	})
+}
+
+// TestProxyEnvFor covers the pure proxy-env mapping: none injects nothing,
+// allowlist requires a URL and injects the three proxy variables, and a nil
+// or unsupported mode errors.
+func TestProxyEnvFor(t *testing.T) {
+	t.Run("nil network is rejected", func(t *testing.T) {
+		if _, err := proxyEnvFor(nil, ""); err == nil {
+			t.Fatal("expected error for nil network")
+		}
+	})
+
+	t.Run("none injects nothing", func(t *testing.T) {
+		env, err := proxyEnvFor(&types.NetworkConfig{Mode: "none"}, "")
+		if err != nil {
+			t.Fatalf("proxyEnvFor(none): %v", err)
+		}
+		if len(env) != 0 {
+			t.Errorf("none must inject no env, got %v", env)
+		}
+	})
+
+	t.Run("allowlist without url errors", func(t *testing.T) {
+		if _, err := proxyEnvFor(&types.NetworkConfig{Mode: "allowlist"}, ""); err == nil {
+			t.Fatal("expected error for allowlist without a proxy URL")
+		}
+	})
+
+	t.Run("allowlist with url injects proxy vars", func(t *testing.T) {
+		const url = "http://stirrup-egress-proxy.default.svc:8080"
+		env, err := proxyEnvFor(&types.NetworkConfig{Mode: "allowlist"}, url)
+		if err != nil {
+			t.Fatalf("proxyEnvFor(allowlist): %v", err)
+		}
+		got := map[string]string{}
+		for _, e := range env {
+			got[e.Name] = e.Value
+		}
+		if got["HTTP_PROXY"] != url || got["HTTPS_PROXY"] != url {
+			t.Errorf("proxy env = %v, want HTTP(S)_PROXY=%s", got, url)
+		}
+		if got["NO_PROXY"] == "" {
+			t.Errorf("NO_PROXY must be set, env = %v", got)
+		}
+	})
+
+	t.Run("unsupported mode errors", func(t *testing.T) {
+		if _, err := proxyEnvFor(&types.NetworkConfig{Mode: "bridge"}, "http://x"); err == nil {
+			t.Fatal("expected error for unsupported mode")
+		}
+	})
 }
 
 // TestK8sCapabilities exercises the CanNetwork branch and verifies the
@@ -405,3 +578,83 @@ func (r *recordingSecurityEmitter) OutputTruncated(command string, originalSize,
 }
 
 var _ SecurityEventEmitter = (*recordingSecurityEmitter)(nil)
+
+// TestClassifyPodCreateError covers the RuntimeClass-aware error wrap. An
+// IsInvalid (built-in admission) or IsForbidden (webhook/OPA) error with a
+// non-empty RuntimeClass gets the friendly hint; an empty RuntimeClass or
+// an unrelated error falls through to the plain "create pod" wrap. The
+// original error must remain reachable via errors.Is/As in every case.
+func TestClassifyPodCreateError(t *testing.T) {
+	invalid := apierrors.NewInvalid(
+		schema.GroupKind{Group: "", Kind: "Pod"},
+		"stirrup-abc",
+		field.ErrorList{field.Invalid(
+			field.NewPath("spec", "runtimeClassName"), "gvisor", "not found",
+		)},
+	)
+	forbidden := apierrors.NewForbidden(
+		schema.GroupResource{Group: "", Resource: "pods"},
+		"stirrup-abc",
+		errors.New("RuntimeClass \"gvisor\" is not allowed by policy"),
+	)
+	transport := errors.New("connection refused")
+
+	t.Run("invalid with runtime class gets hint", func(t *testing.T) {
+		err := classifyPodCreateError("gvisor", invalid)
+		if !strings.Contains(err.Error(), "RuntimeClass \"gvisor\"") {
+			t.Errorf("expected RuntimeClass hint, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "kubectl get runtimeclass") {
+			t.Errorf("expected actionable hint, got: %v", err)
+		}
+		if !apierrors.IsInvalid(err) {
+			t.Errorf("wrapped error must still be IsInvalid (errors.As), got: %v", err)
+		}
+	})
+
+	t.Run("forbidden with runtime class gets hint", func(t *testing.T) {
+		err := classifyPodCreateError("gvisor", forbidden)
+		if !strings.Contains(err.Error(), "RuntimeClass \"gvisor\"") {
+			t.Errorf("expected RuntimeClass hint, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "kubectl get runtimeclass") {
+			t.Errorf("expected actionable hint, got: %v", err)
+		}
+		if !apierrors.IsForbidden(err) {
+			t.Errorf("wrapped error must still be IsForbidden (errors.As), got: %v", err)
+		}
+	})
+
+	t.Run("forbidden without runtime class is plain", func(t *testing.T) {
+		err := classifyPodCreateError("", forbidden)
+		// The synthetic forbidden error carries "RuntimeClass" in its own
+		// text, so assert on the hint phrase the wrapper adds rather than
+		// the bare word.
+		if strings.Contains(err.Error(), "kubectl get runtimeclass") {
+			t.Errorf("empty runtime class must not add the RuntimeClass hint, got: %v", err)
+		}
+		if !apierrors.IsForbidden(err) {
+			t.Errorf("wrapped error must still be IsForbidden, got: %v", err)
+		}
+	})
+
+	t.Run("invalid without runtime class is plain", func(t *testing.T) {
+		err := classifyPodCreateError("", invalid)
+		if strings.Contains(err.Error(), "RuntimeClass") {
+			t.Errorf("empty runtime class must not add the RuntimeClass hint, got: %v", err)
+		}
+		if !strings.HasPrefix(err.Error(), "create pod:") {
+			t.Errorf("expected plain create-pod wrap, got: %v", err)
+		}
+	})
+
+	t.Run("non-invalid error with runtime class is plain", func(t *testing.T) {
+		err := classifyPodCreateError("gvisor", transport)
+		if strings.Contains(err.Error(), "RuntimeClass") {
+			t.Errorf("a non-Invalid error must not get the RuntimeClass hint, got: %v", err)
+		}
+		if !errors.Is(err, transport) {
+			t.Errorf("original error must remain wrapped, got: %v", err)
+		}
+	})
+}

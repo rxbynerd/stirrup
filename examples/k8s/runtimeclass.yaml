@@ -1,0 +1,103 @@
+# RuntimeClass objects for the stirrup k8s executor.
+#
+# The executor maps executor.runtime (the --container-runtime flag, shared with
+# the container executor) onto the Pod's spec.runtimeClassName. The accepted
+# names are a CLOSED set, enforced in types/runconfig.go (validK8sRuntimes):
+#
+#   runc | gvisor | kata-qemu | kata-fc | kata-clh
+#
+# An empty runtime leaves runtimeClassName unset, selecting the cluster-default
+# RuntimeClass — which may be plain runc with no sandbox isolation. The executor
+# logs a warning in that case (see NewK8sExecutor). Set executor.runtime
+# explicitly (e.g. gvisor) for guaranteed isolation.
+#
+# A RuntimeClass is only usable if its `handler` is installed and registered
+# with the container runtime (containerd/CRI-O) on the nodes that will run the
+# Pod. Registering a RuntimeClass object whose handler is absent makes Pod
+# scheduling fail with a RuntimeClass-not-found admission error — which the
+# executor surfaces with a friendlier message (classifyPodCreateError).
+#
+# The handler names below (`runc`, `runsc`, `kata-qemu`, …) are the conventional
+# CRI handler identifiers; confirm them against the node's containerd config
+# (`/etc/containerd/config.toml`, the `[plugins."io.containerd.grpc.v1.cri".
+# containerd.runtimes.<handler>]` stanzas) — handler naming is cluster-specific.
+#
+# The gvisor and kata classes pin scheduling to nodes labelled for that runtime
+# via `scheduling.nodeSelector`. Each class uses a DISTINCT label, because the
+# three Kata variants are NOT interchangeable on one node — kata-fc needs a
+# devmapper snapshotter, kata-clh a different VMM — and a node with only one
+# handler installed would fail admission (handler-not-found) for the others.
+# Label each node only for the handler(s) it actually has, e.g.:
+#   kubectl label node <node> stirrup.dev/runtime-gvisor=true
+#   kubectl label node <node> stirrup.dev/runtime-kata-qemu=true
+#   kubectl label node <node> stirrup.dev/runtime-kata-fc=true
+#   kubectl label node <node> stirrup.dev/runtime-kata-clh=true
+# Sandbox runtimes typically need node-level setup (a gVisor or Kata install,
+# and for Kata nested-virt or bare metal), so they should not land on arbitrary
+# nodes. runc has no nodeSelector — every node can run it.
+---
+# runc — the default OCI runtime. NO additional isolation beyond standard
+# Linux namespaces/cgroups. Prerequisite: none; runc ships with every
+# conformant container runtime. Use this only when node-level sandboxing is
+# provided some other way, or for non-hostile workloads.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: runc
+handler: runc
+---
+# gvisor — gVisor's user-space kernel (the runsc handler). Intercepts syscalls
+# in user space, presenting a much smaller kernel attack surface than runc.
+# Prerequisite: install gVisor (runsc + the containerd-shim-runsc-v1 shim) on
+# the target nodes and register a `runsc` handler in the containerd config.
+# See https://gvisor.dev/docs/user_guide/install/ and the Kubernetes guide at
+# https://gvisor.dev/docs/user_guide/quick_start/kubernetes/.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc
+scheduling:
+  nodeSelector:
+    stirrup.dev/runtime-gvisor: "true"
+---
+# kata-qemu — Kata Containers with the QEMU hypervisor. Runs each Pod in a
+# lightweight VM, giving hardware-virtualization isolation. The most broadly
+# compatible Kata backend. Prerequisite: install Kata Containers and register a
+# `kata-qemu` handler; nodes need KVM (bare metal or nested virtualization).
+# See https://github.com/kata-containers/kata-containers/blob/main/docs/install/.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-qemu
+handler: kata-qemu
+scheduling:
+  nodeSelector:
+    stirrup.dev/runtime-kata-qemu: "true"
+---
+# kata-fc — Kata Containers with the Firecracker hypervisor. Minimal device
+# model and very fast VM boot, at the cost of fewer device features than QEMU.
+# Prerequisite: install Kata Containers configured for Firecracker, register a
+# `kata-fc` handler, and provide a devmapper snapshotter (Firecracker requires a
+# block-device rootfs) plus KVM on the nodes.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-fc
+handler: kata-fc
+scheduling:
+  nodeSelector:
+    stirrup.dev/runtime-kata-fc: "true"
+---
+# kata-clh — Kata Containers with the Cloud Hypervisor (CLH) backend. A modern
+# Rust VMM aimed at cloud workloads. Prerequisite: install Kata Containers
+# configured for Cloud Hypervisor, register a `kata-clh` handler, and provide
+# KVM on the nodes.
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-clh
+handler: kata-clh
+scheduling:
+  nodeSelector:
+    stirrup.dev/runtime-kata-clh: "true"

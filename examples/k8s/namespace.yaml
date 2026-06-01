@@ -1,0 +1,40 @@
+# Sandbox namespace for stirrup k8s-executor runs.
+#
+# Every sandbox Pod the executor creates carries the stirrup-sandbox=true
+# label (see sample-sandbox-pod.yaml), so a dedicated namespace lets an
+# operator scope RBAC, NetworkPolicy, ResourceQuota, and PodSecurity
+# admission to sandbox workloads without touching the rest of the cluster.
+#
+# The namespace name here is `stirrup-sandbox`. The executor's --k8s-namespace
+# flag (executor.k8sNamespace in a RunConfig) MUST point at whichever namespace
+# is used; the egress-proxy manifests under examples/k8s/egress-proxy/ default
+# to `default`, so adjust either the proxy manifests or this file so the proxy
+# and the sandbox Pods share one namespace — the allowlist NetworkPolicy selects
+# the proxy by PodSelector with no NamespaceSelector and will not cross a
+# namespace boundary.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stirrup-sandbox
+  labels:
+    # Marks the namespace as holding stirrup sandbox workloads. Operator
+    # tooling (quotas, admission, dashboards) can select on this.
+    stirrup-sandbox: "true"
+    # Opt the namespace into kube-state-metrics / Prometheus scraping. This is
+    # a widely used convention rather than an API-enforced label; adjust to
+    # match the cluster's monitoring stack if it selects on a different key.
+    monitoring: "true"
+    # Enforce the restricted Pod Security Standard. The sandbox Pod the
+    # executor produces (runAsNonRoot, drop ALL capabilities, no privilege
+    # escalation, seccomp RuntimeDefault) already satisfies `restricted`, so
+    # admission rejects any Pod that does not — a defence-in-depth backstop
+    # for anything scheduled into this namespace by mistake.
+    pod-security.kubernetes.io/enforce: restricted
+    # The version is PINNED rather than set to `latest`. `latest` tracks the
+    # apiserver's newest PSS revision, so a cluster upgrade can silently tighten
+    # the policy (start rejecting fields) with no manifest change. Pinning makes
+    # the enforced ruleset explicit and changes only on a deliberate bump; set
+    # this to a version at or below the cluster's Kubernetes minor. Operators who
+    # prefer to always track the newest standard may set it to `latest` instead,
+    # accepting the upgrade-time tightening that comes with it.
+    pod-security.kubernetes.io/enforce-version: v1.30

@@ -13,10 +13,10 @@ import (
 //     that drops the sort would make completion snapshots and dependent
 //     tests flaky without ever raising a build error.
 //
-//  2. Output contains no empty strings. The two maps that include ""
-//     (validExecutorRuntimes, validTraceEmitterProtocols) must be
-//     filtered through sortedNonEmptyKeys at the helper boundary so a
-//     shell does not offer an unusable empty completion entry.
+//  2. Output contains no empty strings. The maps that include ""
+//     (validContainerRuntimes, validK8sRuntimes, validTraceEmitterProtocols)
+//     must be filtered through sortedNonEmptyKeys at the helper boundary so
+//     a shell does not offer an unusable empty completion entry.
 func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -55,7 +55,7 @@ func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 // invariant: every key in the validator's closed-set map (minus the
 // intentionally-filtered empty string) must appear in the matching
 // completion helper output. A regression that adds "runscv2" to
-// validExecutorRuntimes but forgets to extend the helper surface would
+// validContainerRuntimes but forgets to extend the helper surface would
 // silently ship a completion list that lags the validator.
 //
 // Each row pairs a helper with its backing map; equality is checked
@@ -70,7 +70,7 @@ func TestCompletionValues_TrackValidatorMaps(t *testing.T) {
 		{name: "run modes", backing: validRunModes, got: ValidRunModeValues()},
 		{name: "provider types", backing: validProviderTypes, got: ValidProviderTypeValues()},
 		{name: "executor types", backing: validExecutorTypes, got: ValidExecutorTypeValues()},
-		{name: "executor runtimes", backing: validExecutorRuntimes, got: ValidExecutorRuntimeValues(), filterEmpty: true},
+		{name: "executor runtimes", backing: validContainerRuntimes, got: ValidExecutorRuntimeValues(), filterEmpty: true},
 		{name: "edit strategies", backing: validEditStrategyTypes, got: ValidEditStrategyTypeValues()},
 		{name: "verifiers", backing: validVerifierTypes, got: ValidVerifierTypeValues()},
 		{name: "git strategies", backing: validGitStrategyTypes, got: ValidGitStrategyTypeValues()},
