@@ -37,6 +37,40 @@ nodes — a RuntimeClass whose handler is missing makes Pod scheduling fail. The
 egress-proxy objects are applied separately and only when running in network
 mode `allowlist`; see [`egress-proxy/README.md`](egress-proxy/README.md).
 
+### Namespace alignment — required before applying the egress proxy
+
+The files in this directory place the sandbox in the `stirrup-sandbox`
+namespace, but the `egress-proxy/` manifests ship with `namespace: default`
+(they are written to stand alone). **These two halves MUST share one namespace.**
+The allowlist NetworkPolicy the executor installs selects the proxy by a
+`PodSelector` with no `NamespaceSelector`, so a proxy in a different namespace is
+not matched: under an enforcing CNI the sandbox then gets *no* egress at all (a
+silent deny, not a bypass).
+
+Before applying `egress-proxy/` for use with this sandbox, edit the
+`namespace:` field in each of its four manifests (deployment, service,
+network-policy, configmap) from `default` to `stirrup-sandbox`, then apply and
+point `--k8s-egress-proxy-url` at the matching name:
+
+```sh
+# After editing the egress-proxy manifests' namespace to stirrup-sandbox:
+kubectl apply -f examples/k8s/egress-proxy/configmap.yaml
+kubectl apply -f examples/k8s/egress-proxy/deployment.yaml
+kubectl apply -f examples/k8s/egress-proxy/service.yaml
+kubectl apply -f examples/k8s/egress-proxy/network-policy.yaml
+
+# …and point the executor at the proxy in that namespace:
+#   --k8s-egress-proxy-url http://stirrup-egress-proxy.stirrup-sandbox.svc:8080
+```
+
+The `namespace:` fields in `egress-proxy/` are set explicitly to `default`, so a
+`kubectl apply -n stirrup-sandbox` override does NOT work — kubectl rejects an
+`-n` that disagrees with the object's own `metadata.namespace`. Edit the field
+in the file (or delete it and supply `-n` on apply). Either way, the proxy and
+the sandbox Pods must end up in the same namespace.
+`sample-sandbox-pod.yaml` already shows the proxy URL in the `stirrup-sandbox`
+namespace to match this workflow.
+
 ## How the pieces fit together
 
 The executor authenticates as `stirrup-orchestrator` (`rbac.yaml`), creates a
