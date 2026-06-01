@@ -118,8 +118,9 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 
 		if modified {
 			result[i] = types.Message{
-				Role:    msg.Role,
-				Content: newContent,
+				Role:      msg.Role,
+				Synthetic: msg.Synthetic,
+				Content:   newContent,
 			}
 		}
 	}
