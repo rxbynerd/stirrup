@@ -648,10 +648,22 @@ message RunTrace {
   // Wall-clock duration of the run in milliseconds.
   int64 duration_ms = 6;
 
-  // Why the run ended. Same values as HarnessEvent.stop_reason:
-  // "end_turn", "max_turns", "timeout", "stalled", "tool_failures",
-  // "cancelled", "budget_exceeded".
+  // Deprecated for analytics: retained for backward compatibility. This
+  // field has always carried the run outcome (see `outcome` below), not
+  // the narrower HarnessEvent.stop_reason set, so existing consumers
+  // reading it keep the same value. New consumers should read `outcome`.
   string stop_reason = 7;
+
+  // Canonical terminal status of the run, mirroring the Go-side
+  // types.RunTrace.Outcome. Unlike stop_reason (which on the loop's own
+  // events is one of 7 values and has no "success" concept), outcome is
+  // the authoritative field for downstream analytics and is one of:
+  //   "success" | "error" | "max_turns" | "verification_failed" |
+  //   "verification_error" | "budget_exceeded" | "stalled" |
+  //   "tool_failures" | "cancelled" | "timeout" | "max_tokens".
+  // A wire-driven lakehouse writer can persist this directly without
+  // inferring it from stop_reason + verification_results + budget state.
+  string outcome = 8;
 }
 
 // ---------------------------------------------------------------------------
