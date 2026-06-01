@@ -1819,16 +1819,6 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
 	validateOptionalType("contextStrategy", config.ContextStrategy.Type, validContextStrategyTypes, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
-	if !validContainerRuntimes[config.Executor.Runtime] {
-		errs = append(errs, fmt.Sprintf("unsupported executor.runtime %q", config.Executor.Runtime))
-	}
-	// executor.runtime only changes behaviour for the container executor;
-	// silently dropping it on a "local" or "api" run lets an operator
-	// believe they have gVisor isolation when in fact the workload is
-	// running on the host (S8).
-	if config.Executor.Runtime != "" && config.Executor.Type != "container" && config.Executor.Type != "" {
-		errs = append(errs, "executor.runtime is only valid when executor.type is \"container\"")
-	}
 	validateExecutorRegistryAllowlist(config.Executor, &errs)
 	validateExecutorRuntime(config.Executor, &errs)
 	validateK8sExecutor(config.Executor, &errs)
