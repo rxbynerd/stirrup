@@ -81,6 +81,9 @@ func (v *LLMJudgeVerifier) buildUserMessage(vc VerifyContext) string {
 	sb.WriteString("\n\n## Conversation\n\n")
 
 	for _, msg := range vc.Messages {
+		if msg.Synthetic {
+			continue
+		}
 		fmt.Fprintf(&sb, "### %s\n\n", msg.Role)
 		for _, block := range msg.Content {
 			switch block.Type {

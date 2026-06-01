@@ -6,8 +6,16 @@ import "encoding/json"
 
 // Message represents a single message in the conversation history.
 type Message struct {
-	Role    string         `json:"role"` // "user" | "assistant"
+	Role    string         `json:"role"`    // "user" | "assistant"
 	Content []ContentBlock `json:"content"`
+
+	// Synthetic marks a harness-injected message that is not genuine user or
+	// model content. Examples: escalation prompts appended by applyEscalation
+	// and verifier-feedback turns. Downstream consumers (verifier, compactor,
+	// replay/mining toolchain) can filter on this field to exclude injected
+	// turns from provenance-sensitive views. The field is omitempty so
+	// non-synthetic messages serialise byte-identically to the pre-#340 shape.
+	Synthetic bool `json:"synthetic,omitempty"`
 }
 
 // ContentBlock is a single block of content within a message.

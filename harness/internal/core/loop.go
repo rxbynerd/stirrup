@@ -270,7 +270,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			feedback = "Verification failed. Please review and fix the issues."
 		}
 		messages = append(messages, types.Message{
-			Role: "user",
+			Role:      "user",
+			Synthetic: true,
 			Content: []types.ContentBlock{
 				{Type: "text", Text: feedback},
 			},
@@ -996,7 +997,8 @@ func (l *AgenticLoop) applyEscalation(
 	case EscalationPrompt:
 		if decision.PromptMessage != "" {
 			messages = append(messages, types.Message{
-				Role: "user",
+				Role:      "user",
+				Synthetic: true,
 				Content: []types.ContentBlock{
 					{Type: "text", Text: decision.PromptMessage},
 				},

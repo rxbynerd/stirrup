@@ -299,8 +299,9 @@ func scrubModelInput(in types.ModelInput) types.ModelInput {
 	}
 	for i, m := range in.Messages {
 		out.Messages[i] = types.Message{
-			Role:    m.Role,
-			Content: scrubContentBlocks(m.Content),
+			Role:      m.Role,
+			Synthetic: m.Synthetic,
+			Content:   scrubContentBlocks(m.Content),
 		}
 	}
 	return out
