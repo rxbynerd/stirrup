@@ -461,9 +461,17 @@ is no silent fallback to `runc`.
 
 ### Kubernetes deployment
 
-On Kubernetes, set `runtimeClassName` on the pod spec rather than
-threading the runtime through stirrup. `--container-runtime` is for
-the local Docker/Podman container executor.
+For the `k8s` executor, `--container-runtime` (`executor.runtime`) maps
+to the sandbox Pod's `spec.runtimeClassName` — the same flag, a
+different closed set (`runc`, `gvisor`, `kata-qemu`, `kata-fc`,
+`kata-clh`; note `gvisor`, not the host OCI name `runsc`). The executor
+sets `runtimeClassName` on the Pod it creates, so the runtime is
+threaded through stirrup rather than hand-set on a static spec. Empty
+selects the cluster-default RuntimeClass and logs an isolation warning.
+See [`docs/executors/k8s.md`](executors/k8s.md#safety-rings-on-kubernetes)
+for the full ring mapping on Kubernetes, and
+[Safety rings on Kubernetes](#safety-rings-on-kubernetes) below for the
+in-document summary.
 
 ## Ring 2 — Egress allowlist proxy (network isolation)
 
