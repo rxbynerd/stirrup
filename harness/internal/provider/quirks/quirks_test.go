@@ -742,6 +742,35 @@ func TestToolExamplesCapabilityRules(t *testing.T) {
 	}
 }
 
+// TestOpenAIResponsesBehaviourFlags pins the Responses-specific wire
+// divergences the builtin "openai-responses / *" rule resolves (#332). The
+// resolved ProviderQuirks is the single source of truth for the Responses
+// send path (the Codec invariant), so the adapter reads these flags rather
+// than hard-coding the divergences. Each value is the zero value of its enum
+// — the rule pins them explicitly so a future model-scoped rule has somewhere
+// to override and a dropped pin is caught here.
+func TestOpenAIResponsesBehaviourFlags(t *testing.T) {
+	q := DefaultRegistry().Resolve("openai-responses", "gpt-4o")
+	rf := q.BehaviourFlags.OpenAIResponses
+	if rf.TokenField != TokenFieldMaxOutputTokens {
+		t.Errorf("TokenField = %v, want TokenFieldMaxOutputTokens", rf.TokenField)
+	}
+	if rf.StoreMode != StoreFalse {
+		t.Errorf("StoreMode = %v, want StoreFalse", rf.StoreMode)
+	}
+	if rf.InputItemShape != TypedInputItems {
+		t.Errorf("InputItemShape = %v, want TypedInputItems", rf.InputItemShape)
+	}
+
+	// A provider with no rule resolves the same zero-value flags, so the
+	// adapter falls through to today's byte-identical behaviour even when
+	// the registry is empty for the (provider, model) pair.
+	empty := NewRegistry(nil).Resolve("openai-responses", "gpt-4o")
+	if empty.BehaviourFlags.OpenAIResponses != (OpenAIResponsesBehaviourFlags{}) {
+		t.Errorf("empty registry: OpenAIResponses = %+v, want zero value", empty.BehaviourFlags.OpenAIResponses)
+	}
+}
+
 // TestParallelToolCallsRulesSetSupportedWhenDisable pins the structural
 // relationship the adapters depend on: any rule that turns on the Disable bool
 // must also set Supported. An adapter checks Supported as the master gate, so
@@ -1153,6 +1182,140 @@ func TestGeminiStreamArgsShapeMarshalJSON(t *testing.T) {
 	})
 	t.Run("unknown-unmarshal", func(t *testing.T) {
 		var s GeminiStreamArgsShape
+		if err := json.Unmarshal([]byte(`"bogus"`), &s); err == nil {
+			t.Error("Unmarshal of unknown string must return an error")
+		}
+	})
+}
+
+// TestOpenAIResponsesTokenFieldMarshalJSON mirrors
+// TestOpenAITokenFieldMarshalJSON for the Responses token-field enum,
+// locking the wire-key string against a future typo the rest of the
+// suite would not catch.
+func TestOpenAIResponsesTokenFieldMarshalJSON(t *testing.T) {
+	cases := []struct {
+		val  OpenAIResponsesTokenField
+		want string
+	}{
+		{TokenFieldMaxOutputTokens, `"max_output_tokens"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%v) = %s, want %s", tc.val, got, tc.want)
+			}
+			var round OpenAIResponsesTokenField
+			if err := json.Unmarshal(got, &round); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if round != tc.val {
+				t.Errorf("round-trip: got %v, want %v", round, tc.val)
+			}
+		})
+	}
+	t.Run("unknown-marshal", func(t *testing.T) {
+		got, err := json.Marshal(OpenAIResponsesTokenField(99))
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(got) != `"unknown(99)"` {
+			t.Errorf("Marshal(99) = %s, want %q", got, `"unknown(99)"`)
+		}
+	})
+	t.Run("unknown-unmarshal", func(t *testing.T) {
+		var f OpenAIResponsesTokenField
+		if err := json.Unmarshal([]byte(`"bogus"`), &f); err == nil {
+			t.Error("Unmarshal of unknown string must return an error")
+		}
+	})
+}
+
+// TestOpenAIResponsesStoreModeMarshalJSON mirrors the pattern for the
+// Responses store-mode enum.
+func TestOpenAIResponsesStoreModeMarshalJSON(t *testing.T) {
+	cases := []struct {
+		val  OpenAIResponsesStoreMode
+		want string
+	}{
+		{StoreFalse, `"store_false"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%v) = %s, want %s", tc.val, got, tc.want)
+			}
+			var round OpenAIResponsesStoreMode
+			if err := json.Unmarshal(got, &round); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if round != tc.val {
+				t.Errorf("round-trip: got %v, want %v", round, tc.val)
+			}
+		})
+	}
+	t.Run("unknown-marshal", func(t *testing.T) {
+		got, err := json.Marshal(OpenAIResponsesStoreMode(99))
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(got) != `"unknown(99)"` {
+			t.Errorf("Marshal(99) = %s, want %q", got, `"unknown(99)"`)
+		}
+	})
+	t.Run("unknown-unmarshal", func(t *testing.T) {
+		var s OpenAIResponsesStoreMode
+		if err := json.Unmarshal([]byte(`"bogus"`), &s); err == nil {
+			t.Error("Unmarshal of unknown string must return an error")
+		}
+	})
+}
+
+// TestOpenAIResponsesInputShapeMarshalJSON mirrors the pattern for the
+// Responses input-item shape enum.
+func TestOpenAIResponsesInputShapeMarshalJSON(t *testing.T) {
+	cases := []struct {
+		val  OpenAIResponsesInputShape
+		want string
+	}{
+		{TypedInputItems, `"typed_input_items"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got, err := json.Marshal(tc.val)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("Marshal(%v) = %s, want %s", tc.val, got, tc.want)
+			}
+			var round OpenAIResponsesInputShape
+			if err := json.Unmarshal(got, &round); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if round != tc.val {
+				t.Errorf("round-trip: got %v, want %v", round, tc.val)
+			}
+		})
+	}
+	t.Run("unknown-marshal", func(t *testing.T) {
+		got, err := json.Marshal(OpenAIResponsesInputShape(99))
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if string(got) != `"unknown(99)"` {
+			t.Errorf("Marshal(99) = %s, want %q", got, `"unknown(99)"`)
+		}
+	})
+	t.Run("unknown-unmarshal", func(t *testing.T) {
+		var s OpenAIResponsesInputShape
 		if err := json.Unmarshal([]byte(`"bogus"`), &s); err == nil {
 			t.Error("Unmarshal of unknown string must return an error")
 		}
