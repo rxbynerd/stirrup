@@ -1182,3 +1182,106 @@ func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
 		t.Fatalf("tool result = %q, want pong", out.Text)
 	}
 }
+
+// credentialedURI rewrites base (e.g. an httptest server URL) to embed
+// userinfo and a secret query parameter, matching the CWE-532 leak scenario in
+// issue #395: an operator who puts credentials directly in the MCP server URI.
+func credentialedURI(t *testing.T, base string) string {
+	t.Helper()
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("parse base URL %q: %v", base, err)
+	}
+	u.User = url.UserPassword("user", "pass")
+	u.RawQuery = "api_key=supersecret"
+	return u.String()
+}
+
+// assertNoSecret fails if either the embedded credential or the secret query
+// value appears in s.
+func assertNoSecret(t *testing.T, where, s string) {
+	t.Helper()
+	if strings.Contains(s, "user:pass") {
+		t.Errorf("%s leaked userinfo: %q", where, s)
+	}
+	if strings.Contains(s, "supersecret") {
+		t.Errorf("%s leaked query secret: %q", where, s)
+	}
+}
+
+// TestCall_NonOKError_DoesNotLeakCredentials drives the non-200 error site in
+// call(): the returned error must report a display-safe URI, never the raw
+// credentialed one.
+func TestCall_NonOKError_DoesNotLeakCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream is sad", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	uri := credentialedURI(t, srv.URL)
+	sess, err := newSession(context.Background(),
+		types.MCPServerConfig{Name: "leaky", URI: uri},
+		&stubSecretStore{secrets: map[string]string{}})
+	if err != nil {
+		t.Fatalf("newSession: %v", err)
+	}
+	if strings.Contains(sess.displayURI, "user:pass") || strings.Contains(sess.displayURI, "supersecret") {
+		t.Fatalf("displayURI itself leaked credentials: %q", sess.displayURI)
+	}
+
+	client := NewClient(tool.NewRegistry(), srv.Client())
+	_, err = client.call(context.Background(), sess, "tools/list", nil)
+	if err == nil {
+		t.Fatal("expected error from non-200 response")
+	}
+	assertNoSecret(t, "non-200 error", err.Error())
+}
+
+// TestCall_TransportError_DoesNotLeakCredentials drives the transport-error
+// site in call(): a dial failure against a credentialed loopback URI must not
+// surface the credentials.
+func TestCall_TransportError_DoesNotLeakCredentials(t *testing.T) {
+	// Bind then immediately close a listener to obtain a port that refuses
+	// connections, keeping the host loopback so the SSRF dial guard allows it.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closedURL := srv.URL
+	srv.Close()
+
+	uri := credentialedURI(t, closedURL)
+	sess, err := newSession(context.Background(),
+		types.MCPServerConfig{Name: "leaky", URI: uri},
+		&stubSecretStore{secrets: map[string]string{}})
+	if err != nil {
+		t.Fatalf("newSession: %v", err)
+	}
+
+	client := NewClient(tool.NewRegistry(), nil) // default transport: real dial
+	_, err = client.call(context.Background(), sess, "tools/list", nil)
+	if err == nil {
+		t.Fatal("expected transport error from closed port")
+	}
+	assertNoSecret(t, "transport error", err.Error())
+}
+
+func TestDisplaySafeURI(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"userinfo and query", "https://user:pass@host.example/path?api_key=supersecret", "https://host.example/path"},
+		{"query only", "https://host.example/mcp?token=abc", "https://host.example/mcp"},
+		{"fragment", "https://host.example/mcp#frag", "https://host.example/mcp"},
+		{"clean uri unchanged", "https://host.example/mcp", "https://host.example/mcp"},
+		{"unparseable", "ht!tp://\x7f", "<unparseable mcp uri>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := displaySafeURI(tt.in)
+			if got != tt.want {
+				t.Errorf("displaySafeURI(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			assertNoSecret(t, "displaySafeURI", got)
+		})
+	}
+}
