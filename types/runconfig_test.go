@@ -359,6 +359,94 @@ func TestValidateRunConfig_InvalidBuiltInTool(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_MCPServers(t *testing.T) {
+	cases := []struct {
+		name    string
+		server  MCPServerConfig
+		wantErr string // substring; "" means the config must validate
+	}{
+		{
+			name:   "https_remote_valid",
+			server: MCPServerConfig{Name: "ok", URI: "https://mcp.example.com/rpc"},
+		},
+		{
+			name:   "http_localhost_valid",
+			server: MCPServerConfig{Name: "local", URI: "http://localhost:8080"},
+		},
+		{
+			name:   "http_loopback_ip_valid",
+			server: MCPServerConfig{Name: "local", URI: "http://127.0.0.1:9000"},
+		},
+		{
+			name:    "missing_name",
+			server:  MCPServerConfig{URI: "https://mcp.example.com"},
+			wantErr: "tools.mcpServers[0].name is required",
+		},
+		{
+			name:    "missing_uri",
+			server:  MCPServerConfig{Name: "x"},
+			wantErr: "tools.mcpServers[0].uri is required",
+		},
+		{
+			name:    "bad_scheme",
+			server:  MCPServerConfig{Name: "x", URI: "file:///etc/passwd"},
+			wantErr: "scheme",
+		},
+		{
+			name:    "http_remote_rejected",
+			server:  MCPServerConfig{Name: "x", URI: "http://mcp.example.com/rpc"},
+			wantErr: "must use https",
+		},
+		{
+			name:    "allowedhost_with_scheme",
+			server:  MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{"https://evil.example.com"}},
+			wantErr: "allowedMCPHosts[0]",
+		},
+		{
+			name:    "allowedhost_empty",
+			server:  MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{" "}},
+			wantErr: "allowedMCPHosts[0]",
+		},
+		{
+			name:   "allowedhost_ipv6_literal_valid",
+			server: MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{"::1", "2001:db8::1"}},
+		},
+		{
+			name:   "allowedhost_bare_name_valid",
+			server: MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedMCPHosts: []string{"mcp.example.com"}},
+		},
+		{
+			name:   "allowedtools_set_validates",
+			server: MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedTools: []string{"search"}},
+		},
+		{
+			name:    "allowedtools_empty_entry",
+			server:  MCPServerConfig{Name: "x", URI: "https://mcp.example.com", AllowedTools: []string{"search", "  "}},
+			wantErr: "allowedTools[1]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Tools = ToolsConfig{MCPServers: []MCPServerConfig{tc.server}}
+			err := ValidateRunConfig(c)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected valid config, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_UnknownToolsProfile(t *testing.T) {
 	c := validConfig()
 	c.Tools.Profile = "provider-native-but-unimplemented"

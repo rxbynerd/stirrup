@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -430,7 +432,7 @@ func TestConnect_JSONRPCError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Connect")
 	}
-	if got := err.Error(); !contains(got, "JSON-RPC error") {
+	if got := err.Error(); !strings.Contains(got, "JSON-RPC error") {
 		t.Errorf("error = %q, want it to contain 'JSON-RPC error'", got)
 	}
 }
@@ -479,7 +481,7 @@ func TestConnect_MultipleServers(t *testing.T) {
 	// Both servers share an http client that can reach both test servers.
 	// Since httptest servers use different ports, we need to use the default
 	// transport which can reach any local address.
-	client := NewClient(registry, &http.Client{})
+	client := NewClient(registry, &http.Client{Timeout: 30 * time.Second})
 	secrets := &stubSecretStore{secrets: map[string]string{}}
 
 	configA := types.MCPServerConfig{Name: "alpha", URI: srvA.URL}
@@ -573,7 +575,7 @@ func TestConnect_ToolCallError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from tool call")
 	}
-	if !contains(err.Error(), "something went wrong") {
+	if !strings.Contains(err.Error(), "something went wrong") {
 		t.Errorf("error = %q, want it to contain 'something went wrong'", err.Error())
 	}
 }
@@ -602,19 +604,6 @@ func TestClose(t *testing.T) {
 	}
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
-}
-
-func containsSubstr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
 func TestConnect_RejectsFileSchemeURI(t *testing.T) {
 	registry := tool.NewRegistry()
 	client := NewClient(registry, nil)
@@ -627,7 +616,7 @@ func TestConnect_RejectsFileSchemeURI(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for file:// URI scheme")
 	}
-	if !contains(err.Error(), "not allowed") {
+	if !strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("error = %q, want it to contain 'not allowed'", err.Error())
 	}
 }
@@ -644,7 +633,7 @@ func TestConnect_RejectsNoSchemeURI(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for URI without http/https scheme")
 	}
-	if !contains(err.Error(), "not allowed") {
+	if !strings.Contains(err.Error(), "not allowed") {
 		t.Errorf("error = %q, want it to contain 'not allowed'", err.Error())
 	}
 }
@@ -990,5 +979,206 @@ func TestConnect_CapsToolsPerServer(t *testing.T) {
 	got := len(registry.List())
 	if got != maxMCPToolsPerServer {
 		t.Errorf("registered tool count = %d, want %d (cap)", got, maxMCPToolsPerServer)
+	}
+}
+
+// TestConnect_AllowedToolsFiltersAdvertised verifies the per-server allowlist
+// (#4 2.2): a server advertising a tool not in AllowedTools has that tool
+// rejected at registration, while allowlisted tools register.
+func TestConnect_AllowedToolsFiltersAdvertised(t *testing.T) {
+	tools := []mcpTool{
+		{Name: "search", Description: "ok", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "exfiltrate", Description: "evil", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "fetch", Description: "ok", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	config := types.MCPServerConfig{
+		Name:         "docs",
+		URI:          srv.URL,
+		AllowedTools: []string{"search", "fetch"},
+	}
+	if err := client.Connect(context.Background(), config, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	if registry.Resolve("mcp_docs_search") == nil {
+		t.Error("allowlisted tool 'search' should be registered")
+	}
+	if registry.Resolve("mcp_docs_fetch") == nil {
+		t.Error("allowlisted tool 'fetch' should be registered")
+	}
+	if registry.Resolve("mcp_docs_exfiltrate") != nil {
+		t.Error("tool 'exfiltrate' is not in the allowlist and must be rejected")
+	}
+	if got := len(registry.List()); got != 2 {
+		t.Errorf("registered tool count = %d, want 2", got)
+	}
+}
+
+// TestConnect_EmptyAllowedToolsRegistersAll pins the backward-compatible
+// default: an unset AllowedTools registers every advertised tool.
+func TestConnect_EmptyAllowedToolsRegistersAll(t *testing.T) {
+	tools := []mcpTool{
+		{Name: "a", Description: "", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "b", Description: "", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+
+	srv, _ := fakeMCPServer(t, tools, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	config := types.MCPServerConfig{Name: "srv", URI: srv.URL}
+	if err := client.Connect(context.Background(), config, secrets); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if got := len(registry.List()); got != 2 {
+		t.Errorf("registered tool count = %d, want 2 (unset allowlist registers all)", got)
+	}
+}
+
+// TestConnect_RejectsNonHTTPSRemote verifies a remote (non-loopback) server
+// reached over plain http is refused — credentials and tool-call payloads
+// must not travel in clear (#4 2.5).
+func TestConnect_RejectsNonHTTPSRemote(t *testing.T) {
+	registry := tool.NewRegistry()
+	client := NewClient(registry, nil)
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	err := client.Connect(context.Background(), types.MCPServerConfig{
+		Name: "remote",
+		URI:  "http://mcp.example.com/rpc",
+	}, secrets)
+	if err == nil {
+		t.Fatal("expected error for non-https remote URI")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error = %q, want it to mention https", err.Error())
+	}
+}
+
+// TestConnect_RejectsPrivateIPURI verifies the connect-time SSRF guard refuses
+// a server URI whose host is a non-loopback private address, reusing the
+// shared web_fetch validator (security.ValidatePublicHost). 169.254.169.254 is
+// the cloud metadata endpoint; 10.0.0.1 is RFC1918.
+func TestConnect_RejectsPrivateIPURI(t *testing.T) {
+	cases := []struct{ name, uri string }{
+		{"link_local_metadata", "https://169.254.169.254/latest/meta-data"},
+		{"rfc1918", "https://10.0.0.1/rpc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := tool.NewRegistry()
+			client := NewClient(registry, nil)
+			secrets := &stubSecretStore{secrets: map[string]string{}}
+
+			err := client.Connect(context.Background(), types.MCPServerConfig{
+				Name: "ssrf",
+				URI:  tc.uri,
+			}, secrets)
+			if err == nil {
+				t.Fatalf("expected SSRF rejection for %q", tc.uri)
+			}
+			if !strings.Contains(err.Error(), "private host") {
+				t.Errorf("error = %q, want it to mention 'private host'", err.Error())
+			}
+		})
+	}
+}
+
+// TestConnect_AllowedMCPHostsPin verifies AllowedMCPHosts rejects a URI whose
+// host is not pinned and admits one that is.
+func TestConnect_AllowedMCPHostsPin(t *testing.T) {
+	srv, _ := fakeMCPServer(t, []mcpTool{
+		{Name: "a", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}, "")
+	registry := tool.NewRegistry()
+	client := NewClient(registry, srv.Client())
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	// A pin that does not include the server's loopback host must reject.
+	err := client.Connect(context.Background(), types.MCPServerConfig{
+		Name:            "pinned",
+		URI:             srv.URL,
+		AllowedMCPHosts: []string{"only.example.com"},
+	}, secrets)
+	if err == nil {
+		t.Fatal("expected rejection: host not in allowedMCPHosts")
+	}
+	if !strings.Contains(err.Error(), "allowedMCPHosts") {
+		t.Errorf("error = %q, want it to mention allowedMCPHosts", err.Error())
+	}
+
+	// A pin that includes the actual host (127.0.0.1) must admit.
+	host := mustHost(t, srv.URL)
+	registry2 := tool.NewRegistry()
+	client2 := NewClient(registry2, srv.Client())
+	if err := client2.Connect(context.Background(), types.MCPServerConfig{
+		Name:            "pinned",
+		URI:             srv.URL,
+		AllowedMCPHosts: []string{host},
+	}, secrets); err != nil {
+		t.Fatalf("Connect with matching pin: %v", err)
+	}
+	if registry2.Resolve("mcp_pinned_a") == nil {
+		t.Error("tool should register when host is pinned")
+	}
+}
+
+func mustHost(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u.Hostname()
+}
+
+// TestConnect_LocalhostNameDefaultTransport drives a full tool call to an
+// http://localhost server through the DEFAULT transport
+// (LoopbackAwareDialContext), pinning the review-wave-1 regression: a loopback
+// NAME (which net.ParseIP cannot recognise as loopback) must be admitted at
+// dial time, not refused by the SSRF guard. Reaching the registered tool's
+// result is the proof the dial succeeded.
+func TestConnect_LocalhostNameDefaultTransport(t *testing.T) {
+	tools := []mcpTool{{Name: "ping", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonRPCRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		switch req.Method {
+		case "tools/list":
+			writeJSONRPCResult(w, req.ID, toolsListResult{Tools: tools})
+		case "tools/call":
+			writeJSONRPCResult(w, req.ID, toolsCallResult{Content: []contentItem{{Type: "text", Text: "pong"}}})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// httptest binds 127.0.0.1; rewrite to the localhost NAME so the dial
+	// exercises the name path rather than the IP-literal path.
+	uri := strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)
+
+	registry := tool.NewRegistry()
+	client := NewClient(registry, nil) // default transport: LoopbackAwareDialContext
+	secrets := &stubSecretStore{secrets: map[string]string{}}
+
+	if err := client.Connect(context.Background(), types.MCPServerConfig{Name: "local", URI: uri}, secrets); err != nil {
+		t.Fatalf("Connect to %s: %v", uri, err)
+	}
+	resolved := registry.Resolve("mcp_local_ping")
+	if resolved == nil {
+		t.Fatal("tool not registered")
+	}
+	out, err := resolved.StructuredHandler(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("tool call through loopback-name dial failed: %v", err)
+	}
+	if out.Text != "pong" {
+		t.Fatalf("tool result = %q, want pong", out.Text)
 	}
 }

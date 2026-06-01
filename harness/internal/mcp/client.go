@@ -275,22 +275,111 @@ func (c *Client) warn(msg string, args ...any) {
 	}
 }
 
+// validateMCPHost enforces the connect-time trust-model gate on a server
+// URI: a parseable http/https scheme, a present host, https for any remote
+// (non-loopback) target, the shared SSRF guard against private/reserved
+// addresses, and the optional AllowedMCPHosts pin. It mirrors the static
+// checks in types.ValidateRunConfig but also runs the resolving SSRF guard,
+// because a config that validated at parse time can still point at a name
+// that resolves to a private address — the same reuse web_fetch relies on.
+//
+// Loopback http URIs are permitted for local development; the resolving SSRF
+// guard is therefore skipped only for a loopback IP literal or a
+// localhost name, never for a remote host.
+func validateMCPHost(config types.MCPServerConfig) error {
+	parsed, err := url.Parse(config.URI)
+	if err != nil {
+		return fmt.Errorf("mcp: invalid URI for server %q: %w", config.Name, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("mcp: server %q URI scheme %q not allowed (must be http or https)", config.Name, parsed.Scheme)
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("mcp: server %q URI must include a host", config.Name)
+	}
+
+	local := security.IsLoopbackHost(host)
+	if parsed.Scheme == "http" && !local {
+		return fmt.Errorf("mcp: server %q must use https for remote host %q (http is only permitted for localhost/loopback)", config.Name, host)
+	}
+	if !local {
+		if err := security.ValidatePublicHost(host); err != nil {
+			return fmt.Errorf("mcp: server %q: %w", config.Name, err)
+		}
+	}
+
+	if len(config.AllowedMCPHosts) > 0 {
+		want := strings.ToLower(host)
+		permitted := false
+		for _, h := range config.AllowedMCPHosts {
+			if strings.ToLower(strings.TrimSpace(h)) == want {
+				permitted = true
+				break
+			}
+		}
+		if !permitted {
+			return fmt.Errorf("mcp: server %q host %q is not in allowedMCPHosts", config.Name, host)
+		}
+	}
+	return nil
+}
+
+// filterAllowedTools applies the per-server AllowedTools allowlist to the set
+// of advertised tools. An empty allowlist returns the input unchanged
+// (register everything). Otherwise only tools whose server-reported name is
+// listed survive; the rest are dropped with a warning so a server advertising
+// tools beyond its trust grant is visible to operators.
+func (c *Client) filterAllowedTools(config types.MCPServerConfig, tools []mcpTool) []mcpTool {
+	if len(config.AllowedTools) == 0 {
+		return tools
+	}
+	allowed := make(map[string]bool, len(config.AllowedTools))
+	for _, name := range config.AllowedTools {
+		allowed[name] = true
+	}
+	var kept []mcpTool
+	for _, mt := range tools {
+		if allowed[mt.Name] {
+			kept = append(kept, mt)
+			continue
+		}
+		c.warn("mcp tool not in allowlist; rejected at registration",
+			"server", config.Name,
+			"tool", sanitizeMCPToolName(mt.Name),
+		)
+	}
+	return kept
+}
+
 // serverSession holds per-server connection state.
 type serverSession struct {
+	name      string // operator-supplied logical name, for log attribution
 	uri       string
 	token     string // bearer token, empty if no auth
 	sessionID string // Mcp-Session-Id from server
 }
 
+const mcpClientTimeout = 30 * time.Second
+
 // NewClient creates an MCP client that registers discovered tools into the
 // given registry. It uses the provided http.Client for all requests; if nil,
 // a default client with a 30-second timeout is used to prevent unbounded
 // connections to remote MCP servers.
+//
+// The default client's transport re-validates every dialled host through the
+// shared SSRF guard (security.LoopbackAwareDialContext), so a server whose DNS
+// record flips to a non-loopback private/reserved address between the
+// connect-time check and the actual dial is still refused — DNS-rebinding
+// protection consistent with web_fetch. Loopback targets are permitted because
+// a remote http:// URI is already rejected upstream (ValidateRunConfig /
+// validateMCPHost) and a localhost MCP server is a supported local-dev case.
 func NewClient(registry *tool.Registry, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: mcpClientTimeout,
 			Transport: &http.Transport{
+				DialContext:           security.LoopbackAwareDialContext(mcpClientTimeout),
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: 15 * time.Second,
 				IdleConnTimeout:       90 * time.Second,
@@ -308,35 +397,9 @@ func NewClient(registry *tool.Registry, httpClient *http.Client) *Client {
 // discovers tools via tools/list, and registers each tool into the registry.
 // The server name from config is used to prefix tool names.
 func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) error {
-	if config.Name == "" {
-		return fmt.Errorf("mcp: server config missing required Name field")
-	}
-	if config.URI == "" {
-		return fmt.Errorf("mcp: server %q missing required URI field", config.Name)
-	}
-
-	// Validate URI scheme to prevent SSRF via file://, gopher://, etc.
-	parsed, err := url.Parse(config.URI)
+	sess, err := newSession(ctx, config, secrets)
 	if err != nil {
-		return fmt.Errorf("mcp: invalid URI for server %q: %w", config.Name, err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("mcp: server %q URI scheme %q not allowed (must be http or https)", config.Name, parsed.Scheme)
-	}
-
-	// Resolve bearer token if configured.
-	var token string
-	if config.APIKeyRef != "" {
-		var err error
-		token, err = secrets.Resolve(ctx, config.APIKeyRef)
-		if err != nil {
-			return fmt.Errorf("mcp: resolve auth for server %q: %w", config.Name, err)
-		}
-	}
-
-	sess := &serverSession{
-		uri:   config.URI,
-		token: token,
+		return err
 	}
 
 	c.mu.Lock()
@@ -348,6 +411,14 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 	if err != nil {
 		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
 	}
+
+	// Apply the per-server tool allowlist BEFORE the cardinality cap so a
+	// hostile server cannot fill the cap with disallowed tools and starve
+	// the legitimate ones. An empty AllowedTools registers everything
+	// (backward-compatible); a non-empty list drops any advertised tool not
+	// named, with a warning so operators can spot a server advertising more
+	// than it was trusted for.
+	tools = c.filterAllowedTools(config, tools)
 
 	// Cap the number of tools we register per server. A misconfigured or
 	// hostile MCP server could otherwise expose thousands of unique
@@ -385,34 +456,42 @@ func (c *Client) Connect(ctx context.Context, config types.MCPServerConfig, secr
 // A returned error names the server so the preflight step can point the
 // operator at the specific misconfigured entry.
 func (c *Client) Probe(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) error {
-	if config.Name == "" {
-		return fmt.Errorf("mcp: server config missing required Name field")
-	}
-	if config.URI == "" {
-		return fmt.Errorf("mcp: server %q missing required URI field", config.Name)
-	}
-
-	parsed, err := url.Parse(config.URI)
+	sess, err := newSession(ctx, config, secrets)
 	if err != nil {
-		return fmt.Errorf("mcp: invalid URI for server %q: %w", config.Name, err)
+		return err
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("mcp: server %q URI scheme %q not allowed (must be http or https)", config.Name, parsed.Scheme)
-	}
-
-	var token string
-	if config.APIKeyRef != "" {
-		token, err = secrets.Resolve(ctx, config.APIKeyRef)
-		if err != nil {
-			return fmt.Errorf("mcp: resolve auth for server %q: %w", config.Name, err)
-		}
-	}
-
-	sess := &serverSession{uri: config.URI, token: token}
 	if _, err := c.listTools(ctx, sess); err != nil {
 		return fmt.Errorf("mcp: list tools from server %q: %w", config.Name, err)
 	}
 	return nil
+}
+
+// newSession runs the shared Connect/Probe prologue: it validates the
+// required Name/URI fields and the trust-model host gate (scheme, https,
+// SSRF, allowedMCPHosts), resolves the bearer token, and returns a session
+// carrying the logical name for log attribution. Factoring it here keeps the
+// two entry points from drifting in their gating.
+func newSession(ctx context.Context, config types.MCPServerConfig, secrets security.SecretStore) (*serverSession, error) {
+	if config.Name == "" {
+		return nil, fmt.Errorf("mcp: server config missing required Name field")
+	}
+	if config.URI == "" {
+		return nil, fmt.Errorf("mcp: server %q missing required URI field", config.Name)
+	}
+	if err := validateMCPHost(config); err != nil {
+		return nil, err
+	}
+
+	var token string
+	if config.APIKeyRef != "" {
+		var err error
+		token, err = secrets.Resolve(ctx, config.APIKeyRef)
+		if err != nil {
+			return nil, fmt.Errorf("mcp: resolve auth for server %q: %w", config.Name, err)
+		}
+	}
+
+	return &serverSession{name: config.Name, uri: config.URI, token: token}, nil
 }
 
 // Close releases resources held by the client. Currently a no-op since
@@ -717,7 +796,7 @@ func (c *Client) call(ctx context.Context, sess *serverSession, method string, p
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		if len(sid) > maxMCPSessionIDLen {
 			c.warn("mcp session ID exceeded cap; ignoring",
-				"server", sess.uri, "len", len(sid), "cap", maxMCPSessionIDLen)
+				"server", sess.name, "len", len(sid), "cap", maxMCPSessionIDLen)
 		} else {
 			c.mu.Lock()
 			sess.sessionID = sid

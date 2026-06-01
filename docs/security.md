@@ -127,7 +127,7 @@ response bodies are bounded with `io.LimitReader` to avoid
 unbounded memory consumption when a provider returns an unexpectedly
 large error payload.
 
-## SSRF protection (`web_fetch`)
+## SSRF protection (`web_fetch` and MCP)
 
 The `web_fetch` tool layers four checks before any HTTP request goes
 out:
@@ -136,12 +136,55 @@ out:
    `gopher://`, no other URL schemes.
 2. **DNS resolution:** the hostname is resolved before the request is
    issued; the resolved IP is checked against the blocklist.
-3. **IP block list:** RFC 1918 private ranges, loopback (127/8),
-   link-local (169.254/16), and multicast (224/4 and similar) are
-   rejected. This prevents cloud-metadata exfiltration
-   (`169.254.169.254`) and lateral movement to internal services.
+3. **IP block list:** RFC 1918 private ranges, RFC 6598 carrier-grade
+   NAT (`100.64.0.0/10`), loopback (127/8), link-local (169.254/16),
+   and multicast (224/4 and similar) are rejected. This prevents
+   cloud-metadata exfiltration (`169.254.169.254`) and lateral
+   movement to internal services — including deployment targets that
+   route the CGNAT range to internal subnets.
 4. **Response cap:** 100 KB. Larger responses are truncated; the
    truncation is visible to the model.
+
+Checks 1–3 live in one place — the `security.ValidatePublicHost`
+guard — and are reused by every component that dials a
+caller-supplied host. The MCP client shares the same guard so there
+is a single SSRF blocklist to audit, not one per consumer.
+
+The transport `DialContext` re-runs the host check at connect time
+(`security.SafeDialContext` for `web_fetch`,
+`security.LoopbackAwareDialContext` for MCP), so a hostname that
+passes the resolve-time check but whose DNS answer later flips to a
+private address — a DNS-rebinding attack — is still refused when the
+socket is actually opened. The rebinding guard is best-effort across
+the resolve→dial gap; it does not pin a specific IP for the lifetime
+of a long-lived connection.
+
+### MCP server trust model
+
+An MCP server is untrusted: it supplies tool definitions and tool
+results the harness threads into the model's context and, for
+write-capable tools, into actions. Two operator controls bound what
+a compromised or misconfigured server can do (`MCPServerConfig`):
+
+- **`uri` scheme and host:** the URI must be `http`/`https`. A remote
+  (non-loopback) host must use `https`, so credentials and tool-call
+  payloads are not sent in clear; plain `http` is permitted only for
+  `localhost`/loopback during local development. The host is then run
+  through the shared SSRF guard above, so a server URI resolving to a
+  private or reserved address is refused at connect. `ValidateRunConfig`
+  rejects the malformed-config cases (missing name/uri, bad scheme,
+  non-`https` remote, malformed `allowedMCPHosts`) before a run starts.
+- **`allowedTools`:** an optional per-server allowlist matched against
+  the server-reported tool name. When set, any advertised tool not on
+  the list is refused at registration with a logged reason, so a
+  server cannot smuggle in tools beyond the set it was trusted for.
+  The filter runs before the per-server tool-count cap. An unset list
+  registers every advertised tool (the historical, backward-compatible
+  behaviour).
+- **`allowedMCPHosts`:** an optional host pin. When set, the URI host
+  must appear in the list (exact, case-insensitive) in addition to
+  passing the SSRF guard — a defence against a server URI being
+  repointed at an unexpected host.
 
 ## Path traversal prevention
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -1147,6 +1148,22 @@ type MCPServerConfig struct {
 	Name      string `json:"name"`
 	URI       string `json:"uri"`
 	APIKeyRef string `json:"apiKeyRef,omitempty"`
+
+	// AllowedTools optionally restricts which advertised tools the harness
+	// will register from this server. When non-empty it is an allowlist
+	// matched case-sensitively against the server-reported (unprefixed) tool
+	// name — the exact name the server advertises: any tool not listed is
+	// refused at registration, so a compromised or misconfigured server
+	// cannot smuggle in unexpected tools. An empty/unset list registers every
+	// advertised tool (the historical behaviour) and is backward-compatible.
+	AllowedTools []string `json:"allowedTools,omitempty"`
+
+	// AllowedMCPHosts optionally pins the set of hostnames this server's URI
+	// may resolve to. When non-empty, the URI host must appear in this list
+	// (exact, case-insensitive match) in addition to passing the SSRF guard.
+	// It is an operator-side defence against a server URI being repointed at
+	// an unexpected host. Empty/unset applies no host pinning.
+	AllowedMCPHosts []string `json:"allowedMCPHosts,omitempty"`
 }
 
 var validProviderTypes = map[string]bool{
@@ -1766,6 +1783,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateProviderConfigs(config, retryDefaulted, &errs)
 	validateAPIKeyRefs(config, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
+	validateMCPServers(config.Tools.MCPServers, &errs)
 	validateToolsProfile(config.Tools.Profile, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	for name, prov := range config.Providers {
@@ -2543,6 +2561,78 @@ func validateBuiltInTools(builtIns []string, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf("tools.builtIn contains unsupported tool %q", name))
 		}
 	}
+}
+
+// validateMCPServers checks the structural trust-model fields on every
+// configured MCP server: a parseable http/https URI, https required for any
+// remote (non-loopback) host so credentials and tool-call payloads are not
+// sent in clear, and well-formed AllowedMCPHosts entries. Connect-time SSRF
+// resolution (private/reserved-IP blocking, DNS-rebinding re-validation)
+// lives in the MCP client, which shares security.ValidatePublicHost with
+// web_fetch; this layer rejects the malformed-config cases an operator can
+// fix before a run starts.
+func validateMCPServers(servers []MCPServerConfig, errs *[]string) {
+	for i, server := range servers {
+		path := fmt.Sprintf("tools.mcpServers[%d]", i)
+		if server.Name == "" {
+			*errs = append(*errs, fmt.Sprintf("%s.name is required", path))
+		}
+		if server.URI == "" {
+			*errs = append(*errs, fmt.Sprintf("%s.uri is required", path))
+		} else {
+			u, err := url.Parse(server.URI)
+			switch {
+			case err != nil:
+				*errs = append(*errs, fmt.Sprintf("%s.uri %q is not a valid URL: %v", path, server.URI, err))
+			case u.Scheme != "http" && u.Scheme != "https":
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.uri scheme %q is not allowed (must be http or https)", path, u.Scheme))
+			case u.Hostname() == "":
+				*errs = append(*errs, fmt.Sprintf("%s.uri %q must include a host", path, server.URI))
+			case u.Scheme == "http" && !isLocalMCPHost(u.Hostname()):
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.uri %q must use https for a remote host (http is only permitted for localhost/loopback)",
+					path, server.URI))
+			}
+		}
+		for j, host := range server.AllowedMCPHosts {
+			trimmed := strings.TrimSpace(host)
+			if trimmed == "" {
+				*errs = append(*errs, fmt.Sprintf("%s.allowedMCPHosts[%d] must not be empty", path, j))
+				continue
+			}
+			// An IP literal (including IPv6, which legitimately contains
+			// colons) is a valid bare host; only apply the no-scheme/port/path
+			// check to non-IP names so "::1" or "2001:db8::1" is not rejected
+			// as if the colons were a port separator.
+			if net.ParseIP(trimmed) != nil {
+				continue
+			}
+			if host != trimmed || strings.ContainsAny(host, "/:") {
+				*errs = append(*errs, fmt.Sprintf(
+					"%s.allowedMCPHosts[%d] %q must be a bare hostname or IP literal (no scheme, port, or path)", path, j, host))
+			}
+		}
+		for j, name := range server.AllowedTools {
+			if strings.TrimSpace(name) == "" {
+				*errs = append(*errs, fmt.Sprintf("%s.allowedTools[%d] must not be empty", path, j))
+			}
+		}
+	}
+}
+
+// isLocalMCPHost reports whether host is a loopback target for which a plain
+// http:// MCP URI is acceptable (local development). It accepts the literal
+// "localhost"/"*.localhost" names and any loopback IP literal.
+func isLocalMCPHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // validateAPIKeyRefs enforces that every secret-bearing apiKeyRef on
