@@ -405,6 +405,65 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *test
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic pins the requirement
+// that scrubModelInput forwards the Synthetic marker to the on-disk trace so the
+// replay/mining toolchain can distinguish harness-injected turns from genuine
+// user content (#340).
+func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	emitter.Start("run-synthetic", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelInput: types.ModelInput{
+			Model: "test-model",
+			Messages: []types.Message{
+				{
+					Role:    "user",
+					Content: []types.ContentBlock{{Type: "text", Text: "real user prompt"}},
+				},
+				{
+					Role:      "user",
+					Synthetic: true,
+					Content:   []types.ContentBlock{{Type: "text", Text: "escalation nudge"}},
+				},
+			},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	events := readEvents(t, buf.Bytes())
+	var turnEv Event
+	for _, ev := range events {
+		if ev.Kind == EventKindTurnRecord {
+			turnEv = ev
+			break
+		}
+	}
+	if turnEv.ModelInput == nil {
+		t.Fatal("turn_record has no modelInput")
+	}
+	msgs := turnEv.ModelInput.Messages
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	if msgs[0].Synthetic {
+		t.Error("first message should not be synthetic")
+	}
+	if !msgs[1].Synthetic {
+		t.Error("second message should have Synthetic:true preserved through scrubModelInput")
+	}
+
+	// Also verify the on-disk JSON contains the synthetic field explicitly.
+	onDisk := buf.String()
+	if !strings.Contains(onDisk, `"synthetic":true`) {
+		t.Errorf("expected on-disk JSON to contain synthetic:true, got:\n%s", onDisk)
+	}
+}
+
 // TestJSONLTraceEmitter_PartialStream pins the SIGKILL-safety property:
 // when a run is interrupted between RecordTurnRecord and Finish, the
 // on-disk file is still parseable up to the last completed event.

@@ -1361,7 +1361,10 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 		return nil
 	}
 	last := messages[len(messages)-1]
-	if last.Role != "user" {
+	// Synthetic messages are harness-controlled content (escalation prompts,
+	// verifier feedback); they are never untrusted external input and do not
+	// need pre-turn classification.
+	if last.Role != "user" || last.Synthetic {
 		return nil
 	}
 	chunks := make([]string, 0, len(last.Content))

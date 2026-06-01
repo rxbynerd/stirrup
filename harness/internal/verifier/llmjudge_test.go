@@ -237,6 +237,45 @@ func TestLLMJudgeVerifier_EmptyResponse(t *testing.T) {
 	}
 }
 
+// TestLLMJudgeVerifier_SyntheticMessagesExcluded confirms that messages marked
+// Synthetic:true are not forwarded to the judge model. The verifier must only
+// present genuine conversation content so harness-injected turns (escalation
+// prompts, verifier feedback) do not skew the evaluation.
+func TestLLMJudgeVerifier_SyntheticMessagesExcluded(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: `{"passed": true, "feedback": "ok"}`},
+		},
+	}
+
+	v := NewLLMJudgeVerifier(prov, "test-model", "task must be done")
+	_, _ = v.Verify(context.Background(), VerifyContext{
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "real user prompt"}}},
+			{Role: "assistant", Content: []types.ContentBlock{{Type: "text", Text: "assistant reply"}}},
+			{
+				Role:      "user",
+				Synthetic: true,
+				Content:   []types.ContentBlock{{Type: "text", Text: "synthetic escalation nudge"}},
+			},
+		},
+	})
+
+	if len(prov.lastParams.Messages) != 1 {
+		t.Fatalf("expected 1 message to judge, got %d", len(prov.lastParams.Messages))
+	}
+	text := prov.lastParams.Messages[0].Content[0].Text
+	if strings.Contains(text, "synthetic escalation nudge") {
+		t.Error("judge prompt must not contain synthetic message content")
+	}
+	if !strings.Contains(text, "real user prompt") {
+		t.Error("judge prompt must contain genuine user message content")
+	}
+	if !strings.Contains(text, "assistant reply") {
+		t.Error("judge prompt must contain assistant message content")
+	}
+}
+
 // Verify that LLMJudgeVerifier satisfies the Verifier interface.
 var _ Verifier = (*LLMJudgeVerifier)(nil)
 
