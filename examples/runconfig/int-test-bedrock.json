@@ -1,0 +1,24 @@
+{
+  "mode": "execution",
+  "provider": {
+    "type": "bedrock",
+    "region": "us-east-1"
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "bedrock",
+    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  },
+  "promptBuilder": { "type": "default" },
+  "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
+  "executor": { "type": "local" },
+  "editStrategy": { "type": "multi" },
+  "verifier": { "type": "none" },
+  "permissionPolicy": { "type": "allow-all" },
+  "gitStrategy": { "type": "none" },
+  "transport": { "type": "stdio" },
+  "traceEmitter": { "type": "jsonl" },
+  "maxTurns": 2,
+  "timeout": 60,
+  "logLevel": "info"
+}
