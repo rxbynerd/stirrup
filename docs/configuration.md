@@ -367,14 +367,23 @@ Walkthrough: [`azure-workload-identity.md`](azure-workload-identity.md).
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--executor` | `local` | One of `local`, `container`, `api`. |
-| `--container-runtime` | (none) | OCI runtime: `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`. Empty = engine default. Requires the runtime to be registered with the host Docker/Podman daemon. |
+| `--executor` | `local` | One of `local`, `container`, `k8s`, `api`. |
+| `--container-runtime` | (none) | Per-`executor` closed set. For `container` (host OCI runtime): `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`, `kata-clh` — must be registered with the host Docker/Podman daemon. For `k8s` (Pod `RuntimeClassName`): `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh` — note the name is `gvisor`, not `runsc`. Empty = engine default for `container`, cluster-default RuntimeClass for `k8s`. |
+| `--k8s-namespace` | (none) | Namespace for the `k8s` executor's sandbox Pod. Required when `--executor=k8s`. JSON path: `executor.k8sNamespace`. |
+| `--k8s-kubeconfig` | (none) | Path to a kubeconfig for the `k8s` executor. An explicit value wins even in-cluster; empty prefers in-cluster config, then `$KUBECONFIG`. JSON path: `executor.k8sKubeconfig`. |
+| `--k8s-node-selector` | (none) | Repeatable `key=value` `nodeSelector` constraining where the `k8s` Pod schedules (e.g. `--k8s-node-selector disktype=ssd`). JSON path: `executor.k8sNodeSelector`. |
+| `--k8s-service-account` | (none) | ServiceAccount name for the `k8s` Pod. Empty uses the namespace `default`. The token is never automounted regardless. JSON path: `executor.k8sServiceAccount`. |
+| `--k8s-egress-proxy-url` | (none) | URL the `k8s` sandbox Pod routes `HTTP_PROXY`/`HTTPS_PROXY` through. Required when `--executor=k8s` and the network mode is `allowlist`; rejected otherwise. JSON path: `executor.k8sEgressProxyUrl`. |
 | `--edit-strategy` | `multi` | One of `whole-file`, `search-replace`, `udiff`, `multi`. `composite` is reachable only via `--config`. |
 | `--verifier` | `none` | One of `none`, `test-runner`, `llm-judge`. `composite` is reachable only via `--config`. |
 | `--git-strategy` | `none` | One of `none`, `deterministic`. |
 | `--permission-policy-file` | (none) | Path to a Cedar policy file. When set and the policy type is unset elsewhere, implies `permissionPolicy.type=policy-engine`. Starters live under [`examples/policies/`](../examples/policies/). |
 | `--code-scanner` | (none) | One of `none`, `patterns`, `semgrep`. `composite` is accepted only via `--config` (it requires `codeScanner.scanners`). Empty defers to the mode-aware default (`patterns` for execution, `none` for read-only modes). |
 | `--tools-profile` | (none) | Model-facing toolset profile. Closed enum: `""`/`default` (no aliasing, internal tool names) or `coding-classic` (terse coding-CLI aliases). Changes only the names the model sees; dispatch identities and gating are unchanged. JSON path: `tools.profile`. See [Toolset profiles](#toolset-profiles). |
+
+See also: [`docs/executors/k8s.md`](executors/k8s.md) for the `k8s`
+executor's architecture, deployment recipes, egress model, and the full
+`executor.k8s*` field reference.
 
 ### Transport
 
