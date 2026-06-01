@@ -165,7 +165,8 @@ a billable runtime operation (so it confirms credentials resolve, not
 that the Bedrock endpoint is reachable). A container-executor dry-run is
 read-only: it pings the engine socket and checks the image is present
 locally without creating a container, starting the egress proxy, or
-pulling the image.
+pulling the image. Pass `--no-probe-executor` to suppress even that
+contact, recording the executor step as a `skip`.
 
 The trace probe is the one step that reaches a live backend: for
 `traceEmitter.type=otel` it exports a single throwaway span (tagged
@@ -207,6 +208,7 @@ fail the run:
 | `--no-probe-mcp` | The MCP `initialize` / `tools/list` handshake for every configured server. |
 | `--no-probe-trace` | The trace-emitter reachability probe (`otel` flush, `gcs` bucket check). |
 | `--no-probe-egress` | The egress-allowlist DNS resolution (container executor in `allowlist` network mode). |
+| `--no-probe-executor` | The container-engine probe (socket ping + image-present, container executor only). The executor step then records `skip`; no engine is contacted. No effect on `local`/`api` executors, which construct without an engine. |
 | `--dry-run-timeout` | Not a gate — bounds the total preflight wall-clock. Defaults to `30s`. |
 
 A `--no-probe-*` gate or `--dry-run-timeout` supplied **without**
@@ -434,6 +436,7 @@ full workflow, the per-step report, and how the flags compose.
 | `--no-probe-mcp` | `false` | Skip the MCP server handshake probe. Meaningless without `--dry-run` (exit `4`). |
 | `--no-probe-trace` | `false` | Skip the trace-emitter reachability probe. Meaningless without `--dry-run` (exit `4`). |
 | `--no-probe-egress` | `false` | Skip the egress-allowlist DNS probe. Meaningless without `--dry-run` (exit `4`). |
+| `--no-probe-executor` | `false` | Skip the container-engine probe (container executor only). Meaningless without `--dry-run` (exit `4`). |
 | `--dry-run-timeout` | `30s` | Total wall-clock budget for the preflight. Meaningless without `--dry-run` (exit `4`). |
 
 `--output=json` (above) emits the `PreflightReport` to stdout when paired
@@ -452,7 +455,7 @@ stderr. The scheme is uniform across `harness`, `job`, and
 | `1` | Validation / precondition | `ValidateRunConfig` (or `run-config --validate`) rejected the resolved config; a required prompt had no source; `job` ran without `CONTROL_PLANE_ADDR`. Also the default for any failure not in a more specific class. |
 | `2` | Parse error | The JSON in a `--config` file or piped stdin failed to decode (syntax error, unknown field, type mismatch). |
 | `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure. |
-| `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`) or `--dry-run-timeout` supplied without `--dry-run`. See [Dry-run preflight](#dry-run-preflight). |
+| `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`/`--no-probe-executor`) or `--dry-run-timeout` supplied without `--dry-run`. See [Dry-run preflight](#dry-run-preflight). |
 
 A failed `--dry-run` (one or more probes reported `fail`) exits `1` on
 the default path, not `4`: code `4` is reserved for the command-line

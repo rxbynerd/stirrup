@@ -268,6 +268,68 @@ func TestPreflight_Egress_Skip(t *testing.T) {
 	}
 }
 
+// stepDetail returns the Detail of a named step.
+func stepDetail(report *PreflightReport, name string) (string, bool) {
+	for _, s := range report.Steps {
+		if s.Name == name {
+			return s.Detail, true
+		}
+	}
+	return "", false
+}
+
+// TestPreflight_Executor_Skip is the #357 skip path: a container-executor
+// dry-run with SkipExecutor must record the executor-probe step as a skip
+// (no engine contacted) and keep the report honest the engine was not
+// probed. The container engine is never reachable in CI, so without the
+// gate this step would fail; the gate must turn it into a clean skip.
+func TestPreflight_Executor_Skip(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Executor = types.ExecutorConfig{Type: "container", Image: "ubuntu:26.04"}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipExecutor: true})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	st, ok := stepStatus(report, "executor-probe")
+	if !ok || st != PreflightSkip {
+		t.Errorf("executor-probe step = %v (found=%v), want skip", st, ok)
+	}
+	if detail, _ := stepDetail(report, "executor-probe"); !strings.Contains(detail, "--no-probe-executor") {
+		t.Errorf("executor-probe skip detail = %q, want it to name --no-probe-executor", detail)
+	}
+	if !report.OK {
+		t.Errorf("a skipped executor probe must not fail the report; steps: %+v", report.Steps)
+	}
+}
+
+// TestPreflight_Executor_LocalProbeRunsWhenNotSkipped pins that
+// SkipExecutor is a container-only gate: a local executor still produces an
+// executor-probe step (a skip, since the local executor exposes no Probe),
+// and SkipExecutor does not suppress it with the gate reason.
+func TestPreflight_Executor_LocalUnaffectedBySkip(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1") // local executor
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{SkipExecutor: true})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	st, ok := stepStatus(report, "executor-probe")
+	if !ok || st != PreflightSkip {
+		t.Errorf("executor-probe step = %v (found=%v), want skip", st, ok)
+	}
+	if detail, _ := stepDetail(report, "executor-probe"); strings.Contains(detail, "--no-probe-executor") {
+		t.Errorf("local executor-probe must not report the container gate reason; detail = %q", detail)
+	}
+}
+
 func TestPreflight_Egress_Fail_MalformedAllowlist(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)

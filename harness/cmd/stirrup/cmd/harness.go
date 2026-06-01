@@ -768,6 +768,7 @@ func init() {
 	f.Bool("no-probe-mcp", false, "With --dry-run, skip the MCP server reachability probe. Meaningless without --dry-run (exit 4).")
 	f.Bool("no-probe-trace", false, "With --dry-run, skip the trace-emitter reachability probe. Meaningless without --dry-run (exit 4).")
 	f.Bool("no-probe-egress", false, "With --dry-run, skip the egress-allowlist DNS probe. Meaningless without --dry-run (exit 4).")
+	f.Bool("no-probe-executor", false, "With --dry-run, skip the container-engine probe (socket ping + image-present). The executor step reports skip; no engine is contacted. Meaningless without --dry-run (exit 4).")
 	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "With --dry-run, the total wall-clock budget for the preflight. Meaningless without --dry-run (exit 4).")
 	f.StringP("output", "o", "text", "Post-run summary format: text (default human-readable summary on stderr), json (structured RunResult JSON on stdout, suppresses stderr summary), none (suppresses both). When json is set together with resultSink.type=stdout-json the line is emitted once (the flag wins); pair json with a trace emitter that does not target stdout (the default jsonl file path is fine).")
 
@@ -1384,6 +1385,7 @@ var dryRunProbeGates = []string{
 	"no-probe-mcp",
 	"no-probe-trace",
 	"no-probe-egress",
+	"no-probe-executor",
 	"dry-run-timeout",
 }
 
@@ -1411,12 +1413,14 @@ func dryRunOptionsFromFlags(f *flag.FlagSet) core.PreflightOptions {
 	skipMCP, _ := f.GetBool("no-probe-mcp")
 	skipTrace, _ := f.GetBool("no-probe-trace")
 	skipEgress, _ := f.GetBool("no-probe-egress")
+	skipExecutor, _ := f.GetBool("no-probe-executor")
 	timeout, _ := f.GetDuration("dry-run-timeout")
 	return core.PreflightOptions{
 		SkipProvider: skipProvider,
 		SkipMCP:      skipMCP,
 		SkipTrace:    skipTrace,
 		SkipEgress:   skipEgress,
+		SkipExecutor: skipExecutor,
 		Timeout:      timeout,
 	}
 }
