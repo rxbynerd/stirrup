@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
 // Granite Guardian adapter for the OpenAI-compatible chat-completions API
@@ -406,7 +408,11 @@ func (g *GraniteGuardian) Check(ctx context.Context, in Input) (*Decision, error
 
 	resp, err := g.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("granite-guardian: do request: %w", err)
+		// g.endpoint is an operator-supplied URL that composeGraniteURL
+		// preserves verbatim (userinfo and query string included); unwrap the
+		// transport *url.Error so an embedded credential cannot leak into the
+		// returned error (CWE-532).
+		return nil, fmt.Errorf("granite-guardian: do request: %w", security.UnwrapURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
