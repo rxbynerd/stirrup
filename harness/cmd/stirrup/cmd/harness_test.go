@@ -977,6 +977,148 @@ func TestApplyOverrides_ObservabilityServiceNamespaceFlag(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRunConfig_LogExportPropagates pins that --log-export otlp
+// (with the default endpoint) flows into RunConfig.Observability.LogsExport
+// and validates. The empty Endpoint is intentional: the factory falls back
+// to the trace emitter's endpoint when it is unset.
+func TestBuildHarnessRunConfig_LogExportPropagates(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		LogExport:     "otlp",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if cfg.Observability.LogsExport.Type != "otlp" {
+		t.Errorf("LogsExport.Type: got %q, want otlp", cfg.Observability.LogsExport.Type)
+	}
+	if cfg.Observability.LogsExport.Endpoint != "" {
+		t.Errorf("LogsExport.Endpoint: got %q, want empty (factory falls back to trace endpoint)", cfg.Observability.LogsExport.Endpoint)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("ValidateRunConfig: %v", err)
+	}
+}
+
+// TestBuildHarnessRunConfig_LogExportNoneStaysStderrOnly pins that the
+// default --log-export none does not materialise an "otlp" type — the
+// stderr-only behaviour is the zero value, and the factory only opts in on
+// Type=="otlp".
+func TestBuildHarnessRunConfig_LogExportNoneStaysStderrOnly(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "execution",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+		LogExport:     "none",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if cfg.Observability.LogsExport.Type != "" {
+		t.Errorf("LogsExport.Type: got %q, want empty for --log-export none", cfg.Observability.LogsExport.Type)
+	}
+}
+
+// TestApplyOverrides_LogExportFlag pins the file -> flag override chain for
+// --log-export: an explicit "otlp" must clobber the file value, and an
+// explicit "none" must clear a file's "otlp" back to stderr-only.
+func TestApplyOverrides_LogExportFlag(t *testing.T) {
+	t.Run("otlp overrides file", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		if err := cmd.Flags().Set("log-export", "otlp"); err != nil {
+			t.Fatalf("set log-export: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.Observability.LogsExport.Type != "otlp" {
+			t.Errorf("LogsExport.Type: explicit flag should win, got %q", cfg.Observability.LogsExport.Type)
+		}
+	})
+
+	t.Run("none clears file otlp", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.Observability.LogsExport = types.LogsExportConfig{Type: "otlp", Endpoint: "localhost:4317"}
+		if err := cmd.Flags().Set("log-export", "none"); err != nil {
+			t.Fatalf("set log-export: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.Observability.LogsExport.Type != "" {
+			t.Errorf("LogsExport.Type: --log-export none should clear to stderr-only, got %q", cfg.Observability.LogsExport.Type)
+		}
+	})
+}
+
+// TestApplyOverrides_LogExportEndpointEnvVar pins that
+// OTEL_EXPORTER_OTLP_LOGS_ENDPOINT, when set, pins the log endpoint on the
+// override path regardless of the file value — the per-signal env override
+// the OTel SDK honours.
+func TestApplyOverrides_LogExportEndpointEnvVar(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "logs-collector:4317")
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.Observability.LogsExport = types.LogsExportConfig{Type: "otlp", Endpoint: "from-file:4317"}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.Observability.LogsExport.Endpoint != "logs-collector:4317" {
+		t.Errorf("LogsExport.Endpoint: env var should pin the endpoint, got %q", cfg.Observability.LogsExport.Endpoint)
+	}
+}
+
+// TestBuildHarnessRunConfig_LogExportEndpointFromEnv pins that the builder
+// path reads OTEL_EXPORTER_OTLP_LOGS_ENDPOINT into LogsExport.Endpoint so a
+// flag-only run (no --config) can still pin a distinct logs endpoint.
+func TestBuildHarnessRunConfig_LogExportEndpointFromEnv(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "logs-collector:4317")
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("log-export", "otlp"); err != nil {
+		t.Fatalf("set log-export: %v", err)
+	}
+	// Minimum flags so the builder produces a valid config.
+	for k, v := range map[string]string{
+		"mode": "execution", "prompt": "test", "provider": "anthropic",
+		"api-key-ref": "secret://ANTHROPIC_API_KEY", "model": "claude-sonnet-4-6",
+		"transport": "stdio", "log-level": "info",
+	} {
+		if err := cmd.Flags().Set(k, v); err != nil {
+			t.Fatalf("set %s: %v", k, err)
+		}
+	}
+
+	cfg, err := buildFlagOnlyRunConfig(cmd, nil)
+	if err != nil {
+		t.Fatalf("buildFlagOnlyRunConfig: %v", err)
+	}
+	if cfg.Observability.LogsExport.Type != "otlp" {
+		t.Errorf("LogsExport.Type: got %q, want otlp", cfg.Observability.LogsExport.Type)
+	}
+	if cfg.Observability.LogsExport.Endpoint != "logs-collector:4317" {
+		t.Errorf("LogsExport.Endpoint: got %q, want logs-collector:4317", cfg.Observability.LogsExport.Endpoint)
+	}
+}
+
 // TestApplyOverrides_PositionalPromptFillsFileGap covers the precedence
 // edge case where the file omits a prompt and the user passes one as a
 // positional argument (no --prompt flag). The positional should fill the

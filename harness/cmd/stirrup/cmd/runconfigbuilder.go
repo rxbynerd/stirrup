@@ -400,6 +400,14 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
 	deploymentEnvironment, _ := f.GetString("deployment-environment")
 	serviceNamespace, _ := f.GetString("service-namespace")
+	logExport, _ := f.GetString("log-export")
+	// OTEL_EXPORTER_OTLP_LOGS_ENDPOINT is the OTel-standard per-signal
+	// override for the logs endpoint. When set it pins the log exporter's
+	// endpoint regardless of --otel-endpoint; left empty, the factory falls
+	// back to the trace emitter's endpoint. Read here (in the CLI builder)
+	// rather than in the factory so the agentic loop's "no direct env reads"
+	// invariant is preserved.
+	logExportEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
 	providerRetryMaxAttempts, _ := f.GetInt("provider-retry-max-attempts")
 	providerRetryInitialDelay, _ := f.GetDuration("provider-retry-initial-delay")
 	providerRetryMaxDelay, _ := f.GetDuration("provider-retry-max-delay")
@@ -507,6 +515,8 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		GuardRailFailOpen:            guardRailFailOpen,
 		DeploymentEnvironment:        deploymentEnvironment,
 		ServiceNamespace:             serviceNamespace,
+		LogExport:                    logExport,
+		LogExportEndpoint:            logExportEndpoint,
 		ProviderRetryMaxAttempts:     providerRetryMaxAttempts,
 		ProviderRetryInitialDelay:    providerRetryInitialDelay,
 		ProviderRetryMaxDelay:        providerRetryMaxDelay,
