@@ -79,7 +79,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// would only arise from an alias collision the parent already resolved,
 	// so fall back to the unaliased child registry rather than aborting the
 	// spawn.
-	var childTools tool.ToolRegistry = filterToolRegistry(parent.Tools, "spawn_agent")
+	var childTools tool.ToolRegistry = filterToolRegistry(parent.Tools, subAgentExcludedTools...)
 	if presenter, err := tool.NewPresenter(childTools, parent.ToolProfile); err == nil {
 		childTools = presenter
 	} else {

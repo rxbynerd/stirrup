@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -313,5 +314,28 @@ func TestNewSessionManager_TransportOnNull(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("NewSessionManager(transport, NullTransport): err = nil, want misconfiguration error")
+	}
+}
+
+// TestSubAgentExcludedTools_RecursionGuard pins that a spawned sub-agent's
+// tool registry withholds spawn_agent AND every session tool, so a
+// sub-agent can neither recurse via spawn_agent nor open its own detached
+// sessions outside the parent's concurrency cap and lifetime management.
+func TestSubAgentExcludedTools_RecursionGuard(t *testing.T) {
+	parent := tool.NewRegistry()
+	keep := &tool.Tool{Name: "read_file", Handler: func(context.Context, json.RawMessage) (string, error) { return "", nil }}
+	parent.Register(keep)
+	for _, name := range subAgentExcludedTools {
+		parent.Register(&tool.Tool{Name: name, Handler: func(context.Context, json.RawMessage) (string, error) { return "", nil }})
+	}
+
+	child := filterToolRegistry(parent, subAgentExcludedTools...)
+	if child.Resolve("read_file") == nil {
+		t.Error("read_file should survive the sub-agent filter")
+	}
+	for _, name := range subAgentExcludedTools {
+		if child.Resolve(name) != nil {
+			t.Errorf("excluded tool %q leaked into the sub-agent registry", name)
+		}
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool/builtins"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -542,4 +543,36 @@ func (b *localSessionBackend) terminate(sess *session) {
 	if sess.cancel != nil {
 		sess.cancel()
 	}
+}
+
+// --- builtins.SessionController adapter ------------------------------------
+
+// sessionController adapts *SessionManager to builtins.SessionController,
+// marshalling typed SessionStatus snapshots to JSON at the package boundary
+// so the builtins package stays free of a core import.
+type sessionController struct{ mgr *SessionManager }
+
+var _ builtins.SessionController = sessionController{}
+
+func newSessionController(mgr *SessionManager) sessionController {
+	return sessionController{mgr: mgr}
+}
+
+func (c sessionController) Start(_ context.Context, prompt, mode string, maxTurns int) (string, error) {
+	return c.mgr.Start(SubAgentConfig{Prompt: prompt, Mode: mode, MaxTurns: maxTurns})
+}
+
+func (c sessionController) Status(sessionID string) (json.RawMessage, error) {
+	return json.Marshal(c.mgr.Status(sessionID))
+}
+
+func (c sessionController) Wait(ctx context.Context, sessionID string, timeoutSeconds int) (json.RawMessage, error) {
+	return json.Marshal(c.mgr.Wait(ctx, sessionID, time.Duration(timeoutSeconds)*time.Second))
+}
+
+func (c sessionController) Terminate(sessionID string) (json.RawMessage, error) {
+	if err := c.mgr.Terminate(sessionID); err != nil {
+		return nil, err
+	}
+	return json.Marshal(c.mgr.Status(sessionID))
 }
