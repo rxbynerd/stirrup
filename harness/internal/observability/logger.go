@@ -6,6 +6,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 
@@ -114,15 +115,94 @@ func NewLogger(runID string, level slog.Level, w io.Writer) *slog.Logger {
 // SecretRedactedInOutput event each time it redacts a value. Pass nil to
 // disable (equivalent to NewLogger).
 func NewLoggerWithSecurity(runID string, level slog.Level, w io.Writer, sec SecurityNotifier) *slog.Logger {
+	return NewLoggerWithExport(runID, level, w, sec, nil)
+}
+
+// NewLoggerWithExport is the full logger constructor. It always writes JSON
+// to w; when exportHandler is non-nil (an OTLP-bridge leaf handler from
+// NewLogExporter) each record is additionally fanned out to that handler so
+// the same line ships to the configured OTel collector. Pass nil to keep
+// stderr-only behaviour (the default), which is exactly what
+// NewLoggerWithSecurity / NewLogger do.
+//
+// The scrubbing and span-correlation layers wrap the fan-out point, so both
+// the stderr JSON sink and the OTLP bridge receive identical, already-
+// scrubbed, trace-correlated records — the secret scrubber runs once and
+// covers both paths, satisfying the invariant that no log value leaves the
+// process unscrubbed regardless of sink.
+//
+//	SpanContextHandler ← ScrubHandler ← fanout{JSONHandler, exportHandler}
+func NewLoggerWithExport(runID string, level slog.Level, w io.Writer, sec SecurityNotifier, exportHandler slog.Handler) *slog.Logger {
 	jsonHandler := slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: level,
 	})
-	scrubHandler := NewScrubHandlerWithSecurity(jsonHandler, sec)
+
+	var leaf slog.Handler = jsonHandler
+	if exportHandler != nil {
+		leaf = newFanoutHandler(jsonHandler, exportHandler)
+	}
+
+	scrubHandler := NewScrubHandlerWithSecurity(leaf, sec)
 	// SpanContextHandler is the outermost layer so the trace_id / span_id it
-	// injects still flow through ScrubHandler before reaching the JSON
-	// encoder: JSONHandler ← ScrubHandler ← SpanContextHandler. Records
-	// emitted via *Context (e.g. InfoContext) inside an active span pick up
-	// correlation IDs; context-less calls pass through untouched.
+	// injects still flow through ScrubHandler before reaching the leaf
+	// sink(s). Records emitted via *Context (e.g. InfoContext) inside an
+	// active span pick up correlation IDs; context-less calls pass through
+	// untouched.
 	spanHandler := NewSpanContextHandler(scrubHandler)
 	return slog.New(spanHandler).With("runId", runID)
+}
+
+// fanoutHandler dispatches every record to two inner handlers. It exists so
+// the stderr JSON sink and the OTLP-bridge sink sit below the shared
+// Scrub / SpanContext layers, letting those decorators run exactly once
+// while both sinks still receive the enriched record.
+type fanoutHandler struct {
+	handlers []slog.Handler
+}
+
+func newFanoutHandler(handlers ...slog.Handler) *fanoutHandler {
+	return &fanoutHandler{handlers: handlers}
+}
+
+// Enabled reports true when any inner handler is enabled for the level, so
+// a record is processed if either sink wants it.
+func (h *fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, inner := range h.handlers {
+		if inner.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+// Handle delivers the record to every inner handler. Errors are joined so a
+// failure on one sink (e.g. the OTLP bridge) does not suppress delivery to
+// the others; the stderr write still happens.
+func (h *fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	var errs []error
+	for _, inner := range h.handlers {
+		if !inner.Enabled(ctx, r.Level) {
+			continue
+		}
+		if err := inner.Handle(ctx, r.Clone()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (h *fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make([]slog.Handler, len(h.handlers))
+	for i, inner := range h.handlers {
+		next[i] = inner.WithAttrs(attrs)
+	}
+	return &fanoutHandler{handlers: next}
+}
+
+func (h *fanoutHandler) WithGroup(name string) slog.Handler {
+	next := make([]slog.Handler, len(h.handlers))
+	for i, inner := range h.handlers {
+		next[i] = inner.WithGroup(name)
+	}
+	return &fanoutHandler{handlers: next}
 }
