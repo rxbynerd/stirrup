@@ -92,7 +92,13 @@ func newWebFetchTool(opts webFetchOptions) *tool.Tool {
 
 			resp, err := client.Do(req)
 			if err != nil {
-				return "", fmt.Errorf("fetch URL: %w", err)
+				// The fetched URL is arbitrary user input and frequently
+				// carries credentials in its query string (presigned S3/GCS
+				// URLs, ?api_key=...) or userinfo. The transport *url.Error
+				// embeds that URL and Go does not redact the query string, so
+				// unwrap to the dial-level cause before this error is returned
+				// to the model and logged (CWE-532).
+				return "", fmt.Errorf("fetch URL: %w", security.UnwrapURLError(err))
 			}
 			defer func() { _ = resp.Body.Close() }()
 

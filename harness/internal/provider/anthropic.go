@@ -17,6 +17,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -520,7 +521,10 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		a.recordLatency(ctx, start, metricAttrs)
-		return nil, fmt.Errorf("execute request: %w", err)
+		// a.baseURL is operator-configurable and may carry a credential in
+		// its query string; unwrap the *url.Error so its embedded URL (which
+		// Go does not query-redact) never reaches a log or caller (CWE-532).
+		return nil, fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
 
 	// Record HTTP-level metadata on the span from context (the provider.stream

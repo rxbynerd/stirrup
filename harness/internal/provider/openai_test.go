@@ -20,7 +20,6 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
-	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -1005,33 +1004,24 @@ func TestComposeOpenAIURL_TrimsAndAppends(t *testing.T) {
 	}
 }
 
-// TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed pins the F2
-// remediation from the issue #48 review: when httpClient.Do fails, Go
-// wraps the underlying transport error in *url.Error which embeds the
-// full request URL — including any QueryParams the operator configured.
-// Today's QueryParams (e.g. api-version=preview) are non-sensitive, but
-// the harness now accepts arbitrary user-controlled values there. OTel
-// span status messages bypass ScrubHandler (which only intercepts slog),
-// so loop.go scrubs streamErr.Error() before SetStatus to close the
-// architectural gap.
+// TestOpenAIAdapter_HTTPDoErrorDoesNotContainURL pins the #395 follow-up
+// remediation. When httpClient.Do fails, Go wraps the transport error in a
+// *url.Error whose Error() string embeds the full request URL — including any
+// QueryParams the operator configured. Go redacts userinfo but NOT the query
+// string, so an arbitrary user-controlled QueryParams value (the harness now
+// accepts these) would leak verbatim wherever the error is logged or returned.
 //
-// This test confirms two things in concert:
-//  1. An httpClient.Do failure produces a *url.Error whose string
-//     representation contains the request URL with QueryParams encoded.
-//     This is the channel by which a sensitive QueryParams value would
-//     reach an unscrubbed telemetry sink.
-//  2. security.Scrub strips known sensitive patterns from that string.
-//     We seed a scrubber-recognised secret into the URL via QueryParams
-//     to demonstrate the architectural fix actively redacts when fed a
-//     sensitive value, rather than relying on the current happy-path
-//     where QueryParams values do not happen to match any pattern.
+// The earlier issue #48 mitigation relied on security.Scrub stripping known
+// secret patterns from the error before it reached an OTel span; that left
+// arbitrary, non-pattern secrets (Azure SAS signatures, opaque gateway tokens)
+// exposed. The Stream adapter now unwraps the *url.Error to its transport cause
+// at the Do site, so the credentialed URL never enters the error chain at all —
+// a stronger guarantee that does not depend on pattern matching.
 //
-// The matching scrub call lives at harness/internal/core/loop.go in the
-// provider.stream span error path; verifying its presence directly via
-// the OTel test exporter requires standing up the full agentic loop, so
-// this test exercises the same security.Scrub call against the same
-// shape of error string that loop.go would receive.
-func TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed(t *testing.T) {
+// This test seeds an unmistakable secret into QueryParams and asserts it is
+// absent from the returned error string, and that the error no longer wraps a
+// *url.Error.
+func TestOpenAIAdapter_HTTPDoErrorDoesNotContainURL(t *testing.T) {
 	// httptest.Server with a Hijack handler that closes the underlying
 	// TCP connection mid-request. http.Client.Do returns a *url.Error
 	// wrapping the transport-layer failure with the request URL.
@@ -1048,16 +1038,13 @@ func TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Seed a scrubber-recognised secret into QueryParams. The pattern
-	// must survive net/url's percent-encoding so it can still be matched
-	// in the *url.Error string — Anthropic and OpenAI API keys are
-	// alphanumeric (with `-` and `_`) so they pass through unchanged. We
-	// craft a synthetic `sk-ant-...` string here purely to give the
-	// scrubber something deterministic to match; this is not a real key.
-	const sensitive = "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	// An opaque, non-pattern secret: security.Scrub would NOT catch this,
+	// which is exactly why the leak must be closed at the source rather than
+	// relying on downstream scrubbing.
+	const sensitive = "supersecretsignature"
 	queryParams := map[string]string{
 		"api-version": "preview",
-		"deployment":  sensitive, // crafted to match the anthropic_api_key pattern
+		"sig":         sensitive,
 	}
 
 	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{
@@ -1072,35 +1059,17 @@ func TestOpenAIAdapter_HTTPDoErrorContainsURLAndIsScrubbed(t *testing.T) {
 		t.Fatal("expected an error from connection-close, got nil")
 	}
 
-	// Step 1: the error must wrap *url.Error and the URL string must
-	// contain the encoded QueryParams. If this assertion fails the
-	// premise of F2 (URL leaks via *url.Error) no longer holds and the
-	// scrub mitigation can be reconsidered.
+	// The credentialed URL must not survive into the error chain.
 	var urlErr *url.Error
-	if !errors.As(err, &urlErr) {
-		t.Fatalf("expected error wrapping *url.Error, got %T: %v", err, err)
+	if errors.As(err, &urlErr) {
+		t.Fatalf("error still wraps *url.Error (URL leaks): %v", err)
 	}
 	rawMessage := err.Error()
-	if !strings.Contains(rawMessage, "api-version=preview") {
-		t.Errorf("expected raw error to contain encoded QueryParams, got: %s", rawMessage)
+	if strings.Contains(rawMessage, sensitive) {
+		t.Errorf("error leaked the sig QueryParams secret: %s", rawMessage)
 	}
-	// The sensitive value should be present pre-scrub (the very leak
-	// we are guarding against in OTel span status).
-	if !strings.Contains(rawMessage, url.QueryEscape(sensitive)) && !strings.Contains(rawMessage, sensitive) {
-		t.Errorf("expected raw error to contain sensitive QueryParams value, got: %s", rawMessage)
-	}
-
-	// Step 2: security.Scrub strips the secret-ref pattern. This is
-	// the same call the provider.stream span site in loop.go applies
-	// before passing the string to SetStatus.
-	scrubbed := security.Scrub(rawMessage)
-	if strings.Contains(scrubbed, sensitive) {
-		t.Errorf("scrubbed error still contains sensitive value: %s", scrubbed)
-	}
-	// Confirm scrub did something — the redacted placeholder is the
-	// canonical signal that a pattern fired.
-	if !strings.Contains(scrubbed, "[REDACTED]") {
-		t.Errorf("scrubbed error missing [REDACTED] marker: %s", scrubbed)
+	if strings.Contains(rawMessage, "api-version=preview") {
+		t.Errorf("error still embeds the encoded request URL: %s", rawMessage)
 	}
 }
 

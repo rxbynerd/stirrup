@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
 
 // probeBodyLimit caps how much of a non-2xx probe response body is read
@@ -38,7 +39,10 @@ func (a *AnthropicAdapter) Probe(ctx context.Context) error {
 
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("execute request: %w", err)
+		// a.baseURL is operator-configurable and may carry a credential in
+		// its query string; unwrap the *url.Error so its embedded URL never
+		// leaks into the returned probe error (CWE-532).
+		return fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
 	return checkProbeStatus("anthropic", resp)
 }
@@ -94,7 +98,10 @@ func probeOpenAIModels(
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("execute request: %w", err)
+		// The composed URL carries baseURL and queryParams, either of which
+		// may hold a gateway credential; unwrap the *url.Error so its
+		// embedded URL never leaks into the returned probe error (CWE-532).
+		return fmt.Errorf("execute request: %w", security.UnwrapURLError(err))
 	}
 	return checkProbeStatus(providerLabel, resp)
 }

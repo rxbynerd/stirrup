@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -210,6 +211,44 @@ func TestAnthropicAdapter_HTTPErrorBodyTruncated(t *testing.T) {
 	}
 	if !strings.Contains(errMsg, "400") {
 		t.Errorf("expected status code in error, got: %v", err)
+	}
+}
+
+// TestAnthropicAdapter_TransportError_DoesNotLeakCredentials drives the
+// transport-error path with a credentialed baseURL pointed at a closed port.
+// An operator may put credentials directly in a custom baseURL (userinfo or a
+// gateway api_key query param); the *url.Error Go returns from Do embeds that
+// URL and does not redact the query string, so the wrapped error must report
+// only the dial-level cause (CWE-532, follow-up to #395).
+func TestAnthropicAdapter_TransportError_DoesNotLeakCredentials(t *testing.T) {
+	// A closed loopback port yields a connection-refused dial error.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	closed := srv.URL
+	srv.Close()
+
+	u, err := url.Parse(closed)
+	if err != nil {
+		t.Fatalf("parse closed URL %q: %v", closed, err)
+	}
+	u.User = url.UserPassword("user", "pass")
+	u.RawQuery = "api_key=supersecret"
+
+	adapter := NewAnthropicAdapter(staticBearer("key"), AuthModeAPIKey)
+	adapter.baseURL = u.String()
+
+	_, err = adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	})
+	if err == nil {
+		t.Fatal("expected a transport error dialing a closed port")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "supersecret") {
+		t.Errorf("transport error leaked the query secret: %q", msg)
+	}
+	if strings.Contains(msg, "user:pass") {
+		t.Errorf("transport error leaked userinfo: %q", msg)
 	}
 }
 

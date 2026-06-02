@@ -368,7 +368,7 @@ func (c *harnessPollingBatchClient) submitAnthropic(ctx context.Context, entry B
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("submit batch: %w", err)
+		return "", fmt.Errorf("submit batch: %w", security.UnwrapURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -514,7 +514,7 @@ func (c *harnessPollingBatchClient) pollOnce(ctx context.Context, batchID string
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("poll batch: %w", err)
+		return nil, fmt.Errorf("poll batch: %w", security.UnwrapURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -549,7 +549,10 @@ func (c *harnessPollingBatchClient) fetchResults(ctx context.Context, resultsURL
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch batch results: %w", err)
+		// resultsURL is provider-returned and is frequently a presigned
+		// download URL whose signature lives in the query string; unwrap
+		// the *url.Error so it cannot leak into this error (CWE-532).
+		return nil, fmt.Errorf("fetch batch results: %w", security.UnwrapURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -646,7 +649,10 @@ func (c *harnessPollingBatchClient) bestEffortCancel(batchID string) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if c.logger != nil {
-			c.logger.Warn("batch cancel: send", "batchID", batchID, "error", err, "keyRef", c.apiKeyRef)
+			// Unwrap the transport *url.Error before logging: its embedded
+			// cancelURL is built from c.baseURL, which may carry a credential
+			// query string Go does not redact (CWE-532).
+			c.logger.Warn("batch cancel: send", "batchID", batchID, "error", security.UnwrapURLError(err), "keyRef", c.apiKeyRef)
 		}
 		return
 	}
@@ -887,7 +893,7 @@ func (c *harnessPollingBatchClient) submitOpenAI(ctx context.Context, entry Batc
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("submit openai batch: %w", err)
+		return "", fmt.Errorf("submit openai batch: %w", security.UnwrapURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -946,7 +952,7 @@ func (c *harnessPollingBatchClient) uploadOpenAIBatchFile(ctx context.Context, j
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("upload openai batch file: %w", err)
+		return "", fmt.Errorf("upload openai batch file: %w", security.UnwrapURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1064,7 +1070,7 @@ func (c *harnessPollingBatchClient) pollOnceOpenAI(ctx context.Context, batchID 
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("poll openai batch: %w", err)
+		return nil, fmt.Errorf("poll openai batch: %w", security.UnwrapURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -1233,7 +1239,7 @@ func (c *harnessPollingBatchClient) downloadOpenAIFile(ctx context.Context, file
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("download openai file: %w", err)
+		return nil, fmt.Errorf("download openai file: %w", security.UnwrapURLError(err))
 	}
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
