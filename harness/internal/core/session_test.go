@@ -205,8 +205,8 @@ func TestSessionManager_SpawnAndWait_StartFailure(t *testing.T) {
 func newTransportManager(t *testing.T, tr transport.Transport) *SessionManager {
 	t.Helper()
 	m, err := NewSessionManager(SessionManagerOptions{
-		UseTransport: true,
-		Transport:    tr,
+		UseTransport:  true,
+		Transport:     tr,
 		MaxConcurrent: 4,
 		DefaultWait:   time.Second,
 		MaxLifetime:   2 * time.Second,

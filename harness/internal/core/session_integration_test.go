@@ -94,8 +94,8 @@ func TestSessionIntegration_BlockingSpawn(t *testing.T) {
 	tr := newSessionIntegrationTransport(t, srv)
 
 	mgr, err := NewSessionManager(SessionManagerOptions{
-		UseTransport: true,
-		Transport:    tr,
+		UseTransport:  true,
+		Transport:     tr,
 		MaxConcurrent: 4,
 		DefaultWait:   5 * time.Second,
 		MaxLifetime:   5 * time.Second,
@@ -123,8 +123,8 @@ func TestSessionIntegration_DetachedLifecycle(t *testing.T) {
 	tr := newSessionIntegrationTransport(t, srv)
 
 	mgr, err := NewSessionManager(SessionManagerOptions{
-		UseTransport: true,
-		Transport:    tr,
+		UseTransport:  true,
+		Transport:     tr,
 		MaxConcurrent: 4,
 		DefaultWait:   5 * time.Second,
 		MaxLifetime:   5 * time.Second,
@@ -165,8 +165,8 @@ func TestSessionIntegration_Terminate(t *testing.T) {
 	tr := newSessionIntegrationTransport(t, srv)
 
 	mgr, err := NewSessionManager(SessionManagerOptions{
-		UseTransport: true,
-		Transport:    tr,
+		UseTransport:  true,
+		Transport:     tr,
 		MaxConcurrent: 4,
 		DefaultWait:   2 * time.Second,
 		MaxLifetime:   5 * time.Second,
