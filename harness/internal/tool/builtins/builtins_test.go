@@ -812,6 +812,10 @@ func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
 		GitShowTool(mock),
 		WebFetchTool(),
 		SpawnAgentTool(nil),
+		StartSessionTool(nil),
+		CheckSessionTool(nil),
+		WaitSessionTool(nil),
+		TerminateSessionTool(nil),
 	}
 	for _, tl := range tools {
 		t.Run(tl.Name, func(t *testing.T) {
