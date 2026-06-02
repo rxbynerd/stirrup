@@ -1,4 +1,8 @@
 .env
+# 1Password env-reference file for the `just int-test*` provider
+# integration tests. Holds op:// references (and would hold any
+# hand-filled credentials), so it never gets committed.
+.env.int-test
 # Anchor these patterns to the repo root so they match the built binaries
 # only, not the `harness/cmd/stirrup/` source directory (which otherwise
 # has all of its files silently ignored by git).
