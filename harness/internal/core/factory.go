@@ -120,6 +120,43 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	}
 	registry := buildToolRegistry(exec, es, config.Tools)
 
+	// resourceOpts captures the run-scoped OTel Resource attributes
+	// (deployment.environment, service.namespace, harness.run.mode) shared by
+	// all three signals. resolvedHeaders dereferences any "secret://" values
+	// in TraceEmitter.Headers once, here, so the log / trace / metric
+	// exporters authenticate identically. Both are computed before the logger
+	// is built because the optional OTLP log exporter (wired into the logger
+	// below) needs them; the trace and metric blocks further down reuse these
+	// same values rather than re-resolving.
+	resourceOpts := resourceOptionsFromConfig(config)
+	resolvedHeaders, err := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("resolve trace emitter headers: %w", err)
+	}
+
+	// Optional OTLP log export (issue #96). Stderr is always the default
+	// sink; this adds a second one only when the operator opts in via
+	// observability.logsExport.type == "otlp". The endpoint falls back to the
+	// trace emitter's endpoint so a single --otel-endpoint covers all three
+	// signals. The returned handler is fanned out beneath the shared
+	// Scrub / SpanContext layers inside NewLoggerWithExport, so the OTLP path
+	// is scrubbed and trace-correlated identically to stderr.
+	var logExportHandler slog.Handler
+	if config.Observability.LogsExport.Type == "otlp" {
+		logEndpoint := config.Observability.LogsExport.Endpoint
+		if logEndpoint == "" {
+			logEndpoint = config.TraceEmitter.Endpoint
+		}
+		logExporter, handler, lerr := observability.NewLogExporter(ctx, logEndpoint, resolvedHeaders, resourceOpts)
+		if lerr != nil {
+			cleanup()
+			return nil, fmt.Errorf("build log exporter: %w", lerr)
+		}
+		logExportHandler = handler
+		ownedClosers = append(ownedClosers, logExporter)
+	}
+
 	// secLogger was constructed above (before ValidateRunConfig) so it can
 	// emit config_validation_failed before we know whether we have a
 	// MeterProvider. Wire it into the structured logger here so log-side
@@ -128,7 +165,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	//
 	// Build logger early so MCP connection warnings go through the ScrubHandler.
 	logLevel := parseLogLevel(config.LogLevel)
-	logger := observability.NewLoggerWithSecurity(config.RunID, logLevel, os.Stderr, secLogger)
+	logger := observability.NewLoggerWithExport(config.RunID, logLevel, os.Stderr, secLogger, logExportHandler)
 	if config.SessionName != "" {
 		// Attach SessionName as a default log attribute so every line
 		// emitted from this loop (and any sub-loop sharing this logger)
@@ -192,18 +229,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// surfacing in the dry-run, because both paths construct the set here.
 	// See builtComponents.probeSteps and TestPreflightParity.
 	//
-	// resourceOpts captures the run-scoped OTel Resource attributes
-	// (deployment.environment, service.namespace, harness.run.mode), threaded
-	// into both the trace emitter and the metrics provider so the two signals
-	// share a consistent resource identity. resolvedHeaders dereferences any
-	// "secret://" values in TraceEmitter.Headers once and is reused for the
-	// metrics exporter so traces and metrics authenticate identically.
-	resourceOpts := resourceOptionsFromConfig(config)
-	resolvedHeaders, err := observability.ResolveHeaders(ctx, secrets, config.TraceEmitter.Headers)
-	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("resolve trace emitter headers: %w", err)
-	}
+	// resourceOpts and resolvedHeaders were computed above (before the logger
+	// build) so the optional OTLP log exporter could share them; they are
+	// reused here for the trace emitter and metrics provider so all three
+	// signals carry a consistent resource identity and authenticate
+	// identically.
+	//
 	// exec was built (and its closer registered) above; wrap it so
 	// buildComponents threads it onto the component set. The nil sink means
 	// no per-component construction steps are emitted (those are a dry-run

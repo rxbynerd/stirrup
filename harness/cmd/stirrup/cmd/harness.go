@@ -234,6 +234,15 @@ type harnessCLIOptions struct {
 	DeploymentEnvironment string
 	ServiceNamespace      string
 
+	// LogExport (issue #96) opts structured logs into OTLP export alongside
+	// the stderr default. "none" (or empty) keeps stderr-only; "otlp" adds
+	// the OTLP/gRPC log exporter. LogExportEndpoint is normally empty so the
+	// factory falls back to the trace emitter's endpoint, but the
+	// OTEL_EXPORTER_OTLP_LOGS_ENDPOINT env var (read in the builder) pins it
+	// when set.
+	LogExport         string
+	LogExportEndpoint string
+
 	// Provider retry policy overrides (issue #197). Zero values leave
 	// the corresponding field unset on Provider.Retry so
 	// ValidateRunConfig fills in the documented defaults
@@ -504,16 +513,28 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		}
 	}
 
-	// Observability resource attributes (issue #95). Only construct the
-	// sub-config when the caller touched at least one of the two flags.
-	// An entirely-empty pair leaves config.Observability at the zero value
-	// so a future validator or factory branch that distinguishes
-	// "operator pinned" from "fall through to env" can do so. Matches the
-	// flag-only construction pattern used for GuardRail above.
-	if opts.DeploymentEnvironment != "" || opts.ServiceNamespace != "" {
+	// Observability resource attributes (issue #95) and log export
+	// (issue #96). Only construct the sub-config when the caller touched at
+	// least one of the relevant flags. An entirely-empty set leaves
+	// config.Observability at the zero value so a future validator or factory
+	// branch that distinguishes "operator pinned" from "fall through to env"
+	// can do so. Matches the flag-only construction pattern used for GuardRail
+	// above. "none" is treated as not-set for LogExport so a bare --log-export
+	// none (or its default) does not materialise a sub-config; the factory
+	// reads Type=="otlp" to opt in, and empty/"none" is stderr-only either
+	// way.
+	logExport := opts.LogExport
+	if logExport == "none" {
+		logExport = ""
+	}
+	if opts.DeploymentEnvironment != "" || opts.ServiceNamespace != "" || logExport != "" || opts.LogExportEndpoint != "" {
 		config.Observability = types.ObservabilityConfig{
 			Environment:      opts.DeploymentEnvironment,
 			ServiceNamespace: opts.ServiceNamespace,
+			LogsExport: types.LogsExportConfig{
+				Type:     logExport,
+				Endpoint: opts.LogExportEndpoint,
+			},
 		}
 	}
 
@@ -1156,6 +1177,21 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("service-namespace") {
 		cfg.Observability.ServiceNamespace, _ = f.GetString("service-namespace")
+	}
+	// Log export (issue #96). --log-export overrides observability.logsExport.type;
+	// "none" maps to the empty (stderr-only) form so flipping a file's "otlp"
+	// back off via --log-export none works. OTEL_EXPORTER_OTLP_LOGS_ENDPOINT,
+	// when set, pins the log endpoint regardless of the file value, mirroring
+	// the per-signal env override the OTel SDK honours.
+	if changed("log-export") {
+		v, _ := f.GetString("log-export")
+		if v == "none" {
+			v = ""
+		}
+		cfg.Observability.LogsExport.Type = v
+	}
+	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"); endpoint != "" {
+		cfg.Observability.LogsExport.Endpoint = endpoint
 	}
 
 	// Workspace export (issue #164). The flag explicitly overrides

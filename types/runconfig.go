@@ -244,6 +244,31 @@ type RunConfig struct {
 type ObservabilityConfig struct {
 	Environment      string `json:"environment,omitempty"`
 	ServiceNamespace string `json:"serviceNamespace,omitempty"`
+
+	// LogsExport opts the run's structured logs into OTLP export alongside
+	// the existing trace and metric exporters. Stderr emission is always the
+	// default; this only adds a second sink. Zero value (Type unset / "none")
+	// means stderr-only, so an empty ObservabilityConfig keeps the
+	// pre-existing behaviour.
+	LogsExport LogsExportConfig `json:"logsExport,omitempty"`
+}
+
+// LogsExportConfig selects whether structured logs are shipped to an OTLP
+// collector in addition to stderr. The endpoint is a plain collector
+// address, not a secret — it carries no credential, so it stays on
+// RunConfig and is not stripped by Redact (bearer tokens for the collector
+// ride on TraceEmitter.Headers as "secret://" references, the same path the
+// trace and metric exporters use).
+type LogsExportConfig struct {
+	// Type is "none" (default — stderr only) or "otlp" (stderr plus an
+	// OTLP/gRPC log exporter). The empty string is treated as "none" so an
+	// unset field keeps stderr-only behaviour.
+	Type string `json:"type,omitempty"`
+
+	// Endpoint is the OTLP/gRPC collector address for the log signal. When
+	// empty it defaults to TraceEmitter.Endpoint at factory-build time so a
+	// single --otel-endpoint covers traces, metrics, and logs.
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -1482,6 +1507,17 @@ var validTraceEmitterProtocols = map[string]bool{
 	"":              true,
 	"grpc":          true,
 	"http/protobuf": true,
+}
+
+// validLogsExportTypes is the closed set of
+// ObservabilityConfig.LogsExport.Type values. The empty string is the unset
+// form and is treated as "none" (stderr only) at factory-build time; it is
+// accepted here so an omitted field validates. "otlp" enables the OTLP/gRPC
+// log exporter as a second sink alongside stderr.
+var validLogsExportTypes = map[string]bool{
+	"":     true,
+	"none": true,
+	"otlp": true,
 }
 
 // validResultSinkTypes is the closed set of ResultSinkConfig.Type
@@ -3675,6 +3711,12 @@ func validateObservabilityConfig(cfg ObservabilityConfig, errs *[]string) {
 	}
 	if cfg.ServiceNamespace != "" && !observabilityLabelPattern.MatchString(cfg.ServiceNamespace) {
 		*errs = append(*errs, fmt.Sprintf("observability.serviceNamespace %q must match %s", cfg.ServiceNamespace, observabilityLabelPattern))
+	}
+	if !validLogsExportTypes[cfg.LogsExport.Type] {
+		*errs = append(*errs, fmt.Sprintf(
+			"unsupported observability.logsExport.type %q (allowed: \"\", none, otlp)",
+			cfg.LogsExport.Type,
+		))
 	}
 }
 

@@ -70,6 +70,14 @@ func ValidTraceEmitterProtocolValues() []string {
 	return sortedNonEmptyKeys(validTraceEmitterProtocols)
 }
 
+// ValidLogsExportTypeValues returns the log-export types accepted on
+// RunConfig.Observability.LogsExport.Type. The "" (defaults-to-none) entry
+// is filtered out so the completion list contains only the typeable values
+// (none, otlp).
+func ValidLogsExportTypeValues() []string {
+	return sortedNonEmptyKeys(validLogsExportTypes)
+}
+
 // ValidCodeScannerTypeValues returns the code-scanner types accepted
 // on RunConfig.CodeScanner.Type.
 func ValidCodeScannerTypeValues() []string { return sortedKeys(validCodeScannerTypes) }

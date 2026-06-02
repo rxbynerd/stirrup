@@ -80,6 +80,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 
 	f.String("deployment-environment", "", "OTel deployment.environment resource attribute (e.g. production, staging). Empty falls through to OTEL_DEPLOYMENT_ENVIRONMENT, then to \"local\".")
 	f.String("service-namespace", "", "OTel service.namespace resource attribute (e.g. stirrup-eval, team-a). Empty falls through to OTEL_SERVICE_NAMESPACE, then to \"stirrup\".")
+	f.String("log-export", "none", "Structured-log export: none (stderr only, the default) or otlp (stderr plus an OTLP/gRPC log exporter). Endpoint defaults to --otel-endpoint; OTEL_EXPORTER_OTLP_LOGS_ENDPOINT overrides it. Mirrors observability.logsExport.")
 
 	f.Int("provider-retry-max-attempts", 0, "Maximum HTTP attempts (including the first) for the default provider. 1 disables retry. Hard ceiling: 5. Default (when unset): 3. Currently honoured only by the openai-compatible adapter; the other adapters fall through unconditionally pending their own wire-ups.")
 	f.Duration("provider-retry-initial-delay", 0, "Base delay for exponential backoff before jitter, applied between retries on the default provider. Accepts Go duration syntax (e.g. 500ms, 1s). Default (when unset): 500ms.")
@@ -128,6 +129,7 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues("transport", types.ValidTransportTypeValues())
 	staticValues("trace-emitter", types.ValidTraceEmitterTypeValues())
 	staticValues("otel-protocol", types.ValidTraceEmitterProtocolValues())
+	staticValues("log-export", types.ValidLogsExportTypeValues())
 	staticValues("container-runtime", types.ValidExecutorRuntimeValues())
 	staticValues("code-scanner", types.ValidCodeScannerTypeValues())
 	staticValues("guardrail", types.ValidGuardRailTypeValues())
