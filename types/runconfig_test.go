@@ -4037,6 +4037,8 @@ func TestValidateRunConfig_ObservabilityValid(t *testing.T) {
 		{ServiceNamespace: "stirrup-eval"},
 		{Environment: "staging-eu", ServiceNamespace: "stirrup_team-a"},
 		{Environment: strings.Repeat("a", 64), ServiceNamespace: strings.Repeat("b", 64)},
+		{LogsExport: LogsExportConfig{Type: "none"}},
+		{LogsExport: LogsExportConfig{Type: "otlp", Endpoint: "localhost:4317"}},
 	}
 	for _, obs := range cases {
 		t.Run(fmt.Sprintf("env=%q ns=%q", obs.Environment, obs.ServiceNamespace), func(t *testing.T) {
@@ -4076,6 +4078,27 @@ func TestValidateRunConfig_ObservabilityRejectsBadShape(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "observability.") {
 				t.Errorf("expected error to mention observability.*, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_LogsExportTypeRejectsUnknown pins the closed-set
+// rejection on ObservabilityConfig.LogsExport.Type. A typo'd "loki" or
+// "grpc" must surface at config-load time rather than silently falling
+// through to stderr-only at factory-build time, which would leave an
+// operator wondering why their logs never reached the collector.
+func TestValidateRunConfig_LogsExportTypeRejectsUnknown(t *testing.T) {
+	for _, bad := range []string{"otel", "loki", "grpc", "stdout"} {
+		t.Run(bad, func(t *testing.T) {
+			c := validConfig()
+			c.Observability = ObservabilityConfig{LogsExport: LogsExportConfig{Type: bad}}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error for logsExport.type %q", bad)
+			}
+			if !strings.Contains(err.Error(), "observability.logsExport.type") {
+				t.Errorf("expected error to mention observability.logsExport.type, got: %v", err)
 			}
 		})
 	}

@@ -32,6 +32,7 @@ func TestCompletionValues_SortedAndNonEmpty(t *testing.T) {
 		{"transports", ValidTransportTypeValues()},
 		{"trace emitters", ValidTraceEmitterTypeValues()},
 		{"trace emitter protocols", ValidTraceEmitterProtocolValues()},
+		{"logs export types", ValidLogsExportTypeValues()},
 		{"code scanners", ValidCodeScannerTypeValues()},
 		{"guard rails", ValidGuardRailTypeValues()},
 	} {
@@ -77,6 +78,7 @@ func TestCompletionValues_TrackValidatorMaps(t *testing.T) {
 		{name: "transports", backing: validTransportTypes, got: ValidTransportTypeValues()},
 		{name: "trace emitters", backing: validTraceEmitterTypes, got: ValidTraceEmitterTypeValues()},
 		{name: "trace emitter protocols", backing: validTraceEmitterProtocols, got: ValidTraceEmitterProtocolValues(), filterEmpty: true},
+		{name: "logs export types", backing: validLogsExportTypes, got: ValidLogsExportTypeValues(), filterEmpty: true},
 		{name: "code scanners", backing: validCodeScannerTypes, got: ValidCodeScannerTypeValues()},
 		{name: "guard rails", backing: validGuardRailTypes, got: ValidGuardRailTypeValues()},
 	} {
