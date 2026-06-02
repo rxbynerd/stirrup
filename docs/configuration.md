@@ -607,6 +607,41 @@ did not resolve to a known tool under a non-default profile". The active
 `tools.profile` is recorded in the trace's attached `RunConfig`, so the
 two cases are distinguishable by reading it alongside the record.
 
+## Sub-agent spawning and sessions
+
+The `subAgent` block configures how `spawn_agent` and the start-and-detach
+session tools materialise sub-agents. The zero value preserves the
+historical behaviour: `spawn_agent` runs a child loop in-process and the
+session tools are absent.
+
+| Field | Values | Default | Effect |
+|---|---|---|---|
+| `spawner` | `local`, `transport` | `local` | `local` runs the sub-agent in-process. `transport` dispatches the spawn over the gRPC transport to the control plane, which materialises the sub-agent (for example as a separate `stirrup job`) and returns the result. |
+| `sessions` | `true`, `false` | `false` | When `true`, registers `start_session`, `check_session`, `wait_session`, and `terminate_session` alongside `spawn_agent`. |
+| `sessionTimeout` | 1–3600 s | 300 s | The per-wait timeout applied to a blocking result wait (`spawn_agent`'s implicit wait, or `wait_session` without an explicit timeout). |
+| `maxConcurrentSessions` | 1–256 | 16 | The cap on simultaneously-running detached sessions. `start_session` fails once the cap is reached; terminal sessions do not count against it. |
+
+`spawn_agent` blocks until the sub-agent returns. The session tools split
+that into a lifecycle: `start_session` dispatches a sub-agent and returns a
+session id immediately, `check_session` polls without blocking,
+`wait_session` blocks for the result, and `terminate_session` stops a
+session. A session whose result arrives before any wait is buffered, so a
+later `check_session`/`wait_session` still observes it. The blocking
+`spawn_agent` is `start_session` + `wait_session` fused over the same
+machinery, so the two paths share one wire shape (`tool_result_request` /
+`tool_result_response`).
+
+The `transport` spawner requires a live control-plane transport.
+Selecting it on a run whose transport cannot deliver responses (a
+`NullTransport`) fails at construction rather than blocking on the first
+spawn. Sub-agents themselves never receive `spawn_agent` or the session
+tools, so a sub-agent cannot recurse or open its own detached sessions.
+
+`start_session` carries the same `RequiresApproval` gate as `spawn_agent`
+— it is the budget-consuming spawn. The `check_session`, `wait_session`,
+and `terminate_session` tools manage an already-approved session and are
+not separately gated.
+
 ## Limits and budgets
 
 `ValidateRunConfig` enforces hard caps on values that could otherwise
