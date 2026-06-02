@@ -118,5 +118,11 @@ func NewLoggerWithSecurity(runID string, level slog.Level, w io.Writer, sec Secu
 		Level: level,
 	})
 	scrubHandler := NewScrubHandlerWithSecurity(jsonHandler, sec)
-	return slog.New(scrubHandler).With("runId", runID)
+	// SpanContextHandler is the outermost layer so the trace_id / span_id it
+	// injects still flow through ScrubHandler before reaching the JSON
+	// encoder: JSONHandler ← ScrubHandler ← SpanContextHandler. Records
+	// emitted via *Context (e.g. InfoContext) inside an active span pick up
+	// correlation IDs; context-less calls pass through untouched.
+	spanHandler := NewSpanContextHandler(scrubHandler)
+	return slog.New(spanHandler).With("runId", runID)
 }
