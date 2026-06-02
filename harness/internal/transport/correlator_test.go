@@ -396,3 +396,181 @@ func TestCorrelator_NewIsEmpty(t *testing.T) {
 	// Avoid unused-import lint on fmt by referencing it in a tiny check.
 	_ = fmt.Sprintf("ok-%d", c.PendingCount())
 }
+
+// --- Retained (StartPending / Poll / AwaitID / Forget) path: issue #71 ---
+
+const sessionRespType = "tool_result_response"
+
+func TestCorrelator_StartPending_PollThenAwait(t *testing.T) {
+	t.Parallel()
+	fc := &fakeOnControl{}
+	c := NewCorrelator("session")
+	c.AttachTo(fc, extractByType(sessionRespType))
+
+	id, err := c.StartPending(func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("StartPending: %v", err)
+	}
+	if id != "session-1" {
+		t.Errorf("id = %q, want session-1", id)
+	}
+	if c.RetainedCount() != 1 {
+		t.Errorf("RetainedCount = %d, want 1", c.RetainedCount())
+	}
+
+	// Not ready before delivery.
+	if _, ready := c.Poll(id); ready {
+		t.Error("Poll ready before delivery, want not ready")
+	}
+
+	fc.simulate(types.ControlEvent{Type: sessionRespType, RequestID: id, Content: "done"})
+
+	// Ready after delivery; payload cached across repeated reads.
+	for i := 0; i < 2; i++ {
+		payload, ready := c.Poll(id)
+		if !ready {
+			t.Fatalf("Poll #%d not ready after delivery", i)
+		}
+		if ev, ok := payload.(types.ControlEvent); !ok || ev.Content != "done" {
+			t.Fatalf("Poll #%d payload = %#v, want ControlEvent{Content:done}", i, payload)
+		}
+	}
+
+	// AwaitID returns the same cached payload immediately.
+	payload, err := c.AwaitID(context.Background(), id, time.Second)
+	if err != nil {
+		t.Fatalf("AwaitID: %v", err)
+	}
+	if ev, ok := payload.(types.ControlEvent); !ok || ev.Content != "done" {
+		t.Fatalf("AwaitID payload = %#v, want ControlEvent{Content:done}", payload)
+	}
+
+	// Entry survives until Forget.
+	if c.RetainedCount() != 1 {
+		t.Errorf("RetainedCount before Forget = %d, want 1", c.RetainedCount())
+	}
+	c.Forget(id)
+	if c.RetainedCount() != 0 {
+		t.Errorf("RetainedCount after Forget = %d, want 0", c.RetainedCount())
+	}
+}
+
+func TestCorrelator_StartPending_DeliverBeforeAwait(t *testing.T) {
+	t.Parallel()
+	fc := &fakeOnControl{}
+	c := NewCorrelator("session")
+	c.AttachTo(fc, extractByType(sessionRespType))
+
+	id, err := c.StartPending(func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("StartPending: %v", err)
+	}
+
+	// Deliver before anyone awaits; the payload must be buffered.
+	fc.simulate(types.ControlEvent{Type: sessionRespType, RequestID: id, Content: "early"})
+
+	payload, err := c.AwaitID(context.Background(), id, time.Second)
+	if err != nil {
+		t.Fatalf("AwaitID: %v", err)
+	}
+	if ev, ok := payload.(types.ControlEvent); !ok || ev.Content != "early" {
+		t.Fatalf("payload = %#v, want ControlEvent{Content:early}", payload)
+	}
+}
+
+func TestCorrelator_StartPending_OutOfOrder(t *testing.T) {
+	t.Parallel()
+	fc := &fakeOnControl{}
+	c := NewCorrelator("session")
+	c.AttachTo(fc, extractByType(sessionRespType))
+
+	id1, _ := c.StartPending(func(string) error { return nil })
+	id2, _ := c.StartPending(func(string) error { return nil })
+	if id1 == id2 {
+		t.Fatalf("ids collided: %q", id1)
+	}
+
+	// Respond to the second first.
+	fc.simulate(types.ControlEvent{Type: sessionRespType, RequestID: id2, Content: "two"})
+	fc.simulate(types.ControlEvent{Type: sessionRespType, RequestID: id1, Content: "one"})
+
+	p1, _ := c.Poll(id1)
+	p2, _ := c.Poll(id2)
+	if ev := p1.(types.ControlEvent); ev.Content != "one" {
+		t.Errorf("id1 payload = %q, want one", ev.Content)
+	}
+	if ev := p2.(types.ControlEvent); ev.Content != "two" {
+		t.Errorf("id2 payload = %q, want two", ev.Content)
+	}
+}
+
+func TestCorrelator_AwaitID_Timeout(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	id, err := c.StartPending(func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("StartPending: %v", err)
+	}
+	_, err = c.AwaitID(context.Background(), id, 25*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("AwaitID err = %v, want timeout", err)
+	}
+	// A timed-out wait does NOT discard the entry — a later wait can still
+	// observe a late-arriving result.
+	if c.RetainedCount() != 1 {
+		t.Errorf("RetainedCount after timeout = %d, want 1 (entry retained)", c.RetainedCount())
+	}
+}
+
+func TestCorrelator_AwaitID_ContextCancel(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	id, _ := c.StartPending(func(string) error { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { cancel() }()
+	_, err := c.AwaitID(ctx, id, time.Second)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("AwaitID err = %v, want context.Canceled", err)
+	}
+}
+
+func TestCorrelator_AwaitID_UnknownID(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	_, err := c.AwaitID(context.Background(), "session-404", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "unknown request id") {
+		t.Fatalf("AwaitID err = %v, want unknown request id", err)
+	}
+}
+
+func TestCorrelator_StartPending_EmitFailure(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	_, err := c.StartPending(func(string) error { return errors.New("boom") })
+	if err == nil || !strings.Contains(err.Error(), "emit failed") {
+		t.Fatalf("StartPending err = %v, want emit failed", err)
+	}
+	if c.RetainedCount() != 0 {
+		t.Errorf("RetainedCount after emit failure = %d, want 0 (entry rolled back)", c.RetainedCount())
+	}
+}
+
+func TestCorrelator_Forget_Idempotent(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	c.Forget("never-existed") // must not panic
+	id, _ := c.StartPending(func(string) error { return nil })
+	c.Forget(id)
+	c.Forget(id) // double Forget is safe
+	if c.RetainedCount() != 0 {
+		t.Errorf("RetainedCount = %d, want 0", c.RetainedCount())
+	}
+}
+
+func TestCorrelator_StartPending_NilEmit(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	if _, err := c.StartPending(nil); err == nil {
+		t.Fatal("StartPending(nil) err = nil, want error")
+	}
+}
