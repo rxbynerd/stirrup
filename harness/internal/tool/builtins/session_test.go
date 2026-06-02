@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
 // fakeSessionController records calls and returns canned results.
@@ -183,4 +185,67 @@ func TestSessionTools_EnrichedShape(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSessionTools_UnmarshalErrors(t *testing.T) {
+	ctrl := &fakeSessionController{startID: "session-1"}
+	tools := map[string]*tool.Tool{
+		"start_session":     StartSessionTool(ctrl),
+		"check_session":     CheckSessionTool(ctrl),
+		"wait_session":      WaitSessionTool(ctrl),
+		"terminate_session": TerminateSessionTool(ctrl),
+	}
+	for name, tl := range tools {
+		t.Run(name, func(t *testing.T) {
+			if _, err := tl.Handler(context.Background(), json.RawMessage(`{not json`)); err == nil {
+				t.Fatalf("%s: err = nil for malformed input, want parse error", name)
+			}
+		})
+	}
+}
+
+func TestSessionTools_ControllerErrorPropagation(t *testing.T) {
+	t.Run("check_session", func(t *testing.T) {
+		ctrl := &fakeSessionController{statusErr: errors.New("boom")}
+		if _, err := CheckSessionTool(ctrl).Handler(context.Background(), json.RawMessage(`{"session_id":"s"}`)); err == nil {
+			t.Fatal("err = nil, want controller error")
+		}
+	})
+	t.Run("wait_session", func(t *testing.T) {
+		ctrl := &fakeSessionController{waitErr: errors.New("boom")}
+		if _, err := WaitSessionTool(ctrl).Handler(context.Background(), json.RawMessage(`{"session_id":"s"}`)); err == nil {
+			t.Fatal("err = nil, want controller error")
+		}
+	})
+	t.Run("terminate_session", func(t *testing.T) {
+		ctrl := &fakeSessionController{terminateErr: errors.New("boom")}
+		if _, err := TerminateSessionTool(ctrl).Handler(context.Background(), json.RawMessage(`{"session_id":"s"}`)); err == nil {
+			t.Fatal("err = nil, want controller error")
+		}
+	})
+}
+
+func TestWaitSessionTool_ClampsTimeout(t *testing.T) {
+	t.Run("oversized clamps to max", func(t *testing.T) {
+		ctrl := &fakeSessionController{waitJSON: json.RawMessage(`{}`)}
+		_, err := WaitSessionTool(ctrl).Handler(context.Background(),
+			json.RawMessage(`{"session_id":"s","timeout_seconds":999999999999}`))
+		if err != nil {
+			t.Fatalf("Handler: %v", err)
+		}
+		if ctrl.gotWaitTimout != maxWaitSessionSeconds {
+			t.Fatalf("clamped timeout = %d, want %d", ctrl.gotWaitTimout, maxWaitSessionSeconds)
+		}
+	})
+	t.Run("negative clamps to zero", func(t *testing.T) {
+		ctrl := &fakeSessionController{waitJSON: json.RawMessage(`{}`)}
+		_, err := WaitSessionTool(ctrl).Handler(context.Background(),
+			json.RawMessage(`{"session_id":"s","timeout_seconds":-5}`))
+		if err != nil {
+			t.Fatalf("Handler: %v", err)
+		}
+		if ctrl.gotWaitTimout != 0 {
+			t.Fatalf("clamped timeout = %d, want 0", ctrl.gotWaitTimout)
+		}
+	})
 }

@@ -268,7 +268,12 @@ func capSubAgentMaxTurns(requested, parentMaxTurns int) int {
 	if maxTurns > maxSubAgentMaxTurns {
 		maxTurns = maxSubAgentMaxTurns
 	}
-	if maxTurns > parentMaxTurns {
+	// Cap at the parent's budget, but only when the parent actually has
+	// one: a zero parentMaxTurns (a test-built or not-yet-validated config)
+	// would otherwise silently floor the child to 0 turns, which never
+	// runs. ValidateRunConfig rejects a non-positive MaxTurns for real
+	// runs, so this guard only matters off the validated path.
+	if parentMaxTurns > 0 && maxTurns > parentMaxTurns {
 		maxTurns = parentMaxTurns
 	}
 	return maxTurns

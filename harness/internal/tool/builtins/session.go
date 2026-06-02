@@ -8,6 +8,11 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 )
 
+// maxWaitSessionSeconds bounds wait_session's timeout_seconds, mirroring the
+// JSON schema's maximum. It guards against a value that bypasses schema
+// validation overflowing time.Duration in the controller.
+const maxWaitSessionSeconds = 3600
+
 // SessionController is the interface the start-and-detach session tools use
 // to drive the run's SessionManager. It is declared here, returning JSON
 // and primitives rather than core types, so the builtins package does not
@@ -71,7 +76,8 @@ var waitSessionSchema = json.RawMessage(`{
 		"timeout_seconds": {
 			"type": "integer",
 			"description": "Maximum seconds to block waiting for the session to finish. When the timeout elapses the session keeps running and the returned state is still \"running\"; call wait_session or check_session again later. Defaults to the run's configured session timeout.",
-			"minimum": 1
+			"minimum": 1,
+			"maximum": 3600
 		}
 	},
 	"required": ["session_id"],
@@ -177,7 +183,12 @@ func WaitSessionTool(ctrl SessionController) *tool.Tool {
 			if params.SessionID == "" {
 				return "", fmt.Errorf("wait_session requires a session_id")
 			}
-			status, err := ctrl.Wait(ctx, params.SessionID, params.TimeoutSeconds)
+			// Defence in depth against a value that bypasses the schema's
+			// maximum: clamp to [0, maxWaitSessionSeconds] so a huge timeout
+			// cannot overflow time.Duration (negative -> fires immediately)
+			// or block a dispatch goroutine for an unreasonable span.
+			timeout := max(0, min(params.TimeoutSeconds, maxWaitSessionSeconds))
+			status, err := ctrl.Wait(ctx, params.SessionID, timeout)
 			if err != nil {
 				return "", err
 			}

@@ -14,6 +14,11 @@ import (
 // caller passes a non-positive timeout to Correlator.Await.
 const DefaultCorrelatorTimeout = 60 * time.Second
 
+// ErrEmitFailed wraps any error returned by the emit callback of Await or
+// StartPending. Callers can match it with errors.Is rather than scraping
+// the message, while the underlying transport error stays in the chain.
+var ErrEmitFailed = errors.New("correlator: emit failed")
+
 // HasOnControl is the minimal Transport surface the correlator needs. It is
 // declared in this package so the helper can be reused without a circular
 // import via consumers (e.g. permission, tool dispatch) that define the same
@@ -57,8 +62,12 @@ type Correlator struct {
 // retainedEntry buffers the response to a StartPending request. delivered
 // and payload are guarded by Correlator.mu; done is closed exactly once
 // (under mu) when the response arrives, unblocking any AwaitID waiter.
+// forgotten is closed (once, under mu) by Forget so a parked AwaitID
+// unwinds promptly instead of waiting out its timeout when the session is
+// abandoned or terminated.
 type retainedEntry struct {
 	done      chan struct{}
+	forgotten chan struct{}
 	delivered bool
 	payload   any
 }
@@ -163,7 +172,7 @@ func (c *Correlator) Await(
 
 	if err := emit(requestID); err != nil {
 		c.cancel(requestID)
-		return nil, fmt.Errorf("correlator: emit failed: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrEmitFailed, err)
 	}
 
 	timer := time.NewTimer(timeout)
@@ -182,37 +191,56 @@ func (c *Correlator) Await(
 	}
 }
 
-// StartPending allocates a fresh request ID, registers a retained entry,
-// and invokes emit with that ID — the non-blocking counterpart to Await.
-// It returns as soon as emit succeeds, leaving the response to be picked
-// up later via Poll (non-blocking) or AwaitID (blocking). A response that
-// arrives before any such call is buffered in the entry rather than
+// StartPending allocates a fresh request ID and registers a retained entry
+// via StartPendingWithID. It is the auto-id counterpart to Await; callers
+// that need an externally-chosen id (e.g. an unguessable session handle)
+// use StartPendingWithID directly.
+func (c *Correlator) StartPending(emit func(requestID string) error) (string, error) {
+	requestID := c.nextRequestID()
+	if err := c.StartPendingWithID(requestID, emit); err != nil {
+		return "", err
+	}
+	return requestID, nil
+}
+
+// StartPendingWithID registers a retained entry under the caller-supplied
+// requestID and invokes emit with it — the non-blocking counterpart to
+// Await. It returns as soon as emit succeeds, leaving the response to be
+// picked up later via Poll (non-blocking) or AwaitID (blocking). A response
+// that arrives before any such call is buffered in the entry rather than
 // dropped.
 //
-// On emit failure the entry is removed and the error returned wrapped.
-// The caller owns the returned request ID and must eventually Forget it
-// to release the buffered state.
+// The requestID must be unique among live retained entries; a collision is
+// rejected. On emit failure the entry is removed and the error returned
+// wrapped in ErrEmitFailed. The caller owns the id and must eventually
+// Forget it to release the buffered state.
 //
-// This backs the start-and-detach session model (#71): start_session
-// calls StartPending and returns the ID to the model as a session handle;
-// wait_session/check_session resolve it later.
-func (c *Correlator) StartPending(emit func(requestID string) error) (string, error) {
+// This backs the start-and-detach session model (#71): the SessionManager
+// supplies an unguessable id, emits a tool_result_request under it, and
+// resolves it later via AwaitID/Poll.
+func (c *Correlator) StartPendingWithID(requestID string, emit func(requestID string) error) error {
 	if emit == nil {
-		return "", errors.New("correlator: emit callback is required")
+		return errors.New("correlator: emit callback is required")
+	}
+	if requestID == "" {
+		return errors.New("correlator: requestID is required")
 	}
 
-	requestID := c.nextRequestID()
-	entry := &retainedEntry{done: make(chan struct{})}
+	entry := &retainedEntry{done: make(chan struct{}), forgotten: make(chan struct{})}
 
 	c.mu.Lock()
+	if _, exists := c.retained[requestID]; exists {
+		c.mu.Unlock()
+		return fmt.Errorf("correlator: request id %q already pending", requestID)
+	}
 	c.retained[requestID] = entry
 	c.mu.Unlock()
 
 	if err := emit(requestID); err != nil {
 		c.Forget(requestID)
-		return "", fmt.Errorf("correlator: emit failed: %w", err)
+		return fmt.Errorf("%w: %w", ErrEmitFailed, err)
 	}
-	return requestID, nil
+	return nil
 }
 
 // Poll reports whether the retained request identified by requestID has
@@ -256,6 +284,8 @@ func (c *Correlator) AwaitID(ctx context.Context, requestID string, timeout time
 	select {
 	case <-entry.done:
 		return c.retainedPayload(entry), nil
+	case <-entry.forgotten:
+		return nil, fmt.Errorf("correlator: request %q forgotten before response", requestID)
 	case <-timer.C:
 		return nil, fmt.Errorf("correlator: timed out after %s waiting for response (requestId=%s)", timeout, requestID)
 	case <-ctx.Done():
@@ -272,13 +302,19 @@ func (c *Correlator) retainedPayload(entry *retainedEntry) any {
 	return entry.payload
 }
 
-// Forget removes a retained entry and any buffered payload. Idempotent:
+// Forget removes a retained entry and any buffered payload, unblocking any
+// parked AwaitID for that id (it returns a "forgotten" error). Idempotent:
 // safe to call when the entry is already absent. Use it to release a
 // session's state once its result has been consumed, or to abandon a
 // detached session that the agent has chosen to forget.
 func (c *Correlator) Forget(requestID string) {
 	c.mu.Lock()
-	delete(c.retained, requestID)
+	if entry, ok := c.retained[requestID]; ok {
+		delete(c.retained, requestID)
+		// Closed exactly once: the entry is removed under the same lock,
+		// so a second Forget finds nothing and cannot double-close.
+		close(entry.forgotten)
+	}
 	c.mu.Unlock()
 }
 

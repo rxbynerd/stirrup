@@ -2,12 +2,14 @@ package core
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -36,6 +38,13 @@ const (
 	SessionTerminated SessionState = "terminated"
 	SessionNotFound   SessionState = "not_found"
 )
+
+// sessionRetentionFactor multiplies MaxConcurrent to bound the total
+// number of sessions retained in the registry (running plus terminal).
+// Terminal sessions are kept for later inspection but evicted oldest-first
+// once the registry reaches MaxConcurrent * sessionRetentionFactor, so a
+// run that starts and forgets many sessions cannot grow it without bound.
+const sessionRetentionFactor = 8
 
 // SessionStatus is the snapshot returned by Status/Wait and serialised to
 // the model by the session tools. Result is populated once the session
@@ -74,18 +83,27 @@ var subAgentExcludedTools = []string{
 
 // session is one entry in the SessionManager's registry. state/result are
 // guarded by mu; done is closed exactly once when the session reaches a
-// terminal state, unblocking Wait. cancel stops the backend's work (local
-// backend only).
+// terminal state, unblocking Wait. id and seq are set once at construction
+// (before the backend starts, so a terminate racing the start sees them)
+// and never mutated, so they are read without the lock. terminal is an
+// atomic mirror of "state != running" that the manager's eviction sweep
+// reads without taking mu (avoiding an mu->s.mu lock-order inversion).
+// onTerminal fires exactly once when the session first leaves the running
+// state; the manager uses it to release the concurrency slot. cancel stops
+// the backend's work (local backend only).
 type session struct {
-	id   string
-	seq  int
-	mu   sync.Mutex
-	done chan struct{}
+	id  string
+	seq int
+	mu  sync.Mutex
+
+	done     chan struct{}
+	terminal atomic.Bool
 
 	state  SessionState
 	result *SubAgentResult
 
-	cancel context.CancelFunc
+	onTerminal func()
+	cancel     context.CancelFunc
 }
 
 func (s *session) status() SessionStatus {
@@ -95,19 +113,18 @@ func (s *session) status() SessionStatus {
 }
 
 func (s *session) isTerminal() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.state != SessionRunning
+	return s.terminal.Load()
 }
 
 // complete transitions a running session to its terminal state. A no-op if
 // the session is already terminal (e.g. terminated while a late backend
 // result was in flight), so the backend goroutine never panics on a double
-// close.
+// close. onTerminal is invoked after the lock is released to keep the
+// s.mu -> m.mu ordering one-directional.
 func (s *session) complete(result *SubAgentResult) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.state != SessionRunning {
+		s.mu.Unlock()
 		return
 	}
 	s.result = result
@@ -116,21 +133,36 @@ func (s *session) complete(result *SubAgentResult) {
 	} else {
 		s.state = SessionDone
 	}
+	s.terminal.Store(true)
 	close(s.done)
+	onTerminal := s.onTerminal
+	s.mu.Unlock()
+
+	if onTerminal != nil {
+		onTerminal()
+	}
 }
 
 // markTerminated transitions a running session to terminated. Returns true
 // if it made the transition (false if already terminal). The backend's
-// terminate signal is sent by the caller only on a true return.
+// terminate signal is sent by the caller only on a true return. onTerminal
+// fires (once) after the lock is released, as in complete.
 func (s *session) markTerminated() bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.state != SessionRunning {
+		s.mu.Unlock()
 		return false
 	}
 	s.state = SessionTerminated
 	s.result = &SubAgentResult{Outcome: "terminated"}
+	s.terminal.Store(true)
 	close(s.done)
+	onTerminal := s.onTerminal
+	s.mu.Unlock()
+
+	if onTerminal != nil {
+		onTerminal()
+	}
 	return true
 }
 
@@ -139,10 +171,10 @@ func (s *session) markTerminated() bool {
 // correlates the response; the local backend runs SpawnSubAgent in a
 // goroutine.
 type sessionBackend interface {
-	// start kicks off the sub-agent for sess, arranging for sess.complete
-	// to be called when it finishes. It must not block on the result. The
-	// returned id becomes the session's public handle.
-	start(sess *session, cfg SubAgentConfig) (id string, err error)
+	// start kicks off the sub-agent for sess under the manager-allocated
+	// id, arranging for sess.complete to be called when it finishes. It
+	// must not block on the result.
+	start(sess *session, cfg SubAgentConfig, id string) error
 	// terminate signals the backend to stop sess's in-flight work.
 	terminate(sess *session)
 }
@@ -155,13 +187,19 @@ type sessionBackend interface {
 type SessionManager struct {
 	backend       sessionBackend
 	maxConcurrent int
+	maxTotal      int
 	defaultWait   time.Duration
 	logger        *slog.Logger
 
 	bgCtx  context.Context
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// running is the count of sessions still in the running state. It is
+	// the authoritative concurrency gauge — reserved under mu in Start
+	// before the backend dispatches (so concurrent Starts cannot both pass
+	// the cap) and released exactly once per session via onTerminal.
+	running  int
 	sessions map[string]*session
 	seq      int
 }
@@ -219,11 +257,16 @@ func NewSessionManager(opts SessionManagerOptions) (*SessionManager, error) {
 
 	m := &SessionManager{
 		maxConcurrent: maxConcurrent,
-		defaultWait:   defaultWait,
-		logger:        logger,
-		bgCtx:         bgCtx,
-		cancel:        cancel,
-		sessions:      make(map[string]*session),
+		// Retain up to a small multiple of the live cap so terminal
+		// sessions stay inspectable, but evict oldest-first past the
+		// ceiling so a long run that starts (and forgets) many sessions
+		// cannot grow the registry without bound.
+		maxTotal:    maxConcurrent * sessionRetentionFactor,
+		defaultWait: defaultWait,
+		logger:      logger,
+		bgCtx:       bgCtx,
+		cancel:      cancel,
+		sessions:    make(map[string]*session),
 	}
 
 	if opts.UseTransport {
@@ -249,7 +292,6 @@ func NewSessionManager(opts SessionManagerOptions) (*SessionManager, error) {
 			parent:       opts.Parent,
 			parentConfig: opts.ParentConfig,
 			bgCtx:        bgCtx,
-			nextID:       m.nextLocalID,
 		}
 	}
 
@@ -276,9 +318,11 @@ func (m *SessionManager) Close() error {
 }
 
 // Start dispatches a new detached session and returns its handle. It
-// enforces the live-session cap. The session persists in the registry
-// until the manager is Closed, so a later Status/Wait can observe its
-// result.
+// reserves a concurrency slot atomically (so concurrent Starts cannot both
+// pass a full cap), allocates an unguessable id, dispatches the backend,
+// and registers the session. The session persists in the registry until it
+// is evicted or the manager is Closed, so a later Status/Wait can observe
+// its result.
 func (m *SessionManager) Start(cfg SubAgentConfig) (string, error) {
 	if cfg.Prompt == "" {
 		return "", errors.New("session prompt must not be empty")
@@ -287,37 +331,83 @@ func (m *SessionManager) Start(cfg SubAgentConfig) (string, error) {
 		return "", err
 	}
 
-	sess := &session{done: make(chan struct{}), state: SessionRunning}
-	id, err := m.backend.start(sess, cfg)
-	if err != nil {
+	id := newSessionID()
+	// onTerminal releases the slot exactly once, when the session first
+	// leaves the running state (via complete or markTerminated).
+	sess := &session{id: id, done: make(chan struct{}), state: SessionRunning, onTerminal: m.releaseSlot}
+
+	if err := m.backend.start(sess, cfg, id); err != nil {
+		// Roll back the reserved slot: the session never started, so its
+		// onTerminal will never fire.
+		m.releaseSlot()
 		return "", err
 	}
-	sess.id = id
 
 	m.mu.Lock()
 	m.seq++
 	sess.seq = m.seq
+	m.evictLocked()
 	m.sessions[id] = sess
 	m.mu.Unlock()
 	return id, nil
 }
 
-// reserveSlot fails when the number of running sessions has reached the
-// configured cap. Terminal sessions (done/error/terminated) do not count
-// against the cap — they are kept only for later inspection.
+// reserveSlot claims a running-session slot, failing when the cap is
+// already reached. Terminal sessions do not hold a slot (it is released in
+// onTerminal), so the cap bounds concurrency, not total retention.
 func (m *SessionManager) reserveSlot() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	running := 0
-	for _, s := range m.sessions {
-		if !s.isTerminal() {
-			running++
-		}
+	if m.running >= m.maxConcurrent {
+		return fmt.Errorf("session limit reached: %d concurrent sessions already running (max %d)", m.running, m.maxConcurrent)
 	}
-	if running >= m.maxConcurrent {
-		return fmt.Errorf("session limit reached: %d concurrent sessions already running (max %d)", running, m.maxConcurrent)
-	}
+	m.running++
 	return nil
+}
+
+// releaseSlot returns a running-session slot to the pool. Called exactly
+// once per reserved slot: from onTerminal when a session reaches a terminal
+// state, or directly from Start to roll back a backend that failed to
+// dispatch.
+func (m *SessionManager) releaseSlot() {
+	m.mu.Lock()
+	if m.running > 0 {
+		m.running--
+	}
+	m.mu.Unlock()
+}
+
+// evictLocked drops oldest-first terminal sessions while the registry is at
+// or above its retention ceiling. Caller holds m.mu. It reads each
+// session's terminal flag atomically rather than taking s.mu, so it cannot
+// invert the s.mu -> m.mu order that onTerminal relies on. Running sessions
+// are never evicted; since running is capped below maxTotal there is always
+// a terminal victim when the ceiling is hit.
+func (m *SessionManager) evictLocked() {
+	for len(m.sessions) >= m.maxTotal {
+		victimID := ""
+		victimSeq := int(^uint(0) >> 1) // max int
+		for id, s := range m.sessions {
+			if s.isTerminal() && s.seq < victimSeq {
+				victimID, victimSeq = id, s.seq
+			}
+		}
+		if victimID == "" {
+			return
+		}
+		delete(m.sessions, victimID)
+	}
+}
+
+// newSessionID returns an unguessable session handle. The random suffix
+// stops a prompt-injected model from iterating session-N ids to interfere
+// with sibling sessions it did not start. crypto/rand.Read never fails on
+// supported platforms; a read error degrades to a still-unique but
+// lower-entropy id rather than aborting the spawn.
+func newSessionID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return "session-" + hex.EncodeToString(b[:])
 }
 
 // Status returns a non-blocking snapshot of a session. An unknown id
@@ -393,7 +483,12 @@ func (m *SessionManager) SpawnAndWait(ctx context.Context, cfg SubAgentConfig, t
 		}
 		return &SubAgentResult{Outcome: string(st.State)}, nil
 	default:
-		// Still running after the wait timed out.
+		// Still running after the wait timed out. A blocking spawn that
+		// times out has no later wait to collect the result, so terminate
+		// the session to stop the backend's work — otherwise the
+		// control-plane job (or local goroutine) would run on, orphaned,
+		// until its own lifetime cap.
+		_ = m.Terminate(id)
 		return &SubAgentResult{
 			Outcome: "timeout",
 			Output:  fmt.Sprintf("spawn_agent timed out after %s waiting for the sub-agent result", timeout),
@@ -413,14 +508,7 @@ func (m *SessionManager) forget(id string) {
 	m.mu.Unlock()
 }
 
-func (m *SessionManager) nextLocalID() string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.seq++
-	return fmt.Sprintf("session-%d", m.seq)
-}
-
-// --- transport backend -----------------------------------------------------
+// transport backend.
 
 type transportSessionBackend struct {
 	transport   transport.Transport
@@ -430,27 +518,28 @@ type transportSessionBackend struct {
 	complete    func(payload any) *SubAgentResult
 }
 
-func (b *transportSessionBackend) start(sess *session, cfg SubAgentConfig) (string, error) {
+func (b *transportSessionBackend) start(sess *session, cfg SubAgentConfig, id string) error {
 	input, err := json.Marshal(cfg)
 	if err != nil {
-		return "", fmt.Errorf("marshal sub-agent config: %w", err)
+		return fmt.Errorf("marshal sub-agent config: %w", err)
 	}
 
-	id, err := b.correlator.StartPending(func(requestID string) error {
+	if err := b.correlator.StartPendingWithID(id, func(requestID string) error {
 		return b.transport.Emit(types.HarnessEvent{
 			Type:      "tool_result_request",
 			RequestID: requestID,
 			ToolName:  "spawn_agent",
 			Input:     input,
 		})
-	})
-	if err != nil {
-		return "", err
+	}); err != nil {
+		return err
 	}
 
 	// Await the control-plane response on the manager's background context
-	// so the session survives the turn that spawned it. The entry is
-	// Forgotten once resolved — the durable result lives on the session.
+	// so the session survives the turn that spawned it. Forget on every
+	// exit so a terminated/timed-out session's correlator entry is dropped
+	// promptly (Forget also unblocks a parked AwaitID); the durable result
+	// lives on the session, not the correlator.
 	go func() {
 		defer b.correlator.Forget(id)
 		payload, awaitErr := b.correlator.AwaitID(b.bgCtx, id, b.maxLifetime)
@@ -460,7 +549,7 @@ func (b *transportSessionBackend) start(sess *session, cfg SubAgentConfig) (stri
 		}
 		sess.complete(b.complete(payload))
 	}()
-	return id, nil
+	return nil
 }
 
 func (b *transportSessionBackend) terminate(sess *session) {
@@ -475,8 +564,14 @@ func (b *transportSessionBackend) terminate(sess *session) {
 }
 
 // completeFromAsyncResult translates a correlator payload (always an
-// asyncToolResult from extractAsyncToolResult) into a SubAgentResult. On a
-// successful response the content is the control plane's serialised
+// asyncToolResult from extractAsyncToolResult) into a SubAgentResult.
+//
+// The control plane is partially trusted: it could embed secret-shaped
+// strings in a response. Every content path is scrubbed before it becomes
+// the SubAgentResult.Output, because that value flows into the model
+// context and the JSONL trace before the outbound transport scrub can act —
+// matching dispatchAsyncToolCall's point-of-entry scrub on the error path.
+// On a successful response the content is the control plane's serialised
 // SubAgentResult JSON; if it does not parse, the raw content is surfaced
 // as the output so nothing is silently lost.
 func completeFromAsyncResult(payload any) *SubAgentResult {
@@ -489,17 +584,21 @@ func completeFromAsyncResult(payload any) *SubAgentResult {
 	}
 	var sr SubAgentResult
 	if err := json.Unmarshal([]byte(res.content), &sr); err != nil || sr.Outcome == "" {
-		return &SubAgentResult{Outcome: "done", Output: res.content}
+		return &SubAgentResult{Outcome: "done", Output: security.Scrub(res.content)}
 	}
+	sr.Output = security.Scrub(sr.Output)
 	return &sr
 }
 
 // sessionResultFromAwaitErr maps a correlator await error onto a distinct
 // SubAgentResult.Outcome, mirroring dispatchAsyncToolCall so the failure
-// vocabulary is identical across the blocking and detached paths.
+// vocabulary is identical across the blocking and detached paths. The
+// default arm treats any unrecognised correlator failure as a timeout —
+// the conservative choice for the model, which then knows the result did
+// not arrive.
 func sessionResultFromAwaitErr(err error) *SubAgentResult {
 	switch {
-	case strings.Contains(err.Error(), "emit failed"):
+	case errors.Is(err, transport.ErrEmitFailed):
 		return &SubAgentResult{Outcome: "transport_disconnect", Output: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
 		return &SubAgentResult{Outcome: "timeout", Output: err.Error()}
@@ -510,20 +609,27 @@ func sessionResultFromAwaitErr(err error) *SubAgentResult {
 	}
 }
 
-// --- local backend ---------------------------------------------------------
+// local backend.
 
 type localSessionBackend struct {
 	parent       *AgenticLoop
 	parentConfig *types.RunConfig
 	bgCtx        context.Context
-	nextID       func() string
 }
 
-func (b *localSessionBackend) start(sess *session, cfg SubAgentConfig) (string, error) {
-	id := b.nextID()
+// start runs the sub-agent in a background goroutine. SpawnSubAgent reuses
+// the parent loop's Provider, Executor, Edit and Tools while giving the
+// child its own message history, context strategy, transport, and (for
+// Cedar) a cloned permission policy. Those reused components are the same
+// ones the parallel async-tool dispatch path (#184) already drives
+// concurrently via multiple in-flight spawn_agent calls, so concurrent use
+// here is on the same footing — detached sessions only widen the window,
+// they do not introduce a new sharing pattern. cancel is stored for
+// Terminate / manager Close.
+func (b *localSessionBackend) start(sess *session, cfg SubAgentConfig, _ string) error {
 	// Derive from the manager's background context, not the spawning tool
 	// call's ctx, so a detached session keeps running after the call that
-	// started it returns. cancel is stored for Terminate.
+	// started it returns.
 	childCtx, cancel := context.WithCancel(b.bgCtx)
 	sess.cancel = cancel
 
@@ -536,7 +642,7 @@ func (b *localSessionBackend) start(sess *session, cfg SubAgentConfig) (string, 
 		}
 		sess.complete(result)
 	}()
-	return id, nil
+	return nil
 }
 
 func (b *localSessionBackend) terminate(sess *session) {
@@ -545,7 +651,7 @@ func (b *localSessionBackend) terminate(sess *session) {
 	}
 }
 
-// --- builtins.SessionController adapter ------------------------------------
+// builtins.SessionController adapter.
 
 // sessionController adapts *SessionManager to builtins.SessionController,
 // marshalling typed SessionStatus snapshots to JSON at the package boundary
@@ -558,6 +664,11 @@ func newSessionController(mgr *SessionManager) sessionController {
 	return sessionController{mgr: mgr}
 }
 
+// Start ignores the tool-call context deliberately: a detached session
+// must outlive the call that started it, so the underlying work derives
+// from the manager's background context (cancelled on run end), not from
+// the per-call ctx. Wait, by contrast, threads ctx through so a blocking
+// wait unblocks on run cancellation.
 func (c sessionController) Start(_ context.Context, prompt, mode string, maxTurns int) (string, error) {
 	return c.mgr.Start(SubAgentConfig{Prompt: prompt, Mode: mode, MaxTurns: maxTurns})
 }

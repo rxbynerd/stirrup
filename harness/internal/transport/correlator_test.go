@@ -574,3 +574,57 @@ func TestCorrelator_StartPending_NilEmit(t *testing.T) {
 		t.Fatal("StartPending(nil) err = nil, want error")
 	}
 }
+
+func TestCorrelator_Forget_UnblocksAwaitID(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	id, err := c.StartPending(func(string) error { return nil })
+	if err != nil {
+		t.Fatalf("StartPending: %v", err)
+	}
+
+	parked := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(parked) // about to block in AwaitID
+		_, err := c.AwaitID(context.Background(), id, 5*time.Second)
+		done <- err
+	}()
+
+	// Let the goroutine reach AwaitID's select, then forget the entry.
+	<-parked
+	time.Sleep(20 * time.Millisecond)
+	c.Forget(id)
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "forgotten") {
+			t.Fatalf("AwaitID err = %v, want a 'forgotten' error", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("AwaitID did not unblock after Forget (goroutine leak)")
+	}
+	if c.RetainedCount() != 0 {
+		t.Errorf("RetainedCount after Forget = %d, want 0", c.RetainedCount())
+	}
+}
+
+func TestCorrelator_StartPendingWithID_Duplicate(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	if err := c.StartPendingWithID("session-x", func(string) error { return nil }); err != nil {
+		t.Fatalf("first StartPendingWithID: %v", err)
+	}
+	if err := c.StartPendingWithID("session-x", func(string) error { return nil }); err == nil {
+		t.Fatal("duplicate StartPendingWithID: err = nil, want collision error")
+	}
+}
+
+func TestCorrelator_StartPending_EmitFailure_WrapsSentinel(t *testing.T) {
+	t.Parallel()
+	c := NewCorrelator("session")
+	_, err := c.StartPending(func(string) error { return errors.New("boom") })
+	if err == nil || !errors.Is(err, ErrEmitFailed) {
+		t.Fatalf("err = %v, want errors.Is(ErrEmitFailed)", err)
+	}
+}

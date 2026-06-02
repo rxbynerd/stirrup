@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,30 +16,40 @@ import (
 
 // fakeSessionBackend drives the SessionManager state machine without a real
 // sub-agent. onStart, when set, is invoked synchronously during start so a
-// test can complete (or not) the session deterministically.
+// test can complete (or not) the session deterministically. The slices are
+// mutex-guarded so the concurrency tests can hammer Start under -race.
 type fakeSessionBackend struct {
-	idCounter  int
-	startErr   error
-	onStart    func(sess *session)
+	startErr error
+	onStart  func(sess *session)
+
+	mu         sync.Mutex
 	started    []*session
 	terminated []*session
 }
 
-func (b *fakeSessionBackend) start(sess *session, _ SubAgentConfig) (string, error) {
+func (b *fakeSessionBackend) start(sess *session, _ SubAgentConfig, _ string) error {
 	if b.startErr != nil {
-		return "", b.startErr
+		return b.startErr
 	}
-	b.idCounter++
-	id := "session-" + strconv.Itoa(b.idCounter)
+	b.mu.Lock()
 	b.started = append(b.started, sess)
+	b.mu.Unlock()
 	if b.onStart != nil {
 		b.onStart(sess)
 	}
-	return id, nil
+	return nil
 }
 
 func (b *fakeSessionBackend) terminate(sess *session) {
+	b.mu.Lock()
 	b.terminated = append(b.terminated, sess)
+	b.mu.Unlock()
+}
+
+func (b *fakeSessionBackend) startedCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.started)
 }
 
 func newTestManager(b sessionBackend, maxConcurrent int) *SessionManager {
@@ -47,6 +57,7 @@ func newTestManager(b sessionBackend, maxConcurrent int) *SessionManager {
 	return &SessionManager{
 		backend:       b,
 		maxConcurrent: maxConcurrent,
+		maxTotal:      maxConcurrent * sessionRetentionFactor,
 		defaultWait:   50 * time.Millisecond,
 		logger:        slog.Default(),
 		bgCtx:         bg,
