@@ -37,18 +37,17 @@ const (
 	defaultGraniteModel = "ibm-granite/granite-guardian-4.1-8b"
 
 	// defaultGraniteTimeout is the safe default for a synchronous, in-the-loop
-	// classification call. The original 1.5s was sized for vLLM on a modern
-	// GPU (sub-second total round-trip in production) and proved badly tight
-	// for the local-development case: LM Studio on Apple Silicon doing ~80
-	// tokens of reasoning consistently lands around 5-6s end-to-end (the
+	// classification call. A correct no-think verdict is ~12 tokens and lands
+	// sub-second on a datacentre GPU and ~1.5s on a 30W Jetson Orin (the
 	// non-streaming response path means the runtime emits no headers until
-	// generation completes, so first-byte latency tracks total latency
-	// almost exactly). 10s leaves comfortable margin for that case while
-	// still cutting off a genuinely hung classifier well before the 30s
-	// upper bound enforced by RunConfig validation. Operators on slow
-	// hardware can raise it further via guardRail.timeoutMs; operators on
-	// fast hardware can tighten it back down to a low number to fail
-	// faster on classifier outage.
+	// generation completes, so first-byte latency tracks total latency almost
+	// exactly). 10s leaves comfortable margin for cold starts, a slow local
+	// runtime, or a runtime that still emits a short reasoning trace, while
+	// still cutting off a genuinely hung classifier well before the 30s upper
+	// bound enforced by RunConfig validation. Operators on slow hardware can
+	// raise it further via guardRail.timeoutMs (or --guardrail-timeout);
+	// operators on fast hardware can tighten it back down to fail faster on
+	// classifier outage.
 	defaultGraniteTimeout = 10 * time.Second
 
 	// defaultMinChunkChars is the threshold below which PhasePreTurn skips
@@ -57,19 +56,19 @@ const (
 	// would dominate per-turn latency if classified.
 	defaultMinChunkChars = 256
 
-	// noThinkMaxTokens caps the response in no-think mode. Originally 32
-	// (just enough for "<score>yes</score>" plus margin) on the assumption
-	// that <no-think> would be honoured by every OpenAI-compatible runtime.
-	// Empirically that assumption does not hold: LM Studio (and any
-	// DeepSeek-style runtime that routes reasoning into a separate
-	// `reasoning_content` field) ignores the <no-think> directive and the
-	// underlying model still emits ~80 tokens of reasoning before the
-	// <score> head fires. With a 32-token cap finish_reason fires "length"
-	// and content arrives empty — the parser then misreports it as an
-	// ErrParseFailed, which then becomes a fail-closed deny. 256 absorbs
-	// observed reasoning traces with comfortable margin while still being
-	// half the think-mode budget; a fully no-think runtime (e.g. vLLM with
-	// the official Granite Guardian template) only burns ~10 of these.
+	// noThinkMaxTokens caps the response in no-think mode. With the proper
+	// model-card no-think instruction (guardianJudgeNoThink), Granite
+	// Guardian emits an empty <think>\n</think> pair plus the <score> head
+	// — ~12 tokens — and stops, so this cap is almost never approached. The
+	// generous 256 (against the ~12 a verdict actually needs) is defensive
+	// headroom: a runtime that mangles the instruction, or a DeepSeek-style
+	// runtime that routes a reasoning trace into the content field anyway,
+	// would otherwise hit finish_reason="length" with an empty body — which
+	// the parser reports as ErrParseFailed and the loop turns into a
+	// fail-closed deny. 256 absorbs such a stray trace while staying half
+	// the think-mode budget. (An earlier 32-token cap predated the
+	// instruction fix, when the model still reasoned for ~80 tokens before
+	// scoring and routinely truncated.)
 	noThinkMaxTokens = 256
 
 	// thinkMaxTokens accommodates a short reasoning trace inside
@@ -443,22 +442,37 @@ func (g *GraniteGuardian) Check(ctx context.Context, in Input) (*Decision, error
 	return d, nil
 }
 
-// buildGuardianPrompt emits the literal Granite Guardian template. The
-// directive token (<think> vs <no-think>) sits inside the <guardian>
-// envelope per the issue specification — moving it outside that envelope
-// changes the classifier's behaviour.
+// Granite Guardian 4.1 selects thinking mode *in-band*, via the judge
+// instruction that opens the <guardian> block — not via a chat-template
+// kwarg, a system prompt, or a bare <think_on>/<think_off> control token.
+// These two strings are reproduced verbatim from the model card
+// (ibm-granite/granite-guardian-4.1-8b). The no-think variant's operative
+// clause — "Provide your score immediately without explanation. Output
+// empty <think></think> tags…" — is what actually suppresses the reasoning
+// trace. An earlier paraphrase kept the bare <no-think> marker but dropped
+// that clause, so the model reasoned anyway: ~200 completion tokens and a
+// ~20x latency penalty (≈22s vs ≈1.5s on a 30W Jetson Orin) for a verdict
+// that is identical either way. Edit these only against the current model
+// card; the wording, not the marker, is load-bearing.
+const (
+	guardianJudgeThink   = "<think>As a judge agent, carefully analyze whether the provided text meets the given judging criteria. Use all available information, including conversations, documents, and tools. Reason through the evidence step by step before providing your score. Wrap your reasoning in <think></think> tags, then provide your score in <score></score> tags."
+	guardianJudgeNoThink = "<no-think>As a judge agent, assess whether the provided text meets the given judging criteria using all available information, including conversations, documents, and tools. Provide your score immediately without explanation. Output empty <think>\n</think> tags followed by your score in <score></score> tags."
+)
+
+// buildGuardianPrompt emits the Granite Guardian judge template: the
+// model-card judge instruction (think or no-think), the per-phase
+// criterion, the scoring schema, then the artefact under test. Content is
+// appended below the scoring schema so the classifier sees criteria first;
+// it is unescaped on purpose, as the operator's batched-PreTurn content
+// already carries chunk delimiters when it needs them.
 func buildGuardianPrompt(think bool, criteriaText, content string) string {
-	directive := "<no-think>"
+	instruction := guardianJudgeNoThink
 	if think {
-		directive = "<think>"
+		instruction = guardianJudgeThink
 	}
-	// The user-facing content is appended below the scoring schema so the
-	// classifier sees criteria first, then the artefact under test. The
-	// content is unescaped on purpose: the operator's batched-PreTurn
-	// content already carries chunk delimiters when it needs them.
 	return fmt.Sprintf(
-		"<guardian>%sAs a judge agent, evaluate whether the last assistant turn meets the criteria below.\n\n### Criteria: %s\n\n### Scoring Schema: If the last assistant's text meets the criteria, return 'yes'; otherwise, return 'no'.\n\n%s",
-		directive, criteriaText, content,
+		"<guardian>%s\n\n### Criteria: %s\n\n### Scoring Schema: If the last assistant's text meets the criteria, return 'yes'; otherwise, return 'no'.\n\n%s",
+		instruction, criteriaText, content,
 	)
 }
 

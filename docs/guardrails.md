@@ -336,15 +336,16 @@ stirrup harness \
 ```
 
 The accepted range is `[50ms, 30s]`; the 30s ceiling bounds how long
-a single synchronous guard call may block the loop. A genuinely slow
-self-hosted classifier — a CPU-only or Jetson-class vLLM that emits a
-full reasoning trace per call — can sit near that ceiling, in which
-case pairing the raised timeout with `failOpen: true` keeps an
-occasional over-budget call from aborting the run. Note that a
-runtime which ignores the `<no-think>` directive (some
-OpenAI-compatible servers do) generates a long reasoning trace on
-every call regardless of mode, which is the usual reason a local
-classifier needs a multi-second budget.
+a single synchronous guard call may block the loop. A correct
+no-think verdict is only ~12 tokens, so even a modest self-hosted
+GPU (e.g. a Jetson-class vLLM) lands at ~1-2s and a CPU-only runtime
+at a few seconds — comfortably inside the default. Reach for a raised
+budget for cold starts, a genuinely slow runtime, or to pair with
+`failOpen: true` on flaky hardware. If guard calls are taking *tens*
+of seconds, the classifier is almost certainly emitting a full
+reasoning trace (~200 tokens) rather than the short no-think verdict;
+that is a prompt/serving problem, not a timeout problem — raising the
+budget masks it rather than fixing it.
 
 ## Operator escape hatch
 

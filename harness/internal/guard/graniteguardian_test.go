@@ -141,6 +141,11 @@ func TestGraniteGuardianThinkMode(t *testing.T) {
 	if !strings.Contains(got, "<guardian><think>") {
 		t.Fatalf("user message did not contain <guardian><think>; got: %s", got)
 	}
+	// The think instruction must carry the model-card clause that requests
+	// a reasoning trace; without it the marker is inert (see no-think test).
+	if !strings.Contains(got, "Reason through the evidence step by step") {
+		t.Fatalf("think prompt missing the model-card reasoning clause; got: %s", got)
+	}
 }
 
 func TestGraniteGuardianPromptTemplateEmission(t *testing.T) {
@@ -155,6 +160,14 @@ func TestGraniteGuardianPromptTemplateEmission(t *testing.T) {
 	got := fs.firstUserMessageContent(t)
 	if !strings.HasPrefix(got, "<guardian><no-think>As a judge agent") {
 		t.Fatalf("prompt did not begin with expected envelope; got: %s", got)
+	}
+	// Regression guard: the no-think marker alone is inert. The operative
+	// model-card clause below is what actually suppresses Granite Guardian's
+	// reasoning trace (empty <think></think> + <score>, ~12 tokens). Dropping
+	// it — as an earlier paraphrase did — makes the model reason for ~200
+	// tokens and inflates per-call latency ~20x.
+	if !strings.Contains(got, "Provide your score immediately without explanation") {
+		t.Fatalf("no-think prompt missing the operative model-card clause; got: %s", got)
 	}
 	if !strings.Contains(got, "### Criteria:") {
 		t.Fatalf("prompt missing '### Criteria:' header; got: %s", got)
