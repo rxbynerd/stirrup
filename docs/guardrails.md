@@ -197,9 +197,9 @@ length; treat these as advisory.
 | `post_turn` | < 50 ms | < 600 ms | Single composite-criterion call per turn end. |
 
 With `failOpen: true`, the error path is a single timeout (defaults
-to `timeoutMs: 1500`) before the request is allowed to proceed. With
-`failOpen: false` (the default), a transport error or timeout
-produces a `Deny` and the offending content does not pass.
+to `timeoutMs: 10000` = 10s) before the request is allowed to
+proceed. With `failOpen: false` (the default), a transport error or
+timeout produces a `Deny` and the offending content does not pass.
 
 The two load-bearing latency mitigations are:
 
@@ -323,6 +323,28 @@ tool call on PhasePreTool. That is the correct safety posture, but
 on slow local hardware it surfaces as "every dev run instantly
 fails" — almost always a sign that `timeoutMs` is too low for the
 runtime, not that the classifier is genuinely unhealthy.
+
+Raise the budget either in the RunConfig (`guardRail.timeoutMs`) or
+with the `--guardrail-timeout` flag, which takes a Go duration and
+mirrors the field:
+
+```sh
+stirrup harness \
+  --guardrail granite-guardian \
+  --guardrail-endpoint http://your-classifier:8001 \
+  --guardrail-timeout 25s
+```
+
+The accepted range is `[50ms, 30s]`; the 30s ceiling bounds how long
+a single synchronous guard call may block the loop. A genuinely slow
+self-hosted classifier — a CPU-only or Jetson-class vLLM that emits a
+full reasoning trace per call — can sit near that ceiling, in which
+case pairing the raised timeout with `failOpen: true` keeps an
+occasional over-budget call from aborting the run. Note that a
+runtime which ignores the `<no-think>` directive (some
+OpenAI-compatible servers do) generates a long reasoning trace on
+every call regardless of mode, which is the usual reason a local
+classifier needs a multi-second budget.
 
 ## Operator escape hatch
 
