@@ -77,6 +77,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("guardrail-endpoint", "", "Endpoint URL for the granite-guardian or cloud-judge adapter.")
 	f.String("guardrail-model", "", "Model identifier for the GuardRail classifier. Granite-guardian default: ibm-granite/granite-guardian-4.1-8b. Cloud-judge default: claude-haiku-4-5-20251001 (Anthropic API format) — when the primary provider is Bedrock, use the Bedrock-format ID (e.g. us.anthropic.claude-haiku-4-5-20251001-v1:0).")
 	f.Bool("guardrail-fail-open", false, "When true, transport errors / timeouts produce VerdictAllow with a security event rather than blocking. Default false (fail closed).")
+	f.Duration("guardrail-timeout", 0, "Per-call timeout for the granite-guardian / cloud-judge classifier as a Go duration (e.g. 25s, 2500ms). Mirrors guardRail.timeoutMs; effective range [50ms, 30s]. Zero/unset uses the adapter default (10s). Raise it for slow self-hosted classifiers (e.g. CPU/Jetson vLLM).")
 
 	f.String("deployment-environment", "", "OTel deployment.environment resource attribute (e.g. production, staging). Empty falls through to OTEL_DEPLOYMENT_ENVIRONMENT, then to \"local\".")
 	f.String("service-namespace", "", "OTel service.namespace resource attribute (e.g. stirrup-eval, team-a). Empty falls through to OTEL_SERVICE_NAMESPACE, then to \"stirrup\".")

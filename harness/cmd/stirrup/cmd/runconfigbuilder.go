@@ -398,6 +398,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	guardRailEndpoint, _ := f.GetString("guardrail-endpoint")
 	guardRailModel, _ := f.GetString("guardrail-model")
 	guardRailFailOpen, _ := f.GetBool("guardrail-fail-open")
+	guardRailTimeout, _ := f.GetDuration("guardrail-timeout")
 	deploymentEnvironment, _ := f.GetString("deployment-environment")
 	serviceNamespace, _ := f.GetString("service-namespace")
 	logExport, _ := f.GetString("log-export")
@@ -513,6 +514,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		GuardRailEndpoint:            guardRailEndpoint,
 		GuardRailModel:               guardRailModel,
 		GuardRailFailOpen:            guardRailFailOpen,
+		GuardRailTimeout:             guardRailTimeout,
 		DeploymentEnvironment:        deploymentEnvironment,
 		ServiceNamespace:             serviceNamespace,
 		LogExport:                    logExport,

@@ -2504,6 +2504,77 @@ func TestApplyOverrides_GuardRailModelOverride(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRunConfig_GuardRailTimeoutMaterialises exercises the
+// timeout flag in isolation: setting only --guardrail-timeout is enough
+// to materialise a GuardRail config, and the Go duration is converted to
+// the wire-format milliseconds field. This is the lever for slow
+// self-hosted classifiers whose per-call latency exceeds the 10s adapter
+// default.
+func TestBuildHarnessRunConfig_GuardRailTimeoutMaterialises(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:            "test-run",
+		Mode:             "execution",
+		Prompt:           "test",
+		ProviderType:     "anthropic",
+		APIKeyRef:        "secret://ANTHROPIC_API_KEY",
+		Model:            "claude-sonnet-4-6",
+		MaxTurns:         20,
+		Timeout:          600,
+		TransportType:    "stdio",
+		LogLevel:         "info",
+		GuardRailTimeout: 25 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if cfg.GuardRail == nil {
+		t.Fatalf("expected non-nil GuardRail when timeout flag is set")
+	}
+	if cfg.GuardRail.TimeoutMs != 25000 {
+		t.Errorf("GuardRail.TimeoutMs = %d, want 25000", cfg.GuardRail.TimeoutMs)
+	}
+}
+
+// TestApplyOverrides_GuardRailTimeoutOverride verifies that
+// --guardrail-timeout clobbers a file-provided timeoutMs (converting the
+// Go duration to milliseconds) without disturbing the other GuardRail
+// fields. This is the path an operator takes to push a slow classifier's
+// budget up to the validation ceiling without restating the rest of the
+// file's GuardRail block.
+func TestApplyOverrides_GuardRailTimeoutOverride(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.GuardRail = &types.GuardRailConfig{
+		Type:      "granite-guardian",
+		Endpoint:  "http://file-endpoint:8000",
+		TimeoutMs: 1500,
+		FailOpen:  true,
+	}
+
+	if err := cmd.Flags().Set("guardrail-timeout", "28s"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+	if cfg.GuardRail == nil {
+		t.Fatalf("GuardRail should remain non-nil")
+	}
+	if cfg.GuardRail.TimeoutMs != 28000 {
+		t.Errorf("TimeoutMs override failed: got %d, want 28000", cfg.GuardRail.TimeoutMs)
+	}
+	// Other fields must survive untouched.
+	if cfg.GuardRail.Type != "granite-guardian" {
+		t.Errorf("Type: file value should survive, got %q", cfg.GuardRail.Type)
+	}
+	if cfg.GuardRail.Endpoint != "http://file-endpoint:8000" {
+		t.Errorf("Endpoint: file value should survive, got %q", cfg.GuardRail.Endpoint)
+	}
+	if !cfg.GuardRail.FailOpen {
+		t.Errorf("FailOpen: file value should survive, got false")
+	}
+}
+
 // TestApplyOverrides_GuardRailDefaultFlagsDoNotOverride pins the
 // precedence rule for the GuardRail flags: if the user did not pass
 // any of them, a file-provided GuardRail block must survive intact.

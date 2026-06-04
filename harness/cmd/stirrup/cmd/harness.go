@@ -217,7 +217,7 @@ type harnessCLIOptions struct {
 
 	// GuardRail escape hatches (issue #43). When any of these is non-zero
 	// the flag-only path constructs a GuardRailConfig; an entirely-zero
-	// trio leaves config.GuardRail nil so the factory installs the
+	// set leaves config.GuardRail nil so the factory installs the
 	// no-op "none" guard. Composite stages are not surfaced as flags —
 	// they require a --config file because flag syntax cannot express
 	// per-stage phase restrictions.
@@ -225,6 +225,7 @@ type harnessCLIOptions struct {
 	GuardRailEndpoint string
 	GuardRailModel    string
 	GuardRailFailOpen bool
+	GuardRailTimeout  time.Duration
 
 	// Observability resource attributes (issue #95). Empty values fall
 	// through to env-var fallbacks (OTEL_DEPLOYMENT_ENVIRONMENT,
@@ -504,12 +505,13 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 	// touched at least one of the three GuardRail flags; an entirely-empty
 	// trio leaves config.GuardRail nil and the factory installs the
 	// no-op "none" guard. Composite stages can only be set via --config.
-	if opts.GuardRailType != "" || opts.GuardRailEndpoint != "" || opts.GuardRailModel != "" || opts.GuardRailFailOpen {
+	if opts.GuardRailType != "" || opts.GuardRailEndpoint != "" || opts.GuardRailModel != "" || opts.GuardRailFailOpen || opts.GuardRailTimeout != 0 {
 		config.GuardRail = &types.GuardRailConfig{
-			Type:     opts.GuardRailType,
-			Endpoint: opts.GuardRailEndpoint,
-			Model:    opts.GuardRailModel,
-			FailOpen: opts.GuardRailFailOpen,
+			Type:      opts.GuardRailType,
+			Endpoint:  opts.GuardRailEndpoint,
+			Model:     opts.GuardRailModel,
+			FailOpen:  opts.GuardRailFailOpen,
+			TimeoutMs: int(opts.GuardRailTimeout.Milliseconds()),
 		}
 	}
 
@@ -1167,6 +1169,13 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			cfg.GuardRail = &types.GuardRailConfig{}
 		}
 		cfg.GuardRail.FailOpen = failOpen
+	}
+	if changed("guardrail-timeout") {
+		timeout, _ := f.GetDuration("guardrail-timeout")
+		if cfg.GuardRail == nil {
+			cfg.GuardRail = &types.GuardRailConfig{}
+		}
+		cfg.GuardRail.TimeoutMs = int(timeout.Milliseconds())
 	}
 	// Observability resource attributes (issue #95). Each flag overrides
 	// the corresponding RunConfig field independently so an operator can
