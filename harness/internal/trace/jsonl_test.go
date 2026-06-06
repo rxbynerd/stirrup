@@ -304,6 +304,48 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent pins
+// the scrub of ContentBlock.Content — the tool_result text rendering
+// that rides the message history into the next turn's ModelInput. The
+// same payload is scrubbed as ToolCallRecord.Output on its other route
+// into the trace; this covers the message-history route, which was
+// found unscrubbed while building the OTel content-capture path (#413).
+func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	emitter.Start("run-scrub-tool-result", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 2,
+		ModelInput: types.ModelInput{
+			Model: "claude-3-5-sonnet-latest",
+			Messages: []types.Message{
+				{
+					Role: "user",
+					Content: []types.ContentBlock{
+						{
+							Type:      "tool_result",
+							ToolUseID: "tu-1",
+							Content:   "API_KEY=sk-ant-api03-toolresultleak loaded",
+						},
+					},
+				},
+			},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	if strings.Contains(onDisk, "sk-ant-api03-toolresultleak") {
+		t.Errorf("scrubber missed secret in tool_result content on disk:\n%s", onDisk)
+	}
+	if !strings.Contains(onDisk, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] placeholder proving the tool_result scrub ran, got:\n%s", onDisk)
+	}
+}
+
 // TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured pins the issue #231
 // requirement that the structured tool-result payload is scrubbed on the same
 // footing as the text Output: a command transcript or file excerpt carried in

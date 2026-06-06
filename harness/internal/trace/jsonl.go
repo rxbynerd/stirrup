@@ -329,6 +329,15 @@ func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 		if nb.Text != "" {
 			nb.Text = security.Scrub(nb.Text)
 		}
+		// Content is the tool_result text rendering — command output,
+		// file excerpts, MCP server responses — exactly the untrusted
+		// surface the ToolCallRecord.Output scrub covers on its other
+		// route into the trace. Found via the OTel content-capture
+		// scrub test (#413): this field previously reached the
+		// defence-in-depth layer unscrubbed.
+		if nb.Content != "" {
+			nb.Content = security.Scrub(nb.Content)
+		}
 		if len(nb.Input) > 0 {
 			nb.Input = scrubRawJSON(nb.Input)
 		}
