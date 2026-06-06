@@ -74,6 +74,8 @@ export GRAFANA_CLOUD_AUTH="Basic $(echo -n '123456:glc_eyJv...' | base64)"
 
 ### CLI
 
+The full authenticated path is expressible without a `--config` file:
+
 ```sh
 export GRAFANA_CLOUD_AUTH="Basic ..."
 
@@ -82,12 +84,31 @@ stirrup harness \
   --trace-emitter otel \
   --otel-protocol http/protobuf \
   --otel-endpoint https://otlp-gateway-prod-us-east-0.grafana.net/otlp \
-  --config grafana-cloud.json    # for the headers map; flags don't expose it
+  --otel-header Authorization=secret://GRAFANA_CLOUD_AUTH
 ```
 
-The `--otel-protocol` flag is the only new wire-protocol surface; the
-existing `--otel-endpoint` accepts a full URL when the protocol is
+`--otel-header` is repeatable (`key=value`; the value keeps everything
+after the first `=`, so base64 padding survives) and mirrors
+`traceEmitter.headers`, including the `secret://` resolution above —
+the flag carries references, never raw secrets. When passed
+explicitly it replaces the entire `headers` map from `--config`
+rather than merging, matching the `--query-param` override semantics.
+`--otel-endpoint` accepts a full URL when the protocol is
 `http/protobuf`.
+
+As an alternative to the flag, the OTel SDK reads the standard
+`OTEL_EXPORTER_OTLP_HEADERS` env var (format
+`key1=value1,key2=value2`) when no headers are configured on the
+RunConfig — useful for injecting credentials from the environment
+without touching the invocation. Two caveats: the env var carries the
+resolved value, not a `secret://` reference, so it bypasses the
+SecretStore entirely — if the SDK logs an export error that includes
+request headers, the resolved credential appears in those logs
+(stirrup's scrub layer covers harness output, not SDK-internal
+logging). It also bypasses the validator's headers-require-HTTP check
+(the SDK reads it regardless of protocol), so a credential set this
+way can ride the plaintext gRPC path that `--otel-header` refuses.
+Prefer `--otel-header` where both are available.
 
 ## Other managed APMs
 
@@ -99,6 +120,50 @@ existing `--otel-endpoint` accepts a full URL when the protocol is
 
 Stirrup does not vendor-detect — `protocol`, `endpoint`, and `headers`
 are sufficient for any OTLP/HTTP-protobuf gateway.
+
+## Span content capture (opt-in)
+
+By default the otel emitter records turn-level counters (tokens,
+duration, stop reason) and per-tool spans but **no prompt or
+completion content** — an LLM-observability backend (Langfuse, SigNoz,
+Datadog LLM Observability, Phoenix) shows correct structure, token
+usage, model, and timing, with an empty prompt/IO view.
+
+`traceEmitter.captureContent: true` (CLI: `--otel-capture-content`)
+opts the run into recording content on each `turn[N]` span using the
+standard GenAI semantic-convention attributes those backends read
+natively:
+
+| Attribute | Carries |
+|---|---|
+| `gen_ai.input.messages` | The message history the model saw on the turn (JSON, semconv message schema). |
+| `gen_ai.output.messages` | The model's response blocks, including tool calls, with `finish_reason`. |
+| `gen_ai.system_instructions` | The run's built system prompt. |
+
+The toggle is vendor-neutral: no backend detection, no vendor
+attribute namespace — any OTLP consumer that understands the GenAI
+conventions gets the same view.
+
+Safety properties:
+
+- **Off by default.** The OTel GenAI spec marks message content
+  Opt-In precisely because it is likely to contain PII. With the
+  toggle off, span output is byte-identical to the no-capture
+  emitter.
+- **Scrubbed before export.** Content passes through the same
+  `security.Scrub` defence-in-depth layer the JSONL emitter applies
+  to its `turn_record` lines, so secret-shaped substrings are
+  replaced with `[REDACTED]` before any attribute is built.
+- **Validated.** `captureContent` is rejected on the `jsonl` and
+  `gcs` emitters, like `protocol` and `headers`.
+
+Operational notes: captured attributes can be large (the full message
+history is serialised each turn), so size-sensitive collectors may
+need span attribute limits configured backend-side. Sub-agent turns
+forwarded into the parent's trace are captured with their own
+content; sub-agent *system prompts* are not captured. The semconv
+GenAI conventions are Development-status — attribute names track the
+pinned semconv version (v1.40.0) and may evolve with it.
 
 ## Precedence
 
@@ -257,10 +322,10 @@ supported — Grafana Cloud and the other managed APMs we target prefer
 binary protobuf, and adding the JSON variant would double the surface
 area without operator demand to justify it.
 
-Carrying `protocol` or `headers` on a `jsonl` emitter is also
-rejected — those fields only have meaning for `type: "otel"`, and a
-leftover from a migration should fail loudly rather than silently
-keep the wrong config working.
+Carrying `protocol`, `headers`, or `captureContent` on a `jsonl`
+emitter is also rejected — those fields only have meaning for
+`type: "otel"`, and a leftover from a migration should fail loudly
+rather than silently keep the wrong config working.
 
 `headers` requires `protocol: http/protobuf`. The gRPC exporter path
 calls `WithInsecure()` unconditionally, so any bearer or Basic
@@ -280,6 +345,6 @@ trusted boundary, or switch to `http/protobuf`.
 - **HTTP/JSON encoding.** Binary protobuf only.
 - **TLS client certificate / mTLS.** Use Bearer/Basic via the
   `headers` map; mTLS support is a separate request.
-- **OTLP Logs export.** The `otlploghttp` exporter is gated on issue
-  #96 (logs export) landing first; the same protocol-switch shape
-  will apply.
+- **OTLP/HTTP logs export.** Structured-log export (`--log-export
+  otlp`, issue #96) ships OTLP/gRPC only; an `otlploghttp` variant
+  following the same protocol-switch shape is a separate request.

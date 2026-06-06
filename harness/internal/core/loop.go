@@ -162,6 +162,16 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		return l.finishWithError(runCtx, fmt.Errorf("build system prompt: %w", err))
 	}
 
+	// Forward the built system prompt to emitters that can record it
+	// (the otel emitter's opt-in gen_ai.system_instructions capture).
+	// The optional-capability assertion mirrors the *trace.OTelTraceEmitter
+	// assertions above and below: emitters without content capture do
+	// not implement the interface and the call disappears. The emitter
+	// owns the scrub-and-gate logic, so this is unconditional.
+	if recorder, ok := l.Trace.(trace.SystemInstructionsRecorder); ok {
+		recorder.RecordSystemInstructions(systemPrompt)
+	}
+
 	// Set up git workspace.
 	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(runCtx), "git.setup")
 	if err := l.Git.Setup(runCtx, config.Executor.Workspace, config.RunID); err != nil {

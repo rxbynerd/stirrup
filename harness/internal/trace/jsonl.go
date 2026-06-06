@@ -249,9 +249,12 @@ func (e *JSONLTraceEmitter) Close() error {
 // secret material into a persisted trace.
 //
 // Scrubbing surfaces:
-//   - turn.ModelInput.Messages[*].Content (text blocks; tool_use Input
-//     and tool_result Content are scrubbed through their respective
-//     paths below).
+//   - turn.ModelInput.Messages[*].Content: text blocks (Text), tool_use
+//     Input, and tool_result Content — the message-history route. The
+//     same tool output reaches the trace twice: here as the tool_result
+//     block's Content on the NEXT turn's input, and below as
+//     ToolCalls[*].Output on the turn that ran the tool. Both routes
+//     are scrubbed independently.
 //   - turn.ModelOutput[*].Text and ToolUseId/Name carriers' inputs.
 //   - turn.ToolCalls[*].Input (raw JSON; scrubbed as a string then
 //     re-parsed; if the scrubbed string is not valid JSON it is
@@ -261,12 +264,17 @@ func (e *JSONLTraceEmitter) Close() error {
 //   - turn.ToolCalls[*].Structured (raw JSON; scrubbed via scrubRawJSON like
 //     the tool-call Input, since the structured envelope carries the same
 //     untrusted content as Output).
+//
+// ContentBlock.ThoughtSignature is not scrubbed but dropped entirely —
+// it is provider-opaque and must not be persisted; see scrubContentBlocks.
 func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 	out := types.TurnRecord{
 		Turn:        t.Turn,
 		ModelInput:  scrubModelInput(t.ModelInput),
 		ModelOutput: scrubContentBlocks(t.ModelOutput),
 		ToolCalls:   make([]types.ToolCallRecord, len(t.ToolCalls)),
+		RunID:       t.RunID,
+		ParentRunID: t.ParentRunID,
 	}
 	for i, tc := range t.ToolCalls {
 		out.ToolCalls[i] = types.ToolCallRecord{
@@ -326,8 +334,25 @@ func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 	out := make([]types.ContentBlock, len(blocks))
 	for i, b := range blocks {
 		nb := b
+		// ThoughtSignature is provider-opaque state (Gemini's encrypted
+		// chain-of-thought blob) the harness must round-trip on the live
+		// message history but must never log or persist verbatim — see
+		// the field contract in types/messages.go. It is opaque by
+		// definition, so the scrubber cannot inspect it; the persisted
+		// copy drops it outright. The live blocks the loop holds are
+		// untouched.
+		nb.ThoughtSignature = ""
 		if nb.Text != "" {
 			nb.Text = security.Scrub(nb.Text)
+		}
+		// Content is the tool_result text rendering — command output,
+		// file excerpts, MCP server responses — exactly the untrusted
+		// surface the ToolCallRecord.Output scrub covers on its other
+		// route into the trace. Found via the OTel content-capture
+		// scrub test (#413): this field previously reached the
+		// defence-in-depth layer unscrubbed.
+		if nb.Content != "" {
+			nb.Content = security.Scrub(nb.Content)
 		}
 		if len(nb.Input) > 0 {
 			nb.Input = scrubRawJSON(nb.Input)

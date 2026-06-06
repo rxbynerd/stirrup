@@ -25,7 +25,7 @@ func newTestOTelEmitterWithOpts(opts observability.ResourceOptions) (*OTelTraceE
 		sdktrace.WithSyncer(exporter),
 		sdktrace.WithResource(observability.BuildResource(opts)),
 	)
-	emitter := newOTelTraceEmitterForTest(tp)
+	emitter := newOTelTraceEmitterForTest(tp, false)
 	return emitter, exporter
 }
 

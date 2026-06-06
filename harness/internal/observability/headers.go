@@ -44,7 +44,11 @@ func ResolveHeaders(ctx context.Context, store security.SecretStore, headers map
 			continue
 		}
 		if store == nil {
-			return nil, fmt.Errorf("header %q references a secret (%q) but no SecretStore is configured", name, value)
+			// The reference itself is deliberately not echoed: it names
+			// the credential's env var or file path, which is more than
+			// a stderr line needs to diagnose "no store configured" —
+			// the header name alone identifies the offending entry.
+			return nil, fmt.Errorf("header %q references a secret but no SecretStore is configured", name)
 		}
 		v, err := store.Resolve(ctx, value)
 		if err != nil {

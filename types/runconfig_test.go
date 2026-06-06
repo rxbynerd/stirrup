@@ -4159,6 +4159,45 @@ func TestValidateRunConfig_HeadersOnNonOTelEmitter(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_CaptureContentOnNonOTelEmitter is the
+// captureContent counterpart to TestValidateRunConfig_HeadersOnNonOTelEmitter.
+// Only the otel emitter consults captureContent (the jsonl emitter
+// already records full transcript content unconditionally); carrying
+// the toggle on a non-otel emitter is a stale-config artifact and must
+// fail loudly rather than silently meaning nothing.
+func TestValidateRunConfig_CaptureContentOnNonOTelEmitter(t *testing.T) {
+	c := validConfig()
+	c.TraceEmitter = TraceEmitterConfig{
+		Type:           "jsonl",
+		CaptureContent: true,
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for captureContent on non-otel emitter")
+	}
+	if !strings.Contains(err.Error(), "traceEmitter.captureContent is only valid") {
+		t.Errorf("expected error to call out the type mismatch, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_CaptureContentOnOTelEmitter pins the accept
+// case: captureContent on the otel emitter is valid with both wire
+// protocols. Without this, an overzealous future rejection (e.g.
+// coupling the toggle to a protocol) would go unnoticed.
+func TestValidateRunConfig_CaptureContentOnOTelEmitter(t *testing.T) {
+	for _, protocol := range []string{"", "grpc", "http/protobuf"} {
+		c := validConfig()
+		c.TraceEmitter = TraceEmitterConfig{
+			Type:           "otel",
+			Protocol:       protocol,
+			CaptureContent: true,
+		}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("captureContent on otel emitter (protocol %q) must be valid: %v", protocol, err)
+		}
+	}
+}
+
 // TestValidateRunConfig_HeadersOnGRPCProtocolRejected pins the
 // MF-2 invariant: gRPC OTLP exporter paths in
 // harness/internal/trace/otel.go and observability/metrics.go

@@ -39,3 +39,19 @@ type TraceEmitter interface {
 	// returns the completed RunTrace.
 	Finish(ctx context.Context, outcome string) (*types.RunTrace, error)
 }
+
+// SystemInstructionsRecorder is an optional capability a TraceEmitter
+// can implement to receive the run's built system prompt. The agentic
+// loop forwards the prompt via a type assertion after PromptBuilder.Build
+// succeeds — the same optional-capability pattern as the existing
+// *OTelTraceEmitter assertions in core — so emitters that do not record
+// system instructions need no stub method.
+//
+// Today only the OTel emitter implements it, to emit
+// gen_ai.system_instructions when content capture is opted into.
+// Forwarding is intentionally not wired through NestedJSONLEmitter:
+// a sub-agent's system prompt would clobber the parent's single
+// stored value, so sub-agent system instructions are not captured.
+type SystemInstructionsRecorder interface {
+	RecordSystemInstructions(system string)
+}

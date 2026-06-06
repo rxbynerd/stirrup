@@ -197,6 +197,25 @@ type harnessCLIOptions struct {
 	OTelEndpoint     string
 	OTelProtocol     string
 
+	// OTelHeaders carries the parsed --otel-header key=value entries onto
+	// traceEmitter.headers. Values may be "secret://" references — the
+	// flag transports references only; resolution happens at exporter
+	// init via the SecretStore and RunConfig.Redact() strips them before
+	// any trace or recording is persisted. ValidateRunConfig rejects the
+	// combination with the (default) gRPC protocol because that exporter
+	// path is WithInsecure().
+	OTelHeaders map[string]string
+
+	// OTelMetricsEndpoint sets traceEmitter.metricsEndpoint for runs whose
+	// metrics target a different collector than traces. Empty defers to
+	// the trace endpoint at factory-build time.
+	OTelMetricsEndpoint string
+
+	// OTelCaptureContent opts the otel emitter into GenAI semconv content
+	// capture (issue #413 Part A). Default false; see
+	// types.TraceEmitterConfig.CaptureContent for the PII rationale.
+	OTelCaptureContent bool
+
 	// Safety-ring escape hatches (issue #42). These set RunConfig fields
 	// on the matching sub-config; an empty string leaves the field unset
 	// so ValidateRunConfig's mode-aware defaulting can take over.
@@ -362,6 +381,9 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 		// want OTLP/HTTP set --otel-protocol=http/protobuf;
 		// validation rejects any other value.
 		traceEmitter.Protocol = opts.OTelProtocol
+		traceEmitter.Headers = opts.OTelHeaders
+		traceEmitter.MetricsEndpoint = opts.OTelMetricsEndpoint
+		traceEmitter.CaptureContent = opts.OTelCaptureContent
 	}
 
 	config := &types.RunConfig{
@@ -1077,6 +1099,33 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("otel-protocol") {
 		cfg.TraceEmitter.Protocol, _ = f.GetString("otel-protocol")
+	}
+	if changed("otel-header") {
+		// Replace rather than merge: explicit --otel-header flags clear
+		// any headers set in the --config file, mirroring the
+		// --query-param override semantics above. Merging would surprise
+		// users who set --otel-header to override a stale file entry.
+		raw, _ := f.GetStringArray("otel-header")
+		cfg.TraceEmitter.Headers = nil
+		for _, entry := range raw {
+			k, v, err := parseQueryParam(entry)
+			if err != nil {
+				// Hard-fail like --query-param: dropping a malformed
+				// auth header would let the run proceed and surface as
+				// an opaque 401 from the OTLP gateway at first export.
+				return fmt.Errorf("--otel-header %q: %w", entry, err)
+			}
+			if cfg.TraceEmitter.Headers == nil {
+				cfg.TraceEmitter.Headers = map[string]string{}
+			}
+			cfg.TraceEmitter.Headers[k] = v
+		}
+	}
+	if changed("otel-metrics-endpoint") {
+		cfg.TraceEmitter.MetricsEndpoint, _ = f.GetString("otel-metrics-endpoint")
+	}
+	if changed("otel-capture-content") {
+		cfg.TraceEmitter.CaptureContent, _ = f.GetBool("otel-capture-content")
 	}
 	if changed("container-runtime") {
 		cfg.Executor.Runtime, _ = f.GetString("container-runtime")

@@ -3388,6 +3388,15 @@ type TraceEmitterConfig struct {
 	// a stale value cannot silently keep a bucket reference alive across
 	// a type change. Validated against the GCS bucket naming rules.
 	Bucket string `protobuf:"bytes,7,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	// For "otel": opt the emitter into recording prompt and completion
+	// content on spans via the OTel GenAI semantic-convention attributes
+	// (gen_ai.input.messages, gen_ai.output.messages,
+	// gen_ai.system_instructions). Default false — the GenAI spec marks
+	// message content Opt-In because it is likely to contain PII; with
+	// the toggle off, span output is unchanged. Content is scrubbed for
+	// secret-shaped substrings before any attribute is set. Rejected by
+	// validation for the jsonl and gcs emitters.
+	CaptureContent bool `protobuf:"varint,9,opt,name=capture_content,json=captureContent,proto3" json:"capture_content,omitempty"`
 	// For "gcs": joined with the run ID at write time to form the final
 	// GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
 	// allowed; trailing slash is normalised by validation. Only consulted
@@ -3474,6 +3483,13 @@ func (x *TraceEmitterConfig) GetBucket() string {
 		return x.Bucket
 	}
 	return ""
+}
+
+func (x *TraceEmitterConfig) GetCaptureContent() bool {
+	if x != nil {
+		return x.CaptureContent
+	}
+	return false
 }
 
 func (x *TraceEmitterConfig) GetObjectPrefix() string {
@@ -3891,7 +3907,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"policyFile\x12\x1a\n" +
 	"\bfallback\x18\x04 \x01(\tR\bfallback\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\xf0\x02\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\x99\x03\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
@@ -3899,7 +3915,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x10metrics_endpoint\x18\x04 \x01(\tR\x0fmetricsEndpoint\x12\x1a\n" +
 	"\bprotocol\x18\x05 \x01(\tR\bprotocol\x12M\n" +
 	"\aheaders\x18\x06 \x03(\v23.stirrup.harness.v1.TraceEmitterConfig.HeadersEntryR\aheaders\x12\x16\n" +
-	"\x06bucket\x18\a \x01(\tR\x06bucket\x12#\n" +
+	"\x06bucket\x18\a \x01(\tR\x06bucket\x12'\n" +
+	"\x0fcapture_content\x18\t \x01(\bR\x0ecaptureContent\x12#\n" +
 	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +

@@ -386,6 +386,9 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	traceEmitterType, _ := f.GetString("trace-emitter")
 	otelEndpoint, _ := f.GetString("otel-endpoint")
 	otelProtocol, _ := f.GetString("otel-protocol")
+	otelHeaderRaw, _ := f.GetStringArray("otel-header")
+	otelMetricsEndpoint, _ := f.GetString("otel-metrics-endpoint")
+	otelCaptureContent, _ := f.GetBool("otel-capture-content")
 	containerRuntime, _ := f.GetString("container-runtime")
 	k8sNamespace, _ := f.GetString("k8s-namespace")
 	k8sKubeconfig, _ := f.GetString("k8s-kubeconfig")
@@ -451,6 +454,18 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		k8sNodeSelector[k] = v
 	}
 
+	var otelHeaders map[string]string
+	for _, entry := range otelHeaderRaw {
+		k, v, err := parseQueryParam(entry)
+		if err != nil {
+			return nil, fmt.Errorf("--otel-header %q: %w", entry, err)
+		}
+		if otelHeaders == nil {
+			otelHeaders = map[string]string{}
+		}
+		otelHeaders[k] = v
+	}
+
 	temperature := optionalFloat64Flag(cmd, "temperature")
 
 	// buildHarnessRunConfigCore (not buildHarnessRunConfig) is what runs
@@ -501,6 +516,9 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		TraceEmitterType:             traceEmitterType,
 		OTelEndpoint:                 otelEndpoint,
 		OTelProtocol:                 otelProtocol,
+		OTelHeaders:                  otelHeaders,
+		OTelMetricsEndpoint:          otelMetricsEndpoint,
+		OTelCaptureContent:           otelCaptureContent,
 		ContainerRuntime:             containerRuntime,
 		K8sNamespace:                 k8sNamespace,
 		K8sKubeconfig:                k8sKubeconfig,

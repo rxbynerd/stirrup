@@ -1513,7 +1513,7 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 		if endpoint == "" {
 			endpoint = "localhost:4317"
 		}
-		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts)
+		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts, cfg.CaptureContent)
 	case "gcs":
 		// CredentialConfig is optional — the documented default is
 		// gcp-workload-identity against the runtime's metadata server,
