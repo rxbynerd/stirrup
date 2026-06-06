@@ -1141,6 +1141,25 @@ type TraceEmitterConfig struct {
 	// these as gRPC metadata; for "http/protobuf" they are attached as
 	// HTTP request headers.
 	Headers map[string]string `json:"headers,omitempty"`
+
+	// CaptureContent opts the otel emitter into recording prompt and
+	// completion content on spans using the OTel GenAI semantic-convention
+	// attributes (gen_ai.input.messages, gen_ai.output.messages,
+	// gen_ai.system_instructions). Default false: the GenAI spec marks
+	// message content Opt-In because it is likely to contain PII, and
+	// with the toggle off the otel emitter's span output is unchanged.
+	//
+	// When enabled, content flows through the same defence-in-depth
+	// scrubbing layer (security.Scrub) the jsonl emitter applies to its
+	// turn_record lines, so secret-shaped substrings are replaced with
+	// [REDACTED] before any span attribute is set. The toggle is not
+	// gated on mode or SensitiveData: the jsonl and gcs emitters already
+	// record full transcript content in every mode regardless of the
+	// Rule-of-Two sensitive-data signal, and an explicit default-off
+	// opt-in is the operator's deliberate consent. Only consulted when
+	// type=="otel"; rejected on the jsonl and gcs emitters like Protocol
+	// and Headers.
+	CaptureContent bool `json:"captureContent,omitempty"`
 }
 
 // ResultSinkConfig selects the result sink implementation. The
@@ -3747,10 +3766,11 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 			cfg.Protocol,
 		))
 	}
-	// Protocol/Headers are otel-only. The jsonl and gcs emitters do
-	// not negotiate a wire protocol or send HTTP headers; carrying
-	// these fields on a non-otel run is almost certainly a leftover
-	// from a migration and should fail loudly.
+	// Protocol/Headers/CaptureContent are otel-only. The jsonl and gcs
+	// emitters do not negotiate a wire protocol, send HTTP headers, or
+	// promote content onto spans; carrying these fields on a non-otel
+	// run is almost certainly a leftover from a migration and should
+	// fail loudly.
 	if cfg.Type != "otel" && cfg.Type != "" {
 		if cfg.Protocol != "" {
 			*errs = append(*errs, fmt.Sprintf(
@@ -3761,6 +3781,12 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 		if len(cfg.Headers) > 0 {
 			*errs = append(*errs, fmt.Sprintf(
 				"traceEmitter.headers is only valid when traceEmitter.type is \"otel\" (got type %q)",
+				cfg.Type,
+			))
+		}
+		if cfg.CaptureContent {
+			*errs = append(*errs, fmt.Sprintf(
+				"traceEmitter.captureContent is only valid when traceEmitter.type is \"otel\" (got type %q)",
 				cfg.Type,
 			))
 		}

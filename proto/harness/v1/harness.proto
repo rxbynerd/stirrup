@@ -1372,6 +1372,16 @@ message TraceEmitterConfig {
   // a type change. Validated against the GCS bucket naming rules.
   string bucket = 7;
 
+  // For "otel": opt the emitter into recording prompt and completion
+  // content on spans via the OTel GenAI semantic-convention attributes
+  // (gen_ai.input.messages, gen_ai.output.messages,
+  // gen_ai.system_instructions). Default false — the GenAI spec marks
+  // message content Opt-In because it is likely to contain PII; with
+  // the toggle off, span output is unchanged. Content is scrubbed for
+  // secret-shaped substrings before any attribute is set. Rejected by
+  // validation for the jsonl and gcs emitters.
+  bool capture_content = 9;
+
   // For "gcs": joined with the run ID at write time to form the final
   // GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
   // allowed; trailing slash is normalised by validation. Only consulted

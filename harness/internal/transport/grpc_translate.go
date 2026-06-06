@@ -194,6 +194,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			Headers:         pc.TraceEmitter.Headers,
 			Bucket:          pc.TraceEmitter.Bucket,
 			ObjectPrefix:    pc.TraceEmitter.ObjectPrefix,
+			CaptureContent:  pc.TraceEmitter.CaptureContent,
 		}
 	}
 	if pc.Tools != nil {
