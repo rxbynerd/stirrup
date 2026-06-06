@@ -100,9 +100,15 @@ As an alternative to the flag, the OTel SDK reads the standard
 `OTEL_EXPORTER_OTLP_HEADERS` env var (format
 `key1=value1,key2=value2`) when no headers are configured on the
 RunConfig — useful for injecting credentials from the environment
-without touching the invocation. Note the env var carries the
+without touching the invocation. Two caveats: the env var carries the
 resolved value, not a `secret://` reference, so it bypasses the
-SecretStore; prefer `--otel-header` where both are available.
+SecretStore entirely — if the SDK logs an export error that includes
+request headers, the resolved credential appears in those logs
+(stirrup's scrub layer covers harness output, not SDK-internal
+logging). It also bypasses the validator's headers-require-HTTP check
+(the SDK reads it regardless of protocol), so a credential set this
+way can ride the plaintext gRPC path that `--otel-header` refuses.
+Prefer `--otel-header` where both are available.
 
 ## Other managed APMs
 
