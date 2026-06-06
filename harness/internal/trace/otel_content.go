@@ -36,9 +36,10 @@ type turnContent struct {
 }
 
 // attributes renders the non-empty content fields (plus the run-level
-// system instructions) as span attributes. Empty values are skipped so
-// spans never carry empty-string content attributes.
-func (c *turnContent) attributes(systemInstructions string) []attribute.KeyValue {
+// system instructions, pre-serialised by RecordSystemInstructions) as
+// span attributes. Empty values are skipped so spans never carry
+// empty-string content attributes.
+func (c *turnContent) attributes(systemInstructionsJSON string) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, 3)
 	if c.inputMessages != "" {
 		attrs = append(attrs, attribute.String(genAIInputMessagesKey, c.inputMessages))
@@ -46,8 +47,8 @@ func (c *turnContent) attributes(systemInstructions string) []attribute.KeyValue
 	if c.outputMessages != "" {
 		attrs = append(attrs, attribute.String(genAIOutputMessagesKey, c.outputMessages))
 	}
-	if instructions := genAISystemInstructionsJSON(systemInstructions); instructions != "" {
-		attrs = append(attrs, attribute.String(genAISystemInstructionsKey, instructions))
+	if systemInstructionsJSON != "" {
+		attrs = append(attrs, attribute.String(genAISystemInstructionsKey, systemInstructionsJSON))
 	}
 	return attrs
 }
@@ -135,12 +136,18 @@ func genAISystemInstructionsJSON(system string) string {
 // ThoughtSignature — is provider state the harness must never log.
 // A tool_result's optional Structured envelope is likewise not
 // serialised; Content is the canonical text rendering and the
-// structured payload has no part shape in the schema.
+// structured payload has no part shape in the schema. Text blocks
+// with empty content (e.g. a placeholder block a provider emitted
+// alongside tool calls) are skipped rather than serialised as an
+// empty part.
 func genAIParts(blocks []types.ContentBlock) []genAIPart {
 	parts := make([]genAIPart, 0, len(blocks))
 	for _, b := range blocks {
 		switch b.Type {
 		case "text":
+			if b.Text == "" {
+				continue
+			}
 			parts = append(parts, genAIPart{Type: "text", Content: b.Text})
 		case "tool_use":
 			parts = append(parts, genAIPart{

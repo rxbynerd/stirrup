@@ -6,20 +6,27 @@ import (
 	"strings"
 	"testing"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
 
 // newTestOTelEmitterWithCapture builds an in-memory emitter with
 // content capture opted in, mirroring what the factory constructs for
-// traceEmitter.captureContent=true. captureContent is immutable after
-// construction in production; tests set it before Start so the same
-// invariant holds.
+// traceEmitter.captureContent=true. The toggle is passed at
+// construction time, like the production constructor — captureContent
+// is documented as immutable afterwards (the off-path methods read it
+// without the mutex), so the helper must not mutate it on a built
+// emitter.
 func newTestOTelEmitterWithCapture() (*OTelTraceEmitter, *tracetest.InMemoryExporter) {
-	emitter, exporter := newTestOTelEmitter()
-	emitter.captureContent = true
-	return emitter, exporter
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exporter),
+		sdktrace.WithResource(observability.BuildResource(observability.ResourceOptions{})),
+	)
+	return newOTelTraceEmitterForTest(tp, true), exporter
 }
 
 // findSpan returns the first exported span with the given name, or
@@ -290,6 +297,46 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	}
 	if !sawRedacted {
 		t.Error("expected at least one [REDACTED] placeholder proving the scrubber ran")
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_UnpairedRecordEmitsContentSpan
+// pins the fallback for a transcript record with no buffered summary
+// (the loop always summarises first, so this is the defensive path for
+// a forwarded sub-agent record arriving unpaired): a content-only
+// turn[N] span is emitted rather than the transcript being silently
+// dropped, with zero duration (wall clock at delivery; no summary
+// means no duration to derive timing from) and no counter attributes.
+func TestOTelTraceEmitter_CaptureContent_UnpairedRecordEmitsContentSpan(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-unpaired", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 3,
+		ModelOutput: []types.ContentBlock{
+			{Type: "text", Text: "orphaned transcript"},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	span := findSpan(t, exporter, "turn[3]")
+	out, ok := spanAttrString(span, genAIOutputMessagesKey)
+	if !ok || !strings.Contains(out, "orphaned transcript") {
+		t.Errorf("unpaired record should emit its content, got %q", out)
+	}
+	if _, ok := spanAttrString(span, genAIInputMessagesKey); ok {
+		t.Error("record with no input messages must not carry gen_ai.input.messages")
+	}
+	// No paired summary → no counter attributes on the fallback span.
+	for _, attr := range span.Attributes {
+		if string(attr.Key) == genAIUsageInputTokens {
+			t.Error("unpaired content span must not carry token counters")
+		}
+	}
+	if !span.EndTime.Equal(span.StartTime) {
+		t.Errorf("unpaired span should be zero-duration (start %v, end %v)", span.StartTime, span.EndTime)
 	}
 }
 

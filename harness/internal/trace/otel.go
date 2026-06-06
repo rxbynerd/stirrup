@@ -108,11 +108,13 @@ type OTelTraceEmitter struct {
 	toolCalls         []types.ToolCallTrace
 	permissionDenials int
 
-	// systemInstructions is the scrubbed system prompt stored by
-	// RecordSystemInstructions for emission as gen_ai.system_instructions
-	// on each captured turn span. Empty when capture is off or the loop
-	// has not (yet) forwarded a prompt.
-	systemInstructions string
+	// systemInstructionsJSON is the run's system prompt, scrubbed and
+	// pre-serialised to the gen_ai.system_instructions attribute encoding
+	// by RecordSystemInstructions. Serialising once at record time
+	// (rather than per turn span) keeps the per-turn cost to a string
+	// copy. Empty when capture is off or the loop has not (yet)
+	// forwarded a prompt.
+	systemInstructionsJSON string
 
 	// pendingTurns buffers turn summaries (and the span timestamps
 	// derived at RecordTurn time) between RecordTurn and the matching
@@ -305,22 +307,28 @@ func isInsecureEndpoint(endpoint string) bool {
 	return true
 }
 
-// newOTelTraceEmitterForTest creates an OTel trace emitter backed by the given
-// TracerProvider, used in tests to capture spans in-memory.
-func newOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
+// newOTelTraceEmitterForTest creates an OTel trace emitter backed by the
+// given TracerProvider, used in tests to capture spans in-memory.
+// captureContent is taken at construction time, like the production
+// constructor — it is documented as immutable afterwards (the off-path
+// methods read it without the mutex), so tests must not set the field
+// post-construction either.
+func newOTelTraceEmitterForTest(tp *sdktrace.TracerProvider, captureContent bool) *OTelTraceEmitter {
 	return &OTelTraceEmitter{
-		provider: tp,
-		tracer:   tp.Tracer("stirrup-harness"),
+		provider:       tp,
+		tracer:         tp.Tracer("stirrup-harness"),
+		captureContent: captureContent,
 	}
 }
 
 // NewOTelTraceEmitterForTest is the exported wrapper of the test-only
 // constructor. It lets tests in other packages (notably core) build an
 // OTelTraceEmitter around an in-memory TracerProvider so they can assert
-// on emitted spans without spinning up an OTLP collector. Not intended for
-// production use.
+// on emitted spans without spinning up an OTLP collector. Content
+// capture stays off, matching the default emitter shape those tests
+// exercise. Not intended for production use.
 func NewOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
-	return newOTelTraceEmitterForTest(tp)
+	return newOTelTraceEmitterForTest(tp, false)
 }
 
 // Start initialises a new trace with the given run ID and configuration.
@@ -335,7 +343,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.turns = nil
 	e.toolCalls = nil
 	e.permissionDenials = 0
-	e.systemInstructions = ""
+	e.systemInstructionsJSON = ""
 	e.pendingTurns = nil
 
 	ctx := context.Background()
@@ -449,7 +457,7 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		attribute.String(genAIOperationNameKey, "chat"),
 	}
 	if content != nil {
-		attrs = append(attrs, content.attributes(e.systemInstructions)...)
+		attrs = append(attrs, content.attributes(e.systemInstructionsJSON)...)
 	}
 
 	_, span := e.tracer.Start(e.rootCtx, fmt.Sprintf("turn[%d]", turn.Turn),
@@ -496,7 +504,10 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 		inputMessages: genAIInputMessagesJSON(scrubbed.ModelInput.Messages),
 	}
 
-	key := pendingTurnKey{runID: turn.RunID, turn: turn.Turn}
+	// Key fields come from the scrubbed copy alongside the content so
+	// the pairing and the payload share one source — pairing must not
+	// silently depend on the scrubber never touching RunID/Turn.
+	key := pendingTurnKey{runID: scrubbed.RunID, turn: scrubbed.Turn}
 	if pending, ok := e.pendingTurns[key]; ok {
 		delete(e.pendingTurns, key)
 		// finish_reason comes from the paired summary so the in-message
@@ -510,13 +521,20 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 
 	content.outputMessages = genAIOutputMessagesJSON(scrubbed.ModelOutput, "")
 	attrs := append([]attribute.KeyValue{
-		attribute.Int("turn.number", turn.Turn),
+		attribute.Int("turn.number", scrubbed.Turn),
 		attribute.String(genAIOperationNameKey, "chat"),
-	}, content.attributes(e.systemInstructions)...)
-	_, span := e.tracer.Start(e.rootCtx, fmt.Sprintf("turn[%d]", turn.Turn),
+	}, content.attributes(e.systemInstructionsJSON)...)
+	// No summary means no duration to derive timing from: the span is
+	// pinned to the wall clock at delivery time (start == end). That is
+	// a deliberate degraded shape for a path the loop never takes — the
+	// content is preserved, the timing is honest about knowing only
+	// when the record arrived.
+	now := time.Now()
+	_, span := e.tracer.Start(e.rootCtx, fmt.Sprintf("turn[%d]", scrubbed.Turn),
+		oteltrace.WithTimestamp(now),
 		oteltrace.WithAttributes(attrs...),
 	)
-	span.End()
+	span.End(oteltrace.WithTimestamp(now))
 }
 
 // RecordSystemInstructions stores the run's built system prompt for
@@ -527,14 +545,15 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 //
 // The prompt is scrubbed at record time — the system prompt can carry
 // operator-supplied dynamic context, which is exactly the kind of
-// surface a secret-shaped substring leaks through.
+// surface a secret-shaped substring leaks through — and serialised to
+// the attribute encoding once here rather than on every turn span.
 func (e *OTelTraceEmitter) RecordSystemInstructions(system string) {
 	if !e.captureContent {
 		return
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.systemInstructions = security.Scrub(system)
+	e.systemInstructionsJSON = genAISystemInstructionsJSON(security.Scrub(system))
 }
 
 // RecordToolCall creates a child span for a tool invocation.
@@ -582,7 +601,9 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	// return records a summary but no record). They are emitted as
 	// plain counter spans with the timestamps frozen at RecordTurn
 	// time, so a missing record costs the content attributes, never
-	// the turn span itself.
+	// the turn span itself. Emission order over the map is undefined;
+	// that is fine because each span carries explicit timestamps and
+	// consumers order by those, not by export sequence.
 	for _, pending := range e.pendingTurns {
 		e.emitTurnSpanLocked(pending.trace, pending.spanStart, pending.spanEnd, nil)
 	}
