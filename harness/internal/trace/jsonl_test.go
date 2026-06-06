@@ -304,6 +304,49 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature pins the
+// ThoughtSignature persistence ban: the field is provider-opaque state
+// (Gemini's encrypted chain-of-thought) whose contract in
+// types/messages.go forbids logging it verbatim. Because it is opaque,
+// the scrubber cannot redact within it — the persisted copy must drop
+// it outright, on both the model-output route and the message-history
+// route of the next turn.
+func TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	const signature = "opaque-thought-signature-blob-do-not-persist"
+	emitter.Start("run-thought-signature", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 2,
+		ModelInput: types.ModelInput{
+			Model: "gemini-3-pro",
+			Messages: []types.Message{
+				{
+					Role: "assistant",
+					Content: []types.ContentBlock{
+						{Type: "text", Text: "prior turn", ThoughtSignature: signature},
+					},
+				},
+			},
+		},
+		ModelOutput: []types.ContentBlock{
+			{Type: "text", Text: "answer", ThoughtSignature: signature},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	if strings.Contains(onDisk, signature) {
+		t.Errorf("ThoughtSignature must not survive into the persisted trace:\n%s", onDisk)
+	}
+	if strings.Contains(onDisk, "thought_signature") {
+		t.Errorf("thought_signature key should be absent (omitempty after drop), got:\n%s", onDisk)
+	}
+}
+
 // TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent pins
 // the scrub of ContentBlock.Content — the tool_result text rendering
 // that rides the message history into the next turn's ModelInput. The
