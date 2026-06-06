@@ -400,9 +400,12 @@ executor's architecture, deployment recipes, egress model, and the full
 | Flag | Default | Notes |
 |---|---|---|
 | `--trace <path>` | (none) | JSONL trace path. Implies `--trace-emitter=jsonl` unless overridden. |
-| `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`. |
+| `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`, `gcs`. |
 | `--otel-endpoint` | (none) | OTLP endpoint. Defaults to `localhost:4317` for `--otel-protocol=grpc`; for `http/protobuf` use the gateway base path (e.g. `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`). |
 | `--otel-protocol` | (none) | OTLP wire protocol: `""` (defaults to grpc), `grpc`, `http/protobuf`. HTTP/JSON is intentionally not supported. See [`observability-cloud.md`](observability-cloud.md). |
+| `--otel-header` | (none) | Repeatable `key=value` HTTP header attached to every OTLP export request. Values may be `secret://` references resolved at exporter init — never pass raw secrets. Requires `--otel-protocol=http/protobuf` (validation rejects headers on the plaintext gRPC path). Explicit flags replace any `headers` map from `--config`. The `OTEL_EXPORTER_OTLP_HEADERS` env var is the SDK-native fallback when no headers are configured. |
+| `--otel-metrics-endpoint` | (none) | OTLP endpoint for the metrics exporter when metrics target a different collector than traces. Defaults to `--otel-endpoint`. |
+| `--otel-capture-content` | `false` | Opt the otel emitter into recording prompt/completion content on turn spans via the GenAI semconv attributes (`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.system_instructions`). Off by default: message content is likely to contain PII. Content is scrubbed for secret-shaped substrings before export. See [`observability-cloud.md`](observability-cloud.md#span-content-capture-opt-in). |
 | `--deployment-environment` | (none) | OTel `deployment.environment` resource attribute (e.g. `production`, `staging`). Empty falls through to env `OTEL_DEPLOYMENT_ENVIRONMENT`, then to `local`. |
 | `--service-namespace` | (none) | OTel `service.namespace` resource attribute (e.g. `stirrup-eval`, `team-a`). Empty falls through to env `OTEL_SERVICE_NAMESPACE`, then to `stirrup`. |
 
@@ -490,7 +493,7 @@ configuration space — the common cases. Anything below requires
 | `verifier` | `composite` (chains other verifiers). |
 | `permissionPolicy` | `policy-engine` requires `policyFile`; the optional `fallback` field defaults to `deny-side-effects` when unset. Chained policy engines are rejected. |
 | `codeScanner` | `composite` requires `codeScanner.scanners` (each entry from the non-composite set). |
-| `traceEmitter` | `headers` (for OTLP/HTTP auth). |
+| `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
 | `tools.mcpServers` | Remote MCP server registration. |
 
