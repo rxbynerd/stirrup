@@ -811,6 +811,182 @@ func TestApplyOverrides_OTelProtocolFilePreserved(t *testing.T) {
 	}
 }
 
+// TestApplyOverrides_OTelHeaderReplacesFileHeaders pins the replace-not-
+// merge semantics for --otel-header: explicit flags clear any headers
+// from --config (mirroring --query-param), repeatable entries accumulate,
+// and values keep everything after the first '=' so a Basic credential's
+// base64 padding survives.
+func TestApplyOverrides_OTelHeaderReplacesFileHeaders(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.TraceEmitter = types.TraceEmitterConfig{
+		Type:     "otel",
+		Protocol: "http/protobuf",
+		Headers:  map[string]string{"X-Stale": "from-file"},
+	}
+
+	for _, entry := range []string{
+		"Authorization=secret://LANGFUSE_AUTH",
+		"X-Tenant=team=a", // '=' in the value must survive the split
+	} {
+		if err := cmd.Flags().Set("otel-header", entry); err != nil {
+			t.Fatalf("set otel-header: %v", err)
+		}
+	}
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if _, ok := cfg.TraceEmitter.Headers["X-Stale"]; ok {
+		t.Error("explicit --otel-header should clear file headers, X-Stale survived")
+	}
+	if got := cfg.TraceEmitter.Headers["Authorization"]; got != "secret://LANGFUSE_AUTH" {
+		t.Errorf("Authorization header: got %q, want the secret reference", got)
+	}
+	if got := cfg.TraceEmitter.Headers["X-Tenant"]; got != "team=a" {
+		t.Errorf("X-Tenant header: got %q, want %q (value split must be first-'=' only)", got, "team=a")
+	}
+}
+
+// TestApplyOverrides_OTelHeaderMalformedRejected pins the hard-fail on a
+// missing '=': silently dropping a malformed auth header would let the
+// run proceed and surface as an opaque 401 from the OTLP gateway at
+// first export, mirroring the --query-param rationale.
+func TestApplyOverrides_OTelHeaderMalformedRejected(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+
+	if err := cmd.Flags().Set("otel-header", "no-equals-sign"); err != nil {
+		t.Fatalf("set otel-header: %v", err)
+	}
+	err := applyOverrides(cmd, cfg, nil)
+	if err == nil {
+		t.Fatal("expected error for malformed --otel-header entry")
+	}
+	if !strings.Contains(err.Error(), "--otel-header") {
+		t.Errorf("error should name the offending flag, got: %v", err)
+	}
+}
+
+// TestApplyOverrides_OTelHeaderFilePreserved guards the precedence rule:
+// when --otel-header is not passed, headers loaded from --config survive
+// applyOverrides intact.
+func TestApplyOverrides_OTelHeaderFilePreserved(t *testing.T) {
+	cmd := newTestHarnessCommand()
+	cfg := baseFileConfig()
+	cfg.TraceEmitter = types.TraceEmitterConfig{
+		Type:     "otel",
+		Protocol: "http/protobuf",
+		Headers:  map[string]string{"Authorization": "secret://GRAFANA_CLOUD_AUTH"},
+	}
+
+	if err := applyOverrides(cmd, cfg, nil); err != nil {
+		t.Fatalf("applyOverrides: %v", err)
+	}
+
+	if got := cfg.TraceEmitter.Headers["Authorization"]; got != "secret://GRAFANA_CLOUD_AUTH" {
+		t.Errorf("headers from file should survive default flag, got %q", got)
+	}
+}
+
+// TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint pins the
+// override wiring for the two scalar otel flags added with #413: an
+// explicitly-set flag clobbers the file value, and the unset default
+// does not (captureContent=true in a file must survive a bare CLI run).
+func TestApplyOverrides_OTelCaptureContentAndMetricsEndpoint(t *testing.T) {
+	t.Run("explicit flags override", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+
+		if err := cmd.Flags().Set("otel-capture-content", "true"); err != nil {
+			t.Fatalf("set otel-capture-content: %v", err)
+		}
+		if err := cmd.Flags().Set("otel-metrics-endpoint", "https://metrics.example/otlp"); err != nil {
+			t.Fatalf("set otel-metrics-endpoint: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+
+		if !cfg.TraceEmitter.CaptureContent {
+			t.Error("CaptureContent override failed")
+		}
+		if cfg.TraceEmitter.MetricsEndpoint != "https://metrics.example/otlp" {
+			t.Errorf("MetricsEndpoint override failed: %q", cfg.TraceEmitter.MetricsEndpoint)
+		}
+	})
+
+	t.Run("file values preserved when flags unset", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.TraceEmitter = types.TraceEmitterConfig{
+			Type:            "otel",
+			CaptureContent:  true,
+			MetricsEndpoint: "https://metrics.from-file/otlp",
+		}
+
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+
+		if !cfg.TraceEmitter.CaptureContent {
+			t.Error("CaptureContent from file should survive default flag")
+		}
+		if cfg.TraceEmitter.MetricsEndpoint != "https://metrics.from-file/otlp" {
+			t.Errorf("MetricsEndpoint from file should survive, got %q", cfg.TraceEmitter.MetricsEndpoint)
+		}
+	})
+}
+
+// TestBuildHarnessRunConfig_OTelHeadersPropagate verifies the flag-only
+// build path: headers, metrics endpoint, and the capture toggle land on
+// TraceEmitter when the emitter type is otel, and are scoped away from
+// the jsonl emitter (matching how OTelEndpoint is already scoped).
+func TestBuildHarnessRunConfig_OTelHeadersPropagate(t *testing.T) {
+	base := harnessCLIOptions{
+		RunID:               "test-run",
+		Mode:                "execution",
+		Prompt:              "test",
+		ProviderType:        "anthropic",
+		APIKeyRef:           "secret://ANTHROPIC_API_KEY",
+		Model:               "claude-sonnet-4-6",
+		MaxTurns:            20,
+		Timeout:             600,
+		TransportType:       "stdio",
+		LogLevel:            "info",
+		TraceEmitterType:    "otel",
+		OTelEndpoint:        "https://gw.example/otlp",
+		OTelProtocol:        "http/protobuf",
+		OTelHeaders:         map[string]string{"Authorization": "secret://LANGFUSE_AUTH"},
+		OTelMetricsEndpoint: "https://gw.example/otlp",
+		OTelCaptureContent:  true,
+	}
+
+	cfg, err := buildHarnessRunConfig(base)
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+	if got := cfg.TraceEmitter.Headers["Authorization"]; got != "secret://LANGFUSE_AUTH" {
+		t.Errorf("Headers should propagate on otel emitter, got %q", got)
+	}
+	if cfg.TraceEmitter.MetricsEndpoint != "https://gw.example/otlp" {
+		t.Errorf("MetricsEndpoint should propagate, got %q", cfg.TraceEmitter.MetricsEndpoint)
+	}
+	if !cfg.TraceEmitter.CaptureContent {
+		t.Error("CaptureContent should propagate on otel emitter")
+	}
+
+	jsonlOpts := base
+	jsonlOpts.TraceEmitterType = "jsonl"
+	cfg, err = buildHarnessRunConfig(jsonlOpts)
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig (jsonl): %v", err)
+	}
+	if len(cfg.TraceEmitter.Headers) != 0 || cfg.TraceEmitter.CaptureContent || cfg.TraceEmitter.MetricsEndpoint != "" {
+		t.Errorf("otel-only fields must not leak onto the jsonl emitter, got %+v", cfg.TraceEmitter)
+	}
+}
+
 // TestApplyOverrides_SessionNameExplicit verifies that --name is wired
 // through applyOverrides: when set on the command line, the flag value
 // must overwrite the file's SessionName.
