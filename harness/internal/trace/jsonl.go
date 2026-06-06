@@ -267,6 +267,8 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 		ModelInput:  scrubModelInput(t.ModelInput),
 		ModelOutput: scrubContentBlocks(t.ModelOutput),
 		ToolCalls:   make([]types.ToolCallRecord, len(t.ToolCalls)),
+		RunID:       t.RunID,
+		ParentRunID: t.ParentRunID,
 	}
 	for i, tc := range t.ToolCalls {
 		out.ToolCalls[i] = types.ToolCallRecord{

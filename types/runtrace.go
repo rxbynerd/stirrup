@@ -154,11 +154,22 @@ type ToolCallTrace struct {
 }
 
 // TurnRecord captures the full input/output of a single agentic loop turn.
+//
+// RunID and ParentRunID mirror the forwarding tags on TurnTrace and
+// ToolCallTrace: populated only when the record originated in a
+// sub-agent run forwarded to a parent emitter (see
+// trace.NestedJSONLEmitter), absent (omitempty) on parent-emitted
+// records so the existing wire shape is preserved. The OTel emitter's
+// content-capture path keys its turn-summary pairing on RunID+Turn so
+// a sub-agent's turn N cannot be misattributed to the parent's turn N
+// when both are in flight.
 type TurnRecord struct {
 	Turn        int              `json:"turn"`
 	ModelInput  ModelInput       `json:"modelInput"`
 	ModelOutput []ContentBlock   `json:"modelOutput"`
 	ToolCalls   []ToolCallRecord `json:"toolCalls"`
+	RunID       string           `json:"runId,omitempty"`
+	ParentRunID string           `json:"parentRunId,omitempty"`
 }
 
 // ModelInput records what the model saw on a given turn.
