@@ -94,6 +94,10 @@ type TurnTrace struct {
 	ToolCalls  int        `json:"toolCalls"`
 	StopReason string     `json:"stopReason"`
 	DurationMs int64      `json:"durationMs"`
+	// Model is the router's resolved model for this turn. Empty on traces
+	// that predate the field; consumers fall back to the run-level
+	// configured model when absent.
+	Model string `json:"model,omitempty"`
 	// RunID identifies the run that produced this turn. Populated only
 	// when the turn originated in a sub-agent run forwarded to a parent
 	// emitter; absent (omitempty) on parent-emitted events to preserve
