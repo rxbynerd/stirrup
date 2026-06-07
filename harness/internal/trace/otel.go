@@ -351,10 +351,15 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	// defines this as a persistent agent identity (e.g. an OpenAI Assistant ID),
 	// not a per-execution run ID. Stirrup has no first-class named-agent concept;
 	// emit when one exists. See follow-up issue (#127).
+	// The root span is the run-level agent invocation; the semconv
+	// "invoke_agent {gen_ai.agent.name}" span name is not adopted because
+	// stirrup has no named-agent concept (#127) and backends type
+	// observations from the operation-name attribute, not the span name.
 	ctx, span := e.tracer.Start(ctx, "run",
 		oteltrace.WithAttributes(
 			attribute.String("run.id", runID),
 			attribute.String("harness.version", version.Version()),
+			attribute.String(genAIOperationNameKey, "invoke_agent"),
 		),
 	)
 
@@ -455,6 +460,22 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		attribute.Int64("turn.duration_ms", turn.DurationMs),
 		// Per GenAI semconv, a turn is a chat completion.
 		attribute.String(genAIOperationNameKey, "chat"),
+	}
+	// gen_ai.request.model is Required on chat spans per semconv, and
+	// backends price generations from the span-level model — the
+	// root-span copy is not enough. Prefer the router's per-turn
+	// selection; fall back to the run-level configured model for legacy
+	// callers that predate TurnTrace.Model. Skipped when both are empty
+	// (matches the empty-attribute convention in Start).
+	model := turn.Model
+	if model == "" && e.config != nil {
+		model = e.config.ModelRouter.Model
+	}
+	if model != "" {
+		attrs = append(attrs, attribute.String(genAIRequestModelKey, model))
+	}
+	if e.config != nil {
+		attrs = append(attrs, attribute.String(genAIProviderNameKey, genAIProviderName(e.config.Provider.Type)))
 	}
 	if content != nil {
 		attrs = append(attrs, content.attributes(e.systemInstructionsJSON)...)
@@ -570,10 +591,30 @@ func (e *OTelTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	spanEnd := time.Now()
 	spanStart := spanEnd.Add(-time.Duration(call.DurationMs) * time.Millisecond)
 
-	_, span := e.tracer.Start(e.rootCtx, "tool_call",
+	e.emitToolSpanLocked(call, spanStart, spanEnd)
+}
+
+// emitToolSpanLocked creates and ends the execute_tool child span. Must
+// be called with e.mu held.
+//
+// The span name follows the semconv "execute_tool {gen_ai.tool.name}"
+// form so each tool reads distinctly in backend trace trees — except
+// for unknown-tool failures, where the name the model asked for is
+// model-controlled and unbounded; emitting it as a span name would be
+// the cardinality vector #309 bounded on the loop's tool.<name> spans.
+// Those calls use the bare operation name, and the raw requested name
+// still rides the bounded-cardinality-safe gen_ai.tool.name attribute.
+func (e *OTelTraceEmitter) emitToolSpanLocked(call types.ToolCallTrace, spanStart, spanEnd time.Time) {
+	name := "execute_tool " + call.Name
+	if call.ErrorCategory == string(observability.ToolFailureUnknownTool) {
+		name = "execute_tool"
+	}
+
+	_, span := e.tracer.Start(e.rootCtx, name,
 		oteltrace.WithTimestamp(spanStart),
 		oteltrace.WithAttributes(
 			attribute.String(genAIToolNameKey, call.Name),
+			attribute.String(genAIOperationNameKey, "execute_tool"),
 			attribute.Bool("tool.success", call.Success),
 			attribute.Int64("tool.duration_ms", call.DurationMs),
 		),
