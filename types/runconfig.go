@@ -1368,6 +1368,13 @@ var queryParamKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // without further escaping.
 var observabilityLabelPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
+// modelLabelPattern bounds the character set of model names that ride on
+// the provider.model OTel metric label. Unlike observabilityLabelPattern,
+// it allows forward slashes to support OpenRouter-style "provider/model"
+// naming (e.g. "deepseek/deepseek-v4-flash", "anthropic/claude-sonnet-4.6").
+// The 64-char cap prevents unbounded cardinality expansion on metric labels.
+var modelLabelPattern = regexp.MustCompile(`^[A-Za-z0-9./_-]{1,64}$`)
+
 // traceEmitterHeaderNamePattern restricts trace-emitter header keys to
 // the same minimal set used elsewhere for HTTP header names. Including
 // `_` accommodates underscore-variant headers (e.g. `x_honeycomb_team`)
@@ -3446,9 +3453,8 @@ func validateBedrockModelID(config *RunConfig, errs *[]string) {
 // power (Cloud Run job spec, gRPC submitter) could otherwise set an
 // unbounded or non-printable model string that inflates TSDB cardinality
 // or breaks dashboard label rendering (CWE-400, issue #310). The bound is
-// observabilityLabelPattern — the same ^[A-Za-z0-9._-]{1,64}$ the Gemini
-// precedent (geminiModelNamePattern) and the OTel resource labels already
-// enforce.
+// modelLabelPattern — which allows forward slashes for OpenRouter-style
+// provider/model naming while staying conservative on characters.
 //
 // Scope mirrors validateGeminiModelName: ModelRouter.Model under the
 // resolved default provider, plus each ModeModels override. CheapModel /
@@ -3508,12 +3514,12 @@ func validateProviderModelLabel(config *RunConfig, errs *[]string) {
 			}
 			return
 		}
-		if !observabilityLabelPattern.MatchString(model) {
+		if !modelLabelPattern.MatchString(model) {
 			*errs = append(*errs, fmt.Sprintf(
 				"%s %q must match %s; the model name rides on the provider.model "+
 					"metric label and an unbounded or non-printable value inflates "+
 					"observability cardinality",
-				label, model, observabilityLabelPattern))
+				label, model, modelLabelPattern))
 		}
 	}
 
