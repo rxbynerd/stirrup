@@ -863,8 +863,9 @@ func (l *AgenticLoop) runInnerLoop(
 			"tokens.output", sr.OutputTokens,
 			"stopReason", sr.StopReason)
 
-		// Append assistant message.
-		messages = appendAssistantContent(messages, sr.Blocks)
+		// Append assistant message, carrying any provider replay state
+		// from the stream so the next request can round-trip it.
+		messages = appendAssistantContent(messages, sr.Blocks, sr.ReplayFields)
 
 		// Extract tool calls.
 		toolCalls := collectToolCalls(sr.Blocks)

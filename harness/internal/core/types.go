@@ -546,11 +546,17 @@ func buildMessages(userPrompt string) []types.Message {
 }
 
 // appendAssistantContent adds the model's response content blocks to the
-// message history as an assistant message.
-func appendAssistantContent(messages []types.Message, blocks []types.ContentBlock) []types.Message {
+// message history as an assistant message. replayFields is the
+// provider-opaque round-trip state the stream's message_complete event
+// carried (quirks ReplayFields); attaching it to the persisted Message
+// lets the originating provider's adapter echo it back on subsequent
+// turns. nil for providers that emit none — omitempty keeps the
+// serialised message byte-identical in that case.
+func appendAssistantContent(messages []types.Message, blocks []types.ContentBlock, replayFields map[string]json.RawMessage) []types.Message {
 	return append(messages, types.Message{
-		Role:    "assistant",
-		Content: blocks,
+		Role:         "assistant",
+		Content:      blocks,
+		ReplayFields: replayFields,
 	})
 }
 
@@ -589,10 +595,17 @@ func collectToolCalls(blocks []types.ContentBlock) []types.ToolCall {
 }
 
 // streamResult holds the results of consuming a model response stream.
+//
+// ReplayFields is the provider-opaque round-trip state stashed from the
+// stream's message_complete event (quirks ReplayFields, design §9 risk
+// 7). The loop attaches it to the assistant Message it persists; the
+// values are opaque data plumbed through, never inspected or logged
+// here — the loop-purity invariant is untouched.
 type streamResult struct {
 	Blocks       []types.ContentBlock
 	StopReason   string
 	OutputTokens int
+	ReplayFields map[string]json.RawMessage
 }
 
 // streamEventsToResult consumes a stream event channel and returns the
@@ -655,6 +668,9 @@ func streamEventsToResult(ctx context.Context, ch <-chan types.StreamEvent, tp t
 			}
 			if event.OutputTokens > 0 {
 				result.OutputTokens = event.OutputTokens
+			}
+			if len(event.ReplayFields) > 0 {
+				result.ReplayFields = event.ReplayFields
 			}
 
 		case "error":

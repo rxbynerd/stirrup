@@ -347,6 +347,49 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature(t *testing.T) 
 	}
 }
 
+// TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields mirrors
+// the ThoughtSignature drop test for the message-level
+// Message.ReplayFields carrier (the quirks ReplayFields round-trip
+// state, e.g. DeepSeek's reasoning_content). Same contract, same
+// mechanism: the value is provider-opaque so the scrubber cannot redact
+// within it, and scrubModelInput's explicit field list drops it from
+// the persisted message history outright.
+func TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+
+	const replayValue = "opaque-reasoning-content-do-not-persist"
+	emitter.Start("run-replay-fields", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 2,
+		ModelInput: types.ModelInput{
+			Model: "deepseek-v4-flash",
+			Messages: []types.Message{
+				{
+					Role: "assistant",
+					Content: []types.ContentBlock{
+						{Type: "text", Text: "prior turn"},
+					},
+					ReplayFields: map[string]json.RawMessage{
+						"reasoning_content": json.RawMessage(`"` + replayValue + `"`),
+					},
+				},
+			},
+		},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	if strings.Contains(onDisk, replayValue) {
+		t.Errorf("Message.ReplayFields value must not survive into the persisted trace:\n%s", onDisk)
+	}
+	if strings.Contains(onDisk, "replay_fields") {
+		t.Errorf("replay_fields key should be absent (omitempty after drop), got:\n%s", onDisk)
+	}
+}
+
 // TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent pins
 // the scrub of ContentBlock.Content — the tool_result text rendering
 // that rides the message history into the next turn's ModelInput. The
