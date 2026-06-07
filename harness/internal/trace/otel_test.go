@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -641,4 +642,109 @@ func findSpanByName(t *testing.T, spans tracetest.SpanStubs, name string) tracet
 	}
 	t.Fatalf("no span named %q exported", name)
 	return tracetest.SpanStub{}
+}
+
+// TestOTelTraceEmitter_ErrorStatus pins the OTel status-code surface:
+// backends derive their error level and message from span status, so a
+// failed run, turn, or tool call must carry codes.Error while the
+// success paths leave status Unset (the spec default; Ok is reserved
+// for explicit operator assertion).
+func TestOTelTraceEmitter_ErrorStatus(t *testing.T) {
+	t.Run("root error for non-success outcomes including cancelled", func(t *testing.T) {
+		for _, outcome := range []string{"max_turns", "cancelled"} {
+			emitter, exporter := newTestOTelEmitter()
+			emitter.Start("run-status", nil)
+			if _, err := emitter.Finish(context.Background(), outcome); err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			span := findSpanByName(t, exporter.GetSpans(), "run")
+			if span.Status.Code != codes.Error {
+				t.Errorf("outcome %q: root status = %v, want Error", outcome, span.Status.Code)
+			}
+			if span.Status.Description != outcome {
+				t.Errorf("outcome %q: root status description = %q, want the outcome", outcome, span.Status.Description)
+			}
+		}
+	})
+
+	t.Run("root unset on success", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-status-ok", nil)
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		span := findSpanByName(t, exporter.GetSpans(), "run")
+		if span.Status.Code != codes.Unset {
+			t.Errorf("root status = %v, want Unset", span.Status.Code)
+		}
+	})
+
+	t.Run("turn error on error stop reason", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-status-turn", nil)
+		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "error", DurationMs: 1})
+		emitter.RecordTurn(types.TurnTrace{Turn: 2, StopReason: "end_turn", DurationMs: 1})
+		if _, err := emitter.Finish(context.Background(), "error"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		spans := exporter.GetSpans()
+		if got := findSpanByName(t, spans, "turn[1]").Status.Code; got != codes.Error {
+			t.Errorf("error turn status = %v, want Error", got)
+		}
+		if got := findSpanByName(t, spans, "turn[2]").Status.Code; got != codes.Unset {
+			t.Errorf("clean turn status = %v, want Unset", got)
+		}
+	})
+
+	t.Run("tool error with reason and error.type", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-status-tool", nil)
+		emitter.RecordToolCall(types.ToolCallTrace{
+			Name:          "run_command",
+			DurationMs:    3,
+			Success:       false,
+			ErrorReason:   "exit status 1",
+			ErrorCategory: "execution_failed",
+		})
+		emitter.RecordToolCall(types.ToolCallTrace{
+			Name:       "read_file",
+			DurationMs: 1,
+			Success:    true,
+		})
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		spans := exporter.GetSpans()
+		failed := findSpanByName(t, spans, "execute_tool run_command")
+		if failed.Status.Code != codes.Error {
+			t.Errorf("failed tool status = %v, want Error", failed.Status.Code)
+		}
+		if failed.Status.Description != "exit status 1" {
+			t.Errorf("failed tool status description = %q, want the error reason", failed.Status.Description)
+		}
+		assertAttribute(t, failed, errorTypeKey, "execution_failed")
+
+		ok := findSpanByName(t, spans, "execute_tool read_file")
+		if ok.Status.Code != codes.Unset {
+			t.Errorf("successful tool status = %v, want Unset", ok.Status.Code)
+		}
+		for _, attr := range ok.Attributes {
+			if string(attr.Key) == errorTypeKey {
+				t.Errorf("%s should be absent on successful calls, found %q", errorTypeKey, attr.Value.AsString())
+			}
+		}
+	})
+
+	t.Run("failed tool with empty reason gets fallback description", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-status-tool-bare", nil)
+		emitter.RecordToolCall(types.ToolCallTrace{Name: "edit_file", DurationMs: 1, Success: false})
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		span := findSpanByName(t, exporter.GetSpans(), "execute_tool edit_file")
+		if span.Status.Code != codes.Error || span.Status.Description != "tool call failed" {
+			t.Errorf("status = %v %q, want Error with fallback description", span.Status.Code, span.Status.Description)
+		}
+	})
 }

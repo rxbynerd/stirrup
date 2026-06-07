@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -40,6 +41,11 @@ const (
 	genAIUsageOutputTokens = "gen_ai.usage.output_tokens"
 	genAIFinishReasonsKey  = "gen_ai.response.finish_reasons"
 	genAIToolNameKey       = "gen_ai.tool.name"
+
+	// errorTypeKey is the stable (non-Development) semconv error
+	// attribute, emitted on failed tool spans with the bounded
+	// observability.ToolFailureCategory vocabulary as its value.
+	errorTypeKey = "error.type"
 
 	// Message-content attributes, emitted only when CaptureContent is
 	// opted into. As of the pinned semconv (v1.40.0, matching
@@ -485,6 +491,13 @@ func (e *OTelTraceEmitter) emitTurnSpanLocked(turn types.TurnTrace, spanStart, s
 		oteltrace.WithTimestamp(spanStart),
 		oteltrace.WithAttributes(attrs...),
 	)
+	// The loop's error paths (provider resolution, stream open,
+	// mid-stream failure) all record the turn with this sentinel stop
+	// reason and never produce a TurnRecord, so this is the single
+	// choke point that marks failed turns for backend level filtering.
+	if turn.StopReason == "error" {
+		span.SetStatus(codes.Error, "error")
+	}
 	span.End(oteltrace.WithTimestamp(spanEnd))
 }
 
@@ -610,15 +623,30 @@ func (e *OTelTraceEmitter) emitToolSpanLocked(call types.ToolCallTrace, spanStar
 		name = "execute_tool"
 	}
 
+	attrs := []attribute.KeyValue{
+		attribute.String(genAIToolNameKey, call.Name),
+		attribute.String(genAIOperationNameKey, "execute_tool"),
+		attribute.Bool("tool.success", call.Success),
+		attribute.Int64("tool.duration_ms", call.DurationMs),
+	}
+	if !call.Success && call.ErrorCategory != "" {
+		attrs = append(attrs, attribute.String(errorTypeKey, call.ErrorCategory))
+	}
+
 	_, span := e.tracer.Start(e.rootCtx, name,
 		oteltrace.WithTimestamp(spanStart),
-		oteltrace.WithAttributes(
-			attribute.String(genAIToolNameKey, call.Name),
-			attribute.String(genAIOperationNameKey, "execute_tool"),
-			attribute.Bool("tool.success", call.Success),
-			attribute.Int64("tool.duration_ms", call.DurationMs),
-		),
+		oteltrace.WithAttributes(attrs...),
 	)
+	if !call.Success {
+		// ErrorReason is scrubbed at dispatch time; the second pass here
+		// is the same defence-in-depth posture the JSONL emitter applies
+		// — span status strings bypass ScrubHandler.
+		desc := security.Scrub(call.ErrorReason)
+		if desc == "" {
+			desc = "tool call failed"
+		}
+		span.SetStatus(codes.Error, desc)
+	}
 	span.End(oteltrace.WithTimestamp(spanEnd))
 }
 
@@ -657,6 +685,15 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 			attribute.Int("run.turns", len(e.turns)),
 			attribute.Int("run.permission_denials", e.permissionDenials),
 		)
+		// Every non-success outcome — including cancelled — marks the
+		// root Error so backends expose one "didn't finish" predicate;
+		// the run.outcome attribute (and run.cancelled_by, when set by
+		// the loop) disambiguates operator-initiated cancellation from
+		// failure. The outcome vocabulary is a bounded enum, so the
+		// status description needs no scrubbing.
+		if outcome != "success" {
+			e.rootSpan.SetStatus(codes.Error, outcome)
+		}
 		e.rootSpan.End()
 	}
 
