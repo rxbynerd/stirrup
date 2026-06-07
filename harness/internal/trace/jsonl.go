@@ -159,6 +159,7 @@ func (e *JSONLTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	// tool_call_record here so live consumers see per-call events
 	// before the turn finishes.
 	tc := types.ToolCallRecord{
+		ID:      call.ID,
 		Name:    call.Name,
 		Success: call.Success,
 		// DurationMs and other counters live on call; for the

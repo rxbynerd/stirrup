@@ -246,6 +246,63 @@ func TestTurnTrace_LegacyJSON_DeserialisesToEmptyMode(t *testing.T) {
 	}
 }
 
+// TestToolCallTrace_IDOmittedWhenEmpty pins the omitempty contract on
+// the tool_use ID mirrored onto ToolCallTrace/ToolCallSummary: legacy
+// traces and providers without call identifiers keep the pre-ID wire
+// shape, and a populated ID round-trips. The OTel content-capture path
+// keys tool-span pairing on this field, so silent loss here downgrades
+// captured tool spans to plain counter spans.
+func TestToolCallTrace_IDOmittedWhenEmpty(t *testing.T) {
+	bare, err := json.Marshal(ToolCallTrace{Name: "read_file", DurationMs: 1, Success: true})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(bare), `"id"`) {
+		t.Errorf("empty ID must be omitted; JSON = %s", bare)
+	}
+
+	populated, err := json.Marshal(ToolCallSummary{ID: "tu-1", Name: "read_file", DurationMs: 1, Success: true})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(populated), `"id":"tu-1"`) {
+		t.Errorf("populated ID must be emitted; JSON = %s", populated)
+	}
+
+	var round ToolCallTrace
+	if err := json.Unmarshal(populated, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if round.ID != "tu-1" {
+		t.Errorf("round-trip ID = %q, want %q", round.ID, "tu-1")
+	}
+}
+
+// TestTurnTrace_ModelOmittedWhenEmpty pins the omitempty contract on
+// the per-turn model added for gen_ai.request.model stamping: legacy
+// traces keep their wire shape, and the router's selection round-trips.
+func TestTurnTrace_ModelOmittedWhenEmpty(t *testing.T) {
+	bare, err := json.Marshal(TurnTrace{Turn: 1, StopReason: "end_turn"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(bare), `"model"`) {
+		t.Errorf("empty Model must be omitted; JSON = %s", bare)
+	}
+
+	data, err := json.Marshal(TurnTrace{Turn: 1, Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var round TurnTrace
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if round.Model != "claude-sonnet-4-6" {
+		t.Errorf("round-trip Model = %q, want %q", round.Model, "claude-sonnet-4-6")
+	}
+}
+
 func TestRunTracePermissionDenialsJSONCompatibility(t *testing.T) {
 	var oldTrace RunTrace
 	if err := json.Unmarshal([]byte(`{"id":"run-1","turns":2}`), &oldTrace); err != nil {

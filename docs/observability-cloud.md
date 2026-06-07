@@ -3,8 +3,8 @@
 Stirrup's OTel exporters speak both **OTLP/gRPC** (the default) and
 **OTLP/HTTP with binary protobuf** (issue #100). The HTTP path is what
 unlocks first-class native support for Grafana Cloud, Honeycomb, GCP
-Cloud Trace, Datadog's OTLP intake, and the long tail of managed APMs
-that reject gRPC at the edge.
+Cloud Trace, Datadog's OTLP intake, Langfuse, and the long tail of
+managed APMs that reject gRPC at the edge.
 
 This document is the operator walkthrough. For the underlying signal
 model — what spans, metrics, and resource attributes Stirrup emits —
@@ -117,9 +117,78 @@ Prefer `--otel-header` where both are available.
 | Honeycomb | `https://api.honeycomb.io` | `x-honeycomb-team: secret://HC_API_KEY` |
 | GCP Cloud Trace (via gateway) | gateway URL | `Authorization: secret://GCP_BEARER` |
 | Datadog OTLP intake | `https://trace.agent.datadoghq.com` | `dd-api-key: secret://DD_API_KEY` |
+| Langfuse (cloud or self-hosted) | `https://cloud.langfuse.com/api/public/otel` | `Authorization: secret://LANGFUSE_AUTH` |
 
 Stirrup does not vendor-detect — `protocol`, `endpoint`, and `headers`
 are sufficient for any OTLP/HTTP-protobuf gateway.
+
+## Langfuse
+
+Langfuse is an LLM-observability backend that ingests OTLP natively
+and reads the GenAI semantic-convention attributes Stirrup emits — no
+vendor-specific configuration exists or is needed. Self-hosted
+requires v3.22.0+.
+
+```json
+{
+  "traceEmitter": {
+    "type": "otel",
+    "protocol": "http/protobuf",
+    "endpoint": "http://localhost:3000/api/public/otel",
+    "metricsEndpoint": "http://localhost:3000/api/public/otel",
+    "headers": {
+      "Authorization": "secret://LANGFUSE_AUTH"
+    }
+  }
+}
+```
+
+where the secret resolves to Basic auth over the project's API key
+pair:
+
+```sh
+export LANGFUSE_AUTH="Basic $(printf '%s' 'pk-lf-...:sk-lf-...' | base64)"
+```
+
+**`protocol: "http/protobuf"` is required.** Langfuse's OTLP ingest is
+HTTP-only; on the default gRPC path the spans are silently dropped.
+The per-signal URL appending (below) lands exactly on Langfuse's
+`/api/public/otel/v1/traces` and `/v1/metrics` routes.
+
+How Stirrup's signal model surfaces in Langfuse:
+
+- **Observation typing.** The root `run` span
+  (`gen_ai.operation.name: invoke_agent`) renders as an agent
+  observation, `turn[N]` spans (`chat`) as generations, and
+  `execute_tool <name>` spans as tool observations.
+- **Input/output panels** populate only with
+  [`captureContent`](#span-content-capture-opt-in): the root span's
+  run-level I/O feeds the trace-level input/output views, turn spans
+  feed per-generation I/O, and tool spans feed per-tool
+  arguments/results. Without the toggle, traces show structure,
+  usage, model, and timing with empty content panels.
+- **Cost.** Generations carry `gen_ai.request.model` per turn;
+  Langfuse prices models it recognises by name and needs a custom
+  model definition for others.
+- **Error filtering.** Failed runs, turns, and tool calls carry OTel
+  error status, which Langfuse maps to `level: ERROR` with the status
+  message — filter traces and observations by level to triage
+  failures.
+- **Sessions.** `--session-name` is emitted as
+  `gen_ai.conversation.id`, which Langfuse maps to its session
+  grouping natively.
+- **Environments.** `observability.environment` reaches Langfuse via
+  the `deployment.environment` resource attribute.
+
+One rendering caveat: Stirrup serialises message content in the
+semconv parts schema (`{role, parts: [...]}`), which Langfuse ingests
+and displays but does not yet pretty-render as chat bubbles — the
+content panels show structured JSON. Backend-native concepts beyond
+these (Langfuse users, tags) live in the `langfuse.*` attribute
+namespace, which Stirrup deliberately does not emit; operators who
+need them can rewrite attributes in a collector
+(`transformprocessor`), keeping the vendor mapping in operator
+config.
 
 ## Span content capture (opt-in)
 
@@ -130,15 +199,16 @@ Datadog LLM Observability, Phoenix) shows correct structure, token
 usage, model, and timing, with an empty prompt/IO view.
 
 `traceEmitter.captureContent: true` (CLI: `--otel-capture-content`)
-opts the run into recording content on each `turn[N]` span using the
-standard GenAI semantic-convention attributes those backends read
-natively:
+opts the run into recording content using the standard GenAI
+semantic-convention attributes those backends read natively:
 
-| Attribute | Carries |
-|---|---|
-| `gen_ai.input.messages` | The message history the model saw on the turn (JSON, semconv message schema). |
-| `gen_ai.output.messages` | The model's response blocks, including tool calls, with `finish_reason`. |
-| `gen_ai.system_instructions` | The run's built system prompt. |
+| Attribute | On | Carries |
+|---|---|---|
+| `gen_ai.input.messages` | `turn[N]` | The message history the model saw on the turn (JSON, semconv message schema). |
+| `gen_ai.output.messages` | `turn[N]` | The model's response blocks, including tool calls, with `finish_reason`. |
+| `gen_ai.system_instructions` | `turn[N]` | The run's built system prompt. |
+| `gen_ai.input.messages` / `gen_ai.output.messages` | `run` (root) | Run-level I/O — the seed prompt and the final assistant message — feeding backends' trace-level input/output views. |
+| `gen_ai.tool.call.id` / `.arguments` / `.result` | `execute_tool <name>` | Each tool call's identifier, input arguments, and result text. |
 
 The toggle is vendor-neutral: no backend detection, no vendor
 attribute namespace — any OTLP consumer that understands the GenAI
@@ -146,10 +216,11 @@ conventions gets the same view.
 
 Safety properties:
 
-- **Off by default.** The OTel GenAI spec marks message content
-  Opt-In precisely because it is likely to contain PII. With the
-  toggle off, span output is byte-identical to the no-capture
-  emitter.
+- **Off by default.** The OTel GenAI spec marks message and tool-call
+  content Opt-In precisely because it is likely to contain PII. With
+  the toggle off, span output is identical to the capture-on output
+  minus the content attributes — counters, typing, model, and error
+  status are capture-independent.
 - **Scrubbed before export.** Content passes through the same
   `security.Scrub` defence-in-depth layer the JSONL emitter applies
   to its `turn_record` lines, so secret-shaped substrings are

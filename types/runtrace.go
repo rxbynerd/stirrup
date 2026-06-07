@@ -48,6 +48,10 @@ type RunTrace struct {
 // profile is recorded in the run's RunConfig (tools.profile); read it
 // alongside the record to disambiguate.
 type ToolCallSummary struct {
+	// ID is the provider-assigned tool_use identifier the call arrived
+	// under. Empty on traces that predate the field and for providers
+	// without call identifiers; mirrors ToolCallRecord.ID.
+	ID           string `json:"id,omitempty"`
 	Name         string `json:"name"`
 	InternalName string `json:"internalName,omitempty"`
 	DurationMs   int64  `json:"durationMs"`
@@ -134,6 +138,12 @@ func (t TurnTrace) IsBatch() bool {
 // ambiguity (default profile vs unresolved name under a non-default
 // profile).
 type ToolCallTrace struct {
+	// ID is the provider-assigned tool_use identifier the call arrived
+	// under. Empty on traces that predate the field and for providers
+	// without call identifiers. The OTel emitter's content-capture path
+	// keys its tool-call pairing on (RunID, ID); an empty ID opts the
+	// call out of pairing, never out of its span.
+	ID           string `json:"id,omitempty"`
 	Name         string `json:"name"`
 	InternalName string `json:"internalName,omitempty"`
 	DurationMs   int64  `json:"durationMs"`

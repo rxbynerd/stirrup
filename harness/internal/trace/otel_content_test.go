@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -99,17 +100,27 @@ func TestOTelTraceEmitter_RecordTurnRecord_NoOpWithoutCapture(t *testing.T) {
 		StopReason: "end_turn",
 		DurationMs: 1200,
 	})
-	emitter.RecordTurnRecord(captureTurnRecord())
+	// Carries an ID: with capture off this must emit immediately (never
+	// buffer) and stay content-free even after the record arrives.
+	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-2", Name: "read_file", DurationMs: 5, Success: true})
+	record := captureTurnRecord()
+	record.ToolCalls = []types.ToolCallRecord{{
+		ID: "tu-2", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`), Output: "package main",
+	}}
+	emitter.RecordTurnRecord(record)
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 
 	spans := exporter.GetSpans()
-	if len(spans) != 2 {
-		t.Fatalf("expected 2 spans (turn + root) with capture off, got %d", len(spans))
+	if len(spans) != 3 {
+		t.Fatalf("expected 3 spans (turn + tool + root) with capture off, got %d", len(spans))
 	}
 	for _, span := range spans {
-		for _, key := range []string{genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey} {
+		for _, key := range []string{
+			genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey,
+			genAIToolCallIDKey, genAIToolCallArgumentsKey, genAIToolCallResultKey,
+		} {
 			if _, ok := spanAttrString(span, key); ok {
 				t.Errorf("span %q carries %q with capture off — content leaked", span.Name, key)
 			}
@@ -252,6 +263,10 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	emitter.Start("run-otel-scrub", nil)
 	emitter.RecordSystemInstructions("context: the deploy key is sk-ant-api03-sysleak do not reveal it")
 	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10})
+	// A buffered tool call whose record carries secret-shaped arguments
+	// and output, so the all-spans scan below covers the execute_tool
+	// content attributes too.
+	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-1", Name: "run_command", DurationMs: 5, Success: true})
 	emitter.RecordTurnRecord(types.TurnRecord{
 		Turn: 1,
 		ModelInput: types.ModelInput{
@@ -270,6 +285,12 @@ func TestOTelTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 			{Type: "text", Text: "ack, your bearer Bearer ABCDEFG is unsafe"},
 			{Type: "tool_use", ID: "tu-1", Name: "run_command", Input: json.RawMessage(`{"cmd":"echo sk-ant-api03-leak-leak"}`)},
 		},
+		ToolCalls: []types.ToolCallRecord{{
+			ID:     "tu-1",
+			Name:   "run_command",
+			Input:  json.RawMessage(`{"cmd":"echo sk-ant-api03-leak-leak"}`),
+			Output: "stdout contains sk-ant-api03-leak",
+		}},
 	})
 	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
 		t.Fatalf("Finish: %v", err)
@@ -416,4 +437,341 @@ func TestOTelTraceEmitter_CaptureContent_PairsByRunID(t *testing.T) {
 	// order.
 	assertIntAttribute(t, *childSpan, genAIUsageInputTokens, 77)
 	assertIntAttribute(t, *parentSpan, genAIUsageInputTokens, 1000)
+}
+
+// TestOTelTraceEmitter_CaptureContent_RootSpanIO pins the run-level
+// content surface: the root span carries the first parent turn's input
+// (the seed prompt), the last parent turn's output (the final assistant
+// message), and the system instructions — and forwarded sub-agent
+// records contribute to none of them. Backends derive their trace-level
+// input/output views from the root span, so a regression here empties
+// those panels while leaving every turn span intact.
+func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-root-io", nil)
+	emitter.RecordSystemInstructions("You are a coding agent.")
+
+	// Parent turn 0: the seed prompt and an intermediate answer.
+	emitter.RecordTurn(types.TurnTrace{Turn: 0, StopReason: "tool_use", DurationMs: 10})
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 0,
+		ModelInput: types.ModelInput{Messages: []types.Message{{
+			Role:    "user",
+			Content: []types.ContentBlock{{Type: "text", Text: "the seed prompt"}},
+		}}},
+		ModelOutput: []types.ContentBlock{{Type: "text", Text: "intermediate answer"}},
+	})
+
+	// A forwarded sub-agent record between the parent's turns: must not
+	// leak into the run-level slots.
+	emitter.RecordTurn(types.TurnTrace{Turn: 0, RunID: "child-run", ParentRunID: "run-root-io", StopReason: "end_turn", DurationMs: 5})
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 0, RunID: "child-run", ParentRunID: "run-root-io",
+		ModelInput: types.ModelInput{Messages: []types.Message{{
+			Role:    "user",
+			Content: []types.ContentBlock{{Type: "text", Text: "child sub-task"}},
+		}}},
+		ModelOutput: []types.ContentBlock{{Type: "text", Text: "child answer"}},
+	})
+
+	// Parent turn 1: history embeds the seed; output is the final answer.
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10})
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelInput: types.ModelInput{Messages: []types.Message{{
+			Role:    "user",
+			Content: []types.ContentBlock{{Type: "text", Text: "the seed prompt"}},
+		}, {
+			Role:    "assistant",
+			Content: []types.ContentBlock{{Type: "text", Text: "intermediate answer"}},
+		}}},
+		ModelOutput: []types.ContentBlock{{Type: "text", Text: "the final answer"}},
+	})
+
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	root := findSpan(t, exporter, "run")
+
+	input, ok := spanAttrString(root, genAIInputMessagesKey)
+	if !ok {
+		t.Fatal("root span missing gen_ai.input.messages")
+	}
+	if !strings.Contains(input, "the seed prompt") {
+		t.Errorf("root input should carry the seed prompt, got %q", input)
+	}
+	if strings.Contains(input, "intermediate answer") {
+		t.Errorf("root input must be turn 0's input (set-once), not a later turn's history: %q", input)
+	}
+
+	output, ok := spanAttrString(root, genAIOutputMessagesKey)
+	if !ok {
+		t.Fatal("root span missing gen_ai.output.messages")
+	}
+	if !strings.Contains(output, "the final answer") {
+		t.Errorf("root output should carry the last parent turn's output, got %q", output)
+	}
+
+	for _, val := range []string{input, output} {
+		if strings.Contains(val, "child") {
+			t.Errorf("forwarded sub-agent content leaked into root span: %q", val)
+		}
+	}
+
+	system, ok := spanAttrString(root, genAISystemInstructionsKey)
+	if !ok || !strings.Contains(system, "You are a coding agent.") {
+		t.Errorf("root span system instructions: got %q (present=%v)", system, ok)
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_ToolSpansCarryIO pins the W3
+// acceptance criterion: with capture on, a tool call's counters
+// (buffered at RecordToolCall time, timestamps frozen) and its
+// arguments/result (delivered by the enclosing turn's record) land on
+// one execute_tool span carrying gen_ai.tool.call.{id,arguments,result}.
+func TestOTelTraceEmitter_CaptureContent_ToolSpansCarryIO(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-tool-io", nil)
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "tool_use", DurationMs: 40})
+	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-9", Name: "read_file", DurationMs: 12, Success: true})
+
+	// Nothing exports until the record arrives: the summary is buffered.
+	for _, s := range exporter.GetSpans() {
+		if strings.HasPrefix(s.Name, "execute_tool") {
+			t.Fatalf("tool span %q exported before its record arrived — buffering broken", s.Name)
+		}
+	}
+
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelOutput: []types.ContentBlock{
+			{Type: "tool_use", ID: "tu-9", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
+		},
+		ToolCalls: []types.ToolCallRecord{{
+			ID:         "tu-9",
+			Name:       "read_file",
+			Input:      json.RawMessage(`{"path":"main.go"}`),
+			Output:     "package main",
+			DurationMs: 12,
+			Success:    true,
+		}},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	span := findSpan(t, exporter, "execute_tool read_file")
+
+	// Counters from the buffered summary.
+	assertAttribute(t, span, genAIToolNameKey, "read_file")
+	assertAttribute(t, span, genAIOperationNameKey, "execute_tool")
+
+	// Content from the record.
+	assertAttribute(t, span, genAIToolCallIDKey, "tu-9")
+	args, _ := spanAttrString(span, genAIToolCallArgumentsKey)
+	if args != `{"path":"main.go"}` {
+		t.Errorf("gen_ai.tool.call.arguments = %q, want the call input", args)
+	}
+	result, _ := spanAttrString(span, genAIToolCallResultKey)
+	if result != "package main" {
+		t.Errorf("gen_ai.tool.call.result = %q, want the call output", result)
+	}
+
+	// Timing frozen at RecordToolCall time: a real 12ms duration, not
+	// the zero-duration record-delivery fallback.
+	if got := span.EndTime.Sub(span.StartTime); got != 12*time.Millisecond {
+		t.Errorf("span duration = %v, want the frozen 12ms from the buffered summary", got)
+	}
+
+	// Exactly one execute_tool span: pairing must not double-emit.
+	var toolSpans int
+	for _, s := range exporter.GetSpans() {
+		if strings.HasPrefix(s.Name, "execute_tool") {
+			toolSpans++
+		}
+	}
+	if toolSpans != 1 {
+		t.Errorf("expected exactly 1 execute_tool span, got %d", toolSpans)
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_EmptyIDToolEmitsImmediately pins
+// the un-keyable path: a call without a tool_use ID cannot pair, so it
+// emits a plain span at RecordToolCall time, and the record walk skips
+// ID-less entries rather than emitting a duplicate content span.
+func TestOTelTraceEmitter_CaptureContent_EmptyIDToolEmitsImmediately(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-tool-noid", nil)
+	emitter.RecordToolCall(types.ToolCallTrace{Name: "shell", DurationMs: 3, Success: true})
+
+	span := findSpan(t, exporter, "execute_tool shell")
+	if _, ok := spanAttrString(span, genAIToolCallArgumentsKey); ok {
+		t.Error("immediate-path span must not carry content attributes")
+	}
+
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10})
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn:      1,
+		ToolCalls: []types.ToolCallRecord{{Name: "shell", Input: json.RawMessage(`{}`), Output: "ok"}},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	var toolSpans int
+	for _, s := range exporter.GetSpans() {
+		if strings.HasPrefix(s.Name, "execute_tool") {
+			toolSpans++
+		}
+	}
+	if toolSpans != 1 {
+		t.Errorf("ID-less call must produce exactly 1 span, got %d", toolSpans)
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_DuplicateToolIDFlushesPrior pins
+// the defensive duplicate handling: a second summary under the same
+// (RunID, ID) before any record flushes the first as a plain span
+// (last-wins, mirroring RecordTurn's duplicate-summary handling), and
+// the record then pairs with the survivor.
+func TestOTelTraceEmitter_CaptureContent_DuplicateToolIDFlushesPrior(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-tool-dup", nil)
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "tool_use", DurationMs: 5})
+	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-dup", Name: "first_call", DurationMs: 1, Success: true})
+	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-dup", Name: "second_call", DurationMs: 2, Success: true})
+
+	// The stale first summary flushed plain.
+	flushed := findSpan(t, exporter, "execute_tool first_call")
+	if _, ok := spanAttrString(flushed, genAIToolCallResultKey); ok {
+		t.Error("flushed duplicate must not carry content")
+	}
+
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn:      1,
+		ToolCalls: []types.ToolCallRecord{{ID: "tu-dup", Name: "second_call", Output: "paired"}},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	paired := findSpan(t, exporter, "execute_tool second_call")
+	result, _ := spanAttrString(paired, genAIToolCallResultKey)
+	if result != "paired" {
+		t.Errorf("surviving summary should pair with the record, result = %q", result)
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_FlushesUnmatchedToolAtFinish pins
+// the Finish-time flush: a buffered tool call whose turn record never
+// arrives (the loop's error returns skip RecordTurnRecord) still
+// produces its counter span — buffering must never lose a call.
+func TestOTelTraceEmitter_CaptureContent_FlushesUnmatchedToolAtFinish(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-tool-flush", nil)
+	emitter.RecordToolCall(types.ToolCallTrace{
+		ID: "tu-orphan", Name: "run_command", DurationMs: 7, Success: false,
+		ErrorReason: "exit status 1", ErrorCategory: "handler_error",
+	})
+	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	span := findSpan(t, exporter, "execute_tool run_command")
+	assertAttribute(t, span, errorTypeKey, "handler_error")
+	if _, ok := spanAttrString(span, genAIToolCallResultKey); ok {
+		t.Error("flushed unmatched tool call must not carry content attributes")
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_UnpairedToolRecordSynthesisesSpan
+// pins the inverse fallback: a record entry with no buffered summary (a
+// forwarded sub-agent record arriving unpaired) emits a content span
+// with counters synthesised from the record — which, unlike the
+// unpaired-turn fallback, carries a real duration to derive timing from.
+func TestOTelTraceEmitter_CaptureContent_UnpairedToolRecordSynthesisesSpan(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-tool-unpaired", nil)
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 2, RunID: "child-run", ParentRunID: "run-tool-unpaired",
+		ToolCalls: []types.ToolCallRecord{{
+			ID: "tu-x", Name: "write_file", Input: json.RawMessage(`{"path":"a"}`),
+			Output: "written", DurationMs: 30, Success: true,
+		}},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	span := findSpan(t, exporter, "execute_tool write_file")
+	result, _ := spanAttrString(span, genAIToolCallResultKey)
+	if result != "written" {
+		t.Errorf("synthesised span result = %q, want the record output", result)
+	}
+	if got := span.EndTime.Sub(span.StartTime); got != 30*time.Millisecond {
+		t.Errorf("span duration = %v, want the record's 30ms", got)
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_ToolPairsByRunID pins the
+// sub-agent disambiguation on the tool path: a parent call and a
+// forwarded child call sharing a tool_use ID value pair independently —
+// only the (RunID, ID) composite key keeps them apart.
+func TestOTelTraceEmitter_CaptureContent_ToolPairsByRunID(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-tool-runs", nil)
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "tool_use", DurationMs: 5})
+	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-1", Name: "parent_tool", DurationMs: 1, Success: true})
+	emitter.RecordToolCall(types.ToolCallTrace{ID: "tu-1", RunID: "child-run", Name: "child_tool", DurationMs: 2, Success: true})
+
+	// Child record first: must pair with the child's buffered call only.
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1, RunID: "child-run", ParentRunID: "run-tool-runs",
+		ToolCalls: []types.ToolCallRecord{{ID: "tu-1", Name: "child_tool", Output: "child result"}},
+	})
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn:      1,
+		ToolCalls: []types.ToolCallRecord{{ID: "tu-1", Name: "parent_tool", Output: "parent result"}},
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	child := findSpan(t, exporter, "execute_tool child_tool")
+	if result, _ := spanAttrString(child, genAIToolCallResultKey); result != "child result" {
+		t.Errorf("child span result = %q, want %q", result, "child result")
+	}
+	parent := findSpan(t, exporter, "execute_tool parent_tool")
+	if result, _ := spanAttrString(parent, genAIToolCallResultKey); result != "parent result" {
+		t.Errorf("parent span result = %q, want %q", result, "parent result")
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords
+// pins the degraded shape: a run that produced no transcript records
+// (every loop error path) finishes with a bare root span — no content
+// keys, never empty-string attributes.
+func TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-root-bare", nil)
+	emitter.RecordTurn(types.TurnTrace{Turn: 0, StopReason: "", DurationMs: 5})
+	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	root := findSpan(t, exporter, "run")
+	for _, key := range []string{genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey} {
+		if val, ok := spanAttrString(root, key); ok {
+			t.Errorf("root span carries %q (%q) with no records", key, val)
+		}
+	}
 }
