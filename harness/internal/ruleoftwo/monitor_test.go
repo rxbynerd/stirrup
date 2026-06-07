@@ -71,6 +71,23 @@ func TestPatternMonitor_SkipsRescanAfterTrip(t *testing.T) {
 	}
 }
 
+// TestPatternMonitor_WarnTierSuppressedAfterLatch pins the documented
+// contract that post-latch scanning — including warn-tier telemetry —
+// is suspended: after a latch-tier trip, warn-only content produces an
+// empty Detection (no patterns, so the caller emits no events). The
+// rule_of_two_triggered event's scanning_suspended field is what tells
+// operators soak data ends here.
+func TestPatternMonitor_WarnTierSuppressedAfterLatch(t *testing.T) {
+	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
+	if det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey}); !det.Transition {
+		t.Fatal("setup: latch-tier content must trip the monitor")
+	}
+	det := m.ObserveChunks(context.Background(), "tool_result", 2, []string{"see secret://SOME_REF for the key"})
+	if len(det.Patterns) != 0 || det.Tier != "" || det.Transition {
+		t.Errorf("post-latch warn-tier observation must be empty Detection, got %+v", det)
+	}
+}
+
 func TestPatternMonitor_WarnTierDoesNotLatch(t *testing.T) {
 	m := NewPatternMonitor(true, "block-external", defaultCriteria(), false)
 	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{"see secret://SOME_REF for the key"})

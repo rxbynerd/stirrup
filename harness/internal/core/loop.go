@@ -1395,12 +1395,19 @@ func (l *AgenticLoop) ratchetRuleOfTwo(ctx context.Context, config *types.RunCon
 	}
 	source := "guard:" + decision.GuardID
 	action := l.RuleOfTwo.Action()
+	// The criterion is namespaced "guard:<criterion>" in the patterns
+	// field and the pattern metric label so guard-originated trips can
+	// never impersonate deterministic detector names: a coerced guard
+	// returning criterion "secret/aws_access_key_id" must not make
+	// telemetry (or alerting rules keyed on pattern names) read as if
+	// the detector fired.
+	pattern := "guard:" + decision.Criterion
 	if l.Security != nil {
-		l.Security.SensitiveDataDetected([]string{decision.Criterion}, security.TierLatch, source, turn, action, true)
+		l.Security.SensitiveDataDetected([]string{pattern}, security.TierLatch, source, turn, action, true)
 	}
 	if l.Metrics != nil {
 		l.Metrics.RuleOfTwoDetections.Add(ctx, 1, l.metricAttrs(
-			attribute.String("pattern", decision.Criterion),
+			attribute.String("pattern", pattern),
 			attribute.String("tier", security.TierLatch),
 			attribute.String("source", source),
 		))
@@ -1420,7 +1427,7 @@ func (l *AgenticLoop) emitRuleOfTwoTriggered(config *types.RunConfig, source, ac
 	}
 	_ = l.Transport.Emit(types.HarnessEvent{
 		Type:    "warning",
-		Message: fmt.Sprintf("rule of two: sensitive data detected (source %s); action %q is observe-only this release", source, action),
+		Message: fmt.Sprintf("rule of two: sensitive data detected (source %q); action %q is observe-only this release", source, action),
 	})
 }
 
@@ -1471,7 +1478,11 @@ func guardFailOpen(config *types.RunConfig) bool {
 // entries (sorted by key for determinism). On subsequent turns it
 // returns the Content field of every tool_result block in the last
 // message — those entries arrived from external tool execution and
-// have not yet been classified.
+// have not yet been classified — plus the Structured payload (issue
+// #231) when present: the Anthropic adapter forwards it to the model
+// as a second text block and the Gemini adapter embeds it under
+// functionResponse.response.structured, so a credential present only
+// in the structured JSON is model-visible and must be classified too.
 //
 // v1 keeps this conservative: we do not attempt to classify earlier
 // turns' content (already in history), nor model-emitted text (handled
@@ -1510,8 +1521,14 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 	}
 	chunks := make([]string, 0, len(last.Content))
 	for _, b := range last.Content {
-		if b.Type == "tool_result" && b.Content != "" {
+		if b.Type != "tool_result" {
+			continue
+		}
+		if b.Content != "" {
 			chunks = append(chunks, b.Content)
+		}
+		if len(b.Structured) > 0 {
+			chunks = append(chunks, string(b.Structured))
 		}
 	}
 	return chunks

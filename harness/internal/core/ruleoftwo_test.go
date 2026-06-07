@@ -8,7 +8,11 @@ import (
 	"sync"
 	"testing"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -332,6 +336,9 @@ func TestLoop_RuleOfTwoDetectsSensitiveToolResult(t *testing.T) {
 	if !strings.Contains(out, `"transition":true`) {
 		t.Errorf("expected transition:true on the latching detection, got: %s", out)
 	}
+	if !strings.Contains(out, `"scanning_suspended":true`) {
+		t.Errorf("expected scanning_suspended:true on the trigger event (soak data ends at the latch), got: %s", out)
+	}
 
 	// Dark-ship pin: an identical run with the Noop monitor must end the
 	// same way — outcome and turn count unchanged by detection.
@@ -355,6 +362,70 @@ func buildTestConfigWithMaxTurns(maxTurns int) *types.RunConfig {
 	cfg := buildTestConfig()
 	cfg.MaxTurns = maxTurns
 	return cfg
+}
+
+// TestLoop_RuleOfTwoDetectsStructuredToolResult closes the structured-
+// result bypass: the Anthropic and Gemini adapters forward
+// ContentBlock.Structured to the model (as a second text block /
+// functionResponse.response.structured respectively), so a credential
+// present only in the structured payload is model-visible and must
+// latch even when the text Content is benign.
+func TestLoop_RuleOfTwoDetectsStructuredToolResult(t *testing.T) {
+	var secBuf bytes.Buffer
+	loop := buildTestLoopWithSecurity(nil, &secBuf)
+	loop.Provider = &scriptedProvider{
+		turns: [][]types.StreamEvent{
+			{
+				{Type: "tool_call", ID: "tc_1", Name: "structured_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "done"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+	registry, ok := loop.Tools.(*tool.Registry)
+	if !ok {
+		t.Fatalf("test loop Tools is %T, want *tool.Registry", loop.Tools)
+	}
+	registry.Register(&tool.Tool{
+		Name:        "structured_tool",
+		Description: "returns a structured payload carrying a credential",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		StructuredHandler: func(_ context.Context, _ json.RawMessage) (tool.StructuredResult, error) {
+			return tool.StructuredResult{
+				Text:       "command completed",
+				Structured: json.RawMessage(`{"stdout":"` + fakeLiveAWSKey + `"}`),
+				Kind:       "command_result",
+			}, nil
+		},
+	})
+	monitor := defaultRuleOfTwoTestMonitor()
+	loop.RuleOfTwo = monitor
+	config := buildTestConfig()
+	config.MaxTurns = 4
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Errorf("outcome = %q, want success (observe-only)", runTrace.Outcome)
+	}
+	if !monitor.Tripped() {
+		t.Fatal("monitor must latch on a credential present only in the structured payload")
+	}
+	out := secBuf.String()
+	if !strings.Contains(out, `"event":"sensitive_data_detected"`) {
+		t.Errorf("expected sensitive_data_detected event, got: %s", out)
+	}
+	if !strings.Contains(out, `"source":"tool_result"`) {
+		t.Errorf("expected source tool_result, got: %s", out)
+	}
+	if !strings.Contains(out, `"secret/aws_access_key_id"`) {
+		t.Errorf("expected the pattern name in the event, got: %s", out)
+	}
 }
 
 // trippedAtStreamProvider snapshots the monitor's latch state at the
@@ -451,6 +522,13 @@ func TestLoop_RuleOfTwoGuardCriterionRatchetTrips(t *testing.T) {
 	loop.GuardRail = &criterionGuard{criterion: "sensitive_data"}
 	monitor := defaultRuleOfTwoTestMonitor()
 	loop.RuleOfTwo = monitor
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	metrics, err := observability.NewMetricsForTesting(mp)
+	if err != nil {
+		t.Fatalf("NewMetricsForTesting: %v", err)
+	}
+	loop.Metrics = metrics
 	config := buildTestConfig()
 
 	runTrace, err := loop.Run(context.Background(), config)
@@ -467,9 +545,51 @@ func TestLoop_RuleOfTwoGuardCriterionRatchetTrips(t *testing.T) {
 	if !strings.Contains(out, `"source":"guard:stub"`) {
 		t.Errorf("expected source guard:stub, got: %s", out)
 	}
+	// Provenance namespacing: the guard's criterion must land in the
+	// patterns field prefixed "guard:" so it can never impersonate a
+	// deterministic detector name.
+	if !strings.Contains(out, `"patterns":["guard:sensitive_data"]`) {
+		t.Errorf("expected patterns [guard:sensitive_data], got: %s", out)
+	}
 	if !strings.Contains(out, `"event":"rule_of_two_triggered"`) {
 		t.Errorf("expected rule_of_two_triggered event, got: %s", out)
 	}
+	if got := ruleOfTwoDetectionPatternCount(t, reader, "guard:sensitive_data"); got != 1 {
+		t.Errorf("rule-of-two detections with pattern=guard:sensitive_data = %d, want 1", got)
+	}
+	if got := ruleOfTwoDetectionPatternCount(t, reader, "sensitive_data"); got != 0 {
+		t.Errorf("unprefixed criterion leaked into the pattern label: count = %d, want 0", got)
+	}
+}
+
+// ruleOfTwoDetectionPatternCount sums stirrup.ruleoftwo.detections data
+// points whose pattern attribute equals pattern.
+func ruleOfTwoDetectionPatternCount(t *testing.T, reader *sdkmetric.ManualReader, pattern string) int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	var total int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "stirrup.ruleoftwo.detections" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				continue
+			}
+			for _, dp := range sum.DataPoints {
+				for _, kv := range dp.Attributes.ToSlice() {
+					if string(kv.Key) == "pattern" && kv.Value.AsString() == pattern {
+						total += dp.Value
+					}
+				}
+			}
+		}
+	}
+	return total
 }
 
 func TestLoop_RuleOfTwoGuardNonMatchingCriterionDoesNotTrip(t *testing.T) {

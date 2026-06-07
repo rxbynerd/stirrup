@@ -57,8 +57,11 @@ func (m *PatternMonitor) ObserveChunks(_ context.Context, _ string, _ int, chunk
 	// Once latched, further scans buy nothing: the latch is one-way and
 	// no consumer reads per-chunk findings until redact mode exists
 	// (the detector costs ~80ms/MB, so this skip is the perf budget for
-	// long runs). Wave 4 revisits this for onDetect=redact, which needs
-	// spans on every chunk after the trip.
+	// long runs). Warn-tier telemetry is also suppressed post-latch —
+	// a documented contract, not a side-effect: the rule_of_two_triggered
+	// event carries scanning_suspended:true so operators can see where
+	// soak data ends. Wave 4 revisits this for onDetect=redact, which
+	// needs spans on every chunk after the trip.
 	if m.tripped.Load() {
 		return Detection{}
 	}

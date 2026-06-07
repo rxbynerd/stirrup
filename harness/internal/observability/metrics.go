@@ -407,9 +407,10 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.RuleOfTwoDetections, err = meter.Int64Counter("stirrup.harness.rule_of_two_detections",
+	m.RuleOfTwoDetections, err = meter.Int64Counter("stirrup.ruleoftwo.detections",
 		metric.WithUnit("{detection}"),
-		metric.WithDescription("Sensitive-data detections recorded by the Rule-of-Two runtime monitor, labelled by pattern, tier, and source"),
+		metric.WithDescription("Sensitive-data detections recorded by the Rule-of-Two runtime monitor, labelled by pattern, tier, and source. "+
+			"Guard-ratchet trips carry a \"guard:\"-prefixed pattern label so they are distinguishable from deterministic detector hits."),
 	)
 	if err != nil {
 		return nil, err
@@ -553,7 +554,7 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
-	m.SensitiveScan, err = meter.Float64Histogram("stirrup.harness.sensitive_scan_ms",
+	m.SensitiveScan, err = meter.Float64Histogram("stirrup.ruleoftwo.scan_duration_ms",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Wall-clock latency of Rule-of-Two sensitive-content scans"),
 	)
