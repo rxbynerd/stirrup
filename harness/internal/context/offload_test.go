@@ -2,6 +2,7 @@ package context
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -106,6 +107,60 @@ func TestOffloadToFile_OverBudget_OffloadsLargeToolResults(t *testing.T) {
 	// Verify the file was written with the original content.
 	if fw.written[expectedPath] != largeContent {
 		t.Errorf("expected file to contain original content")
+	}
+}
+
+func TestOffloadToFile_PreservesReplayFieldsOnModifiedMessages(t *testing.T) {
+	fw := newMockFileWriter()
+	s := NewOffloadToFileStrategy(fw)
+
+	replay := map[string]json.RawMessage{
+		"reasoning_content": json.RawMessage(`"thinking..."`),
+	}
+	largeContent := strings.Repeat("x", 3000)
+	msgs := []types.Message{
+		makeMessage("user", "do something"),
+		// A message that both triggers the offload rebuild (large
+		// tool_result) and carries replay state. The rebuild path
+		// constructs a fresh types.Message; any field not copied
+		// explicitly — ReplayFields here — would be silently dropped,
+		// and the next request against DeepSeek v4 thinking mode would
+		// omit reasoning_content and 400.
+		{
+			Role: "assistant",
+			Content: []types.ContentBlock{
+				{Type: "tool_result", ToolUseID: "t1", Content: largeContent},
+			},
+			ReplayFields: replay,
+		},
+		makeMessage("user", "more context"),
+		makeMessage("assistant", "working on it"),
+		makeMessage("user", "question"),
+		makeMessage("assistant", "answer"),
+		makeMessage("user", "another question"),
+		makeMessage("assistant", "another answer"),
+		// Last 6 messages are indices 2-7, so index 1 is offload-eligible.
+	}
+
+	result, err := s.Prepare(context.Background(), msgs, TokenBudget{
+		MaxTokens:          2000,
+		CurrentTokens:      5000,
+		ReserveForResponse: 500,
+	})
+	if err != nil {
+		t.Fatalf("Prepare() error: %v", err)
+	}
+
+	// The rebuild must have fired (the tool_result was offloaded)…
+	if !strings.Contains(result[1].Content[0].Content, "offloaded to") {
+		t.Fatalf("expected the tool_result to be offloaded; got: %s", result[1].Content[0].Content)
+	}
+	// …and the replay state must have survived it intact.
+	if result[1].ReplayFields == nil {
+		t.Fatal("ReplayFields dropped by the offload rebuild")
+	}
+	if got := string(result[1].ReplayFields["reasoning_content"]); got != `"thinking..."` {
+		t.Errorf("ReplayFields[reasoning_content] = %s, want \"thinking...\"", got)
 	}
 }
 
