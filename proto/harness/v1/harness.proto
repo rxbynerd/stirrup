@@ -506,6 +506,11 @@ message RuleOfTwoConfig {
 // detects sensitive content. The other two legs are static
 // capabilities computable at config time; sensitivity is a content
 // property only knowable at runtime.
+//
+// NOTE: Only the configuration surface ships in this message. The
+// detector, latch, and enforcement gate land in follow-up changes.
+// Fields are validated but have no runtime effect until that change
+// lands.
 message RuleOfTwoRuntimeConfig {
   // The detector implementation.
   // Valid values:

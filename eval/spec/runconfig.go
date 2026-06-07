@@ -368,7 +368,7 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 			out.RuleOfTwo.Runtime = &types.RuleOfTwoRuntimeConfig{
 				Classifier:    s.RuleOfTwo.Runtime.Classifier,
 				OnDetect:      s.RuleOfTwo.Runtime.OnDetect,
-				GuardCriteria: s.RuleOfTwo.Runtime.GuardCriteria,
+				GuardCriteria: append([]string(nil), s.RuleOfTwo.Runtime.GuardCriteria...),
 			}
 		}
 	}

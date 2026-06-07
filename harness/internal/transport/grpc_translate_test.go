@@ -133,36 +133,37 @@ func TestRuleOfTwoProto_RuntimeTranslation(t *testing.T) {
 		}
 	})
 
-	t.Run("populated runtime round-trips through the wire", func(t *testing.T) {
-		original := &pb.RuleOfTwoConfig{
-			Runtime: &pb.RuleOfTwoRuntimeConfig{
-				Classifier:    "patterns",
-				OnDetect:      "block-external",
-				GuardCriteria: []string{"sensitive_data", "pii"},
+	t.Run("populated runtime translates fields", func(t *testing.T) {
+		src := &pb.RunConfig{
+			RuleOfTwo: &pb.RuleOfTwoConfig{
+				Runtime: &pb.RuleOfTwoRuntimeConfig{
+					Classifier:    "patterns",
+					OnDetect:      "block-external",
+					GuardCriteria: []string{"sensitive_data", "pii"},
+				},
 			},
 		}
-		bytes, err := proto.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		var decoded pb.RuleOfTwoConfig
-		if err := proto.Unmarshal(bytes, &decoded); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-
-		rc := runConfigFromProto(&pb.RunConfig{RuleOfTwo: &decoded})
+		rc := runConfigFromProto(src)
 		rt := rc.RuleOfTwo.Runtime
 		if rt == nil {
-			t.Fatal("expected Runtime non-nil after wire round-trip")
+			t.Fatal("expected Runtime non-nil")
 		}
 		if rt.Classifier != "patterns" {
-			t.Errorf("Classifier = %q, want patterns", rt.Classifier)
+			t.Errorf("Classifier: got %q, want %q", rt.Classifier, "patterns")
 		}
 		if rt.OnDetect != "block-external" {
-			t.Errorf("OnDetect = %q, want block-external", rt.OnDetect)
+			t.Errorf("OnDetect: got %q, want %q", rt.OnDetect, "block-external")
 		}
 		if len(rt.GuardCriteria) != 2 || rt.GuardCriteria[0] != "sensitive_data" || rt.GuardCriteria[1] != "pii" {
-			t.Errorf("GuardCriteria = %v, want [sensitive_data pii]", rt.GuardCriteria)
+			t.Errorf("GuardCriteria: got %v", rt.GuardCriteria)
+		}
+		// Mutation isolation: the proto message owns its backing array; on
+		// a long-lived gRPC server a shared slice would let writes to one
+		// decoded payload corrupt another run's criteria list. Modifying
+		// the source after translation must not reach the translated copy.
+		src.RuleOfTwo.Runtime.GuardCriteria[0] = "mutated"
+		if rt.GuardCriteria[0] != "sensitive_data" {
+			t.Error("GuardCriteria shares backing array with proto source")
 		}
 	})
 }

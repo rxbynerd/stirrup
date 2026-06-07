@@ -163,7 +163,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			rc.RuleOfTwo.Runtime = &types.RuleOfTwoRuntimeConfig{
 				Classifier:    pc.RuleOfTwo.Runtime.Classifier,
 				OnDetect:      pc.RuleOfTwo.Runtime.OnDetect,
-				GuardCriteria: pc.RuleOfTwo.Runtime.GuardCriteria,
+				GuardCriteria: append([]string(nil), pc.RuleOfTwo.Runtime.GuardCriteria...),
 			}
 		}
 	}

@@ -1078,6 +1078,11 @@ func (x *RuleOfTwoConfig) GetRuntime() *RuleOfTwoRuntimeConfig {
 // detects sensitive content. The other two legs are static
 // capabilities computable at config time; sensitivity is a content
 // property only knowable at runtime.
+//
+// NOTE: Only the configuration surface ships in this message. The
+// detector, latch, and enforcement gate land in follow-up changes.
+// Fields are validated but have no runtime effect until that change
+// lands.
 type RuleOfTwoRuntimeConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The detector implementation.
