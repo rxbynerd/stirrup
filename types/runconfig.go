@@ -370,8 +370,7 @@ type RuleOfTwoRuntimeConfig struct {
 	// trip the sensitive-data latch, so an LLM guard flagging e.g.
 	// "sensitive_data" can tighten the rule mid-run (one-way — a guard
 	// can never loosen it). Entries follow the same snake_case
-	// constraint as guardRail customCriteria keys. Empty defers to the
-	// factory default of ["sensitive_data", "pii"].
+	// constraint as guardRail customCriteria keys.
 	GuardCriteria []string `json:"guardCriteria,omitempty"`
 }
 
@@ -2203,10 +2202,16 @@ func validateRuleOfTwoRuntime(config *RunConfig, errs *[]string) {
 	if !validRuleOfTwoClassifiers[rt.Classifier] {
 		*errs = append(*errs, fmt.Sprintf("unsupported ruleOfTwo.runtime.classifier %q", rt.Classifier))
 	}
+	// Reject dead configuration: "none" disables the detector, so any
+	// onDetect action would be stored and validated but never fire — an
+	// operator who sets {classifier: "none", onDetect: "abort"} believing
+	// they have a safety net in fact has none.
+	if rt.Classifier == "none" && rt.OnDetect != "" {
+		*errs = append(*errs, `ruleOfTwo.runtime.onDetect has no effect when classifier="none": the detector is disabled and will never fire`)
+	}
 	if !validRuleOfTwoOnDetectActions[rt.OnDetect] {
 		*errs = append(*errs, fmt.Sprintf("unsupported ruleOfTwo.runtime.onDetect %q", rt.OnDetect))
-	}
-	if rt.OnDetect == "ask-upstream" && config.Transport.Type != "grpc" {
+	} else if rt.OnDetect == "ask-upstream" && config.Transport.Type != "grpc" {
 		*errs = append(*errs, "ruleOfTwo.runtime.onDetect \"ask-upstream\" requires transport=grpc (stdio has no upstream control plane to answer permission requests)")
 	}
 	for i, criterion := range rt.GuardCriteria {

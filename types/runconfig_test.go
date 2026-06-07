@@ -2811,21 +2811,24 @@ func TestValidateRunConfig_RuleOfTwoRuntime_ClassifierClosedSet(t *testing.T) {
 
 func TestValidateRunConfig_RuleOfTwoRuntime_OnDetectClosedSet(t *testing.T) {
 	cases := []struct {
-		name     string
-		onDetect string
-		wantErr  bool
+		name      string
+		onDetect  string
+		transport string
+		wantErr   bool
 	}{
-		{"empty_defaults_to_block_external", "", false},
-		{"block_external", "block-external", false},
-		{"redact", "redact", false},
-		{"abort", "abort", false},
-		{"warn", "warn", false},
-		{"unknown", "deny", true},
-		{"case_sensitive", "Warn", true},
+		{"empty_defaults_to_block_external", "", "", false},
+		{"block_external", "block-external", "", false},
+		{"ask_upstream_valid_value", "ask-upstream", "grpc", false}, // cross-field check exercised separately
+		{"redact", "redact", "", false},
+		{"abort", "abort", "", false},
+		{"warn", "warn", "", false},
+		{"unknown", "deny", "", true},
+		{"case_sensitive", "Warn", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := validConfig()
+			c.Transport = TransportConfig{Type: tc.transport}
 			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: tc.onDetect}}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
@@ -2842,6 +2845,31 @@ func TestValidateRunConfig_RuleOfTwoRuntime_OnDetectClosedSet(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateRunConfig_RuleOfTwoRuntime_NoneClassifierCrossField pins
+// the dead-config rejection: classifier "none" disables the detector,
+// so a non-empty onDetect would be stored and validated but never fire
+// — an operator who sets it believing they have a safety net has none.
+func TestValidateRunConfig_RuleOfTwoRuntime_NoneClassifierCrossField(t *testing.T) {
+	t.Run("none with onDetect rejected", func(t *testing.T) {
+		c := validConfig()
+		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{Classifier: "none", OnDetect: "abort"}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected rejection for classifier=none with onDetect=abort, got nil")
+		}
+		if !strings.Contains(err.Error(), "has no effect") {
+			t.Errorf("error should mention has no effect, got: %v", err)
+		}
+	})
+	t.Run("none with empty onDetect passes", func(t *testing.T) {
+		c := validConfig()
+		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{Classifier: "none"}}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("classifier=none alone should pass, got: %v", err)
+		}
+	})
 }
 
 // TestValidateRunConfig_RuleOfTwoRuntime_AskUpstreamRequiresGRPC pins the
