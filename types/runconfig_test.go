@@ -5239,9 +5239,10 @@ func TestValidateRunConfig_BedrockModelIDShape(t *testing.T) {
 // TestValidateRunConfig_ProviderModelLabelBound pins the cardinality
 // guard from #310: the router-resolved model string rides on the
 // provider.model OTel metric label, so for anthropic, openai-compatible,
-// and openai-responses it must match observabilityLabelPattern
-// (^[A-Za-z0-9._-]{1,64}$). #304 hardened the model-controlled tool.name
-// label; this is the operator-controlled sibling.
+// and openai-responses it must match modelLabelPattern
+// (^[A-Za-z0-9./_-]{1,64}$), which allows forward slashes for
+// OpenRouter-style "provider/model" naming. #304 hardened the
+// model-controlled tool.name label; this is the operator-controlled sibling.
 func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 	// A 65-char model string overruns the 64-char label cap.
 	tooLong := strings.Repeat("a", 65)
@@ -5253,7 +5254,6 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 			model    string
 		}{
 			{"anthropic with space", "anthropic", "claude sonnet"},
-			{"anthropic with slash", "anthropic", "anthropic/claude"},
 			{"anthropic too long", "anthropic", tooLong},
 			{"anthropic with newline", "anthropic", "claude\nsonnet"},
 			{"openai-compatible with colon", "openai-compatible", "gpt-4:turbo"},
@@ -5287,7 +5287,11 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 			{"anthropic", "claude-opus-4-1"},
 			{"openai-compatible", "gpt-4o"},
 			{"openai-responses", "gpt-4.1"},
-			{"anthropic", strings.Repeat("a", 64)}, // exactly at the cap
+			// OpenRouter-style model names with forward slashes
+			{"openai-compatible", "deepseek/deepseek-v4-flash"},
+			{"openai-compatible", "anthropic/claude-sonnet-4.6"},
+			// exactly at the cap
+			{"anthropic", strings.Repeat("a", 64)},
 		}
 		for _, tc := range cases {
 			t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
