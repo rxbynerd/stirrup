@@ -137,6 +137,7 @@ Quick map for "I need to change X" lookups:
 | Edit fallback logic | `harness/internal/edit/multi.go` |
 | Permission gating logic | `harness/internal/permission/<type>.go` |
 | Cedar policy semantics | `harness/internal/permission/policyengine.go` |
+| Rule-of-Two runtime classifier (detector / monitor+latch / gate) | `harness/internal/security/sensitivepatterns.go`, `harness/internal/ruleoftwo/`, `harness/internal/permission/ruleoftwogate.go` (arming in `core/factory.go`; operator doc: `docs/safety-rings.md`) |
 | Container runtime / network mode wiring | `harness/internal/executor/container*.go` |
 | K8s executor (Pod-per-run) + egress NetworkPolicy | `harness/internal/executor/k8s.go`, `k8s_netpol.go` (operator doc: `docs/executors/k8s.md`) |
 | `--k8s-*` CLI flags (`--k8s-namespace`, `--k8s-kubeconfig`, `--k8s-node-selector`, `--k8s-service-account`, `--k8s-egress-proxy-url`) | `harness/cmd/stirrup/cmd/runconfigflags.go` (defs), `harness.go` (mapping) |
