@@ -415,6 +415,17 @@ The short version: guardrails catch what the rings cannot
 (content-level attacks), and the rings catch what guardrails cannot
 (structural and policy violations). Both are needed.
 
+One place a guardrail *feeds* a ring is the Rule-of-Two
+criterion ratchet. When a guard `Decision.Criterion` matches
+`ruleOfTwo.runtime.guardCriteria` (default `["sensitive_data", "pii"]`),
+it trips Ring 4's runtime sensitive-data latch — one-way, false→true
+only. A guard can therefore *tighten* the Rule of Two mid-run (revoking
+egress once it judges sensitive content has entered the conversation)
+but can never loosen it, which keeps the LLM's involvement fail-safe.
+See [the runtime
+classifier](safety-rings.md#the-runtime-classifier) for the latch, the
+arming matrix, and the on-detect actions.
+
 ## References
 
 - IBM, *Granite Guardian 4.1-8B* model card —
