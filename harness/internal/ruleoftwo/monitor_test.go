@@ -269,6 +269,42 @@ func TestPatternMonitor_RedactLeavesWarnTierIntact(t *testing.T) {
 	}
 }
 
+// TestPatternMonitor_RedactKeepsScanningAfterLatch pins the wave-4
+// exception to skip-after-trip: an enforcing redact monitor must keep
+// returning detections post-latch so the loop can rewrite spans on
+// every later tool result. Every other action (and observe-only)
+// suspends scanning — covered by TestPatternMonitor_SkipsRescanAfterTrip
+// and TestPatternMonitor_WarnTierSuppressedAfterLatch.
+func TestPatternMonitor_RedactKeepsScanningAfterLatch(t *testing.T) {
+	m := NewPatternMonitor(true, "redact", defaultCriteria(), false)
+	if det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey}); !det.Transition {
+		t.Fatal("setup: first latch-tier content must transition")
+	}
+	det := m.ObserveChunks(context.Background(), "tool_result", 2, []string{"another " + fakeLiveAWSKey})
+	if det.Transition {
+		t.Error("redact must not report a second transition")
+	}
+	if len(det.Patterns) == 0 {
+		t.Error("redact must keep scanning post-latch (non-empty Detection), got empty")
+	}
+	if det.Tier != security.TierLatch {
+		t.Errorf("Tier = %q, want latch", det.Tier)
+	}
+}
+
+func TestPatternMonitor_NonRedactActionSuspendsScanning(t *testing.T) {
+	for _, action := range []string{"block-external", "ask-upstream", "abort"} {
+		t.Run(action, func(t *testing.T) {
+			m := NewPatternMonitor(true, action, defaultCriteria(), false)
+			m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey})
+			det := m.ObserveChunks(context.Background(), "tool_result", 2, []string{fakeLiveAWSKey})
+			if len(det.Patterns) != 0 {
+				t.Errorf("action %q must suspend scanning post-latch, got %+v", action, det)
+			}
+		})
+	}
+}
+
 func TestNoop_NeverTripsNeverEnforces(t *testing.T) {
 	m := NewNoop()
 	det := m.ObserveChunks(context.Background(), "tool_result", 1, []string{fakeLiveAWSKey})

@@ -54,15 +54,16 @@ func NewPatternMonitor(enforcing bool, action string, guardCriteria []string, st
 // anthropic and openai patterns, "Bearer eyJ..." matches bearer_token
 // and oidc_jwt), and latches on any latch-tier finding.
 func (m *PatternMonitor) ObserveChunks(_ context.Context, _ string, _ int, chunks []string) Detection {
-	// Once latched, further scans buy nothing: the latch is one-way and
-	// no consumer reads per-chunk findings until redact mode exists
-	// (the detector costs ~80ms/MB, so this skip is the perf budget for
-	// long runs). Warn-tier telemetry is also suppressed post-latch —
-	// a documented contract, not a side-effect: the rule_of_two_triggered
-	// event carries scanning_suspended:true so operators can see where
-	// soak data ends. Wave 4 revisits this for onDetect=redact, which
-	// needs spans on every chunk after the trip.
-	if m.tripped.Load() {
+	// Once latched, further scans buy nothing for every action EXCEPT
+	// redact: the latch is one-way, the gate (block-external /
+	// ask-upstream) keys on Tripped() alone, and abort already
+	// short-circuited the run — so re-scanning only burns the detector's
+	// ~80ms/MB. Redact is the exception: it rewrites matched spans on
+	// every just-arrived tool result for the rest of the run, so it must
+	// keep scanning post-latch. Warn-tier telemetry is therefore also
+	// dark post-latch for non-redact actions (the rule_of_two_triggered
+	// event's scanning_suspended field records where that data ends).
+	if m.tripped.Load() && !m.continuesScanning() {
 		return Detection{}
 	}
 	var names []string
@@ -116,6 +117,14 @@ func (m *PatternMonitor) Action() string {
 		return "warn"
 	}
 	return m.action
+}
+
+// continuesScanning reports whether ObserveChunks keeps scanning after
+// the latch trips. Only the enforcing redact action does — it rewrites
+// matched spans on every subsequent tool result — so the effective
+// action (Action()) being exactly "redact" is the condition.
+func (m *PatternMonitor) continuesScanning() bool {
+	return m.Action() == "redact"
 }
 
 // Redact replaces every latch-tier span reported by DetectSensitive
