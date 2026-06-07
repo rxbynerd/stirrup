@@ -2,6 +2,10 @@ claude-3-5-sonnet-20241022
 deepseek-reasoner
 deepseek-v4
 deepseek-v4-chat
+deepseek-v4-flash
+deepseek-v4-pro
+deepseek/deepseek-v4-flash
+deepseek/deepseek-v4-pro
 gemini-2.5-pro
 gemini-3.1-pro-preview
 glm-4-air

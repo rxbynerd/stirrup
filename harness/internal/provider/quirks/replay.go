@@ -9,10 +9,12 @@ import (
 // This file implements the shared ReplayFields path parser and walker.
 // ReplayFields is the design D12 surface: a rule lists assistant-message
 // field paths that should be captured from a provider response so the
-// agentic loop can echo them back on the next turn. Wave 2 lands
-// parse-side recognition only (design §9 risk 7) — the captured values
-// surface in trace attributes so an operator can see the rule fired,
-// but they are not yet threaded back into outbound message history.
+// agentic loop can echo them back on the next turn. Captured values
+// surface in length-only trace attributes on every adapter; the
+// openai-compatible adapter additionally threads single-segment paths
+// back into outbound message history (design §9 risk 7) — see the
+// "(threaded)" / "(parse-side only)" Description convention in
+// builtin.go.
 //
 // The parser is cross-adapter: both openai.go and gemini.go call it
 // against their decoded SSE payloads, so the path syntax is the only
