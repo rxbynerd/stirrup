@@ -130,9 +130,17 @@ Provider/model pairs sometimes diverge from the adapter's canonical
 wire shape: OpenAI's reasoning-class models reject sampling
 parameters, Z.ai GLM requires the legacy `max_tokens` key, Gemini
 3.x emits a `thoughtSignature` blob that must survive turn
-boundaries. Rather than encoding these as adapter-internal model
-substring checks, the harness routes them through a registry-driven
-quirks layer at `harness/internal/provider/quirks/`.
+boundaries, and DeepSeek v4's default-on thinking mode requires the
+`reasoning_content` it streams replayed back on every request after
+a tool-call turn (the API returns 400 otherwise). Rather than
+encoding these as adapter-internal model substring checks, the
+harness routes them through a registry-driven quirks layer at
+`harness/internal/provider/quirks/`. DeepSeek v4 runs through the
+stock Chat Completions adapter (`provider.type:
+"openai-compatible"` with `provider.baseUrl:
+"https://api.deepseek.com"`); the built-in `deepseek-v4*` and
+`deepseek/deepseek-v4*` rules supply the replay threading, sampling
+suppression, and legacy token key with no operator configuration.
 
 Operators do not author quirk rules. Two surfaces are available:
 

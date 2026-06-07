@@ -12,13 +12,14 @@ breaking end-to-end against a live provider.
 testdata/quirks/<provider-type>/<model>/
     request.json     # golden outbound request body (one tool-enabled turn)
     response.sse      # captured streaming response for parser tests
-    replay.json       # captured ReplayFields snapshot (parse-side rules)
+    replay.json       # captured ReplayFields snapshot (ReplayFields rules)
 ```
 
 `<provider-type>` is the `RunConfig` provider type (`anthropic`,
 `openai-compatible`, `openai-responses`, `gemini`); `<model>` is the model the
-fixture was captured for. Not every provider/model carries all three files —
-add only what the test asserts.
+fixture was captured for — a gateway-prefixed id such as
+`deepseek/deepseek-v4-flash` maps onto a nested directory verbatim. Not every
+provider/model carries all three files — add only what the test asserts.
 
 ## `request.json` format
 
