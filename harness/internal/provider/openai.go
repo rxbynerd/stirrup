@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -444,6 +445,60 @@ func logReplayFieldsCapture(ctx context.Context, logger *slog.Logger, providerTy
 	)
 }
 
+// flattenReplayCapture projects the per-stream ReplayFields accumulator
+// onto the map a "message_complete" StreamEvent carries (the flattening
+// rule documented on types.StreamEvent.ReplayFields):
+//
+//   - when every captured value for a path is a string, the pieces are
+//     concatenated in arrival order and marshalled as one JSON string —
+//     the streamed-string-field case (DeepSeek's reasoning_content
+//     arrives across many chunks);
+//   - otherwise the LAST captured value is marshalled verbatim
+//     (snapshot semantics for object-shaped fields).
+//
+// A value that fails to re-marshal is skipped: every entry in the
+// accumulator was decoded from provider JSON, so the arm is
+// defence-in-depth, and dropping one path must not poison the rest.
+// Returns nil when nothing was captured so the StreamEvent field stays
+// omitted.
+func flattenReplayCapture(capture map[string][]any) map[string]json.RawMessage {
+	if len(capture) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(capture))
+	for path, values := range capture {
+		if len(values) == 0 {
+			continue
+		}
+		allStrings := true
+		for _, v := range values {
+			if _, ok := v.(string); !ok {
+				allStrings = false
+				break
+			}
+		}
+		var encoded []byte
+		var err error
+		if allStrings {
+			var b strings.Builder
+			for _, v := range values {
+				b.WriteString(v.(string))
+			}
+			encoded, err = json.Marshal(b.String())
+		} else {
+			encoded, err = json.Marshal(values[len(values)-1])
+		}
+		if err != nil {
+			continue
+		}
+		out[path] = encoded
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // canonicalOpenAIFields enumerates the top-level Chat Completions
 // request fields the adapter knows how to emit. ExtraBodyFields rules
 // must not collide with any of these — the registry self-test guards
@@ -476,11 +531,117 @@ func isCanonicalOpenAIField(k string) bool {
 }
 
 // openaiMessage is a single message in OpenAI's Chat Completions format.
+//
+// ReplayFields carries provider-opaque round-trip state (quirks
+// ReplayFields, design D12) to emit as additional top-level keys on an
+// assistant message — e.g. DeepSeek thinking mode's reasoning_content,
+// which the API requires replayed on tool-call turns (400 otherwise).
+// Keyed by the rule's verbatim single-segment path; values are the
+// flattened JSON captured on a prior turn. The `json:"-"` tag keeps
+// the map out of the default (un)marshalling — MarshalJSON merges the
+// entries after the canonical fields, mirroring the openaiRequest
+// ExtraBodyFields pattern. Populated by translateMessages only for
+// paths the resolved quirks name for THIS stream, so stale state from
+// a different model never leaks onto the wire. The decode side
+// deliberately ignores non-canonical message keys: replay state is
+// produced by the harness, never parsed back out of a request body.
 type openaiMessage struct {
-	Role       string           `json:"role"` // "system" | "user" | "assistant" | "tool"
-	Content    any              `json:"content,omitempty"`
-	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role         string                     `json:"role"` // "system" | "user" | "assistant" | "tool"
+	Content      any                        `json:"content,omitempty"`
+	ToolCalls    []openaiToolCall           `json:"tool_calls,omitempty"`
+	ToolCallID   string                     `json:"tool_call_id,omitempty"`
+	ReplayFields map[string]json.RawMessage `json:"-"`
+}
+
+// canonicalOpenAIMessageFields enumerates the top-level Chat Completions
+// message keys the adapter owns. A ReplayFields path that collides with
+// any of these is never emitted as an extra key: translateMessages skips
+// it silently at runtime, the quirks registry's build-time test
+// (TestBuiltinRulesReplayFieldsSuffix) rejects first-party rules that
+// declare one, and MarshalJSON errors as defence-in-depth. "name" is in
+// the set even though the struct does not carry it — it is a documented
+// optional key on the OpenAI message schema.
+var canonicalOpenAIMessageFields = map[string]struct{}{
+	"role":         {},
+	"content":      {},
+	"tool_calls":   {},
+	"tool_call_id": {},
+	"name":         {},
+}
+
+// isCanonicalOpenAIMessageField reports whether the given key is owned
+// by the canonical openaiMessage projection.
+func isCanonicalOpenAIMessageField(k string) bool {
+	_, ok := canonicalOpenAIMessageFields[k]
+	return ok
+}
+
+// threadableOpenAIReplayPath reports whether a quirks ReplayFields path
+// can be echoed back as a top-level key on an assistant wire message.
+// Only single-segment paths qualify: a captured value from a nested or
+// array-iterated path (e.g. Gemini's candidates[].content.parts[]
+// shape) has no faithful flat representation on a Chat Completions
+// message, and emitting a guess would be worse than emitting nothing.
+// Canonical message keys are excluded so a rule cannot overwrite
+// role/content/tool_calls via the replay side-channel.
+//
+// Non-qualifying paths are silently skipped here (safe at runtime);
+// the quirks registry's build-time test fails loudly on any first-party
+// openai-compatible rule that declares one.
+func threadableOpenAIReplayPath(path string) bool {
+	segments, err := quirks.ParseReplayPath(path)
+	if err != nil || len(segments) != 1 || segments[0].IsArray {
+		return false
+	}
+	return !isCanonicalOpenAIMessageField(path)
+}
+
+// MarshalJSON emits the canonical message fields in struct order, then
+// appends the ReplayFields entries (sorted by key for determinism).
+// The two-pass shape mirrors openaiRequest.MarshalJSON: canonical
+// fields stay struct-driven so their byte order is stable, and the
+// extras are spliced in after. A ReplayFields key that collides with a
+// canonical message field, or a value that is not valid JSON, is an
+// error — translateMessages filters both cases, so reaching either arm
+// means a non-quirks caller populated the map by hand and should fail
+// loudly before any wire bytes are sent.
+func (m openaiMessage) MarshalJSON() ([]byte, error) {
+	type alias openaiMessage
+	base, err := json.Marshal(alias(m))
+	if err != nil {
+		return nil, err
+	}
+	if len(m.ReplayFields) == 0 {
+		return base, nil
+	}
+	keys := make([]string, 0, len(m.ReplayFields))
+	for k := range m.ReplayFields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	// base is always a non-empty object ("role" has no omitempty), so
+	// stripping the closing brace and splicing ",<key>:<value>" pairs is
+	// safe.
+	buf := bytes.NewBuffer(base[:len(base)-1])
+	for _, k := range keys {
+		if isCanonicalOpenAIMessageField(k) {
+			return nil, fmt.Errorf("openai replay field %q collides with canonical message field", k)
+		}
+		v := m.ReplayFields[k]
+		if !json.Valid(v) {
+			return nil, fmt.Errorf("openai replay field %q carries invalid JSON", k)
+		}
+		keyJSON, err := json.Marshal(k)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteByte(',')
+		buf.Write(keyJSON)
+		buf.WriteByte(':')
+		buf.Write(v)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
 
 // openaiToolCall represents a tool invocation in an assistant message.
@@ -638,7 +799,17 @@ type openaiToolCallState struct {
 // translateMessages converts stirrup's internal Message/ContentBlock format
 // to OpenAI's chat message format. The system prompt is prepended as a
 // system message.
-func translateMessages(system string, messages []types.Message) []openaiMessage {
+//
+// replayPaths is the resolved quirks ReplayFields for THIS stream. For
+// each assistant message carrying Message.ReplayFields, the entries
+// whose path is (a) named by replayPaths, (b) single-segment, and (c)
+// not a canonical message key are emitted as top-level keys on the
+// assistant wire message — the outbound half of the quirks ReplayFields
+// round-trip (design §9 risk 7). Gating on replayPaths keeps the
+// registry the single source of truth: state captured under a different
+// model's rules (e.g. after a mid-run model switch) is not replayed to
+// a provider whose resolved rules never asked for it.
+func translateMessages(system string, messages []types.Message, replayPaths []string) []openaiMessage {
 	var out []openaiMessage
 
 	if system != "" {
@@ -680,6 +851,20 @@ func translateMessages(system string, messages []types.Message) []openaiMessage 
 			}
 			if len(toolCalls) > 0 {
 				oai.ToolCalls = toolCalls
+			}
+			if len(msg.ReplayFields) > 0 {
+				var extra map[string]json.RawMessage
+				for _, path := range replayPaths {
+					v, ok := msg.ReplayFields[path]
+					if !ok || len(v) == 0 || !threadableOpenAIReplayPath(path) {
+						continue
+					}
+					if extra == nil {
+						extra = make(map[string]json.RawMessage)
+					}
+					extra[path] = v
+				}
+				oai.ReplayFields = extra
 			}
 			out = append(out, oai)
 
@@ -890,7 +1075,7 @@ func buildOpenAIRequest(params types.StreamParams, stream bool, q quirks.Provide
 	}
 	return openaiRequest{
 		Model:              params.Model,
-		Messages:           translateMessages(params.System, params.Messages),
+		Messages:           translateMessages(params.System, params.Messages, q.ReplayFields),
 		Tools:              tools,
 		MaxTokens:          params.MaxTokens,
 		Temperature:        params.Temperature,
@@ -1093,8 +1278,9 @@ func (o *OpenAICompatibleAdapter) recordLatency(ctx context.Context, start time.
 // (design D5). The parser reads q.ReplayFields and captures the named
 // paths from each chunk's delta object — design D12. The captured set
 // surfaces in a per-stream debug log emitted at the end of the stream
-// (Wave 2 lands parse-side recognition only — outbound threading is
-// deferred per §9 risk 7).
+// (length-only) and, flattened, on the message_complete event's
+// ReplayFields so the loop can round-trip it on the next turn (§9
+// risk 7 outbound threading).
 //
 // logger and model are threaded purely so the per-stream replay-fields
 // debug summary names the model and stays on the same logger the
@@ -1186,12 +1372,11 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		}
 
 		for _, choice := range chunk.Choices {
-			// ReplayFields capture (design D12, Wave 2 parse-side
-			// recognition). Walk the raw delta object once per chunk
-			// and merge any matching paths into the per-stream
-			// accumulator. The path walker is a no-op when
-			// q.ReplayFields is empty so the cost in the zero-rules
-			// case is one slice-length check.
+			// ReplayFields capture (design D12). Walk the raw delta
+			// object once per chunk and merge any matching paths into
+			// the per-stream accumulator. The path walker is a no-op
+			// when q.ReplayFields is empty so the cost in the
+			// zero-rules case is one slice-length check.
 			if len(q.ReplayFields) > 0 && len(choice.RawDelta) > 0 {
 				if captured := quirks.CaptureFromJSON(choice.RawDelta, q.ReplayFields); len(captured) > 0 {
 					for k, v := range captured {
@@ -1237,6 +1422,15 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 				ev := types.StreamEvent{
 					Type:       "message_complete",
 					StopReason: stopReason,
+					// The flattened ReplayFields capture rides on the
+					// message_complete event so the agentic loop can
+					// attach it to the assistant Message it persists —
+					// the outbound half of the round-trip threads it
+					// back via translateMessages on the next turn. The
+					// length-only slog/OTel summary in the deferred
+					// block above is unchanged; the values themselves
+					// are never logged.
+					ReplayFields: flattenReplayCapture(replayFieldsCapture),
 				}
 				if chunk.Usage != nil {
 					ev.OutputTokens = chunk.Usage.CompletionTokens
