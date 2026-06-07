@@ -533,6 +533,9 @@ func TestSpawnSubAgent_TraceToolCallsForwardedToParent(t *testing.T) {
 		if c.Name != "test_tool" {
 			t.Errorf("forwarded ToolCallTrace.Name: got %q, want %q", c.Name, "test_tool")
 		}
+		if c.ID != "tc_1" {
+			t.Errorf("forwarded ToolCallTrace.ID: got %q, want the provider's tool_use ID %q", c.ID, "tc_1")
+		}
 	}
 }
 

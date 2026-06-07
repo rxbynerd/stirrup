@@ -329,6 +329,7 @@ func (l *AgenticLoop) planAndDispatch(
 			internalForTrace = p.internalName
 		}
 		l.Trace.RecordToolCall(types.ToolCallTrace{
+			ID:            p.call.ID,
 			Name:          p.call.Name,
 			InternalName:  internalForTrace,
 			DurationMs:    callDuration.Milliseconds(),
