@@ -122,6 +122,18 @@ type OTelTraceEmitter struct {
 	// forwarded a prompt.
 	systemInstructionsJSON string
 
+	// rootInputMessagesJSON / rootOutputMessagesJSON are the run-level
+	// content stamped on the root span at Finish, making the root span a
+	// complete invoke_agent observation (the agent's input and final
+	// output) for backends that derive trace-level views from it. Both
+	// are retained from the parent run's own turn records (RunID == "");
+	// forwarded sub-agent records never contribute. Input is set-once —
+	// turn 0's input messages are exactly the seed prompt — and output
+	// is overwrite-always so the final assistant message wins. Empty
+	// when capture is off.
+	rootInputMessagesJSON  string
+	rootOutputMessagesJSON string
+
 	// pendingTurns buffers turn summaries (and the span timestamps
 	// derived at RecordTurn time) between RecordTurn and the matching
 	// RecordTurnRecord while capture is on, so a single turn[N] span
@@ -350,6 +362,8 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 	e.permissionDenials = 0
 	e.systemInstructionsJSON = ""
+	e.rootInputMessagesJSON = ""
+	e.rootOutputMessagesJSON = ""
 	e.pendingTurns = nil
 
 	ctx := context.Background()
@@ -549,11 +563,13 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 		// the same span (raw provider vocabulary, not the semconv enum,
 		// for consistency between the two surfaces).
 		content.outputMessages = genAIOutputMessagesJSON(scrubbed.ModelOutput, pending.trace.StopReason)
+		e.retainRootContentLocked(scrubbed.RunID, content)
 		e.emitTurnSpanLocked(pending.trace, pending.spanStart, pending.spanEnd, content)
 		return
 	}
 
 	content.outputMessages = genAIOutputMessagesJSON(scrubbed.ModelOutput, "")
+	e.retainRootContentLocked(scrubbed.RunID, content)
 	attrs := append([]attribute.KeyValue{
 		attribute.Int("turn.number", scrubbed.Turn),
 		attribute.String(genAIOperationNameKey, "chat"),
@@ -569,6 +585,28 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 		oteltrace.WithAttributes(attrs...),
 	)
 	span.End(oteltrace.WithTimestamp(now))
+}
+
+// retainRootContentLocked feeds a captured turn's content into the
+// run-level slots stamped on the root span at Finish. Only the parent
+// run's own records contribute (runID is empty exactly there; forwarded
+// sub-agent records carry the child's run ID) — a sub-agent's transcript
+// is its spawn_agent tool call's business, not the run's I/O. Input is
+// set-once: turn 0's input messages are the seed prompt verbatim, and if
+// that record never arrives, a later turn's history still embeds the
+// seed. Output overwrites so the final assistant message wins; an empty
+// serialisation (e.g. an aborted turn with no output blocks) never
+// clobbers earlier content. Must be called with e.mu held.
+func (e *OTelTraceEmitter) retainRootContentLocked(runID string, content *turnContent) {
+	if runID != "" {
+		return
+	}
+	if e.rootInputMessagesJSON == "" {
+		e.rootInputMessagesJSON = content.inputMessages
+	}
+	if content.outputMessages != "" {
+		e.rootOutputMessagesJSON = content.outputMessages
+	}
 }
 
 // RecordSystemInstructions stores the run's built system prompt for
@@ -685,6 +723,19 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 			attribute.Int("run.turns", len(e.turns)),
 			attribute.Int("run.permission_denials", e.permissionDenials),
 		)
+		// Stamp the run-level content retained from the parent run's
+		// turn records (see retainRootContentLocked), completing the
+		// root span as an invoke_agent observation. Must happen before
+		// End below — the SDK silently drops attributes set afterwards.
+		if e.captureContent {
+			rootContent := turnContent{
+				inputMessages:  e.rootInputMessagesJSON,
+				outputMessages: e.rootOutputMessagesJSON,
+			}
+			if attrs := rootContent.attributes(e.systemInstructionsJSON); len(attrs) > 0 {
+				e.rootSpan.SetAttributes(attrs...)
+			}
+		}
 		// Every non-success outcome — including cancelled — marks the
 		// root Error so backends expose one "didn't finish" predicate;
 		// the run.outcome attribute (and run.cancelled_by, when set by

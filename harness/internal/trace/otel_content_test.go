@@ -417,3 +417,111 @@ func TestOTelTraceEmitter_CaptureContent_PairsByRunID(t *testing.T) {
 	assertIntAttribute(t, *childSpan, genAIUsageInputTokens, 77)
 	assertIntAttribute(t, *parentSpan, genAIUsageInputTokens, 1000)
 }
+
+// TestOTelTraceEmitter_CaptureContent_RootSpanIO pins the run-level
+// content surface: the root span carries the first parent turn's input
+// (the seed prompt), the last parent turn's output (the final assistant
+// message), and the system instructions — and forwarded sub-agent
+// records contribute to none of them. Backends derive their trace-level
+// input/output views from the root span, so a regression here empties
+// those panels while leaving every turn span intact.
+func TestOTelTraceEmitter_CaptureContent_RootSpanIO(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-root-io", nil)
+	emitter.RecordSystemInstructions("You are a coding agent.")
+
+	// Parent turn 0: the seed prompt and an intermediate answer.
+	emitter.RecordTurn(types.TurnTrace{Turn: 0, StopReason: "tool_use", DurationMs: 10})
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 0,
+		ModelInput: types.ModelInput{Messages: []types.Message{{
+			Role:    "user",
+			Content: []types.ContentBlock{{Type: "text", Text: "the seed prompt"}},
+		}}},
+		ModelOutput: []types.ContentBlock{{Type: "text", Text: "intermediate answer"}},
+	})
+
+	// A forwarded sub-agent record between the parent's turns: must not
+	// leak into the run-level slots.
+	emitter.RecordTurn(types.TurnTrace{Turn: 0, RunID: "child-run", ParentRunID: "run-root-io", StopReason: "end_turn", DurationMs: 5})
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 0, RunID: "child-run", ParentRunID: "run-root-io",
+		ModelInput: types.ModelInput{Messages: []types.Message{{
+			Role:    "user",
+			Content: []types.ContentBlock{{Type: "text", Text: "child sub-task"}},
+		}}},
+		ModelOutput: []types.ContentBlock{{Type: "text", Text: "child answer"}},
+	})
+
+	// Parent turn 1: history embeds the seed; output is the final answer.
+	emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 10})
+	emitter.RecordTurnRecord(types.TurnRecord{
+		Turn: 1,
+		ModelInput: types.ModelInput{Messages: []types.Message{{
+			Role:    "user",
+			Content: []types.ContentBlock{{Type: "text", Text: "the seed prompt"}},
+		}, {
+			Role:    "assistant",
+			Content: []types.ContentBlock{{Type: "text", Text: "intermediate answer"}},
+		}}},
+		ModelOutput: []types.ContentBlock{{Type: "text", Text: "the final answer"}},
+	})
+
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	root := findSpan(t, exporter, "run")
+
+	input, ok := spanAttrString(root, genAIInputMessagesKey)
+	if !ok {
+		t.Fatal("root span missing gen_ai.input.messages")
+	}
+	if !strings.Contains(input, "the seed prompt") {
+		t.Errorf("root input should carry the seed prompt, got %q", input)
+	}
+	if strings.Contains(input, "intermediate answer") {
+		t.Errorf("root input must be turn 0's input (set-once), not a later turn's history: %q", input)
+	}
+
+	output, ok := spanAttrString(root, genAIOutputMessagesKey)
+	if !ok {
+		t.Fatal("root span missing gen_ai.output.messages")
+	}
+	if !strings.Contains(output, "the final answer") {
+		t.Errorf("root output should carry the last parent turn's output, got %q", output)
+	}
+
+	for _, val := range []string{input, output} {
+		if strings.Contains(val, "child") {
+			t.Errorf("forwarded sub-agent content leaked into root span: %q", val)
+		}
+	}
+
+	system, ok := spanAttrString(root, genAISystemInstructionsKey)
+	if !ok || !strings.Contains(system, "You are a coding agent.") {
+		t.Errorf("root span system instructions: got %q (present=%v)", system, ok)
+	}
+}
+
+// TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords
+// pins the degraded shape: a run that produced no transcript records
+// (every loop error path) finishes with a bare root span — no content
+// keys, never empty-string attributes.
+func TestOTelTraceEmitter_CaptureContent_RootSpanIOAbsentWithoutRecords(t *testing.T) {
+	emitter, exporter := newTestOTelEmitterWithCapture()
+
+	emitter.Start("run-root-bare", nil)
+	emitter.RecordTurn(types.TurnTrace{Turn: 0, StopReason: "", DurationMs: 5})
+	if _, err := emitter.Finish(context.Background(), "error"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	root := findSpan(t, exporter, "run")
+	for _, key := range []string{genAIInputMessagesKey, genAIOutputMessagesKey, genAISystemInstructionsKey} {
+		if val, ok := spanAttrString(root, key); ok {
+			t.Errorf("root span carries %q (%q) with no records", key, val)
+		}
+	}
+}
