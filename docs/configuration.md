@@ -792,10 +792,10 @@ versions.
 ## Rule-of-Two configuration
 
 The `ruleOfTwo` block tunes [Ring 4](safety-rings.md#ring-4--rule-of-two-pre-flight-invariant--runtime-classifier).
-It has no CLI flag — the override must live in the RunConfig so it is
+It has no CLI flag — the override must be stored in the RunConfig so it is
 reviewable in pull requests. The behavioural semantics (what trips the
 latch, the arming matrix, the on-detect actions) are documented in
-[`safety-rings.md`](safety-rings.md#the-runtime-classifier); this is the
+[`safety-rings.md`](safety-rings.md#the-runtime-classifier); this table is the
 schema reference.
 
 | Field | Type | Default | Notes |

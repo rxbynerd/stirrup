@@ -238,14 +238,13 @@ For the declared case, the operator states sensitivity and the harness
 does not infer it from credential names. Two signals trip the leg at
 config time:
 
-- `runConfig.sensitiveData: true` — a top-level boolean. Use this
-  when the run will work with sensitive data sourced from somewhere
-  other than the dynamic-context block (workspace files, future
-  MCP-resourced data, etc.).
-- `dynamicContext.<key>.sensitive: true` — per-entry. Use this when
-  the sensitive data rides into the prompt as a dynamic-context
-  block — e.g. a customer record loaded for triage. Non-sensitive
-  entries (issue body, repo metadata) can sit alongside.
+- `runConfig.sensitiveData: true` — a top-level boolean for runs that
+  work with sensitive data sourced from somewhere other than the
+  dynamic-context block (workspace files, future MCP-resourced data, etc.).
+- `dynamicContext.<key>.sensitive: true` — per-entry, for sensitive data
+  that rides into the prompt as a dynamic-context block — e.g. a
+  customer record loaded for triage. Non-sensitive entries (issue body,
+  repo metadata) can sit alongside.
 
 Either signal, on its own, sets `holdsSensitiveData = true`.
 
@@ -377,8 +376,8 @@ revokes egress).
 
 ### Why `ask-upstream` is the documented exception
 
-Rule of Two is a "two of three" rule. You can hold any two of
-{untrusted input, sensitive data, external comms} freely; you can
+Rule of Two is a "two of three" rule. A run may hold any two of
+{untrusted input, sensitive data, external comms} freely; it may
 also hold all three *if* a human is in the loop. `ask-upstream`
 prompts the operator (over the gRPC transport correlator) for every
 side-effecting call, making each dangerous tool call a human
