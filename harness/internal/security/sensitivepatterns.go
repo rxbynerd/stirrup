@@ -113,6 +113,8 @@ func buildSensitivePatterns() []SensitivePattern {
 		case "api_key_header":
 			sp.Validate = validAPIKeyHeader
 			sp.prefilter = anyLiteral(apiKeyHeaderPrefilterLits)
+		case "aws_access_key_id":
+			sp.Validate = validAWSAccessKeyID
 		case "aws_secret_access_key":
 			sp.prefilter = anyLiteral(awsSecretPrefilterLits)
 		case "azure_storage_key":
@@ -157,6 +159,9 @@ func lowerVariant(src string) *regexp.Regexp {
 	if !ok {
 		return nil
 	}
+	if hasUnsafeClassRange(rest) {
+		return nil
+	}
 	var b strings.Builder
 	b.Grow(len(rest))
 	for i := 0; i < len(rest); i++ {
@@ -181,6 +186,48 @@ func lowerVariant(src string) *regexp.Regexp {
 		return nil
 	}
 	return re
+}
+
+// hasUnsafeClassRange reports whether the pattern fragment contains a
+// character-class range with exactly one uppercase-letter endpoint,
+// e.g. [0-F] or [A-z]. Mechanically lowering such a range changes its
+// semantics: [0-F] → [0-f] admits punctuation and a-f that the
+// original never matched. Ranges with both endpoints uppercase ([A-Z])
+// lower cleanly — ASCII lowering is an order-preserving bijection from
+// A-Z to a-z — and are left for lowerVariant to rewrite; bailing on
+// them too would disqualify every current (?i) scrubber pattern (they
+// all contain [A-Za-z...]) and forfeit the fast path entirely. A
+// leading/trailing '-' inside a class is a literal, not a range.
+func hasUnsafeClassRange(src string) bool {
+	inClass := false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if c == '\\' {
+			i++
+			continue
+		}
+		switch c {
+		case '[':
+			inClass = true
+			continue
+		case ']':
+			inClass = false
+			continue
+		}
+		if !inClass || c != '-' || i == 0 || i+1 >= len(src) {
+			continue
+		}
+		lo, hi := src[i-1], src[i+1]
+		if lo == '[' || hi == ']' {
+			continue
+		}
+		loUpper := lo >= 'A' && lo <= 'Z'
+		hiUpper := hi >= 'A' && hi <= 'Z'
+		if loUpper != hiUpper {
+			return true
+		}
+	}
+	return false
 }
 
 func asciiLower(s string) string {
@@ -309,6 +356,12 @@ func detectBulk(content string, p *SensitivePattern) (SensitiveFinding, bool) {
 			return SensitiveFinding{Name: p.Name, Tier: p.Tier, Start: first, End: firstEnd}, true
 		}
 		pos = end
+		if loc[1] == loc[0] {
+			// A zero-length match would pin pos in place; emailRe
+			// cannot produce one, but a future MinDistinct pattern
+			// with a *-quantified regex must not infinite-loop.
+			pos++
+		}
 	}
 	return SensitiveFinding{}, false
 }
@@ -321,21 +374,39 @@ var docExampleLiterals = []string{
 	"MTIzNDU2OmdsY18uLi4=",
 }
 
-// notDocExample rejects canonical documentation examples: anything
-// ending in "EXAMPLE" (the convention AWS reserves for doc keys such
-// as AKIAIOSFODNN7EXAMPLE, which also appear in this repo's eval
-// suites) plus the literal allowlist above.
+// notDocExample rejects canonical documentation examples by exact
+// literal only. It deliberately does NOT exclude matches that merely
+// end in "EXAMPLE": the secret patterns have greedy variable-length
+// tails, so an appended EXAMPLE is absorbed into the match and a
+// tail check would let an attacker suppress detection of a real key
+// by suffixing it (wave-2 review bypass). The EXAMPLE-tail
+// convention is handled per-pattern where it is sound — see
+// validAWSAccessKeyID.
 func notDocExample(content string, start, end int) bool {
 	m := content[start:end]
-	if len(m) >= 7 && strings.EqualFold(m[len(m)-7:], "EXAMPLE") {
-		return false
-	}
 	for _, lit := range docExampleLiterals {
 		if strings.Contains(m, lit) {
 			return false
 		}
 	}
 	return true
+}
+
+// validAWSAccessKeyID adds the EXAMPLE-tail convention on top of the
+// literal allowlist: AWS reserves key IDs ending in EXAMPLE for
+// documentation (AKIAIOSFODNN7EXAMPLE and friends, which appear in
+// this repo's eval suites). The check is sound here and only here
+// because the pattern is fixed-length: an EXAMPLE appended to a real
+// key lands after the 20-char match — the regex cannot absorb it —
+// so the match tail, and detection, are unchanged. Variable-length
+// patterns must keep using notDocExample alone; their greedy classes
+// absorb the suffix into the match, which is exactly the wave-2
+// review bypass.
+func validAWSAccessKeyID(content string, start, end int) bool {
+	if !notDocExample(content, start, end) {
+		return false
+	}
+	return !strings.HasSuffix(content[start:end], "EXAMPLE")
 }
 
 // tokenAfterSpace returns the substring after the last whitespace in
@@ -390,14 +461,26 @@ func validBasicAuth(content string, start, end int) bool {
 	return bytes.IndexByte(decoded, ':') >= 0
 }
 
-// validAPIKeyHeader drops matches whose value is actually the scheme
-// of a reference or URL: `dd-api-key: secret://DD_API_KEY` matches the
-// scrubber regex as `api-key: secret`.
+// validAPIKeyHeader drops the secret://-reference shape and nothing
+// else: `dd-api-key: secret://DD_API_KEY` matches the scrubber regex
+// as `api-key: secret` because the value class excludes ':', leaving
+// "://" immediately after the match. The value must be exactly the
+// scheme word "secret" — suppressing on a bare "://" suffix would let
+// an attacker drop detection of any real key by appending
+// "://anything" to it (wave-2 review bypass), and a value that merely
+// ends in "secret" could still be key material.
 func validAPIKeyHeader(content string, start, end int) bool {
 	if !notDocExample(content, start, end) {
 		return false
 	}
-	return !strings.HasPrefix(content[end:], "://")
+	m := content[start:end]
+	if i := strings.IndexByte(m, ':'); i >= 0 {
+		val := strings.TrimLeft(m[i+1:], " \t\r\n\v\f")
+		if val == "secret" && strings.HasPrefix(content[end:], "://") {
+			return false
+		}
+	}
+	return true
 }
 
 // validLuhn strips separators and applies the Luhn checksum over the

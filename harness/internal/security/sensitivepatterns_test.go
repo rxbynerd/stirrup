@@ -2,6 +2,8 @@ package security
 
 import (
 	"encoding/base64"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -187,6 +189,30 @@ func TestDetectSensitive_ExampleKeyAllowlist(t *testing.T) {
 	}
 }
 
+// Wave-2 review bypass: greedy variable-length patterns absorb an
+// appended EXAMPLE into the match, so a within-match tail check let an
+// attacker suppress detection of a real key by suffixing it. The
+// exclusion is now exact-literal (plus the fixed-length AKIA tail
+// convention), so these must keep latching.
+func TestDetectSensitive_ExampleSuffixBypassPrevented(t *testing.T) {
+	realGHP := "ghp_" + "myrealtoken1234"
+	if fs := DetectSensitive("key: " + realGHP + "EXAMPLE"); !hasFinding(fs, "secret/github_pat") {
+		t.Errorf("EXAMPLE-suffix bypass: %q not detected", realGHP+"EXAMPLE")
+	}
+
+	realAnthropic := "sk-ant-" + "abc123DEF456xyz789AB"
+	if fs := DetectSensitive(realAnthropic + "EXAMPLE"); !hasFinding(fs, "secret/anthropic_api_key") {
+		t.Errorf("EXAMPLE-suffix bypass: anthropic key %q not detected", realAnthropic+"EXAMPLE")
+	}
+
+	// Fixed-length AKIA cannot absorb the suffix: the appended EXAMPLE
+	// sits after the 20-char match and must not suppress it.
+	realAKIA := "AKIA" + "ABCDEFGHIJKLMNOP"
+	if fs := DetectSensitive("leak " + realAKIA + "EXAMPLE"); !hasFinding(fs, "secret/aws_access_key_id") {
+		t.Errorf("EXAMPLE-suffix bypass: AKIA key with appended EXAMPLE not detected: %v", fs)
+	}
+}
+
 func TestDetectSensitive_SpanOffsets(t *testing.T) {
 	key := "AKIA" + "ABCDEFGHIJKLMNOP"
 	content := "before " + key + " after"
@@ -197,6 +223,25 @@ func TestDetectSensitive_SpanOffsets(t *testing.T) {
 	}
 	if got := content[f.Start:f.End]; got != key {
 		t.Errorf("span sliced %q, want %q", got, key)
+	}
+}
+
+// aws_secret_access_key has a (?i) prefix so its lowerRe is non-nil —
+// this exercises the lowerRe scan path, whose offsets Wave 3 uses for
+// redaction. Uppercase characters before the key pin the byte-
+// preserving property of asciiLower: replacing it with anything that
+// can change byte length would shift the span and fail here.
+func TestDetectSensitive_SpanOffsets_LowerRePath(t *testing.T) {
+	key := strings.Repeat("Ab1+", 10)
+	content := "BEFORE AWS_SECRET_ACCESS_KEY = " + key + " AFTER"
+	fs := DetectSensitive(content)
+	f, ok := findByName(fs, "secret/aws_secret_access_key")
+	if !ok {
+		t.Fatalf("expected secret/aws_secret_access_key finding, got %v", fs)
+	}
+	got := content[f.Start:f.End]
+	if !strings.HasSuffix(got, key) || !strings.HasPrefix(got, "AWS_SECRET_ACCESS_KEY") {
+		t.Errorf("lowerRe span sliced %q, want %q through %q", got, "AWS_SECRET_ACCESS_KEY", key)
 	}
 }
 
@@ -244,17 +289,39 @@ func TestDetectSensitive_GrafanaDocExampleAllowlisted(t *testing.T) {
 }
 
 func TestDetectSensitive_APIKeyHeaderSecretRef(t *testing.T) {
-	fs := DetectSensitive("dd-api-key: secret://DD_API_KEY")
-	for _, f := range fs {
-		if f.Tier == TierLatch {
-			t.Errorf("secret:// header value produced latch finding %s", f.Name)
+	for _, input := range []string{
+		"dd-api-key: secret://DD_API_KEY",
+		"x-api-key: secret://X_API_KEY",
+	} {
+		for _, f := range DetectSensitive(input) {
+			if f.Tier == TierLatch {
+				t.Errorf("input %q: secret:// header value produced latch finding %s", input, f.Name)
+			}
 		}
 	}
 
 	hex32 := strings.Repeat("0123456789abcdef", 2)
-	fs = DetectSensitive("api-key: " + hex32)
+	fs := DetectSensitive("api-key: " + hex32)
 	if !hasFinding(fs, "secret/api_key_header") {
 		t.Errorf("real api-key header value not detected: %v", fs)
+	}
+}
+
+// Wave-2 review bypass: suppressing any match followed by "://" let an
+// attacker drop api_key_header detection by appending "://anything" to
+// a real value. Only the bare secret://-reference shape may suppress.
+func TestDetectSensitive_APIKeyHeaderURLSuffixBypassPrevented(t *testing.T) {
+	realKey := strings.Repeat("0123456789abcdef", 2)
+	fs := DetectSensitive("api-key: " + realKey + "://api.attacker.example/steal")
+	if !hasFinding(fs, "secret/api_key_header") {
+		t.Errorf("api-key value followed by :// was suppressed: %v", fs)
+	}
+
+	// A value that merely ends in the word "secret" is still potential
+	// key material; only the exact scheme word is a reference.
+	fs = DetectSensitive("api-key: " + "a1b2c3d4e5f6secret" + "://api.attacker.example/steal")
+	if !hasFinding(fs, "secret/api_key_header") {
+		t.Errorf("api-key value ending in 'secret' followed by :// was suppressed: %v", fs)
 	}
 }
 
@@ -310,6 +377,100 @@ func TestPrefilterLiteralsStayInSyncWithScrubberSources(t *testing.T) {
 			if !strings.Contains(src, lit) {
 				t.Errorf("prefilter literal %q for %s not found in regex source %q", lit, name, src)
 			}
+		}
+	}
+}
+
+// Every derived lowerRe must agree with its canonical (?i) regex —
+// same matches, same byte offsets — over a corpus that actually
+// exercises the six case-insensitive patterns in mixed case. A
+// divergence means lowerVariant mis-lowered a construct.
+func TestLowerVariant_EquivalentToCanonical(t *testing.T) {
+	samples := []string{
+		"AWS_SECRET_ACCESS_KEY = " + strings.Repeat("Ab1+", 10),
+		"aws_secret_access_key: '" + strings.Repeat("zZ9/", 10) + "'",
+		"Authorization: BEARER A1b2C3d4E5f6G7h8I9j0",
+		"bearer tokens are discussed here",
+		"Basic " + "YWxhZGRpbjpvcGVuU2VzYW1l",
+		"BASIC AUTH IS SIMPLE",
+		"X-API-KEY: 0123456789ABCDEF0123456789abcdef",
+		"Ocp-Apim-Subscription-Key: AbCd1234efGh5678",
+		"PASSWORD = \"0123456789abcdefABCDEF0123456789\"",
+		"accountKey=" + strings.Repeat("Qq+/", 11),
+		"no credentials in this line at all",
+	}
+	var corpus []string
+	for _, s := range samples {
+		corpus = append(corpus, s, "PREFIX "+s+" suffix", strings.ToUpper(s), strings.ToLower(s))
+	}
+	hasLowerRe := 0
+	for _, p := range sensitivePatterns {
+		if p.lowerRe == nil {
+			continue
+		}
+		hasLowerRe++
+		for _, s := range corpus {
+			canonical := p.Re.FindAllStringIndex(s, -1)
+			lowered := p.lowerRe.FindAllStringIndex(asciiLower(s), -1)
+			if !reflect.DeepEqual(canonical, lowered) {
+				t.Errorf("pattern %s diverges on %q: canonical %v, lowerRe %v", p.Name, s, canonical, lowered)
+			}
+		}
+	}
+	if hasLowerRe == 0 {
+		t.Error("no pattern has a lowerRe — the fast path is dead and this test vacuous")
+	}
+}
+
+func TestHasUnsafeClassRange(t *testing.T) {
+	cases := []struct {
+		src  string
+		want bool
+	}{
+		{`[0-F]`, true},
+		{`[A-z]`, true},
+		{`[?-Z]`, true},
+		{`[Z-a]`, true},
+		// Both-uppercase ranges lower cleanly and must stay eligible:
+		// every current (?i) scrubber pattern contains [A-Za-z...].
+		{`[A-Z]`, false},
+		{`[A-Za-z0-9+/]`, false},
+		{`[a-z0-9]`, false},
+		{`\baws\b\s*[:=]\s*[A-Za-z0-9/+=]{40}`, false},
+		{`abc-DEF`, false},
+		{`[a\-Z]`, false},
+	}
+	for _, tc := range cases {
+		if got := hasUnsafeClassRange(tc.src); got != tc.want {
+			t.Errorf("hasUnsafeClassRange(%q) = %v, want %v", tc.src, got, tc.want)
+		}
+	}
+}
+
+// A regex that can match the empty string must not pin detectBulk in
+// place; emailRe cannot produce one today, but a future MinDistinct
+// pattern with a *-quantifier would otherwise infinite-loop on every
+// tool result.
+func TestDetectBulk_ZeroLengthMatchTerminates(t *testing.T) {
+	p := &SensitivePattern{Name: "test/zero", Re: regexp.MustCompile(`a*`), Tier: TierWarn, MinDistinct: 3}
+	if f, ok := detectBulk("bbbb", p); ok {
+		t.Errorf("only the empty string matches, expected no finding, got %v", f)
+	}
+	if _, ok := detectBulk("xaxbxaax", p); !ok {
+		t.Error(`expected a finding: "", "a", "aa" are three distinct matches`)
+	}
+}
+
+// The DetectSensitive memo caches scan results keyed on the p.Re
+// pointer alone. Correctness requires that consecutive patterns
+// sharing a *regexp.Regexp also agree on lowerRe (both nil or both the
+// same), or one pattern would silently receive matches computed
+// against the wrong haystack.
+func TestSensitivePatternCacheInvariant(t *testing.T) {
+	for i := 1; i < len(sensitivePatterns); i++ {
+		a, b := sensitivePatterns[i-1], sensitivePatterns[i]
+		if a.Re == b.Re && a.lowerRe != b.lowerRe {
+			t.Errorf("patterns %s and %s share Re but differ on lowerRe — memo cache would serve wrong matches", a.Name, b.Name)
 		}
 	}
 }
