@@ -2774,6 +2774,192 @@ func TestValidateRunConfig_RuleOfTwo_ToolListReflectsActualBuiltIn(t *testing.T)
 	}
 }
 
+// --- RuleOfTwoRuntimeConfig ---
+
+func TestValidateRunConfig_RuleOfTwoRuntime_ClassifierClosedSet(t *testing.T) {
+	cases := []struct {
+		name       string
+		classifier string
+		wantErr    bool
+	}{
+		{"empty_is_auto", "", false},
+		{"patterns", "patterns", false},
+		{"none", "none", false},
+		{"unknown", "regex", true},
+		{"case_sensitive", "Patterns", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{Classifier: tc.classifier}}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for classifier %q, got nil", tc.classifier)
+				}
+				if !strings.Contains(err.Error(), "ruleOfTwo.runtime.classifier") {
+					t.Errorf("error should name ruleOfTwo.runtime.classifier, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("classifier %q should pass, got: %v", tc.classifier, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_RuleOfTwoRuntime_OnDetectClosedSet(t *testing.T) {
+	cases := []struct {
+		name     string
+		onDetect string
+		wantErr  bool
+	}{
+		{"empty_defaults_to_block_external", "", false},
+		{"block_external", "block-external", false},
+		{"redact", "redact", false},
+		{"abort", "abort", false},
+		{"warn", "warn", false},
+		{"unknown", "deny", true},
+		{"case_sensitive", "Warn", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: tc.onDetect}}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for onDetect %q, got nil", tc.onDetect)
+				}
+				if !strings.Contains(err.Error(), "ruleOfTwo.runtime.onDetect") {
+					t.Errorf("error should name ruleOfTwo.runtime.onDetect, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("onDetect %q should pass, got: %v", tc.onDetect, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_RuleOfTwoRuntime_AskUpstreamRequiresGRPC pins the
+// cross-field invariant: onDetect "ask-upstream" routes external-comm
+// permission requests upstream, which only exists on the gRPC transport.
+// A stdio (or defaulted-empty) transport has no control plane to answer
+// the request, so the combination must fail at validation time rather
+// than as a 60-second timeout per tool call at runtime.
+func TestValidateRunConfig_RuleOfTwoRuntime_AskUpstreamRequiresGRPC(t *testing.T) {
+	cases := []struct {
+		name      string
+		transport string
+		wantErr   bool
+	}{
+		{"grpc_passes", "grpc", false},
+		{"stdio_fails", "stdio", true},
+		{"empty_transport_fails", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Transport = TransportConfig{Type: tc.transport}
+			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "ask-upstream"}}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for ask-upstream with transport %q, got nil", tc.transport)
+				}
+				if !strings.Contains(err.Error(), "requires transport=grpc") {
+					t.Errorf("error should mention requires transport=grpc, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ask-upstream with grpc transport should pass, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_RuleOfTwoRuntime_GuardCriteriaPattern(t *testing.T) {
+	cases := []struct {
+		name     string
+		criteria []string
+		wantErr  bool
+	}{
+		{"snake_case_passes", []string{"sensitive_data", "pii"}, false},
+		{"uppercase_fails", []string{"PII"}, true},
+		{"leading_digit_fails", []string{"4data"}, true},
+		{"hyphen_fails", []string{"sensitive-data"}, true},
+		{"empty_entry_fails", []string{""}, true},
+		{"mixed_reports_offender", []string{"sensitive_data", "Bad Entry"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{GuardCriteria: tc.criteria}}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for guardCriteria %v, got nil", tc.criteria)
+				}
+				if !strings.Contains(err.Error(), "ruleOfTwo.runtime.guardCriteria") {
+					t.Errorf("error should name ruleOfTwo.runtime.guardCriteria, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("guardCriteria %v should pass, got: %v", tc.criteria, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_RuleOfTwoRuntime_NilPassthrough pins the
+// no-injection invariant: validation must neither reject nor mutate a
+// config with a nil RuleOfTwo or nil Runtime. Default arming is factory
+// behaviour — an injected Runtime block would alter the
+// Redact()-persisted config operators audit against (contrast
+// applyCodeScannerDefault, which deliberately does mutate).
+func TestValidateRunConfig_RuleOfTwoRuntime_NilPassthrough(t *testing.T) {
+	t.Run("nil RuleOfTwo", func(t *testing.T) {
+		c := validConfig()
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("nil RuleOfTwo should pass, got: %v", err)
+		}
+		if c.RuleOfTwo != nil {
+			t.Fatalf("validation must not inject a RuleOfTwo block, got: %+v", c.RuleOfTwo)
+		}
+	})
+	t.Run("nil Runtime", func(t *testing.T) {
+		c := validConfig()
+		c.RuleOfTwo = &RuleOfTwoConfig{Enforce: boolRef(true)}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("nil Runtime should pass, got: %v", err)
+		}
+		if c.RuleOfTwo.Runtime != nil {
+			t.Fatalf("validation must not inject a Runtime block, got: %+v", c.RuleOfTwo.Runtime)
+		}
+	})
+}
+
+func TestValidateRunConfig_RuleOfTwoRuntime_ValidFullBlockPasses(t *testing.T) {
+	c := validConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	c.RuleOfTwo = &RuleOfTwoConfig{
+		Enforce: boolRef(true),
+		Runtime: &RuleOfTwoRuntimeConfig{
+			Classifier:    "patterns",
+			OnDetect:      "ask-upstream",
+			GuardCriteria: []string{"sensitive_data", "pii"},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("fully-populated valid runtime block should pass, got: %v", err)
+	}
+}
+
 // --- GuardRailConfig ---
 
 // TestValidateGuardRailConfig is a table-driven exercise of every
