@@ -558,6 +558,39 @@ The read-only modes differ from each other only in prompt template:
 `review` for change-review tasks, `research` for investigation across
 a codebase or the web, and `toil` for structured-briefing workflows.
 
+## Rule-of-Two configuration
+
+The `ruleOfTwo` block tunes [Ring 4](safety-rings.md#ring-4--rule-of-two-pre-flight-invariant--runtime-classifier).
+It has no CLI flag — the override must live in the RunConfig so it is
+reviewable in pull requests. The behavioural semantics (what trips the
+latch, the arming matrix, the on-detect actions) are documented in
+[`safety-rings.md`](safety-rings.md#the-runtime-classifier); this is the
+schema reference.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `ruleOfTwo.enforce` | `bool` (pointer) | `true` (unset = enforce) | `false` overrides the pre-flight all-three rejection *and* downgrades the runtime classifier to observe-only. Detection events still fire; a `rule_of_two_disabled` event is emitted at run start. |
+| `ruleOfTwo.runtime.classifier` | enum | `""` | `""` lets the factory decide from the static Rule-of-Two state; `"patterns"` forces the deterministic detector on; `"none"` disables runtime detection entirely. |
+| `ruleOfTwo.runtime.onDetect` | enum | `""` (= `block-external`) | Action once the latch trips: `block-external` (revoke external-comm tools), `ask-upstream`, `redact`, `abort`, `warn`. |
+| `ruleOfTwo.runtime.guardCriteria` | `[]string` | `["sensitive_data", "pii"]` | LLM-guard `Decision.Criterion` values that also trip the latch (one-way). Each entry must match the same snake_case constraint as `guardRail.customCriteria` keys. |
+
+`ValidateRunConfig` enforces the closed sets and three cross-field
+rules:
+
+- `onDetect: "ask-upstream"` requires `transport.type: "grpc"` — `stdio`
+  has no upstream control plane to answer an approval request.
+- `onDetect` must be empty when `classifier: "none"`: the detector is
+  disabled, so the action could never fire, and the combination is
+  rejected rather than stored as dead configuration.
+- `onDetect: "abort"` is rejected when the run is already statically
+  sensitive (`sensitiveData: true` or a `sensitive` dynamic-context
+  entry): the latch is pre-tripped, so no runtime transition can fire
+  and the abort would never trigger.
+
+Validation never injects a `runtime` block, so the `Redact()`-persisted
+config reflects exactly what the operator declared; default arming is
+factory behaviour, not config mutation.
+
 ## Toolset profiles
 
 `tools.profile` selects the *model-facing presentation* of the tool
