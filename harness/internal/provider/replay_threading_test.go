@@ -153,13 +153,13 @@ func TestThreadableOpenAIReplayPath(t *testing.T) {
 		{"thinking", true},
 		{"delta.reasoning_content", false},                       // multi-segment
 		{"candidates[].content.parts[].thoughtSignature", false}, // array iteration
-		{"role", false},         // canonical message key
-		{"content", false},      // canonical message key
-		{"tool_calls", false},   // canonical message key
-		{"tool_call_id", false}, // canonical message key
-		{"name", false},         // canonical (documented optional key)
-		{"a..b", false},         // malformed
-		{"", false},             // malformed
+		{"role", false},                                          // canonical message key
+		{"content", false},                                       // canonical message key
+		{"tool_calls", false},                                    // canonical message key
+		{"tool_call_id", false},                                  // canonical message key
+		{"name", false},                                          // canonical (documented optional key)
+		{"a..b", false},                                          // malformed
+		{"", false},                                              // malformed
 	}
 	for _, tc := range cases {
 		if got := threadableOpenAIReplayPath(tc.path); got != tc.want {

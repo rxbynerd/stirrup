@@ -366,8 +366,8 @@ func TestBuiltinRulesReplayFieldsSuffix(t *testing.T) {
 		if len(q.ReplayFields) == 0 {
 			continue
 		}
-		switch {
-		case rule.ProviderType == "openai-compatible":
+		switch rule.ProviderType {
+		case "openai-compatible":
 			if !strings.HasSuffix(rule.Description, threadedSuffix) {
 				t.Errorf("BuiltinRules()[%d] (%q): openai-compatible ReplayFields rule description must end with %q (the adapter threads its captures outbound)", i, rule.Description, threadedSuffix)
 			}
