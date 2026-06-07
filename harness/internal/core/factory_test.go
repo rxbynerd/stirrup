@@ -476,7 +476,7 @@ func TestEmitRuleOfTwoEvents_AllThreeWithOverrideEmitsDisabled(t *testing.T) {
 		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
 	}
 
-	emitRuleOfTwoEvents(cfg, sec)
+	emitRuleOfTwoEvents(cfg, sec, resolveRuleOfTwoArming(cfg))
 
 	out := buf.String()
 	if !strings.Contains(out, `"event":"rule_of_two_disabled"`) {
@@ -498,7 +498,7 @@ func TestEmitRuleOfTwoEvents_AllThreeWithoutOverrideStaysSilent(t *testing.T) {
 		SensitiveData:    &sensitive,
 	}
 
-	emitRuleOfTwoEvents(cfg, sec)
+	emitRuleOfTwoEvents(cfg, sec, resolveRuleOfTwoArming(cfg))
 
 	if strings.Contains(buf.String(), "rule_of_two_disabled") {
 		t.Errorf("ask-upstream all-three path must not emit rule_of_two_disabled, got: %s", buf.String())
@@ -568,7 +568,7 @@ func TestEmitRuleOfTwoEvents_TwoOfThreeEmitsWarning(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			sec, buf := captureSecLogger(t)
-			emitRuleOfTwoEvents(tc.cfg, sec)
+			emitRuleOfTwoEvents(tc.cfg, sec, resolveRuleOfTwoArming(tc.cfg))
 			out := buf.String()
 			if !strings.Contains(out, `"event":"rule_of_two_warning"`) {
 				t.Fatalf("expected rule_of_two_warning event, got: %s", out)
@@ -615,7 +615,7 @@ func TestEmitRuleOfTwoEvents_DisabledPayloadShape(t *testing.T) {
 		SensitiveData:    &sensitive,
 		RuleOfTwo:        &types.RuleOfTwoConfig{Enforce: &enforce},
 	}
-	emitRuleOfTwoEvents(cfg, sec)
+	emitRuleOfTwoEvents(cfg, sec, resolveRuleOfTwoArming(cfg))
 	out := buf.String()
 	if !strings.Contains(out, `"event":"rule_of_two_disabled"`) {
 		t.Fatalf("expected rule_of_two_disabled, got: %s", out)
@@ -633,7 +633,7 @@ func TestEmitRuleOfTwoEvents_NoneOrOneStaysSilent(t *testing.T) {
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
 		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
 	}
-	emitRuleOfTwoEvents(cfg, sec)
+	emitRuleOfTwoEvents(cfg, sec, resolveRuleOfTwoArming(cfg))
 	if buf.Len() > 0 {
 		t.Errorf("zero-or-one flag config should emit nothing, got: %s", buf.String())
 	}

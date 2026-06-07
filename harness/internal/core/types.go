@@ -28,6 +28,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
@@ -76,13 +77,20 @@ type AgenticLoop struct {
 	// disagrees with the parent's presented names. There is no runtime
 	// guard — compare Tools.(*tool.Presenter).Profile() against ToolProfile
 	// at construction if the wiring is not obviously consistent.
-	ToolProfile  *tool.Profile
-	Executor     executor.Executor
-	Edit         edit.EditStrategy
-	Verifier     verifier.Verifier
-	Permissions  permission.PermissionPolicy
-	Git          git.GitStrategy
-	GuardRail    guard.GuardRail
+	ToolProfile *tool.Profile
+	Executor    executor.Executor
+	Edit        edit.EditStrategy
+	Verifier    verifier.Verifier
+	Permissions permission.PermissionPolicy
+	Git         git.GitStrategy
+	GuardRail   guard.GuardRail
+	// RuleOfTwo is the Rule-of-Two runtime sensitive-data monitor
+	// (observe-only this wave: detections produce events and metrics,
+	// no enforcement consumer exists yet). The factory injects
+	// ruleoftwo.NewNoop() when the run is unarmed so loop call sites
+	// stay unconditional; hand-assembled loops (tests, embedders) may
+	// leave it nil and the observe helpers no-op, mirroring GuardRail.
+	RuleOfTwo    ruleoftwo.Monitor
 	Escalation   EscalationPolicy // tool-choice missed-tool recovery (#230); nil = disabled
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
