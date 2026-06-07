@@ -604,6 +604,66 @@ func TestLoadSuiteHCL_OpenAIResponsesSuiteUsesInlineRunConfig(t *testing.T) {
 	}
 }
 
+// TestLoadSuiteHCL_RuleOfTwoSuitesParse pins the deterministic
+// Rule-of-Two runtime-classifier suites. Both ship for operators to run
+// against the rule-of-two leg; a parse or arming-shape regression would
+// surface only as an opaque runner failure or, worse, a suite that
+// silently no longer arms the classifier. The enforcing suite must keep
+// the arming inputs (web_fetch + run_command, no declared sensitivity, no
+// enforce override) and the observe-only companion must keep
+// enforce:false.
+func TestLoadSuiteHCL_RuleOfTwoSuitesParse(t *testing.T) {
+	enforcing, err := LoadSuiteHCL("../suites/ruleoftwo.hcl")
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL(ruleoftwo.hcl): %v", err)
+	}
+	if enforcing.ID != "ruleoftwo-enforcing" {
+		t.Errorf("suite ID = %q, want ruleoftwo-enforcing", enforcing.ID)
+	}
+	if len(enforcing.Tasks) == 0 {
+		t.Fatal("expected at least one task in ruleoftwo.hcl")
+	}
+	rc := enforcing.RunConfig
+	if rc == nil {
+		t.Fatal("ruleoftwo.hcl must declare an inline run_config block")
+	}
+	// The factory auto-arms enforcing only when untrusted input and
+	// external comms both hold without a declared sensitivity. web_fetch
+	// supplies both legs; run_command supplies external comms. Pin the
+	// tool set and the absence of a sensitivity / enforce override so the
+	// suite cannot silently stop arming.
+	hasWebFetch, hasRunCommand := false, false
+	for _, name := range rc.Tools.BuiltIn {
+		switch name {
+		case "web_fetch":
+			hasWebFetch = true
+		case "run_command":
+			hasRunCommand = true
+		}
+	}
+	if !hasWebFetch || !hasRunCommand {
+		t.Errorf("ruleoftwo.hcl run_config must keep web_fetch + run_command to auto-arm enforcing; got %v", rc.Tools.BuiltIn)
+	}
+	if rc.SensitiveData != nil && *rc.SensitiveData {
+		t.Error("ruleoftwo.hcl must not declare sensitiveData: that would arm observe-only, not enforcing")
+	}
+	if rc.RuleOfTwo != nil && rc.RuleOfTwo.Enforce != nil && !*rc.RuleOfTwo.Enforce {
+		t.Error("ruleoftwo.hcl must not set enforce:false: that is the observe-only companion's job")
+	}
+
+	observe, err := LoadSuiteHCL("../suites/ruleoftwo-observe.hcl")
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL(ruleoftwo-observe.hcl): %v", err)
+	}
+	if observe.ID != "ruleoftwo-observe-only" {
+		t.Errorf("suite ID = %q, want ruleoftwo-observe-only", observe.ID)
+	}
+	if observe.RunConfig == nil || observe.RunConfig.RuleOfTwo == nil ||
+		observe.RunConfig.RuleOfTwo.Enforce == nil || *observe.RunConfig.RuleOfTwo.Enforce {
+		t.Error("ruleoftwo-observe.hcl must set ruleOfTwo.enforce = false")
+	}
+}
+
 // TestLoadSuiteHCL_RunConfigDeepBlocks exercises a richer inline
 // run_config — nested blocks (executor, network, resources,
 // permission_policy, code_scanner, guard_rail with stages,
