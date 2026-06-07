@@ -58,6 +58,29 @@ type StreamEvent struct {
 	// value on a ContentBlock cannot accidentally cross provider
 	// boundaries.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+
+	// ReplayFields carries the message-level provider-opaque state a
+	// quirks ReplayFields rule captured from this response, keyed by the
+	// rule's verbatim path string. Populated only on "message_complete"
+	// events; the agentic loop copies it onto the persisted assistant
+	// Message so the next request can replay it (e.g. DeepSeek v4
+	// thinking mode returns HTTP 400 on tool-call turns unless
+	// reasoning_content is echoed back).
+	//
+	// Flattening rule: an adapter accumulates captured values per path
+	// across the whole stream. When every captured value for a path is a
+	// string, the pieces are concatenated in arrival order and marshalled
+	// as a single JSON string (the streamed-string-field case, e.g.
+	// reasoning_content arriving across many chunks). Otherwise the LAST
+	// captured value is marshalled verbatim (snapshot semantics).
+	//
+	// The values are provider-opaque: the harness must not introspect,
+	// log verbatim, or mutate them — only round-trip them to the same
+	// provider. `omitempty` keeps the field off the wire for adapters
+	// that do not emit it. ThoughtSignature (above) is the block-level
+	// sibling for per-block provider state; this field carries
+	// message-level state.
+	ReplayFields map[string]json.RawMessage `json:"replayFields,omitempty"`
 }
 
 // ToolChoiceMode is a closed enum selecting how the model is steered
