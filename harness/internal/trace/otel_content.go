@@ -53,6 +53,33 @@ func (c *turnContent) attributes(systemInstructionsJSON string) []attribute.KeyV
 	return attrs
 }
 
+// toolContent carries the content attributes for one captured
+// execute_tool span: the tool_use ID and the call's arguments/result.
+// Arguments and result are the semconv gen_ai.tool.call.{arguments,
+// result} attributes ("Any" typed in the spec; the JSON-string /
+// plain-string fallback applies, same as the message attributes).
+type toolContent struct {
+	id        string
+	arguments json.RawMessage
+	result    string
+}
+
+// attributes renders the non-empty fields as span attributes, mirroring
+// turnContent.attributes' skip-empty contract.
+func (c *toolContent) attributes() []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 3)
+	if c.id != "" {
+		attrs = append(attrs, attribute.String(genAIToolCallIDKey, c.id))
+	}
+	if len(c.arguments) > 0 {
+		attrs = append(attrs, attribute.String(genAIToolCallArgumentsKey, string(c.arguments)))
+	}
+	if c.result != "" {
+		attrs = append(attrs, attribute.String(genAIToolCallResultKey, c.result))
+	}
+	return attrs
+}
+
 // genAIMessage mirrors the ChatMessage / OutputMessage shape shared by
 // the input- and output-messages schemas. FinishReason is only set on
 // output messages (omitempty keeps it off input messages).
