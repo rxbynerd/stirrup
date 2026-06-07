@@ -127,6 +127,94 @@ func TestOpenAIQuirks_GPT4oNoQuirksApply(t *testing.T) {
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "gpt-4o", "request.json"), body)
 }
 
+// deepseekReplayParams returns the canonical multi-turn tool-calling
+// StreamParams for the DeepSeek wire-shape tests: a prior assistant
+// turn that called a tool and carries the captured reasoning_content,
+// followed by the tool result. The shape is the exact scenario the v4
+// thinking-mode guide documents as 400-ing without the replay.
+func deepseekReplayParams(model string) types.StreamParams {
+	return types.StreamParams{
+		Model:       model,
+		MaxTokens:   4096,
+		Temperature: types.Float64Ptr(0.5),
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "list main.go"}}},
+			{
+				Role: "assistant",
+				Content: []types.ContentBlock{
+					{Type: "text", Text: "Reading the file."},
+					{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
+				},
+				ReplayFields: map[string]json.RawMessage{
+					"reasoning_content": json.RawMessage(`"The user wants the file contents; read_file is the right tool."`),
+				},
+			},
+			{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_1", Content: "package main"}}},
+		},
+	}
+}
+
+// TestOpenAIQuirks_DeepSeekV4Flash_RequestShape is the golden contract
+// for the threaded DeepSeek v4 rule: the prior turn's reasoning_content
+// is replayed as a top-level key on the assistant wire message, the
+// token budget uses the legacy max_tokens key, and the caller-supplied
+// temperature is suppressed. The fixture is the source of truth.
+func TestOpenAIQuirks_DeepSeekV4Flash_RequestShape(t *testing.T) {
+	params := deepseekReplayParams("deepseek-v4-flash")
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+		t.Fatalf("deepseek-v4-flash: expected OmitSamplingParams=true (rule not firing)")
+	}
+	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
+		t.Fatalf("deepseek-v4-flash: expected TokenField=max_tokens, got %v", q.BehaviourFlags.OpenAI.TokenField)
+	}
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "deepseek-v4-flash", "request.json"), body)
+
+	// Belt-and-braces string assertions on the load-bearing keys, so a
+	// fixture edit cannot silently weaken the contract.
+	s := string(body)
+	if !strings.Contains(s, `"max_tokens"`) || strings.Contains(s, `"max_completion_tokens"`) {
+		t.Errorf("body must use the legacy max_tokens key: %s", s)
+	}
+	if strings.Contains(s, `"temperature"`) {
+		t.Errorf("body contains temperature despite OmitSamplingParams: %s", s)
+	}
+	if !strings.Contains(s, `"reasoning_content":"The user wants the file contents; read_file is the right tool."`) {
+		t.Errorf("body missing replayed reasoning_content on the assistant message: %s", s)
+	}
+}
+
+// TestOpenAIQuirks_NoReplayRule_OmitsReplayState pins the negative half
+// of the threading contract: the same message history sent to a model
+// whose resolved quirks register no ReplayFields emits NOTHING extra —
+// the registry, not the persisted message, decides what is replayed.
+func TestOpenAIQuirks_NoReplayRule_OmitsReplayState(t *testing.T) {
+	params := deepseekReplayParams("gpt-4o")
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	if len(q.ReplayFields) != 0 {
+		t.Fatalf("gpt-4o: expected no ReplayFields, got %v", q.ReplayFields)
+	}
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "reasoning_content") {
+		t.Errorf("gpt-4o body leaked reasoning_content with no rule: %s", body)
+	}
+}
+
 // TestNoRegressionMaxCompletionTokensDefault pins design risk 1: the
 // default openai-compatible body MUST emit max_completion_tokens, NOT
 // the legacy max_tokens, regardless of whether a quirk rule fired.
