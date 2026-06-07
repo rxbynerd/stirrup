@@ -510,6 +510,40 @@ func TestLoop_RuleOfTwoRedactRewritesContentAndStructured(t *testing.T) {
 	}
 }
 
+// TestLoop_RuleOfTwoRedactStructuredInvalidJSONFallback drives the
+// fallback branch of redactSensitiveSpans: when scrubbing a Structured
+// payload breaks its JSON (the generic_hex_secret span consumes the
+// value's closing quote), the field is replaced with a marshalled
+// placeholder rather than emitting malformed JSON. json.Marshal keeps
+// the output valid regardless of the placeholder's contents.
+func TestLoop_RuleOfTwoRedactStructuredInvalidJSONFallback(t *testing.T) {
+	loop := buildTestLoop(nil)
+	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "redact", []string{"sensitive_data"}, false)
+
+	const hex = "0123456789abcdef0123456789abcdef"
+	messages := []types.Message{
+		{Role: "assistant", Content: []types.ContentBlock{{Type: "text", Text: "x"}}},
+		{Role: "user", Content: []types.ContentBlock{
+			{Type: "tool_result", ToolUseID: "tc_1", Structured: json.RawMessage(`{"note":"password=` + hex + `"}`)},
+		}},
+	}
+	n := loop.redactSensitiveSpans(messages, 1)
+	if n == 0 {
+		t.Fatal("expected the latch-tier secret to be redacted")
+	}
+	got := messages[1].Content[0].Structured
+	if !json.Valid(got) {
+		t.Errorf("fallback must keep Structured valid JSON, got: %q", got)
+	}
+	if strings.Contains(string(got), hex) {
+		t.Errorf("secret survived the fallback: %q", got)
+	}
+	want, _ := json.Marshal(ruleoftwo.RedactionPlaceholder)
+	if string(got) != string(want) {
+		t.Errorf("fallback Structured = %q, want the marshalled placeholder %q", got, want)
+	}
+}
+
 // messageCapturingProvider records the message slice of the LAST Stream
 // call so a test can inspect what the model saw after redaction.
 type messageCapturingProvider struct {

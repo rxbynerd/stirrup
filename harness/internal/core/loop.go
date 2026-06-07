@@ -1853,7 +1853,13 @@ func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) i
 				if json.Valid([]byte(redacted)) {
 					last.Content[i].Structured = json.RawMessage(redacted)
 				} else {
-					last.Content[i].Structured = json.RawMessage(`"` + ruleoftwo.RedactionPlaceholder + `"`)
+					// json.Marshal of a Go string always yields a valid
+					// JSON string regardless of the placeholder's
+					// contents; the error is unreachable for a string
+					// argument. This avoids relying on RedactionPlaceholder
+					// never acquiring a quote, backslash, or control char.
+					b, _ := json.Marshal(ruleoftwo.RedactionPlaceholder)
+					last.Content[i].Structured = json.RawMessage(b)
 				}
 				total += n
 			}

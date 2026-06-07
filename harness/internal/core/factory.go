@@ -1102,9 +1102,9 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 // an LLM guard is expected to name when it spots sensitive content.
 var defaultRuleOfTwoGuardCriteria = []string{"sensitive_data", "pii"}
 
-// defaultRuleOfTwoAction is the documented onDetect default. Inert this
-// wave (no enforcement consumer); it flows into events so the soak
-// shows the action wave 4 will start applying.
+// defaultRuleOfTwoAction is the documented onDetect default, enforced
+// via the permission gate (block-external) when the arming matrix arms
+// the run.
 const defaultRuleOfTwoAction = "block-external"
 
 // ruleOfTwoArming is the factory's arming decision for the Rule-of-Two
@@ -1649,9 +1649,13 @@ func wrapRuleOfTwoGate(pp permission.PermissionPolicy, monitor ruleoftwo.Monitor
 	case "block-external":
 		return permission.NewRuleOfTwoGate(pp, monitor, externalCommToolSet(registry), nil, metrics)
 	case "ask-upstream":
+		// One external-comm set shared by the ask policy and the gate:
+		// both must cover the same tools, and a single allocation keeps
+		// them from silently diverging.
+		extSet := externalCommToolSet(registry)
 		timeout := time.Duration(cfg.PermissionPolicy.Timeout) * time.Second
-		ask := permission.NewAskUpstreamPolicy(tp, externalCommToolSet(registry), timeout)
-		return permission.NewRuleOfTwoGate(pp, monitor, externalCommToolSet(registry), ask, metrics)
+		ask := permission.NewAskUpstreamPolicy(tp, extSet, timeout)
+		return permission.NewRuleOfTwoGate(pp, monitor, extSet, ask, metrics)
 	default:
 		return pp
 	}
