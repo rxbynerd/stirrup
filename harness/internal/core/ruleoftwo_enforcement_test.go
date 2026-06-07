@@ -588,6 +588,39 @@ func TestLoop_RuleOfTwoAbortTurnZeroBeforeProviderCall(t *testing.T) {
 	}
 }
 
+// TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort documents WHY the
+// validator rejects onDetect:"abort" + sensitiveData:true (Wave-4
+// review item 1): a pre-tripped abort monitor never fires the abort,
+// because the loop keys abort on the false→true Transition and a
+// pre-tripped latch can never transition. The provider IS reached and
+// the run completes normally. This is the regression pin for anyone who
+// later removes the validator check — the loop alone cannot catch this.
+func TestLoop_RuleOfTwoAbortPreTrippedLatchDoesNotAbort(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "ok"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	loop := buildTestLoop(prov)
+	// staticallySensitive=true → latch starts tripped → no transition.
+	loop.RuleOfTwo = ruleoftwo.NewPatternMonitor(true, "abort", []string{"sensitive_data"}, true)
+
+	runTrace, err := loop.Run(context.Background(), buildTestConfig())
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome == "rule_of_two_violation" {
+		t.Error("a pre-tripped abort latch must NOT abort (no transition); the validator is what prevents this config")
+	}
+	if runTrace.Outcome != "success" {
+		t.Errorf("outcome = %q, want success (the loop cannot abort a pre-tripped run)", runTrace.Outcome)
+	}
+	if !loop.RuleOfTwo.Tripped() {
+		t.Error("monitor should be pre-tripped")
+	}
+}
+
 // --- default-flip pin (inverse of the wave-3 dark-ship pin) ---
 
 // TestBuildLoop_DefaultArmedEnforcesBlockExternal pins the wave-4

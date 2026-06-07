@@ -2872,6 +2872,61 @@ func TestValidateRunConfig_RuleOfTwoRuntime_NoneClassifierCrossField(t *testing.
 	})
 }
 
+// TestValidateRunConfig_RuleOfTwoRuntime_AbortWithStaticSensitiveCrossField
+// pins the dead-config rejection from the Wave-4 review: onDetect "abort"
+// fires only on a runtime latch transition, but a statically-sensitive run
+// pre-trips the latch before the first scan, so no transition ever fires
+// and the abort silently never happens. The validator rejects the
+// combination and directs the operator to block-external.
+func TestValidateRunConfig_RuleOfTwoRuntime_AbortWithStaticSensitiveCrossField(t *testing.T) {
+	t.Run("abort with sensitiveData rejected", func(t *testing.T) {
+		c := validConfig()
+		// Only the sensitive leg holds (read-only tools, no untrusted
+		// ingress) so the static all-three check stays silent and this
+		// case isolates the abort cross-field rejection.
+		c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+		c.SensitiveData = boolRef(true)
+		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "abort"}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected rejection for onDetect=abort with sensitiveData:true, got nil")
+		}
+		if !strings.Contains(err.Error(), "abort") || !strings.Contains(err.Error(), "sensitiveData") {
+			t.Errorf("error should name abort and sensitiveData, got: %v", err)
+		}
+	})
+	t.Run("abort with sensitive dynamicContext entry rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+		c.DynamicContext = map[string]DynamicContextValue{"record": {Value: "x", Sensitive: true}}
+		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "abort"}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected rejection for onDetect=abort with a Sensitive dynamicContext entry, got nil")
+		}
+		if !strings.Contains(err.Error(), "abort") {
+			t.Errorf("error should name abort, got: %v", err)
+		}
+	})
+	t.Run("block-external with sensitiveData passes", func(t *testing.T) {
+		c := validConfig()
+		c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+		c.SensitiveData = boolRef(true)
+		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "block-external"}}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("block-external on a statically-sensitive run should pass, got: %v", err)
+		}
+	})
+	t.Run("abort without static sensitivity passes", func(t *testing.T) {
+		c := validConfig()
+		c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+		c.RuleOfTwo = &RuleOfTwoConfig{Runtime: &RuleOfTwoRuntimeConfig{OnDetect: "abort"}}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("abort on a non-statically-sensitive run should pass, got: %v", err)
+		}
+	})
+}
+
 // TestValidateRunConfig_RuleOfTwoRuntime_AskUpstreamRequiresGRPC pins the
 // cross-field invariant: onDetect "ask-upstream" routes external-comm
 // permission requests upstream, which only exists on the gRPC transport.

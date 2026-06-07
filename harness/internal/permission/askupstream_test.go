@@ -82,6 +82,54 @@ func TestAskUpstream_AutoAllowsReadOnlyTools(t *testing.T) {
 	}
 }
 
+// TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot pins
+// the Wave-4 fix: an mcp_-prefixed tool absent from the construction-time
+// approvalTools snapshot must still be forwarded for approval, matching
+// ruleOfTwoGate.isExternal. Without the prefix fallback the call would
+// auto-allow, bypassing the upstream approval the rule-of-two gate routes
+// it here to obtain.
+func TestAskUpstream_MCPPrefixRequiresApprovalWhenAbsentFromSnapshot(t *testing.T) {
+	mt := &mockTransport{}
+	// Snapshot deliberately omits the MCP tool.
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
+
+	tool := types.ToolDefinition{Name: "mcp_newserver_tool"}
+
+	// Approve asynchronously; if the prefix fallback is missing, Check
+	// returns Allowed immediately without ever emitting a request and the
+	// goroutine's response is dropped (caught by the lastEmitted assertion).
+	go func() {
+		for {
+			time.Sleep(5 * time.Millisecond)
+			e := mt.lastEmitted()
+			if e != nil && e.Type == "permission_request" {
+				allowed := true
+				mt.simulateControlEvent(types.ControlEvent{
+					Type:      "permission_response",
+					RequestID: e.RequestID,
+					Allowed:   &allowed,
+				})
+				return
+			}
+		}
+	}()
+
+	result, err := policy.Check(context.Background(), tool, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Allowed {
+		t.Error("expected allow after upstream approval")
+	}
+	e := mt.lastEmitted()
+	if e == nil || e.Type != "permission_request" {
+		t.Fatalf("mcp_-prefixed tool must emit a permission_request, not auto-allow; got %+v", e)
+	}
+	if e.ToolName != "mcp_newserver_tool" {
+		t.Errorf("permission_request tool = %q, want mcp_newserver_tool", e.ToolName)
+	}
+}
+
 func TestAskUpstream_EmitsRequestForSideEffectingTool(t *testing.T) {
 	mt := &mockTransport{}
 	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)

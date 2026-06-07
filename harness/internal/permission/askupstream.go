@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -125,6 +126,15 @@ func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition
 	p.mu.Lock()
 	required := p.approvalTools[tool.Name]
 	p.mu.Unlock()
+	// Treat any mcp_-prefixed tool as approval-required even when it is
+	// absent from the construction-time snapshot. This mirrors
+	// ruleOfTwoGate.isExternal, which already applies the prefix: without
+	// it a dynamically-registered MCP tool routed here by the rule-of-two
+	// gate would auto-allow, silently bypassing the upstream approval the
+	// gate intended to enforce.
+	if !required && strings.HasPrefix(tool.Name, "mcp_") {
+		required = true
+	}
 	if !required {
 		return &PermissionResult{Allowed: true}, nil
 	}

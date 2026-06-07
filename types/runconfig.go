@@ -2214,6 +2214,18 @@ func validateRuleOfTwoRuntime(config *RunConfig, errs *[]string) {
 	} else if rt.OnDetect == "ask-upstream" && config.Transport.Type != "grpc" {
 		*errs = append(*errs, "ruleOfTwo.runtime.onDetect \"ask-upstream\" requires transport=grpc (stdio has no upstream control plane to answer permission requests)")
 	}
+	// Reject dead configuration: "abort" fires only on a runtime latch
+	// transition, but a statically-sensitive run (sensitiveData:true or a
+	// dynamic-context entry marked Sensitive) pre-trips the latch before
+	// the first scan, so the false→true transition never happens and the
+	// abort never fires. An operator declaring the run sensitive up front
+	// wants egress revoked from the start — use block-external (or
+	// ask-upstream) instead.
+	if rt.OnDetect == "abort" && ruleOfTwoSensitiveData(config) {
+		*errs = append(*errs, `ruleOfTwo.runtime.onDetect "abort" has no effect when the run is already statically sensitive `+
+			`(sensitiveData:true or a Sensitive dynamicContext entry): the latch is pre-tripped so no runtime transition can fire; `+
+			`use block-external to revoke egress on a statically-sensitive run`)
+	}
 	for i, criterion := range rt.GuardCriteria {
 		if !guardRailCustomCriterionPattern.MatchString(criterion) {
 			*errs = append(*errs, fmt.Sprintf("ruleOfTwo.runtime.guardCriteria[%d] %q must match %s", i, criterion, guardRailCustomCriterionPattern.String()))

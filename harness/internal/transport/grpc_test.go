@@ -416,6 +416,38 @@ func TestGRPCTransport_EmitScrubsSecrets(t *testing.T) {
 	}
 }
 
+// TestGRPCTransport_EmitScrubsInput mirrors the stdio Input-scrub fix on
+// the gRPC transport: a permission_request forwarding a tool call's raw
+// input must not leak a latch-tripping secret to the control plane.
+func TestGRPCTransport_EmitScrubsInput(t *testing.T) {
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	event := types.HarnessEvent{
+		Type:  "permission_request",
+		Name:  "run_command",
+		Input: json.RawMessage(`{"command":"echo AKIAQWERTYUIOPASDFGH"}`),
+	}
+	if err := tr.Emit(event); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	_ = tr.stream.CloseSend()
+	time.Sleep(50 * time.Millisecond)
+
+	received := srv.getReceived()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 received event, got %d", len(received))
+	}
+	if strings.Contains(string(received[0].Input), "AKIAQWERTYUIOPASDFGH") {
+		t.Errorf("live-shaped AWS key was not scrubbed from event Input: %q", received[0].Input)
+	}
+	if !json.Valid(received[0].Input) {
+		t.Errorf("scrubbed Input is not valid JSON: %q", received[0].Input)
+	}
+}
+
 func TestGRPCTransport_EmitFiresSecretRedactedInOutput(t *testing.T) {
 	srv := newTestServer()
 	tr, _, cleanup := setupTestTransport(t, srv)
