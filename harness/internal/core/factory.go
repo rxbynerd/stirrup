@@ -283,10 +283,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 10b. Rule-of-Two runtime monitor, from the arming decision
 	// computed alongside the run-start audit events above. Noop when
-	// unarmed so the loop's call sites are unconditional. Observe-only
-	// this wave: enforcing/action flow into events only — no
-	// enforcement consumer exists until wave 4 lands the permission
-	// gate, redact, and abort paths.
+	// unarmed so the loop's call sites are unconditional. Enforcement
+	// is delivered by the permission gate wrapped below (block-external
+	// / ask-upstream) and the loop's redact / abort actions; escape
+	// hatches are ruleOfTwo.runtime.classifier "none" and
+	// ruleOfTwo.enforce: false.
 	rot := buildRuleOfTwoMonitor(ruleOfTwoArmingState)
 
 	// 11. Git strategy.
@@ -338,6 +339,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// (rather than step 7) so the metric-recorder wrapping centralised
 	// in buildVerifier sees a non-nil metrics on the only call site.
 	v = buildVerifier(config.Verifier, prov, metrics)
+
+	// Rule-of-Two enforcement gate, applied BEFORE the metrics wrapper
+	// so gate denials are recorded by stirrup.permission.decisions
+	// under the configured policy label (true attribution rides
+	// stirrup.ruleoftwo.actions, emitted by the gate itself). No-op
+	// unless the monitor is armed and enforcing with a gate-delivered
+	// action.
+	pp = wrapRuleOfTwoGate(pp, rot, ruleOfTwoArmingState, registry, config, tp, metrics)
 
 	// Wrap the previously-built permission policy with metrics so
 	// each Check call records stirrup.permission.decisions tagged
@@ -1575,6 +1584,48 @@ func mutatingToolSet(registry *tool.Registry) map[string]bool {
 		}
 	}
 	return out
+}
+
+// externalCommToolSet returns the names of registered tools that can
+// move data outside the harness sandbox: run_command (shell egress),
+// web_fetch (arbitrary HTTP), and every MCP-imported tool (the remote
+// server receives each call's payload). The Rule-of-Two gate revokes
+// exactly this set once the sensitive-data latch trips. Keys are
+// internal tool IDs — the Presenter never rewrites dispatch names, so
+// toolset-profile aliases cannot bypass the set.
+func externalCommToolSet(registry *tool.Registry) map[string]bool {
+	out := make(map[string]bool)
+	for _, td := range registry.List() {
+		if td.Name == "run_command" || td.Name == "web_fetch" || strings.HasPrefix(td.Name, "mcp_") {
+			out[td.Name] = true
+		}
+	}
+	return out
+}
+
+// wrapRuleOfTwoGate installs the Rule-of-Two enforcement gate around
+// the permission policy when the runtime monitor is armed and
+// enforcing with a gate-delivered action. redact and abort are
+// loop-level actions with no permission-layer component, and
+// observe-only monitors ("warn") never gate — those return pp
+// unchanged. For onDetect=ask-upstream the AskUpstreamPolicy is
+// pre-built eagerly here, idle until the latch trips, so enforcement
+// time never constructs components; the validator already pinned
+// transport=grpc for that action.
+func wrapRuleOfTwoGate(pp permission.PermissionPolicy, monitor ruleoftwo.Monitor, arming ruleOfTwoArming, registry *tool.Registry, cfg *types.RunConfig, tp transport.Transport, metrics *observability.Metrics) permission.PermissionPolicy {
+	if !arming.armed || !arming.enforcing {
+		return pp
+	}
+	switch arming.action {
+	case "block-external":
+		return permission.NewRuleOfTwoGate(pp, monitor, externalCommToolSet(registry), nil, metrics)
+	case "ask-upstream":
+		timeout := time.Duration(cfg.PermissionPolicy.Timeout) * time.Second
+		ask := permission.NewAskUpstreamPolicy(tp, externalCommToolSet(registry), timeout)
+		return permission.NewRuleOfTwoGate(pp, monitor, externalCommToolSet(registry), ask, metrics)
+	default:
+		return pp
+	}
 }
 
 // approvalRequiredToolSet returns the names of registered tools that
