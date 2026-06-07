@@ -332,6 +332,46 @@ func (rc *RunConfig) EffectiveToolDispatchMaxParallel() int {
 // equivalent to leaving the field unset.
 type RuleOfTwoConfig struct {
 	Enforce *bool `json:"enforce,omitempty"`
+
+	// Runtime configures the runtime sensitive-data classifier. The
+	// untrusted-input and external-communication legs are static
+	// capabilities computable at config time; sensitivity is a content
+	// property — the declarative signals (SensitiveData, per-entry
+	// Sensitive flags) cannot see sensitive content that first arrives
+	// mid-run via tool results. The runtime classifier makes the
+	// sensitive-data leg dynamic by scanning content as it enters the
+	// conversation. Nil leaves arming to the factory; validation never
+	// injects a Runtime block, so the Redact()-persisted config always
+	// reflects exactly what the operator declared.
+	Runtime *RuleOfTwoRuntimeConfig `json:"runtime,omitempty"`
+}
+
+// RuleOfTwoRuntimeConfig selects the runtime sensitive-data classifier
+// and the action taken when it detects sensitive content. Only the
+// config surface and its validation ship today; the detector, monitor,
+// and enforcement semantics land in follow-up changes.
+type RuleOfTwoRuntimeConfig struct {
+	// Classifier selects the detector implementation. Valid values:
+	// "" (automatic — the factory decides from the static Rule-of-Two
+	// state), "patterns" (deterministic regex+checksum pack), "none"
+	// (disable runtime classification entirely).
+	Classifier string `json:"classifier,omitempty"`
+
+	// OnDetect selects the action once the classifier trips. Empty
+	// defaults to "block-external" (revoke external-communication
+	// tools for the rest of the run). Other values: "ask-upstream"
+	// (route external-communication calls through the upstream
+	// permission channel; requires transport=grpc), "redact" (rewrite
+	// matched spans), "abort" (terminate the run), "warn" (events and
+	// metrics only).
+	OnDetect string `json:"onDetect,omitempty"`
+
+	// GuardCriteria lists guard Decision.Criterion values that also
+	// trip the sensitive-data latch, so an LLM guard flagging e.g.
+	// "sensitive_data" can tighten the rule mid-run (one-way — a guard
+	// can never loosen it). Entries follow the same snake_case
+	// constraint as guardRail customCriteria keys.
+	GuardCriteria []string `json:"guardCriteria,omitempty"`
 }
 
 // CodeScannerConfig selects the static-analysis pass run after every
@@ -1974,6 +2014,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	}
 
 	validateRuleOfTwo(config, &errs)
+	validateRuleOfTwoRuntime(config, &errs)
 	validateCodeScannerConfig(config.CodeScanner, &errs)
 	validateGuardRailConfig(config.GuardRail, "guardRail", false, &errs)
 	validateObservabilityConfig(config.Observability, &errs)
@@ -2138,6 +2179,53 @@ func validateRuleOfTwo(config *RunConfig, errs *[]string) {
 	}
 	*errs = append(*errs,
 		"all three of {untrusted-input, sensitive-data, external-communication} cannot simultaneously hold without the ask-upstream permission policy (Rule of Two)")
+}
+
+var validRuleOfTwoClassifiers = map[string]bool{
+	"":         true,
+	"patterns": true,
+	"none":     true,
+}
+
+var validRuleOfTwoOnDetectActions = map[string]bool{
+	"":               true,
+	"block-external": true,
+	"ask-upstream":   true,
+	"redact":         true,
+	"abort":          true,
+	"warn":           true,
+}
+
+// validateRuleOfTwoRuntime enforces the closed sets and cross-field
+// invariants on RuleOfTwo.Runtime. Unlike applyCodeScannerDefault, it
+// deliberately never injects or defaults a Runtime block: default
+// arming is factory behaviour, and an injected block would alter the
+// Redact()-persisted config operators audit against.
+func validateRuleOfTwoRuntime(config *RunConfig, errs *[]string) {
+	if config.RuleOfTwo == nil || config.RuleOfTwo.Runtime == nil {
+		return
+	}
+	rt := config.RuleOfTwo.Runtime
+	if !validRuleOfTwoClassifiers[rt.Classifier] {
+		*errs = append(*errs, fmt.Sprintf("unsupported ruleOfTwo.runtime.classifier %q", rt.Classifier))
+	}
+	// Reject dead configuration: "none" disables the detector, so any
+	// onDetect action would be stored and validated but never fire — an
+	// operator who sets {classifier: "none", onDetect: "abort"} believing
+	// they have a safety net in fact has none.
+	if rt.Classifier == "none" && rt.OnDetect != "" {
+		*errs = append(*errs, `ruleOfTwo.runtime.onDetect has no effect when classifier="none": the detector is disabled and will never fire`)
+	}
+	if !validRuleOfTwoOnDetectActions[rt.OnDetect] {
+		*errs = append(*errs, fmt.Sprintf("unsupported ruleOfTwo.runtime.onDetect %q", rt.OnDetect))
+	} else if rt.OnDetect == "ask-upstream" && config.Transport.Type != "grpc" {
+		*errs = append(*errs, "ruleOfTwo.runtime.onDetect \"ask-upstream\" requires transport=grpc (stdio has no upstream control plane to answer permission requests)")
+	}
+	for i, criterion := range rt.GuardCriteria {
+		if !guardRailCustomCriterionPattern.MatchString(criterion) {
+			*errs = append(*errs, fmt.Sprintf("ruleOfTwo.runtime.guardCriteria[%d] %q must match %s", i, criterion, guardRailCustomCriterionPattern.String()))
+		}
+	}
 }
 
 // ruleOfTwoUntrustedInput reports whether the run can ingest content

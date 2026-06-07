@@ -672,6 +672,16 @@ suite "s" {
       block_on_warn = true
     }
 
+    rule_of_two {
+      enforce = true
+
+      runtime {
+        classifier     = "patterns"
+        on_detect      = "block-external"
+        guard_criteria = ["sensitive_data", "pii"]
+      }
+    }
+
     guard_rail {
       type = "composite"
 
@@ -747,6 +757,18 @@ suite "s" {
 	}
 	if rc.CodeScanner == nil || !rc.CodeScanner.BlockOnWarn {
 		t.Errorf("CodeScanner = %#v, want BlockOnWarn=true", rc.CodeScanner)
+	}
+	if rc.RuleOfTwo == nil || rc.RuleOfTwo.Enforce == nil || !*rc.RuleOfTwo.Enforce {
+		t.Errorf("RuleOfTwo = %#v, want Enforce=&true", rc.RuleOfTwo)
+	}
+	if rc.RuleOfTwo == nil || rc.RuleOfTwo.Runtime == nil {
+		t.Fatalf("RuleOfTwo.Runtime should be non-nil, got %#v", rc.RuleOfTwo)
+	}
+	if rc.RuleOfTwo.Runtime.Classifier != "patterns" || rc.RuleOfTwo.Runtime.OnDetect != "block-external" {
+		t.Errorf("RuleOfTwo.Runtime = %#v, want {Classifier:patterns OnDetect:block-external}", rc.RuleOfTwo.Runtime)
+	}
+	if got := rc.RuleOfTwo.Runtime.GuardCriteria; len(got) != 2 || got[0] != "sensitive_data" || got[1] != "pii" {
+		t.Errorf("RuleOfTwo.Runtime.GuardCriteria = %v, want [sensitive_data pii]", got)
 	}
 	if rc.GuardRail == nil || rc.GuardRail.Type != "composite" {
 		t.Errorf("GuardRail = %#v, want composite", rc.GuardRail)

@@ -218,7 +218,14 @@ type toolsSpec struct {
 }
 
 type ruleOfTwoSpec struct {
-	Enforce *bool `hcl:"enforce,optional"`
+	Enforce *bool                 `hcl:"enforce,optional"`
+	Runtime *ruleOfTwoRuntimeSpec `hcl:"runtime,block"`
+}
+
+type ruleOfTwoRuntimeSpec struct {
+	Classifier    string   `hcl:"classifier,optional"`
+	OnDetect      string   `hcl:"on_detect,optional"`
+	GuardCriteria []string `hcl:"guard_criteria,optional"`
 }
 
 type codeScannerSpec struct {
@@ -357,6 +364,13 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 	}
 	if s.RuleOfTwo != nil {
 		out.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: s.RuleOfTwo.Enforce}
+		if s.RuleOfTwo.Runtime != nil {
+			out.RuleOfTwo.Runtime = &types.RuleOfTwoRuntimeConfig{
+				Classifier:    s.RuleOfTwo.Runtime.Classifier,
+				OnDetect:      s.RuleOfTwo.Runtime.OnDetect,
+				GuardCriteria: append([]string(nil), s.RuleOfTwo.Runtime.GuardCriteria...),
+			}
+		}
 	}
 	if s.CodeScanner != nil {
 		out.CodeScanner = &types.CodeScannerConfig{

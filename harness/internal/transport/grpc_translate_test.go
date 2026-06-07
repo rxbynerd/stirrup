@@ -105,6 +105,69 @@ func TestRuleOfTwoProto_EmptyMessageDoesNotDisableEnforcement(t *testing.T) {
 	})
 }
 
+// TestRuleOfTwoProto_RuntimeTranslation pins the runtime sub-message
+// translation. The nil-vs-present distinction matters the same way it
+// does for enforce: an absent proto Runtime must stay nil on the
+// internal config so the factory's default arming applies, while a
+// present-but-empty one must surface as a present-but-empty block.
+func TestRuleOfTwoProto_RuntimeTranslation(t *testing.T) {
+	t.Run("absent runtime stays nil", func(t *testing.T) {
+		rc := runConfigFromProto(&pb.RunConfig{RuleOfTwo: &pb.RuleOfTwoConfig{}})
+		if rc.RuleOfTwo == nil {
+			t.Fatal("expected RuleOfTwo non-nil when proto sub-message present")
+		}
+		if rc.RuleOfTwo.Runtime != nil {
+			t.Fatalf("expected Runtime nil when proto runtime absent, got %+v", rc.RuleOfTwo.Runtime)
+		}
+	})
+
+	t.Run("empty runtime surfaces as present-but-empty", func(t *testing.T) {
+		rc := runConfigFromProto(&pb.RunConfig{
+			RuleOfTwo: &pb.RuleOfTwoConfig{Runtime: &pb.RuleOfTwoRuntimeConfig{}},
+		})
+		if rc.RuleOfTwo == nil || rc.RuleOfTwo.Runtime == nil {
+			t.Fatalf("expected present-but-empty Runtime, got %+v", rc.RuleOfTwo)
+		}
+		if rc.RuleOfTwo.Runtime.Classifier != "" || rc.RuleOfTwo.Runtime.OnDetect != "" || rc.RuleOfTwo.Runtime.GuardCriteria != nil {
+			t.Errorf("expected zero-valued Runtime, got %+v", rc.RuleOfTwo.Runtime)
+		}
+	})
+
+	t.Run("populated runtime translates fields", func(t *testing.T) {
+		src := &pb.RunConfig{
+			RuleOfTwo: &pb.RuleOfTwoConfig{
+				Runtime: &pb.RuleOfTwoRuntimeConfig{
+					Classifier:    "patterns",
+					OnDetect:      "block-external",
+					GuardCriteria: []string{"sensitive_data", "pii"},
+				},
+			},
+		}
+		rc := runConfigFromProto(src)
+		rt := rc.RuleOfTwo.Runtime
+		if rt == nil {
+			t.Fatal("expected Runtime non-nil")
+		}
+		if rt.Classifier != "patterns" {
+			t.Errorf("Classifier: got %q, want %q", rt.Classifier, "patterns")
+		}
+		if rt.OnDetect != "block-external" {
+			t.Errorf("OnDetect: got %q, want %q", rt.OnDetect, "block-external")
+		}
+		if len(rt.GuardCriteria) != 2 || rt.GuardCriteria[0] != "sensitive_data" || rt.GuardCriteria[1] != "pii" {
+			t.Errorf("GuardCriteria: got %v", rt.GuardCriteria)
+		}
+		// Mutation isolation: the proto message owns its backing array; on
+		// a long-lived gRPC server a shared slice would let writes to one
+		// decoded payload corrupt another run's criteria list. Modifying
+		// the source after translation must not reach the translated copy.
+		src.RuleOfTwo.Runtime.GuardCriteria[0] = "mutated"
+		if rt.GuardCriteria[0] != "sensitive_data" {
+			t.Error("GuardCriteria shares backing array with proto source")
+		}
+	})
+}
+
 // TestRunConfigFromProto_TranslatesNewSafetyFields confirms that proto
 // fields added in #42 (executor.runtime, ruleOfTwo, codeScanner,
 // permissionPolicy.policy_file/fallback) are populated on the internal
