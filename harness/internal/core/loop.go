@@ -152,6 +152,17 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			}
 		}
 	}
+
+	// Turn-0 Rule-of-Two scan: classify the operator prompt and the
+	// sanitized dynamic-context values before Prompt.Build so a
+	// latch-tier hit is recorded before the first provider call.
+	// Observe-only — redact-mode rewriting of dynamic context lands
+	// with enforcement in wave 4.
+	if config.Prompt != "" {
+		l.observeSensitive(runCtx, config, "prompt", 0, []string{config.Prompt})
+	}
+	l.observeSensitive(runCtx, config, "dynamic_context", 0, sortedContextValues(dynamicContext))
+
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
 		Mode:           config.Mode,
 		Workspace:      config.Executor.Workspace,
@@ -469,6 +480,15 @@ func (l *AgenticLoop) runInnerLoop(
 			preTurnDynamic = config.DynamicContext
 		}
 		if chunks := collectUntrustedChunks(messages, turn, preTurnDynamic, config.Prompt); len(chunks) > 0 {
+			// Rule-of-Two scan of the just-arrived tool results,
+			// deterministic-first (before the guard so a later guard-deny
+			// scrub cannot un-trip the latch). Turn-0 chunks are the
+			// prompt and dynamic context, already observed in Run()
+			// under their own source labels — rescanning them here would
+			// double-emit warn-tier detections mislabelled "tool_result".
+			if turn > 0 {
+				l.observeSensitive(ctx, config, "tool_result", turn, chunks)
+			}
 			batched := batchUntrustedChunks(chunks)
 			in := guard.Input{
 				Phase:   guard.PhasePreTurn,
@@ -478,6 +498,7 @@ func (l *AgenticLoop) runInnerLoop(
 				RunID:   config.RunID,
 			}
 			allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
+			l.ratchetRuleOfTwo(ctx, config, decision, turn)
 			switch {
 			case !allow:
 				// On turn 0 the user prompt itself is the untrusted
@@ -898,7 +919,8 @@ func (l *AgenticLoop) runInnerLoop(
 					Mode:    config.Mode,
 					RunID:   config.RunID,
 				}
-				allow, _, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
+				allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
+				l.ratchetRuleOfTwo(ctx, config, decision, turn)
 				if !allow {
 					return messages, "guardrail_blocked"
 				}
@@ -1314,6 +1336,122 @@ func (l *AgenticLoop) recordSpotlightApplied(ctx context.Context, phase guard.Ph
 	}
 }
 
+// observeSensitive runs the Rule-of-Two monitor over freshly-arrived
+// untrusted chunks and emits the observe-only telemetry: the
+// sensitive_scan_ms histogram on every scan, sensitive_data_detected +
+// rule_of_two_detections on any finding, and the once-per-run
+// rule_of_two_triggered + transport warning at the latch transition.
+// Nothing here changes run behaviour — wave 3 ships dark; enforcement
+// consumers arrive in wave 4. A nil monitor (hand-assembled loops)
+// no-ops, mirroring guardCheck's nil-GuardRail branch.
+func (l *AgenticLoop) observeSensitive(ctx context.Context, config *types.RunConfig, source string, turn int, chunks []string) {
+	if l.RuleOfTwo == nil || len(chunks) == 0 {
+		return
+	}
+	start := time.Now()
+	det := l.RuleOfTwo.ObserveChunks(ctx, source, turn, chunks)
+	if l.Metrics != nil {
+		// Fractional milliseconds: scans are routinely sub-millisecond
+		// and this histogram exists to keep regex cost observable —
+		// integer truncation would flatten the series to zero.
+		elapsedMs := float64(time.Since(start)) / float64(time.Millisecond)
+		l.Metrics.SensitiveScan.Record(ctx, elapsedMs, l.metricAttrs(
+			attribute.String("source", source),
+		))
+	}
+	if len(det.Patterns) == 0 {
+		return
+	}
+	action := l.RuleOfTwo.Action()
+	if l.Security != nil {
+		l.Security.SensitiveDataDetected(det.Patterns, det.Tier, source, turn, action, det.Transition)
+	}
+	if l.Metrics != nil {
+		for _, p := range det.Patterns {
+			l.Metrics.RuleOfTwoDetections.Add(ctx, 1, l.metricAttrs(
+				attribute.String("pattern", p),
+				attribute.String("tier", det.Tier),
+				attribute.String("source", source),
+			))
+		}
+	}
+	if det.Transition {
+		l.emitRuleOfTwoTriggered(config, source, action)
+	}
+}
+
+// ratchetRuleOfTwo forwards a guard decision's criterion to the
+// Rule-of-Two monitor's one-way ratchet. Every non-nil decision is
+// forwarded — the monitor filters against its configured guard-criteria
+// set internally, keeping the loop free of criteria logic. Telemetry
+// fires only on the false→true transition: the guard's own deny/allow
+// events already record the decision itself.
+func (l *AgenticLoop) ratchetRuleOfTwo(ctx context.Context, config *types.RunConfig, decision *guard.Decision, turn int) {
+	if l.RuleOfTwo == nil || decision == nil || decision.Criterion == "" {
+		return
+	}
+	if !l.RuleOfTwo.TripFromGuard(decision.GuardID, decision.Criterion) {
+		return
+	}
+	source := "guard:" + decision.GuardID
+	action := l.RuleOfTwo.Action()
+	// The criterion is namespaced "guard:<criterion>" in the patterns
+	// field and the pattern metric label so guard-originated trips can
+	// never impersonate deterministic detector names: a coerced guard
+	// returning criterion "secret/aws_access_key_id" must not make
+	// telemetry (or alerting rules keyed on pattern names) read as if
+	// the detector fired.
+	pattern := "guard:" + decision.Criterion
+	if l.Security != nil {
+		l.Security.SensitiveDataDetected([]string{pattern}, security.TierLatch, source, turn, action, true)
+	}
+	if l.Metrics != nil {
+		l.Metrics.RuleOfTwoDetections.Add(ctx, 1, l.metricAttrs(
+			attribute.String("pattern", pattern),
+			attribute.String("tier", security.TierLatch),
+			attribute.String("source", source),
+		))
+	}
+	l.emitRuleOfTwoTriggered(config, source, action)
+}
+
+// emitRuleOfTwoTriggered records the once-per-run latch transition: the
+// rule_of_two_triggered security event (key names mirror the run-start
+// audit events from emitRuleOfTwoEvents) and a one-time transport
+// warning so operators without a security-event pipeline still see the
+// posture change on the wire.
+func (l *AgenticLoop) emitRuleOfTwoTriggered(config *types.RunConfig, source, action string) {
+	untrusted, _, external := types.RuleOfTwoState(config)
+	if l.Security != nil {
+		l.Security.RuleOfTwoTriggered(untrusted, external, action, source)
+	}
+	_ = l.Transport.Emit(types.HarnessEvent{
+		Type:    "warning",
+		Message: fmt.Sprintf("rule of two: sensitive data detected (source %q); action %q is observe-only this release", source, action),
+	})
+}
+
+// sortedContextValues returns the non-empty dynamic-context values in
+// key order, matching collectUntrustedChunks' deterministic ordering so
+// detection events are stable across runs of the same config.
+func sortedContextValues(dynamicContext map[string]string) []string {
+	if len(dynamicContext) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(dynamicContext))
+	for k := range dynamicContext {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	values := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if v := dynamicContext[k]; v != "" {
+			values = append(values, v)
+		}
+	}
+	return values
+}
+
 // guardIDFromDecision returns the GuardID from a Decision, defaulting to
 // "unknown" when the decision is nil or its GuardID is empty. Used for
 // metric labelling on the error path where a Decision may not exist.
@@ -1340,7 +1478,11 @@ func guardFailOpen(config *types.RunConfig) bool {
 // entries (sorted by key for determinism). On subsequent turns it
 // returns the Content field of every tool_result block in the last
 // message — those entries arrived from external tool execution and
-// have not yet been classified.
+// have not yet been classified — plus the Structured payload (issue
+// #231) when present: the Anthropic adapter forwards it to the model
+// as a second text block and the Gemini adapter embeds it under
+// functionResponse.response.structured, so a credential present only
+// in the structured JSON is model-visible and must be classified too.
 //
 // v1 keeps this conservative: we do not attempt to classify earlier
 // turns' content (already in history), nor model-emitted text (handled
@@ -1379,8 +1521,14 @@ func collectUntrustedChunks(messages []types.Message, turn int, dynamicContext m
 	}
 	chunks := make([]string, 0, len(last.Content))
 	for _, b := range last.Content {
-		if b.Type == "tool_result" && b.Content != "" {
+		if b.Type != "tool_result" {
+			continue
+		}
+		if b.Content != "" {
 			chunks = append(chunks, b.Content)
+		}
+		if len(b.Structured) > 0 {
+			chunks = append(chunks, string(b.Structured))
 		}
 	}
 	return chunks

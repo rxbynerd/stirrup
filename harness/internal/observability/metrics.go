@@ -40,6 +40,7 @@ type Metrics struct {
 	GuardErrors           metric.Int64Counter
 	GuardSkips            metric.Int64Counter
 	GuardSpotlights       metric.Int64Counter
+	RuleOfTwoDetections   metric.Int64Counter
 
 	// --- Component-level instruments (issue #97) ---
 	// Counters
@@ -61,6 +62,7 @@ type Metrics struct {
 	ProviderLatency  metric.Float64Histogram
 	ProviderTTFB     metric.Float64Histogram
 	GuardDuration    metric.Float64Histogram
+	SensitiveScan    metric.Float64Histogram
 
 	// --- Component-level histograms (issue #97) ---
 	SubagentDuration metric.Float64Histogram
@@ -405,6 +407,15 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		return nil, err
 	}
 
+	m.RuleOfTwoDetections, err = meter.Int64Counter("stirrup.ruleoftwo.detections",
+		metric.WithUnit("{detection}"),
+		metric.WithDescription("Sensitive-data detections recorded by the Rule-of-Two runtime monitor, labelled by pattern, tier, and source. "+
+			"Guard-ratchet trips carry a \"guard:\"-prefixed pattern label so they are distinguishable from deterministic detector hits."),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// --- Component-level counters (issue #97) ---
 	//
 	// These instruments expose per-component activity (sub-agent, MCP,
@@ -538,6 +549,14 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 	m.GuardDuration, err = meter.Float64Histogram("stirrup.guard.duration_ms",
 		metric.WithUnit("ms"),
 		metric.WithDescription("Wall-clock latency of guard.Check calls"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.SensitiveScan, err = meter.Float64Histogram("stirrup.ruleoftwo.scan_duration_ms",
+		metric.WithUnit("ms"),
+		metric.WithDescription("Wall-clock latency of Rule-of-Two sensitive-content scans"),
 	)
 	if err != nil {
 		return nil, err

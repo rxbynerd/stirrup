@@ -252,3 +252,42 @@ func (sl *SecurityLogger) GuardError(phase, guardID, errorMessage string) {
 		"error":   errorMessage,
 	})
 }
+
+// SensitiveDataDetected emits when the Rule-of-Two runtime monitor
+// reports sensitive content. patterns carries pattern NAMES only —
+// never matched content (the same no-content contract as GuardDenied).
+// source is the provenance ("prompt", "dynamic_context", "tool_result",
+// or "guard:<id>" for the LLM-guard ratchet); transition is true on the
+// event that flipped the run's sensitive-data latch.
+func (sl *SecurityLogger) SensitiveDataDetected(patterns []string, tier, source string, turn int, action string, transition bool) {
+	sl.Emit("warn", "sensitive_data_detected", map[string]any{
+		"patterns":   patterns,
+		"tier":       tier,
+		"source":     source,
+		"turn":       turn,
+		"action":     action,
+		"transition": transition,
+	})
+}
+
+// RuleOfTwoTriggered emits once per run, at the false→true transition
+// of the sensitive-data latch while the runtime monitor is armed. The
+// boolean keys mirror emitRuleOfTwoEvents' run-start audit events so
+// downstream tooling greps one identifier set; sensitiveData is always
+// true here — the transition is the event.
+//
+// scanning_suspended marks where soak telemetry ends: once the latch
+// trips, the monitor stops scanning, so warn-tier detections after
+// this event are deliberately dark. Hardcoded true while the skip is
+// unconditional; the enforcement wave's redact mode (which keeps
+// scanning post-latch) will parameterise it.
+func (sl *SecurityLogger) RuleOfTwoTriggered(untrustedInput, externalCommunication bool, action, source string) {
+	sl.Emit("warn", "rule_of_two_triggered", map[string]any{
+		"untrustedInput":        untrustedInput,
+		"externalCommunication": externalCommunication,
+		"sensitiveData":         true,
+		"action":                action,
+		"source":                source,
+		"scanning_suspended":    true,
+	})
+}

@@ -161,6 +161,11 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		// Without this, an indirect-injection payload could route
 		// harmful work through spawn_agent and bypass all phases.
 		GuardRail: parent.GuardRail,
+		// Share (not copy) the parent's Rule-of-Two monitor for the
+		// same reason: the latch is run-scoped, so sensitive content
+		// observed by either side must tighten the whole run —
+		// spawn_agent must not be a latch escape hatch.
+		RuleOfTwo: parent.RuleOfTwo,
 		// Tag every metric observation emitted from the child so
 		// dashboards can decompose a run into parent vs sub-agent
 		// contributions. The parent's run id is preserved as

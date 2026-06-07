@@ -28,6 +28,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider/compat/zai"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/security/codescanner"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -75,8 +76,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// override (RuleOfTwo.Enforce: false) or the ask-upstream policy.
 	// Recording the event keeps the override auditable; the two-of-three
 	// warning surfaces a heads-up that future capability creep would
-	// trip the invariant.
-	emitRuleOfTwoEvents(config, secLogger)
+	// trip the invariant. The arming decision for the runtime
+	// sensitive-data monitor is computed once here — it feeds both the
+	// rule_of_two_runtime_armed audit event and the monitor built in
+	// step 10b below.
+	ruleOfTwoArmingState := resolveRuleOfTwoArming(config)
+	emitRuleOfTwoEvents(config, secLogger, ruleOfTwoArmingState)
 
 	// Secret store for resolving credential references. AutoSecretStore routes
 	// to SSM for "secret://ssm:///..." refs, falling back to env/file otherwise.
@@ -275,6 +280,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		cleanup()
 		return nil, fmt.Errorf("build guardrail: %w", err)
 	}
+
+	// 10b. Rule-of-Two runtime monitor, from the arming decision
+	// computed alongside the run-start audit events above. Noop when
+	// unarmed so the loop's call sites are unconditional. Observe-only
+	// this wave: enforcing/action flow into events only — no
+	// enforcement consumer exists until wave 4 lands the permission
+	// gate, redact, and abort paths.
+	rot := buildRuleOfTwoMonitor(ruleOfTwoArmingState)
 
 	// 11. Git strategy.
 	gs := buildGitStrategy(config.GitStrategy)
@@ -542,6 +555,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Permissions:  pp,
 		Git:          gs,
 		GuardRail:    gr,
+		RuleOfTwo:    rot,
 		Escalation:   escalation,
 		Transport:    tp,
 		Trace:        te,
@@ -1054,8 +1068,110 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 	}
 }
 
-// emitRuleOfTwoEvents records two security events at run start:
+// defaultRuleOfTwoGuardCriteria is the guard-criteria set used when
+// ruleOfTwo.runtime.guardCriteria is unset: the two built-in criteria
+// an LLM guard is expected to name when it spots sensitive content.
+var defaultRuleOfTwoGuardCriteria = []string{"sensitive_data", "pii"}
+
+// defaultRuleOfTwoAction is the documented onDetect default. Inert this
+// wave (no enforcement consumer); it flows into events so the soak
+// shows the action wave 4 will start applying.
+const defaultRuleOfTwoAction = "block-external"
+
+// ruleOfTwoArming is the factory's arming decision for the Rule-of-Two
+// runtime monitor, computed once per run from the static Rule-of-Two
+// state and the operator's ruleOfTwo.runtime block. Default arming is
+// deliberately factory behaviour, not config mutation — the validator
+// never injects a Runtime block, so the Redact()-persisted config
+// reflects exactly what the operator declared.
+type ruleOfTwoArming struct {
+	armed           bool
+	enforcing       bool
+	action          string
+	criteria        []string
+	classifier      string
+	staticSensitive bool
+}
+
+// resolveRuleOfTwoArming computes the arming matrix. With u =
+// holdsUntrusted, e = canCommExternal, s = static sensitive declaration:
 //
+//   - runtime.classifier "none" disarms entirely.
+//   - u && e && !s with a non-ask-upstream policy and enforce != false
+//     arms enforcing (the dangerous two-of-three where a mid-run
+//     sensitive sighting completes the triad).
+//   - u && e otherwise (ask-upstream, enforce:false, or s already
+//     declared) arms observe-only: ask-upstream already gates egress,
+//     an explicit override must stay an override, and a declared-
+//     sensitive run was already adjudicated by the validator.
+//   - !u || !e stays unarmed — the triad cannot complete — unless the
+//     operator explicitly selected classifier "patterns" (observe-only
+//     detection telemetry on request).
+func resolveRuleOfTwoArming(config *types.RunConfig) ruleOfTwoArming {
+	if config == nil {
+		return ruleOfTwoArming{}
+	}
+	classifier := ""
+	action := defaultRuleOfTwoAction
+	criteria := defaultRuleOfTwoGuardCriteria
+	enforceOverridden := false
+	if config.RuleOfTwo != nil {
+		enforceOverridden = config.RuleOfTwo.Enforce != nil && !*config.RuleOfTwo.Enforce
+		if rt := config.RuleOfTwo.Runtime; rt != nil {
+			classifier = rt.Classifier
+			if rt.OnDetect != "" {
+				action = rt.OnDetect
+			}
+			if len(rt.GuardCriteria) > 0 {
+				criteria = rt.GuardCriteria
+			}
+		}
+	}
+	if classifier == "none" {
+		return ruleOfTwoArming{}
+	}
+	u, s, e := types.RuleOfTwoState(config)
+	switch {
+	case u && e:
+		enforcing := !s && config.PermissionPolicy.Type != "ask-upstream" && !enforceOverridden
+		return ruleOfTwoArming{
+			armed:           true,
+			enforcing:       enforcing,
+			action:          action,
+			criteria:        criteria,
+			classifier:      "patterns",
+			staticSensitive: s,
+		}
+	case classifier == "patterns":
+		return ruleOfTwoArming{
+			armed:           true,
+			enforcing:       false,
+			action:          action,
+			criteria:        criteria,
+			classifier:      "patterns",
+			staticSensitive: s,
+		}
+	default:
+		return ruleOfTwoArming{}
+	}
+}
+
+// buildRuleOfTwoMonitor maps an arming decision onto a Monitor. Noop
+// for unarmed runs so the loop's call sites stay unconditional.
+func buildRuleOfTwoMonitor(arming ruleOfTwoArming) ruleoftwo.Monitor {
+	if !arming.armed {
+		return ruleoftwo.NewNoop()
+	}
+	return ruleoftwo.NewPatternMonitor(arming.enforcing, arming.action, arming.criteria, arming.staticSensitive)
+}
+
+// emitRuleOfTwoEvents records the Rule-of-Two security events at run
+// start:
+//
+//   - rule_of_two_runtime_armed whenever the runtime monitor is armed,
+//     recording the resolved classifier, the effective on-detect action
+//     (the monitor reports "warn" when observe-only, so the event never
+//     promises an action that cannot fire), and the enforcing bit.
 //   - rule_of_two_disabled when all three Rule-of-Two flags hold AND the
 //     operator explicitly disabled enforcement via RuleOfTwo.Enforce:false.
 //     This is the audit trail for the override; the validator would
@@ -1067,9 +1183,20 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 // The event names "untrusted-input", "sensitive-data", and
 // "external-communication" mirror the validator's rejection message so
 // downstream tooling can grep for the same identifiers in both places.
-func emitRuleOfTwoEvents(config *types.RunConfig, sec *security.SecurityLogger) {
+func emitRuleOfTwoEvents(config *types.RunConfig, sec *security.SecurityLogger, arming ruleOfTwoArming) {
 	if sec == nil || config == nil {
 		return
+	}
+	if arming.armed {
+		effectiveAction := arming.action
+		if !arming.enforcing {
+			effectiveAction = "warn"
+		}
+		sec.Emit("info", "rule_of_two_runtime_armed", map[string]any{
+			"classifier": arming.classifier,
+			"onDetect":   effectiveAction,
+			"enforcing":  arming.enforcing,
+		})
 	}
 	u, s, e := types.RuleOfTwoState(config)
 
