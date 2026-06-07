@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -107,7 +108,7 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 		t.Fatal("expected OTel spans to be exported, got none")
 	}
 
-	// We expect: 2 turn spans + 2 tool_call spans + 1 root span = 5.
+	// We expect: 2 turn spans + 2 tool spans + 1 root span = 5.
 	if len(spans) != 5 {
 		t.Errorf("expected 5 spans, got %d", len(spans))
 		for _, s := range spans {
@@ -129,8 +130,11 @@ func TestOTelTraceEmitter_FullLifecycle(t *testing.T) {
 	if spanNames["turn[2]"] != 1 {
 		t.Errorf("expected 1 'turn[2]' span, got %d", spanNames["turn[2]"])
 	}
-	if spanNames["tool_call"] != 2 {
-		t.Errorf("expected 2 'tool_call' spans, got %d", spanNames["tool_call"])
+	if spanNames["execute_tool read_file"] != 1 {
+		t.Errorf("expected 1 'execute_tool read_file' span, got %d", spanNames["execute_tool read_file"])
+	}
+	if spanNames["execute_tool write_file"] != 1 {
+		t.Errorf("expected 1 'execute_tool write_file' span, got %d", spanNames["execute_tool write_file"])
 	}
 
 	// Verify root span has correct attributes.
@@ -217,14 +221,14 @@ func TestOTelTraceEmitter_ToolCallAttributes(t *testing.T) {
 	spans := exporter.GetSpans()
 	var toolSpan tracetest.SpanStub
 	for _, s := range spans {
-		if s.Name == "tool_call" {
+		if s.Name == "execute_tool shell" {
 			toolSpan = s
 			break
 		}
 	}
 
 	if toolSpan.Name == "" {
-		t.Fatal("no tool_call span found")
+		t.Fatal("no 'execute_tool shell' span found")
 	}
 
 	assertAttribute(t, toolSpan, genAIToolNameKey, "shell")
@@ -490,6 +494,7 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 		ToolCalls:  1,
 		StopReason: "end_turn",
 		DurationMs: 5,
+		Model:      "claude-opus-4-8",
 	})
 	emitter.RecordToolCall(types.ToolCallTrace{
 		Name:       "read_file",
@@ -512,18 +517,19 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 			root = s
 		case "turn[1]":
 			turn = s
-		case "tool_call":
+		case "execute_tool read_file":
 			tool = s
 		}
 	}
 	if root.Name == "" || turn.Name == "" || tool.Name == "" {
-		t.Fatalf("expected run, turn[1], tool_call spans; got %v", spans)
+		t.Fatalf("expected run, turn[1], execute_tool read_file spans; got %v", spans)
 	}
 
-	// Root span: model, provider, conversation. gen_ai.agent.id is
-	// intentionally NOT emitted; the spec defines it as a persistent
-	// agent identity (e.g. an OpenAI Assistant ID), not a per-execution
-	// run ID.
+	// Root span: operation name, model, provider, conversation.
+	// gen_ai.agent.id is intentionally NOT emitted; the spec defines it
+	// as a persistent agent identity (e.g. an OpenAI Assistant ID), not
+	// a per-execution run ID.
+	assertAttribute(t, root, genAIOperationNameKey, "invoke_agent")
 	assertAttribute(t, root, genAIProviderNameKey, "anthropic")
 	assertAttribute(t, root, genAIRequestModelKey, "claude-sonnet-4-6")
 	assertAttribute(t, root, genAIConversationIDKey, "alignment-test")
@@ -533,12 +539,212 @@ func TestOTelTraceEmitter_GenAIAttributes(t *testing.T) {
 		}
 	}
 
-	// Turn span: usage tokens, finish reasons, operation name.
+	// Turn span: usage tokens, finish reasons, operation name, and the
+	// per-turn model/provider that backends type and price generations
+	// from. The turn-level model (the router's selection) wins over the
+	// run-level configured model.
 	assertIntAttribute(t, turn, genAIUsageInputTokens, 42)
 	assertIntAttribute(t, turn, genAIUsageOutputTokens, 17)
 	assertStringSliceAttribute(t, turn, genAIFinishReasonsKey, []string{"end_turn"})
 	assertAttribute(t, turn, genAIOperationNameKey, "chat")
+	assertAttribute(t, turn, genAIRequestModelKey, "claude-opus-4-8")
+	assertAttribute(t, turn, genAIProviderNameKey, "anthropic")
 
-	// Tool span: tool name.
+	// Tool span: tool name and operation name.
 	assertAttribute(t, tool, genAIToolNameKey, "read_file")
+	assertAttribute(t, tool, genAIOperationNameKey, "execute_tool")
+}
+
+// TestOTelTraceEmitter_TurnModelFallback pins the gen_ai.request.model
+// resolution order on turn spans: the router's per-turn selection
+// (TurnTrace.Model) wins, the run-level configured model fills in for
+// legacy summaries without one, and the attribute is absent when
+// neither is known — empty attributes pollute downstream filtering.
+func TestOTelTraceEmitter_TurnModelFallback(t *testing.T) {
+	timeout := 60
+	config := &types.RunConfig{
+		RunID:       "run-model-fallback",
+		Mode:        "execution",
+		MaxTurns:    5,
+		Timeout:     &timeout,
+		Provider:    types.ProviderConfig{Type: "anthropic"},
+		ModelRouter: types.ModelRouterConfig{Model: "config-model"},
+	}
+
+	t.Run("turn model wins over config", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-model-fallback", config)
+		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 1, Model: "turn-model"})
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		assertAttribute(t, findSpanByName(t, exporter.GetSpans(), "turn[1]"), genAIRequestModelKey, "turn-model")
+	})
+
+	t.Run("config model fills in", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-model-fallback", config)
+		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 1})
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		assertAttribute(t, findSpanByName(t, exporter.GetSpans(), "turn[1]"), genAIRequestModelKey, "config-model")
+	})
+
+	t.Run("absent when neither known", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-no-model", nil)
+		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "end_turn", DurationMs: 1})
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		span := findSpanByName(t, exporter.GetSpans(), "turn[1]")
+		for _, attr := range span.Attributes {
+			if string(attr.Key) == genAIRequestModelKey {
+				t.Errorf("%s should be absent when no model is known, found %q", genAIRequestModelKey, attr.Value.AsString())
+			}
+		}
+	})
+}
+
+// TestOTelTraceEmitter_UnknownToolSpanNameBounded pins the cardinality
+// bound on tool span names: an unknown-tool failure carries a
+// model-controlled tool name, which must not become an unbounded span
+// name (the vector issue #309 bounded on the loop's tool.<name> spans).
+// The raw requested name still rides the gen_ai.tool.name attribute.
+func TestOTelTraceEmitter_UnknownToolSpanNameBounded(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+
+	emitter.Start("run-unknown-tool", nil)
+	emitter.RecordToolCall(types.ToolCallTrace{
+		Name:          "totally_made_up_tool_9000",
+		DurationMs:    1,
+		Success:       false,
+		ErrorReason:   "unknown tool",
+		ErrorCategory: string(observability.ToolFailureUnknownTool),
+	})
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	span := findSpanByName(t, exporter.GetSpans(), "execute_tool")
+	assertAttribute(t, span, genAIToolNameKey, "totally_made_up_tool_9000")
+}
+
+// findSpanByName fails the test when no span with the given name was
+// exported.
+func findSpanByName(t *testing.T, spans tracetest.SpanStubs, name string) tracetest.SpanStub {
+	t.Helper()
+	for _, s := range spans {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("no span named %q exported", name)
+	return tracetest.SpanStub{}
+}
+
+// TestOTelTraceEmitter_ErrorStatus pins the OTel status-code surface:
+// backends derive their error level and message from span status, so a
+// failed run, turn, or tool call must carry codes.Error while the
+// success paths leave status Unset (the spec default; Ok is reserved
+// for explicit operator assertion).
+func TestOTelTraceEmitter_ErrorStatus(t *testing.T) {
+	t.Run("root error for non-success outcomes including cancelled", func(t *testing.T) {
+		for _, outcome := range []string{"max_turns", "cancelled"} {
+			emitter, exporter := newTestOTelEmitter()
+			emitter.Start("run-status", nil)
+			if _, err := emitter.Finish(context.Background(), outcome); err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+			span := findSpanByName(t, exporter.GetSpans(), "run")
+			if span.Status.Code != codes.Error {
+				t.Errorf("outcome %q: root status = %v, want Error", outcome, span.Status.Code)
+			}
+			if span.Status.Description != outcome {
+				t.Errorf("outcome %q: root status description = %q, want the outcome", outcome, span.Status.Description)
+			}
+		}
+	})
+
+	t.Run("root unset on success", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-status-ok", nil)
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		span := findSpanByName(t, exporter.GetSpans(), "run")
+		if span.Status.Code != codes.Unset {
+			t.Errorf("root status = %v, want Unset", span.Status.Code)
+		}
+	})
+
+	t.Run("turn error on error stop reason", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-status-turn", nil)
+		emitter.RecordTurn(types.TurnTrace{Turn: 1, StopReason: "error", DurationMs: 1})
+		emitter.RecordTurn(types.TurnTrace{Turn: 2, StopReason: "end_turn", DurationMs: 1})
+		if _, err := emitter.Finish(context.Background(), "error"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		spans := exporter.GetSpans()
+		if got := findSpanByName(t, spans, "turn[1]").Status.Code; got != codes.Error {
+			t.Errorf("error turn status = %v, want Error", got)
+		}
+		if got := findSpanByName(t, spans, "turn[2]").Status.Code; got != codes.Unset {
+			t.Errorf("clean turn status = %v, want Unset", got)
+		}
+	})
+
+	t.Run("tool error with reason and error.type", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-status-tool", nil)
+		emitter.RecordToolCall(types.ToolCallTrace{
+			Name:          "run_command",
+			DurationMs:    3,
+			Success:       false,
+			ErrorReason:   "exit status 1",
+			ErrorCategory: "execution_failed",
+		})
+		emitter.RecordToolCall(types.ToolCallTrace{
+			Name:       "read_file",
+			DurationMs: 1,
+			Success:    true,
+		})
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		spans := exporter.GetSpans()
+		failed := findSpanByName(t, spans, "execute_tool run_command")
+		if failed.Status.Code != codes.Error {
+			t.Errorf("failed tool status = %v, want Error", failed.Status.Code)
+		}
+		if failed.Status.Description != "exit status 1" {
+			t.Errorf("failed tool status description = %q, want the error reason", failed.Status.Description)
+		}
+		assertAttribute(t, failed, errorTypeKey, "execution_failed")
+
+		ok := findSpanByName(t, spans, "execute_tool read_file")
+		if ok.Status.Code != codes.Unset {
+			t.Errorf("successful tool status = %v, want Unset", ok.Status.Code)
+		}
+		for _, attr := range ok.Attributes {
+			if string(attr.Key) == errorTypeKey {
+				t.Errorf("%s should be absent on successful calls, found %q", errorTypeKey, attr.Value.AsString())
+			}
+		}
+	})
+
+	t.Run("failed tool with empty reason gets fallback description", func(t *testing.T) {
+		emitter, exporter := newTestOTelEmitter()
+		emitter.Start("run-status-tool-bare", nil)
+		emitter.RecordToolCall(types.ToolCallTrace{Name: "edit_file", DurationMs: 1, Success: false})
+		if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+			t.Fatalf("Finish: %v", err)
+		}
+		span := findSpanByName(t, exporter.GetSpans(), "execute_tool edit_file")
+		if span.Status.Code != codes.Error || span.Status.Description != "tool call failed" {
+			t.Errorf("status = %v %q, want Error with fallback description", span.Status.Code, span.Status.Description)
+		}
+	})
 }

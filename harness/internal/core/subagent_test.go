@@ -472,6 +472,9 @@ func TestSpawnSubAgent_TraceEventsForwardedToParent(t *testing.T) {
 		if turn.RunID == parentConfig.RunID {
 			t.Errorf("forwarded turn RunID must be the child's runID, not the parent's; got %q", turn.RunID)
 		}
+		if turn.Model != "claude-sonnet-4-6" {
+			t.Errorf("forwarded turn Model: got %q, want the router's selected model", turn.Model)
+		}
 	}
 }
 

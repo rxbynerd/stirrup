@@ -615,6 +615,7 @@ func (l *AgenticLoop) runInnerLoop(
 					StopReason: "error",
 					DurationMs: time.Since(turnStart).Milliseconds(),
 					Mode:       "",
+					Model:      selection.Model,
 				})
 				return messages, "error"
 			}
@@ -627,6 +628,7 @@ func (l *AgenticLoop) runInnerLoop(
 				StopReason: "error",
 				DurationMs: time.Since(turnStart).Milliseconds(),
 				Mode:       "",
+				Model:      selection.Model,
 			})
 			return messages, "error"
 		}
@@ -729,6 +731,7 @@ func (l *AgenticLoop) runInnerLoop(
 				DurationMs: time.Since(turnStart).Milliseconds(),
 				Mode:       turnMode,
 				BatchID:    turnBatchID,
+				Model:      selection.Model,
 			})
 			// If the provider call failed because the run context was
 			// cancelled, surface that so the outer loop can classify the
@@ -789,6 +792,7 @@ func (l *AgenticLoop) runInnerLoop(
 				DurationMs: turnDuration.Milliseconds(),
 				Mode:       turnMode,
 				BatchID:    turnBatchID,
+				Model:      selection.Model,
 			})
 			// Distinguish stream-abort-due-to-ctx from other stream errors
 			// so the outer loop can classify the outcome correctly.
@@ -824,6 +828,7 @@ func (l *AgenticLoop) runInnerLoop(
 			DurationMs: turnDuration.Milliseconds(),
 			Mode:       turnMode,
 			BatchID:    turnBatchID,
+			Model:      selection.Model,
 		})
 
 		// Snapshot the model input the provider just saw and the
