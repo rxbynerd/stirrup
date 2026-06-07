@@ -1,0 +1,12 @@
+# synthetic: derived from the DeepSeek thinking-mode guide (https://api-docs.deepseek.com/guides/thinking_mode) because the harness does not yet have a live deepseek-v4-flash capture. Mirrors the v4 wire shape (reasoning_content streamed as a sibling of content on each assistant delta, thinking default-on) so the SSE-parse contract test walks the capture-and-flatten path end-to-end for the explicit flash id. Replace with a real capture before relying on the rule against live traffic.
+data: {"id":"chatcmpl-ds-v4-flash-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-flash-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"Scanning the request. "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-flash-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"Choosing an answer."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-flash-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-flash-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":8}}
+
+data: [DONE]

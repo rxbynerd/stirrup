@@ -817,6 +817,21 @@ func TestReplayFieldsRules_DeepSeekReasoner(t *testing.T) {
 		if len(q.ReplayFields) != 1 || q.ReplayFields[0] != "reasoning_content" {
 			t.Errorf("ReplayFields = %v, want [reasoning_content]", q.ReplayFields)
 		}
+		// The reasoner rule carries the same behaviour-flag set as the
+		// v4 rule (it is a v4-flash thinking alias until 2026-07-24):
+		// sampling params suppressed (logprobs hard-errors on the
+		// reasoner lineage), legacy max_tokens key, no strict mode
+		// (Beta-only, unreliable). Without these assertions a
+		// divergence from the v4 rule would pass the suite undetected.
+		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("OmitSamplingParams = false, want true")
+		}
+		if q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxTokens {
+			t.Errorf("TokenField = %v, want TokenFieldMaxTokens", q.BehaviourFlags.OpenAI.TokenField)
+		}
+		if q.BehaviourFlags.OpenAI.StrictMode {
+			t.Errorf("StrictMode = true, want false")
+		}
 	})
 	t.Run("fires on deepseek-reasoner-lite (suffix variant)", func(t *testing.T) {
 		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-reasoner-lite")

@@ -486,6 +486,169 @@ func TestReplayFields_CapBoundsAccumulator(t *testing.T) {
 	}
 }
 
+// TestReplayFields_SpanAttributesRecordCaptureSummary pins the OTel
+// half of the per-stream capture observability: when a span is active
+// on the Stream context, the deferred capture summary must set
+// replay_fields_captured.count / .total_len (length-only — values
+// never reach the trace). The stub-server tests never carried a span,
+// leaving summarizeReplayCaptures unexercised.
+func TestReplayFields_SpanAttributesRecordCaptureSummary(t *testing.T) {
+	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek-v4/response.sse"))
+	defer srv.Close()
+
+	ctx, exporter, span := withRecordingSpan(t)
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+
+	ch, err := adapter.Stream(ctx, types.StreamParams{
+		Model:     "deepseek-v4",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	_ = drainStream(t, ch)
+	span.End()
+
+	var count, totalLen int64
+	found := false
+	for _, stub := range exporter.GetSpans() {
+		for _, attr := range stub.Attributes {
+			switch attr.Key {
+			case "replay_fields_captured.count":
+				count = attr.Value.AsInt64()
+				found = true
+			case "replay_fields_captured.total_len":
+				totalLen = attr.Value.AsInt64()
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("replay_fields_captured.* attributes missing from recorded spans")
+	}
+	// The deepseek-v4 fixture streams two reasoning_content pieces
+	// ("" + "Considering the request carefully.").
+	if count != 2 {
+		t.Errorf("replay_fields_captured.count = %d, want 2", count)
+	}
+	if totalLen != int64(len("Considering the request carefully.")) {
+		t.Errorf("replay_fields_captured.total_len = %d, want %d", totalLen, len("Considering the request carefully."))
+	}
+}
+
+// TestSummarizeReplayCaptures pins both arms of the length proxy
+// directly: raw length for strings, JSON-encoded length for anything
+// else (the arm no streaming fixture reaches, since the current rules
+// only capture string fields).
+func TestSummarizeReplayCaptures(t *testing.T) {
+	t.Run("string values use raw length", func(t *testing.T) {
+		count, totalLen := summarizeReplayCaptures(map[string][]any{
+			"reasoning_content": {"ab", "cde"},
+		})
+		if count != 2 || totalLen != 5 {
+			t.Errorf("got (count=%d, totalLen=%d), want (2, 5)", count, totalLen)
+		}
+	})
+	t.Run("non-string values use JSON-encoded length", func(t *testing.T) {
+		count, totalLen := summarizeReplayCaptures(map[string][]any{
+			"x": {map[string]any{"step": 1}},
+		})
+		// json.Marshal(map[string]any{"step": 1}) = `{"step":1}` (10 bytes).
+		if count != 1 || totalLen != 10 {
+			t.Errorf("got (count=%d, totalLen=%d), want (1, 10)", count, totalLen)
+		}
+	})
+	t.Run("cap accounting helper agrees with the summary proxy", func(t *testing.T) {
+		if got := replayCaptureByteLen("abc"); got != 3 {
+			t.Errorf("string: got %d, want 3", got)
+		}
+		if got := replayCaptureByteLen(map[string]any{"step": 1}); got != 10 {
+			t.Errorf("object: got %d, want 10 (JSON-encoded length)", got)
+		}
+		// Unmarshalable values degrade to zero rather than failing —
+		// the accumulator only ever holds decoded JSON, so this is the
+		// defensive arm.
+		if got := replayCaptureByteLen(func() {}); got != 0 {
+			t.Errorf("unmarshalable: got %d, want 0", got)
+		}
+	})
+}
+
+// TestReplayFields_TwoTurnRoundTrip drives the full failure mode the
+// feature exists to prevent: turn 1 streams a DeepSeek v4 response with
+// reasoning_content, the captured state is attached to the assistant
+// message exactly as the agentic loop does it, and the turn-2 request
+// built from that history must carry reasoning_content as a top-level
+// key on the assistant wire message — the shape whose absence 400s.
+func TestReplayFields_TwoTurnRoundTrip(t *testing.T) {
+	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek-v4-flash/response.sse"))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+
+	history := []types.Message{
+		{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+	}
+
+	// Turn 1: stream and assemble the assistant message the way
+	// streamEventsToResult + appendAssistantContent do — text deltas
+	// concatenate into one block, message_complete supplies the
+	// replay state.
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "deepseek-v4-flash",
+		MaxTokens: 1024,
+		Messages:  history,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var text strings.Builder
+	var replay map[string]json.RawMessage
+	for _, ev := range drainStream(t, ch) {
+		switch ev.Type {
+		case "text_delta":
+			text.WriteString(ev.Text)
+		case "message_complete":
+			replay = ev.ReplayFields
+		}
+	}
+	if replay == nil {
+		t.Fatal("turn 1 produced no ReplayFields")
+	}
+	history = append(history, types.Message{
+		Role:         "assistant",
+		Content:      []types.ContentBlock{{Type: "text", Text: text.String()}},
+		ReplayFields: replay,
+	})
+	history = append(history, types.Message{
+		Role:    "user",
+		Content: []types.ContentBlock{{Type: "text", Text: "and now?"}},
+	})
+
+	// Turn 2: the request built from the updated history must replay
+	// the captured value verbatim on the assistant message.
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", "deepseek-v4-flash")
+	req, err := buildOpenAIRequest(types.StreamParams{
+		Model:     "deepseek-v4-flash",
+		MaxTokens: 1024,
+		Messages:  history,
+	}, true, q, nil)
+	if err != nil {
+		t.Fatalf("build turn-2 request: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal turn-2 request: %v", err)
+	}
+	want := `"reasoning_content":"Scanning the request. Choosing an answer."`
+	if !strings.Contains(string(body), want) {
+		t.Errorf("turn-2 wire body missing replayed reasoning_content:\nwant substring: %s\nbody: %s", want, body)
+	}
+}
+
 // replayLeakageMessages is the shared history for the cross-provider
 // leakage guards: an assistant message carrying ReplayFields state that
 // only an openai-compatible adapter is allowed to serialise.
