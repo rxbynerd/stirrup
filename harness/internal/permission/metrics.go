@@ -95,6 +95,14 @@ func (r *metricRecorder) Unwrap() PermissionPolicy {
 	return r.inner
 }
 
+// Rewrap reproduces the metric recorder around a different inner
+// policy, preserving the metrics handle and policy label.
+func (r *metricRecorder) Rewrap(inner PermissionPolicy) PermissionPolicy {
+	clone := *r
+	clone.inner = inner
+	return &clone
+}
+
 // Unwrap returns the underlying PermissionPolicy if pp is wrapped in a
 // metric recorder, or pp itself otherwise. Use this whenever a caller
 // needs to test the concrete policy class rather than dispatch a
@@ -109,4 +117,43 @@ func Unwrap(pp PermissionPolicy) PermissionPolicy {
 		}
 		pp = w.Unwrap()
 	}
+}
+
+// Rewrapper is implemented by policy wrappers that can reproduce
+// themselves around a different inner policy. RewrapChain uses it to
+// rebuild a factory-built wrapper chain around a per-child clone of the
+// innermost policy (see core.SpawnSubAgent): each wrapper's own
+// configuration (metric label, gate state) is shared; only the inner
+// pointer changes.
+type Rewrapper interface {
+	Rewrap(inner PermissionPolicy) PermissionPolicy
+}
+
+// RewrapChain rebuilds pp's wrapper chain around newInner, preserving
+// wrapper order. Returns (pp, false) when any wrapper in the chain does
+// not implement Rewrapper: callers must treat that as "cannot safely
+// re-wrap" and keep the original chain rather than substituting the
+// bare inner — dropping a wrapper here would silently shed its
+// enforcement (a dropped Rule-of-Two gate turns spawn_agent into a
+// latch escape hatch).
+func RewrapChain(pp, newInner PermissionPolicy) (PermissionPolicy, bool) {
+	var wrappers []Rewrapper
+	cur := pp
+	for {
+		u, ok := cur.(interface{ Unwrap() PermissionPolicy })
+		if !ok {
+			break
+		}
+		rw, ok := cur.(Rewrapper)
+		if !ok {
+			return pp, false
+		}
+		wrappers = append(wrappers, rw)
+		cur = u.Unwrap()
+	}
+	out := newInner
+	for i := len(wrappers) - 1; i >= 0; i-- {
+		out = wrappers[i].Rewrap(out)
+	}
+	return out, true
 }

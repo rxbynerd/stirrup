@@ -41,6 +41,7 @@ type Metrics struct {
 	GuardSkips            metric.Int64Counter
 	GuardSpotlights       metric.Int64Counter
 	RuleOfTwoDetections   metric.Int64Counter
+	RuleOfTwoActions      metric.Int64Counter
 
 	// --- Component-level instruments (issue #97) ---
 	// Counters
@@ -411,6 +412,15 @@ func newMetricsFromMeter(meter metric.Meter, provider *sdkmetric.MeterProvider) 
 		metric.WithUnit("{detection}"),
 		metric.WithDescription("Sensitive-data detections recorded by the Rule-of-Two runtime monitor, labelled by pattern, tier, and source. "+
 			"Guard-ratchet trips carry a \"guard:\"-prefixed pattern label so they are distinguishable from deterministic detector hits."),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	m.RuleOfTwoActions, err = meter.Int64Counter("stirrup.ruleoftwo.actions",
+		metric.WithUnit("{action}"),
+		metric.WithDescription("Rule-of-Two enforcement actions applied after the sensitive-data latch trips: "+
+			"one per gate denial (block-external), per gate-routed upstream ask (ask-upstream), per redacted chunk set (redact), and per terminated run (abort)."),
 	)
 	if err != nil {
 		return nil, err
