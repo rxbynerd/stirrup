@@ -44,6 +44,19 @@ type OpenAIAuthConfig struct {
 const (
 	openaiDefaultBaseURL   = "https://api.openai.com/v1"
 	openaiMaxToolInputSize = 10 * 1024 * 1024 // 10 MB cap on streamed tool argument JSON
+
+	// maxReplayFieldBytes bounds the per-stream ReplayFields capture
+	// accumulator across all paths — 512 kB is generous for any real
+	// chain-of-thought field. Without a cap, a malicious or
+	// misconfigured provider could stream tens of thousands of
+	// captured chunks within the request timeout and balloon the
+	// accumulator (plus the flatten-time copies) to hundreds of MB.
+	// Same precedent as openaiMaxToolInputSize above; shared by the
+	// openai and gemini capture sites. Overflow truncates — the
+	// accumulated prefix is kept, every later capture is dropped so
+	// the flattened value stays a clean prefix — and logs one WARN
+	// per stream. The values themselves are never logged.
+	maxReplayFieldBytes = 512 * 1024
 )
 
 // OpenAICompatibleAdapter implements ProviderAdapter for the OpenAI Chat
@@ -445,6 +458,22 @@ func logReplayFieldsCapture(ctx context.Context, logger *slog.Logger, providerTy
 	)
 }
 
+// replayCaptureByteLen returns the byte-length proxy for one captured
+// replay value: raw length for strings, JSON-encoded length otherwise
+// (zero on a marshal failure). The same proxy summarizeReplayCaptures
+// and logReplayFieldsCapture use, so the maxReplayFieldBytes cap
+// accounting agrees with the observability surfaces.
+func replayCaptureByteLen(v any) int {
+	if s, ok := v.(string); ok {
+		return len(s)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return 0
+	}
+	return len(b)
+}
+
 // flattenReplayCapture projects the per-stream ReplayFields accumulator
 // onto the map a "message_complete" StreamEvent carries (the flattening
 // rule documented on types.StreamEvent.ReplayFields):
@@ -455,6 +484,12 @@ func logReplayFieldsCapture(ctx context.Context, logger *slog.Logger, providerTy
 //     arrives across many chunks);
 //   - otherwise the LAST captured value is marshalled verbatim
 //     (snapshot semantics for object-shaped fields).
+//
+// JSON nulls (Go nil after decode) are stripped before the
+// all-strings check: a provider that opens the stream with
+// `"reasoning_content": null` before the string chunks must not flip
+// the path onto the last-value snapshot arm and silently drop every
+// intermediate piece.
 //
 // A value that fails to re-marshal is skipped: every entry in the
 // accumulator was decoded from provider JSON, so the arm is
@@ -467,11 +502,17 @@ func flattenReplayCapture(capture map[string][]any) map[string]json.RawMessage {
 	}
 	out := make(map[string]json.RawMessage, len(capture))
 	for path, values := range capture {
-		if len(values) == 0 {
+		nonNil := make([]any, 0, len(values))
+		for _, v := range values {
+			if v != nil {
+				nonNil = append(nonNil, v)
+			}
+		}
+		if len(nonNil) == 0 {
 			continue
 		}
 		allStrings := true
-		for _, v := range values {
+		for _, v := range nonNil {
 			if _, ok := v.(string); !ok {
 				allStrings = false
 				break
@@ -481,12 +522,12 @@ func flattenReplayCapture(capture map[string][]any) map[string]json.RawMessage {
 		var err error
 		if allStrings {
 			var b strings.Builder
-			for _, v := range values {
+			for _, v := range nonNil {
 				b.WriteString(v.(string))
 			}
 			encoded, err = json.Marshal(b.String())
 		} else {
-			encoded, err = json.Marshal(values[len(values)-1])
+			encoded, err = json.Marshal(nonNil[len(nonNil)-1])
 		}
 		if err != nil {
 			continue
@@ -598,9 +639,10 @@ func threadableOpenAIReplayPath(path string) bool {
 
 // MarshalJSON emits the canonical message fields in struct order, then
 // appends the ReplayFields entries (sorted by key for determinism).
-// The two-pass shape mirrors openaiRequest.MarshalJSON: canonical
-// fields stay struct-driven so their byte order is stable, and the
-// extras are spliced in after. A ReplayFields key that collides with a
+// The two-pass shape mirrors openaiChunkChoice.UnmarshalJSON: the alias
+// preserves the canonical typed path and the extras are spliced into
+// the trailing bytes, matching the ExtraBodyFields merge concept in
+// openaiRequest.MarshalJSON. A ReplayFields key that collides with a
 // canonical message field, or a value that is not valid JSON, is an
 // error — translateMessages filters both cases, so reaching either arm
 // means a non-quirks caller populated the map by hand and should fail
@@ -1311,7 +1353,20 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	// reasoning_content streamed across multiple chunks) records each
 	// piece in arrival order rather than only the last value. The
 	// terminal log line summarises lengths, not values.
+	//
+	// replayFieldsTotalBytes tracks the accumulator's byte budget
+	// (replayCaptureByteLen proxy, across all paths) against
+	// maxReplayFieldBytes. Once the cap is hit, replayFieldsCapped
+	// flips and every later capture is dropped, so the flattened value
+	// stays a clean prefix of the stream rather than gaining holes
+	// from selectively skipped chunks.
 	replayFieldsCapture := map[string][]any{}
+	replayFieldsTotalBytes := 0
+	replayFieldsCapped := false
+	// messageCompleted records whether a finish_reason chunk produced a
+	// message_complete event, so the bare-[DONE] fallback below knows
+	// whether the stream still owes one.
+	messageCompleted := false
 	// Emit the per-stream ReplayFields summary on any exit path
 	// (normal end, early return on error, ctx cancel). Length-only
 	// reporting per design §5: avoid leaking captured content into
@@ -1362,6 +1417,23 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		if data == "[DONE]" {
 			// Flush any remaining tool calls before ending.
 			o.flushToolCallsVia(toolCalls, emitEvent)
+			// Some gateways terminate with a bare [DONE] and never send
+			// a finish_reason chunk. If replay state accumulated and no
+			// message_complete was emitted, synthesise one so the
+			// captured state still reaches the persisted assistant
+			// message — otherwise the next turn 400s against DeepSeek
+			// v4 thinking mode. Gated on messageCompleted: a stream
+			// that already completed normally must not get a second
+			// event, which would clobber the real stop reason (e.g.
+			// "tool_use") in streamEventsToResult's last-write-wins
+			// merge.
+			if !messageCompleted && len(replayFieldsCapture) > 0 {
+				emitEvent(types.StreamEvent{
+					Type:         "message_complete",
+					StopReason:   mapFinishReason("stop"),
+					ReplayFields: flattenReplayCapture(replayFieldsCapture),
+				})
+			}
 			return
 		}
 
@@ -1374,12 +1446,32 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		for _, choice := range chunk.Choices {
 			// ReplayFields capture (design D12). Walk the raw delta
 			// object once per chunk and merge any matching paths into
-			// the per-stream accumulator. The path walker is a no-op
+			// the per-stream accumulator, subject to the
+			// maxReplayFieldBytes budget. The path walker is a no-op
 			// when q.ReplayFields is empty so the cost in the
-			// zero-rules case is one slice-length check.
-			if len(q.ReplayFields) > 0 && len(choice.RawDelta) > 0 {
+			// zero-rules case is one slice-length check; once the cap
+			// is hit, the walk is skipped entirely for the rest of the
+			// stream.
+			if !replayFieldsCapped && len(q.ReplayFields) > 0 && len(choice.RawDelta) > 0 {
 				if captured := quirks.CaptureFromJSON(choice.RawDelta, q.ReplayFields); len(captured) > 0 {
 					for k, v := range captured {
+						add := 0
+						for _, item := range v {
+							add += replayCaptureByteLen(item)
+						}
+						if replayFieldsTotalBytes+add > maxReplayFieldBytes {
+							replayFieldsCapped = true
+							// One WARN per stream; the captured values
+							// themselves are never logged.
+							logger.WarnContext(ctx, "replay field accumulator cap reached, truncating",
+								slog.String("provider.type", "openai-compatible"),
+								slog.String("provider.model", model),
+								slog.String("path", k),
+								slog.Int("limit_bytes", maxReplayFieldBytes),
+							)
+							break
+						}
+						replayFieldsTotalBytes += add
 						replayFieldsCapture[k] = append(replayFieldsCapture[k], v...)
 					}
 				}
@@ -1436,6 +1528,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 					ev.OutputTokens = chunk.Usage.CompletionTokens
 				}
 				emitEvent(ev)
+				messageCompleted = true
 			}
 		}
 	}

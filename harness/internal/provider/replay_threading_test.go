@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -51,6 +52,18 @@ func TestFlattenReplayCapture(t *testing.T) {
 			t.Errorf("field = %s, want %s", got["field"], want)
 		}
 	})
+	t.Run("nil first chunk then strings concatenates", func(t *testing.T) {
+		// A provider that opens the stream with `"reasoning_content":
+		// null` decodes to a Go nil. The nil must be stripped before
+		// the all-strings check — otherwise the last-value snapshot
+		// arm fires and silently drops every intermediate piece.
+		got := flattenReplayCapture(map[string][]any{
+			"reasoning_content": {nil, "a", "b"},
+		})
+		if string(got["reasoning_content"]) != `"ab"` {
+			t.Errorf("reasoning_content = %s, want \"ab\"", got["reasoning_content"])
+		}
+	})
 	t.Run("empty capture returns nil", func(t *testing.T) {
 		if got := flattenReplayCapture(nil); got != nil {
 			t.Errorf("nil capture: got %v, want nil", got)
@@ -60,6 +73,9 @@ func TestFlattenReplayCapture(t *testing.T) {
 		}
 		if got := flattenReplayCapture(map[string][]any{"p": {}}); got != nil {
 			t.Errorf("empty value slice: got %v, want nil", got)
+		}
+		if got := flattenReplayCapture(map[string][]any{"p": {nil, nil}}); got != nil {
+			t.Errorf("all-nil value slice: got %v, want nil", got)
 		}
 	})
 }
@@ -325,6 +341,148 @@ func TestReplayFields_NoRule_MessageCompleteCarriesNothing(t *testing.T) {
 		if ev.Type == "message_complete" && ev.ReplayFields != nil {
 			t.Errorf("message_complete carries ReplayFields with no rule: %v", ev.ReplayFields)
 		}
+	}
+}
+
+// TestReplayFields_DoneOnlyTermination_EmitsMessageComplete pins the
+// bare-[DONE] fallback: some proxy gateways omit the finish_reason
+// chunk and terminate with [DONE] alone. Accumulated replay state must
+// still reach a message_complete event — silently dropping it would
+// 400 the next DeepSeek turn. The companion sub-test pins the guard's
+// other half: a stream that completed normally must emit exactly one
+// message_complete (a duplicate from the fallback would clobber the
+// real stop reason in streamEventsToResult's last-write-wins merge).
+func TestReplayFields_DoneOnlyTermination_EmitsMessageComplete(t *testing.T) {
+	t.Run("bare DONE emits synthetic message_complete", func(t *testing.T) {
+		sse := "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"part one \"},\"finish_reason\":null}]}\n\n" +
+			"data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"part two\"},\"finish_reason\":null}]}\n\n" +
+			"data: [DONE]\n\n"
+		srv := sseStubServer(t, []byte(sse))
+		defer srv.Close()
+
+		adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+		ch, err := adapter.Stream(context.Background(), types.StreamParams{
+			Model:     "deepseek-v4-flash",
+			MaxTokens: 1024,
+			Messages: []types.Message{
+				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		var completes []types.StreamEvent
+		for _, ev := range drainStream(t, ch) {
+			if ev.Type == "message_complete" {
+				completes = append(completes, ev)
+			}
+		}
+		if len(completes) != 1 {
+			t.Fatalf("expected exactly 1 message_complete, got %d", len(completes))
+		}
+		if got := string(completes[0].ReplayFields["reasoning_content"]); got != `"part one part two"` {
+			t.Errorf("ReplayFields[reasoning_content] = %s, want \"part one part two\"", got)
+		}
+		if completes[0].StopReason != "end_turn" {
+			t.Errorf("StopReason = %q, want end_turn (canonical mapping of the synthetic stop)", completes[0].StopReason)
+		}
+	})
+
+	t.Run("normal finish_reason stream emits exactly one message_complete", func(t *testing.T) {
+		srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek-v4/response.sse"))
+		defer srv.Close()
+
+		adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+		ch, err := adapter.Stream(context.Background(), types.StreamParams{
+			Model:     "deepseek-v4",
+			MaxTokens: 1024,
+			Messages: []types.Message{
+				{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Stream: %v", err)
+		}
+		count := 0
+		var last types.StreamEvent
+		for _, ev := range drainStream(t, ch) {
+			if ev.Type == "message_complete" {
+				count++
+				last = ev
+			}
+		}
+		if count != 1 {
+			t.Fatalf("expected exactly 1 message_complete, got %d (the [DONE] fallback must not double-emit)", count)
+		}
+		if last.StopReason != "end_turn" {
+			t.Errorf("StopReason = %q, want end_turn from the finish_reason chunk", last.StopReason)
+		}
+	})
+}
+
+// TestReplayFields_CapBoundsAccumulator pins the maxReplayFieldBytes
+// budget: a provider streaming far more captured content than any real
+// chain-of-thought field must be truncated to a bounded prefix, the
+// stream must complete normally, and one WARN must name the cap. 600
+// chunks of 1 kB exceed the 512 kB budget by ~17%.
+func TestReplayFields_CapBoundsAccumulator(t *testing.T) {
+	piece := strings.Repeat("a", 1024)
+	var sse strings.Builder
+	for i := 0; i < 600; i++ {
+		sse.WriteString(`data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"` + piece + `"},"finish_reason":null}]}`)
+		sse.WriteString("\n\n")
+	}
+	sse.WriteString(`data: {"id":"x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	sse.WriteString("\n\ndata: [DONE]\n\n")
+
+	srv := sseStubServer(t, []byte(sse.String()))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "deepseek-v4-flash",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var complete *types.StreamEvent
+	for _, ev := range drainStream(t, ch) {
+		if ev.Type == "message_complete" {
+			evCopy := ev
+			complete = &evCopy
+		}
+	}
+	if complete == nil {
+		t.Fatal("no message_complete event")
+	}
+	got := complete.ReplayFields["reasoning_content"]
+	if len(got) == 0 {
+		t.Fatal("truncation must keep the accumulated prefix, not drop the field")
+	}
+	// The flattened value is a JSON string: content bytes plus two
+	// quotes (the fixture content needs no escaping).
+	if len(got) > maxReplayFieldBytes+2 {
+		t.Errorf("flattened value is %d bytes, want <= %d (cap not enforced)", len(got), maxReplayFieldBytes+2)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "replay field accumulator cap reached, truncating") {
+		t.Errorf("missing cap WARN log; log:\n%.2000s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"level":"WARN"`) {
+		t.Errorf("cap log entry must be WARN level; log:\n%.2000s", logOutput)
+	}
+	if strings.Contains(logOutput, piece) {
+		t.Errorf("cap WARN leaked captured content into the log")
 	}
 }
 
