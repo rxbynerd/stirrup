@@ -155,6 +155,17 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		// the unset/false distinction here — the validator depends on it
 		// to apply the secure default (enforce) when the field is omitted.
 		rc.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: pc.RuleOfTwo.Enforce}
+		// Runtime mirrors the same nil-vs-present distinction: an absent
+		// sub-message stays nil so the factory's default arming applies,
+		// rather than a synthesised empty block masquerading as an
+		// operator declaration.
+		if pc.RuleOfTwo.Runtime != nil {
+			rc.RuleOfTwo.Runtime = &types.RuleOfTwoRuntimeConfig{
+				Classifier:    pc.RuleOfTwo.Runtime.Classifier,
+				OnDetect:      pc.RuleOfTwo.Runtime.OnDetect,
+				GuardCriteria: pc.RuleOfTwo.Runtime.GuardCriteria,
+			}
+		}
 	}
 	if pc.SensitiveData != nil {
 		// proto3 `optional bool`, generated as *bool. Preserve the

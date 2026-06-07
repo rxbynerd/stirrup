@@ -494,6 +494,42 @@ message RuleOfTwoConfig {
   // `RuleOfTwoConfig{enforce: false}`, silently disabling enforcement
   // for any control plane that includes the sub-message at all.
   optional bool enforce = 1;
+
+  // Optional. Runtime sensitive-data classifier configuration. An
+  // absent sub-message leaves arming to the harness factory's
+  // defaults; the validator never synthesises one.
+  RuleOfTwoRuntimeConfig runtime = 2;
+}
+
+// RuleOfTwoRuntimeConfig selects the runtime sensitive-data classifier
+// for the Rule-of-Two sensitive-data leg and the action taken when it
+// detects sensitive content. The other two legs are static
+// capabilities computable at config time; sensitivity is a content
+// property only knowable at runtime.
+message RuleOfTwoRuntimeConfig {
+  // The detector implementation.
+  // Valid values:
+  //   ""         — automatic (the factory decides from the static
+  //                 Rule-of-Two state).
+  //   "patterns" — deterministic regex+checksum pattern pack.
+  //   "none"     — disable runtime classification entirely.
+  string classifier = 1;
+
+  // The action once the classifier trips. Empty defaults to
+  // "block-external".
+  // Valid values: "block-external" (revoke external-communication
+  // tools for the rest of the run), "ask-upstream" (route
+  // external-communication calls through the upstream permission
+  // channel; requires transport=grpc), "redact" (rewrite matched
+  // spans), "abort" (terminate the run), "warn" (events and metrics
+  // only).
+  string on_detect = 2;
+
+  // Guard Decision.Criterion values that also trip the sensitive-data
+  // latch (one-way — a guard can tighten the rule, never loosen it).
+  // Entries must be snake_case identifiers, matching the constraint
+  // on GuardRailConfig.custom_criteria keys.
+  repeated string guard_criteria = 3;
 }
 
 // CodeScannerConfig selects the static-analysis pass run after every

@@ -105,6 +105,68 @@ func TestRuleOfTwoProto_EmptyMessageDoesNotDisableEnforcement(t *testing.T) {
 	})
 }
 
+// TestRuleOfTwoProto_RuntimeTranslation pins the runtime sub-message
+// translation. The nil-vs-present distinction matters the same way it
+// does for enforce: an absent proto Runtime must stay nil on the
+// internal config so the factory's default arming applies, while a
+// present-but-empty one must surface as a present-but-empty block.
+func TestRuleOfTwoProto_RuntimeTranslation(t *testing.T) {
+	t.Run("absent runtime stays nil", func(t *testing.T) {
+		rc := runConfigFromProto(&pb.RunConfig{RuleOfTwo: &pb.RuleOfTwoConfig{}})
+		if rc.RuleOfTwo == nil {
+			t.Fatal("expected RuleOfTwo non-nil when proto sub-message present")
+		}
+		if rc.RuleOfTwo.Runtime != nil {
+			t.Fatalf("expected Runtime nil when proto runtime absent, got %+v", rc.RuleOfTwo.Runtime)
+		}
+	})
+
+	t.Run("empty runtime surfaces as present-but-empty", func(t *testing.T) {
+		rc := runConfigFromProto(&pb.RunConfig{
+			RuleOfTwo: &pb.RuleOfTwoConfig{Runtime: &pb.RuleOfTwoRuntimeConfig{}},
+		})
+		if rc.RuleOfTwo == nil || rc.RuleOfTwo.Runtime == nil {
+			t.Fatalf("expected present-but-empty Runtime, got %+v", rc.RuleOfTwo)
+		}
+		if rc.RuleOfTwo.Runtime.Classifier != "" || rc.RuleOfTwo.Runtime.OnDetect != "" || rc.RuleOfTwo.Runtime.GuardCriteria != nil {
+			t.Errorf("expected zero-valued Runtime, got %+v", rc.RuleOfTwo.Runtime)
+		}
+	})
+
+	t.Run("populated runtime round-trips through the wire", func(t *testing.T) {
+		original := &pb.RuleOfTwoConfig{
+			Runtime: &pb.RuleOfTwoRuntimeConfig{
+				Classifier:    "patterns",
+				OnDetect:      "block-external",
+				GuardCriteria: []string{"sensitive_data", "pii"},
+			},
+		}
+		bytes, err := proto.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var decoded pb.RuleOfTwoConfig
+		if err := proto.Unmarshal(bytes, &decoded); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		rc := runConfigFromProto(&pb.RunConfig{RuleOfTwo: &decoded})
+		rt := rc.RuleOfTwo.Runtime
+		if rt == nil {
+			t.Fatal("expected Runtime non-nil after wire round-trip")
+		}
+		if rt.Classifier != "patterns" {
+			t.Errorf("Classifier = %q, want patterns", rt.Classifier)
+		}
+		if rt.OnDetect != "block-external" {
+			t.Errorf("OnDetect = %q, want block-external", rt.OnDetect)
+		}
+		if len(rt.GuardCriteria) != 2 || rt.GuardCriteria[0] != "sensitive_data" || rt.GuardCriteria[1] != "pii" {
+			t.Errorf("GuardCriteria = %v, want [sensitive_data pii]", rt.GuardCriteria)
+		}
+	})
+}
+
 // TestRunConfigFromProto_TranslatesNewSafetyFields confirms that proto
 // fields added in #42 (executor.runtime, ruleOfTwo, codeScanner,
 // permissionPolicy.policy_file/fallback) are populated on the internal
