@@ -1172,13 +1172,22 @@ func resolveRuleOfTwoArming(config *types.RunConfig) ruleOfTwoArming {
 			staticSensitive: s,
 		}
 	case classifier == "patterns":
+		// Explicit classifier:"patterns" with !u||!e is observe-only by
+		// construction (no enforcement consumer reads the latch here),
+		// so the monitor must NOT start pre-tripped even when the
+		// operator also declared sensitiveData: pre-tripping would skip
+		// every scan and yield zero detection telemetry — the opposite
+		// of what an operator who explicitly asked for pattern scanning
+		// wants. staticSensitive stays meaningful only on the enforcing
+		// u&&e path above, where a pre-tripped latch is the audited
+		// posture.
 		return ruleOfTwoArming{
 			armed:           true,
 			enforcing:       false,
 			action:          action,
 			criteria:        criteria,
 			classifier:      "patterns",
-			staticSensitive: s,
+			staticSensitive: false,
 		}
 	default:
 		return ruleOfTwoArming{}
