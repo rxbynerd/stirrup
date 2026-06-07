@@ -80,7 +80,7 @@ type StreamEvent struct {
 	// that do not emit it. ThoughtSignature (above) is the block-level
 	// sibling for per-block provider state; this field carries
 	// message-level state.
-	ReplayFields map[string]json.RawMessage `json:"replayFields,omitempty"`
+	ReplayFields map[string]json.RawMessage `json:"replay_fields,omitempty"`
 }
 
 // ToolChoiceMode is a closed enum selecting how the model is steered
