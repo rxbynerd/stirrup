@@ -5287,9 +5287,11 @@ func TestValidateRunConfig_ProviderModelLabelBound(t *testing.T) {
 			{"anthropic", "claude-opus-4-1"},
 			{"openai-compatible", "gpt-4o"},
 			{"openai-responses", "gpt-4.1"},
-			{"openai-compatible", "deepseek/deepseek-v4-flash"},        // OpenRouter-style model names
-			{"openai-compatible", "anthropic/claude-sonnet-4.6"},       // OpenRouter-style model names
-			{"anthropic", strings.Repeat("a", 64)},                    // exactly at the cap
+			// OpenRouter-style model names with forward slashes
+			{"openai-compatible", "deepseek/deepseek-v4-flash"},
+			{"openai-compatible", "anthropic/claude-sonnet-4.6"},
+			// exactly at the cap
+			{"anthropic", strings.Repeat("a", 64)},
 		}
 		for _, tc := range cases {
 			t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
