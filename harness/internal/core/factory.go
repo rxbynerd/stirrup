@@ -714,6 +714,9 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			if err != nil {
 				return nil, fmt.Errorf("resolve compat profile: %w", err)
 			}
+			// BuiltinRules() returns a fresh slice on every call, so
+			// appending the compat rules here cannot mutate the shared
+			// builtin catalogue used by every other adapter.
 			rules := append(quirks.BuiltinRules(), extra...)
 			adapter.Registry = quirks.NewRegistry(rules)
 		}

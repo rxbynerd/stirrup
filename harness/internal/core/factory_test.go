@@ -2071,8 +2071,10 @@ func TestBuildProvider_OpenAICompatibleWithRetryConfig(t *testing.T) {
 //
 // The assertion uses the adapter's exported Registry field to
 // resolve the GLM model end-to-end: the registry returned by the
-// factory must include zai.CompatRule, so a glm-4-plus resolution
-// produces TokenFieldMaxTokens and the tool_stream extra body field.
+// factory must include zai.CompatRules(), so a glm-4-plus resolution
+// produces TokenFieldMaxTokens and the tool_stream extra body field,
+// and a glm-4.7 resolution additionally produces the thinking-family
+// quirks (reasoning_content replay + the thinking extra body).
 func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
 	prov, err := buildProvider(context.Background(), types.ProviderConfig{
