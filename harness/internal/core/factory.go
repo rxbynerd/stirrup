@@ -703,18 +703,18 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		// validator.
 		retry := provider.RetryPolicyFromConfig(cfg.Retry)
 		adapter := provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry)
-		// Inject a compat rule into the adapter's registry when the
+		// Inject the compat rules into the adapter's registry when the
 		// operator selected a compatProfile. The default registry is
 		// already attached by the constructor; we replace it with a
-		// new registry containing the compat rule appended after
-		// BuiltinRules so the compat rule's specificity ordering wins
-		// against any first-party glob it overlaps.
+		// new registry containing the compat rules appended after
+		// BuiltinRules so their specificity ordering wins against any
+		// first-party glob they overlap.
 		if cfg.CompatProfile != "" {
 			extra, err := resolveCompatProfile(cfg.CompatProfile)
 			if err != nil {
 				return nil, fmt.Errorf("resolve compat profile: %w", err)
 			}
-			rules := append(quirks.BuiltinRules(), extra)
+			rules := append(quirks.BuiltinRules(), extra...)
 			adapter.Registry = quirks.NewRegistry(rules)
 		}
 		return adapter, nil
@@ -1719,7 +1719,7 @@ func buildGCSTraceCredentialSource(cfg *types.CredentialConfig) (credential.Sour
 }
 
 // resolveCompatProfile maps the closed enum of supported
-// compatProfile names to the rule the corresponding compat package
+// compatProfile names to the rules the corresponding compat package
 // exports. The set must stay aligned with validCompatProfiles in
 // types/runconfig.go — ValidateRunConfig rejects unknown values at
 // startup, so an unknown value reaching this switch is a defence-in-
@@ -1729,13 +1729,13 @@ func buildGCSTraceCredentialSource(cfg *types.CredentialConfig) (credential.Sour
 // New entries here require a corresponding compat package under
 // harness/internal/provider/compat/<name>/ and an addition to
 // validCompatProfiles. Adding a name to the validator without a rule
-// would silently no-op for runs that selected the new profile.
-func resolveCompatProfile(profile string) (quirks.Rule, error) {
+// set would silently no-op for runs that selected the new profile.
+func resolveCompatProfile(profile string) ([]quirks.Rule, error) {
 	switch profile {
 	case "zai-glm":
-		return zai.CompatRule(), nil
+		return zai.CompatRules(), nil
 	default:
-		return quirks.Rule{}, fmt.Errorf("unknown compat profile %q (supported: zai-glm)", profile)
+		return nil, fmt.Errorf("unknown compat profile %q (supported: zai-glm)", profile)
 	}
 }
 
