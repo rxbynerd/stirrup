@@ -1113,6 +1113,51 @@ func TestStreamEventsToResult_ThoughtSignaturePropagatedToBlock(t *testing.T) {
 	})
 }
 
+// TestStreamEventsToResult_ReplayFieldsStashedAndAttached pins the
+// in-loop hop for the message-level replay state (quirks ReplayFields,
+// design §9 risk 7): the message_complete event's ReplayFields must land
+// on the streamResult, and appendAssistantContent must attach it to the
+// persisted assistant Message so the next request can round-trip it.
+// Mirrors the ThoughtSignature test above for the message-level carrier.
+func TestStreamEventsToResult_ReplayFieldsStashedAndAttached(t *testing.T) {
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+
+	replay := map[string]json.RawMessage{
+		"reasoning_content": json.RawMessage(`"step by step"`),
+	}
+	ch := make(chan types.StreamEvent, 2)
+	ch <- types.StreamEvent{Type: "text_delta", Text: "Hello"}
+	ch <- types.StreamEvent{
+		Type:         "message_complete",
+		StopReason:   "end_turn",
+		ReplayFields: replay,
+	}
+	close(ch)
+
+	result, err := streamEventsToResult(context.Background(), ch, tp, slog.Default())
+	if err != nil {
+		t.Fatalf("streamEventsToResult() error: %v", err)
+	}
+	if string(result.ReplayFields["reasoning_content"]) != `"step by step"` {
+		t.Errorf("streamResult.ReplayFields = %v, want reasoning_content stashed", result.ReplayFields)
+	}
+
+	messages := appendAssistantContent(nil, result.Blocks, result.ReplayFields)
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	if string(messages[0].ReplayFields["reasoning_content"]) != `"step by step"` {
+		t.Errorf("assistant Message.ReplayFields = %v, want reasoning_content attached", messages[0].ReplayFields)
+	}
+
+	// The no-replay path must leave the field nil so the persisted
+	// message serialises byte-identically to the prior shape.
+	plain := appendAssistantContent(nil, result.Blocks, nil)
+	if plain[0].ReplayFields != nil {
+		t.Errorf("nil replay state must stay nil on the Message, got %v", plain[0].ReplayFields)
+	}
+}
+
 func TestStreamEventsToResult_MergesMessageCompleteFields(t *testing.T) {
 	ch := make(chan types.StreamEvent, 3)
 	ch <- types.StreamEvent{Type: "text_delta", Text: "Hello"}

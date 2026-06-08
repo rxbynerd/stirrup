@@ -94,6 +94,17 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 			estimatedTokens = 1
 		}
 
+		// Known gap: ReplayFields is NOT forwarded here. TurnRecord does
+		// not carry the message-level replay state (the trace scrubber
+		// deliberately drops it as provider-opaque), so a
+		// live-continuation run seeded from a recording against
+		// DeepSeek v4 thinking mode will miss reasoning_content on the
+		// replayed turn and 400 on the first real tool-call request.
+		// Closing it needs a TurnRecord schema change (a recording-side
+		// carrier exempt from the scrub drop) — tracked as a follow-up;
+		// live continuation against v4 thinking mode is not a supported
+		// workflow today. Contrast with ThoughtSignature above, which
+		// rides the ContentBlock and is forwarded.
 		ch <- types.StreamEvent{
 			Type:         "message_complete",
 			StopReason:   stopReason,

@@ -39,8 +39,13 @@ type ProviderQuirks struct {
 	EnumCoercions map[string]map[string]string `json:"enumCoercions"`
 
 	// ReplayFields lists assistant-message field paths to preserve verbatim
-	// across turns. Parse-side recognition only in v1; outbound threading is
-	// a follow-up. Paths use dot-separated keys with [] for array-of-objects.
+	// across turns. Paths use dot-separated keys with [] for array-of-objects.
+	// Every adapter captures the named paths parse-side (length-only
+	// observability); the openai-compatible adapter additionally threads
+	// single-segment, non-colliding paths back onto subsequent requests as
+	// top-level assistant-message keys (design §9 risk 7). A rule's
+	// Description suffix — "(threaded)" vs "(parse-side only)" — records
+	// which behaviour applies; see the ReplayFields rules in BuiltinRules.
 	ReplayFields []string `json:"replayFields"`
 
 	// --- Capabilities ---

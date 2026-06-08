@@ -423,7 +423,14 @@ func (g *GeminiAdapter) consumeSSE(
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// replayFieldsTotalBytes / replayFieldsCapped enforce the shared
+	// maxReplayFieldBytes budget (see the constant in openai.go): once
+	// the cap is hit, every later capture is dropped so the
+	// accumulator stays a clean prefix and a hostile upstream cannot
+	// balloon per-stream memory.
 	replayFieldsCapture := map[string][]any{}
+	replayFieldsTotalBytes := 0
+	replayFieldsCapped := false
 	defer func() {
 		if len(replayFieldsCapture) == 0 {
 			return
@@ -561,9 +568,26 @@ func (g *GeminiAdapter) consumeSSE(
 		// (geminiMaxScannerBuffer = 16 MiB, set above). Acceptable
 		// because the path is gated by len(q.ReplayFields) > 0 and
 		// only the gemini-3* rule registers ReplayFields today.
-		if len(q.ReplayFields) > 0 {
+		if !replayFieldsCapped && len(q.ReplayFields) > 0 {
 			if captured := quirks.CaptureFromJSON([]byte(data), q.ReplayFields); len(captured) > 0 {
 				for k, v := range captured {
+					add := 0
+					for _, item := range v {
+						add += replayCaptureByteLen(item)
+					}
+					if replayFieldsTotalBytes+add > maxReplayFieldBytes {
+						replayFieldsCapped = true
+						// One WARN per stream; the captured values
+						// themselves are never logged.
+						logger.WarnContext(ctx, "replay field accumulator cap reached, truncating",
+							slog.String("provider.type", "gemini"),
+							slog.String("provider.model", model),
+							slog.String("path", k),
+							slog.Int("limit_bytes", maxReplayFieldBytes),
+						)
+						break
+					}
+					replayFieldsTotalBytes += add
 					replayFieldsCapture[k] = append(replayFieldsCapture[k], v...)
 				}
 			}

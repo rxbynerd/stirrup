@@ -42,9 +42,11 @@ Concrete v1 divergences:
   fix is a registry-driven `ReplayFields` capture.
 - DeepSeek's reasoner and v4 families surface chain-of-thought
   through a `reasoning_content` sibling field on the assistant
-  delta. Parse-side recognition lets the harness expose the field
-  in traces; outbound threading (round-tripping it on the next turn)
-  is a deferred follow-up.
+  delta. DeepSeek v4 thinking mode (default-on) additionally
+  *requires* the field replayed on every request after a tool-call
+  turn — the API returns 400 otherwise — so the `ReplayFields`
+  capture is threaded back outbound on the openai-compatible
+  adapter (see [§3.1](#31-replayfields-rules)).
 
 ### 1.1 Prior art
 
@@ -101,9 +103,13 @@ Fixture trees for the wire-shape contract tests:
 ```
 harness/internal/provider/testdata/quirks/
     openai-compatible/<model>/{request.json, response.sse}
-    openai-compatible/<deepseek-model>/{response.sse, replay.json}
+    openai-compatible/<deepseek-model>/{request.json, response.sse, replay.json}
     gemini/<model>/{request.json, response.sse[, replay.json]}
 ```
+
+A gateway-prefixed model id (e.g. `deepseek/deepseek-v4-flash`) maps
+onto a nested fixture directory; the `<model>` path component is the
+id verbatim.
 
 ### 2.1 ProviderQuirks
 
@@ -118,7 +124,7 @@ type ProviderQuirks struct {
     OmitFields      []string                  // canonical fields the adapter MUST NOT emit
     ValueOverrides  map[string]Value          // forced serialised value, ignoring StreamParams
     EnumCoercions   map[string]map[string]string // caller value → wire value
-    ReplayFields    []string                  // assistant-message paths to preserve (parse-side only in v1)
+    ReplayFields    []string                  // assistant-message paths to preserve across turns
 
     // Cross-provider capabilities (top-level, not per-adapter).
     ToolChoice            ToolChoiceCapability           // native tool_choice support (auto/required/none/named)
@@ -302,8 +308,9 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `o[1-9]*`          | OpenAI reasoning-class (o-series): omit sampling params              |
 | `openai-compatible` | `gpt-5*`           | OpenAI gpt-5 family: omit sampling params                            |
 | `openai-compatible` | `gpt-5-chat*`      | OpenAI gpt-5-chat carve-out: chat-class accepts sampling params      |
-| `openai-compatible` | `deepseek-reasoner*` | DeepSeek reasoner: preserve `reasoning_content` (parse-side only)  |
-| `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: preserve `reasoning_content` (parse-side only)          |
+| `openai-compatible` | `deepseek-reasoner*` | DeepSeek reasoner: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
+| `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens` (threaded) |
+| `openai-compatible` | `deepseek/deepseek-v4*` | DeepSeek v4 via gateway prefix (OpenRouter-style ids): same quirk set as `deepseek-v4*` (threaded) |
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
@@ -319,22 +326,51 @@ The compat profile rule for Z.ai GLM is registered separately via
 `BuiltinRules()` and only loads when `provider.compatProfile =
 "zai-glm"` is set.
 
-### 3.1 ReplayFields rules (parse-side only)
+### 3.1 ReplayFields rules
 
-The three `ReplayFields` rules added in Wave 2 land **parse-side
-recognition only**. Captured values surface in a per-stream debug
-log (and as totals on the active OTel span) so operators can see
-the rule fired, but the values are not yet threaded back into
-outbound message history. Multi-turn runs against affected models
-continue to fail on turn 2 in the same way they did before the
-rule; the observable improvement is the slog DEBUG record and the
-matching span attributes.
+`ReplayFields` rules are no longer uniformly parse-side. Every
+adapter captures the named paths from its decoded stream into a
+per-stream accumulator; what happens next splits into two classes,
+recorded by a mandatory Description suffix:
 
-Outbound threading is design §9 risk 7 and is tracked separately.
-The Description of every ReplayFields rule ends in `(parse-side
-only)` so trace consumers know the captured value is observable but
-not round-tripped. `TestBuiltinRulesParseSideOnlySuffix` enforces
-the convention.
+- **`(threaded)`** — the openai-compatible adapter additionally
+  round-trips the capture. When the stream completes, the
+  accumulator is flattened onto the `message_complete` event's
+  `ReplayFields` (per path: if every captured value is a string,
+  the pieces are concatenated in arrival order and marshalled as
+  one JSON string — the streamed-string case, e.g.
+  `reasoning_content` arriving across many chunks; otherwise the
+  last captured value is marshalled verbatim, snapshot semantics).
+  The agentic loop attaches the map to the assistant `Message` it
+  persists, and on subsequent requests the adapter emits each
+  qualifying entry as a top-level key on the assistant wire
+  message. Qualifying means: the path is named by the quirks
+  resolved for *that* stream (the registry stays the single source
+  of truth — state captured under another model's rules is never
+  replayed), the path is single-segment (no `.`, no `[]`), and it
+  does not collide with a canonical message key (`role`, `content`,
+  `tool_calls`, `tool_call_id`, `name`). Non-qualifying paths are
+  silently skipped at runtime; first-party rules that declare one
+  fail the registry's build-time test instead.
+- **`(parse-side only)`** — the capture surfaces in the length-only
+  observability summaries below but is not round-tripped via this
+  surface. The Gemini 3 `thoughtSignature` rule stays in this
+  class: Gemini's real round-trip is the typed block-level
+  `ContentBlock.ThoughtSignature`, and the ReplayFields capture is
+  corroborating observability.
+
+`TestBuiltinRulesReplayFieldsSuffix` enforces the convention: a
+ReplayFields rule's Description must end in exactly one of the two
+markers, openai-compatible rules must be `(threaded)` with
+threadable paths, and other providers must be `(parse-side only)`.
+
+Known limitation: the gRPC `BatchAdapter` shares the
+openai-compatible request builder, so the outbound half rides along
+for batch submissions — but its result-parse path
+(`fabricateStream`) has no ReplayFields capture, so nothing is
+accumulated to replay. Multi-turn tool-calling against DeepSeek v4
+thinking mode through the batch path therefore still fails with 400
+on the turn after a tool call; see §9 risk 7.
 
 The captured-fields debug log line is `quirks replay fields
 captured` at slog DEBUG level. It records a per-path summary of
@@ -522,14 +558,20 @@ concerns are tracked separately:
    on specificity ordering; `TestRuleCarveOuts` is the load-bearing
    negative test.
 
-7. **ReplayFields threading gap.** Wave 2 lands parse-side
-   recognition only. Operators seeing `provider.quirk.applied:
-   ["Gemini 3: preserve thought_signature on functionCall parts
-   (parse-side only)"]` in their trace must not assume the threading
-   is complete. The `(parse-side only)` suffix on every ReplayFields
-   rule's `Description` is the load-bearing observability signal;
-   `TestBuiltinRulesParseSideOnlySuffix` enforces it. Outbound
-   threading is a follow-up.
+7. **ReplayFields threading scope.** Outbound threading is
+   implemented for the openai-compatible adapter (see
+   [§3.1](#31-replayfields-rules)): captured values ride the
+   `message_complete` event onto the persisted assistant message and
+   are echoed back as top-level wire keys on subsequent requests.
+   Gemini ReplayFields rules remain parse-side observability — the
+   typed block-level `ThoughtSignature` is Gemini's actual
+   round-trip — and no rules target the Anthropic or OpenAI
+   Responses adapters. The Description suffix (`(threaded)` vs
+   `(parse-side only)`) is the load-bearing observability signal;
+   `TestBuiltinRulesReplayFieldsSuffix` enforces it. Remaining gap:
+   the BatchAdapter's result-parse path has no capture, so batch
+   submissions against DeepSeek v4 thinking mode cannot sustain
+   multi-turn tool-calling (§3.1).
 
 8. **`DefaultRegistry()` singleton and test isolation.** The
    singleton is constructed once via `sync.Once` and is read-only
@@ -538,11 +580,32 @@ concerns are tracked separately:
    field. `TestDefaultRegistryConcurrentAccess` stresses the
    singleton under `-race`.
 
-9. **DeepSeek field-path verification gap.** The `reasoning_content`
-   path used by the DeepSeek-reasoner and DeepSeek-v4 rules is
-   sourced from the DeepSeek API documentation, not from a live
-   capture. If a live capture surfaces a different shape (e.g. a
-   structured `thinking` object rather than a flat string), the
-   rule's path and the corresponding `replay.json` fixture need
-   to be adjusted in lockstep. The 180-day staleness window flags
-   the rule for re-verification.
+9. **DeepSeek verification status.** The `reasoning_content` path
+   and the v4 replay requirement are doc-verified as of 2026-06-07
+   against the DeepSeek thinking-mode guide
+   (https://api-docs.deepseek.com/guides/thinking_mode), with broad
+   community corroboration of the 400-on-missing-replay behaviour on
+   both first-party and OpenRouter-served v4 traffic — but no live
+   first-party capture exists yet. Remaining live-capture gaps,
+   each flagged in the rule comments: whether the v4 endpoint also
+   accepts `max_completion_tokens` (the rules pin the doc-consistent
+   legacy `max_tokens`), where `reasoning_effort` sits on the wire
+   (the API reference and the guide disagree on nested-vs-top-level
+   placement, so no rule ships for it), and whether any gateway
+   renames the field to `reasoning`. If a live capture surfaces a
+   different shape (e.g. a structured `thinking` object rather than
+   a flat string), the rule's path and the corresponding
+   `replay.json` fixture need to be adjusted in lockstep. The
+   180-day staleness window flags the rules for re-verification.
+
+   Operators who want v4 *non-thinking* behaviour can inject a rule
+   via `NewRegistry` whose `ExtraBodyFields` carries the documented
+   toggle, `{"thinking": {"type": "disabled"}}`. No builtin rule
+   sets it: thinking default-on is the desired behaviour for a
+   coding agent, and disabling it also forfeits the documented
+   reasoning quality. The legacy `deepseek-chat` /
+   `deepseek-reasoner` ids are first-party aliases for v4-flash
+   non-thinking / thinking modes, fully retired after 2026-07-24
+   15:59 UTC; the reasoner rule carries a matching sunset note and
+   no `deepseek-chat` rule exists (non-thinking, no
+   `reasoning_content`).

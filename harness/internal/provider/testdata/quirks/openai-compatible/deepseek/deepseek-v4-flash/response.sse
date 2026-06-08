@@ -1,0 +1,12 @@
+# synthetic: derived from the first-party deepseek-v4 fixture and community reports of OpenRouter-served deepseek/deepseek-v4-* traffic (the gateway preserves the reasoning_content field name and the 400-replay requirement per claude-code-router#1378 and related reports) because the harness does not yet have a live gateway capture. Some gateways are reported to rename the field to "reasoning" — unverified; capture live traffic before adding that path. Replace with a real OpenRouter capture before relying on the rule against live traffic.
+data: {"id":"chatcmpl-ds-v4-gw-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-gw-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"Weighing the options "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-gw-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"before answering."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-gw-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-ds-v4-gw-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":7}}
+
+data: [DONE]

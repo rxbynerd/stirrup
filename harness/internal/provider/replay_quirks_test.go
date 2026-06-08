@@ -263,6 +263,75 @@ func TestReplayFields_DeepSeekV4_PreservesReasoningContent(t *testing.T) {
 	}
 }
 
+// TestReplayFields_DeepSeekV4Gateway_PreservesReasoningContent drives
+// the OpenRouter-style prefixed id (deepseek/deepseek-v4-flash) through
+// the production Stream path. The gateway sibling rule must fire — the
+// bare deepseek-v4* glob cannot match across the slash — and produce
+// the same capture + flattened message_complete value the first-party
+// rule does.
+func TestReplayFields_DeepSeekV4Gateway_PreservesReasoningContent(t *testing.T) {
+	const ssePath = "testdata/quirks/openai-compatible/deepseek/deepseek-v4-flash/response.sse"
+	const replayPath = "testdata/quirks/openai-compatible/deepseek/deepseek-v4-flash/replay.json"
+
+	srv := sseStubServer(t, streamFixtureSSE(t, ssePath))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "deepseek/deepseek-v4-flash",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := drainStream(t, ch)
+
+	// Capture-side: the per-stream summary's piece count matches the
+	// fixture, same as the first-party tests.
+	want := loadReplayFixture(t, replayPath)
+	got := extractReplayFieldsLog(t, buf.String())
+	if got == nil {
+		t.Fatalf("debug log missing 'quirks replay fields captured' record; log:\n%s", buf.String())
+	}
+	for path, wantPieces := range want {
+		if path == "content" {
+			continue
+		}
+		gotCount, ok := got[path]
+		if !ok {
+			t.Errorf("path %q not captured; got summary %v", path, got)
+			continue
+		}
+		if gotCount != len(wantPieces) {
+			t.Errorf("path %q: captured %d pieces, want %d", path, gotCount, len(wantPieces))
+		}
+	}
+
+	// Thread-side: the message_complete event carries the in-order
+	// concatenation of the fixture's reasoning_content pieces.
+	var complete *types.StreamEvent
+	for i := range events {
+		if events[i].Type == "message_complete" {
+			complete = &events[i]
+		}
+	}
+	if complete == nil {
+		t.Fatalf("no message_complete event in %v", events)
+	}
+	wantFlat := `"Weighing the options before answering."`
+	if gotFlat := string(complete.ReplayFields["reasoning_content"]); gotFlat != wantFlat {
+		t.Errorf("message_complete ReplayFields[reasoning_content] = %s, want %s", gotFlat, wantFlat)
+	}
+}
+
 // TestReplayFields_Gemini3_PreservesThoughtSignature drives the
 // gemini-3.1-pro-preview/response.sse fixture through the Gemini
 // adapter and asserts the per-stream summary names the

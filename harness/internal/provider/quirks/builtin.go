@@ -87,52 +87,145 @@ func BuiltinRules() []Rule {
 		},
 		// --- ReplayFields rules (design §6.5, D12) ---
 		//
-		// Wave 2 lands parse-side recognition only. Each rule's
-		// Description ends in "(parse-side only)" so trace consumers
-		// know the captured value is observable but not yet threaded
-		// back into outbound history. Outbound threading is design
-		// §9 risk 7, deferred to a follow-up.
+		// Each rule's Description ends in exactly one of two markers so
+		// trace consumers know what happens to the captured value:
 		//
-		// The Description suffix is enforced by
-		// TestBuiltinRulesParseSideOnlySuffix in replay_test.go.
+		//   - "(threaded)"        — the value is captured parse-side AND
+		//     echoed back onto subsequent requests (the §9 risk 7
+		//     outbound threading, implemented for openai-compatible).
+		//     Threaded paths must be single-segment and must not collide
+		//     with a canonical wire-message key.
+		//   - "(parse-side only)" — the value surfaces in length-only
+		//     observability (slog/OTel) but is not round-tripped via
+		//     this surface. Gemini's real round-trip is the typed
+		//     block-level ThoughtSignature, so its ReplayFields rule
+		//     stays parse-side.
+		//
+		// The suffix convention and the threadable-path constraint are
+		// enforced by TestBuiltinRulesReplayFieldsSuffix in
+		// replay_test.go.
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek-reasoner*",
-			Description:  "DeepSeek reasoner: preserve reasoning_content (parse-side only)",
-			LastVerified: Date("2026-05-24"),
+			Description:  "DeepSeek reasoner: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
+			LastVerified: Date("2026-06-07"),
 			Apply: func(q *ProviderQuirks) {
-				// DeepSeek's reasoner family surfaces its chain-of-
-				// thought as a `reasoning_content` field on each
-				// assistant delta, alongside the canonical `content`
-				// field. The DeepSeek API docs describe the field as
-				// part of the model's response, and the openai-
-				// compatible streaming layout places it at the same
-				// nesting level as `content` (a direct child of
-				// `delta`). The single-segment path captures it
-				// directly when the adapter walks the choice's raw
-				// delta object.
+				// SUNSET: deepseek-reasoner is now a first-party
+				// compatibility alias for deepseek-v4-flash thinking
+				// mode, fully retired after 2026-07-24 15:59 UTC
+				// (https://api-docs.deepseek.com/updates). Remove this
+				// rule after that date. Note the legacy reasoning-model
+				// guide and the v4 thinking-mode guide give conflicting
+				// input semantics for reasoning_content during the
+				// alias window; the explicit deepseek-v4* ids below are
+				// the supported target.
 				//
-				// Field-path verification status: unverified against a
-				// live DeepSeek-reasoner capture as of LastVerified.
-				// Mark the rule stale if not re-verified within the
-				// 180-day window; the staleness test will surface it.
+				// reasoning_content arrives as a sibling of `content`
+				// on each assistant delta (a direct child of `delta`),
+				// so the single-segment path captures it when the
+				// adapter walks the choice's raw delta object. The
+				// shape is documented in both the legacy reasoning-model
+				// guide and the v4 thinking-mode guide; not yet verified
+				// against a live first-party capture.
 				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
+				// The reasoner lineage ignores temperature / top_p /
+				// penalties ("will not trigger an error but will also
+				// have no effect") while logprobs / top_logprobs DO
+				// trigger an API error — see
+				// https://api-docs.deepseek.com/guides/reasoning_model.
+				// OmitSamplingParams covers both sets: hygiene for the
+				// inert params, 400-protection for the log* ones.
+				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
+				// The reasoner guide documents max_tokens (32K default,
+				// 64K max) and never mentions max_completion_tokens.
+				// Doc-derived, pending live-capture verification of
+				// whether the modern key is also accepted.
+				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
 			},
 		},
 		{
 			ProviderType: "openai-compatible",
 			ModelMatch:   "deepseek-v4*",
-			Description:  "DeepSeek v4: preserve reasoning_content (parse-side only)",
-			LastVerified: Date("2026-05-24"),
+			Description:  "DeepSeek v4: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
+			LastVerified: Date("2026-06-07"),
 			Apply: func(q *ProviderQuirks) {
-				// DeepSeek's v4 series uses the same reasoning_content
-				// field on the assistant delta as the reasoner family
-				// per the DeepSeek API documentation. If a future v4
-				// release diverges (e.g. adopts a structured
-				// `thinking` field instead) the rule needs a
-				// LastVerified bump and the path adjusted; the
-				// staleness test will surface the prompt.
+				// DeepSeek v4 (deepseek-v4-flash / deepseek-v4-pro) is
+				// dual-mode with thinking DEFAULT-ON, emitting
+				// chain-of-thought as `delta.reasoning_content`. The
+				// thinking-mode guide
+				// (https://api-docs.deepseek.com/guides/thinking_mode)
+				// is explicit that "for turns that do perform tool
+				// calls, the reasoning_content must be fully passed
+				// back to the API in all subsequent requests" and that
+				// the API returns a 400 error otherwise — so this rule
+				// is load-bearing for multi-turn tool-calling, not just
+				// observability. Replaying on all turns is safe: the
+				// field is optional, not forbidden, on non-tool-call
+				// turns. Doc-verified 2026-06-07 with broad community
+				// 400-report corroboration; not yet verified against a
+				// live first-party capture.
 				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
+				// Thinking mode IGNORES temperature / top_p / penalties
+				// ("will not trigger an error but will also have no
+				// effect") — omitting them is hygiene, not
+				// 400-protection — while logprobs / top_logprobs
+				// hard-error on the reasoner lineage. See
+				// https://api-docs.deepseek.com/guides/thinking_mode.
+				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
+				// DeepSeek docs use the legacy max_tokens key throughout
+				// and never mention max_completion_tokens. Doc-derived,
+				// pending live-capture verification of whether
+				// max_completion_tokens is also accepted.
+				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
+				// Deliberately NOT set: StrictMode (per-tool strict is
+				// Beta-only on a separate /beta base URL with a known
+				// malformed-JSON bug — deepseek-ai/DeepSeek-V3#1069) and
+				// any ToolChoice/ParallelToolCalls/ToolExamples override
+				// (the openai-compatible base rules already advertise
+				// the documented v4 surface: full tool_choice, 128
+				// tools). parallel_tool_calls is undocumented for
+				// DeepSeek; live-capture TODO alongside required/named
+				// tool-choice honouring in thinking mode.
+			},
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "deepseek/deepseek-v4*",
+			Description:  "DeepSeek v4 via gateway prefix: replay reasoning_content, omit sampling params, legacy max_tokens (threaded)",
+			LastVerified: Date("2026-06-07"),
+			Apply: func(q *ProviderQuirks) {
+				// OpenRouter (and OpenRouter-style gateways) serve the
+				// same models under prefixed ids
+				// (deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro)
+				// that the bare deepseek-v4* glob cannot match:
+				// path.Match's `*` does not cross `/`, so this sibling
+				// rule names the prefix literally. The slash also means
+				// the longer glob sorts after deepseek-v4* under
+				// specificity ordering (D10) — moot today because the
+				// two globs are disjoint, but pinned by test so a future
+				// overlap composes predictably.
+				//
+				// Community reports through OpenRouter show the same
+				// 400-on-missing-replay behaviour as the first-party
+				// endpoint, so the full v4 quirk set is mirrored.
+				// Unverified gateway divergences, needing live capture
+				// before any rule change: some gateways rename the
+				// field to `reasoning` (no path for it here until
+				// observed), and gateway thinking-mode defaults may
+				// diverge from first-party default-on.
+				//
+				// Note: the openai-compatible base "*" rules (tool
+				// choice, parallel tool calls, schema examples) do NOT
+				// match slash-prefixed ids for the same path.Match
+				// reason, so those capabilities resolve to their
+				// zero values (unsupported) for gateway ids. That is a
+				// pre-existing property of every slash-prefixed model id
+				// on this provider type, not something this rule
+				// changes; widening the base rules is a separate
+				// decision.
+				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
+				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
+				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
 			},
 		},
 		// --- Schema lint / strict-mode rules (#228, Wave 3 Step B) ---

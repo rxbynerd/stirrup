@@ -16,6 +16,25 @@ type Message struct {
 	// turns from provenance-sensitive views. The field is omitempty so
 	// non-synthetic messages serialise byte-identically to the pre-#340 shape.
 	Synthetic bool `json:"synthetic,omitempty"`
+
+	// ReplayFields is provider-opaque round-trip state captured from an
+	// assistant response by quirks ReplayFields rules, keyed by the rule's
+	// verbatim path string (e.g. "reasoning_content" for DeepSeek thinking
+	// mode). The agentic loop attaches it to the assistant Message it
+	// persists; the originating provider's adapter echoes qualifying
+	// entries back onto the wire on subsequent turns. Treat the values as
+	// fully opaque — the harness must not introspect, log verbatim, or
+	// mutate them. `omitempty` keeps non-participating messages
+	// byte-identical to the prior shape.
+	//
+	// Adapter-private wire types for other providers (anthropic, gemini)
+	// must NOT serialise this field — the same cross-provider leakage
+	// guard established for ContentBlock.ThoughtSignature (see the
+	// rename-decision note on that field). ThoughtSignature is the
+	// block-level carrier for per-block provider state (Gemini's
+	// per-part signatures); ReplayFields is the message-level sibling
+	// for state that belongs to the assistant turn as a whole.
+	ReplayFields map[string]json.RawMessage `json:"replay_fields,omitempty"`
 }
 
 // ContentBlock is a single block of content within a message.

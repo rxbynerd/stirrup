@@ -817,6 +817,21 @@ func TestReplayFieldsRules_DeepSeekReasoner(t *testing.T) {
 		if len(q.ReplayFields) != 1 || q.ReplayFields[0] != "reasoning_content" {
 			t.Errorf("ReplayFields = %v, want [reasoning_content]", q.ReplayFields)
 		}
+		// The reasoner rule carries the same behaviour-flag set as the
+		// v4 rule (it is a v4-flash thinking alias until 2026-07-24):
+		// sampling params suppressed (logprobs hard-errors on the
+		// reasoner lineage), legacy max_tokens key, no strict mode
+		// (Beta-only, unreliable). Without these assertions a
+		// divergence from the v4 rule would pass the suite undetected.
+		if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+			t.Errorf("OmitSamplingParams = false, want true")
+		}
+		if q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxTokens {
+			t.Errorf("TokenField = %v, want TokenFieldMaxTokens", q.BehaviourFlags.OpenAI.TokenField)
+		}
+		if q.BehaviourFlags.OpenAI.StrictMode {
+			t.Errorf("StrictMode = true, want false")
+		}
 	})
 	t.Run("fires on deepseek-reasoner-lite (suffix variant)", func(t *testing.T) {
 		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-reasoner-lite")
@@ -859,6 +874,104 @@ func TestReplayFieldsRules_DeepSeekV4(t *testing.T) {
 		q := DefaultRegistry().Resolve("openai-compatible", "deepseek-v3")
 		if len(q.ReplayFields) != 0 {
 			t.Errorf("deepseek-v3 must not fire deepseek-v4 rule; got ReplayFields=%v", q.ReplayFields)
+		}
+	})
+}
+
+// TestDeepSeekV4Resolution pins the full resolved quirk set for the
+// first-party v4 ids. Beyond the ReplayFields path, the rule sets the
+// thinking-mode behaviour flags (sampling params ignored upstream;
+// legacy max_tokens key) and must NOT enable strict mode (Beta-only on
+// a separate /beta base URL with a known malformed-JSON bug) or perturb
+// the base openai-compatible capabilities.
+func TestDeepSeekV4Resolution(t *testing.T) {
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
+		model := model
+		t.Run(model, func(t *testing.T) {
+			q := DefaultRegistry().Resolve("openai-compatible", model)
+			if len(q.ReplayFields) != 1 || q.ReplayFields[0] != "reasoning_content" {
+				t.Errorf("ReplayFields = %v, want [reasoning_content]", q.ReplayFields)
+			}
+			if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+				t.Errorf("OmitSamplingParams = false, want true (thinking mode ignores sampling params; logprobs hard-errors)")
+			}
+			if q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxTokens {
+				t.Errorf("TokenField = %v, want TokenFieldMaxTokens (DeepSeek docs use the legacy key)", q.BehaviourFlags.OpenAI.TokenField)
+			}
+			if q.BehaviourFlags.OpenAI.StrictMode {
+				t.Errorf("StrictMode = true, want false (DeepSeek strict tools are Beta-only and unreliable)")
+			}
+			// The openai-compatible base "*" rules still compose: full
+			// tool_choice and parallel/examples capabilities, text-only
+			// structured results.
+			wantTC := ToolChoiceCapability{Supported: true, Auto: true, Required: true, None: true, NamedTool: true}
+			if q.ToolChoice != wantTC {
+				t.Errorf("ToolChoice = %+v, want %+v (base rule must compose)", q.ToolChoice, wantTC)
+			}
+			if q.StructuredToolResults != (StructuredToolResultCapability{}) {
+				t.Errorf("StructuredToolResults = %+v, want zero value (text-only)", q.StructuredToolResults)
+			}
+		})
+	}
+}
+
+// TestDeepSeekV4GatewayPrefixResolution pins the sibling rule for
+// OpenRouter-style prefixed ids. path.Match's `*` does not cross `/`,
+// which cuts both ways: the bare deepseek-v4* glob cannot match the
+// prefixed id (hence the sibling rule), and the openai-compatible base
+// "*" rules cannot either — so the gateway ids resolve the DeepSeek
+// flags but zero-value capabilities. Both directions are pinned so a
+// future glob change is a deliberate edit.
+func TestDeepSeekV4GatewayPrefixResolution(t *testing.T) {
+	for _, model := range []string{"deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro"} {
+		model := model
+		t.Run(model, func(t *testing.T) {
+			q, applied := DefaultRegistry().ResolveWithRules("openai-compatible", model)
+			if len(q.ReplayFields) != 1 || q.ReplayFields[0] != "reasoning_content" {
+				t.Errorf("ReplayFields = %v, want [reasoning_content]", q.ReplayFields)
+			}
+			if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+				t.Errorf("OmitSamplingParams = false, want true")
+			}
+			if q.BehaviourFlags.OpenAI.TokenField != TokenFieldMaxTokens {
+				t.Errorf("TokenField = %v, want TokenFieldMaxTokens", q.BehaviourFlags.OpenAI.TokenField)
+			}
+			if q.BehaviourFlags.OpenAI.StrictMode {
+				t.Errorf("StrictMode = true, want false")
+			}
+			// Exactly one rule fires: the slash keeps every other
+			// openai-compatible glob (including the base "*" rules) from
+			// matching. This is the D10 ordering check the rule comment
+			// references — the globs are disjoint, so the longer gateway
+			// glob is the only contributor.
+			if len(applied) != 1 || !strings.Contains(applied[0].Description, "gateway prefix") {
+				descs := make([]string, 0, len(applied))
+				for _, r := range applied {
+					descs = append(descs, r.Description)
+				}
+				t.Errorf("applied rules = %v, want exactly the gateway-prefix rule", descs)
+			}
+			if q.ToolChoice != (ToolChoiceCapability{}) {
+				t.Errorf("ToolChoice = %+v, want zero value (base * rule does not cross the slash)", q.ToolChoice)
+			}
+		})
+	}
+
+	t.Run("bare ids do not fire the gateway rule", func(t *testing.T) {
+		_, applied := DefaultRegistry().ResolveWithRules("openai-compatible", "deepseek-v4-flash")
+		for _, r := range applied {
+			if strings.Contains(r.Description, "gateway prefix") {
+				t.Errorf("gateway-prefix rule fired for a bare id: %v", r.Description)
+			}
+		}
+	})
+
+	t.Run("other prefixed deepseek ids do not fire", func(t *testing.T) {
+		for _, model := range []string{"deepseek/deepseek-chat", "deepseek/deepseek-v3", "openrouter/deepseek-v4-flash"} {
+			q := DefaultRegistry().Resolve("openai-compatible", model)
+			if len(q.ReplayFields) != 0 {
+				t.Errorf("%s: ReplayFields = %v, want none", model, q.ReplayFields)
+			}
 		}
 	})
 }

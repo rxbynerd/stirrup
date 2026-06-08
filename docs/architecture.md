@@ -420,8 +420,8 @@ of every `Stream()` call. The layer handles wire-shape and
 behaviour divergences that the canonical `ProviderAdapter`
 interface cannot express: OpenAI reasoning-class sampling-param
 omissions, Z.ai GLM legacy field names, Gemini 3.x
-`thoughtSignature` capture, DeepSeek `reasoning_content` parse-side
-recognition. The `NormalizingAdapter` wraps the concrete adapter
+`thoughtSignature` capture, DeepSeek `reasoning_content` capture
+and replay. The `NormalizingAdapter` wraps the concrete adapter
 from the outside; the quirks resolution sits inside the adapter's
 `Stream()` body. Both layers compose without either knowing about
 the other.

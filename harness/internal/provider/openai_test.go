@@ -640,7 +640,7 @@ func TestTranslateMessages(t *testing.T) {
 		},
 	}
 
-	result := translateMessages("System prompt", messages)
+	result := translateMessages("System prompt", messages, nil)
 
 	// system + user + assistant + tool = 4 messages.
 	if len(result) != 4 {
@@ -683,7 +683,7 @@ func TestTranslateMessages_ErrorToolResult(t *testing.T) {
 		},
 	}
 
-	result := translateMessages("", messages)
+	result := translateMessages("", messages, nil)
 
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))

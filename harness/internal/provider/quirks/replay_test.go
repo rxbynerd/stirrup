@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -309,18 +310,46 @@ func TestBuiltinRulesValidate_ReplayFieldsPathsAreSyntacticallyValid(t *testing.
 	}
 }
 
-// TestBuiltinRulesParseSideOnlySuffix pins design §9 risk 7: a rule
+// canonicalOpenAIMessageFieldNames mirrors the canonical Chat
+// Completions message-key surface enumerated by
+// harness/internal/provider/openai.go's canonicalOpenAIMessageFields.
+// The duplication is intentional, following the existing
+// canonicalOpenAIFieldNames precedent in quirks_test.go: the adapter's
+// set is unexported and the registry must not import the provider
+// package, so the test cross-checks rules against a local copy. When
+// the adapter learns a new canonical message key, add it here too.
+var canonicalOpenAIMessageFieldNames = map[string]bool{
+	"role":         true,
+	"content":      true,
+	"tool_calls":   true,
+	"tool_call_id": true,
+	"name":         true,
+}
+
+// TestBuiltinRulesReplayFieldsSuffix pins design §9 risk 7's
+// observability convention now that outbound threading exists: a rule
 // that registers a ReplayFields path MUST end its Description with
-// "(parse-side only)" so trace consumers know the captured value is
-// observable but not yet threaded back into outbound history. Without
-// this convention an operator reading the trace might assume the
-// preserved field is being round-tripped on the next turn — it is
-// not, by design, in v1.
+// exactly one of two markers so trace consumers know whether the
+// captured value is round-tripped.
+//
+//   - openai-compatible rules must end "(threaded)" — the adapter
+//     threads their captures back onto subsequent requests — and every
+//     path they declare must be threadable: single-segment, no []
+//     iteration, and not a canonical wire-message key. A first-party
+//     rule that declares a non-threadable path fails here at build
+//     time (the adapter would silently skip it at runtime, which is
+//     the wrong failure mode for first-party rules — loud at build,
+//     safe at runtime).
+//   - every other provider's rules must end "(parse-side only)" —
+//     their adapters have no outbound threading path (Gemini's real
+//     round-trip is the typed block-level ThoughtSignature), so
+//     claiming "(threaded)" would be a lie in the trace.
 //
 // The check applies only to rules that write to ReplayFields, so
-// existing wire-shape rules are unaffected.
-func TestBuiltinRulesParseSideOnlySuffix(t *testing.T) {
-	const suffix = "(parse-side only)"
+// wire-shape rules are unaffected.
+func TestBuiltinRulesReplayFieldsSuffix(t *testing.T) {
+	const threadedSuffix = "(threaded)"
+	const parseSideSuffix = "(parse-side only)"
 	for i, rule := range BuiltinRules() {
 		if rule.Apply == nil {
 			continue
@@ -337,46 +366,34 @@ func TestBuiltinRulesParseSideOnlySuffix(t *testing.T) {
 		if len(q.ReplayFields) == 0 {
 			continue
 		}
-		// The convention is a substring (not strict suffix) so a rule
-		// that adds a clarifying parenthetical after the marker stays
-		// valid; the marker presence is the load-bearing signal.
-		if !containsCaseInsensitive(rule.Description, suffix) {
-			t.Errorf("BuiltinRules()[%d] (%q): ReplayFields rule description must contain %q so trace consumers know the value is parse-side only", i, rule.Description, suffix)
-		}
-	}
-}
-
-// containsCaseInsensitive avoids importing strings for a one-shot
-// helper; the test runs once per build and ASCII case-folding is
-// sufficient for the rule descriptions in this repo.
-func containsCaseInsensitive(haystack, needle string) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	if len(haystack) < len(needle) {
-		return false
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		match := true
-		for j := 0; j < len(needle); j++ {
-			a := haystack[i+j]
-			b := needle[j]
-			if a >= 'A' && a <= 'Z' {
-				a += 'a' - 'A'
+		switch rule.ProviderType {
+		case "openai-compatible":
+			if !strings.HasSuffix(rule.Description, threadedSuffix) {
+				t.Errorf("BuiltinRules()[%d] (%q): openai-compatible ReplayFields rule description must end with %q (the adapter threads its captures outbound)", i, rule.Description, threadedSuffix)
 			}
-			if b >= 'A' && b <= 'Z' {
-				b += 'a' - 'A'
+			for _, path := range q.ReplayFields {
+				segments, err := ParseReplayPath(path)
+				if err != nil {
+					// TestBuiltinRulesValidate_ReplayFieldsPathsAreSyntacticallyValid
+					// reports the parse failure with a better message.
+					continue
+				}
+				if len(segments) != 1 || segments[0].IsArray {
+					t.Errorf("BuiltinRules()[%d] (%q): ReplayFields path %q is not threadable (must be a single non-array segment for outbound emission)", i, rule.Description, path)
+				}
+				if canonicalOpenAIMessageFieldNames[path] {
+					t.Errorf("BuiltinRules()[%d] (%q): ReplayFields path %q collides with a canonical openai message key", i, rule.Description, path)
+				}
 			}
-			if a != b {
-				match = false
-				break
+		default:
+			if !strings.HasSuffix(rule.Description, parseSideSuffix) {
+				t.Errorf("BuiltinRules()[%d] (%q): ReplayFields rule description must end with %q (no outbound threading exists for provider %q)", i, rule.Description, parseSideSuffix, rule.ProviderType)
+			}
+			if strings.HasSuffix(rule.Description, threadedSuffix) {
+				t.Errorf("BuiltinRules()[%d] (%q): provider %q has no outbound threading; the description must not claim %q", i, rule.Description, rule.ProviderType, threadedSuffix)
 			}
 		}
-		if match {
-			return true
-		}
 	}
-	return false
 }
 
 // TestSortedReplayPathKeys is a small utility test for the trace-attribute

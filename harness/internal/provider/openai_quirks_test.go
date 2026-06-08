@@ -127,6 +127,174 @@ func TestOpenAIQuirks_GPT4oNoQuirksApply(t *testing.T) {
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "gpt-4o", "request.json"), body)
 }
 
+// deepseekReplayParams returns the canonical multi-turn tool-calling
+// StreamParams for the DeepSeek wire-shape tests: a prior assistant
+// turn that called a tool and carries the captured reasoning_content,
+// followed by the tool result. The shape is the exact scenario the v4
+// thinking-mode guide documents as 400-ing without the replay.
+func deepseekReplayParams(model string) types.StreamParams {
+	return types.StreamParams{
+		Model:       model,
+		MaxTokens:   4096,
+		Temperature: types.Float64Ptr(0.5),
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "list main.go"}}},
+			{
+				Role: "assistant",
+				Content: []types.ContentBlock{
+					{Type: "text", Text: "Reading the file."},
+					{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"main.go"}`)},
+				},
+				ReplayFields: map[string]json.RawMessage{
+					"reasoning_content": json.RawMessage(`"The user wants the file contents; read_file is the right tool."`),
+				},
+			},
+			{Role: "user", Content: []types.ContentBlock{{Type: "tool_result", ToolUseID: "call_1", Content: "package main"}}},
+		},
+	}
+}
+
+// TestOpenAIQuirks_DeepSeekV4Flash_RequestShape is the golden contract
+// for the threaded DeepSeek v4 rule: the prior turn's reasoning_content
+// is replayed as a top-level key on the assistant wire message, the
+// token budget uses the legacy max_tokens key, and the caller-supplied
+// temperature is suppressed. The fixture is the source of truth.
+func TestOpenAIQuirks_DeepSeekV4Flash_RequestShape(t *testing.T) {
+	params := deepseekReplayParams("deepseek-v4-flash")
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+		t.Fatalf("deepseek-v4-flash: expected OmitSamplingParams=true (rule not firing)")
+	}
+	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
+		t.Fatalf("deepseek-v4-flash: expected TokenField=max_tokens, got %v", q.BehaviourFlags.OpenAI.TokenField)
+	}
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "deepseek-v4-flash", "request.json"), body)
+
+	// Belt-and-braces string assertions on the load-bearing keys, so a
+	// fixture edit cannot silently weaken the contract.
+	s := string(body)
+	if !strings.Contains(s, `"max_tokens"`) || strings.Contains(s, `"max_completion_tokens"`) {
+		t.Errorf("body must use the legacy max_tokens key: %s", s)
+	}
+	if strings.Contains(s, `"temperature"`) {
+		t.Errorf("body contains temperature despite OmitSamplingParams: %s", s)
+	}
+	if !strings.Contains(s, `"reasoning_content":"The user wants the file contents; read_file is the right tool."`) {
+		t.Errorf("body missing replayed reasoning_content on the assistant message: %s", s)
+	}
+}
+
+// TestOpenAIQuirks_DeepSeekReasoner_RequestShape mirrors the v4-flash
+// golden for the retiring deepseek-reasoner alias (a v4-flash thinking
+// alias until 2026-07-24): the rule's behaviour flags must produce the
+// same wire divergences — legacy max_tokens, suppressed temperature,
+// reasoning_content replayed on the assistant message. The fixture pins
+// the current shape for the alias's remaining operation; remove it
+// together with the rule after the sunset.
+func TestOpenAIQuirks_DeepSeekReasoner_RequestShape(t *testing.T) {
+	params := deepseekReplayParams("deepseek-reasoner")
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	if !q.BehaviourFlags.OpenAI.OmitSamplingParams {
+		t.Fatalf("deepseek-reasoner: expected OmitSamplingParams=true (rule not firing)")
+	}
+	if q.BehaviourFlags.OpenAI.TokenField != quirks.TokenFieldMaxTokens {
+		t.Fatalf("deepseek-reasoner: expected TokenField=max_tokens, got %v", q.BehaviourFlags.OpenAI.TokenField)
+	}
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath(fixtureRoot, "deepseek-reasoner", "request.json"), body)
+
+	s := string(body)
+	if !strings.Contains(s, `"max_tokens"`) || strings.Contains(s, `"max_completion_tokens"`) {
+		t.Errorf("body must use the legacy max_tokens key: %s", s)
+	}
+	if strings.Contains(s, `"temperature"`) {
+		t.Errorf("body contains temperature despite OmitSamplingParams: %s", s)
+	}
+	if !strings.Contains(s, `"reasoning_content"`) {
+		t.Errorf("body missing replayed reasoning_content on the assistant message: %s", s)
+	}
+}
+
+// TestOpenAIQuirks_DeepSeekV4Flash_SSEParse drives the deepseek-v4-flash
+// response fixture through the production Stream path: the SSE parse
+// must capture every reasoning_content delta and the message_complete
+// event must carry the flattened (concatenated) value. Together with
+// the request.json golden this closes the fixture round-trip for the
+// explicit flash id — every other model fixture directory carries both
+// halves.
+func TestOpenAIQuirks_DeepSeekV4Flash_SSEParse(t *testing.T) {
+	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/deepseek-v4-flash/response.sse"))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "deepseek-v4-flash",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	var complete *types.StreamEvent
+	for _, ev := range drainStream(t, ch) {
+		if ev.Type == "message_complete" {
+			evCopy := ev
+			complete = &evCopy
+		}
+	}
+	if complete == nil {
+		t.Fatal("no message_complete event")
+	}
+	if complete.ReplayFields == nil {
+		t.Fatal("message_complete carries no ReplayFields for deepseek-v4-flash")
+	}
+	want := `"Scanning the request. Choosing an answer."`
+	if got := string(complete.ReplayFields["reasoning_content"]); got != want {
+		t.Errorf("ReplayFields[reasoning_content] = %s, want %s", got, want)
+	}
+}
+
+// TestOpenAIQuirks_NoReplayRule_OmitsReplayState pins the negative half
+// of the threading contract: the same message history sent to a model
+// whose resolved quirks register no ReplayFields emits NOTHING extra —
+// the registry, not the persisted message, decides what is replayed.
+func TestOpenAIQuirks_NoReplayRule_OmitsReplayState(t *testing.T) {
+	params := deepseekReplayParams("gpt-4o")
+	q := quirks.DefaultRegistry().Resolve("openai-compatible", params.Model)
+	if len(q.ReplayFields) != 0 {
+		t.Fatalf("gpt-4o: expected no ReplayFields, got %v", q.ReplayFields)
+	}
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "reasoning_content") {
+		t.Errorf("gpt-4o body leaked reasoning_content with no rule: %s", body)
+	}
+}
+
 // TestNoRegressionMaxCompletionTokensDefault pins design risk 1: the
 // default openai-compatible body MUST emit max_completion_tokens, NOT
 // the legacy max_tokens, regardless of whether a quirk rule fired.

@@ -117,10 +117,18 @@ func (o *OffloadToFileStrategy) Prepare(ctx context.Context, messages []types.Me
 		}
 
 		if modified {
+			// ReplayFields must survive the rebuild: it carries the
+			// provider-opaque round-trip state (e.g. DeepSeek v4's
+			// reasoning_content) that the next request replays —
+			// dropping it here silently 400s the following tool-call
+			// turn. The long multi-turn run with large tool outputs
+			// that triggers this offload is exactly the workload the
+			// replay threading exists for.
 			result[i] = types.Message{
-				Role:      msg.Role,
-				Synthetic: msg.Synthetic,
-				Content:   newContent,
+				Role:         msg.Role,
+				Synthetic:    msg.Synthetic,
+				Content:      newContent,
+				ReplayFields: msg.ReplayFields,
 			}
 		}
 	}

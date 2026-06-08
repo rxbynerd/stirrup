@@ -300,6 +300,13 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 // Tool definitions and the model string are not scrubbed: tool schemas
 // are constants compiled into the harness, and the model identifier
 // (e.g. "claude-3-5-sonnet-latest") is not a secret.
+//
+// Message.ReplayFields is deliberately absent from the rebuilt Message:
+// like ContentBlock.ThoughtSignature it is provider-opaque round-trip
+// state the harness must never persist verbatim (see the field contract
+// in types/messages.go), and the scrubber cannot inspect an opaque
+// value. The explicit field list below is the drop mechanism — a future
+// edit that copies the source Message wholesale would regress this.
 func scrubModelInput(in types.ModelInput) types.ModelInput {
 	out := types.ModelInput{
 		Model:    in.Model,
