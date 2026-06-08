@@ -2101,6 +2101,30 @@ func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
 	} else if b, isBool := v.(bool); !isBool || !b {
 		t.Errorf("glm-4-plus resolution: ExtraBodyFields[tool_stream] = %v (type %T), want true", v, v)
 	}
+
+	// A thinking-family model (glm-4.7) must additionally resolve the
+	// reasoning_content replay field and the thinking extra body through
+	// the same factory-built registry — proving resolveCompatProfile
+	// returns the full CompatRules() slice, not just the base rule.
+	qt := adapter.Registry.Resolve("openai-compatible", "glm-4.7")
+	hasReasoning := false
+	for _, p := range qt.ReplayFields {
+		if p == "reasoning_content" {
+			hasReasoning = true
+			break
+		}
+	}
+	if !hasReasoning {
+		t.Errorf("glm-4.7 resolution: reasoning_content not in ReplayFields %v (thinking-family rule did not fire via factory)", qt.ReplayFields)
+	}
+	thinking, ok := qt.BehaviourFlags.OpenAI.ExtraBodyFields["thinking"]
+	if !ok {
+		t.Fatalf("glm-4.7 resolution: ExtraBodyFields[thinking] missing; thinking-family rule should set it")
+	}
+	tm, ok := thinking.(map[string]any)
+	if !ok || len(tm) != 1 || tm["type"] != "enabled" {
+		t.Errorf("glm-4.7 resolution: thinking = %#v, want map[string]any{\"type\":\"enabled\"}", thinking)
+	}
 }
 
 // TestBuildProvider_OpenAICompatibleWithUnknownCompatProfile_Errors
