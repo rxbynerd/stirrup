@@ -20,26 +20,72 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
+// testK8sConfig carries the cluster-specific knobs the integration suite
+// needs to run against an arbitrary cluster, not just the untainted
+// single-node kind dev cluster. Every value falls back to the original
+// kind-friendly default when its env var is unset, so `just kind-smoke`
+// style runs are unchanged; a real cluster (e.g. GKE, whose node pools are
+// tainted and gated on a RuntimeClass) is selected by exporting:
+//
+//	STIRRUP_TEST_KUBECONFIG       path to a kubeconfig (also the suite gate)
+//	STIRRUP_TEST_NAMESPACE        sandbox namespace            (default "default")
+//	STIRRUP_TEST_RUNTIME_CLASS    Pod RuntimeClassName         (default "")
+//	STIRRUP_TEST_IMAGE            sandbox image                (default "busybox:latest")
+//	STIRRUP_TEST_EGRESS_PROXY_URL allowlist proxy URL          (default the default-ns svc)
+//
+// On a cluster whose only schedulable nodes are tainted for a sandbox
+// runtime (GKE Sandbox taints the gVisor pool, and a no-RuntimeClass Pod
+// has nowhere to land), STIRRUP_TEST_RUNTIME_CLASS must name the sandbox
+// RuntimeClass (e.g. "gvisor") or every Pod times out at readiness.
+type testK8sConfig struct {
+	kubeconfig   string
+	namespace    string
+	runtimeClass string
+	image        string
+	proxyURL     string
+}
+
+// testK8sEnv resolves the integration config from the environment, skipping
+// the test when STIRRUP_TEST_KUBECONFIG is unset (the existing suite gate).
+func testK8sEnv(t *testing.T) testK8sConfig {
+	t.Helper()
+	kubeconfig := os.Getenv("STIRRUP_TEST_KUBECONFIG")
+	if kubeconfig == "" {
+		t.Skip("STIRRUP_TEST_KUBECONFIG not set; skipping k8s integration test")
+	}
+	return testK8sConfig{
+		kubeconfig:   kubeconfig,
+		namespace:    envOr("STIRRUP_TEST_NAMESPACE", "default"),
+		runtimeClass: os.Getenv("STIRRUP_TEST_RUNTIME_CLASS"),
+		image:        envOr("STIRRUP_TEST_IMAGE", "busybox:latest"),
+		proxyURL:     envOr("STIRRUP_TEST_EGRESS_PROXY_URL", "http://stirrup-egress-proxy.default.svc:8080"),
+	}
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
 // TestK8sExecutorLifecycle exercises the full create/wait/delete lifecycle
 // against a real cluster. It is gated by build tag `integration_k8s` and by
 // STIRRUP_TEST_KUBECONFIG so the default `just test` run never touches a
 // real cluster.
 func TestK8sExecutorLifecycle(t *testing.T) {
-	kubeconfig := os.Getenv("STIRRUP_TEST_KUBECONFIG")
-	if kubeconfig == "" {
-		t.Skip("STIRRUP_TEST_KUBECONFIG not set; skipping k8s integration test")
-	}
-
-	namespace := "default"
+	cfg := testK8sEnv(t)
+	namespace := cfg.namespace
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:      "busybox:latest",
-		Namespace:  namespace,
-		Kubeconfig: kubeconfig,
-		Network:    &types.NetworkConfig{Mode: "none"},
+		Image:            cfg.image,
+		Namespace:        namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "none"},
 	})
 	if err != nil {
 		t.Fatalf("NewK8sExecutor: %v", err)
@@ -58,7 +104,7 @@ func TestK8sExecutorLifecycle(t *testing.T) {
 	}
 	closed = true
 
-	clientset, err := kubeClientFromConfig(t, kubeconfig)
+	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
 	if err != nil {
 		t.Fatalf("build verification clientset: %v", err)
 	}
@@ -84,19 +130,17 @@ func TestK8sExecutorLifecycle(t *testing.T) {
 // guarantee: calling Close twice on an executor whose Pod is already gone
 // must return nil from the second call.
 func TestK8sExecutorCloseIdempotent(t *testing.T) {
-	kubeconfig := os.Getenv("STIRRUP_TEST_KUBECONFIG")
-	if kubeconfig == "" {
-		t.Skip("STIRRUP_TEST_KUBECONFIG not set; skipping k8s integration test")
-	}
+	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:      "busybox:latest",
-		Namespace:  "default",
-		Kubeconfig: kubeconfig,
-		Network:    &types.NetworkConfig{Mode: "none"},
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "none"},
 	})
 	if err != nil {
 		t.Fatalf("NewK8sExecutor: %v", err)
@@ -125,19 +169,17 @@ func kubeClientFromConfig(t *testing.T, kubeconfig string) (kubernetes.Interface
 // torn down on test cleanup.
 func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 	t.Helper()
-	kubeconfig := os.Getenv("STIRRUP_TEST_KUBECONFIG")
-	if kubeconfig == "" {
-		t.Skip("STIRRUP_TEST_KUBECONFIG not set; skipping k8s integration test")
-	}
+	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:      "busybox:latest",
-		Namespace:  "default",
-		Kubeconfig: kubeconfig,
-		Network:    &types.NetworkConfig{Mode: "none"},
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "none"},
 	})
 	if err != nil {
 		t.Fatalf("NewK8sExecutor: %v", err)
@@ -375,12 +417,22 @@ func TestK8sWriteFile_RejectsWorkspaceRoot(t *testing.T) {
 // real value from a `kubectl exec ... uname -r` against the gVisor Pod and
 // pin it once observed.
 func TestK8sRuntimeClass_Admitted(t *testing.T) {
-	kubeconfig := os.Getenv("STIRRUP_TEST_KUBECONFIG")
-	if kubeconfig == "" {
-		t.Skip("STIRRUP_TEST_KUBECONFIG not set; skipping k8s integration test")
+	cfg := testK8sEnv(t)
+
+	// The default set assumes a kind cluster (untainted node + a `runc`
+	// RuntimeClass registered by kind-up.sh). On a cluster whose only
+	// schedulable nodes are sandbox-tainted (GKE Sandbox) the cluster-default
+	// and runc cases have nowhere to land, so the operator narrows the set,
+	// e.g. STIRRUP_TEST_RUNTIME_CLASSES=gvisor.
+	runtimeClasses := []string{"", "runc", "gvisor"}
+	if v := os.Getenv("STIRRUP_TEST_RUNTIME_CLASSES"); v != "" {
+		runtimeClasses = nil
+		for _, rc := range strings.Split(v, ",") {
+			runtimeClasses = append(runtimeClasses, strings.TrimSpace(rc))
+		}
 	}
 
-	for _, runtimeClass := range []string{"", "runc", "gvisor"} {
+	for _, runtimeClass := range runtimeClasses {
 		name := runtimeClass
 		if name == "" {
 			name = "cluster-default"
@@ -390,9 +442,9 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 			defer cancel()
 
 			exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-				Image:            "busybox:latest",
-				Namespace:        "default",
-				Kubeconfig:       kubeconfig,
+				Image:            cfg.image,
+				Namespace:        cfg.namespace,
+				Kubeconfig:       cfg.kubeconfig,
 				RuntimeClassName: runtimeClass,
 				Network:          &types.NetworkConfig{Mode: "none"},
 			})
@@ -417,17 +469,29 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 				t.Errorf("Exec stdout = %q, want \"ok\"", res.Stdout)
 			}
 
-			// VERIFY AGAINST REAL RUN: under gVisor, `uname -r` reports a
-			// synthetic kernel version distinct from the host. Capture the
-			// real string and assert on it once a runsc-backed kind cluster
-			// is available; asserting a fabricated value now would be worse
-			// than asserting nothing.
+			// Confirm gVisor is actually in force rather than the Pod silently
+			// falling back to the host runtime. Two independent signals,
+			// observed against this GKE Sandbox cluster (handler "gvisor"):
+			//   - `dmesg` prints the gVisor boot banner ("Starting gVisor...").
+			//     This is the robust signal — it is a literal product string,
+			//     stable across releases (and what scripts/dev/smoke-test.sh
+			//     keys on).
+			//   - `uname -r` reports a synthetic kernel version ("4.4.0" on the
+			//     observed release) distinct from the host's. Logged, not hard
+			//     asserted, since the exact string tracks the runsc build.
 			if runtimeClass == "gvisor" {
+				dmesgRes, dmesgErr := exec.Exec(ctx, "dmesg 2>/dev/null | head -n 50", 10*time.Second)
+				if dmesgErr != nil {
+					t.Fatalf("dmesg under gvisor: %v", dmesgErr)
+				}
+				if !strings.Contains(strings.ToLower(dmesgRes.Stdout), "gvisor") {
+					t.Errorf("dmesg under gvisor has no gVisor banner; sandbox may not be active. dmesg=%q", dmesgRes.Stdout)
+				}
 				unameRes, unameErr := exec.Exec(ctx, "uname -r", 10*time.Second)
 				if unameErr != nil {
 					t.Fatalf("uname under gvisor: %v", unameErr)
 				}
-				t.Logf("gvisor uname -r = %q (pin this once observed against a real runsc kind cluster)", strings.TrimSpace(unameRes.Stdout))
+				t.Logf("gvisor in force: uname -r = %q, dmesg banner present", strings.TrimSpace(unameRes.Stdout))
 			}
 		})
 	}
@@ -463,32 +527,30 @@ func TestK8sRuntimeClass_KataValidatedAsString(t *testing.T) {
 // proves the object is created with the right shape, NOT that egress is
 // actually denied. Enforcement is only verifiable on a Cilium/Calico cluster.
 func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
-	kubeconfig := os.Getenv("STIRRUP_TEST_KUBECONFIG")
-	if kubeconfig == "" {
-		t.Skip("STIRRUP_TEST_KUBECONFIG not set; skipping k8s integration test")
-	}
+	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:      "busybox:latest",
-		Namespace:  "default",
-		Kubeconfig: kubeconfig,
-		Network:    &types.NetworkConfig{Mode: "none"},
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "none"},
 	})
 	if err != nil {
 		t.Fatalf("NewK8sExecutor: %v", err)
 	}
 	t.Cleanup(func() { _ = exec.Close() })
 
-	clientset, err := kubeClientFromConfig(t, kubeconfig)
+	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
 	if err != nil {
 		t.Fatalf("build verification clientset: %v", err)
 	}
 
 	// The Pod carries the sandbox marker label.
-	pod, err := clientset.CoreV1().Pods("default").Get(ctx, exec.podName, metav1.GetOptions{})
+	pod, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, exec.podName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get pod: %v", err)
 	}
@@ -503,7 +565,7 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 		}
 	}
 
-	np, err := clientset.NetworkingV1().NetworkPolicies("default").Get(ctx, networkPolicyName(exec.podName), metav1.GetOptions{})
+	np, err := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(ctx, networkPolicyName(exec.podName), metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get networkpolicy: %v", err)
 	}
@@ -523,7 +585,7 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		_, getErr := clientset.NetworkingV1().NetworkPolicies("default").Get(context.Background(), networkPolicyName(exec.podName), metav1.GetOptions{})
+		_, getErr := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(context.Background(), networkPolicyName(exec.podName), metav1.GetOptions{})
 		if apierrors.IsNotFound(getErr) {
 			break
 		}
@@ -542,33 +604,31 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 // MANIFEST-SHAPE ONLY: kindnet does not enforce NetworkPolicy, so this proves
 // the object/env shape, not that egress is actually confined to the proxy.
 func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
-	kubeconfig := os.Getenv("STIRRUP_TEST_KUBECONFIG")
-	if kubeconfig == "" {
-		t.Skip("STIRRUP_TEST_KUBECONFIG not set; skipping k8s integration test")
-	}
+	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	const proxyURL = "http://stirrup-egress-proxy.default.svc:8080"
+	proxyURL := cfg.proxyURL
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:          "busybox:latest",
-		Namespace:      "default",
-		Kubeconfig:     kubeconfig,
-		Network:        &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
-		EgressProxyURL: proxyURL,
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
+		EgressProxyURL:   proxyURL,
 	})
 	if err != nil {
 		t.Fatalf("NewK8sExecutor: %v", err)
 	}
 	t.Cleanup(func() { _ = exec.Close() })
 
-	clientset, err := kubeClientFromConfig(t, kubeconfig)
+	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
 	if err != nil {
 		t.Fatalf("build verification clientset: %v", err)
 	}
 
-	pod, err := clientset.CoreV1().Pods("default").Get(ctx, exec.podName, metav1.GetOptions{})
+	pod, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, exec.podName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get pod: %v", err)
 	}
@@ -583,7 +643,7 @@ func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
 		t.Errorf("NO_PROXY should be set in allowlist mode, env = %v", env)
 	}
 
-	np, err := clientset.NetworkingV1().NetworkPolicies("default").Get(ctx, networkPolicyName(exec.podName), metav1.GetOptions{})
+	np, err := clientset.NetworkingV1().NetworkPolicies(cfg.namespace).Get(ctx, networkPolicyName(exec.podName), metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get networkpolicy: %v", err)
 	}
@@ -613,5 +673,63 @@ func TestK8sEgress_AllowlistRequiresProxyURL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "proxy") {
 		t.Errorf("error %q should mention the missing proxy URL", err)
+	}
+}
+
+// TestK8sEgress_NoneEnforced verifies ACTUAL egress enforcement, not just
+// manifest shape: on a NetworkPolicy-enforcing CNI (GKE Dataplane V2, Cilium,
+// Calico) a Mode=="none" sandbox cannot reach the internet. It is gated by
+// STIRRUP_TEST_ENFORCE_EGRESS (in addition to the kubeconfig gate) so it is
+// skipped on kindnet — there the deny-all policy is inert and the Pod WOULD
+// reach the internet, a false negative this test must never produce. The
+// companion shape test (TestK8sEgress_NoneInstallsDenyAllPolicy) always runs
+// and proves the policy object is correct; this proves the policy bites.
+//
+// The probe is a raw TCP connect to a literal public IP (1.1.1.1:443),
+// deliberately DNS-free: the deny-all policy also blocks DNS, so resolving a
+// name would fail for the wrong reason and muddy the signal. Under an
+// enforcing CNI the SYN is dropped, the connect never completes, and the
+// wrapper reports a non-zero status; an unconfined Pod connects and prints
+// rc=0.
+func TestK8sEgress_NoneEnforced(t *testing.T) {
+	cfg := testK8sEnv(t)
+	if os.Getenv("STIRRUP_TEST_ENFORCE_EGRESS") == "" {
+		t.Skip("STIRRUP_TEST_ENFORCE_EGRESS not set; skipping egress-enforcement test (requires a NetworkPolicy-enforcing CNI)")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "none"},
+	})
+	if err != nil {
+		t.Fatalf("NewK8sExecutor: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.Close() })
+
+	// `nc` ships with busybox; the guard turns a missing tool into an explicit
+	// skip rather than a non-zero status that would masquerade as "blocked".
+	const probe = "command -v nc >/dev/null 2>&1 || { echo NONC; exit 0; }; " +
+		"timeout 8 nc -w 6 1.1.1.1 443 </dev/null >/dev/null 2>&1; echo rc=$?"
+	res, err := exec.Exec(ctx, probe, 30*time.Second)
+	if err != nil {
+		t.Fatalf("egress probe exec: %v", err)
+	}
+	out := strings.TrimSpace(res.Stdout)
+	t.Logf("deny-all egress probe output: %q (stderr=%q)", out, strings.TrimSpace(res.Stderr))
+	switch {
+	case out == "NONC":
+		t.Skip("sandbox image has no `nc`; cannot probe egress enforcement")
+	case out == "rc=0":
+		t.Fatalf("Mode==none sandbox reached 1.1.1.1:443 (rc=0) — deny-all egress is NOT enforced by this CNI")
+	case strings.HasPrefix(out, "rc="):
+		// Non-zero status: the connect was blocked, as required.
+	default:
+		t.Fatalf("unexpected probe output %q (want rc=<nonzero>)", out)
 	}
 }
