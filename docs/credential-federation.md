@@ -278,7 +278,11 @@ WIF — they avoid the STS round-trip entirely:
 - `gcp-workload-identity` — fail-fast variant of `gcp-default` that
   goes straight to the metadata server. Errors loudly if there is no
   metadata server reachable, so a misconfigured pod does not silently
-  fall through to environment-variable credentials.
+  fall through to environment-variable credentials. On GKE this is GKE
+  Workload Identity (bind the Kubernetes ServiceAccount to a GCP service
+  account); it works from a gVisor-sandboxed Pod. Like every
+  metadata-server source it requires the orchestrator to run in-cluster —
+  see [`executors/k8s.md`](executors/k8s.md#running-the-orchestrator-in-cluster).
 
 `gcp-workload-identity` also works unchanged inside Cloud Run jobs:
 the same metadata server is exposed at `metadata.google.internal` with

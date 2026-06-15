@@ -52,6 +52,23 @@ workspace, the field is optional in RunConfig; if it covers more than
 one (or all), the field is required. Anthropic accepts the literal
 string `default` alongside `wrkspc_...` identifiers.
 
+The target service account must be a **member of every workspace the
+rule mints into**, beyond its implicit membership in the organization's
+default workspace. A rule bound to a non-default workspace whose service
+account is not a member of that workspace fails *every* exchange with
+`401 authentication_error` (see [Validation errors](#validation-errors)).
+Add the membership in the Console, or via the Admin API
+`POST /v1/organizations/service_accounts/{svac}/workspaces`.
+
+> Programmatic creation of the issuer / service account / rule requires
+> an `org:admin` **OAuth** token — the Admin **API key**
+> (`sk-ant-admin...`) returns `404` on the federation endpoints. Mint one
+> with `ant auth login --profile admin --scope org:admin --workspace-id
+> <wrkspc_>` (the `--workspace-id` is required even though an `org:admin`
+> token is org-wide), then `ant auth print-credentials --profile admin
+> --access-token`. See Anthropic's
+> [WIF Admin API](https://platform.claude.com/docs/en/manage-claude/wif-admin-api).
+
 ## Stirrup-side configuration
 
 The minimal RunConfig is:
@@ -226,6 +243,42 @@ that issue tokens via IMDS.
 The federation issuer on the Anthropic side is the AKS cluster's
 `AZURE_AUTHORITY_HOST` issuer URL.
 
+### GKE (Workload Identity metadata server)
+
+On GKE with Workload Identity enabled, the GKE metadata server issues a
+Google-signed OIDC identity token for the Pod's bound GCP service
+account. The `gke-metadata` token source fetches it directly — no
+projected volume to declare:
+
+```json
+{
+  "provider": {
+    "type": "anthropic",
+    "credential": {
+      "type": "anthropic-wif",
+      "federationRuleId": "fdrl_example",
+      "organizationId": "11111111-1111-1111-1111-111111111111",
+      "serviceAccountId": "svac_example",
+      "tokenSource": { "type": "gke-metadata", "audience": "https://api.anthropic.com" }
+    }
+  }
+}
+```
+
+The Pod runs as a Kubernetes ServiceAccount bound to a GCP service
+account via Workload Identity (the `iam.gke.io/gcp-service-account`
+annotation plus a `roles/iam.workloadIdentityUser` binding). The token
+the metadata server issues carries `iss=https://accounts.google.com`,
+`sub` equal to the GCP service account's numeric unique ID, and `aud`
+equal to the `audience` requested above. Configure the Anthropic
+federation issuer as Google (`issuer_url: https://accounts.google.com`,
+`jwks: discovery`) and set the rule's `subject_prefix` to that unique ID
+(`gcloud iam service-accounts describe <gsa> --format='value(uniqueId)'`).
+
+The metadata server is reachable only from inside the cluster, so the
+orchestrator must run on GKE (it works under the `gvisor` RuntimeClass) —
+see [`executors/k8s.md`](executors/k8s.md#running-the-orchestrator-in-cluster).
+
 ### Generic Kubernetes (projected service-account tokens)
 
 For any k8s cluster (not EKS / AKS / GKE) that supports
@@ -278,6 +331,7 @@ discovery URL, exposed via `kubectl get --raw /.well-known/openid-configuration`
 | `federationRuleId %q does not match %q` | The ID format is wrong. Federation rules are `fdrl_...`, service accounts are `svac_...`, workspaces are `wrkspc_...` (or the literal `default`). |
 | `--anthropic-* federation flags imply credential.type=anthropic-wif, but credential.type is already %q` | The `--config` already named a different credential type and the operator layered WIF flags on top. Pick one — silently rewriting the explicit type would hide intent. |
 | `token exchange returned 400 (request_id=req_...)` | Anthropic rejected the assertion. Common causes: clock skew (Anthropic applies 30s; check NTP on the runtime), `subject_prefix` mismatch, expired JWT, or the federation rule was archived. The `request_id` is the lookup key for the [Console authentication-history page](https://platform.claude.com/settings/workload-identity-federation?tab=history). |
+| `token exchange returned 401 (request_id=req_...)` | Anthropic rejected the exchange with an `authentication_error` — distinct from the 400 `invalid_grant` claim-mismatch case. A 401 typically means the rule↔service-account↔workspace wiring is invalid: most commonly the target service account is **not a member of the workspace the rule mints into**, or the `service_account_id` sent does not match the rule's target. Verify workspace membership and the rule target; correlate the `request_id` on the [authentication-history page](https://platform.claude.com/settings/workload-identity-federation?tab=history). |
 
 ## Refresh behaviour
 

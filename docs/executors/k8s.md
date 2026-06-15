@@ -407,6 +407,56 @@ The RuntimeClass's `scheduling.nodeSelector` and any
 `--k8s-node-selector` the run supplies are merged by Kubernetes into the
 effective node selection.
 
+## Running the orchestrator in-cluster
+
+The orchestrator (the process running `stirrup harness`) and the sandbox
+Pod are distinct: the orchestrator resolves provider credentials and drives
+the run; the sandbox only executes tools. Where the orchestrator runs
+determines which provider credential sources are reachable.
+
+The metadata-server credential sources — `gcp-workload-identity` /
+`gcp-default` for Vertex AI Gemini, and `anthropic-wif` with the
+`gke-metadata` token source for Anthropic — read from
+`metadata.google.internal`, reachable **only from inside the cluster**.
+Driving them from a laptop fails fast (`not running on GCE`). To use GKE
+Workload Identity for provider auth, run the orchestrator in-cluster as a
+`Job` under a ServiceAccount bound to a GCP service account via Workload
+Identity. This holds under the `gvisor` RuntimeClass: a gVisor-sandboxed
+orchestrator reaches the metadata server and mints both GCP access tokens
+and Google OIDC identity tokens normally.
+
+A standalone in-cluster `Job` running `stirrup harness` (no control plane)
+is the lightest shape — the executor falls back to the in-cluster
+ServiceAccount, so no kubeconfig is mounted. The `stirrup job` +
+control-plane shape in [`deployment.md`](../deployment.md) is the
+production alternative.
+
+Two requirements are easy to miss:
+
+- **`automountServiceAccountToken: true` on the orchestrator Pod.** The
+  reference orchestrator ServiceAccount sets `automountServiceAccountToken:
+  false` on the SA object
+  ([`rbac.yaml`](../../examples/k8s/rbac.yaml)), so a Pod that does not
+  re-enable it has no projected token and the executor's in-cluster REST
+  config fails with `open
+  /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or
+  directory`. Set the field on the orchestrator Pod spec. The sandbox Pod
+  the executor creates still runs with its token un-mounted — that is
+  enforced separately and unaffected.
+- **Scheduling onto an amd64 / RuntimeClass-appropriate node.** On a GKE
+  Sandbox cluster the only amd64 nodes are the gVisor pool, so the
+  orchestrator Pod needs `runtimeClassName: gvisor` (which injects the pool
+  toleration) or a dedicated untainted pool.
+
+Provider auth is **orthogonal to sandbox egress**. The orchestrator's
+provider call (to Anthropic / Vertex / an OpenAI-compatible endpoint) is
+made from the orchestrator Pod, not the sandbox, so a sandbox
+`network.mode: allowlist` that omits the provider host does not block the
+run — the allowlist constrains only the sandbox Pod's own traffic. (When
+the orchestrator Pod is itself subject to a namespace egress
+`NetworkPolicy`, it needs its own allowances for the provider endpoint, the
+metadata server, DNS, and the in-cluster API server.)
+
 ## RuntimeClass selection per run
 
 `executor.runtime` maps directly to the Pod `RuntimeClassName`, so a
@@ -549,6 +599,7 @@ executor's exact minimum). The sandbox Pod has no API access of its own
 | Egress not actually confined on `kind` | kindnet does not enforce NetworkPolicy. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico) for real confinement. |
 | `pod ... not ready` after the readiness timeout (default 60 s, or the caller context deadline if shorter) | Image lacks `/bin/sh`, or the runtime cannot start the Pod. | Use an image shipping `/bin/sh`, `tar`, `ls`; check `kubectl describe pod`. |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
+| `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
 
 ## Testing the executor against a real cluster
 
