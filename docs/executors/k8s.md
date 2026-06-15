@@ -87,10 +87,15 @@ The pieces and their lifecycle:
   RuntimeDefault`. `automountServiceAccountToken` is **always** `false`,
   so the sandbox itself has no Kubernetes API access regardless of the
   ServiceAccount named. `restartPolicy` is `Never` (one-shot), the
-  container is named `agent`, the working directory is `/workspace`, and
-  the entrypoint is `/bin/sh -c "sleep infinity"` — all real work runs
-  through subsequent `exec` calls, not the entrypoint. The exact spec is
-  annotated field-by-field in
+  container is named `agent`, and the entrypoint is `/bin/sh -c "sleep
+  infinity"` — all real work runs through subsequent `exec` calls, not
+  the entrypoint. The working directory `/workspace` is an `emptyDir` the
+  executor mounts, with pod `securityContext.fsGroup: 65532`, so the
+  workspace is writable by the non-root UID for *any* image that ships a
+  shell — the image need not pre-create a writable `/workspace`, and the
+  volume is wiped per Pod. (This mirrors the container executor's writable
+  host bind mount; both hide any content an image bakes at that path.) The
+  exact spec is annotated field-by-field in
   [`examples/k8s/sample-sandbox-pod.yaml`](../../examples/k8s/sample-sandbox-pod.yaml).
 
 - **Command execution and file I/O** both ride the `pods/exec`
@@ -252,6 +257,21 @@ on Sandbox-enabled node pools. No node-level gVisor install is needed —
 GKE manages it. A NetworkPolicy-enforcing CNI is available on GKE
 (Dataplane V2 / Calico), so the egress policy is genuinely enforced.
 
+> **GKE manages the `gvisor` RuntimeClass — do not apply this repo's.**
+> GKE Sandbox creates and reconciles a `gvisor` RuntimeClass whose
+> `handler` is **`gvisor`** (not `runsc`) and whose `scheduling` already
+> carries the Sandbox node pool's `nodeSelector`
+> (`sandbox.gke.io/runtime: gvisor`) **and** the matching toleration for
+> the pool's `sandbox.gke.io/runtime=gvisor:NoSchedule` taint. Setting
+> `--container-runtime gvisor` targets that managed class directly, so a
+> Pod schedules onto the Sandbox pool with the toleration injected for
+> it. Do **not** `kubectl apply` the `gvisor` entry from
+> [`examples/k8s/runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml)
+> on GKE — its `handler: runsc` and `stirrup.dev/runtime-gvisor`
+> nodeSelector describe a self-managed gVisor install and conflict with
+> the GKE-managed object. The sandbox **image must be amd64-compatible**
+> (or multi-arch): GKE Sandbox node pools are x86.
+
 ```sh
 # Create a node pool with GKE Sandbox enabled, then:
 stirrup harness \
@@ -259,13 +279,26 @@ stirrup harness \
   --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
   --k8s-namespace stirrup-sandbox \
   --container-runtime gvisor \
-  --k8s-node-selector sandbox.gke.io/runtime=gvisor \
   --mode execution \
   --prompt "..."
 ```
 
-The `--k8s-node-selector` pins scheduling to the Sandbox node pool;
-adjust the label to the cluster's node pool labelling.
+The managed `gvisor` RuntimeClass already pins scheduling to the Sandbox
+pool and tolerates its taint, so `--k8s-node-selector
+sandbox.gke.io/runtime=gvisor` is not required (it is an additional,
+redundant constraint). Add `--k8s-node-selector` only to further
+constrain placement. To verify gVisor is actually in force inside a Pod,
+`uname -r` reports a synthetic version (observed `4.4.0`) and `dmesg`
+shows a `Starting gVisor...` banner — both distinct from the host kernel.
+
+The control plane of a **private-endpoint** GKE cluster is unreachable
+from outside the VPC; the orchestrator can run in-cluster (in-cluster
+ServiceAccount) or, for an out-of-cluster orchestrator, reach the API
+server through [GKE Connect
+Gateway](https://docs.cloud.google.com/kubernetes-engine/enterprise/multicluster-management/gateway).
+The executor negotiates WebSocket-first for the `pods/exec` stream (with
+a SPDY fallback), so exec and file I/O work through such a proxied API
+endpoint, not only against a directly-reachable API server.
 
 ### Kata Containers (kata-qemu / kata-fc / kata-clh)
 

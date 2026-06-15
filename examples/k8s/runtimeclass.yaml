@@ -52,6 +52,16 @@ handler: runc
 # the target nodes and register a `runsc` handler in the containerd config.
 # See https://gvisor.dev/docs/user_guide/install/ and the Kubernetes guide at
 # https://gvisor.dev/docs/user_guide/quick_start/kubernetes/.
+#
+# MANAGED PLATFORMS: this entry is for a SELF-MANAGED gVisor install. On
+# GKE Sandbox do NOT apply it — GKE creates and reconciles its own `gvisor`
+# RuntimeClass whose handler is `gvisor` (not `runsc`) and whose scheduling
+# already carries the Sandbox pool's nodeSelector (sandbox.gke.io/runtime:
+# gvisor) and the toleration for its NoSchedule taint. Applying this object
+# there conflicts with the managed one (and a `runsc` handler / the
+# stirrup.dev/runtime-gvisor nodeSelector match no GKE Sandbox node). The
+# executor's --container-runtime gvisor targets whichever `gvisor`
+# RuntimeClass the cluster registers, so the managed class is used as-is.
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
