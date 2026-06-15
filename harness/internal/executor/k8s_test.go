@@ -5,7 +5,9 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -731,5 +733,131 @@ func TestK8sEgress_NoneEnforced(t *testing.T) {
 		// Non-zero status: the connect was blocked, as required.
 	default:
 		t.Fatalf("unexpected probe output %q (want rc=<nonzero>)", out)
+	}
+}
+
+// TestK8sEgress_AllowlistEnforced verifies ACTUAL allowlist enforcement on a
+// NetworkPolicy-enforcing CNI with a real egress proxy deployed. It exercises
+// both halves of the posture:
+//
+//   - the executor's per-Pod NetworkPolicy: direct egress to the internet is
+//     blocked, while the egress proxy peer is reachable on its listen port;
+//   - the proxy's FQDN allowlist (the deployed ConfigMap permits github.com and
+//     does NOT permit example.com): a CONNECT to the allowlisted host returns
+//     200, a CONNECT to a non-allowlisted host does not.
+//
+// Gated by STIRRUP_TEST_ENFORCE_EGRESS, and skipped unless a proxy peer
+// (app=stirrup-egress-proxy) is present in the namespace and
+// STIRRUP_TEST_EGRESS_PROXY_URL points at it. DNS is permitted in allowlist
+// mode, so the proxy is addressed by its Service name. Probes use busybox nc.
+func TestK8sEgress_AllowlistEnforced(t *testing.T) {
+	cfg := testK8sEnv(t)
+	if os.Getenv("STIRRUP_TEST_ENFORCE_EGRESS") == "" {
+		t.Skip("STIRRUP_TEST_ENFORCE_EGRESS not set; skipping egress-enforcement test (requires a NetworkPolicy-enforcing CNI)")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
+	if err != nil {
+		t.Fatalf("build verification clientset: %v", err)
+	}
+	peers, err := clientset.CoreV1().Pods(cfg.namespace).List(ctx, metav1.ListOptions{LabelSelector: "app=" + k8sEgressProxyLabel})
+	if err != nil {
+		t.Fatalf("list egress proxy peers: %v", err)
+	}
+	if len(peers.Items) == 0 {
+		t.Skipf("no egress proxy peer (app=%s) in namespace %q; deploy one to run this test", k8sEgressProxyLabel, cfg.namespace)
+	}
+
+	proxyAddr, err := url.Parse(cfg.proxyURL)
+	if err != nil {
+		t.Fatalf("parse proxy URL %q: %v", cfg.proxyURL, err)
+	}
+	proxyHost, proxyPort := proxyAddr.Hostname(), proxyAddr.Port()
+	if proxyPort == "" {
+		proxyPort = "8080"
+	}
+
+	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"github.com"}},
+		EgressProxyURL:   cfg.proxyURL,
+	})
+	if err != nil {
+		t.Fatalf("NewK8sExecutor: %v", err)
+	}
+	t.Cleanup(func() { _ = exec.Close() })
+
+	// (a) Direct egress to the internet (DNS-free literal IP) must be blocked
+	// by the allowlist NetworkPolicy: only DNS and the proxy peer are permitted.
+	direct, err := exec.Exec(ctx, "command -v nc >/dev/null 2>&1 || { echo NONC; exit 0; }; timeout 8 nc -w 6 1.1.1.1 443 </dev/null >/dev/null 2>&1; echo rc=$?", 30*time.Second)
+	if err != nil {
+		t.Fatalf("direct-egress probe exec: %v", err)
+	}
+	directOut := strings.TrimSpace(direct.Stdout)
+	t.Logf("direct-egress probe: %q", directOut)
+	if directOut == "NONC" {
+		t.Skip("sandbox image has no `nc`; cannot probe egress enforcement")
+	}
+	if directOut == "rc=0" {
+		t.Errorf("allowlist sandbox reached 1.1.1.1:443 directly (rc=0) — NetworkPolicy is not confining egress to the proxy")
+	}
+
+	// (b) The egress proxy peer must be reachable on its listen port (the
+	// NetworkPolicy permits this peer); nc connecting then closing yields rc=0.
+	peer, err := exec.Exec(ctx, fmt.Sprintf("timeout 8 nc -w 6 %s %s </dev/null >/dev/null 2>&1; echo rc=$?", proxyHost, proxyPort), 30*time.Second)
+	if err != nil {
+		t.Fatalf("proxy-peer probe exec: %v", err)
+	}
+	peerOut := strings.TrimSpace(peer.Stdout)
+	t.Logf("proxy-peer reach probe (%s:%s): %q", proxyHost, proxyPort, peerOut)
+	if peerOut != "rc=0" {
+		t.Errorf("egress proxy peer %s:%s not reachable (%q); the allowlist NetworkPolicy should permit it", proxyHost, proxyPort, peerOut)
+	}
+
+	// (c)/(d) The proxy's FQDN allowlist, verified with a REAL TLS client. The
+	// stirrup proxy validates the TLS ClientHello SNI of the tunnelled
+	// connection, not merely the plaintext CONNECT host — a raw CONNECT with no
+	// handshake is rejected as tls_parse_failed — so the allowed path must
+	// actually complete a TLS handshake. curl is required for this half; when
+	// the sandbox image lacks it the test skips (not fails), since the
+	// executor-contract assertions above (the executor's actual responsibility)
+	// already passed. Run with STIRRUP_TEST_IMAGE=curlimages/curl to exercise
+	// the full chain.
+	haveCurl, err := exec.Exec(ctx, "command -v curl >/dev/null 2>&1 && echo yes || echo no", 10*time.Second)
+	if err != nil {
+		t.Fatalf("curl detection exec: %v", err)
+	}
+	if strings.TrimSpace(haveCurl.Stdout) != "yes" {
+		t.Skipf("sandbox image %q has no curl; executor NetworkPolicy assertions passed. Set STIRRUP_TEST_IMAGE to a curl-capable image to exercise the proxy TLS allowlist.", cfg.image)
+	}
+
+	httpCode := func(host string) string {
+		cmd := fmt.Sprintf("curl -sS -o /dev/null -w '%%{http_code}' --max-time 15 -x %s https://%s/ 2>/dev/null; echo", cfg.proxyURL, host)
+		res, execErr := exec.Exec(ctx, cmd, 30*time.Second)
+		if execErr != nil {
+			t.Fatalf("curl %s probe exec: %v", host, execErr)
+		}
+		return strings.TrimSpace(res.Stdout)
+	}
+
+	// (c) An allowlisted host must complete TLS through the proxy (2xx/3xx).
+	allowed := httpCode("github.com")
+	t.Logf("HTTPS via proxy to github.com (allowlisted) → http_code %q", allowed)
+	if !strings.HasPrefix(allowed, "2") && !strings.HasPrefix(allowed, "3") {
+		t.Errorf("allowlisted github.com via proxy returned http_code %q, want 2xx/3xx", allowed)
+	}
+
+	// (d) A non-allowlisted host must be refused by the proxy (no successful
+	// response; curl reports http_code 000 after the proxy's 403).
+	denied := httpCode("example.com")
+	t.Logf("HTTPS via proxy to example.com (not allowlisted) → http_code %q", denied)
+	if strings.HasPrefix(denied, "2") || strings.HasPrefix(denied, "3") {
+		t.Errorf("non-allowlisted example.com via proxy returned http_code %q, want a failure (proxy 403)", denied)
 	}
 }
