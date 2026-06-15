@@ -1700,6 +1700,9 @@ func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 		{name: "k8s accepts kata-clh", execType: "k8s", runtime: "kata-clh", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
 		{name: "k8s rejects runsc", execType: "k8s", runtime: "runsc", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "runsc"},
 		{name: "k8s rejects kata bare", execType: "k8s", runtime: "kata", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "kata"},
+		{name: "k8s-sandbox accepts gvisor", execType: "k8s-sandbox", runtime: "gvisor", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
+		{name: "k8s-sandbox rejects runc", execType: "k8s-sandbox", runtime: "runc", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "gvisor"},
+		{name: "k8s-sandbox rejects kata-clh", execType: "k8s-sandbox", runtime: "kata-clh", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "gvisor"},
 		{name: "local rejects any runtime", execType: "local", runtime: "runc", wantErr: true, errContains: "only valid"},
 	}
 	for _, tc := range cases {
@@ -1826,6 +1829,132 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "executor.network is required for executor.type=\"k8s\"",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = tc.exec
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("expected error to mention %q, got: %v", tc.errContains, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected config to validate, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_K8sSandboxExecutorFields exercises the
+// type-"k8s-sandbox" arm. The Agent Sandbox executor reuses the entire K8s*
+// config surface, so the same cross-field requirements as "k8s" apply (Image
+// and K8sNamespace required, Workspace rejected, Network required, the
+// egress-proxy/allowlist coupling) — but its runtime set is narrower: gVisor
+// is the only admissible RuntimeClass, so "gvisor" (or empty) is accepted and
+// every other value is rejected with the k8s-sandbox-specific message.
+func TestValidateRunConfig_K8sSandboxExecutorFields(t *testing.T) {
+	cases := []struct {
+		name        string
+		exec        ExecutorConfig
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "valid minimal",
+			exec: ExecutorConfig{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}},
+		},
+		{
+			name: "valid with gvisor runtime and optional fields",
+			exec: ExecutorConfig{
+				Type:              "k8s-sandbox",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				K8sKubeconfig:     "/home/u/.kube/config",
+				K8sNodeSelector:   map[string]string{"disktype": "ssd"},
+				K8sServiceAccount: "agent-sa",
+				Runtime:           "gvisor",
+				Network:           &NetworkConfig{Mode: "none"},
+			},
+		},
+		{
+			name:        "missing image",
+			exec:        ExecutorConfig{Type: "k8s-sandbox", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}},
+			wantErr:     true,
+			errContains: "executor.image is required for executor.type=\"k8s-sandbox\"",
+		},
+		{
+			name:        "missing namespace",
+			exec:        ExecutorConfig{Type: "k8s-sandbox", Image: "img", Network: &NetworkConfig{Mode: "none"}},
+			wantErr:     true,
+			errContains: "executor.k8sNamespace is required for executor.type=\"k8s-sandbox\"",
+		},
+		{
+			name:        "workspace rejected",
+			exec:        ExecutorConfig{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns", Workspace: "/ws", Network: &NetworkConfig{Mode: "none"}},
+			wantErr:     true,
+			errContains: "executor.workspace is not valid for executor.type=\"k8s-sandbox\"",
+		},
+		{
+			name:        "nil network rejected",
+			exec:        ExecutorConfig{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns"},
+			wantErr:     true,
+			errContains: "executor.network is required for executor.type=\"k8s-sandbox\"",
+		},
+		{
+			name: "gvisor runtime accepted",
+			exec: ExecutorConfig{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns", Runtime: "gvisor", Network: &NetworkConfig{Mode: "none"}},
+		},
+		{
+			name:        "runc runtime rejected",
+			exec:        ExecutorConfig{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns", Runtime: "runc", Network: &NetworkConfig{Mode: "none"}},
+			wantErr:     true,
+			errContains: "executor.runtime must be \"gvisor\" or empty for executor.type=\"k8s-sandbox\"",
+		},
+		{
+			name:        "kata-qemu runtime rejected",
+			exec:        ExecutorConfig{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns", Runtime: "kata-qemu", Network: &NetworkConfig{Mode: "none"}},
+			wantErr:     true,
+			errContains: "executor.runtime must be \"gvisor\" or empty for executor.type=\"k8s-sandbox\"",
+		},
+		{
+			name: "allowlist mode with proxy url is valid",
+			exec: ExecutorConfig{
+				Type:              "k8s-sandbox",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				Network:           &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
+				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
+			},
+		},
+		{
+			name: "allowlist mode without proxy url rejected",
+			exec: ExecutorConfig{
+				Type:         "k8s-sandbox",
+				Image:        "img",
+				K8sNamespace: "ns",
+				Network:      &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
+			},
+			wantErr:     true,
+			errContains: "executor.k8sEgressProxyUrl is required",
+		},
+		{
+			name: "proxy url set with none mode rejected",
+			exec: ExecutorConfig{
+				Type:              "k8s-sandbox",
+				Image:             "img",
+				K8sNamespace:      "ns",
+				Network:           &NetworkConfig{Mode: "none"},
+				K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080",
+			},
+			wantErr:     true,
+			errContains: "executor.k8sEgressProxyUrl is only valid",
 		},
 	}
 	for _, tc := range cases {

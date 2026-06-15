@@ -919,7 +919,7 @@ type ContextStrategyConfig struct {
 
 // ExecutorConfig selects the executor implementation.
 type ExecutorConfig struct {
-	Type       string            `json:"type"`                 // "api" | "local" | "container" | "k8s"
+	Type       string            `json:"type"`                 // "api" | "local" | "container" | "k8s" | "k8s-sandbox"
 	VcsBackend *VcsBackendConfig `json:"vcsBackend,omitempty"` // type: "api"
 	Workspace  string            `json:"workspace,omitempty"`
 	Image      string            `json:"image,omitempty"`
@@ -927,25 +927,28 @@ type ExecutorConfig struct {
 	Resources  *ResourceLimits   `json:"resources,omitempty"`
 	Proxy      string            `json:"proxy,omitempty"`
 
-	// K8s* fields configure the "k8s" executor, which runs the agent in a
-	// sandbox Pod. They are ignored for every other Type. K8sNamespace is
-	// required for type "k8s"; the rest are optional. The Pod's container
-	// image comes from the shared Image field (required for type "k8s")
-	// and the OCI sandbox is selected via the shared Runtime field, which
-	// maps to the Pod's RuntimeClassName.
+	// K8s* fields configure the "k8s" and "k8s-sandbox" executors, which run
+	// the agent in a sandbox Pod ("k8s" manages the Pod directly;
+	// "k8s-sandbox" provisions it via the Agent Sandbox CRD). They are ignored
+	// for every other Type. K8sNamespace is required for both types; the rest
+	// are optional. The Pod's container image comes from the shared Image field
+	// (required for both types) and the OCI sandbox is selected via the shared
+	// Runtime field, which maps to the Pod's RuntimeClassName ("k8s-sandbox" is
+	// gVisor-only and forces "gvisor").
 	K8sNamespace      string            `json:"k8sNamespace,omitempty"`
 	K8sKubeconfig     string            `json:"k8sKubeconfig,omitempty"`
 	K8sNodeSelector   map[string]string `json:"k8sNodeSelector,omitempty"`
 	K8sServiceAccount string            `json:"k8sServiceAccount,omitempty"`
 
 	// K8sEgressProxyURL is the URL the sandbox Pod's HTTP_PROXY / HTTPS_PROXY
-	// point at when Network.Mode == "allowlist". The k8s executor installs an
-	// egress NetworkPolicy that confines the Pod to the proxy (plus DNS), so
-	// this URL is required in allowlist mode and rejected otherwise. The proxy
-	// runs as a separate Deployment — see examples/k8s/egress-proxy/ and the
-	// `stirrup egress-proxy` subcommand. The proxy MUST run in the same
-	// namespace as the sandbox Pod (the policy selects it by PodSelector with
-	// no NamespaceSelector). Ignored for every non-"k8s" Type.
+	// point at when Network.Mode == "allowlist". The k8s and k8s-sandbox
+	// executors install an egress NetworkPolicy that confines the Pod to the
+	// proxy (plus DNS), so this URL is required in allowlist mode and rejected
+	// otherwise. The proxy runs as a separate Deployment — see
+	// examples/k8s/egress-proxy/ and the `stirrup egress-proxy` subcommand. The
+	// proxy MUST run in the same namespace as the sandbox Pod (the policy
+	// selects it by PodSelector with no NamespaceSelector). Ignored for every
+	// non-k8s-family Type.
 	K8sEgressProxyURL string `json:"k8sEgressProxyUrl,omitempty"`
 
 	// Runtime selects the OCI sandbox runtime. Empty string means "use the
@@ -1454,10 +1457,11 @@ var validContextStrategyTypes = map[string]bool{
 }
 
 var validExecutorTypes = map[string]bool{
-	"api":       true,
-	"local":     true,
-	"container": true,
-	"k8s":       true,
+	"api":         true,
+	"local":       true,
+	"container":   true,
+	"k8s":         true,
+	"k8s-sandbox": true,
 }
 
 // validContainerRuntimes is the closed set of OCI runtimes the container
@@ -4048,55 +4052,72 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf(
 				"unsupported executor.runtime %q for executor.type=\"k8s\"", cfg.Runtime))
 		}
+	case "k8s-sandbox":
+		// The Agent Sandbox path is gVisor-only: GKE's secure-sandbox-policy
+		// admits nothing else and the executor forces it. Empty is allowed and
+		// means "the executor will use gvisor"; any other explicit value is a
+		// config error rather than a silent override.
+		if cfg.Runtime != "gvisor" {
+			*errs = append(*errs, fmt.Sprintf(
+				"executor.runtime must be \"gvisor\" or empty for executor.type=\"k8s-sandbox\" (got %q)", cfg.Runtime))
+		}
 	default:
-		*errs = append(*errs, "executor.runtime is only valid when executor.type is \"container\" or \"k8s\"")
+		*errs = append(*errs, "executor.runtime is only valid when executor.type is \"container\", \"k8s\", or \"k8s-sandbox\"")
 	}
 }
 
-// validateK8sExecutor enforces the cross-field requirements of the "k8s"
-// executor: a container Image and a target K8sNamespace are mandatory,
-// and Workspace must be empty because the workspace lives inside the Pod
-// at a fixed path (/workspace) rather than mapping a host directory. The
-// fields are a no-op for every other Type.
+// isK8sFamily reports whether the executor Type runs the agent in a sandbox
+// Pod and therefore shares the K8s* config surface and its cross-field
+// requirements. The "k8s" executor manages the Pod directly; "k8s-sandbox"
+// provisions it via the Agent Sandbox CRD. Both consume the same K8s* fields.
+func isK8sFamily(t string) bool {
+	return t == "k8s" || t == "k8s-sandbox"
+}
+
+// validateK8sExecutor enforces the cross-field requirements shared by the
+// "k8s" and "k8s-sandbox" executors: a container Image and a target
+// K8sNamespace are mandatory, and Workspace must be empty because the
+// workspace lives inside the Pod at a fixed path (/workspace) rather than
+// mapping a host directory. The fields are a no-op for every other Type.
 func validateK8sExecutor(cfg ExecutorConfig, errs *[]string) {
-	if cfg.Type != "k8s" {
+	if !isK8sFamily(cfg.Type) {
 		return
 	}
 	if cfg.Image == "" {
-		*errs = append(*errs, "executor.image is required for executor.type=\"k8s\"")
+		*errs = append(*errs, fmt.Sprintf("executor.image is required for executor.type=%q", cfg.Type))
 	}
 	if cfg.K8sNamespace == "" {
-		*errs = append(*errs, "executor.k8sNamespace is required for executor.type=\"k8s\"")
+		*errs = append(*errs, fmt.Sprintf("executor.k8sNamespace is required for executor.type=%q", cfg.Type))
 	}
 	if cfg.Workspace != "" {
-		*errs = append(*errs, "executor.workspace is not valid for executor.type=\"k8s\" (the Pod workspace is fixed at /workspace)")
+		*errs = append(*errs, fmt.Sprintf("executor.workspace is not valid for executor.type=%q (the Pod workspace is fixed at /workspace)", cfg.Type))
 	}
-	// A nil network leaves egress posture undefined. NewK8sExecutor fails
+	// A nil network leaves egress posture undefined. The executor fails
 	// closed on it, but ValidateRunConfig would otherwise report a false
 	// "valid config"; surface the same requirement at config-load time. When
 	// network is nil the egress-proxy cross-field check is skipped — the nil
 	// error is the primary signal and a second "k8sEgressProxyUrl is only
 	// valid when ..." line would be noise.
 	if cfg.Network == nil {
-		*errs = append(*errs, "executor.network is required for executor.type=\"k8s\" (set mode to \"none\" or \"allowlist\")")
+		*errs = append(*errs, fmt.Sprintf("executor.network is required for executor.type=%q (set mode to \"none\" or \"allowlist\")", cfg.Type))
 		return
 	}
 	validateK8sEgressProxy(cfg, errs)
 }
 
 // validateK8sEgressProxy enforces the cross-field requirement that ties the
-// k8s egress proxy URL to the allowlist network mode. The k8s executor
-// installs a NetworkPolicy that confines an allowlist-mode Pod to the proxy,
-// so the URL is mandatory in that mode (the run would otherwise have no route
-// to the network) and pointless otherwise. The executor itself fails closed
-// at construction; surfacing the mismatch here gives the operator a config-
-// load error rather than a runtime one. Called only for executor.type=="k8s"
-// with a non-nil Network (the caller handles the nil-network case).
+// k8s egress proxy URL to the allowlist network mode. The k8s and k8s-sandbox
+// executors install a NetworkPolicy that confines an allowlist-mode Pod to the
+// proxy, so the URL is mandatory in that mode (the run would otherwise have no
+// route to the network) and pointless otherwise. The executor itself fails
+// closed at construction; surfacing the mismatch here gives the operator a
+// config-load error rather than a runtime one. Called only for a k8s-family
+// executor.type with a non-nil Network (the caller handles the nil case).
 func validateK8sEgressProxy(cfg ExecutorConfig, errs *[]string) {
 	switch cfg.Network.Mode {
 	case "allowlist":
 		if cfg.K8sEgressProxyURL == "" {
-			*errs = append(*errs, "executor.k8sEgressProxyUrl is required when executor.network.mode is \"allowlist\" for executor.type=\"k8s\"")
+			*errs = append(*errs, fmt.Sprintf("executor.k8sEgressProxyUrl is required when executor.network.mode is \"allowlist\" for executor.type=%q", cfg.Type))
 		}
 	default:
 		if cfg.K8sEgressProxyURL != "" {

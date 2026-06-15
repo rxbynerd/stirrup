@@ -1085,6 +1085,57 @@ func TestBuildExecutor_K8s_TakesK8sPath(t *testing.T) {
 	}
 }
 
+func TestBuildExecutor_K8sSandbox_MissingImage(t *testing.T) {
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
+		Type:         "k8s-sandbox",
+		K8sNamespace: "default",
+	}, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for k8s-sandbox without image")
+	}
+	if !strings.Contains(err.Error(), "requires image") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBuildExecutor_K8sSandbox_MissingNamespace(t *testing.T) {
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
+		Type:  "k8s-sandbox",
+		Image: "busybox",
+	}, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for k8s-sandbox without namespace")
+	}
+	if !strings.Contains(err.Error(), "requires k8sNamespace") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestBuildExecutor_K8sSandbox_TakesAgentSandboxPath confirms the
+// "k8s-sandbox" case routes to NewAgentSandboxExecutor (not the default
+// "unsupported" arm) when Image, K8sNamespace, and Network are present.
+// Without a cluster, NewAgentSandboxExecutor fails downstream at REST config /
+// Sandbox creation, so the error must be an agent-sandbox-construction
+// failure, never "unsupported executor type". A bogus kubeconfig path forces a
+// deterministic, cluster-free failure.
+func TestBuildExecutor_K8sSandbox_TakesAgentSandboxPath(t *testing.T) {
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
+		Type:          "k8s-sandbox",
+		Image:         "busybox",
+		K8sNamespace:  "default",
+		Network:       &types.NetworkConfig{Mode: "none"},
+		K8sKubeconfig: filepath.Join(t.TempDir(), "does-not-exist.kubeconfig"),
+	}, nil, nil)
+	if err == nil {
+		// A success would mean a cluster was reachable; that is fine but not
+		// the cluster-free case this test targets.
+		t.Skip("agent sandbox executor unexpectedly constructed (a cluster appears reachable); skipping the no-cluster assertion")
+	}
+	if strings.Contains(err.Error(), "unsupported executor type") {
+		t.Fatalf("k8s-sandbox type fell through to the default arm: %v", err)
+	}
+}
+
 // --- buildTransport ---
 
 func TestBuildTransport_Stdio(t *testing.T) {
