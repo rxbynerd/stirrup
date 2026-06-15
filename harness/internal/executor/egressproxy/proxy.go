@@ -256,14 +256,30 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.logger.Debug("clear deadlines failed", slog.String("err", err.Error()))
 	}
 
-	// Peek the ClientHello so we can verify SNI matches the CONNECT host
-	// BEFORE writing the 200 response. Sending the 200 first would force
-	// us to deny() on a hijacked connection that the client already saw
-	// as "tunnel established" — confusing both audit logs and clients —
-	// and would also count an "egress allowed" tunnel that we then tore
-	// down. A short read deadline keeps a misbehaving client from
-	// holding a hijacked socket forever. We restore the cleared deadline
-	// after the peek succeeds.
+	// Write the 200 BEFORE peeking the ClientHello. Per RFC 7231 §4.3.6 a
+	// CONNECT client (curl, browsers, Go net/http, git, ...) sends NO tunnel
+	// bytes until it has seen a 2xx, so peeking first deadlocks every
+	// compliant client until the read deadline fires — observed against a
+	// real cluster as a hang ending in tls_parse_failed. The host allowlist
+	// was already enforced above (a 403 returned before the hijack), so this
+	// 200 only promises a tunnel to an allowlisted *host*.
+	//
+	// SECURITY INVARIANT: the SNI cross-check below still gates whether any
+	// bytes ever reach an upstream — p.dialer is not called, and nothing is
+	// spliced, until the ClientHello SNI is verified to match the allowlisted
+	// host. A bad/absent/mismatched SNI drops the hijacked connection here
+	// (the client's in-flight TLS handshake fails) WITHOUT opening any
+	// upstream connection, so this is a closed tunnel, not an egress leak.
+	// Sending the 200 early costs only that a denied client briefly saw
+	// "tunnel established"; the audit event is still emitted by deny().
+	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		p.logger.Debug("write 200 to client failed", slog.String("err", err.Error()))
+		return
+	}
+
+	// Bound the wait for the ClientHello so a client that opened the tunnel
+	// but then sends nothing cannot hold the hijacked socket forever. The
+	// deadline is cleared after the peek succeeds, before the splice.
 	if err := clientConn.SetReadDeadline(time.Now().Add(p.readTimeout)); err != nil {
 		p.logger.Debug("set read deadline failed", slog.String("err", err.Error()))
 		return
@@ -283,7 +299,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// SNI for HTTPS, so the absence is a tampering signal — most likely
 	// a crafted client suppressing SNI to bypass the cross-check below.
 	// Without this, a CONNECT to an allowlisted host could tunnel TLS
-	// for a different hostname (M2).
+	// for a different hostname (M2). Each deny path returns before any
+	// upstream dial, so no client bytes are ever forwarded.
 	if errors.Is(sniErr, errSNINotPresent) {
 		p.deny(w, r, host, port, "sni_absent", 0)
 		return
@@ -294,12 +311,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if canonicaliseHost(sni) != canonicaliseHost(host) {
 		p.deny(w, r, host, port, "sni_mismatch", 0)
-		return
-	}
-
-	// SNI checks out: tell the client the tunnel is open.
-	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		p.logger.Debug("write 200 to client failed", slog.String("err", err.Error()))
 		return
 	}
 

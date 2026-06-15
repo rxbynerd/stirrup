@@ -242,22 +242,25 @@ func TestProxy_CONNECT_SNIMismatchIsDropped(t *testing.T) {
 	}
 
 	// Send a ClientHello whose SNI is "evil.example", which does NOT match
-	// the allowlisted CONNECT host. The proxy should drop the connection
-	// BEFORE writing the 200 — sending it first would falsely tell the
-	// client the tunnel is open and emit a misleading audit event (M2).
+	// the allowlisted CONNECT host. The proxy writes the 200 first (so a
+	// compliant client can send its ClientHello at all — see
+	// TestProxy_CONNECT_CompliantClient_Succeeds), then reads the SNI and
+	// drops the connection on the mismatch BEFORE dialing any upstream. The
+	// security guarantee is the sni_mismatch deny plus a closed tunnel, not
+	// the absence of a 200 on the wire (M2).
 	hello := clientHelloWithSNI("evil.example")
 	if _, err := conn.Write(hello); err != nil {
 		t.Logf("write hello: %v", err)
 	}
 
-	// Read should fail with EOF without ever seeing the 200 line.
+	// The tunnel must be dropped with no upstream connection: draining yields
+	// the optional 200 but never the echoed ClientHello bytes.
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
-	buf := make([]byte, 64)
-	n, _ := conn.Read(buf)
-	if n > 0 && bytes.Contains(buf[:n], []byte("200")) {
-		t.Errorf("expected no 200 response on SNI mismatch, got %q", string(buf[:n]))
+	got := readAllUntilEOF(t, conn)
+	if bytes.Contains(got, hello) {
+		t.Errorf("mismatched-SNI tunnel echoed client bytes back — upstream was reached: %q", string(got))
 	}
 
 	// Wait for the egress_blocked event to land.

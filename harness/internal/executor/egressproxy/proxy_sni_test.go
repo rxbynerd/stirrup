@@ -1,9 +1,12 @@
 package egressproxy
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -38,26 +41,34 @@ func TestProxy_CONNECT_SNIAbsent_IsDropped(t *testing.T) {
 		t.Logf("write hello: %v", err)
 	}
 
-	// No 200 should ever land on the wire and the connection must close.
+	// The protocol-compliant ordering writes the 200 before the proxy can
+	// inspect the (absent) SNI, so a 200 may appear on the wire. The security
+	// guarantee is NOT "no 200" — it is that the sni_absent deny fires (it
+	// returns before p.dialer is ever called, so no upstream connection is
+	// opened) and the hijacked tunnel is then dropped. Assert exactly that.
+	awaitDeny(t, emitter, "sni_absent")
+
+	// The proxy must drop the connection rather than splice it to an upstream;
+	// after draining the optional 200 the read hits EOF (no echoed bytes).
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
-	buf := make([]byte, 64)
-	n, _ := conn.Read(buf)
-	if n > 0 && bytes.Contains(buf[:n], []byte("200")) {
-		t.Errorf("expected no 200 response on absent SNI, got %q", string(buf[:n]))
+	got := readAllUntilEOF(t, conn)
+	if bytes.Contains(got, hello) {
+		t.Errorf("absent-SNI tunnel echoed client bytes back — upstream was reached: %q", string(got))
 	}
-
-	awaitDeny(t, emitter, "sni_absent")
 }
 
-// TestProxy_CONNECT_200WrittenAfterSNIVerification confirms the ordering
-// fix from M2: the 200 line is only emitted after SNI is verified to
-// match the CONNECT host. A test that read 200 before sending the
-// hello would silently regress because of TCP buffering — we instead
-// inspect for the 200 byte sequence after writing a deny-triggering
-// hello and assert it is absent.
-func TestProxy_CONNECT_200WrittenAfterSNIVerification(t *testing.T) {
+// TestProxy_CONNECT_CompliantClient_Succeeds is the regression test for the
+// CONNECT-ordering bug: an RFC 7231 §4.3.6 client reads the proxy's 2xx
+// response BEFORE sending any tunnel bytes (curl, browsers, Go net/http, git
+// all do this). The earlier "peek ClientHello before writing 200" ordering
+// deadlocked such a client — it waited for a 200 the proxy would not send
+// until it had read a ClientHello the client would not send until it saw the
+// 200 — until the read deadline tripped (observed as tls_parse_failed against
+// a real cluster). This test fails (hangs to deadline) under that ordering and
+// passes once the 200 is written first.
+func TestProxy_CONNECT_CompliantClient_Succeeds(t *testing.T) {
 	upstream := startEchoTCPServer(t)
 	upstreamHost, upstreamPort := splitHostPort(t, upstream.Addr().String())
 
@@ -70,22 +81,47 @@ func TestProxy_CONNECT_200WrittenAfterSNIVerification(t *testing.T) {
 		t.Fatalf("dial proxy: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline: %v", err)
+	}
 
 	connectLine := fmt.Sprintf("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", upstreamHost, upstreamPort, upstreamHost, upstreamPort)
 	if _, err := conn.Write([]byte(connectLine)); err != nil {
 		t.Fatalf("write CONNECT: %v", err)
 	}
 
-	if _, err := conn.Write(clientHelloWithSNI("evil.example")); err != nil {
-		t.Logf("write hello: %v", err)
+	// Compliant ordering: read the CONNECT response FIRST, only then send the
+	// ClientHello. Under the old peek-before-200 logic this read blocks until
+	// the deadline.
+	r := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(r, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("read CONNECT response (deadlocked under the pre-fix ordering?): %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status: got %d, want 200", resp.StatusCode)
 	}
 
-	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("SetReadDeadline: %v", err)
+	hello := clientHelloWithSNI(upstreamHost)
+	if _, err := conn.Write(hello); err != nil {
+		t.Fatalf("write hello after 200: %v", err)
 	}
-	all := readAllUntilEOF(t, conn)
-	if bytes.Contains(all, []byte("HTTP/1.1 200")) {
-		t.Errorf("200 response written before SNI verification: %q", string(all))
+
+	// The proxy replays the ClientHello to the echo upstream, which echoes it
+	// back through the spliced tunnel — proof the tunnel is live end to end.
+	got := make([]byte, len(hello))
+	if _, err := io.ReadFull(r, got); err != nil {
+		t.Fatalf("read echoed bytes through tunnel: %v", err)
+	}
+	if !bytes.Equal(got, hello) {
+		t.Error("upstream echo mismatch through compliant-client tunnel")
+	}
+
+	for i := 0; i < 50 && !emitter.hasEvent("egress_allowed"); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !emitter.hasEvent("egress_allowed") {
+		t.Error("expected egress_allowed event for the compliant CONNECT")
 	}
 }
 
