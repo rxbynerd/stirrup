@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"math"
+	"net/url"
 	"os"
 	"path"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/remotecommand"
 	utilexec "k8s.io/client-go/util/exec"
+	"k8s.io/streaming/pkg/httpstream"
 	"k8s.io/utils/ptr"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -35,6 +37,7 @@ import (
 
 const (
 	k8sWorkspace        = "/workspace"
+	k8sWorkspaceVolume  = "workspace"
 	k8sAgentContainer   = "agent"
 	k8sReadyTimeout     = 60 * time.Second
 	k8sReadyPollPeriod  = 1 * time.Second
@@ -222,14 +225,40 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 			AutomountServiceAccountToken: ptr.To(false),
 			NodeSelector:                 cfg.NodeSelector,
 			RuntimeClassName:             optionalRuntimeClassName(cfg.RuntimeClassName),
+			// FSGroup makes the /workspace emptyDir (below) group-owned by and
+			// group-writable for the non-root UID the agent runs as. Without
+			// it, a workspace directory the kubelet/runtime auto-creates is
+			// root-owned and the UID-65532 container cannot write to it — every
+			// WriteFile/mkdir would fail with EACCES. This is the k8s analogue
+			// of the container executor's writable host bind mount.
+			SecurityContext: &corev1.PodSecurityContext{
+				FSGroup: ptr.To(k8sRunAsUserUID),
+			},
+			// An ephemeral, writable workspace mounted at /workspace. The
+			// executor provides this rather than requiring every sandbox image
+			// to pre-create a /workspace owned by UID 65532: a minimal image
+			// (busybox, distroless-with-shell) has no such directory, and one
+			// auto-created at the mount point would be root-owned. Mounting an
+			// emptyDir (wiped per Pod, good sandbox hygiene) with FSGroup above
+			// guarantees the workspace is writable for any image that merely
+			// ships a shell. This mirrors the container executor, which
+			// bind-mounts a writable host directory at /workspace — both hide
+			// any content an image happens to bake at that path.
+			Volumes: []corev1.Volume{
+				{
+					Name:         k8sWorkspaceVolume,
+					VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+				},
+			},
 			Containers: []corev1.Container{
 				{
-					Name:       k8sAgentContainer,
-					Image:      cfg.Image,
-					Command:    []string{"/bin/sh", "-c", "sleep infinity"},
-					WorkingDir: k8sWorkspace,
-					Env:        proxyEnv,
-					Resources:  resourcesToPodResources(cfg.Resources),
+					Name:         k8sAgentContainer,
+					Image:        cfg.Image,
+					Command:      []string{"/bin/sh", "-c", "sleep infinity"},
+					WorkingDir:   k8sWorkspace,
+					Env:          proxyEnv,
+					Resources:    resourcesToPodResources(cfg.Resources),
+					VolumeMounts: []corev1.VolumeMount{{Name: k8sWorkspaceVolume, MountPath: k8sWorkspace}},
 					SecurityContext: &corev1.SecurityContext{
 						AllowPrivilegeEscalation: ptr.To(false),
 						Capabilities: &corev1.Capabilities{
@@ -610,15 +639,42 @@ func (e *K8sExecutor) streamExec(ctx context.Context, command []string, stdin io
 			TTY:       false,
 		}, scheme.ParameterCodec)
 
-	exec, err := remotecommand.NewSPDYExecutor(e.restConfig, "POST", req.URL())
+	exec, err := newRemoteExecutor(e.restConfig, req.URL())
 	if err != nil {
-		return fmt.Errorf("build spdy executor: %w", err)
+		return fmt.Errorf("build exec streamer: %w", err)
 	}
 
 	return exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 		Stdin:  stdin,
 		Stdout: stdout,
 		Stderr: stderr,
+	})
+}
+
+// newRemoteExecutor builds a remotecommand.Executor that negotiates the exec
+// streaming protocol the way kubectl does: WebSocket first, falling back to
+// SPDY only when the WebSocket upgrade fails. WebSocket exec is the modern
+// default (the API server has served the v5.channel.k8s.io subprotocol since
+// v1.29) and, unlike the legacy SPDY upgrade, survives an HTTP(S) proxy or the
+// GKE Connect Gateway sitting in front of the API server — both reject the
+// SPDY upgrade (the gateway returns a bare HTTP 400). SPDY is retained as the
+// fallback so the executor keeps working against API servers that predate the
+// WebSocket exec subprotocol. This mirrors k8s.io/kubectl's createExecutor.
+//
+// The WebSocket executor is constructed with method GET (it issues an HTTP GET
+// upgrade), the SPDY executor with POST; the fallback predicate fires only on
+// a genuine upgrade/proxy failure so a normal command error is not retried.
+func newRemoteExecutor(config *rest.Config, u *url.URL) (remotecommand.Executor, error) {
+	spdyExec, err := remotecommand.NewSPDYExecutor(config, "POST", u)
+	if err != nil {
+		return nil, err
+	}
+	wsExec, err := remotecommand.NewWebSocketExecutor(config, "GET", u.String())
+	if err != nil {
+		return nil, err
+	}
+	return remotecommand.NewFallbackExecutor(wsExec, spdyExec, func(err error) bool {
+		return httpstream.IsUpgradeFailure(err) || httpstream.IsHTTPSProxyError(err)
 	})
 }
 
