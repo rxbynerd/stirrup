@@ -2071,8 +2071,10 @@ func TestBuildProvider_OpenAICompatibleWithRetryConfig(t *testing.T) {
 //
 // The assertion uses the adapter's exported Registry field to
 // resolve the GLM model end-to-end: the registry returned by the
-// factory must include zai.CompatRule, so a glm-4-plus resolution
-// produces TokenFieldMaxTokens and the tool_stream extra body field.
+// factory must include zai.CompatRules(), so a glm-4-plus resolution
+// produces TokenFieldMaxTokens and the tool_stream extra body field,
+// and a glm-4.7 resolution additionally produces the thinking-family
+// quirks (reasoning_content replay + the thinking extra body).
 func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
 	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
 	prov, err := buildProvider(context.Background(), types.ProviderConfig{
@@ -2100,6 +2102,30 @@ func TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI(t *testing.T) {
 		t.Errorf("glm-4-plus resolution: ExtraBodyFields[tool_stream] missing; Z.ai rule should set it")
 	} else if b, isBool := v.(bool); !isBool || !b {
 		t.Errorf("glm-4-plus resolution: ExtraBodyFields[tool_stream] = %v (type %T), want true", v, v)
+	}
+
+	// A thinking-family model (glm-4.7) must additionally resolve the
+	// reasoning_content replay field and the thinking extra body through
+	// the same factory-built registry — proving resolveCompatProfile
+	// returns the full CompatRules() slice, not just the base rule.
+	qt := adapter.Registry.Resolve("openai-compatible", "glm-4.7")
+	hasReasoning := false
+	for _, p := range qt.ReplayFields {
+		if p == "reasoning_content" {
+			hasReasoning = true
+			break
+		}
+	}
+	if !hasReasoning {
+		t.Errorf("glm-4.7 resolution: reasoning_content not in ReplayFields %v (thinking-family rule did not fire via factory)", qt.ReplayFields)
+	}
+	thinking, ok := qt.BehaviourFlags.OpenAI.ExtraBodyFields["thinking"]
+	if !ok {
+		t.Fatalf("glm-4.7 resolution: ExtraBodyFields[thinking] missing; thinking-family rule should set it")
+	}
+	tm, ok := thinking.(map[string]any)
+	if !ok || len(tm) != 1 || tm["type"] != "enabled" {
+		t.Errorf("glm-4.7 resolution: thinking = %#v, want map[string]any{\"type\":\"enabled\"}", thinking)
 	}
 }
 

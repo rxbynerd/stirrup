@@ -35,7 +35,13 @@ Concrete v1 divergences:
   `max_tokens`.
 - Z.ai's GLM endpoint speaks the OpenAI Chat Completions wire format
   but requires `max_tokens` (the legacy key) and accepts a
-  proprietary `tool_stream: true` extension.
+  proprietary `tool_stream: true` extension. The GLM-4.5-and-above
+  thinking family (`glm-4.5`/`4.6`/`4.7` and the `glm-5` line)
+  additionally emits `reasoning_content` on the assistant delta and
+  accepts a top-level `thinking: {"type":"enabled"}` object; the
+  reasoning is replayed back outbound (same `ReplayFields` threading
+  as DeepSeek). The legacy hyphenated line (`glm-4-plus` etc.) has no
+  thinking mode and receives only the base quirks.
 - Vertex AI's Gemini 3.x stream emits a `thoughtSignature` blob on
   every `parts[]` entry that the harness must preserve verbatim for
   multi-turn reasoning continuity. Issue #194 traced the symptom; the
@@ -94,7 +100,7 @@ Compatibility profiles (operator-selected via
 ```
 harness/internal/provider/compat/
     zai/
-        zai.go      — CompatRule() returning the Z.ai GLM rule
+        zai.go      — CompatRules() returning the Z.ai GLM rule set
         zai_test.go — httptest contract test
 ```
 
@@ -321,10 +327,10 @@ resolved struct, not the adapter, is the source of truth for the
 Responses send path; the pinned values reproduce the adapter's prior
 hard-coded shape byte-for-byte. See [§2.1](#21-providerquirks).
 
-The compat profile rule for Z.ai GLM is registered separately via
-`harness/internal/provider/compat/zai/CompatRule()`; it is not in
-`BuiltinRules()` and only loads when `provider.compatProfile =
-"zai-glm"` is set.
+The compat profile rules for Z.ai GLM are registered separately via
+`harness/internal/provider/compat/zai/CompatRules()`; they are not in
+`BuiltinRules()` and only load when `provider.compatProfile =
+"zai-glm"` is set. See [§6](#6-zai-compat-placement) for the rule set.
 
 ### 3.1 ReplayFields rules
 
@@ -432,10 +438,33 @@ applied override must fire a `SecurityLogger` event.
 
 ## 6. Z.ai compat placement
 
-Z.ai/GLM is a compatibility-only target. The rule lives at
-`harness/internal/provider/compat/zai/zai.go` and exports a single
-`CompatRule()` function. The factory injects it into the registry
-when `provider.compatProfile = "zai-glm"` is set.
+Z.ai/GLM is a compatibility-only target. The rules live at
+`harness/internal/provider/compat/zai/zai.go` and are exported by
+`CompatRules()`, which returns a composing set rather than a single
+rule. The factory injects the set into the registry when
+`provider.compatProfile = "zai-glm"` is set; `resolveCompatProfile`
+returns the whole slice and the injection site spreads it after
+`BuiltinRules()`.
+
+The set composes — `quirks.Registry.Resolve` runs every matching
+rule's `Apply` in specificity-then-declaration order, so the more
+specific thinking-family rules ADD to the base rule without re-setting
+its fields:
+
+| ModelMatch       | Quirks                                                       | Notes |
+|------------------|--------------------------------------------------------------|-------|
+| `glm-*`          | legacy `max_tokens`; `tool_stream: true`                     | all GLM, incl. the legacy hyphenated line (`glm-4-plus`) |
+| `glm-4.[5-9]*`   | + replay `reasoning_content`; + `thinking: {"type":"enabled"}` | GLM-4.5/4.6/4.7 thinking family; the dot excludes the hyphenated legacy line |
+| `glm-5*`         | same as `glm-4.[5-9]*`                                        | GLM-5/5.1 thinking family |
+| `z-ai/glm-*`     | legacy `max_tokens`; + replay `reasoning_content`            | OpenRouter gateway-prefixed ids (`*` does not cross `/`); no `tool_stream`/`thinking` — vendor extras unverified through gateways |
+
+`reasoning_content` threading (the `(threaded)` ReplayFields suffix in
+[§3.1](#31-replayfields-rules)) now applies to the GLM-4.5+ thinking
+family: the captured reasoning is round-tripped onto subsequent
+openai-compatible requests, with zero adapter code — the rule only
+appends the path to `ReplayFields`. Sampling params are NOT suppressed
+for GLM (it accepts and recommends `temperature`/`top_p`), unlike the
+DeepSeek and OpenAI reasoning-class rules.
 
 `CompatProfile` does not violate the "no wire-shape on `RunConfig`"
 invariant: it is a named profile selector from a closed enum (only

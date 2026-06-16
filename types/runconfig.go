@@ -692,8 +692,12 @@ type ProviderConfig struct {
 	//
 	//   ""          — no compat profile (default).
 	//   "zai-glm"   — Z.ai GLM tool_stream extension and legacy
-	//                 max_tokens field. Applied on top of provider.type
-	//                 = "openai-compatible".
+	//                 max_tokens field for all GLM models, plus
+	//                 reasoning_content replay and the thinking object
+	//                 ({"type":"enabled"}) for the GLM-4.5+ thinking
+	//                 family (glm-4.5/4.6/4.7 and the glm-5 line).
+	//                 Applied on top of provider.type =
+	//                 "openai-compatible".
 	//
 	// Unknown values are rejected by ValidateRunConfig. Adding a new
 	// value requires both an entry in validCompatProfiles and a matching
