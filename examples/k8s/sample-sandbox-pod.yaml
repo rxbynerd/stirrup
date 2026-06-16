@@ -61,6 +61,21 @@ spec:
   # --k8s-node-selector disktype=ssd the executor would emit:
   #   nodeSelector:
   #     disktype: ssd
+  # Pod-level securityContext. fsGroup=65532 (k8sRunAsUserUID) makes the
+  # /workspace emptyDir (below) group-owned by, and group-writable for, the
+  # non-root UID the agent runs as. Without it a UID-65532 container cannot
+  # write to a workspace directory the runtime auto-creates root-owned.
+  securityContext:
+    fsGroup: 65532
+  # The executor mounts an ephemeral emptyDir at /workspace rather than relying
+  # on the image to pre-create a writable workspace: a minimal image (busybox,
+  # distroless-with-shell) has none, and an auto-created mount point would be
+  # root-owned. Wiped per Pod (good sandbox hygiene); the k8s analogue of the
+  # container executor's writable host bind mount. Both hide any content an
+  # image happens to bake at /workspace.
+  volumes:
+    - name: workspace
+      emptyDir: {}
   containers:
     - # The container name is the constant "agent" (k8sAgentContainer). Exec and
       # file I/O target this container by name over the pods/exec subresource, so
@@ -76,6 +91,11 @@ spec:
       # workingDir is the constant "/workspace" (k8sWorkspace). ResolvePath
       # confines all file I/O beneath it.
       workingDir: /workspace
+      # The executor mounts the workspace emptyDir (spec.volumes above) here, so
+      # /workspace is writable by the non-root UID regardless of the image.
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
       # env is populated by proxyEnvFor ONLY in network mode "allowlist".
       # HTTP_PROXY/HTTPS_PROXY are the --k8s-egress-proxy-url value; NO_PROXY is
       # the fixed loopback set. Under mode "none" this whole block is absent.

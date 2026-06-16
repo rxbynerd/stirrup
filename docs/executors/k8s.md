@@ -27,6 +27,7 @@ those files.
 - [Egress](#egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
 - [Troubleshooting](#troubleshooting)
+- [Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster)
 
 ## When to use it
 
@@ -87,10 +88,15 @@ The pieces and their lifecycle:
   RuntimeDefault`. `automountServiceAccountToken` is **always** `false`,
   so the sandbox itself has no Kubernetes API access regardless of the
   ServiceAccount named. `restartPolicy` is `Never` (one-shot), the
-  container is named `agent`, the working directory is `/workspace`, and
-  the entrypoint is `/bin/sh -c "sleep infinity"` — all real work runs
-  through subsequent `exec` calls, not the entrypoint. The exact spec is
-  annotated field-by-field in
+  container is named `agent`, and the entrypoint is `/bin/sh -c "sleep
+  infinity"` — all real work runs through subsequent `exec` calls, not
+  the entrypoint. The working directory `/workspace` is an `emptyDir` the
+  executor mounts, with pod `securityContext.fsGroup: 65532`, so the
+  workspace is writable by the non-root UID for *any* image that ships a
+  shell — the image need not pre-create a writable `/workspace`, and the
+  volume is wiped per Pod. (This mirrors the container executor's writable
+  host bind mount; both hide any content an image bakes at that path.) The
+  exact spec is annotated field-by-field in
   [`examples/k8s/sample-sandbox-pod.yaml`](../../examples/k8s/sample-sandbox-pod.yaml).
 
 - **Command execution and file I/O** both ride the `pods/exec`
@@ -245,27 +251,121 @@ Kata backends are deliberately absent from the kind dev cluster: kind
 nodes are themselves containers and Kata needs nested KVM, which is not
 available inside a containerised host. Exercise Kata on a real cluster.
 
-### GKE Sandbox (gVisor on GKE)
+### GKE Sandbox (gVisor on GKE) — end-to-end walkthrough
 
-GKE Sandbox runs Pods under gVisor and exposes a `gvisor` RuntimeClass
-on Sandbox-enabled node pools. No node-level gVisor install is needed —
-GKE manages it. A NetworkPolicy-enforcing CNI is available on GKE
-(Dataplane V2 / Calico), so the egress policy is genuinely enforced.
+GKE is the reference managed target. GKE Sandbox runs Pods under gVisor
+(no node-level install — GKE manages it) and GKE Dataplane V2 (Cilium)
+enforces `NetworkPolicy`, so **both** halves of the sandbox posture —
+kernel isolation *and* egress confinement — are real here, unlike on a
+stock `kind` cluster. The steps below take a cluster from zero to a
+verified sandbox run.
+
+#### 1 — Cluster and Sandbox node pool
+
+Two cluster properties are load-bearing:
+
+- **Dataplane V2** (`--enable-dataplane-v2`, i.e. `networkConfig.
+  datapathProvider: ADVANCED_DATAPATH`) so the per-Pod egress
+  `NetworkPolicy` the executor installs is actually enforced. The legacy
+  Calico network-policy addon is unnecessary (and mutually exclusive).
+- A **GKE Sandbox node pool** (`--sandbox type=gvisor`) for the gVisor
+  RuntimeClass.
 
 ```sh
-# Create a node pool with GKE Sandbox enabled, then:
-stirrup harness \
-  --executor k8s \
-  --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
-  --k8s-namespace stirrup-sandbox \
-  --container-runtime gvisor \
-  --k8s-node-selector sandbox.gke.io/runtime=gvisor \
-  --mode execution \
-  --prompt "..."
+gcloud container clusters create CLUSTER \
+  --zone ZONE --enable-dataplane-v2
+
+gcloud container node-pools create sandbox \
+  --cluster CLUSTER --zone ZONE \
+  --sandbox type=gvisor --machine-type e2-standard-4
 ```
 
-The `--k8s-node-selector` pins scheduling to the Sandbox node pool;
-adjust the label to the cluster's node pool labelling.
+GKE Sandbox node pools are **x86**, taint themselves
+`sandbox.gke.io/runtime=gvisor:NoSchedule`, and GKE creates a *managed*
+`gvisor` RuntimeClass (handler `gvisor`) whose `scheduling` carries the
+matching `nodeSelector` and toleration. Two consequences:
+
+- The sandbox **image must be amd64-compatible** (or multi-arch).
+- `--container-runtime gvisor` targets the managed class directly; the
+  Pod schedules onto the Sandbox pool with the toleration injected for
+  it, so `--k8s-node-selector sandbox.gke.io/runtime=gvisor` is redundant
+  (add `--k8s-node-selector` only to *further* constrain placement).
+
+> **Do not apply this repo's `gvisor` RuntimeClass on GKE.** The `gvisor`
+> entry in
+> [`examples/k8s/runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml)
+> describes a *self-managed* gVisor install (`handler: runsc`,
+> `stirrup.dev/runtime-gvisor` nodeSelector) and conflicts with the
+> GKE-managed object. On GKE apply only `namespace.yaml` and `rbac.yaml`.
+
+#### 2 — Connect to the control plane
+
+```sh
+# Public-endpoint cluster:
+gcloud container clusters get-credentials CLUSTER --zone ZONE
+
+# Private-endpoint cluster (control plane unreachable from outside the
+# VPC): register it to a fleet and reach the API server through Connect
+# Gateway instead of the private endpoint.
+gcloud services enable connectgateway.googleapis.com
+gcloud container fleet memberships get-credentials CLUSTER
+```
+
+Both paths need the `gke-gcloud-auth-plugin` (`gcloud components install
+gke-gcloud-auth-plugin`). The executor negotiates **WebSocket-first** for
+the `pods/exec` stream (SPDY fallback), so exec and file I/O work through
+the Connect Gateway proxy — not only against a directly-reachable API
+server.
+
+#### 3 — Standing objects
+
+```sh
+kubectl apply -f examples/k8s/namespace.yaml   # stirrup-sandbox, restricted PSS
+kubectl apply -f examples/k8s/rbac.yaml        # orchestrator SA + Role/RoleBinding
+# (skip runtimeclass.yaml on GKE — see the note in step 1)
+```
+
+#### 4 — Egress proxy (network mode `allowlist` only)
+
+For `network.mode: allowlist`, deploy the proxy from
+[`examples/k8s/egress-proxy/`](../../examples/k8s/egress-proxy/) into the
+**same namespace** as the sandbox; see that directory's README for the
+namespace-alignment requirement and the GKE scheduling note (the proxy
+needs an amd64-or-multi-arch image and either a non-Sandbox node pool or
+`runtimeClassName: gvisor` to tolerate the Sandbox-pool taint). Skip this
+step entirely for `network.mode: none`.
+
+#### 5 — Run
+
+`network.mode` has no CLI flag; it lives in a `--config` RunConfig.
+[`examples/runconfig/k8s-gvisor.json`](../../examples/runconfig/k8s-gvisor.json)
+is a ready starting point (`executor.network.mode: none`); for allowlist
+mode set `network.mode: "allowlist"` and `executor.k8sEgressProxyUrl`.
+
+```sh
+stirrup harness \
+  --config examples/runconfig/k8s-gvisor.json \
+  --k8s-kubeconfig ~/.kube/config \   # the get-credentials / Connect Gateway context
+  --prompt "Create greeting.txt containing 'hello from the gvisor sandbox', then cat it."
+```
+
+Alternatively run the orchestrator **in-cluster** as a Pod/Job under the
+`stirrup-orchestrator` ServiceAccount (`stirrup job` — see
+[`docs/deployment.md`](../deployment.md)); leaving `executor.k8sKubeconfig`
+empty then prefers the in-cluster config.
+
+#### 6 — Verify gVisor is in force
+
+A trivial exec confirms the sandbox actually runs under gVisor rather
+than silently falling back to the host runtime: `uname -r` reports a
+synthetic kernel version (observed `4.4.0`) and `dmesg` shows a `Starting
+gVisor...` banner — both distinct from the host kernel.
+
+```sh
+POD=$(kubectl -n stirrup-sandbox get pod -l stirrup-sandbox=true \
+  -o jsonpath='{.items[0].metadata.name}')
+kubectl -n stirrup-sandbox exec "$POD" -- sh -c 'uname -r; dmesg | grep -i gvisor'
+```
 
 ### Kata Containers (kata-qemu / kata-fc / kata-clh)
 
@@ -306,6 +406,56 @@ Kata prerequisites are documented inline in
 The RuntimeClass's `scheduling.nodeSelector` and any
 `--k8s-node-selector` the run supplies are merged by Kubernetes into the
 effective node selection.
+
+## Running the orchestrator in-cluster
+
+The orchestrator (the process running `stirrup harness`) and the sandbox
+Pod are distinct: the orchestrator resolves provider credentials and drives
+the run; the sandbox only executes tools. Where the orchestrator runs
+determines which provider credential sources are reachable.
+
+The metadata-server credential sources — `gcp-workload-identity` /
+`gcp-default` for Vertex AI Gemini, and `anthropic-wif` with the
+`gke-metadata` token source for Anthropic — read from
+`metadata.google.internal`, reachable **only from inside the cluster**.
+Driving them from a laptop fails fast (`not running on GCE`). To use GKE
+Workload Identity for provider auth, run the orchestrator in-cluster as a
+`Job` under a ServiceAccount bound to a GCP service account via Workload
+Identity. This holds under the `gvisor` RuntimeClass: a gVisor-sandboxed
+orchestrator reaches the metadata server and mints both GCP access tokens
+and Google OIDC identity tokens normally.
+
+A standalone in-cluster `Job` running `stirrup harness` (no control plane)
+is the lightest shape — the executor falls back to the in-cluster
+ServiceAccount, so no kubeconfig is mounted. The `stirrup job` +
+control-plane shape in [`deployment.md`](../deployment.md) is the
+production alternative.
+
+Two requirements are easy to miss:
+
+- **`automountServiceAccountToken: true` on the orchestrator Pod.** The
+  reference orchestrator ServiceAccount sets `automountServiceAccountToken:
+  false` on the SA object
+  ([`rbac.yaml`](../../examples/k8s/rbac.yaml)), so a Pod that does not
+  re-enable it has no projected token and the executor's in-cluster REST
+  config fails with `open
+  /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or
+  directory`. Set the field on the orchestrator Pod spec. The sandbox Pod
+  the executor creates still runs with its token un-mounted — that is
+  enforced separately and unaffected.
+- **Scheduling onto an amd64 / RuntimeClass-appropriate node.** On a GKE
+  Sandbox cluster the only amd64 nodes are the gVisor pool, so the
+  orchestrator Pod needs `runtimeClassName: gvisor` (which injects the pool
+  toleration) or a dedicated untainted pool.
+
+Provider auth is **orthogonal to sandbox egress**. The orchestrator's
+provider call (to Anthropic / Vertex / an OpenAI-compatible endpoint) is
+made from the orchestrator Pod, not the sandbox, so a sandbox
+`network.mode: allowlist` that omits the provider host does not block the
+run — the allowlist constrains only the sandbox Pod's own traffic. (When
+the orchestrator Pod is itself subject to a namespace egress
+`NetworkPolicy`, it needs its own allowances for the provider endpoint, the
+metadata server, DNS, and the in-cluster API server.)
 
 ## RuntimeClass selection per run
 
@@ -445,14 +595,62 @@ executor's exact minimum). The sandbox Pod has no API access of its own
 | `executor.network is required for executor.type="k8s"` | No `network` block. | Set `executor.network.mode` to `none` or `allowlist`. |
 | `not in cluster and KUBECONFIG is unset` | No in-cluster config, no kubeconfig. | Set `--k8s-kubeconfig` or `$KUBECONFIG`, or run in-cluster. |
 | Pod scheduling fails / pending forever | RuntimeClass `nodeSelector` matches no node, or the handler is missing. | Label the node for the runtime; confirm the handler is installed. |
+| `0/N nodes available: ... had untolerated taint(s)` (Pod Pending) | The schedulable nodes are tainted (GKE Sandbox pools taint `sandbox.gke.io/runtime=gvisor:NoSchedule`; arch-dedicated pools may add `kubernetes.io/arch=...`) and the Pod tolerates none. | For the Sandbox pool, set `--container-runtime gvisor` so the managed RuntimeClass injects the toleration. For other tainted pools, add a matching `--k8s-node-selector` and ensure a toleration is available (the executor does not inject arbitrary tolerations). |
 | Egress not actually confined on `kind` | kindnet does not enforce NetworkPolicy. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico) for real confinement. |
 | `pod ... not ready` after the readiness timeout (default 60 s, or the caller context deadline if shorter) | Image lacks `/bin/sh`, or the runtime cannot start the Pod. | Use an image shipping `/bin/sh`, `tar`, `ls`; check `kubectl describe pod`. |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
+| `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
+
+## Testing the executor against a real cluster
+
+The executor's own unit tests run with `just test`. A separate
+**integration suite** in
+[`harness/internal/executor/k8s_test.go`](../../harness/internal/executor/k8s_test.go),
+gated by the `integration_k8s` build tag and `STIRRUP_TEST_KUBECONFIG`,
+exercises the create→exec→file-I/O→delete lifecycle against a *live*
+cluster. A stock `kind` cluster proves manifest shape only; a real
+NetworkPolicy-enforcing, gVisor-capable cluster (GKE Sandbox + Dataplane
+V2) is what proves the two things kind cannot — **egress is actually
+confined** and **gVisor is actually in force**.
+
+The suite is parameterized by environment so it runs against any cluster,
+defaulting to the kind-friendly values when a variable is unset:
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `STIRRUP_TEST_KUBECONFIG` | *(unset → skip)* | Kubeconfig path; also the suite gate. |
+| `STIRRUP_TEST_NAMESPACE` | `default` | Sandbox namespace (use `stirrup-sandbox` for the restricted-PSS path). |
+| `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | Pod `RuntimeClassName` for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). |
+| `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated set for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
+| `STIRRUP_TEST_IMAGE` | `busybox:latest` | Sandbox image (amd64/multi-arch for the Sandbox pool; `curlimages/curl:latest` for the allowlist TLS test). |
+| `STIRRUP_TEST_EGRESS_PROXY_URL` | `…default.svc:8080` | Allowlist-mode proxy URL. |
+| `STIRRUP_TEST_ENFORCE_EGRESS` | *(unset → skip)* | Set to run the enforcement tests (`*_Enforced`); skipped otherwise so kindnet never produces a false negative. |
+
+```sh
+# Example: full suite against GKE Sandbox via Connect Gateway.
+kubectl config view --minify --flatten \
+  --context=connectgateway_PROJECT_global_CLUSTER > /tmp/gw-kubeconfig.yaml
+
+STIRRUP_TEST_KUBECONFIG=/tmp/gw-kubeconfig.yaml \
+STIRRUP_TEST_NAMESPACE=stirrup-sandbox \
+STIRRUP_TEST_RUNTIME_CLASS=gvisor STIRRUP_TEST_RUNTIME_CLASSES=gvisor \
+STIRRUP_TEST_ENFORCE_EGRESS=1 \
+STIRRUP_TEST_EGRESS_PROXY_URL=http://stirrup-egress-proxy.stirrup-sandbox.svc:8080 \
+  go test -tags integration_k8s -count=1 -v -run TestK8s \
+  ./harness/internal/executor/
+```
+
+The allowlist enforcement test (`TestK8sEgress_AllowlistEnforced`)
+additionally needs a real egress proxy deployed and a TLS-capable image
+(`STIRRUP_TEST_IMAGE=curlimages/curl:latest`) — the proxy validates the
+TLS SNI, so a raw `CONNECT` without a handshake is rejected.
 
 ## See also
 
 - [`examples/k8s/`](../../examples/k8s/) — reference manifests
   (namespace, RBAC, RuntimeClasses, sample Pod, egress proxy).
+- [`examples/runconfig/k8s-gvisor.json`](../../examples/runconfig/k8s-gvisor.json)
+  — a runnable `k8s` executor RunConfig (gVisor, `network.mode: none`).
 - [`scripts/dev/`](../../scripts/dev/) — local `kind` cluster with
   gVisor for development (`just kind-up` / `kind-smoke` / `kind-down`).
 - [`docs/safety-rings.md`](../safety-rings.md) — the five-ring model.

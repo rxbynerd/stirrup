@@ -132,6 +132,30 @@ stirrup egress-proxy --listen :8080 --allowlist-file ./allowlist.txt
 `egress_allowed` / `egress_blocked` audit events are written to stderr as JSON
 lines, so a Deployment's Pod logs carry every gating decision.
 
+## Scheduling on GKE
+
+These manifests carry no `nodeSelector`, `tolerations`, or
+`runtimeClassName`, so they schedule onto any untainted node. On GKE that
+assumption often does not hold and the Deployment stays `Pending` with an
+"untolerated taint" event:
+
+- **GKE Sandbox pools** taint themselves
+  `sandbox.gke.io/runtime=gvisor:NoSchedule`. They are also x86, so the
+  proxy image must be amd64 (or multi-arch). Two ways to place the proxy:
+  - run it on a **regular (non-Sandbox) node pool** — the simplest option,
+    no taint to tolerate; or
+  - if the only available pool is the Sandbox pool, set
+    `runtimeClassName: gvisor` on the proxy Pod so GKE injects the
+    Sandbox-pool toleration and nodeSelector for it (running the proxy
+    itself under gVisor is harmless).
+- **Arch- or workload-dedicated pools** may add their own taints (e.g.
+  `kubernetes.io/arch=arm64:NoSchedule`); add a matching `nodeSelector`
+  and `tolerations`, and use a multi-arch image.
+
+The image must reach a registry the nodes can pull from (a private GKE
+cluster needs Cloud NAT or Private Google Access for the pull, and for the
+proxy's own upstream egress to the allowlisted hosts).
+
 ## Scope
 
 These manifests are a minimal, single-replica example. A production deployment
