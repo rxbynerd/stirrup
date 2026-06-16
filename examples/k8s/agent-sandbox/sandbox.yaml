@@ -1,0 +1,148 @@
+# Reference: what a real stirrup Agent Sandbox custom resource looks like.
+#
+# This is DOCUMENTATION, not a manifest to apply. The k8s-sandbox executor
+# BUILDS this object in Go at runtime (buildSandboxObject in
+# harness/internal/executor/agentsandbox.go) and submits it through a dynamic
+# client; applying this file by hand would create a Sandbox the executor does
+# not manage, with a name it cannot guess and no per-Pod egress NetworkPolicy
+# bound to it. The value of the file is the annotated, field-by-field record of
+# the exact shape the executor emits, so an operator can reason about admission,
+# RBAC, and the controller-created Pod against a concrete object.
+#
+# Every field below is cross-checked against agentsandbox.go (buildSandboxObject,
+# applyAgentSandboxAdmissionDeltas) and the shared buildSandboxPodSpec in k8s.go.
+# The shape shown is network mode "none" (no proxy env on the container); under
+# mode "allowlist" the container env carries HTTP_PROXY/HTTPS_PROXY/NO_PROXY and
+# the per-Pod NetworkPolicy permits DNS + the proxy peer instead of denying all.
+#
+# API version: agents.x-k8s.io/v1alpha1 is what GKE Agent Sandbox SERVES.
+# Upstream HEAD has moved to v1beta1 with a different field shape; the executor
+# pins v1alpha1 via sandboxGVR (agentsandbox_api.go). Do not "upgrade" this to
+# v1beta1 for a GKE cluster — admission would reject the unknown shape.
+apiVersion: agents.x-k8s.io/v1alpha1
+kind: Sandbox
+metadata:
+  # Generated as "stirrup-<12 hex chars>" by generatePodName(). On the
+  # cold-create path the controller names the backing Pod after the Sandbox, so
+  # this same name is the Pod name the per-Pod NetworkPolicy ("<name>-egress")
+  # selects on. Shown here with a placeholder suffix.
+  name: stirrup-0a1b2c3d4e5f
+  # The namespace from --k8s-namespace / executor.k8sNamespace. Must match the
+  # egress proxy's namespace in allowlist mode (see examples/k8s/egress-proxy/).
+  namespace: stirrup-sandbox
+  labels:
+    # buildSandboxObject sets only the marker label on the Sandbox object
+    # itself; the per-pod stirrup.dev/pod=<name> label lives on the podTemplate
+    # (below) so the controller propagates it to the Pod the NetworkPolicy binds
+    # to.
+    stirrup-sandbox: "true"
+spec:
+  # shutdownPolicy "Delete" + shutdownTime is the controller-owned GC backstop
+  # (agentSandboxMaxTTL, 12h from creation): if the orchestrator crashes and
+  # Close() never runs, the controller deletes the Sandbox — and cascades to the
+  # Pod — once shutdownTime passes. Close() is the normal teardown; this TTL only
+  # fires on a leaked sandbox. The value is an absolute RFC3339 timestamp the
+  # executor computes as time.Now()+12h; the literal below is illustrative.
+  shutdownPolicy: Delete
+  shutdownTime: "2026-01-01T00:00:00Z"
+  podTemplate:
+    metadata:
+      labels:
+        # podLabels() in k8s_netpol.go — the single source of truth for the
+        # per-pod label set. The controller propagates podTemplate labels to the
+        # backing Pod (stripping only agents.x-k8s.io/* keys), so both land on
+        # the Pod and the egress NetworkPolicy binds to stirrup.dev/pod=<name>.
+        stirrup-sandbox: "true"
+        stirrup.dev/pod: stirrup-0a1b2c3d4e5f
+    spec:
+      # RestartPolicy: Never — the Pod is a one-shot sandbox; the controller
+      # cascade-deletes it when the Sandbox is deleted.
+      restartPolicy: Never
+      # serviceAccountName from --k8s-service-account / executor.k8sServiceAccount,
+      # or "default" when unset. The sandbox needs NO API access (see the token
+      # mount below), so the account is effectively just an identity.
+      serviceAccountName: default
+      # ALWAYS false (ptr.To(false) in buildSandboxPodSpec). A sandbox Pod must
+      # not reach the Kubernetes API; the token is never mounted regardless of
+      # the ServiceAccount named.
+      automountServiceAccountToken: false
+      # runtimeClassName: gvisor is FORCED by applyAgentSandboxAdmissionDeltas —
+      # the Agent Sandbox path is gVisor-only and overrides any caller runtime.
+      # Required by GKE secure-sandbox-policy
+      runtimeClassName: gvisor
+      # nodeSelector pins the Pod to a gVisor node. The runtime key/value is
+      # injected by applyAgentSandboxAdmissionDeltas (merged into any caller
+      # nodeSelector, never clobbering it).
+      # Required by GKE secure-sandbox-policy
+      nodeSelector:
+        sandbox.gke.io/runtime: gvisor
+      # The gVisor node taint toleration, appended idempotently by
+      # applyAgentSandboxAdmissionDeltas. Without it the Pod cannot schedule onto
+      # the (NoSchedule-tainted) gVisor pool.
+      # Required by GKE secure-sandbox-policy
+      tolerations:
+        - key: sandbox.gke.io/runtime
+          operator: Equal
+          value: gvisor
+          effect: NoSchedule
+      # Pod-level securityContext. fsGroup=65532 (k8sRunAsUserUID) makes the
+      # /workspace emptyDir group-owned by, and group-writable for, the non-root
+      # UID the agent runs as — without it a UID-65532 container cannot write to
+      # a root-owned auto-created mount point.
+      securityContext:
+        fsGroup: 65532
+      # An ephemeral, writable workspace mounted at /workspace, wiped per Pod.
+      # The executor provides this so a minimal image need not pre-create a
+      # writable /workspace owned by UID 65532.
+      volumes:
+        - name: workspace
+          emptyDir: {}
+      containers:
+        - # The container name is the constant "agent" (k8sAgentContainer). Exec
+          # and file I/O target this container by name over pods/exec.
+          name: agent
+          # image from --image / executor.image. MUST ship /bin/sh, tar, and ls.
+          image: ghcr.io/rxbynerd/stirrup-sandbox:latest
+          # The executor holds the container open with a sleep; all real work
+          # runs via subsequent exec calls, not the entrypoint.
+          command: ["/bin/sh", "-c", "sleep infinity"]
+          # workingDir is the constant "/workspace" (k8sWorkspace).
+          workingDir: /workspace
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+          # securityContext — every field below is fixed by buildSandboxPodSpec
+          # and does not vary with config. This is the hardened posture GKE's
+          # secure-sandbox-policy and the namespace's `restricted` PodSecurity
+          # admission both expect.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            # 65532 (k8sRunAsUserUID), the distroless "nonroot" UID.
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          # resources: explicit CPU and memory LIMITS (and matching requests) are
+          # required on every container by GKE secure-sandbox-policy.
+          # applyAgentSandboxAdmissionDeltas fills any gap a caller leaves with
+          # the package defaults (cpu 500m, memory 512Mi); a caller-set value via
+          # executor.resources is preserved. The values shown are those defaults.
+          # Required by GKE secure-sandbox-policy
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+# The egress side is unchanged from the raw-Pod k8s executor: the k8s-sandbox
+# executor installs the SAME per-Pod NetworkPolicy ("<pod-name>-egress") BEFORE
+# the Sandbox, and removes it only after the Sandbox (and its cascaded Pod) is
+# confirmed gone. The Agent Sandbox controller itself installs no NetworkPolicy,
+# and the GKE managed template policy is L4-only — so the executor's policy plus
+# the L7 egress proxy remain the egress control. See examples/k8s/egress-proxy/
+# for the proxy Deployment whose app=stirrup-egress-proxy label the allowlist
+# policy selects, and docs/executors/k8s-agent-sandbox.md for the full picture.

@@ -1,0 +1,33 @@
+{
+  "runId": "k8s-sandbox-gvisor-example",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "anthropic",
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6"
+  },
+  "promptBuilder": { "type": "default" },
+  "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
+  "executor": {
+    "type": "k8s-sandbox",
+    "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest",
+    "k8sNamespace": "stirrup-sandbox",
+    "k8sKubeconfig": "",
+    "runtime": "gvisor",
+    "network": { "mode": "none" }
+  },
+  "editStrategy": { "type": "multi" },
+  "verifier": { "type": "none" },
+  "permissionPolicy": { "type": "allow-all" },
+  "gitStrategy": { "type": "none" },
+  "transport": { "type": "stdio" },
+  "traceEmitter": { "type": "jsonl" },
+  "maxTurns": 20,
+  "timeout": 300,
+  "logLevel": "info"
+}
