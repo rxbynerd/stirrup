@@ -19,10 +19,13 @@ every field shown here is cross-checked against it.
 | `taint-and-toleration.yaml` | (doc only) | no | The pattern for isolating sandbox nodes — and the note that the executor does not yet inject tolerations. |
 | `sample-sandbox-pod.yaml` | (doc only) | no | The exact Pod the executor produces, annotated field-by-field. The reference for "what a real sandbox Pod looks like". |
 | `egress-proxy/` | Deployment + Service + ConfigMap + NetworkPolicy | yes (allowlist mode) | The shared egress allowlist proxy. See its own [README](egress-proxy/README.md). |
+| `agent-sandbox/` | RBAC (apply) + Sandbox (doc only) | partial | Manifests for the `k8s-sandbox` executor (Agent Sandbox CRD): an orchestrator Role and a reference Sandbox CR. See [`docs/executors/k8s-agent-sandbox.md`](../../docs/executors/k8s-agent-sandbox.md). |
 
 `sample-sandbox-pod.yaml` and `taint-and-toleration.yaml` are documentation, not
 appliable objects: the executor creates Pods at runtime, so a static Pod manifest
-would not be one the executor manages.
+would not be one the executor manages. The same holds for
+`agent-sandbox/sandbox.yaml` (the executor builds the Sandbox CR in Go);
+`agent-sandbox/rbac-agent-sandbox.yaml` is appliable.
 
 ## Applying the standing objects
 

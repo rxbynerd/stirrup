@@ -45,6 +45,17 @@ is a Pod (not a host container), the runtime maps to a Pod
 a `NetworkPolicy` plus an in-cluster proxy Deployment (not an in-process
 host proxy).
 
+### Variant: provisioning via the Agent Sandbox CRD
+
+On a cluster running the GKE Agent Sandbox controller, the
+[`k8s-sandbox` executor](k8s-agent-sandbox.md) provisions the same
+hardened sandbox Pod through an `agents.x-k8s.io/v1alpha1` **Sandbox**
+custom resource instead of creating the Pod directly. It reuses every
+`K8s*` flag, the hardened Pod spec, and the per-Pod egress
+`NetworkPolicy` documented here; it differs only in *who owns the Pod*
+(the controller, not the orchestrator) and is gVisor-only. See
+[`k8s-agent-sandbox.md`](k8s-agent-sandbox.md) for the deltas.
+
 ## Architecture
 
 ```mermaid
@@ -647,6 +658,8 @@ TLS SNI, so a raw `CONNECT` without a handshake is rejected.
 
 ## See also
 
+- [`k8s-agent-sandbox.md`](k8s-agent-sandbox.md) — the `k8s-sandbox`
+  variant that provisions the sandbox via the Agent Sandbox CRD.
 - [`examples/k8s/`](../../examples/k8s/) — reference manifests
   (namespace, RBAC, RuntimeClasses, sample Pod, egress proxy).
 - [`examples/runconfig/k8s-gvisor.json`](../../examples/runconfig/k8s-gvisor.json)
