@@ -281,7 +281,7 @@ func TestK8sCapabilities(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			exec := &K8sExecutor{network: tt.network}
+			exec := &K8sExecutor{podExecCore: podExecCore{network: tt.network}}
 			caps := exec.Capabilities()
 			if caps.CanNetwork != tt.wantCanNet {
 				t.Errorf("CanNetwork: got %v, want %v", caps.CanNetwork, tt.wantCanNet)
@@ -490,7 +490,7 @@ func TestK8sWriteFile_OutputCapUnit(t *testing.T) {
 // TestK8sWriteFile_OutputCapUnit above, which uses a zero-value executor.
 func TestK8sWriteFile_OutputCapEmitsSecurityEvent(t *testing.T) {
 	rec := &recordingSecurityEmitter{}
-	exec := &K8sExecutor{Security: rec}
+	exec := &K8sExecutor{podExecCore: podExecCore{Security: rec}}
 	big := strings.Repeat("a", int(k8sMaxOutput)+1)
 	if err := exec.WriteFile(context.Background(), "big.txt", big); !errors.Is(err, errK8sOutputCap) {
 		t.Fatalf("WriteFile oversized: err = %v, want errK8sOutputCap", err)
@@ -513,7 +513,7 @@ func TestK8sWriteFile_OutputCapEmitsSecurityEvent(t *testing.T) {
 // already provide.
 func TestK8sResolvePath_EmitsPathTraversal(t *testing.T) {
 	rec := &recordingSecurityEmitter{}
-	exec := &K8sExecutor{Security: rec}
+	exec := &K8sExecutor{podExecCore: podExecCore{Security: rec}}
 
 	if _, err := exec.ResolvePath("../etc/passwd"); err == nil {
 		t.Fatal("ResolvePath(../etc/passwd): expected escape error")
