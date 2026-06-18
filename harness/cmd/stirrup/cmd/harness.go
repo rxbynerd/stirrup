@@ -224,10 +224,11 @@ type harnessCLIOptions struct {
 	CodeScannerType      string
 
 	// K8s executor escape hatches (issue #80). These set the
-	// Executor.K8s* fields when --executor=k8s. K8sNamespace is required
-	// for a k8s run; the rest are optional. The Pod image comes from the
-	// shared Image field and the sandbox runtime from ContainerRuntime
-	// (mapped to the Pod RuntimeClassName).
+	// Executor.K8s* fields when --executor=k8s or --executor=k8s-sandbox.
+	// K8sNamespace is required for either k8s-family run; the rest are
+	// optional. The Pod image comes from the shared Image field and the
+	// sandbox runtime from ContainerRuntime (mapped to the Pod
+	// RuntimeClassName; k8s-sandbox is gVisor-only and forces "gvisor").
 	K8sNamespace      string
 	K8sKubeconfig     string
 	K8sServiceAccount string

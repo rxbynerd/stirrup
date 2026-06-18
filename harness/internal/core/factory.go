@@ -928,18 +928,21 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			RegistryAllowlist: cfg.RegistryAllowlist,
 			EgressSecurity:    secLogger,
 		})
-	case "k8s":
-		// ValidateRunConfig already enforces Image and K8sNamespace for
-		// type "k8s"; the guards here keep buildExecutor self-contained for
+	case "k8s", "k8s-sandbox":
+		// ValidateRunConfig already enforces Image and K8sNamespace for the
+		// k8s family; the guards here keep buildExecutor self-contained for
 		// callers that construct a RunConfig without going through the
-		// validator (gRPC translate, embedding).
+		// validator (gRPC translate, embedding). Both types share the K8s*
+		// config surface and differ only in how the sandbox Pod is created:
+		// "k8s" manages the Pod directly, "k8s-sandbox" provisions it via the
+		// Agent Sandbox CRD (gVisor-only — the executor forces "gvisor").
 		if cfg.Image == "" {
-			return nil, fmt.Errorf("k8s executor requires image")
+			return nil, fmt.Errorf("%s executor requires image", cfg.Type)
 		}
 		if cfg.K8sNamespace == "" {
-			return nil, fmt.Errorf("k8s executor requires k8sNamespace")
+			return nil, fmt.Errorf("%s executor requires k8sNamespace", cfg.Type)
 		}
-		return executor.NewK8sExecutor(ctx, executor.K8sExecutorConfig{
+		k8sCfg := executor.K8sExecutorConfig{
 			Image:              cfg.Image,
 			Namespace:          cfg.K8sNamespace,
 			Kubeconfig:         cfg.K8sKubeconfig,
@@ -950,7 +953,11 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			Network:            cfg.Network,
 			EgressProxyURL:     cfg.K8sEgressProxyURL,
 			Security:           secLogger,
-		})
+		}
+		if cfg.Type == "k8s-sandbox" {
+			return executor.NewAgentSandboxExecutor(ctx, k8sCfg)
+		}
+		return executor.NewK8sExecutor(ctx, k8sCfg)
 	case "api":
 		if cfg.VcsBackend == nil {
 			return nil, fmt.Errorf("api executor requires vcsBackend configuration")
@@ -965,7 +972,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 		}
 		return executor.NewAPIExecutor(token, parts[0], parts[1], cfg.VcsBackend.Ref), nil
 	default:
-		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, k8s, api)", cfg.Type)
+		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, k8s, k8s-sandbox, api)", cfg.Type)
 	}
 }
 
