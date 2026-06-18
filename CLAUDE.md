@@ -139,7 +139,8 @@ Quick map for "I need to change X" lookups:
 | Cedar policy semantics | `harness/internal/permission/policyengine.go` |
 | Container runtime / network mode wiring | `harness/internal/executor/container*.go` |
 | K8s executor (Pod-per-run) + egress NetworkPolicy | `harness/internal/executor/k8s.go`, `k8s_netpol.go` (operator doc: `docs/executors/k8s.md`) |
-| `--k8s-*` CLI flags (`--k8s-namespace`, `--k8s-kubeconfig`, `--k8s-node-selector`, `--k8s-service-account`, `--k8s-egress-proxy-url`) | `harness/cmd/stirrup/cmd/runconfigflags.go` (defs), `harness.go` (mapping) |
+| `k8s-sandbox` executor (Agent Sandbox CRD: `agents.x-k8s.io/v1alpha1` Sandbox → controller-created Pod) | `harness/internal/executor/agentsandbox.go`, `agentsandbox_api.go` (operator doc: `docs/executors/k8s-agent-sandbox.md`) |
+| `--k8s-*` CLI flags (`--k8s-namespace`, `--k8s-kubeconfig`, `--k8s-node-selector`, `--k8s-service-account`, `--k8s-egress-proxy-url`; serve both `k8s` and `k8s-sandbox`) | `harness/cmd/stirrup/cmd/runconfigflags.go` (defs), `harness.go` (mapping) |
 | `stirrup egress-proxy` subcommand | `harness/cmd/stirrup/cmd/egress_proxy.go` |
 | Egress proxy | `harness/internal/executor/egressproxy/` |
 | Code scanner | `harness/internal/security/codescanner/` |

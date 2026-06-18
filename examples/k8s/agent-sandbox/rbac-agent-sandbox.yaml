@@ -1,0 +1,111 @@
+# RBAC for the stirrup orchestrator running the k8s-sandbox executor.
+#
+# This is the sandbox-only analogue of ../rbac.yaml. It differs in exactly one
+# way that matters: the orchestrator does NOT create or delete Pods — the Agent
+# Sandbox controller owns the backing Pod (via owner references) and
+# cascade-GCs it when the Sandbox is deleted. The orchestrator instead manages
+# the agents.x-k8s.io Sandbox custom resource, and only reads Pods (to discover
+# the controller-created Pod) and execs into them.
+#
+# How this differs from ../rbac.yaml (the raw-Pod k8s executor):
+#
+#   ../rbac.yaml grants                this file grants
+#   ------------------------------     ------------------------------------------
+#   pods: create, get, delete          pods: get ONLY (the controller owns the
+#                                        Pod's create/delete via the Sandbox CR)
+#   (no sandboxes verb)                sandboxes: create, get, list, watch, delete
+#   pods/exec: create                  pods/exec: create        (unchanged)
+#   networkpolicies: create, delete    networkpolicies: create, delete (unchanged)
+#   pods/log: get (debug convenience)  (omitted — add it back for `kubectl logs`)
+#
+# The verbs below are derived from the executor's calls in
+# harness/internal/executor/agentsandbox.go (Sandbox create/get/delete via the
+# dynamic client, NetworkPolicy create/delete via the clientset), k8s_execcore.go
+# (pods/exec for Exec + tar-based file I/O), and the readiness/resolution reads
+# of the backing Pod:
+#
+#   sandboxes        create  — NewAgentSandboxExecutor creates the Sandbox CR
+#                    get     — readiness poll + pod-name resolution
+#                    list    — operator/teardown discovery by the
+#                              stirrup-sandbox=true label (also future warm-pool)
+#                    watch   — granted alongside list for controller-style reads
+#                    delete  — Close() / best-effort construction cleanup
+#   pods             get     — resolve and reference the controller-created Pod;
+#                              the orchestrator never creates or deletes it
+#   pods/exec        create  — Exec + tar-based file I/O POST to the pods/exec
+#                              subresource (streamExec)
+#   networkpolicies  create  — the per-Pod egress policy is installed BEFORE the
+#                    delete    Sandbox and removed after it on Close(); without
+#                              both verbs construction fails fail-closed, because
+#                              a Pod whose egress cannot be confined must never be
+#                              created.
+#
+# The Role is intentionally namespaced (not a ClusterRole): the orchestrator
+# operates within a single sandbox namespace. Bind one Role per namespace if
+# runs span several. The Agent Sandbox CONTROLLER's own cluster RBAC (to manage
+# Pods on the orchestrator's behalf) is installed with the controller and is out
+# of scope here — this Role is only the orchestrator's.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stirrup-orchestrator
+  namespace: stirrup-sandbox
+  labels:
+    stirrup-sandbox: "true"
+# Refuse a default token automount on the ServiceAccount object itself; the
+# orchestrator is given credentials explicitly (kubeconfig or a projected token
+# on its own Pod) rather than relying on an ambient mount.
+automountServiceAccountToken: false
+---
+# The ServiceAccount above is core/v1; the Role and RoleBinding below are
+# rbac.authorization.k8s.io/v1 — they live in different API groups, which is why
+# the apiVersion changes across the three documents.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: stirrup-orchestrator
+  namespace: stirrup-sandbox
+  labels:
+    stirrup-sandbox: "true"
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+      - delete
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs:
+      - get
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs:
+      - create
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    verbs:
+      - create
+      - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: stirrup-orchestrator
+  namespace: stirrup-sandbox
+  labels:
+    stirrup-sandbox: "true"
+subjects:
+  - kind: ServiceAccount
+    name: stirrup-orchestrator
+    namespace: stirrup-sandbox
+roleRef:
+  kind: Role
+  name: stirrup-orchestrator
+  apiGroup: rbac.authorization.k8s.io
