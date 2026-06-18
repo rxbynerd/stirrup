@@ -55,7 +55,7 @@ jobs:
       id-token: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # SHA-pinned to v3.0.0. Same pin as `ci.yml::publish-container` and
       # `release.yml::publish-container` — must move in lockstep with

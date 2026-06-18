@@ -85,7 +85,7 @@ jobs:
           - {os: darwin, arch: arm64}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.validate-tag.outputs.tag }}
           fetch-depth: 0
@@ -173,7 +173,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.validate-tag.outputs.tag }}
 
@@ -224,7 +224,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Full history is required for git describe / git log range.
           fetch-depth: 0
@@ -302,7 +302,7 @@ jobs:
       TAG: ${{ needs.validate-tag.outputs.tag }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.validate-tag.outputs.tag }}
 
