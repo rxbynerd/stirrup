@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	// k8sSandboxLabel marks every Pod the K8sExecutor creates. It is the
-	// stable selector a cluster operator can target with their own policies
-	// and the key the per-Pod NetworkPolicy selects on (combined with the
-	// unique pod name) so the policy binds to exactly this Pod.
+	// k8sSandboxLabel marks every sandbox Pod the k8s-family executors create —
+	// the K8sExecutor (directly) and the AgentSandboxExecutor (via the Sandbox
+	// CR's propagated podTemplate labels). It is the stable selector a cluster
+	// operator can target with their own policies and the key the per-Pod
+	// NetworkPolicy selects on (combined with the unique pod name) so the policy
+	// binds to exactly this Pod.
 	k8sSandboxLabel = "stirrup-sandbox"
 
 	// k8sPodNameLabel carries the generated Pod name as a label so the

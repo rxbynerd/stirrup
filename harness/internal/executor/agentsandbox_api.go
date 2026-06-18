@@ -9,7 +9,7 @@ import (
 // by GKE Agent Sandbox. GKE installs v1alpha1; upstream HEAD has moved to
 // v1beta1 with a different field shape, so this is pinned to what the cluster
 // actually serves. Changing this is the single edit needed to track a GKE bump.
-var sandboxGVR = schema.GroupVersionResource{ //nolint:unused // consumed by AgentSandboxExecutor (next PR); declared here to keep all v1alpha1 GVR knowledge in one tested place.
+var sandboxGVR = schema.GroupVersionResource{
 	Group: "agents.x-k8s.io", Version: "v1alpha1", Resource: "sandboxes",
 }
 
@@ -17,7 +17,7 @@ const (
 	// sandboxNameHashLabel is the label the Sandbox controller puts on every
 	// backing Pod (value = FNV-1a hash of the Sandbox name). It is the
 	// controller-guaranteed selector for the Pod.
-	sandboxNameHashLabel = "agents.x-k8s.io/sandbox-name-hash" //nolint:unused // consumed by AgentSandboxExecutor (next PR); kept here with the other Sandbox CRD keys.
+	sandboxNameHashLabel = "agents.x-k8s.io/sandbox-name-hash" //nolint:unused // documents the controller-guaranteed Pod label; becomes load-bearing for the warm-pool follow-up, which selects the backing Pod by this hash instead of the cold-path name==Sandbox identity.
 	// sandboxPodNameAnnotation, when present on the Sandbox, names the backing
 	// Pod. It is set for warm-pool-adopted Sandboxes (random Pod name); for a
 	// cold-created Sandbox it is absent and the Pod name equals the Sandbox name.
