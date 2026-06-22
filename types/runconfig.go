@@ -819,6 +819,16 @@ type GeminiSafetySetting struct {
 //     AzureClientID, and TokenSource. Bearer is sent as
 //     "Authorization: Bearer" — APIKeyRef and APIKeyHeader="api-key" are
 //     mutually exclusive with this type.
+//   - "openai-wif"                        — OpenAI Workload Identity
+//     Federation. Exchanges an OIDC JWT (from TokenSource) at
+//     https://auth.openai.com/oauth/token for a short-lived OpenAI access
+//     token via the RFC 8693 token-exchange grant. Requires
+//     OpenAIIdentityProviderID, OpenAIServiceAccountID, and TokenSource.
+//     Pairs only with the openai-compatible / openai-responses provider
+//     types; Bearer is sent as "Authorization: Bearer", so APIKeyRef and
+//     APIKeyHeader="api-key" are mutually exclusive with this type. The
+//     audience is set on the TokenSource (canonically
+//     https://api.openai.com/v1), not in the exchange body.
 type CredentialConfig struct {
 	Type           string             `json:"type"`
 	TokenSource    *TokenSourceConfig `json:"tokenSource,omitempty"`    // required for "web-identity", "gcp-workload-identity-federation", "anthropic-wif", "azure-workload-identity"
@@ -875,6 +885,31 @@ type CredentialConfig struct {
 	// or login.microsoftonline.de (Azure Germany, deprecated). Must be a
 	// syntactically valid HTTPS URL when set.
 	AzureTokenURL string `json:"azureTokenUrl,omitempty"`
+
+	// OpenAIIdentityProviderID is required for "openai-wif". The OpenAI
+	// Workload Identity Provider ID an organization owner registers in the
+	// OpenAI dashboard; it binds the trusted OIDC issuer, expected audience,
+	// and key source. Sent as identity_provider_id in the token-exchange
+	// body. Non-secret: it identifies the provider but cannot authenticate.
+	// OpenAI's reference does not document a stable prefix or charset, so it
+	// is validated only as a printable, whitespace-free identifier.
+	OpenAIIdentityProviderID string `json:"openaiIdentityProviderId,omitempty"`
+
+	// OpenAIServiceAccountID is required for "openai-wif". The OpenAI
+	// service-account ID the federation mapping targets; the resulting
+	// access token acts as this non-human principal. Sent as
+	// service_account_id in the token-exchange body. Non-secret, and
+	// validated with the same opaque-identifier shape as
+	// OpenAIIdentityProviderID.
+	OpenAIServiceAccountID string `json:"openaiServiceAccountId,omitempty"`
+
+	// OpenAISubjectTokenType is optional for "openai-wif". The RFC 8693
+	// subject_token_type URN for the exchange. Default (empty) applies
+	// "urn:ietf:params:oauth:token-type:jwt", which every OpenAI-documented
+	// identity provider uses; override only when the IdP issues a different
+	// token type (e.g. an id_token). Must be an RFC 8693 token-type URN
+	// when set.
+	OpenAISubjectTokenType string `json:"openaiSubjectTokenType,omitempty"`
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
@@ -1629,6 +1664,7 @@ var validCredentialTypes = map[string]bool{
 	"gcp-workload-identity-federation": true,
 	"anthropic-wif":                    true,
 	"azure-workload-identity":          true,
+	"openai-wif":                       true,
 }
 
 // GCPWIFAudiencePatternString bounds the shape of a Workload Identity
@@ -1732,6 +1768,17 @@ var (
 		`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
 	)
 )
+
+// openAIWIFIdentifierPattern bounds the shape of an OpenAI WIF identity-
+// provider ID and service-account ID. Unlike Anthropic's fdrl_/svac_
+// identifiers, OpenAI's reference does not document a stable prefix or
+// charset for these dashboard-issued IDs, so this is a conservative safety
+// net rather than a precise shape check: a non-empty run of printable ASCII
+// with no whitespace, capped at 256 chars. It rejects the obvious
+// copy-paste failures (empty value, embedded newline/space, control bytes)
+// without guessing a format the docs do not promise. It is intentionally
+// unexported and not surfaced in error text — the format is not a contract.
+var openAIWIFIdentifierPattern = regexp.MustCompile(`^[\x21-\x7e]{1,256}$`)
 
 var validTokenSourceTypes = map[string]bool{
 	"gke-metadata":        true,
@@ -2660,6 +2707,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 	validateGeminiProviderFields("provider", config.Provider, errs)
 	validateAnthropicProviderFields("provider", config.Provider, errs)
 	validateAzureWIFCrossField("provider", config.Provider, errs)
+	validateOpenAIWIFCrossField("provider", config.Provider, errs)
 	validateProviderRetryConfig("provider.retry", config.Provider.Retry, retryDefaulted["provider.retry"], errs)
 	validateCompatProfile("provider.compatProfile", config.Provider.CompatProfile, errs)
 	for name, provider := range config.Providers {
@@ -2678,6 +2726,7 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		validateGeminiProviderFields(path, provider, errs)
 		validateAnthropicProviderFields(path, provider, errs)
 		validateAzureWIFCrossField(path, provider, errs)
+		validateOpenAIWIFCrossField(path, provider, errs)
 		retryPath := fmt.Sprintf("%s.retry", path)
 		validateProviderRetryConfig(retryPath, provider.Retry, retryDefaulted[retryPath], errs)
 		validateCompatProfile(fmt.Sprintf("%s.compatProfile", path), provider.CompatProfile, errs)
@@ -3060,6 +3109,59 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 		if cfg.ServiceAccount != "" {
 			*errs = append(*errs, fmt.Sprintf("%s.serviceAccount is only valid for credential type %q", path, "gcp-workload-identity-federation"))
 		}
+	case "openai-wif":
+		// OpenAIIdentityProviderID and OpenAIServiceAccountID are both
+		// required. OpenAI's reference does not document a stable format
+		// for either, so they are validated only as printable,
+		// whitespace-free identifiers — enough to catch a copy-paste with
+		// an embedded newline without rejecting a valid opaque ID.
+		if cfg.OpenAIIdentityProviderID == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: openai-wif requires openaiIdentityProviderId", path))
+		} else if !openAIWIFIdentifierPattern.MatchString(cfg.OpenAIIdentityProviderID) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.openaiIdentityProviderId %q must be a non-empty printable identifier with no whitespace (max 256 chars)",
+				path, cfg.OpenAIIdentityProviderID,
+			))
+		}
+		if cfg.OpenAIServiceAccountID == "" {
+			*errs = append(*errs, fmt.Sprintf("%s: openai-wif requires openaiServiceAccountId", path))
+		} else if !openAIWIFIdentifierPattern.MatchString(cfg.OpenAIServiceAccountID) {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.openaiServiceAccountId %q must be a non-empty printable identifier with no whitespace (max 256 chars)",
+				path, cfg.OpenAIServiceAccountID,
+			))
+		}
+		// SubjectTokenType is optional; the source applies the JWT default
+		// when empty. When set, require the RFC 8693 token-type URN prefix
+		// so a typo surfaces here rather than as a 400 from the exchange.
+		if cfg.OpenAISubjectTokenType != "" &&
+			!strings.HasPrefix(cfg.OpenAISubjectTokenType, "urn:ietf:params:oauth:token-type:") {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.openaiSubjectTokenType %q must be an RFC 8693 token-type URN (e.g. \"urn:ietf:params:oauth:token-type:jwt\")",
+				path, cfg.OpenAISubjectTokenType,
+			))
+		}
+		if cfg.TokenSource == nil {
+			*errs = append(*errs, fmt.Sprintf("%s: openai-wif requires tokenSource", path))
+		} else {
+			validateTokenSourceConfig(cfg.TokenSource, path+".tokenSource", errs)
+		}
+		// Mutual-exclusion: openai-wif consumes its own identifiers, not the
+		// AWS web-identity / GCP WIF fields. A stale roleArn / audience /
+		// serviceAccount is almost always a copy-paste error; surface it
+		// loudly rather than silently ignoring the value.
+		if cfg.RoleARN != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.roleArn is only valid for credential type %q", path, "web-identity"))
+		}
+		if cfg.SessionName != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.sessionName is only valid for credential type %q", path, "web-identity"))
+		}
+		if cfg.Audience != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.audience is only valid for credential type %q", path, "gcp-workload-identity-federation"))
+		}
+		if cfg.ServiceAccount != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.serviceAccount is only valid for credential type %q", path, "gcp-workload-identity-federation"))
+		}
 	}
 
 	// Reciprocal mutual-exclusion: the four anthropic-wif fields are
@@ -3098,6 +3200,21 @@ func validateCredentialConfig(cfg *CredentialConfig, path string, errs *[]string
 		}
 		if cfg.AzureTokenURL != "" {
 			*errs = append(*errs, fmt.Sprintf("%s.azureTokenUrl is only valid for credential type %q", path, "azure-workload-identity"))
+		}
+	}
+
+	// Reciprocal mutual-exclusion: the openai-wif fields are scoped to
+	// type="openai-wif". Same rationale as the anthropic-wif and
+	// azure-workload-identity blocks above.
+	if cfg.Type != "openai-wif" {
+		if cfg.OpenAIIdentityProviderID != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.openaiIdentityProviderId is only valid for credential type %q", path, "openai-wif"))
+		}
+		if cfg.OpenAIServiceAccountID != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.openaiServiceAccountId is only valid for credential type %q", path, "openai-wif"))
+		}
+		if cfg.OpenAISubjectTokenType != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.openaiSubjectTokenType is only valid for credential type %q", path, "openai-wif"))
 		}
 	}
 }
@@ -3231,6 +3348,50 @@ func validateAzureWIFCrossField(path string, cfg ProviderConfig, errs *[]string)
 	if cfg.APIKeyHeader == "api-key" {
 		*errs = append(*errs, fmt.Sprintf(
 			"%s: azure-workload-identity requires Authorization: Bearer; apiKeyHeader=\"api-key\" is mutually exclusive (use empty apiKeyHeader for Bearer auth)",
+			path,
+		))
+	}
+}
+
+// validateOpenAIWIFCrossField enforces the auth-field invariants that only
+// make sense once the credential type is "openai-wif". Three combinations
+// are rejected:
+//
+//   - Provider type other than openai-compatible / openai-responses: those
+//     are the two adapters that speak to the OpenAI API. The other provider
+//     types (anthropic, bedrock, gemini) have their own auth contracts and
+//     would silently ignore a Bearer minted by the OpenAI exchange, so an
+//     operator pointing them at openai-wif is almost certainly a mistake —
+//     and a hand-authored config aiming a WIF access token at a foreign
+//     base URL is a credential-exfiltration footgun. Mirrors how
+//     validateAnthropicProviderFields scopes anthropic-wif to anthropic.
+//   - APIKeyRef set: OpenAI WIF resolves the bearer dynamically via the
+//     OAuth2 token exchange; a static key alongside would either be
+//     silently ignored (confusing UX) or conflict with the federated
+//     bearer. Either way, mixing the two is a configuration error.
+//   - APIKeyHeader == "api-key": OpenAI accepts the access token only on the
+//     Authorization: Bearer header; the "api-key" header is reserved for
+//     static Azure OpenAI key auth and would produce a 401.
+func validateOpenAIWIFCrossField(path string, cfg ProviderConfig, errs *[]string) {
+	if cfg.Credential == nil || cfg.Credential.Type != "openai-wif" {
+		return
+	}
+	if cfg.Type != "openai-compatible" && cfg.Type != "openai-responses" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: openai-wif is only supported with openai-compatible or openai-responses provider types (got %q) "+
+				"(an OpenAI WIF access token must not be sent to a non-OpenAI endpoint)",
+			path, cfg.Type,
+		))
+	}
+	if cfg.APIKeyRef != "" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: openai-wif does not use apiKeyRef; remove it (the bearer is fetched via OAuth2 token exchange)",
+			path,
+		))
+	}
+	if cfg.APIKeyHeader == "api-key" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s: openai-wif requires Authorization: Bearer; apiKeyHeader=\"api-key\" is mutually exclusive (use empty apiKeyHeader for Bearer auth)",
 			path,
 		))
 	}

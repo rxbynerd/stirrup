@@ -1643,6 +1643,199 @@ func TestValidateRunConfig_AnthropicWIF(t *testing.T) {
 	}
 }
 
+// validOpenAIWIFCredential returns a baseline openai-wif credential with
+// every required field set. Negative-path tests mutate one field at a time
+// off this baseline.
+func validOpenAIWIFCredential() *CredentialConfig {
+	return &CredentialConfig{
+		Type:                     "openai-wif",
+		OpenAIIdentityProviderID: "idp_abc123",
+		OpenAIServiceAccountID:   "sa_xyz789",
+		TokenSource: &TokenSourceConfig{
+			Type:     "github-actions-oidc",
+			Audience: "https://api.openai.com/v1",
+		},
+	}
+}
+
+// validOpenAIWIFProvider returns an openai-compatible provider carrying the
+// baseline openai-wif credential and no static apiKeyRef (the cross-field
+// validator rejects a key alongside WIF).
+func validOpenAIWIFProvider() ProviderConfig {
+	return ProviderConfig{
+		Type:       "openai-compatible",
+		BaseURL:    "https://api.openai.com/v1",
+		Credential: validOpenAIWIFCredential(),
+	}
+}
+
+func TestValidateRunConfig_OpenAIWIF(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(c *RunConfig)
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "minimal openai-wif config passes",
+			mutate: func(c *RunConfig) {
+				c.Provider = validOpenAIWIFProvider()
+			},
+			wantErr: false,
+		},
+		{
+			name: "subjectTokenType jwt URN override passes",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.OpenAISubjectTokenType = "urn:ietf:params:oauth:token-type:id_token"
+				c.Provider = p
+			},
+			wantErr: false,
+		},
+		{
+			name: "openai-responses provider passes",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Type = "openai-responses"
+				c.Provider = p
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing openaiIdentityProviderId fails",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.OpenAIIdentityProviderID = ""
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "openai-wif requires openaiIdentityProviderId",
+		},
+		{
+			name: "missing openaiServiceAccountId fails",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.OpenAIServiceAccountID = ""
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "openai-wif requires openaiServiceAccountId",
+		},
+		{
+			name: "missing tokenSource fails",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.TokenSource = nil
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "openai-wif requires tokenSource",
+		},
+		{
+			name: "identity provider id with embedded whitespace rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.OpenAIIdentityProviderID = "idp with space"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "openaiIdentityProviderId",
+		},
+		{
+			name: "subjectTokenType non-URN rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.OpenAISubjectTokenType = "jwt"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "openaiSubjectTokenType",
+		},
+		{
+			name: "apiKeyRef set alongside openai-wif rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.APIKeyRef = "secret://OPENAI_KEY"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "openai-wif does not use apiKeyRef",
+		},
+		{
+			name: "apiKeyHeader api-key alongside openai-wif rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.APIKeyHeader = "api-key"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "openai-wif requires Authorization: Bearer",
+		},
+		{
+			name: "roleArn on openai-wif rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.RoleARN = "arn:aws:iam::123456789012:role/Stirrup"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "roleArn is only valid for credential type \"web-identity\"",
+		},
+		{
+			// Cross-provider validation: pairing credential.type=openai-wif
+			// with a non-OpenAI provider would hand a federated access token
+			// to a foreign endpoint. Fail closed at config-load time.
+			name: "openai-wif paired with anthropic provider rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:       "anthropic",
+					Credential: validOpenAIWIFCredential(),
+				}
+			},
+			wantErr:   true,
+			errSubstr: "openai-wif is only supported with openai-compatible or openai-responses",
+		},
+		{
+			// Reciprocal mutual-exclusion: the openai-wif fields are scoped
+			// to type=openai-wif; a leftover value on another type is an
+			// error so it does not silently linger across a type change.
+			name: "openaiIdentityProviderId on static credential rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:      "openai-compatible",
+					APIKeyRef: "secret://OPENAI_KEY",
+					Credential: &CredentialConfig{
+						Type:                     "static",
+						OpenAIIdentityProviderID: "idp_abc123",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "openaiIdentityProviderId is only valid for credential type \"openai-wif\"",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.errSubstr)
+				}
+				if tc.errSubstr != "" && !strings.Contains(err.Error(), tc.errSubstr) {
+					t.Errorf("expected error to contain %q, got: %v", tc.errSubstr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected no error, got: %v", err)
+			}
+		})
+	}
+}
+
 // --- ValidateRunConfig: APIKeyHeader / QueryParams (issue #48) ---
 
 func TestValidateRunConfig_APIKeyHeader_Valid(t *testing.T) {
