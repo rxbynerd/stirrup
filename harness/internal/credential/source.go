@@ -144,6 +144,27 @@ func BuildSource(cfg types.ProviderConfig, secrets security.SecretStore) (Source
 			cfg.Credential.ServiceAccountID,
 			cfg.Credential.WorkspaceID,
 		), nil
+	case "openai-wif":
+		// Belt-and-braces. types.validateCredentialConfig already enforces
+		// these field shapes at config-load time; the redundant guard here
+		// keeps BuildSource self-contained for callers (e.g. eval harness)
+		// that bypass full RunConfig validation.
+		if cfg.Credential.OpenAIIdentityProviderID == "" || cfg.Credential.OpenAIServiceAccountID == "" {
+			return nil, fmt.Errorf("openai-wif requires openaiIdentityProviderId and openaiServiceAccountId")
+		}
+		if cfg.Credential.TokenSource == nil {
+			return nil, fmt.Errorf("openai-wif requires tokenSource")
+		}
+		ts, err := BuildTokenSource(cfg.Credential.TokenSource)
+		if err != nil {
+			return nil, fmt.Errorf("build token source: %w", err)
+		}
+		return NewOpenAIWIFSource(
+			ts,
+			cfg.Credential.OpenAIIdentityProviderID,
+			cfg.Credential.OpenAIServiceAccountID,
+			cfg.Credential.OpenAISubjectTokenType,
+		), nil
 	case "azure-workload-identity":
 		// Defence-in-depth: validateRunConfig already rejects these
 		// missing-field cases at config-load time. Re-checking here

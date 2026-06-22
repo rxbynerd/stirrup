@@ -64,7 +64,7 @@ func anthropicOAuthHandler(t *testing.T, accessToken string, expiresIn int64, ve
 		if verify != nil {
 			verify(parsed, raw)
 		}
-		resp := anthropicOAuthResponse{
+		resp := oauthExchangeResponse{
 			AccessToken: accessToken,
 			TokenType:   "Bearer",
 			ExpiresIn:   expiresIn,
@@ -476,7 +476,7 @@ func TestAnthropicWIFSource_ReuseTokenSourceCachesExchange(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&exchanges, 1)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(anthropicOAuthResponse{
+		_ = json.NewEncoder(w).Encode(oauthExchangeResponse{
 			AccessToken: "cached",
 			TokenType:   "Bearer",
 			ExpiresIn:   3600,
@@ -586,7 +586,7 @@ func TestAnthropicWIFSource_ConcurrentBearerCallsSingleFlight(t *testing.T) {
 		exchanges.Add(1)
 		time.Sleep(50 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(anthropicOAuthResponse{
+		_ = json.NewEncoder(w).Encode(oauthExchangeResponse{
 			AccessToken: "concurrent-tok",
 			TokenType:   "Bearer",
 			ExpiresIn:   3600,
