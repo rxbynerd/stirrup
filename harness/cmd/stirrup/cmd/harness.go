@@ -1834,6 +1834,135 @@ func applyAnthropicWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error 
 	return nil
 }
 
+// applyOpenAIWIFOverrides folds the OpenAI-WIF flag surface and the
+// OPENAI_* env fallbacks into cfg, mirroring applyAnthropicWIFOverrides.
+// Resolution chain:
+//
+//  1. Federation IDs: explicit flag > OPENAI_* env var > file value.
+//     Setting any ID (or the GHA opt-in) without a Credential block infers
+//     credential.type=openai-wif.
+//  2. Token source inference (only when Credential.TokenSource is nil so a
+//     config-file source always wins):
+//     - --openai-from-github-actions → github-actions-oidc with the OpenAI
+//     API audience (https://api.openai.com/v1)
+//     - OPENAI_IDENTITY_TOKEN_FILE → file source pointing at it
+//     - OPENAI_IDENTITY_TOKEN → env source
+//     A bare ACTIONS_ID_TOKEN_REQUEST_URL is NOT auto-selected — silent IdP
+//     selection from env presence is rejected (mirrors the Anthropic path,
+//     issue #117 risk #5).
+//  3. apiKeyRef mutual exclusion: an openai-wif credential on an OpenAI
+//     provider must not also carry a static key. Explicit --api-key-ref is a
+//     hard error; the default "secret://ANTHROPIC_API_KEY" is cleared
+//     silently because no intent was expressed.
+//
+// Returns a non-nil error only on the conflicting-type and apiKeyRef guards;
+// everything else is best-effort folding that ValidateRunConfig rejects if
+// the resulting shape is invalid.
+func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
+	f := cmd.Flags()
+	changed := func(name string) bool { return f.Changed(name) }
+
+	resolveID := func(flagName, envName string) string {
+		if changed(flagName) {
+			v, _ := f.GetString(flagName)
+			return v
+		}
+		return os.Getenv(envName)
+	}
+
+	idpID := resolveID("openai-identity-provider-id", "OPENAI_IDENTITY_PROVIDER_ID")
+	saID := resolveID("openai-service-account-id", "OPENAI_SERVICE_ACCOUNT_ID")
+	subjectTokenType := resolveID("openai-subject-token-type", "OPENAI_SUBJECT_TOKEN_TYPE")
+	fromGHA, _ := f.GetBool("openai-from-github-actions")
+
+	anyIDSet := idpID != "" || saID != "" || subjectTokenType != ""
+
+	// Only fire when the operator has signalled WIF intent (any ID set, the
+	// GHA opt-in, or an existing type=openai-wif config).
+	if !anyIDSet && !fromGHA &&
+		(cfg.Provider.Credential == nil || cfg.Provider.Credential.Type != "openai-wif") {
+		return nil
+	}
+
+	if cfg.Provider.Credential == nil {
+		cfg.Provider.Credential = &types.CredentialConfig{Type: "openai-wif"}
+	} else if cfg.Provider.Credential.Type == "" || cfg.Provider.Credential.Type == "static" {
+		cfg.Provider.Credential.Type = "openai-wif"
+	} else if cfg.Provider.Credential.Type != "openai-wif" && anyIDSet {
+		return fmt.Errorf(
+			"--openai-* federation flags imply credential.type=openai-wif, "+
+				"but credential.type is already %q; remove the conflicting type or "+
+				"the federation flags",
+			cfg.Provider.Credential.Type)
+	}
+
+	// Apply IDs after the type is settled; an explicit/env value overrides an
+	// existing value from --config.
+	if idpID != "" {
+		cfg.Provider.Credential.OpenAIIdentityProviderID = idpID
+	}
+	if saID != "" {
+		cfg.Provider.Credential.OpenAIServiceAccountID = saID
+	}
+	if subjectTokenType != "" {
+		cfg.Provider.Credential.OpenAISubjectTokenType = subjectTokenType
+	}
+
+	// Token-source inference. A config-file token source always wins; fill
+	// the slot only when it is nil.
+	if fromGHA && cfg.Provider.Credential.TokenSource != nil {
+		slog.Warn("--openai-from-github-actions ignored: config file already specifies credential.tokenSource",
+			"existing_type", cfg.Provider.Credential.TokenSource.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil {
+		switch {
+		case fromGHA:
+			// OpenAI validates the audience from the subject token's aud
+			// claim against the provider config; the canonical value is the
+			// OpenAI API root. Operators needing a custom audience must use
+			// --config.
+			cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
+				Type:     "github-actions-oidc",
+				Audience: "https://api.openai.com/v1",
+			}
+		case os.Getenv("OPENAI_IDENTITY_TOKEN_FILE") != "":
+			cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
+				Type: "file",
+				Path: os.Getenv("OPENAI_IDENTITY_TOKEN_FILE"),
+			}
+		case os.Getenv("OPENAI_IDENTITY_TOKEN") != "":
+			cfg.Provider.Credential.TokenSource = &types.TokenSourceConfig{
+				Type:   "env",
+				EnvVar: "OPENAI_IDENTITY_TOKEN",
+			}
+		}
+	}
+
+	// apiKeyRef mutual exclusion. Only enforce on the OpenAI-shaped providers
+	// with openai-wif credentials; validateOpenAIWIFCrossField catches a
+	// leftover --config value, but it does not know about the per-provider
+	// default flag value being "secret://ANTHROPIC_API_KEY", so reconcile the
+	// default-vs-explicit case here before validation runs.
+	if (cfg.Provider.Type == "openai-compatible" || cfg.Provider.Type == "openai-responses") &&
+		cfg.Provider.Credential != nil &&
+		cfg.Provider.Credential.Type == "openai-wif" &&
+		cfg.Provider.APIKeyRef != "" {
+		if changed("api-key-ref") {
+			return fmt.Errorf(
+				"--api-key-ref must not be set with --openai-identity-provider-id " +
+					"(or any other --openai-* federation flag): WIF authenticates " +
+					"via OAuth bearer tokens and a static API key would conflict with " +
+					"the federated credential")
+		}
+		// Default flag value carries no operator intent under WIF — clear it
+		// silently so validateOpenAIWIFCrossField does not reject the
+		// otherwise-valid config.
+		cfg.Provider.APIKeyRef = ""
+	}
+
+	return nil
+}
+
 // runOptions carries CLI-only behaviour that doesn't fit on RunConfig.
 // exportWorkspaceRequired controls whether a failed workspace export
 // propagates a non-zero exit code. outputMode selects the post-run

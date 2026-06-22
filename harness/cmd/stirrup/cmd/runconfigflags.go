@@ -43,6 +43,11 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("azure-tenant-id", "", "Azure AD tenant UUID hosting the App Registration. When set, implies credential.type=azure-workload-identity. Use with --provider=openai-compatible or openai-responses against Azure OpenAI / Foundry.")
 	f.String("azure-client-id", "", "App Registration / federated identity credential client ID (UUID). Required with --azure-tenant-id.")
 	f.String("azure-scope", "https://cognitiveservices.azure.com/.default", "OAuth2 scope for the Entra access token. Override only for non-default Azure audiences (custom AAD app registrations, sovereign clouds).")
+
+	f.String("openai-identity-provider-id", "", "OpenAI Workload Identity Federation identity provider ID. Implies credential.type=openai-wif when set. Use with --provider=openai-compatible or openai-responses against the OpenAI API. Env fallback: OPENAI_IDENTITY_PROVIDER_ID.")
+	f.String("openai-service-account-id", "", "OpenAI WIF service account ID. Required with --openai-identity-provider-id. Env fallback: OPENAI_SERVICE_ACCOUNT_ID.")
+	f.String("openai-subject-token-type", "", "OpenAI WIF subject token type (RFC 8693 URN). Optional; defaults to urn:ietf:params:oauth:token-type:jwt. Env fallback: OPENAI_SUBJECT_TOKEN_TYPE.")
+	f.Bool("openai-from-github-actions", false, "Enable GitHub Actions OIDC token source for OpenAI WIF. Reads ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN from the runner environment and sets the token-source audience to https://api.openai.com/v1. Ignored (with a warning) if `--config` already sets `credential.tokenSource`.")
 	f.StringP("workspace", "w", "", "Workspace directory (default: current directory)")
 	f.Int("max-turns", 20, "Maximum agentic loop turns")
 	f.Int("timeout", 600, "Wall-clock timeout in seconds")

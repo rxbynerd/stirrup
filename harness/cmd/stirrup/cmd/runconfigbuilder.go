@@ -126,6 +126,14 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		return nil, err
 	}
 
+	// OpenAI Workload Identity Federation overrides. Same structure as the
+	// Anthropic helper above; runs after it so that combining --anthropic-*
+	// and --openai-* flags surfaces a clear conflicting-type error rather
+	// than silently letting one win.
+	if err := applyOpenAIWIFOverrides(sources.Cmd, cfg); err != nil {
+		return nil, err
+	}
+
 	if sources.Resolve != ResolveAll {
 		return cfg, nil
 	}
