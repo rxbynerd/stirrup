@@ -365,6 +365,19 @@ Walkthrough: [`anthropic-wif.md`](anthropic-wif.md).
 
 Walkthrough: [`azure-workload-identity.md`](azure-workload-identity.md).
 
+### OpenAI Workload Identity Federation
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--openai-identity-provider-id` | (none) | OpenAI identity provider ID. Implies `credential.type=openai-wif`. Use with `--provider=openai-compatible` or `openai-responses` against the OpenAI API. Env fallback: `OPENAI_IDENTITY_PROVIDER_ID`. |
+| `--openai-service-account-id` | (none) | OpenAI service account ID. Required with `--openai-identity-provider-id`. Env fallback: `OPENAI_SERVICE_ACCOUNT_ID`. |
+| `--openai-subject-token-type` | (none) | RFC 8693 subject token type URN. Optional; defaults to `urn:ietf:params:oauth:token-type:jwt`. Env fallback: `OPENAI_SUBJECT_TOKEN_TYPE`. |
+| `--openai-from-github-actions` | `false` | Enable GitHub Actions OIDC token source, setting the audience to `https://api.openai.com/v1`. Implicit selection from env presence is rejected — explicit opt-in is required. The `OPENAI_IDENTITY_TOKEN_FILE` and `OPENAI_IDENTITY_TOKEN` env vars also infer the file / env token sources respectively when unset by `--config`. |
+
+The exchange audience is set on the `tokenSource` (canonically
+`https://api.openai.com/v1`), not in the exchange body. Walkthrough:
+[`openai-wif.md`](openai-wif.md).
+
 ### Components
 
 | Flag | Default | Notes |
@@ -653,6 +666,8 @@ passes `ValidateRunConfig` end-to-end.
 | [`examples/runconfig/anthropic-wif-eks-irsa.json`](../examples/runconfig/anthropic-wif-eks-irsa.json) | Anthropic Messages API authenticated via WIF from an EKS pod with IRSA. |
 | [`examples/runconfig/azure-openai-wif-aks.json`](../examples/runconfig/azure-openai-wif-aks.json) | Azure OpenAI from AKS via Entra ID Workload Identity Federation. |
 | [`examples/runconfig/azure-openai-wif-github-actions.json`](../examples/runconfig/azure-openai-wif-github-actions.json) | Azure OpenAI from GitHub Actions via Entra ID Workload Identity Federation. |
+| [`examples/runconfig/openai-wif-github-actions.json`](../examples/runconfig/openai-wif-github-actions.json) | OpenAI API (Responses) authenticated via WIF from a GitHub Actions runner. |
+| [`examples/runconfig/openai-wif-eks-irsa.json`](../examples/runconfig/openai-wif-eks-irsa.json) | OpenAI API (Chat Completions) authenticated via WIF from an EKS pod with IRSA. |
 | [`examples/runconfig/grafana-cloud.json`](../examples/runconfig/grafana-cloud.json) | Native OTLP/HTTP export to Grafana Cloud's managed gateway. No Alloy/OTel-Collector sidecar needed. |
 
 For an annotated walkthrough of `full.json` see

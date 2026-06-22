@@ -56,6 +56,7 @@ authentication material.
 | `gcp-workload-identity-federation` | Vertex AI from a non-GCP runtime | `audience`, `tokenSource`; optional `serviceAccount` |
 | `anthropic-wif` | Anthropic Messages API from any OIDC-aware runtime | `federationRuleId`, `organizationId`, `serviceAccountId`, `tokenSource`; optional `workspaceId`. See [`anthropic-wif.md`](anthropic-wif.md). |
 | `azure-workload-identity` | Azure OpenAI / Foundry from anywhere | `azureTenantId`, `azureClientId`, `tokenSource`; optional `azureScope`. See [`azure-workload-identity.md`](azure-workload-identity.md). |
+| `openai-wif` | OpenAI API from any OIDC-aware runtime | `openaiIdentityProviderId`, `openaiServiceAccountId`, `tokenSource`; optional `openaiSubjectTokenType`. The exchange audience is set on the `tokenSource`, not the credential. See [`openai-wif.md`](openai-wif.md). |
 
 ## Cross-cloud → Vertex AI Gemini via Workload Identity Federation
 
@@ -296,6 +297,10 @@ Cloud-Run-side IAM walkthrough.
   for the Anthropic Messages API counterpart of this design (OIDC →
   Anthropic `/v1/oauth/token` exchange, federation rules, GHA / EKS /
   AKS / generic-k8s runtimes).
+- [`openai-wif.md`](openai-wif.md) — the operator walkthrough for the
+  OpenAI API counterpart (OIDC → `auth.openai.com/oauth/token` RFC 8693
+  token exchange; the audience rides on the token source rather than the
+  exchange body).
 - [`harness/internal/credential/source.go`](../harness/internal/credential/source.go)
   — the full closure contract on `Resolved.BearerToken`.
 - [`harness/internal/credential/google_federation.go`](../harness/internal/credential/google_federation.go)

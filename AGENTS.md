@@ -163,9 +163,9 @@ The API executor (`executor/api.go`) implements the `Executor` interface for rea
 The `credential` package (`credential/`) provides cross-cloud authentication through a two-tier abstraction:
 
 - **TokenSource** — fetches identity tokens from the runtime environment (GKE Workload Identity metadata server, k8s projected volumes, environment variable, AWS IRSA, Azure IMDS, GitHub Actions OIDC).
-- **credential.Source** — exchanges identity tokens (or resolves static secrets) into provider-specific credentials. Implementations include `StaticSource`, `WebIdentityAWSSource`, `AnthropicWIFSource`, `AzureWorkloadIdentitySource`, and GCP-native paths.
+- **credential.Source** — exchanges identity tokens (or resolves static secrets) into provider-specific credentials. Implementations include `StaticSource`, `WebIdentityAWSSource`, `AnthropicWIFSource`, `OpenAIWIFSource`, `AzureWorkloadIdentitySource`, and GCP-native paths. The Anthropic and OpenAI WIF sources share the JSON token-exchange skeleton in `oauth_exchange.go`.
 
-The `BearerToken` closure returned by `Resolved.BearerToken` is called on every provider request — tokens are refreshed without restarting the run. See [`docs/credential-federation.md`](docs/credential-federation.md), [`docs/anthropic-wif.md`](docs/anthropic-wif.md), and [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md).
+The `BearerToken` closure returned by `Resolved.BearerToken` is called on every provider request — tokens are refreshed without restarting the run. See [`docs/credential-federation.md`](docs/credential-federation.md), [`docs/anthropic-wif.md`](docs/anthropic-wif.md), [`docs/openai-wif.md`](docs/openai-wif.md), and [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md).
 
 ### GuardRail
 
