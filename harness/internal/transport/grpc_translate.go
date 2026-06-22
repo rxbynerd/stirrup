@@ -380,6 +380,13 @@ func credentialConfigFromProto(pc *pb.CredentialConfig) *types.CredentialConfig 
 		AzureClientID: pc.GetAzureClientId(),
 		AzureScope:    pc.GetAzureScope(),
 		AzureTokenURL: pc.GetAzureTokenUrl(),
+		// OpenAI Workload Identity Federation fields. Use the generated
+		// getters so a K8s job that ships an `openai-wif` credential over the
+		// wire keeps its identity_provider_id / service_account_id rather than
+		// arriving empty and failing validation.
+		OpenAIIdentityProviderID: pc.GetOpenaiIdentityProviderId(),
+		OpenAIServiceAccountID:   pc.GetOpenaiServiceAccountId(),
+		OpenAISubjectTokenType:   pc.GetOpenaiSubjectTokenType(),
 	}
 	if pc.TokenSource != nil {
 		cfg.TokenSource = &types.TokenSourceConfig{

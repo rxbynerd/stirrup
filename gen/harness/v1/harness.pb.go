@@ -2006,6 +2006,21 @@ type CredentialConfig struct {
 	//	                                      GHA → Azure OpenAI, and other non-Azure
 	//	                                      runtimes calling Azure OpenAI / Foundry
 	//	                                      without a static client secret.
+	//	"openai-wif"                        — OpenAI Workload Identity Federation.
+	//	                                      Exchanges an OIDC JWT (from token_source) at
+	//	                                      https://auth.openai.com/oauth/token for a
+	//	                                      short-lived OpenAI access token via the
+	//	                                      RFC 8693 token-exchange grant. Requires
+	//	                                      openai_identity_provider_id,
+	//	                                      openai_service_account_id, and token_source.
+	//	                                      Pairs only with the openai-compatible /
+	//	                                      openai-responses provider types; Bearer is
+	//	                                      sent as "Authorization: Bearer", so
+	//	                                      api_key_ref and api_key_header="api-key" are
+	//	                                      mutually exclusive with this type. The
+	//	                                      audience is set on the token_source
+	//	                                      (canonically https://api.openai.com/v1), not
+	//	                                      in the exchange body.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// Required when type is "web-identity". Configuration for the identity
 	// token source used in the OIDC token exchange.
@@ -2079,10 +2094,28 @@ type CredentialConfig struct {
 	// workload runs against a non-global cloud. Must be a syntactically
 	// valid HTTPS URL when set; ValidateRunConfig rejects http:// and
 	// schemeless values.
-	// Next available field number: 15.
 	AzureTokenUrl string `protobuf:"bytes,14,opt,name=azure_token_url,json=azureTokenUrl,proto3" json:"azure_token_url,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Required when type is "openai-wif". The OpenAI Workload Identity Provider
+	// ID an organization owner registers in the OpenAI dashboard. Binds the
+	// trusted OIDC issuer, expected audience, and key source. Sent as
+	// identity_provider_id in the token-exchange body. Non-secret. OpenAI's
+	// reference does not document a stable prefix or charset, so it is
+	// validated only as a printable, whitespace-free identifier.
+	OpenaiIdentityProviderId string `protobuf:"bytes,15,opt,name=openai_identity_provider_id,json=openaiIdentityProviderId,proto3" json:"openai_identity_provider_id,omitempty"`
+	// Required when type is "openai-wif". The OpenAI service-account ID the
+	// federation mapping targets; the resulting access token acts as this
+	// principal. Sent as service_account_id in the token-exchange body.
+	// Non-secret, validated with the same opaque-identifier shape.
+	OpenaiServiceAccountId string `protobuf:"bytes,16,opt,name=openai_service_account_id,json=openaiServiceAccountId,proto3" json:"openai_service_account_id,omitempty"`
+	// Optional when type is "openai-wif". The RFC 8693 subject_token_type URN.
+	// Default (empty) applies "urn:ietf:params:oauth:token-type:jwt", which
+	// every OpenAI-documented identity provider uses; override only when the
+	// IdP issues a different token type (e.g. an id_token). Must be an RFC 8693
+	// token-type URN when set.
+	// Next available field number: 18.
+	OpenaiSubjectTokenType string `protobuf:"bytes,17,opt,name=openai_subject_token_type,json=openaiSubjectTokenType,proto3" json:"openai_subject_token_type,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *CredentialConfig) Reset() {
@@ -2209,6 +2242,27 @@ func (x *CredentialConfig) GetAzureScope() string {
 func (x *CredentialConfig) GetAzureTokenUrl() string {
 	if x != nil {
 		return x.AzureTokenUrl
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetOpenaiIdentityProviderId() string {
+	if x != nil {
+		return x.OpenaiIdentityProviderId
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetOpenaiServiceAccountId() string {
+	if x != nil {
+		return x.OpenaiServiceAccountId
+	}
+	return ""
+}
+
+func (x *CredentialConfig) GetOpenaiSubjectTokenType() string {
+	if x != nil {
+		return x.OpenaiSubjectTokenType
 	}
 	return ""
 }
@@ -3906,7 +3960,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x13fallback_on_timeout\x18\x04 \x01(\bR\x11fallbackOnTimeout\x12<\n" +
 	"\x1bcancel_bundle_on_run_cancel\x18\x05 \x01(\bR\x17cancelBundleOnRunCancel\x126\n" +
 	"\x17allow_interactive_modes\x18\x06 \x01(\bR\x15allowInteractiveModesB\x13\n" +
-	"\x11_max_wait_seconds\"\xb4\x04\n" +
+	"\x11_max_wait_seconds\"\xe9\x05\n" +
 	"\x10CredentialConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12H\n" +
 	"\ftoken_source\x18\x02 \x01(\v2%.stirrup.harness.v1.TokenSourceConfigR\vtokenSource\x12\x19\n" +
@@ -3923,7 +3977,10 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0fazure_client_id\x18\f \x01(\tR\razureClientId\x12\x1f\n" +
 	"\vazure_scope\x18\r \x01(\tR\n" +
 	"azureScope\x12&\n" +
-	"\x0fazure_token_url\x18\x0e \x01(\tR\razureTokenUrl\"\xa9\x01\n" +
+	"\x0fazure_token_url\x18\x0e \x01(\tR\razureTokenUrl\x12=\n" +
+	"\x1bopenai_identity_provider_id\x18\x0f \x01(\tR\x18openaiIdentityProviderId\x129\n" +
+	"\x19openai_service_account_id\x18\x10 \x01(\tR\x16openaiServiceAccountId\x129\n" +
+	"\x19openai_subject_token_type\x18\x11 \x01(\tR\x16openaiSubjectTokenType\"\xa9\x01\n" +
 	"\x11TokenSourceConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x12\n" +

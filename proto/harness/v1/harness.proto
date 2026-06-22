@@ -891,6 +891,21 @@ message CredentialConfig {
   //                                         GHA → Azure OpenAI, and other non-Azure
   //                                         runtimes calling Azure OpenAI / Foundry
   //                                         without a static client secret.
+  //   "openai-wif"                        — OpenAI Workload Identity Federation.
+  //                                         Exchanges an OIDC JWT (from token_source) at
+  //                                         https://auth.openai.com/oauth/token for a
+  //                                         short-lived OpenAI access token via the
+  //                                         RFC 8693 token-exchange grant. Requires
+  //                                         openai_identity_provider_id,
+  //                                         openai_service_account_id, and token_source.
+  //                                         Pairs only with the openai-compatible /
+  //                                         openai-responses provider types; Bearer is
+  //                                         sent as "Authorization: Bearer", so
+  //                                         api_key_ref and api_key_header="api-key" are
+  //                                         mutually exclusive with this type. The
+  //                                         audience is set on the token_source
+  //                                         (canonically https://api.openai.com/v1), not
+  //                                         in the exchange body.
   string type = 1;
 
   // Required when type is "web-identity". Configuration for the identity
@@ -973,8 +988,29 @@ message CredentialConfig {
   // workload runs against a non-global cloud. Must be a syntactically
   // valid HTTPS URL when set; ValidateRunConfig rejects http:// and
   // schemeless values.
-  // Next available field number: 15.
   string azure_token_url = 14;
+
+  // Required when type is "openai-wif". The OpenAI Workload Identity Provider
+  // ID an organization owner registers in the OpenAI dashboard. Binds the
+  // trusted OIDC issuer, expected audience, and key source. Sent as
+  // identity_provider_id in the token-exchange body. Non-secret. OpenAI's
+  // reference does not document a stable prefix or charset, so it is
+  // validated only as a printable, whitespace-free identifier.
+  string openai_identity_provider_id = 15;
+
+  // Required when type is "openai-wif". The OpenAI service-account ID the
+  // federation mapping targets; the resulting access token acts as this
+  // principal. Sent as service_account_id in the token-exchange body.
+  // Non-secret, validated with the same opaque-identifier shape.
+  string openai_service_account_id = 16;
+
+  // Optional when type is "openai-wif". The RFC 8693 subject_token_type URN.
+  // Default (empty) applies "urn:ietf:params:oauth:token-type:jwt", which
+  // every OpenAI-documented identity provider uses; override only when the
+  // IdP issues a different token type (e.g. an id_token). Must be an RFC 8693
+  // token-type URN when set.
+  // Next available field number: 18.
+  string openai_subject_token_type = 17;
 }
 
 // TokenSourceConfig selects where identity tokens are fetched from.
