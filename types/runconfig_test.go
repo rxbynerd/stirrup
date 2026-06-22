@@ -1742,6 +1742,46 @@ func TestValidateRunConfig_OpenAIWIF(t *testing.T) {
 			errSubstr: "openaiIdentityProviderId",
 		},
 		{
+			name: "service account id with embedded whitespace rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.OpenAIServiceAccountID = "sa with space"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "openaiServiceAccountId",
+		},
+		{
+			name: "sessionName on openai-wif rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.SessionName = "stirrup"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "sessionName is only valid for credential type \"web-identity\"",
+		},
+		{
+			name: "audience on openai-wif rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.Audience = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/pr"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "audience is only valid for credential type \"gcp-workload-identity-federation\"",
+		},
+		{
+			name: "serviceAccount on openai-wif rejected",
+			mutate: func(c *RunConfig) {
+				p := validOpenAIWIFProvider()
+				p.Credential.ServiceAccount = "vertex@my-project.iam.gserviceaccount.com"
+				c.Provider = p
+			},
+			wantErr:   true,
+			errSubstr: "serviceAccount is only valid for credential type \"gcp-workload-identity-federation\"",
+		},
+		{
 			name: "subjectTokenType non-URN rejected",
 			mutate: func(c *RunConfig) {
 				p := validOpenAIWIFProvider()
@@ -1812,6 +1852,36 @@ func TestValidateRunConfig_OpenAIWIF(t *testing.T) {
 			},
 			wantErr:   true,
 			errSubstr: "openaiIdentityProviderId is only valid for credential type \"openai-wif\"",
+		},
+		{
+			name: "openaiServiceAccountId on static credential rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:      "openai-compatible",
+					APIKeyRef: "secret://OPENAI_KEY",
+					Credential: &CredentialConfig{
+						Type:                   "static",
+						OpenAIServiceAccountID: "sa_abc123",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "openaiServiceAccountId is only valid for credential type \"openai-wif\"",
+		},
+		{
+			name: "openaiSubjectTokenType on static credential rejected",
+			mutate: func(c *RunConfig) {
+				c.Provider = ProviderConfig{
+					Type:      "openai-compatible",
+					APIKeyRef: "secret://OPENAI_KEY",
+					Credential: &CredentialConfig{
+						Type:                   "static",
+						OpenAISubjectTokenType: "urn:ietf:params:oauth:token-type:jwt",
+					},
+				}
+			},
+			wantErr:   true,
+			errSubstr: "openaiSubjectTokenType is only valid for credential type \"openai-wif\"",
 		},
 	}
 

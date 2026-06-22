@@ -3798,6 +3798,112 @@ func TestApplyOpenAIWIF_ConflictingExplicitTypeRejected(t *testing.T) {
 	}
 }
 
+// TestApplyOpenAIWIF_StaticCredentialTypePromoted pins that an existing
+// type=static credential block is promoted to openai-wif when WIF flags are
+// present, rather than being treated as a conflicting type.
+func TestApplyOpenAIWIF_StaticCredentialTypePromoted(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("openai-identity-provider-id", "idp_flag")
+	mustSet("openai-service-account-id", "sa_flag")
+
+	cfg := openAIWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{
+		Type: "static",
+		TokenSource: &types.TokenSourceConfig{
+			Type: "file",
+			Path: "/var/run/file/jwt",
+		},
+	}
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential.Type != "openai-wif" {
+		t.Errorf("static credential should be promoted to openai-wif, got %q", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.OpenAIIdentityProviderID != "idp_flag" {
+		t.Errorf("OpenAIIdentityProviderID = %q, want idp_flag", cfg.Provider.Credential.OpenAIIdentityProviderID)
+	}
+}
+
+// TestApplyOpenAIWIF_SubjectTokenTypeApplied pins that the
+// OPENAI_SUBJECT_TOKEN_TYPE env var (and the flag) is written onto the
+// credential once the WIF flow is established by a required ID — but never
+// triggers the flow on its own (see TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp).
+func TestApplyOpenAIWIF_SubjectTokenTypeApplied(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
+	t.Setenv("OPENAI_SERVICE_ACCOUNT_ID", "sa_env")
+	t.Setenv("OPENAI_SUBJECT_TOKEN_TYPE", "urn:ietf:params:oauth:token-type:id_token")
+
+	cmd := newTestHarnessCommand()
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential == nil ||
+		cfg.Provider.Credential.OpenAISubjectTokenType != "urn:ietf:params:oauth:token-type:id_token" {
+		t.Errorf("subject token type not applied, got %+v", cfg.Provider.Credential)
+	}
+}
+
+// TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp pins the fix for the
+// reviewer-flagged trap: a lone OPENAI_SUBJECT_TOKEN_TYPE (no required ID,
+// no GHA opt-in) must NOT flip a plain openai-compatible run into the WIF
+// path. The optional modifier is not a WIF discriminator.
+func TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("OPENAI_SUBJECT_TOKEN_TYPE", "urn:ietf:params:oauth:token-type:id_token")
+
+	cmd := newTestHarnessCommand()
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential != nil {
+		t.Errorf("subject-token-type alone must not infer WIF, got %+v", cfg.Provider.Credential)
+	}
+	if cfg.Provider.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
+		t.Errorf("APIKeyRef should be untouched without WIF intent, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyOpenAIWIF_FromGHAIgnoredWhenTokenSourceSet pins that
+// --openai-from-github-actions does not overwrite a config-file-supplied
+// token source (the config source always wins).
+func TestApplyOpenAIWIF_FromGHAIgnoredWhenTokenSourceSet(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("openai-from-github-actions", "true"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	cfg := openAIWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{
+		Type:                     "openai-wif",
+		OpenAIIdentityProviderID: "idp_file",
+		OpenAIServiceAccountID:   "sa_file",
+		TokenSource: &types.TokenSourceConfig{
+			Type: "file",
+			Path: "/var/run/file/jwt",
+		},
+	}
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential.TokenSource.Type != "file" {
+		t.Errorf("config-file TokenSource overwritten by GHA flag: got %q", cfg.Provider.Credential.TokenSource.Type)
+	}
+	if cfg.Provider.Credential.TokenSource.Path != "/var/run/file/jwt" {
+		t.Errorf("config-file TokenSource.Path overwritten: got %q", cfg.Provider.Credential.TokenSource.Path)
+	}
+}
+
 // TestBuildHarnessRunConfig_AzureWIFFlagsImplyCredential verifies that
 // --azure-tenant-id (and the companion --azure-client-id / --azure-scope)
 // in the flag-only path produce a Credential block with

@@ -1777,7 +1777,9 @@ var (
 // with no whitespace, capped at 256 chars. It rejects the obvious
 // copy-paste failures (empty value, embedded newline/space, control bytes)
 // without guessing a format the docs do not promise. It is intentionally
-// unexported and not surfaced in error text — the format is not a contract.
+// unexported and the regex string itself is not embedded in the validation
+// error (unlike the Anthropic patterns) — the format is not a contract,
+// though the offending value is echoed via %q to aid debugging.
 var openAIWIFIdentifierPattern = regexp.MustCompile(`^[\x21-\x7e]{1,256}$`)
 
 var validTokenSourceTypes = map[string]bool{

@@ -1875,7 +1875,14 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 	subjectTokenType := resolveID("openai-subject-token-type", "OPENAI_SUBJECT_TOKEN_TYPE")
 	fromGHA, _ := f.GetBool("openai-from-github-actions")
 
-	anyIDSet := idpID != "" || saID != "" || subjectTokenType != ""
+	// Only the two required identifiers discriminate WIF intent.
+	// subjectTokenType is an optional modifier of an already-chosen flow —
+	// it has an env-var fallback (OPENAI_SUBJECT_TOKEN_TYPE), so including
+	// it here would let a stray env var on a CI runner flip a plain
+	// openai-compatible run into the WIF path and then fail validation with
+	// a confusing "requires openaiIdentityProviderId". It is still applied
+	// below once the type is settled.
+	anyIDSet := idpID != "" || saID != ""
 
 	// Only fire when the operator has signalled WIF intent (any ID set, the
 	// GHA opt-in, or an existing type=openai-wif config).
@@ -1940,9 +1947,11 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 
 	// apiKeyRef mutual exclusion. Only enforce on the OpenAI-shaped providers
 	// with openai-wif credentials; validateOpenAIWIFCrossField catches a
-	// leftover --config value, but it does not know about the per-provider
-	// default flag value being "secret://ANTHROPIC_API_KEY", so reconcile the
-	// default-vs-explicit case here before validation runs.
+	// leftover --config value, but it cannot tell the cobra default apart
+	// from an operator-set value. The --api-key-ref default is the shared
+	// "secret://ANTHROPIC_API_KEY" string regardless of provider, so an
+	// OpenAI WIF run carries it unless reconciled: clear it when it is the
+	// untouched default, hard-error when it was set explicitly.
 	if (cfg.Provider.Type == "openai-compatible" || cfg.Provider.Type == "openai-responses") &&
 		cfg.Provider.Credential != nil &&
 		cfg.Provider.Credential.Type == "openai-wif" &&

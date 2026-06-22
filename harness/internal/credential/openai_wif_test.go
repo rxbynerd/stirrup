@@ -630,6 +630,84 @@ func TestOpenAIWIFSource_NetworkError(t *testing.T) {
 	}
 }
 
+// TestOpenAIWIFSource_NegativeExpiresInFallback documents the safe-default
+// behaviour for a malformed expires_in: the shared doJSONTokenExchange
+// helper treats any non-positive value as the 1-hour fallback, so a
+// hostile/buggy server returning a negative value must not yield a token
+// whose Expiry is already in the past (which would re-exchange on every
+// request). Mirrors TestAnthropicWIFSource_NegativeExpiresInFallback.
+func TestOpenAIWIFSource_NegativeExpiresInFallback(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"tok","token_type":"Bearer","expires_in":-600}`))
+	}))
+	defer srv.Close()
+
+	src := newOpenAIWIFSourceForTest(
+		t,
+		&stubTokenSource{token: []byte("oidc")},
+		testOpenAIIdentityProviderID, testOpenAIServiceAccountID, "",
+		srv.URL,
+	)
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	tok1, err := cred.BearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("BearerToken first: %v", err)
+	}
+	tok2, err := cred.BearerToken(context.Background())
+	if err != nil {
+		t.Fatalf("BearerToken second: %v", err)
+	}
+	if tok1 != "tok" || tok2 != "tok" {
+		t.Errorf("bearer = (%q, %q), want both \"tok\"", tok1, tok2)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("exchange hit %d times, want 1 (negative expires_in must trigger 1-hour fallback)", got)
+	}
+}
+
+// TestOpenAIWIFSource_CorrelationHeaderCapped verifies the shared helper
+// runs a server-controlled correlation header through sanitiseCorrelationID
+// before embedding it in the error, capping its length so a hostile or
+// misconfigured token endpoint cannot pad the error (and any slog line it
+// reaches) with an oversized value. The response body is already bounded by
+// truncateForError; this closes the same hole on the header. (Control bytes
+// are stripped too, but Go's own transport rejects a response whose header
+// carries them before this code runs, so only the length cap is reachable
+// from an end-to-end test.)
+func TestOpenAIWIFSource_CorrelationHeaderCapped(t *testing.T) {
+	oversized := strings.Repeat("A", maxCorrelationIDLen*3)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("x-request-id", oversized)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_request"}`))
+	}))
+	defer srv.Close()
+
+	src := newOpenAIWIFSourceForTest(
+		t,
+		&stubTokenSource{token: []byte("oidc")},
+		testOpenAIIdentityProviderID, testOpenAIServiceAccountID, "",
+		srv.URL,
+	)
+	cred, err := src.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = cred.BearerToken(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), strings.Repeat("A", maxCorrelationIDLen+1)) {
+		t.Errorf("correlation id should be capped at %d chars, got: %v", maxCorrelationIDLen, err)
+	}
+}
+
 // TestOpenAIWIFSource_TokenSourceError verifies an underlying TokenSource
 // failure is wrapped, not swallowed.
 func TestOpenAIWIFSource_TokenSourceError(t *testing.T) {

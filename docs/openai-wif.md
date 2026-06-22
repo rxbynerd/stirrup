@@ -85,9 +85,9 @@ Unlike Anthropic WIF — which carries organization and workspace
 identifiers in the exchange body — the OpenAI exchange body holds only
 the grant type, the subject token, and the two IDs. OpenAI validates the
 **audience** from the subject token's `aud` claim against the provider
-config, so the audience is configured on the `tokenSource` (the
+config, so the audience is configured on the `tokenSource` — the
 canonical value is `https://api.openai.com/v1`, or whatever custom
-audience the provider was registered with), never in the exchange
+audience the provider was registered with — never in the exchange
 itself. Organization and project are bound by the service-account
 mapping server-side and likewise do not appear in stirrup's config.
 
@@ -300,6 +300,13 @@ one-hour ceiling. The exchange-endpoint timeout is 30 seconds.
 - **No audience in the exchange body.** The audience is validated from
   the subject token's `aud` claim against the provider config. Set it on
   the token source, not the credential.
+- **Point `baseUrl` only at a trusted OpenAI endpoint.** The validator
+  scopes `openai-wif` to the `openai-compatible` / `openai-responses`
+  provider types but does not constrain `baseUrl` (the same posture as
+  `azure-workload-identity`). A `baseUrl` aimed at an attacker-controlled
+  host would send the minted access token there, so treat it as a
+  security-relevant field — pin it to `https://api.openai.com/v1` (or a
+  gateway under the operator's control).
 - **Federated tokens cannot call the Admin API.** Admin scopes cannot be
   assigned to a mapping; use a static admin key for those operations.
 - **Subject token type.** All documented providers present a JWT

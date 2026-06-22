@@ -81,7 +81,14 @@ func doJSONTokenExchange(
 	if resp.StatusCode != http.StatusOK {
 		var corr string
 		if correlationHeader != "" {
-			corr = resp.Header.Get(correlationHeader)
+			// The correlation header is server-controlled. Sanitise it
+			// (strip non-printable bytes, cap length) so a hostile or
+			// misconfigured token endpoint cannot inject newlines into a
+			// slog line or pad the error with an oversized value — the
+			// response body is already bounded by truncateForError, but the
+			// header is not read through it. Shares the helper with the
+			// Azure source's body-borne correlation id.
+			corr = sanitiseCorrelationID(resp.Header.Get(correlationHeader))
 		}
 		if corr == "" {
 			return nil, fmt.Errorf(
