@@ -148,6 +148,50 @@ Common causes are clock skew on the runner (Anthropic applies 30s
 skew on `exp`/`nbf`/`iat`), an archived federation rule, or a
 `subject_prefix` that no longer matches the dispatching branch.
 
+## OpenAI
+
+The OpenAI smoke workflow lives at
+[`.github/workflows/smoke-openai-wif.yml`](../.github/workflows/smoke-openai-wif.yml).
+It targets the OpenAI Responses API over the public endpoint with WIF,
+no `OPENAI_API_KEY` in scope. The federation primitive is documented in
+full at [`docs/openai-wif.md`](openai-wif.md).
+
+Unlike the Anthropic smoke run, the two non-secret identifiers are
+**not** committed in the workflow: this repository does not provision an
+OpenAI WIF tenant. An organization owner who has registered an OpenAI
+Workload Identity Provider (against the GitHub Actions OIDC issuer
+`https://token.actions.githubusercontent.com`, audience
+`https://api.openai.com/v1`) and a service-account mapping supplies them
+as repository variables:
+
+- `OPENAI_WIF_IDENTITY_PROVIDER_ID` — the identity provider ID.
+- `OPENAI_WIF_SERVICE_ACCOUNT_ID` — the service account ID the mapping
+  targets.
+- `OPENAI_WIF_MODEL` — optional; defaults to `gpt-5.4-nano`.
+
+A preflight step fails the run with a clear message if either ID is
+unset, so a dispatch against an unconfigured repo reports the missing
+setup rather than a confusing exchange error. Both IDs are non-secret
+(they identify the provider/mapping but cannot authenticate); the
+authentication factor is the per-run OIDC JWT minted by GitHub.
+
+The workflow uses the harness's first-class
+`--openai-from-github-actions` opt-in, which sets the token-source
+audience to `https://api.openai.com/v1`. The two IDs are read from the
+`OPENAI_IDENTITY_PROVIDER_ID` / `OPENAI_SERVICE_ACCOUNT_ID` env-var
+fallbacks. No fixture file is needed.
+
+The mapping's subject must match this repository's dispatching ref. As
+with the other vendors below, a `workflow_dispatch`-triggered run mints a
+token whose `sub` takes the branch-ref form
+(`repo:rxbynerd/stirrup:ref:refs/heads/<branch>`), **not** a distinct
+`workflow_dispatch` form — see the gotcha under [Azure OpenAI](#gotcha-workflow_dispatch-uses-the-branch-ref-subject-form).
+If the run surfaces `token exchange returned 4xx`, the most common causes
+are clock skew on the runner, a `sub` that no longer matches the mapping,
+or an `aud` mismatch against the provider config. When OpenAI returns an
+`x-request-id` header on the exchange it is surfaced in the harness
+error.
+
 ## Azure OpenAI
 
 The Azure OpenAI smoke workflow lives at

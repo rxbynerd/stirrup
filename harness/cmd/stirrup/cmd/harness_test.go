@@ -1587,6 +1587,63 @@ func TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleOpenAIWIFGitHubActionsJSONLoadsAndValidates pins the shipped
+// OpenAI-WIF GitHub-Actions fixture: it must round-trip through
+// loadRunConfigFile and pass ValidateRunConfig, demonstrating the openai-wif
+// credential type on an openai-responses provider with a github-actions-oidc
+// token source carrying the OpenAI API audience.
+func TestExampleOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "openai-wif-github-actions.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/openai-wif-github-actions.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/openai-wif-github-actions.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "openai-wif" {
+		t.Errorf("Credential.Type = %q, want openai-wif", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != "https://api.openai.com/v1" {
+		t.Errorf("audience = %q, want https://api.openai.com/v1", cfg.Provider.Credential.TokenSource.Audience)
+	}
+}
+
+// TestExampleOpenAIWIFEKSIRSAJSONLoadsAndValidates pins the shipped
+// OpenAI-WIF EKS/IRSA fixture: same shape as the GitHub-Actions test above
+// but on an openai-compatible provider with an aws-irsa token source.
+func TestExampleOpenAIWIFEKSIRSAJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "openai-wif-eks-irsa.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/openai-wif-eks-irsa.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/openai-wif-eks-irsa.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "openai-wif" {
+		t.Errorf("Credential.Type = %q, want openai-wif", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "aws-irsa" {
+		t.Errorf("expected aws-irsa token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+}
+
 // TestExampleBedrockWIFSmokeJSONLoadsAndValidates pins the pre-wired
 // smoke-test fixture consumed by .github/workflows/smoke-bedrock.yml.
 // The fixture hardcodes the stirrup sandbox AWS account's role ARN
