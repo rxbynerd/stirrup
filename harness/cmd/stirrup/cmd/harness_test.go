@@ -1587,6 +1587,63 @@ func TestExampleAzureOpenAIWIFSmokeJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleOpenAIWIFGitHubActionsJSONLoadsAndValidates pins the shipped
+// OpenAI-WIF GitHub-Actions fixture: it must round-trip through
+// loadRunConfigFile and pass ValidateRunConfig, demonstrating the openai-wif
+// credential type on an openai-responses provider with a github-actions-oidc
+// token source carrying the OpenAI API audience.
+func TestExampleOpenAIWIFGitHubActionsJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "openai-wif-github-actions.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/openai-wif-github-actions.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/openai-wif-github-actions.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "openai-wif" {
+		t.Errorf("Credential.Type = %q, want openai-wif", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("expected github-actions-oidc token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+	if cfg.Provider.Credential.TokenSource.Audience != "https://api.openai.com/v1" {
+		t.Errorf("audience = %q, want https://api.openai.com/v1", cfg.Provider.Credential.TokenSource.Audience)
+	}
+}
+
+// TestExampleOpenAIWIFEKSIRSAJSONLoadsAndValidates pins the shipped
+// OpenAI-WIF EKS/IRSA fixture: same shape as the GitHub-Actions test above
+// but on an openai-compatible provider with an aws-irsa token source.
+func TestExampleOpenAIWIFEKSIRSAJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "openai-wif-eks-irsa.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/openai-wif-eks-irsa.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/openai-wif-eks-irsa.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Provider.Credential == nil {
+		t.Fatal("expected Provider.Credential block")
+	}
+	if cfg.Provider.Credential.Type != "openai-wif" {
+		t.Errorf("Credential.Type = %q, want openai-wif", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.TokenSource == nil || cfg.Provider.Credential.TokenSource.Type != "aws-irsa" {
+		t.Errorf("expected aws-irsa token source, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+}
+
 // TestExampleBedrockWIFSmokeJSONLoadsAndValidates pins the pre-wired
 // smoke-test fixture consumed by .github/workflows/smoke-bedrock.yml.
 // The fixture hardcodes the stirrup sandbox AWS account's role ARN
@@ -3490,6 +3547,360 @@ func TestApplyAnthropicWIF_ExistingTokenSourcePreserved(t *testing.T) {
 	}
 	if cfg.Provider.Credential.TokenSource.Path != "/var/run/file/jwt" {
 		t.Errorf("file-provided TokenSource.Path overwritten: got %q", cfg.Provider.Credential.TokenSource.Path)
+	}
+}
+
+// openAIWIFBaseConfig is the OpenAI counterpart of anthropicWIFBaseConfig:
+// an openai-compatible provider carrying the cobra-default ANTHROPIC api-key
+// ref, so the apiKeyRef-clearing branch in applyOpenAIWIFOverrides is
+// exercised.
+func openAIWIFBaseConfig() *types.RunConfig {
+	cfg := baseFileConfig()
+	cfg.Provider = types.ProviderConfig{
+		Type:      "openai-compatible",
+		BaseURL:   "https://api.openai.com/v1",
+		APIKeyRef: "secret://ANTHROPIC_API_KEY",
+	}
+	return cfg
+}
+
+// clearOpenAIWIFEnv hermetically scrubs the env vars
+// applyOpenAIWIFOverrides reads so a contaminated CI runner cannot flip an
+// inference branch.
+func clearOpenAIWIFEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{
+		"OPENAI_IDENTITY_PROVIDER_ID",
+		"OPENAI_SERVICE_ACCOUNT_ID",
+		"OPENAI_SUBJECT_TOKEN_TYPE",
+		"OPENAI_IDENTITY_TOKEN_FILE",
+		"OPENAI_IDENTITY_TOKEN",
+		"ACTIONS_ID_TOKEN_REQUEST_URL",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+	} {
+		t.Setenv(name, "")
+	}
+}
+
+// TestApplyOpenAIWIF_EnvVarFallback verifies the OPENAI_* env vars fill in
+// the identifiers when no flag is set and the inferred type is openai-wif.
+func TestApplyOpenAIWIF_EnvVarFallback(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
+	t.Setenv("OPENAI_SERVICE_ACCOUNT_ID", "sa_env")
+	t.Setenv("OPENAI_IDENTITY_TOKEN_FILE", "/var/run/secrets/idp/jwt")
+
+	cmd := newTestHarnessCommand()
+	cfg := openAIWIFBaseConfig()
+
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+
+	cred := cfg.Provider.Credential
+	if cred == nil {
+		t.Fatal("expected Credential to be inferred from env vars")
+	}
+	if cred.Type != "openai-wif" {
+		t.Errorf("Credential.Type = %q, want openai-wif", cred.Type)
+	}
+	if cred.OpenAIIdentityProviderID != "idp_env" {
+		t.Errorf("OpenAIIdentityProviderID = %q, want idp_env", cred.OpenAIIdentityProviderID)
+	}
+	if cred.OpenAIServiceAccountID != "sa_env" {
+		t.Errorf("OpenAIServiceAccountID = %q, want sa_env", cred.OpenAIServiceAccountID)
+	}
+	if cred.TokenSource == nil || cred.TokenSource.Type != "file" || cred.TokenSource.Path != "/var/run/secrets/idp/jwt" {
+		t.Errorf("expected file token source from OPENAI_IDENTITY_TOKEN_FILE, got %+v", cred.TokenSource)
+	}
+	if cfg.Provider.APIKeyRef != "" {
+		t.Errorf("APIKeyRef should be cleared under WIF, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyOpenAIWIF_ExplicitFlagBeatsEnv pins flag > env precedence.
+func TestApplyOpenAIWIF_ExplicitFlagBeatsEnv(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("openai-identity-provider-id", "idp_flag"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if err := cmd.Flags().Set("openai-service-account-id", "sa_flag"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential == nil || cfg.Provider.Credential.OpenAIIdentityProviderID != "idp_flag" {
+		t.Errorf("explicit flag should beat env, got %+v", cfg.Provider.Credential)
+	}
+}
+
+// TestApplyOpenAIWIF_FromGitHubActionsSelectsTokenSource pins the GHA opt-in:
+// the inferred token source is github-actions-oidc with the OpenAI API
+// audience.
+func TestApplyOpenAIWIF_FromGitHubActionsSelectsTokenSource(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
+
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("openai-identity-provider-id", "idp_flag")
+	mustSet("openai-service-account-id", "sa_flag")
+	mustSet("openai-from-github-actions", "true")
+
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+
+	cred := cfg.Provider.Credential
+	if cred == nil || cred.TokenSource == nil {
+		t.Fatalf("expected TokenSource set, got %+v", cred)
+	}
+	if cred.TokenSource.Type != "github-actions-oidc" {
+		t.Errorf("TokenSource.Type = %q, want github-actions-oidc", cred.TokenSource.Type)
+	}
+	if cred.TokenSource.Audience != "https://api.openai.com/v1" {
+		t.Errorf("TokenSource.Audience = %q, want https://api.openai.com/v1", cred.TokenSource.Audience)
+	}
+}
+
+// TestApplyOpenAIWIF_GHAEnvAloneDoesNotInferTokenSource is the negative test
+// for silent IdP selection: bare ACTIONS_ID_TOKEN_REQUEST_URL must not
+// auto-select github-actions-oidc.
+func TestApplyOpenAIWIF_GHAEnvAloneDoesNotInferTokenSource(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", "https://example.actions.githubusercontent.com/token")
+	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
+	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
+	t.Setenv("OPENAI_SERVICE_ACCOUNT_ID", "sa_env")
+
+	cmd := newTestHarnessCommand()
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential != nil && cfg.Provider.Credential.TokenSource != nil {
+		t.Errorf("token source must not be inferred from bare GHA env, got %+v", cfg.Provider.Credential.TokenSource)
+	}
+}
+
+// TestApplyOpenAIWIF_IdentityTokenEnvVarSelectsEnvSource pins the env-source
+// inference from OPENAI_IDENTITY_TOKEN.
+func TestApplyOpenAIWIF_IdentityTokenEnvVarSelectsEnvSource(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
+	t.Setenv("OPENAI_SERVICE_ACCOUNT_ID", "sa_env")
+	t.Setenv("OPENAI_IDENTITY_TOKEN", "the-jwt")
+
+	cmd := newTestHarnessCommand()
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	ts := cfg.Provider.Credential.TokenSource
+	if ts == nil || ts.Type != "env" || ts.EnvVar != "OPENAI_IDENTITY_TOKEN" {
+		t.Errorf("expected env token source, got %+v", ts)
+	}
+}
+
+// TestApplyOpenAIWIF_ExplicitAPIKeyRefRejected pins the apiKeyRef guard: an
+// explicit --api-key-ref alongside openai-wif flags is a hard error.
+func TestApplyOpenAIWIF_ExplicitAPIKeyRefRejected(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("openai-identity-provider-id", "idp_flag")
+	mustSet("openai-service-account-id", "sa_flag")
+	mustSet("api-key-ref", "secret://OPENAI_KEY")
+
+	cfg := openAIWIFBaseConfig()
+	err := applyOpenAIWIFOverrides(cmd, cfg)
+	if err == nil {
+		t.Fatal("expected error for explicit --api-key-ref alongside WIF flags")
+	}
+	if !strings.Contains(err.Error(), "api-key-ref must not be set") {
+		t.Errorf("error should mention the apiKeyRef conflict, got: %v", err)
+	}
+}
+
+// TestApplyOpenAIWIF_DefaultAPIKeyRefSilentlyCleared pins that the cobra
+// default api-key-ref is cleared (not error) when WIF intent is expressed.
+func TestApplyOpenAIWIF_DefaultAPIKeyRefSilentlyCleared(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("openai-identity-provider-id", "idp_flag")
+	mustSet("openai-service-account-id", "sa_flag")
+
+	cfg := openAIWIFBaseConfig() // APIKeyRef = default ANTHROPIC ref, not changed
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.APIKeyRef != "" {
+		t.Errorf("default APIKeyRef should be cleared under WIF, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyOpenAIWIF_NoIntentNoOp pins that the helper does nothing when no
+// WIF intent is expressed — a plain openai-compatible run keeps its key.
+func TestApplyOpenAIWIF_NoIntentNoOp(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	cmd := newTestHarnessCommand()
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential != nil {
+		t.Errorf("no WIF intent should leave Credential nil, got %+v", cfg.Provider.Credential)
+	}
+	if cfg.Provider.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
+		t.Errorf("APIKeyRef should be untouched without WIF intent, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyOpenAIWIF_ConflictingExplicitTypeRejected pins that layering
+// --openai-* flags on a config that already names a different credential
+// type is a hard error rather than a silent rewrite.
+func TestApplyOpenAIWIF_ConflictingExplicitTypeRejected(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("openai-identity-provider-id", "idp_flag"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	cfg := openAIWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{Type: "azure-workload-identity"}
+	err := applyOpenAIWIFOverrides(cmd, cfg)
+	if err == nil {
+		t.Fatal("expected error for conflicting explicit credential type")
+	}
+	if !strings.Contains(err.Error(), "conflicting type") {
+		t.Errorf("error should mention the conflicting type, got: %v", err)
+	}
+}
+
+// TestApplyOpenAIWIF_StaticCredentialTypePromoted pins that an existing
+// type=static credential block is promoted to openai-wif when WIF flags are
+// present, rather than being treated as a conflicting type.
+func TestApplyOpenAIWIF_StaticCredentialTypePromoted(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	cmd := newTestHarnessCommand()
+	mustSet := func(name, val string) {
+		if err := cmd.Flags().Set(name, val); err != nil {
+			t.Fatalf("set %s: %v", name, err)
+		}
+	}
+	mustSet("openai-identity-provider-id", "idp_flag")
+	mustSet("openai-service-account-id", "sa_flag")
+
+	cfg := openAIWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{
+		Type: "static",
+		TokenSource: &types.TokenSourceConfig{
+			Type: "file",
+			Path: "/var/run/file/jwt",
+		},
+	}
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential.Type != "openai-wif" {
+		t.Errorf("static credential should be promoted to openai-wif, got %q", cfg.Provider.Credential.Type)
+	}
+	if cfg.Provider.Credential.OpenAIIdentityProviderID != "idp_flag" {
+		t.Errorf("OpenAIIdentityProviderID = %q, want idp_flag", cfg.Provider.Credential.OpenAIIdentityProviderID)
+	}
+}
+
+// TestApplyOpenAIWIF_SubjectTokenTypeApplied pins that the
+// OPENAI_SUBJECT_TOKEN_TYPE env var (and the flag) is written onto the
+// credential once the WIF flow is established by a required ID — but never
+// triggers the flow on its own (see TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp).
+func TestApplyOpenAIWIF_SubjectTokenTypeApplied(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("OPENAI_IDENTITY_PROVIDER_ID", "idp_env")
+	t.Setenv("OPENAI_SERVICE_ACCOUNT_ID", "sa_env")
+	t.Setenv("OPENAI_SUBJECT_TOKEN_TYPE", "urn:ietf:params:oauth:token-type:id_token")
+
+	cmd := newTestHarnessCommand()
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential == nil ||
+		cfg.Provider.Credential.OpenAISubjectTokenType != "urn:ietf:params:oauth:token-type:id_token" {
+		t.Errorf("subject token type not applied, got %+v", cfg.Provider.Credential)
+	}
+}
+
+// TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp pins the fix for the
+// reviewer-flagged trap: a lone OPENAI_SUBJECT_TOKEN_TYPE (no required ID,
+// no GHA opt-in) must NOT flip a plain openai-compatible run into the WIF
+// path. The optional modifier is not a WIF discriminator.
+func TestApplyOpenAIWIF_SubjectTokenTypeAloneNoOp(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	t.Setenv("OPENAI_SUBJECT_TOKEN_TYPE", "urn:ietf:params:oauth:token-type:id_token")
+
+	cmd := newTestHarnessCommand()
+	cfg := openAIWIFBaseConfig()
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential != nil {
+		t.Errorf("subject-token-type alone must not infer WIF, got %+v", cfg.Provider.Credential)
+	}
+	if cfg.Provider.APIKeyRef != "secret://ANTHROPIC_API_KEY" {
+		t.Errorf("APIKeyRef should be untouched without WIF intent, got %q", cfg.Provider.APIKeyRef)
+	}
+}
+
+// TestApplyOpenAIWIF_FromGHAIgnoredWhenTokenSourceSet pins that
+// --openai-from-github-actions does not overwrite a config-file-supplied
+// token source (the config source always wins).
+func TestApplyOpenAIWIF_FromGHAIgnoredWhenTokenSourceSet(t *testing.T) {
+	clearOpenAIWIFEnv(t)
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("openai-from-github-actions", "true"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+
+	cfg := openAIWIFBaseConfig()
+	cfg.Provider.Credential = &types.CredentialConfig{
+		Type:                     "openai-wif",
+		OpenAIIdentityProviderID: "idp_file",
+		OpenAIServiceAccountID:   "sa_file",
+		TokenSource: &types.TokenSourceConfig{
+			Type: "file",
+			Path: "/var/run/file/jwt",
+		},
+	}
+	if err := applyOpenAIWIFOverrides(cmd, cfg); err != nil {
+		t.Fatalf("applyOpenAIWIFOverrides: %v", err)
+	}
+	if cfg.Provider.Credential.TokenSource.Type != "file" {
+		t.Errorf("config-file TokenSource overwritten by GHA flag: got %q", cfg.Provider.Credential.TokenSource.Type)
+	}
+	if cfg.Provider.Credential.TokenSource.Path != "/var/run/file/jwt" {
+		t.Errorf("config-file TokenSource.Path overwritten: got %q", cfg.Provider.Credential.TokenSource.Path)
 	}
 }
 

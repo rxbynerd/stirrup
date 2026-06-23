@@ -154,6 +154,7 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 | Cross-cloud credential federation | [`docs/credential-federation.md`](docs/credential-federation.md) |
 | Anthropic Workload Identity Federation | [`docs/anthropic-wif.md`](docs/anthropic-wif.md) |
 | Azure Workload Identity Federation | [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md) |
+| OpenAI Workload Identity Federation | [`docs/openai-wif.md`](docs/openai-wif.md) |
 | Cloud observability backends (Grafana, etc.) | [`docs/observability-cloud.md`](docs/observability-cloud.md) |
 | Project philosophy | [`docs/philosophy.md`](docs/philosophy.md) |
 | Per-package layout (orientation for AI agents) | [`AGENTS.md`](AGENTS.md) |

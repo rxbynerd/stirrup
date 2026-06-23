@@ -59,7 +59,7 @@ type RunConfigSources struct {
 	ConfigPath string
 	// Cmd is the cobra command whose flags carry the overrides. The
 	// builder reads both Changed() and the resolved values via
-	// applyOverrides / applyAnthropicWIFOverrides.
+	// applyOverrides / applyAnthropicWIFOverrides / applyOpenAIWIFOverrides.
 	Cmd *cobra.Command
 	// Args is the positional argument slice (typically the prompt
 	// positional). Only consulted when Resolve == ResolveAll and the
@@ -91,6 +91,9 @@ type RunConfigSources struct {
 //     a flag at its default value never clobbers a base field).
 //  4. applyAnthropicWIFOverrides (env-var + flag federation folding
 //     plus the apiKeyRef mutual-exclusion guard from #117).
+//  5. applyOpenAIWIFOverrides (the OpenAI counterpart of step 4; runs
+//     after it so combining --anthropic-* and --openai-* flags errors on
+//     the conflicting type rather than letting one silently win).
 //
 // When Resolve == ResolveAll the builder additionally:
 //   - Calls applyModeDefaults so read-only modes get a non-empty Tools.
@@ -123,6 +126,14 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 	// site here keeps the slog.Warn diagnostics inside the helper from
 	// firing twice per invocation.
 	if err := applyAnthropicWIFOverrides(sources.Cmd, cfg); err != nil {
+		return nil, err
+	}
+
+	// OpenAI Workload Identity Federation overrides. Same structure as the
+	// Anthropic helper above; runs after it so that combining --anthropic-*
+	// and --openai-* flags surfaces a clear conflicting-type error rather
+	// than silently letting one win.
+	if err := applyOpenAIWIFOverrides(sources.Cmd, cfg); err != nil {
 		return nil, err
 	}
 

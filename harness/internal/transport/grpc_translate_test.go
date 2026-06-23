@@ -629,6 +629,53 @@ func TestRunConfigFromProto_AnthropicWIFFieldsPreserved(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_OpenAIWIFFieldsPreserved guards the three OpenAI
+// Workload Identity Federation proto fields against silent drop on the
+// control-plane / K8s-job path. Without coverage here, an operator
+// delivering a RunConfig with credential.type=openai-wif via gRPC receives
+// a CredentialConfig with the two required fields empty, validation rejects
+// it, and the K8s job fails to start. Mirrors the Anthropic WIF round-trip
+// test above; uses the generated getters in the translate layer to stay
+// nil-safe.
+func TestRunConfigFromProto_OpenAIWIFFieldsPreserved(t *testing.T) {
+	pc := &pb.RunConfig{
+		Provider: &pb.ProviderConfig{
+			Type: "openai-compatible",
+			Credential: &pb.CredentialConfig{
+				Type:                     "openai-wif",
+				OpenaiIdentityProviderId: "idp_abc123",
+				OpenaiServiceAccountId:   "sa_xyz789",
+				OpenaiSubjectTokenType:   "urn:ietf:params:oauth:token-type:jwt",
+				TokenSource: &pb.TokenSourceConfig{
+					Type:     "github-actions-oidc",
+					Audience: "https://api.openai.com/v1",
+				},
+			},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.Provider.Credential == nil {
+		t.Fatal("Credential dropped during proto translation")
+	}
+	if got, want := rc.Provider.Credential.Type, "openai-wif"; got != want {
+		t.Errorf("Credential.Type: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.OpenAIIdentityProviderID, "idp_abc123"; got != want {
+		t.Errorf("Credential.OpenAIIdentityProviderID: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.OpenAIServiceAccountID, "sa_xyz789"; got != want {
+		t.Errorf("Credential.OpenAIServiceAccountID: got %q, want %q", got, want)
+	}
+	if got, want := rc.Provider.Credential.OpenAISubjectTokenType, "urn:ietf:params:oauth:token-type:jwt"; got != want {
+		t.Errorf("Credential.OpenAISubjectTokenType: got %q, want %q", got, want)
+	}
+	if rc.Provider.Credential.TokenSource == nil || rc.Provider.Credential.TokenSource.Audience != "https://api.openai.com/v1" {
+		t.Errorf("TokenSource dropped or mangled: %+v", rc.Provider.Credential.TokenSource)
+	}
+}
+
 // TestRunConfigFromProto_TraceEmitterProtocolAndHeadersPreserved guards
 // the two new TraceEmitterConfig fields added by gh-100 (Protocol,
 // Headers) against silent drop in runConfigFromProto. Without this

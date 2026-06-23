@@ -165,6 +165,9 @@ so short-lived tokens are refreshed without restarting the run.
 
 The token-source abstraction (`TokenSource`) is reusable across targets:
 the same EKS IRSA projected token can be exchanged for AWS credentials,
-GCP credentials (via WIF), or an Anthropic service account token.
+GCP credentials (via WIF), an Anthropic service account token, or an
+OpenAI access token. The `openai-compatible` and `openai-responses`
+providers reach the OpenAI API keyless via OpenAI Workload Identity
+Federation — see [`docs/openai-wif.md`](openai-wif.md).
 
 Full reference: [`docs/credential-federation.md`](credential-federation.md).

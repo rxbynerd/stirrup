@@ -1,11 +1,9 @@
 package credential
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -141,17 +139,13 @@ type anthropicOAuthRequest struct {
 	WorkspaceID      string `json:"workspace_id,omitempty"`
 }
 
-// anthropicOAuthResponse mirrors the documented success response. We
-// parse only the fields needed to drive the bearer-token refresh loop;
-// trailing fields (`scope`) are read but unused beyond surfacing.
-type anthropicOAuthResponse struct {
-	AccessToken string `json:"access_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int64  `json:"expires_in"`
-	Scope       string `json:"scope"`
-}
-
 // Token performs the OAuth token-exchange. Implements oauth2.TokenSource.
+//
+// The request body and the anthropic-version header are Anthropic-specific;
+// the transport, bounded response read, error decoration, and expiry
+// calculation are delegated to doJSONTokenExchange, shared with the OpenAI
+// WIF source. Anthropic surfaces a request-id response header on non-2xx,
+// which rides through to the error for Console correlation.
 //
 // The "Anthropic WIF:" error prefix is a deliberate convention shared
 // with google_federation.go so federation failures group together in
@@ -187,77 +181,9 @@ func (t *anthropicWIFTokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("Anthropic WIF: marshal token request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.src.tokenURL, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("Anthropic WIF: build token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("anthropic-version", anthropicVersionHeader)
-
-	resp, err := t.src.httpClient.Do(req)
-	if err != nil {
-		// TODO(issue #117 follow-up): emit a `federation_exchange_failed`
-		// security event here so operators can dashboard refresh
-		// failures alongside other security events. The credential
-		// package today has no SecurityLogger handle — adding one
-		// requires either a callback wired by the factory (preferred)
-		// or moving SecurityLogger into a leaf package. Tracked in
-		// the remediation brief I-finding "Missing federation_exchange_failed
-		// security event" and deferred from this remediation pass to
-		// keep its scope tight.
-		return nil, fmt.Errorf("Anthropic WIF: token request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, stsResponseLimit))
-	if err != nil {
-		return nil, fmt.Errorf("Anthropic WIF: read token response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		// Anthropic returns a request_id header on every response; surface
-		// it in the error so operators can correlate with the Console
-		// authentication-history page. The body is bounded by
-		// truncateForError so a hostile or misconfigured endpoint cannot
-		// flood logs through this path.
-		reqID := resp.Header.Get("request-id")
-		if reqID == "" {
-			return nil, fmt.Errorf(
-				"Anthropic WIF: token exchange returned %d: %s",
-				resp.StatusCode,
-				truncateForError(respBody),
-			)
-		}
-		return nil, fmt.Errorf(
-			"Anthropic WIF: token exchange returned %d (request_id=%s): %s",
-			resp.StatusCode,
-			reqID,
-			truncateForError(respBody),
-		)
-	}
-
-	var parsed anthropicOAuthResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("Anthropic WIF: parse token response: %w", err)
-	}
-	if parsed.AccessToken == "" {
-		return nil, fmt.Errorf("Anthropic WIF: token exchange returned empty access_token")
-	}
-
-	// Anthropic's docs document expires_in in seconds (typically 3600,
-	// configurable per federation rule from 60–86400). Fall back to a
-	// 1-hour assumption if the server omits it for any reason — without
-	// a non-zero expiry the ReuseTokenSource wrapper would treat the
-	// token as already expired and re-hit the exchange endpoint on
-	// every adapter request.
-	lifetime := time.Duration(parsed.ExpiresIn) * time.Second
-	if lifetime <= 0 {
-		lifetime = time.Hour
-	}
-	return &oauth2.Token{
-		AccessToken: parsed.AccessToken,
-		TokenType:   "Bearer",
-		Expiry:      time.Now().Add(lifetime),
-	}, nil
+	return doJSONTokenExchange(ctx, t.src.httpClient, t.src.tokenURL, map[string]string{
+		"Content-Type":      "application/json",
+		"Accept":            "application/json",
+		"anthropic-version": anthropicVersionHeader,
+	}, body, "Anthropic WIF", "request-id")
 }

@@ -1,0 +1,106 @@
+name: Smoke Test - OpenAI WIF
+
+# End-to-end smoke test for OpenAI Workload Identity Federation.
+# Manually dispatched. Exchanges the GitHub Actions OIDC token for an
+# OpenAI access token at auth.openai.com/oauth/token via the RFC 8693
+# token-exchange grant, then runs the harness against the live OpenAI API
+# with no static OPENAI_API_KEY in scope.
+#
+# Unlike the Anthropic smoke test, the two non-secret identifiers are NOT
+# committed here: this repository does not provision an OpenAI WIF tenant.
+# An operator who has registered an OpenAI Workload Identity Provider and a
+# service-account mapping (org-owner operations — see docs/openai-wif.md)
+# supplies them as repository variables:
+#
+#   OPENAI_WIF_IDENTITY_PROVIDER_ID  — the provider ID (identity_provider_id)
+#   OPENAI_WIF_SERVICE_ACCOUNT_ID    — the service account ID
+#   OPENAI_WIF_MODEL                 — optional; defaults to gpt-5.4-nano
+#
+# These are non-secret identifiers (they identify the provider/mapping but
+# cannot authenticate); the authentication factor is the per-run OIDC JWT
+# minted by GitHub. The mapping's subject must match this repository's
+# workflow ref — see the workflow_dispatch gotcha in docs/smoke-tests.md.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-openai-wif:
+    name: OpenAI WIF Smoke Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.OPENAI_WIF_IDENTITY_PROVIDER_ID }}
+      OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.OPENAI_WIF_SERVICE_ACCOUNT_ID }}
+      OPENAI_WIF_MODEL: ${{ vars.OPENAI_WIF_MODEL || 'gpt-5.4-nano' }}
+    steps:
+      - name: Preflight — require the WIF identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "${OPENAI_IDENTITY_PROVIDER_ID}" ]; then
+            echo "::error::repository variable OPENAI_WIF_IDENTITY_PROVIDER_ID is unset" >&2
+            missing=1
+          fi
+          if [ -z "${OPENAI_SERVICE_ACCOUNT_ID}" ]; then
+            echo "::error::repository variable OPENAI_WIF_SERVICE_ACCOUNT_ID is unset" >&2
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            echo "Set both variables (Settings → Secrets and variables → Actions → Variables) after provisioning OpenAI WIF; see docs/openai-wif.md." >&2
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            harness/go.mod
+            types/go.mod
+            eval/go.mod
+
+      - name: Build stirrup binary
+        working-directory: harness
+        run: go build -o ../stirrup ./cmd/stirrup
+
+      - name: Create workspace
+        run: mkdir -p workspace
+
+      - name: Run smoke test
+        run: |
+          ./stirrup harness \
+            --provider openai-responses \
+            --base-url https://api.openai.com/v1 \
+            --openai-from-github-actions \
+            --model "${OPENAI_WIF_MODEL}" \
+            --workspace workspace \
+            --trace trace.jsonl \
+            --max-turns 5 \
+            --prompt "Write the string 'smoke test passed' to a file called hello.txt"
+
+      - name: Verify trace outcome
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -s trace.jsonl ] || { echo "trace.jsonl is missing or empty" >&2; exit 1; }
+          jq -e '.outcome == "success"' trace.jsonl
+
+      - name: Verify workspace output
+        run: |
+          test -f workspace/hello.txt || { echo "hello.txt was not created" >&2; exit 1; }
+          grep -qF 'smoke test passed' workspace/hello.txt || { echo "hello.txt does not contain expected string" >&2; cat workspace/hello.txt >&2; exit 1; }
+
+      - name: Upload trace
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-trace-openai-wif
+          path: trace.jsonl
+          retention-days: 7
