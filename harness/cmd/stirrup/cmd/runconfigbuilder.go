@@ -168,9 +168,12 @@ func BuildRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 // loadBaseRunConfig picks the right base — file, stdin, or
 // flag-derived — and returns a RunConfig pre-population is layered on.
 // The three sources are mutually exclusive: --config <path> with a
-// non-TTY stdin is rejected with both sources cited, because the
-// alternative (silent precedence) would surprise pipeline authors
-// debugging which source landed which field.
+// non-TTY stdin that carries bytes is rejected with both sources cited,
+// because the alternative (silent precedence) would surprise pipeline
+// authors debugging which source landed which field. An auto-detected
+// but empty piped stdin is not a source at all — it is downgraded to
+// "no piped stdin" (see the read below) so non-interactive runtimes
+// that attach an empty pipe to fd 0 do not abort an otherwise-valid run.
 //
 // STIRRUP_CONFIG is a fourth-precedence fallback that fills the same
 // slot as --config when the flag was not passed. It accepts the same
@@ -206,6 +209,34 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		}
 	}
 
+	// An auto-detected piped stdin is only a real config source when it
+	// actually carries bytes. Non-interactive runtimes routinely hand the
+	// process a closed, empty anonymous pipe on fd 0 — GitHub Actions
+	// shell steps, `docker exec` without -i, `kubectl exec` — which
+	// os.File.Stat reports as os.ModeNamedPipe, so isStdinPiped treats it
+	// as piped. Reading it once and finding it empty lets the harness tell
+	// "operator piped a config" apart from "the runtime attached an empty
+	// pipe": the latter is downgraded to "no piped stdin" so a flag-only
+	// or --config run proceeds instead of aborting with "input is empty"
+	// or a phantom ambiguity. The explicit --config - / STIRRUP_CONFIG=-
+	// form is exempt — there the operator named stdin as the source, so an
+	// empty read stays a hard error (the explicitStdin case below). The
+	// cost is that a held-open, never-written pipe blocks here rather than
+	// erroring fast; that is already true of the explicit-stdin read and
+	// requires the operator to deliberately attach such a pipe.
+	var pipedConfig []byte
+	if stdinPiped && !explicitStdin {
+		data, err := readCappedStdin(sources.Stdin, "<stdin>")
+		if err != nil {
+			return nil, err
+		}
+		if len(data) == 0 {
+			stdinPiped = false
+		} else {
+			pipedConfig = data
+		}
+	}
+
 	// The base-source preconditions below are configuration mistakes the
 	// operator must resolve before any input is read — ambiguous sources,
 	// or --config -/STIRRUP_CONFIG=- without a usable piped stdin. They
@@ -236,7 +267,10 @@ func loadBaseRunConfig(sources RunConfigSources) (*types.RunConfig, error) {
 		}
 		return readRunConfigFromReader(sources.Stdin, "<stdin>")
 	case stdinPiped && filePath == "":
-		return readRunConfigFromReader(sources.Stdin, "<stdin>")
+		// pipedConfig was buffered above and is guaranteed non-empty: an
+		// empty pipe flips stdinPiped to false, so this case is never
+		// reached for one.
+		return decodeRunConfig(pipedConfig, "<stdin>")
 	case filePath != "":
 		if envConfigSourced {
 			slog.Debug("using STIRRUP_CONFIG as base RunConfig source", "path", filePath)
@@ -306,27 +340,35 @@ func isStdinPiped(r io.Reader) bool {
 	return false
 }
 
-// readRunConfigFromReader mirrors loadRunConfigFile but consumes any
-// io.Reader. Used for both --config - and the auto-detected pipe path
-// in BuildRunConfig. The 1 MiB cap matches the file path (a RunConfig
-// is at most a few KB; megabytes mean a mistake), the
-// DisallowUnknownFields setting matches the file path (typos in piped
-// JSON should fail fast), and the empty-input error is what the spec
-// requires for `stirrup harness < /dev/null`.
-func readRunConfigFromReader(r io.Reader, source string) (*types.RunConfig, error) {
+// readCappedStdin reads up to the config-size cap from r and returns the
+// raw bytes. Emptiness is deliberately NOT an error here: the caller
+// decides whether an empty read is fatal (an explicit --config - / `<
+// config.json` the operator asked for) or benign (an auto-detected pipe
+// that turns out to carry no config — see loadBaseRunConfig). A read
+// failure on the stream itself (broken pipe, flaky redirected file) and
+// an over-cap payload are both I/O errors (exit 3): the bytes never
+// reached the decoder.
+func readCappedStdin(r io.Reader, source string) ([]byte, error) {
 	// +1 lets us distinguish "exactly at the cap" from "larger than the
 	// cap" so the operator-facing error is accurate. Same shape as the
 	// readPromptFile helper above.
 	data, err := io.ReadAll(io.LimitReader(r, maxConfigFileBytes+1))
 	if err != nil {
-		// Read failure on the stream itself (a broken pipe, a flaky
-		// redirected file) is an I/O error (exit 3), not a parse error:
-		// the bytes never reached the decoder.
 		return nil, ioError(fmt.Errorf("reading config from %s: %w", source, err))
 	}
 	if int64(len(data)) > maxConfigFileBytes {
 		return nil, ioError(fmt.Errorf("reading config from %s: exceeds %d byte cap", source, maxConfigFileBytes))
 	}
+	return data, nil
+}
+
+// decodeRunConfig parses already-read config bytes with the same
+// DisallowUnknownFields strictness as the file path (typos in piped JSON
+// should fail fast). Empty input is an I/O error (exit 3) carrying the
+// remediation hint; malformed JSON is a parse error (exit 2). Callers
+// that treat an empty read as benign must gate on len(data) themselves
+// before calling this.
+func decodeRunConfig(data []byte, source string) (*types.RunConfig, error) {
 	if len(data) == 0 {
 		return nil, ioError(fmt.Errorf("reading config from %s: input is empty; pass --config <path> or remove the redirection", source))
 	}
@@ -334,11 +376,21 @@ func readRunConfigFromReader(r io.Reader, source string) (*types.RunConfig, erro
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		// Malformed JSON (syntax error, unknown field, type mismatch) is
-		// a parse error (exit 2): the input was read but did not decode.
 		return nil, parseError(fmt.Errorf("parsing config from %s: %w", source, err))
 	}
 	return &cfg, nil
+}
+
+// readRunConfigFromReader mirrors loadRunConfigFile but consumes any
+// io.Reader. Used for the explicit --config - path, where an empty read
+// is an error. The 1 MiB cap matches the file path (a RunConfig is at
+// most a few KB; megabytes mean a mistake).
+func readRunConfigFromReader(r io.Reader, source string) (*types.RunConfig, error) {
+	data, err := readCappedStdin(r, source)
+	if err != nil {
+		return nil, err
+	}
+	return decodeRunConfig(data, source)
 }
 
 // buildFlagOnlyRunConfig reads the flag values off cmd and constructs
