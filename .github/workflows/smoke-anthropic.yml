@@ -52,6 +52,7 @@ jobs:
             --workspace workspace \
             --trace trace.jsonl \
             --max-turns 5 \
+            --mode execution \
             --prompt "Write the string 'smoke test passed' to a file called hello.txt"
 
       - name: Verify trace outcome

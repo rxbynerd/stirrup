@@ -44,10 +44,10 @@ on:
     inputs:
       tag:
         description: >-
-          GAR image tag to deploy. Defaults to `latest`, which after
-          the dev-push removal (see ci.yml) resolves to the most
-          recent non-prerelease release. Pass a specific `vX.Y.Z` or
-          `vX.Y.Z-rcN` to smoke a prerelease.
+          GAR image tag to deploy. Defaults to `latest`, which after the
+          dev-push removal (see ci.yml) resolves to the most recent
+          non-prerelease release. Pass a specific `vX.Y.Z` or `vX.Y.Z-rcN` to
+          smoke a prerelease.
         required: false
         default: latest
         type: string
@@ -78,7 +78,8 @@ jobs:
         with:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER_SMOKE }}
-          service_account: stirrup-gha-smoke-deployer@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+          service_account: stirrup-gha-smoke-deployer@${{ vars.GCP_PROJECT_ID
+            }}.iam.gserviceaccount.com
 
       # SHA-pinned to v3.0.1 — same pin as smoke-gar-publish.yml.
       - name: Set up gcloud CLI
