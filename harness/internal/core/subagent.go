@@ -79,7 +79,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// would only arise from an alias collision the parent already resolved,
 	// so fall back to the unaliased child registry rather than aborting the
 	// spawn.
-	var childTools tool.ToolRegistry = filterToolRegistry(parent.Tools, "spawn_agent")
+	var childTools tool.ToolRegistry = filterToolRegistry(parent.Tools, subAgentExcludedTools...)
 	if presenter, err := tool.NewPresenter(childTools, parent.ToolProfile); err == nil {
 		childTools = presenter
 	} else {
@@ -273,7 +273,12 @@ func capSubAgentMaxTurns(requested, parentMaxTurns int) int {
 	if maxTurns > maxSubAgentMaxTurns {
 		maxTurns = maxSubAgentMaxTurns
 	}
-	if maxTurns > parentMaxTurns {
+	// Cap at the parent's budget, but only when the parent actually has
+	// one: a zero parentMaxTurns (a test-built or not-yet-validated config)
+	// would otherwise silently floor the child to 0 turns, which never
+	// runs. ValidateRunConfig rejects a non-positive MaxTurns for real
+	// runs, so this guard only matters off the validated path.
+	if parentMaxTurns > 0 && maxTurns > parentMaxTurns {
 		maxTurns = parentMaxTurns
 	}
 	return maxTurns

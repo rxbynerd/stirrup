@@ -322,6 +322,11 @@ func Float64Ptr(v float64) *float64 {
 //     cancels or its wall-clock cap fires and the operator opted into
 //     CancelBundleOnRunCancel; RequestID echoes the submission so the
 //     control plane can cancel the matching provider-side batch entry.
+//   - "session_terminate"    — emitted by the SessionManager when the agent
+//     terminates (or the run tears down) a detached sub-agent session
+//     (#71); RequestID echoes the originating "tool_result_request" so the
+//     control plane can stop the matching sub-agent job. Fire-and-forget:
+//     no response is correlated back.
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`

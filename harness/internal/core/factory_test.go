@@ -1706,6 +1706,112 @@ func TestBuildLoopWithTransport_AllToolsRegisteredByDefault(t *testing.T) {
 			t.Errorf("expected tool %q to be registered", name)
 		}
 	}
+	// The session tools are off unless SubAgent.Sessions opts in.
+	for _, name := range []string{"start_session", "check_session", "wait_session", "terminate_session"} {
+		if loop.Tools.Resolve(name) != nil {
+			t.Errorf("session tool %q registered without SubAgent.Sessions", name)
+		}
+	}
+}
+
+// TestBuildLoopWithTransport_SessionToolsRegistered pins the #71 wiring:
+// SubAgent.Sessions registers the four detached-session tools, and
+// start_session joins the ask-upstream approval set (the budget-consuming
+// spawn) while the management tools do not.
+func TestBuildLoopWithTransport_SessionToolsRegistered(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-sessions",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "ask-upstream", Timeout: 60},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		MaxTurns:         2,
+		Timeout:          &timeout,
+		SubAgent:         types.SubAgentRunConfig{Sessions: true},
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	for _, name := range []string{"start_session", "check_session", "wait_session", "terminate_session"} {
+		if loop.Tools.Resolve(name) == nil {
+			t.Errorf("expected session tool %q to be registered", name)
+		}
+	}
+
+	ask, ok := permission.Unwrap(loop.Permissions).(*permission.AskUpstreamPolicy)
+	if !ok {
+		t.Fatalf("expected AskUpstreamPolicy, got %T", loop.Permissions)
+	}
+	approval := make(map[string]bool)
+	for _, name := range ask.ApprovalToolNames() {
+		approval[name] = true
+	}
+	if !approval["start_session"] {
+		t.Errorf("start_session missing from approval set; got %v", approval)
+	}
+	for _, name := range []string{"check_session", "wait_session", "terminate_session"} {
+		if approval[name] {
+			t.Errorf("management tool %q should not require approval", name)
+		}
+	}
+}
+
+// TestBuildLoopWithTransport_TransportSpawnerRequiresLiveTransport pins the
+// #54 misconfiguration guard: selecting the transport spawner on a loop
+// whose transport cannot deliver responses (NullTransport) fails at
+// construction rather than blocking on the first spawn.
+func TestBuildLoopWithTransport_TransportSpawnerRequiresLiveTransport(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-transport-spawner",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "whole-file"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+		SubAgent:         types.SubAgentRunConfig{Spawner: "transport"},
+	}
+
+	// Inject a NullTransport (cannot deliver control-plane responses).
+	_, err := BuildLoopWithTransport(context.Background(), config, &transport.NullTransport{})
+	if err == nil {
+		t.Fatal("expected error for transport spawner on NullTransport")
+	}
+	if !strings.Contains(err.Error(), "session manager") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }
 
 // TestBuildLoopWithTransport_TraceEmitterHeaderResolutionError pins

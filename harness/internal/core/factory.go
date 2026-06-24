@@ -567,17 +567,63 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers: ownedClosers,
 	}
 
+	// Build the sub-agent session manager when the run uses the transport
+	// spawner (#54) or enables the start-and-detach session tools (#71).
+	// The common case — the local spawner with sessions off — needs no
+	// manager: spawn_agent runs SpawnSubAgent in-process exactly as before,
+	// so a bare run pays nothing for this feature.
+	useTransportSpawner := config.SubAgent.UsesTransportSpawner()
+	spawnEnabled := toolEnabled(config.Tools.BuiltIn, "spawn_agent")
+	var sessionMgr *SessionManager
+	if config.SubAgent.Sessions || (spawnEnabled && useTransportSpawner) {
+		// A detached session must not outlive the run; bound a single
+		// transport await by the run timeout when one is set.
+		var maxLifetime time.Duration
+		if config.Timeout != nil && *config.Timeout > 0 {
+			maxLifetime = time.Duration(*config.Timeout) * time.Second
+		}
+		mgr, mgrErr := NewSessionManager(SessionManagerOptions{
+			UseTransport:  useTransportSpawner,
+			Transport:     tp,
+			Parent:        loop,
+			ParentConfig:  config,
+			MaxConcurrent: config.SubAgent.EffectiveMaxConcurrentSessions(),
+			DefaultWait:   time.Duration(config.SubAgent.EffectiveSessionTimeoutSeconds()) * time.Second,
+			MaxLifetime:   maxLifetime,
+			Logger:        logger,
+		})
+		if mgrErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("build sub-agent session manager: %w", mgrErr)
+		}
+		sessionMgr = mgr
+		// Close the manager (tearing down any live sessions) before the
+		// transport closes: appended last, it runs first in Close's reverse
+		// walk. Keep loop.ownedClosers in sync with the local slice so both
+		// the success path (loop.Close) and the failure path (cleanup) cover
+		// it.
+		ownedClosers = append(ownedClosers, mgr)
+		loop.ownedClosers = ownedClosers
+	}
+
 	// Register spawn_agent after loop construction. The tool needs a
 	// reference to the loop (chicken-and-egg), so we close over the loop
 	// pointer here. The spawner closure captures the loop and config so
-	// the tool can call SpawnSubAgent without a circular import.
-	if toolEnabled(config.Tools.BuiltIn, "spawn_agent") {
+	// the tool can call SpawnSubAgent without a circular import. With the
+	// transport spawner the same call is dispatched over the wire and
+	// awaited (Start+Wait fused) instead of run in-process.
+	if spawnEnabled {
 		spawner := func(ctx context.Context, prompt, mode string, maxTurns int) (json.RawMessage, error) {
-			result, err := SpawnSubAgent(ctx, loop, config, SubAgentConfig{
-				Prompt:   prompt,
-				Mode:     mode,
-				MaxTurns: maxTurns,
-			})
+			cfg := SubAgentConfig{Prompt: prompt, Mode: mode, MaxTurns: maxTurns}
+			var (
+				result *SubAgentResult
+				err    error
+			)
+			if sessionMgr != nil && useTransportSpawner {
+				result, err = sessionMgr.SpawnAndWait(ctx, cfg, time.Duration(config.SubAgent.EffectiveSessionTimeoutSeconds())*time.Second)
+			} else {
+				result, err = SpawnSubAgent(ctx, loop, config, cfg)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -595,6 +641,24 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		// the wrapper's pass-through first before falling back to a
 		// direct type assertion.
 		addApprovalTool(pp, "spawn_agent")
+	}
+
+	// Register the start-and-detach session tools (#71) when enabled. They
+	// share the session manager backend with the transport spawner. The
+	// sub-agent recursion guard in SpawnSubAgent withholds these (and
+	// spawn_agent) from spawned children so a sub-agent cannot open its own
+	// detached sessions.
+	if config.SubAgent.Sessions {
+		ctrl := newSessionController(sessionMgr)
+		registry.Register(builtins.StartSessionTool(ctrl))
+		registry.Register(builtins.CheckSessionTool(ctrl))
+		registry.Register(builtins.WaitSessionTool(ctrl))
+		registry.Register(builtins.TerminateSessionTool(ctrl))
+		// start_session is the budget-consuming spawn in the family, so it
+		// carries the same upstream-approval gate as spawn_agent. The
+		// poll/wait/terminate tools manage an already-approved session and
+		// are not separately gated.
+		addApprovalTool(pp, "start_session")
 	}
 
 	// Apply the toolset-profile presentation (issue #234) last, after every

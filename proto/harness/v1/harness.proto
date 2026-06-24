@@ -103,12 +103,20 @@ service HarnessService {
 //     (Best-effort signal; the control plane should call the provider's
 //     batch-cancel endpoint. The harness does not retry or block on a
 //     response — cancellation is fire-and-forget.)
+//
+//   "session_terminate"
+//     - request_id: the originating "tool_result_request" request_id of a
+//                   detached sub-agent session (#71).
+//     (Best-effort signal; the control plane should stop the matching
+//     sub-agent job. The harness does not retry or block on a response —
+//     termination is fire-and-forget. Reuses the generic async-tool
+//     round-trip's request_id, so no session-specific message is needed.)
 message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
   //              "warning", "heartbeat", "ready", "permission_request",
   //              "tool_result_request", "batch_submission", "batch_waiting",
-  //              "batch_cancel_request".
+  //              "batch_cancel_request", "session_terminate".
   string type = 1;
 
   // Incremental text fragment from the model. Set on "text_delta" events.

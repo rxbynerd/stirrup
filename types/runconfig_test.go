@@ -309,6 +309,69 @@ func TestValidateRunConfig_ReadOnlyModeWithAllowAll(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_SubAgent(t *testing.T) {
+	ptr := func(i int) *int { return &i }
+	cases := []struct {
+		name    string
+		mutate  func(*RunConfig)
+		wantErr string // substring; empty means expect success
+	}{
+		{"default zero value", func(c *RunConfig) {}, ""},
+		{"spawner local", func(c *RunConfig) { c.SubAgent.Spawner = "local" }, ""},
+		{"spawner transport", func(c *RunConfig) { c.SubAgent.Spawner = "transport" }, ""},
+		{"spawner invalid", func(c *RunConfig) { c.SubAgent.Spawner = "remote" }, "subAgent.spawner"},
+		{"sessions enabled", func(c *RunConfig) { c.SubAgent.Sessions = true }, ""},
+		{"timeout valid", func(c *RunConfig) { c.SubAgent.SessionTimeout = ptr(120) }, ""},
+		{"timeout zero", func(c *RunConfig) { c.SubAgent.SessionTimeout = ptr(0) }, "subAgent.sessionTimeout"},
+		{"timeout too large", func(c *RunConfig) { c.SubAgent.SessionTimeout = ptr(maxSessionTimeout + 1) }, "subAgent.sessionTimeout"},
+		{"maxConcurrent valid", func(c *RunConfig) { c.SubAgent.MaxConcurrentSessions = ptr(8) }, ""},
+		{"maxConcurrent zero", func(c *RunConfig) { c.SubAgent.MaxConcurrentSessions = ptr(0) }, "subAgent.maxConcurrentSessions"},
+		{"maxConcurrent too large", func(c *RunConfig) { c.SubAgent.MaxConcurrentSessions = ptr(maxConcurrentSessionsCeiling + 1) }, "subAgent.maxConcurrentSessions"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected success, got: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestSubAgentRunConfig_Effective(t *testing.T) {
+	ptr := func(i int) *int { return &i }
+	var zero SubAgentRunConfig
+	if got := zero.SpawnerOrDefault(); got != "local" {
+		t.Errorf("SpawnerOrDefault zero = %q, want local", got)
+	}
+	if zero.UsesTransportSpawner() {
+		t.Error("UsesTransportSpawner zero = true, want false")
+	}
+	if got := (SubAgentRunConfig{Spawner: "transport"}); !got.UsesTransportSpawner() {
+		t.Error("UsesTransportSpawner transport = false, want true")
+	}
+	if got := zero.EffectiveSessionTimeoutSeconds(); got != DefaultSessionTimeout {
+		t.Errorf("EffectiveSessionTimeoutSeconds zero = %d, want %d", got, DefaultSessionTimeout)
+	}
+	if got := (SubAgentRunConfig{SessionTimeout: ptr(45)}).EffectiveSessionTimeoutSeconds(); got != 45 {
+		t.Errorf("EffectiveSessionTimeoutSeconds = %d, want 45", got)
+	}
+	if got := zero.EffectiveMaxConcurrentSessions(); got != DefaultMaxConcurrentSessions {
+		t.Errorf("EffectiveMaxConcurrentSessions zero = %d, want %d", got, DefaultMaxConcurrentSessions)
+	}
+	if got := (SubAgentRunConfig{MaxConcurrentSessions: ptr(3)}).EffectiveMaxConcurrentSessions(); got != 3 {
+		t.Errorf("EffectiveMaxConcurrentSessions = %d, want 3", got)
+	}
+}
+
 func TestValidateRunConfig_ReadOnlyModeWithDenySideEffects(t *testing.T) {
 	c := validConfig()
 	c.Mode = "review"

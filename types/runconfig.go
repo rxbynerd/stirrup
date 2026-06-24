@@ -219,6 +219,12 @@ type RunConfig struct {
 	// ToolChoiceEscalationConfig for the per-knob semantics and the
 	// mode-aware policy that decides when a no-tool answer is suspicious.
 	ToolChoiceEscalation *ToolChoiceEscalationConfig `json:"toolChoiceEscalation,omitempty"`
+
+	// SubAgent configures how spawn_agent and the start-and-detach
+	// session tools materialise sub-agents (issues #54, #71). The zero
+	// value selects the in-process spawner with the session tools
+	// disabled, so a bare run is byte-for-byte unchanged.
+	SubAgent SubAgentRunConfig `json:"subAgent,omitempty"`
 }
 
 // ObservabilityConfig carries operator-supplied labels that are promoted to
@@ -1070,6 +1076,112 @@ type ResourceLimits struct {
 // ValidateRunConfig.
 type ToolDispatchConfig struct {
 	MaxParallel int `json:"maxParallel,omitempty"`
+}
+
+// Sub-agent spawning / session defaults (issues #54, #71).
+const (
+	// DefaultSessionTimeout is the per-wait timeout, in seconds, applied
+	// to a blocking sub-agent result wait (spawn_agent's implicit wait,
+	// or an explicit wait_session) when SubAgentRunConfig.SessionTimeout
+	// is unset.
+	DefaultSessionTimeout = 300
+
+	// maxSessionTimeout bounds SubAgentRunConfig.SessionTimeout. It mirrors
+	// the run-level timeout ceiling: a per-wait timeout longer than the
+	// longest a run may live is meaningless.
+	maxSessionTimeout = 3600
+
+	// DefaultMaxConcurrentSessions caps simultaneously-live detached
+	// sessions a single run may hold open when
+	// SubAgentRunConfig.MaxConcurrentSessions is unset.
+	DefaultMaxConcurrentSessions = 16
+
+	// maxConcurrentSessionsCeiling is the hard upper bound on
+	// SubAgentRunConfig.MaxConcurrentSessions regardless of what an
+	// operator requests, bounding the registry's memory footprint.
+	maxConcurrentSessionsCeiling = 256
+)
+
+// SubAgentRunConfig configures how spawn_agent and the start-and-detach
+// session tools materialise sub-agents (issues #54, #71).
+//
+// The zero value selects the in-process ("local") spawner with the
+// session tools disabled — a bare run keeps the pre-existing behaviour
+// where spawn_agent runs a child loop synchronously in the calling
+// goroutine.
+type SubAgentRunConfig struct {
+	// Spawner selects how a sub-agent is materialised:
+	//
+	//   "local"  (default) — run the child loop in-process in the calling
+	//                        harness, synchronously (the historical path).
+	//   "transport"        — dispatch the spawn over the gRPC transport to
+	//                        the control plane, which materialises the
+	//                        sub-agent (e.g. a separate `stirrup job`) and
+	//                        returns its result.
+	//
+	// The transport spawner needs a live control-plane transport: the
+	// factory refuses to construct it on a NullTransport rather than
+	// letting every spawn block until the per-call timeout.
+	Spawner string `json:"spawner,omitempty"`
+
+	// Sessions, when true, registers the start-and-detach session tools
+	// (start_session, check_session, wait_session, terminate_session)
+	// alongside the blocking spawn_agent tool. The session tools share the
+	// Spawner backend. Default false: a bare run exposes only spawn_agent.
+	Sessions bool `json:"sessions,omitempty"`
+
+	// SessionTimeout bounds, in seconds, how long a blocking result wait
+	// (spawn_agent's implicit wait or an explicit wait_session) blocks on a
+	// sub-agent result before returning a "timeout" outcome. Nil selects
+	// DefaultSessionTimeout. A detached session that times out on one wait
+	// is not terminated — a later wait_session/check_session can still
+	// observe its result.
+	SessionTimeout *int `json:"sessionTimeout,omitempty"`
+
+	// MaxConcurrentSessions caps the number of simultaneously-live detached
+	// sessions a single run may hold. Nil selects
+	// DefaultMaxConcurrentSessions. start_session fails loudly once the cap
+	// is reached rather than growing the registry without bound.
+	MaxConcurrentSessions *int `json:"maxConcurrentSessions,omitempty"`
+}
+
+// SpawnerOrDefault returns the configured spawner, defaulting the empty
+// (unset) value to "local" so call sites need not special-case the zero
+// value.
+func (c SubAgentRunConfig) SpawnerOrDefault() string {
+	if c.Spawner == "" {
+		return "local"
+	}
+	return c.Spawner
+}
+
+// UsesTransportSpawner reports whether the configured spawner dispatches
+// over the transport rather than running in-process.
+func (c SubAgentRunConfig) UsesTransportSpawner() bool {
+	return c.SpawnerOrDefault() == "transport"
+}
+
+// EffectiveSessionTimeoutSeconds resolves the per-wait timeout, falling
+// back to DefaultSessionTimeout when unset or non-positive.
+func (c SubAgentRunConfig) EffectiveSessionTimeoutSeconds() int {
+	if c.SessionTimeout == nil || *c.SessionTimeout <= 0 {
+		return DefaultSessionTimeout
+	}
+	return *c.SessionTimeout
+}
+
+// EffectiveMaxConcurrentSessions resolves the live-session cap, falling
+// back to DefaultMaxConcurrentSessions when unset or non-positive.
+func (c SubAgentRunConfig) EffectiveMaxConcurrentSessions() int {
+	if c.MaxConcurrentSessions == nil || *c.MaxConcurrentSessions <= 0 {
+		return DefaultMaxConcurrentSessions
+	}
+	return *c.MaxConcurrentSessions
+}
+
+var validSpawnerTypes = map[string]bool{
+	"local":     true,
+	"transport": true,
 }
 
 // ToolChoiceEscalationConfig configures the missed-tool recovery (#230).
@@ -2078,11 +2190,27 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateToolDispatchConfig(config.ToolDispatch, &errs)
 	validateToolChoiceEscalationConfig(config.ToolChoiceEscalation, &errs)
 	validateBatchConfig(config, &errs)
+	validateSubAgentConfig(config.SubAgent, &errs)
 
 	if len(errs) > 0 {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// validateSubAgentConfig enforces the sub-agent spawning / session knobs
+// (issues #54, #71). The spawner enum, the session timeout, and the
+// concurrency cap are all bounded here; the NullTransport-vs-transport
+// misconfiguration is caught later at factory construction, where the
+// resolved transport is known.
+func validateSubAgentConfig(c SubAgentRunConfig, errs *[]string) {
+	validateOptionalType("subAgent.spawner", c.Spawner, validSpawnerTypes, errs)
+	if c.SessionTimeout != nil && (*c.SessionTimeout <= 0 || *c.SessionTimeout > maxSessionTimeout) {
+		*errs = append(*errs, fmt.Sprintf("subAgent.sessionTimeout must be > 0 and <= %d seconds", maxSessionTimeout))
+	}
+	if c.MaxConcurrentSessions != nil && (*c.MaxConcurrentSessions <= 0 || *c.MaxConcurrentSessions > maxConcurrentSessionsCeiling) {
+		*errs = append(*errs, fmt.Sprintf("subAgent.maxConcurrentSessions must be > 0 and <= %d", maxConcurrentSessionsCeiling))
+	}
 }
 
 func validateRequiredType(name, value string, valid map[string]bool, errs *[]string) {

@@ -442,6 +442,27 @@ The `SubAgentSpawner` function type in `tool/builtins` decouples the
 tool from the `core` package, avoiding circular imports. The factory
 provides the concrete closure.
 
+The `subAgent` config block widens this in two ways
+([configuration.md](configuration.md#sub-agent-spawning-and-sessions)).
+`spawner: transport` dispatches the spawn over the gRPC transport
+instead of running it in-process — the control plane materialises the
+sub-agent (for example as a separate `stirrup job`) and returns its
+result over the existing `tool_result_request` / `tool_result_response`
+async-tool round-trip, so no spawn-specific wire message is needed.
+`sessions: true` registers the start-and-detach tools (`start_session`,
+`check_session`, `wait_session`, `terminate_session`), which let the
+agent kick off a sub-agent and collect its result later instead of
+blocking. Both ride a `SessionManager` (`core/session.go`) that models a
+detached session as a non-awaited async round-trip: `start_session`
+emits the request and returns the request id as a session handle, and
+`wait_session` / `check_session` resolve it via the transport
+`Correlator`'s buffered retained entries. Blocking `spawn_agent` is the
+same machinery with start and wait fused. A new fire-and-forget
+`session_terminate` event lets the harness ask the control plane to stop
+a detached sub-agent job. Sub-agents receive neither `spawn_agent` nor
+the session tools, so the recursion and concurrency guards hold one
+level down.
+
 ## Permission policies
 
 Four implementations gate side-effecting tool calls:
