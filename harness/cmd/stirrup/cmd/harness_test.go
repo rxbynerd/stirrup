@@ -5419,6 +5419,104 @@ func TestRunHarness_StdinDashWithoutPipeErrors(t *testing.T) {
 	}
 }
 
+// TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags pins the
+// non-interactive-runtime fix: an auto-detected piped stdin that turns
+// out to be empty (a closed anonymous pipe, exactly the fd 0 a GitHub
+// Actions shell step / `docker exec` without -i hands the process) must
+// be treated as "no piped config" and let the flag-only base build
+// proceed — not abort with "input is empty". Without the empty-read
+// downgrade this is the exact failure the OpenAI WIF smoke test hit.
+func TestRunHarness_EmptyAutoDetectedStdinFallsThroughToFlags(t *testing.T) {
+	withPipedStdin(t, "") // empty pipe == an *os.File reporting ModeNamedPipe
+	getOut := captureStdout(t)
+
+	cmd := newTestHarnessCommand()
+	// No --config; a flag-only invocation with just a prompt should
+	// validate as planning off the flag defaults.
+	if err := cmd.Flags().Set("prompt", "prompt from flags"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	runErr := runHarness(cmd, nil)
+	out := getOut()
+
+	if runErr != nil {
+		t.Fatalf("empty auto-detected stdin must fall through to flags, got: %v\nstdout: %s", runErr, out)
+	}
+
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.Prompt != "prompt from flags" {
+		t.Errorf("Prompt = %q, want it sourced from the flag (not stdin)", cfg.Prompt)
+	}
+}
+
+// TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous pins the
+// complement for the --config path: an empty piped stdin is not a
+// competing base, so `--config <path>` alongside it must succeed rather
+// than trip the ambiguous-sources guard. This is what lets a `--config`
+// smoke test run unmodified under a runtime that attaches an empty pipe.
+func TestRunHarness_EmptyStdinWithConfigFileIsNotAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg.json")
+	if err := os.WriteFile(path, []byte(minimalStdinRunConfig(t)), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	withPipedStdin(t, "") // empty pipe alongside --config
+	getOut := captureStdout(t)
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", path); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+	if err := cmd.Flags().Set("output-runconfig", "-"); err != nil {
+		t.Fatalf("set output-runconfig: %v", err)
+	}
+
+	runErr := runHarness(cmd, nil)
+	out := getOut()
+
+	if runErr != nil {
+		t.Fatalf("empty stdin must not make --config ambiguous, got: %v\nstdout: %s", runErr, out)
+	}
+
+	var cfg types.RunConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("captured output should be parseable JSON: %v\n%s", err, out)
+	}
+	if cfg.Prompt != "prompt from stdin" {
+		t.Errorf("Prompt = %q, want the --config file's value", cfg.Prompt)
+	}
+}
+
+// TestRunHarness_ExplicitDashWithEmptyPipeStillErrors guards the
+// exemption: the empty-read downgrade applies only to auto-detection.
+// When the operator explicitly names stdin via --config -, an empty pipe
+// is a genuine mistake and must stay a hard "input is empty" error
+// rather than silently falling through to flags.
+func TestRunHarness_ExplicitDashWithEmptyPipeStillErrors(t *testing.T) {
+	withPipedStdin(t, "") // operator pointed --config - at an empty pipe
+
+	cmd := newTestHarnessCommand()
+	if err := cmd.Flags().Set("config", "-"); err != nil {
+		t.Fatalf("set config: %v", err)
+	}
+
+	err := runHarness(cmd, nil)
+	if err == nil {
+		t.Fatal("expected --config - against an empty pipe to error")
+	}
+	if !strings.Contains(err.Error(), "input is empty") {
+		t.Errorf("error should report the empty input, got: %v", err)
+	}
+}
+
 // TestRunHarness_OutputRunConfigBadPathErrors pins SF-3: an
 // --output-runconfig path whose parent directory does not exist must
 // surface as a non-nil error mentioning the path. The OpenFile error
