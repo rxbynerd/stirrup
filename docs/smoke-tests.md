@@ -57,16 +57,25 @@ assertions**:
    ```sh
    set -euo pipefail
    [ -s trace.jsonl ] || { echo "trace.jsonl is missing or empty" >&2; exit 1; }
-   jq -e '.outcome == "success"' trace.jsonl
+   jq -e 'select(.kind == "run_finished") | .trace.outcome == "success"' trace.jsonl
    ```
 
+   `trace.jsonl` is a multi-record stream — one `run_started` line, one
+   `turn_record` per turn, then a terminal `run_finished` line that
+   embeds the run summary. The loop's stop reason lives at
+   `.trace.outcome` inside that `run_finished` record, not at the top
+   level, so the assertion selects the record by `kind` first. A
+   harness that exits before finishing writes no `run_finished` line;
+   `jq -e` then produces no output and exits non-zero (status 4), so
+   the missing terminal record is itself a failure signal.
+
    The `[ -s trace.jsonl ]` guard catches the case where the harness
-   exited before writing the trace; `jq -e` exits non-zero when the
-   expression is falsy. Direct read of the single-document JSONL — do
-   **not** rewrite this as `tail -1 | jq`. Under GNU coreutils
-   `tail` silently emits an empty stream for a missing file, which
-   `jq` then passes; the failure becomes invisible. (This was the
-   regression #132 explicitly fixed in review.)
+   exited before writing any trace at all. Do **not** rewrite the
+   `select` as `tail -1 | jq`: it couples the assertion to line
+   ordering, and under GNU coreutils `tail` silently emits an empty
+   stream for a missing file, which `jq` then passes — the failure
+   becomes invisible. (This was the regression #132 explicitly fixed
+   in review.)
 
 2. **Workspace artifact**:
 
