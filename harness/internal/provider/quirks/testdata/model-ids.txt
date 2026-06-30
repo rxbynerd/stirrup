@@ -26,3 +26,5 @@ o3
 o3-mini
 o4
 o4-mini
+qwen/qwen3.6-27b
+qwen3.6-35b-a3b-mlx

@@ -217,12 +217,12 @@ func BuiltinRules() []Rule {
 				// Note: the openai-compatible base "*" rules (tool
 				// choice, parallel tool calls, schema examples) do NOT
 				// match slash-prefixed ids for the same path.Match
-				// reason, so those capabilities resolve to their
-				// zero values (unsupported) for gateway ids. That is a
-				// pre-existing property of every slash-prefixed model id
-				// on this provider type, not something this rule
-				// changes; widening the base rules is a separate
-				// decision.
+				// reason. The "*/*" sibling rules alongside them now
+				// restore those capabilities for one level of vendor
+				// prefix, so gateway DeepSeek ids advertise the same
+				// tool surface as the bare ids — this rule only adds the
+				// DeepSeek-specific wire behaviour (replay, sampling,
+				// token key) on top.
 				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
 				q.BehaviourFlags.OpenAI.OmitSamplingParams = true
 				q.BehaviourFlags.OpenAI.TokenField = TokenFieldMaxTokens
@@ -380,6 +380,32 @@ func BuiltinRules() []Rule {
 			},
 		},
 		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/*",
+			Description:  "OpenAI-compatible vendor-prefixed ids: native tool_choice (auto/required/none/function)",
+			LastVerified: Date("2026-06-30"),
+			Apply: func(q *ProviderQuirks) {
+				// path.Match's `*` does not cross `/`, so the bare "*" rule
+				// above misses the vendor/model ids that LM Studio,
+				// OpenRouter, and similar gateways serve (qwen/qwen3.6-27b,
+				// deepseek/deepseek-v4-flash, mlx-community/...). This
+				// sibling restores the identical tool_choice surface for one
+				// level of prefix so a locally-hosted model is not silently
+				// denied native tool choice. The two globs are disjoint (a
+				// bare id never contains a slash; a prefixed id never matches
+				// "*"), so there is no ordering interaction. Deeper nesting
+				// (a/b/c) is not observed in the wild and intentionally
+				// unmatched.
+				q.ToolChoice = ToolChoiceCapability{
+					Supported: true,
+					Auto:      true,
+					Required:  true,
+					None:      true,
+					NamedTool: true,
+				}
+			},
+		},
+		{
 			ProviderType: "gemini",
 			ModelMatch:   "*",
 			Description:  "Gemini: native functionCallingConfig.mode (AUTO/ANY/NONE)",
@@ -521,6 +547,19 @@ func BuiltinRules() []Rule {
 				// `parallel_tool_calls` bool (either direction) and passes
 				// through the JSON-Schema `examples` keyword in a function's
 				// parameters object.
+				q.ParallelToolCalls = ParallelToolCallsCapability{Supported: true, Disable: true}
+				q.ToolExamples = ToolExamplesCapability{Supported: true}
+			},
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/*",
+			Description:  "OpenAI-compatible vendor-prefixed ids: top-level parallel_tool_calls; accepts schema examples",
+			LastVerified: Date("2026-06-30"),
+			Apply: func(q *ProviderQuirks) {
+				// Sibling of the bare "*" rule for vendor/model ids served by
+				// LM Studio / OpenRouter / similar gateways; see the
+				// tool_choice "*/*" rule for why path.Match needs both globs.
 				q.ParallelToolCalls = ParallelToolCallsCapability{Supported: true, Disable: true}
 				q.ToolExamples = ToolExamplesCapability{Supported: true}
 			},
