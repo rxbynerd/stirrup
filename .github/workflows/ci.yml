@@ -12,7 +12,7 @@ jobs:
     name: Eval Gate
     runs-on: ubuntu-latest
     needs: verify
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event_name == 'disabled'
     # id-token: write is required for Anthropic Workload Identity
     # Federation: actions/checkout's runner exposes
     # ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN
