@@ -8,5 +8,8 @@
     }
   ],
   "max_completion_tokens": 4096,
-  "stream": true
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
 }
