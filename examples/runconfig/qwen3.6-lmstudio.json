@@ -1,0 +1,57 @@
+{
+  "runId": "example-qwen36-lmstudio",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "openai-compatible",
+    "apiKeyRef": "secret://LMSTUDIO_API_KEY",
+    "baseUrl": "http://localhost:1234/v1"
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "openai-compatible",
+    "model": "qwen/qwen3.6-27b"
+  },
+  "temperature": 0.6,
+  "promptBuilder": {
+    "type": "default"
+  },
+  "contextStrategy": {
+    "type": "sliding-window",
+    "maxTokens": 131072
+  },
+  "executor": {
+    "type": "local"
+  },
+  "editStrategy": {
+    "type": "multi"
+  },
+  "verifier": {
+    "type": "none"
+  },
+  "permissionPolicy": {
+    "type": "allow-all"
+  },
+  "gitStrategy": {
+    "type": "none"
+  },
+  "transport": {
+    "type": "stdio"
+  },
+  "traceEmitter": {
+    "type": "jsonl"
+  },
+  "tools": {
+    "builtIn": [
+      "read_file",
+      "list_directory",
+      "grep_files",
+      "find_files",
+      "edit_file",
+      "run_command"
+    ]
+  },
+  "maxTurns": 20,
+  "timeout": 600,
+  "logLevel": "info"
+}
