@@ -2933,6 +2933,56 @@ func TestBuildLoopWithTransport_BedrockAdapterHasLogger(t *testing.T) {
 	}
 }
 
+// TestBuildLoopWithTransport_AnthropicAdapterHasLogger asserts that
+// BuildLoopWithTransport injects a non-nil Logger into the
+// AnthropicAdapter, so the "quirks suppressed caller temperature" warn
+// (fired for Claude Opus 4.7+, Sonnet 5, and Fable 5/Mythos 5) runs
+// through the factory's ScrubHandler-backed logger rather than the
+// slog.Default fallback. A future deletion of the `pa.Logger = logger`
+// line in the *provider.AnthropicAdapter factory arm would silently
+// regress the scrub and correlation invariants for that warn; this test
+// surfaces that regression at the assembly seam, mirroring the sibling
+// OpenAI-compatible and Bedrock tests above.
+func TestBuildLoopWithTransport_AnthropicAdapterHasLogger(t *testing.T) {
+	t.Setenv("TEST_ANTHROPIC_KEY", "test-key")
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-test-anthropic-logger",
+		Mode:             "planning",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://TEST_ANTHROPIC_KEY"},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "anthropic", Model: "claude-sonnet-5"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		Tools:            types.ToolsConfig{BuiltIn: types.DefaultReadOnlyBuiltInTools()},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	adapter, ok := unwrapNormalizer(loop.Provider).(*provider.AnthropicAdapter)
+	if !ok {
+		t.Fatalf("loop.Provider (after unwrap) type = %T, want *provider.AnthropicAdapter", unwrapNormalizer(loop.Provider))
+	}
+	if adapter.Logger == nil {
+		t.Error("AnthropicAdapter.Logger is nil; factory should inject the ScrubHandler-backed logger so the suppressed-temperature warn keeps run/trace correlation and scrubbing")
+	}
+}
+
 // --- stubSecretStore ---
 
 type stubSecretStore struct {

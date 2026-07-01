@@ -458,6 +458,120 @@ func TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature(t *tes
 	}
 }
 
+// TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset covers
+// the "double negative" the suppression logic must handle correctly:
+// a caller who never set Temperature at all, on a model in the omit
+// family. The wire body must still omit "temperature" (the loop's own
+// default-temperature resolution supplies a non-nil pointer in
+// production, but buildAnthropicRequest must not depend on that — a
+// direct nil is the base case), and — unlike
+// TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature —
+// the WARN log must NOT fire, since there is no caller-supplied value to
+// warn about suppressing (mirrors the `params.Temperature != nil` guard
+// on the log condition).
+func TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset(t *testing.T) {
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:       "claude-sonnet-5",
+		MaxTokens:   4096,
+		Temperature: nil,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	if strings.Contains(string(rawBody), `"temperature"`) {
+		t.Errorf("body contains 'temperature' for nil Temperature on an omit-family model: %s", rawBody)
+	}
+	if strings.Contains(buf.String(), "anthropic quirks suppressed caller temperature") {
+		t.Errorf("warn log fired despite no caller-supplied Temperature to suppress: %s", buf.String())
+	}
+}
+
+// TestAnthropicAdapter_DebugLogListsAppliedRules pins the per-Stream debug
+// line, mirroring TestOpenAIAdapter_DebugLogListsAppliedRules: the line
+// fires at the top of every Stream call and lists the descriptions of the
+// rules that contributed to the resolution. An empty rule list is still
+// logged (never happens for "anthropic" in practice, since the base "*"
+// tool-choice/structured-result/parallel-call rules always fire, but the
+// no-omission-rule case for claude-sonnet-4-6 is the useful negative here).
+func TestAnthropicAdapter_DebugLogListsAppliedRules(t *testing.T) {
+	cases := []struct {
+		name               string
+		model              string
+		wantRuleSubstrings []string
+	}{
+		{
+			name:               "sonnet-5 omission rule fires",
+			model:              "claude-sonnet-5",
+			wantRuleSubstrings: []string{"Claude Sonnet 5"},
+		},
+		{
+			name:               "sonnet-4-6 has no omission rule",
+			model:              "claude-sonnet-4-6",
+			wantRuleSubstrings: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+			}))
+			defer srv.Close()
+
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+			adapter.baseURL = srv.URL
+			adapter.Logger = logger
+
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{
+				Model:     tc.model,
+				MaxTokens: 4096,
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			for range ch {
+			}
+
+			logOutput := buf.String()
+			if !strings.Contains(logOutput, "anthropic quirks resolved") {
+				t.Errorf("debug log message absent: %s", logOutput)
+			}
+			for _, want := range tc.wantRuleSubstrings {
+				if !strings.Contains(logOutput, want) {
+					t.Errorf("debug log missing rule substring %q: %s", want, logOutput)
+				}
+			}
+		})
+	}
+}
+
 func TestSSE_DeltaForUnknownIndex(t *testing.T) {
 	// Send a content_block_delta for an index that has no content_block_start.
 	// The adapter should skip it silently — no panic, no error event.
