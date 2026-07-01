@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -60,16 +61,18 @@ type AnthropicAdapter struct {
 	baseURL    string                 // overridable for testing
 	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics    *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	Logger     *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
 
 	// Registry resolves per-(provider, model) quirks at the top of every
 	// Stream call. The constructor seeds it with quirks.DefaultRegistry()
 	// so callers that ignore the field still get the built-in rule set;
 	// the nil-Registry guard in Stream tolerates direct construction. The
-	// Anthropic adapter only reads the cross-provider ToolChoice
-	// capability today (Anthropic has no wire-shape or sampling-param
-	// divergences StreamParams cannot already express), but resolving
-	// through the registry keeps the tool-choice gating consistent with
-	// the OpenAI and Gemini adapters.
+	// Anthropic adapter reads the cross-provider ToolChoice,
+	// StructuredToolResults, and ParallelToolCalls capabilities plus the
+	// Anthropic-specific OmitSamplingParams behaviour flag (the newest
+	// Claude tier — Opus 4.7+, Sonnet 5, Fable 5 / Mythos 5 — rejects a
+	// non-default temperature outright); resolving through the registry
+	// keeps this consistent with the OpenAI and Gemini adapters.
 	Registry *quirks.Registry
 }
 
@@ -121,7 +124,11 @@ func (a *AnthropicAdapter) AuthMode() AuthMode {
 // wire shape). A non-nil pointer transmits the dereferenced value
 // verbatim, including an explicit 0.0 for greedy decoding. This mirrors
 // the upstream StreamParams.Temperature pointer type so the
-// unset-vs-explicit-zero distinction survives marshalling.
+// unset-vs-explicit-zero distinction survives marshalling. buildAnthropicRequest
+// forces this field back to nil when the resolved quirks set
+// BehaviourFlags.Anthropic.OmitSamplingParams, so the plain omitempty tag
+// is sufficient to suppress the wire key — no custom MarshalJSON needed
+// (contrast openaiRequest, which needs one for other reasons).
 //
 // Messages is typed as []anthropicMessage, not []types.Message, to
 // enforce a cross-provider confidentiality invariant: each adapter owns
@@ -445,6 +452,15 @@ type sseMessageDelta struct {
 // accepts (e.g. thinking_config), change the return type to
 // (json.RawMessage, error) and apply a batch-specific projection here.
 func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.ProviderQuirks) anthropicRequest {
+	temperature := params.Temperature
+	if q.BehaviourFlags.Anthropic.OmitSamplingParams {
+		// Model families that reject a non-default temperature (Claude
+		// Opus 4.7+, Sonnet 5, Fable 5 / Mythos 5) 400 on the field even
+		// when the loop's default-temperature resolution supplied it.
+		// Forcing the pointer to nil relies on the struct's existing
+		// omitempty tag to drop the wire key.
+		temperature = nil
+	}
 	return anthropicRequest{
 		Model:    params.Model,
 		System:   params.System,
@@ -455,7 +471,7 @@ func buildAnthropicRequest(params types.StreamParams, stream bool, q quirks.Prov
 		// input_schema when the resolved capability supports it.
 		Tools:       translateToolsAnthropic(params.Tools, q.ToolExamples.Supported),
 		MaxTokens:   params.MaxTokens,
-		Temperature: params.Temperature,
+		Temperature: temperature,
 		ToolChoice:  applyAnthropicParallel(anthropicToolChoiceFromParams(params, q.ToolChoice), params, q.ParallelToolCalls),
 		Stream:      stream,
 	}
@@ -479,7 +495,40 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q := registry.Resolve("anthropic", params.Model)
+	q, appliedRules := registry.ResolveWithRules("anthropic", params.Model)
+
+	logger := a.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	// Debug-level log lists the descriptions of every rule that
+	// contributed to this resolution, mirroring the OpenAI adapter's
+	// equivalent line. Emitted even when the list is empty so an
+	// operator grepping for the line knows the resolution ran.
+	logger.DebugContext(ctx, "anthropic quirks resolved",
+		slog.String("provider.type", "anthropic"),
+		slog.String("provider.model", params.Model),
+		slog.Any("rules", ruleDescriptions(appliedRules)),
+	)
+
+	if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
+	}
+
+	// Warn-level log when a caller-supplied non-nil Temperature is
+	// suppressed by the OmitSamplingParams quirk (mirrors the OpenAI
+	// adapter's design-risk-2 signal). Without this, an operator who set
+	// RunConfig.Temperature explicitly would silently observe it dropped
+	// on Claude Opus 4.7+/Sonnet 5/Fable 5/Mythos 5. The suppressed value
+	// itself is intentionally NOT logged.
+	if q.BehaviourFlags.Anthropic.OmitSamplingParams && params.Temperature != nil {
+		logger.WarnContext(ctx, "anthropic quirks suppressed caller temperature",
+			slog.String("provider.type", "anthropic"),
+			slog.String("provider.model", params.Model),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
+		)
+	}
 
 	reqBody := buildAnthropicRequest(params, true, q)
 

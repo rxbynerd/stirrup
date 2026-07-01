@@ -383,6 +383,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		case *provider.AnthropicAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
+			pa.Logger = logger
 		case *provider.OpenAICompatibleAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics

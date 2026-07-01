@@ -111,8 +111,29 @@ type ProviderBehaviourFlags struct {
 	// it. The zero value reproduces the adapter's pre-quirks hard-coded
 	// behaviour so a Responses request with no rule is byte-identical.
 	OpenAIResponses OpenAIResponsesBehaviourFlags `json:"openaiResponses"`
-	// Future: Anthropic AnthropicBehaviourFlags (reserved; Anthropic v1 has no
-	// structural divergences beyond what StreamParams already encodes).
+	// Anthropic carries the Anthropic Messages API adapter's behaviour
+	// divergences. The zero value reproduces pre-existing behaviour: no
+	// sampling-param suppression.
+	Anthropic AnthropicBehaviourFlags `json:"anthropic"`
+}
+
+// AnthropicBehaviourFlags covers behaviour divergences in the Anthropic
+// Messages API adapter. The zero value reproduces today's behaviour
+// (sampling params forwarded whenever StreamParams.Temperature is non-nil).
+type AnthropicBehaviourFlags struct {
+	// OmitSamplingParams, when true, forces "temperature" out of the
+	// request body even when StreamParams.Temperature is non-nil. Used
+	// for model families that reject a non-default sampling parameter
+	// outright: Claude Opus 4.7+, Claude Sonnet 5, and Claude Fable 5 /
+	// Mythos 5 return a 400 error rather than ignoring the value. Mirrors
+	// quirks.OpenAIBehaviourFlags.OmitSamplingParams — see that field's
+	// doc comment for the design-risk-2 caller-value-suppression warning
+	// this flag also drives in the Anthropic adapter's Stream method.
+	//
+	// StreamParams carries no top_p/top_k fields today, so this flag has
+	// nothing else to suppress; it will cover them too if those fields
+	// are added later.
+	OmitSamplingParams bool `json:"omitSamplingParams"`
 }
 
 // OpenAIBehaviourFlags covers behaviour divergences in openai-compatible

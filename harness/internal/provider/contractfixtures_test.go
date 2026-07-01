@@ -52,6 +52,31 @@ func TestAnthropicContract_ToolEnabledRequestBody(t *testing.T) {
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-sonnet-4-6", "request.json"), body)
 }
 
+// TestAnthropicContract_ClaudeSonnet5OmitsTemperature pins the outbound
+// Claude Sonnet 5 request shape: identical to the claude-sonnet-4-6 fixture
+// above except "temperature" is absent, even though the same non-nil
+// Temperature is supplied. Claude Sonnet 5 (like Opus 4.7+ and Fable 5 /
+// Mythos 5) returns a 400 on a non-default temperature; the
+// OmitSamplingParams quirk must suppress the field before it reaches the
+// wire.
+func TestAnthropicContract_ClaudeSonnet5OmitsTemperature(t *testing.T) {
+	params := types.StreamParams{
+		Model:       "claude-sonnet-5",
+		System:      "You are helpful.",
+		Messages:    contractFixtureMessages(),
+		Tools:       []types.ToolDefinition{contractFixtureTool()},
+		MaxTokens:   4096,
+		Temperature: types.Float64Ptr(0.5),
+		ToolChoice:  types.ToolChoiceRequired,
+	}
+	q := quirks.DefaultRegistry().Resolve("anthropic", params.Model)
+	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-sonnet-5", "request.json"), body)
+}
+
 // TestResponsesContract_ToolEnabledRequestBody pins the outbound OpenAI
 // Responses request for a tool-enabled turn, including the typed input-item
 // variants (#199) and the flat function-tool shape.

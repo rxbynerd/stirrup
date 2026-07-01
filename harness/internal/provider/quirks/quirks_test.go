@@ -652,6 +652,46 @@ func TestStructuredToolResultCapabilityRules(t *testing.T) {
 	})
 }
 
+// TestAnthropicOmitSamplingParamsCapabilityRules pins which Claude model
+// families the harness omits sampling params for. Claude Opus 4.7+, Claude
+// Sonnet 5, and Claude Fable 5 / Mythos 5 return an HTTP 400 on a non-default
+// temperature (see BuiltinRules' "Anthropic sampling-param omission rules"
+// section); Claude Opus 4.6, Sonnet 4.6, and Haiku 4.5 still accept one, so
+// they are the load-bearing negative cases guarding against an over-broad
+// glob silently suppressing temperature on models that support it.
+func TestAnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
+	omits := []string{
+		"claude-opus-4-7",
+		"claude-opus-4-8",
+		"claude-sonnet-5",
+		"claude-fable-5",
+		"claude-mythos-5",
+	}
+	for _, model := range omits {
+		t.Run(model+" omits sampling params", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if !q.BehaviourFlags.Anthropic.OmitSamplingParams {
+				t.Errorf("anthropic/%s: OmitSamplingParams = false, want true (rule not firing)", model)
+			}
+		})
+	}
+
+	accepts := []string{
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-5",
+		"claude-haiku-4-5-20251001",
+	}
+	for _, model := range accepts {
+		t.Run(model+" keeps sampling params", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if q.BehaviourFlags.Anthropic.OmitSamplingParams {
+				t.Errorf("anthropic/%s: OmitSamplingParams = true, want false (rule misfire)", model)
+			}
+		})
+	}
+}
+
 // TestStructuredToolResultRulesSetSupportedWhenAnyShape pins the structural
 // relationship the adapters depend on: any first-party rule that turns on a
 // structured wire-shape bool must also set Supported. An adapter checks

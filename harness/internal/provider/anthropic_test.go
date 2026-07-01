@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -349,6 +351,110 @@ func TestAnthropicAdapter_TemperatureWireShape(t *testing.T) {
 				t.Errorf("missing %q in body: %s", tc.wantTempSubstring, body)
 			}
 		})
+	}
+}
+
+// TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels pins
+// the fix for the model families that reject a non-default temperature
+// outright (Claude Opus 4.7+, Sonnet 5, Fable 5 / Mythos 5 all return a 400
+// rather than ignoring the field). Even though the harness loop always
+// resolves a non-nil default temperature when RunConfig.Temperature is
+// unset (core.defaultTemperature), the wire body must omit "temperature"
+// entirely for these models. claude-sonnet-4-6 is the negative control: it
+// still accepts a non-default temperature, so the key must survive there.
+func TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels(t *testing.T) {
+	cases := []struct {
+		model       string
+		wantOmitted bool
+	}{
+		{model: "claude-opus-4-7", wantOmitted: true},
+		{model: "claude-opus-4-8", wantOmitted: true},
+		{model: "claude-sonnet-5", wantOmitted: true},
+		{model: "claude-fable-5", wantOmitted: true},
+		{model: "claude-mythos-5", wantOmitted: true},
+		{model: "claude-sonnet-4-6", wantOmitted: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var rawBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rawBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+			}))
+			defer srv.Close()
+
+			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+			adapter.baseURL = srv.URL
+
+			// Deliberately non-nil, non-default: pins that suppression
+			// wins even when a caller (or the loop's own default) set an
+			// explicit temperature.
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{
+				Model:       tc.model,
+				MaxTokens:   1024,
+				Temperature: types.Float64Ptr(0.1),
+			})
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			for range ch {
+			}
+
+			hasKey := strings.Contains(string(rawBody), `"temperature"`)
+			if tc.wantOmitted && hasKey {
+				t.Errorf("%s: body contains 'temperature' despite OmitSamplingParams suppression: %s", tc.model, rawBody)
+			}
+			if !tc.wantOmitted && !hasKey {
+				t.Errorf("%s: body missing 'temperature' (over-broad suppression?): %s", tc.model, rawBody)
+			}
+		})
+	}
+}
+
+// TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature
+// mirrors the OpenAI adapter's design-risk-2 coverage: when the quirk
+// suppresses a caller-supplied non-nil Temperature, the warn log must fire,
+// name the rule that caused the suppression, and never include the
+// suppressed value itself.
+func TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:       "claude-sonnet-5",
+		MaxTokens:   4096,
+		Temperature: types.Float64Ptr(0.5),
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "anthropic quirks suppressed caller temperature") {
+		t.Errorf("warn log message absent from output: %s", logOutput)
+	}
+	const wantRule = "Claude Sonnet 5"
+	if !strings.Contains(logOutput, wantRule) {
+		t.Errorf("warn log missing rule description substring %q: %s", wantRule, logOutput)
+	}
+	if strings.Contains(logOutput, "0.5") {
+		t.Errorf("warn log leaks the suppressed temperature value: %s", logOutput)
 	}
 }
 
