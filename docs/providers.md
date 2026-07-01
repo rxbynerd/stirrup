@@ -19,6 +19,18 @@ Federation — see [`docs/anthropic-wif.md`](anthropic-wif.md).
 Default safety thresholds: none — the harness does not configure
 Anthropic safety settings; the API defaults apply.
 
+No model-ID allowlist: `RunConfig.Model` is forwarded to the wire
+verbatim, so a newly released Claude model works with no code change
+as long as its request/response shape matches the Messages API
+contract this adapter already speaks. Claude Opus 4.7 and later, Claude
+Sonnet 5, and Claude Fable 5 / Mythos 5 reject a non-default
+`temperature` outright (HTTP 400) rather than ignoring it; since the
+harness always resolves a non-nil default temperature
+(`core.defaultTemperature = 0.1`) when `RunConfig.Temperature` is
+unset, a per-model quirk rule omits the field for those models before
+it reaches the wire — see [Per-model wire-shape
+quirks](#per-model-wire-shape-quirks) below.
+
 ## AWS Bedrock
 
 **File:** `harness/internal/provider/bedrock.go`
@@ -128,9 +140,11 @@ See `examples/runconfig/vertex-gemini.json` and
 
 Provider/model pairs sometimes diverge from the adapter's canonical
 wire shape: OpenAI's reasoning-class models reject sampling
-parameters, Z.ai GLM requires the legacy `max_tokens` key, Gemini
-3.x emits a `thoughtSignature` blob that must survive turn
-boundaries, and DeepSeek v4's default-on thinking mode requires the
+parameters, the newest Claude tier (Opus 4.7+, Sonnet 5, Fable 5 /
+Mythos 5) rejects a non-default temperature the same way, Z.ai GLM
+requires the legacy `max_tokens` key, Gemini 3.x emits a
+`thoughtSignature` blob that must survive turn boundaries, and
+DeepSeek v4's default-on thinking mode requires the
 `reasoning_content` it streams replayed back on every request after
 a tool-call turn (the API returns 400 otherwise). Rather than
 encoding these as adapter-internal model substring checks, the

@@ -635,6 +635,11 @@ Full reference: [`eval.md`](eval.md).
 | `max_tokens` | 64 000 | — |
 | Default model | `claude-sonnet-4-6` | — |
 
+The `temperature` default is resolved unconditionally for every
+provider call; it is not sent on the wire to Claude Opus 4.7+, Claude
+Sonnet 5, or Claude Fable 5 / Mythos 5, which reject a non-default
+value with an HTTP 400. See [`provider-quirks.md`](provider-quirks.md).
+
 ## External dependencies
 
 Provider adapters and the container executor use hand-rolled HTTP
