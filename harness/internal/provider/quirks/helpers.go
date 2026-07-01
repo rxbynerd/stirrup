@@ -17,6 +17,15 @@ func applyOpenAIReasoningClass(q *ProviderQuirks) {
 	q.BehaviourFlags.OpenAI.OmitSamplingParams = true
 }
 
+// applyAnthropicNoSamplingParamsClass sets OmitSamplingParams = true for
+// the Anthropic model families that reject a non-default temperature (and,
+// once StreamParams grows the fields, top_p/top_k) with an HTTP 400 rather
+// than ignoring it. See the "Anthropic sampling-param omission rules"
+// section of BuiltinRules for the affected model list and rationale.
+func applyAnthropicNoSamplingParamsClass(q *ProviderQuirks) {
+	q.BehaviourFlags.Anthropic.OmitSamplingParams = true
+}
+
 // removeFromOmit drops the named field from ProviderQuirks.OmitFields.
 // Used by carve-out rules (e.g. gpt-5-chat*) that need to undo an
 // omission applied by a broader sibling rule. A no-op if the field is

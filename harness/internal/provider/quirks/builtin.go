@@ -548,5 +548,58 @@ func BuiltinRules() []Rule {
 				q.BehaviourFlags.OpenAIResponses.InputItemShape = TypedInputItems
 			},
 		},
+		// --- Anthropic sampling-param omission rules ---
+		//
+		// Claude Opus 4.7 removed support for non-default temperature /
+		// top_p / top_k (a 400 error, not a silent ignore); Claude Opus 4.8,
+		// Claude Sonnet 5, and Claude Fable 5 / Mythos 5 inherit the same
+		// constraint. The harness's loop unconditionally resolves a
+		// non-nil default temperature for every provider call
+		// (core.defaultTemperature) when RunConfig.Temperature is unset,
+		// so without this rule every request to one of these models 400s
+		// on its first turn. Mirrors the openai-compatible reasoning-class
+		// rules above: one entry per affected model family, all applying
+		// the same omission.
+		//
+		// Deliberately NOT matched: claude-opus-4-6*, claude-sonnet-4-6*,
+		// claude-haiku-4-5* (still accept a non-default temperature), and
+		// claude-mythos-preview (predecessor to Mythos 5; its sampling-
+		// param behaviour is not confirmed against a live capture — add a
+		// rule once verified rather than guessing).
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-4-7*",
+			Description:  "Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p/top_k)",
+			LastVerified: Date("2026-07-01"),
+			Apply:        applyAnthropicNoSamplingParamsClass,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-4-8*",
+			Description:  "Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p/top_k)",
+			LastVerified: Date("2026-07-01"),
+			Apply:        applyAnthropicNoSamplingParamsClass,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-sonnet-5*",
+			Description:  "Anthropic Claude Sonnet 5: omit sampling params (400 on non-default temperature/top_p/top_k)",
+			LastVerified: Date("2026-07-01"),
+			Apply:        applyAnthropicNoSamplingParamsClass,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-fable-5*",
+			Description:  "Anthropic Claude Fable 5: omit sampling params (400 on non-default temperature/top_p/top_k)",
+			LastVerified: Date("2026-07-01"),
+			Apply:        applyAnthropicNoSamplingParamsClass,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-mythos-5*",
+			Description:  "Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5; 400 on non-default temperature/top_p/top_k)",
+			LastVerified: Date("2026-07-01"),
+			Apply:        applyAnthropicNoSamplingParamsClass,
+		},
 	}
 }

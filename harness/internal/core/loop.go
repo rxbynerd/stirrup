@@ -69,6 +69,20 @@ const (
 	// biases for determinism on coding tasks — the historical
 	// hardcoded value, preserved as the harness default so unset
 	// configs see no behaviour change.
+	//
+	// Not every model accepts this value on the wire: Claude Opus 4.7+,
+	// Claude Sonnet 5, and Claude Fable 5 / Mythos 5 return an HTTP 400
+	// on a non-default temperature rather than ignoring it (as do
+	// OpenAI's reasoning-class models, which already had this
+	// constraint). The loop still resolves defaultTemperature
+	// unconditionally for every provider — narrowing it here would
+	// need per-model knowledge this package deliberately does not
+	// have (CLAUDE.md: the loop is a pure function of its interfaces).
+	// The adapters suppress the field for those models via the
+	// per-(provider, model) quirks registry instead
+	// (quirks.AnthropicBehaviourFlags.OmitSamplingParams,
+	// quirks.OpenAIBehaviourFlags.OmitSamplingParams) — see
+	// docs/provider-quirks.md.
 	defaultTemperature = 0.1
 
 	// tokenEstimationDivisor is the approximate character-to-token ratio

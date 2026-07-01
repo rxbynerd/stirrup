@@ -652,6 +652,95 @@ func TestStructuredToolResultCapabilityRules(t *testing.T) {
 	})
 }
 
+// TestAnthropicOmitSamplingParamsCapabilityRules pins which Claude model
+// families the harness omits sampling params for. Claude Opus 4.7+, Claude
+// Sonnet 5, and Claude Fable 5 / Mythos 5 return an HTTP 400 on a non-default
+// temperature (see BuiltinRules' "Anthropic sampling-param omission rules"
+// section); Claude Opus 4.6, Sonnet 4.6, and Haiku 4.5 still accept one, so
+// they are the load-bearing negative cases guarding against an over-broad
+// glob silently suppressing temperature on models that support it.
+func TestAnthropicOmitSamplingParamsCapabilityRules(t *testing.T) {
+	omits := []string{
+		"claude-opus-4-7",
+		"claude-opus-4-8",
+		"claude-sonnet-5",
+		"claude-fable-5",
+		"claude-mythos-5",
+	}
+	for _, model := range omits {
+		t.Run(model+" omits sampling params", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if !q.BehaviourFlags.Anthropic.OmitSamplingParams {
+				t.Errorf("anthropic/%s: OmitSamplingParams = false, want true (rule not firing)", model)
+			}
+		})
+	}
+
+	accepts := []string{
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-sonnet-4-5",
+		"claude-haiku-4-5-20251001",
+		// claude-mythos-preview is deliberately unmatched by any builtin
+		// rule (see BuiltinRules' "Anthropic sampling-param omission
+		// rules" comment) — its sampling-param behaviour is not confirmed
+		// against a live capture, so no rule is added rather than
+		// assumed from the Fable 5 family resemblance. This pin exists
+		// so a future edit that widens "claude-mythos-5*" to
+		// "claude-mythos*" (a plausible-looking cleanup) is a deliberate,
+		// test-visible decision rather than a silent behaviour change.
+		"claude-mythos-preview",
+	}
+	for _, model := range accepts {
+		t.Run(model+" keeps sampling params", func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if q.BehaviourFlags.Anthropic.OmitSamplingParams {
+				t.Errorf("anthropic/%s: OmitSamplingParams = true, want false (rule misfire)", model)
+			}
+		})
+	}
+}
+
+// TestAnthropicOmitSamplingParamsComposesWithExistingCapabilities pins the
+// specificity-ordering interaction the sampling-param rules introduce:
+// each of the five new claude-*-glob rules (glob length 16-17) resolves
+// strictly after the pre-existing "anthropic / *" capability rules (glob
+// length 1, see registry.go's ascending-length ordering) and must not
+// clobber ToolChoice, StructuredToolResults, or ParallelToolCalls — those
+// rules and the new OmitSamplingParams rules write disjoint struct fields,
+// but this test proves the composition rather than relying on that being
+// self-evident from the code.
+func TestAnthropicOmitSamplingParamsComposesWithExistingCapabilities(t *testing.T) {
+	baseline := DefaultRegistry().Resolve("anthropic", "claude-sonnet-4-5")
+
+	for _, model := range []string{
+		"claude-opus-4-7",
+		"claude-opus-4-8",
+		"claude-sonnet-5",
+		"claude-fable-5",
+		"claude-mythos-5",
+	} {
+		t.Run(model, func(t *testing.T) {
+			q := DefaultRegistry().Resolve("anthropic", model)
+			if !q.BehaviourFlags.Anthropic.OmitSamplingParams {
+				t.Fatalf("anthropic/%s: OmitSamplingParams = false, want true (rule not firing)", model)
+			}
+			if q.ToolChoice != baseline.ToolChoice {
+				t.Errorf("anthropic/%s: ToolChoice = %+v, want unchanged from claude-sonnet-4-5 baseline %+v", model, q.ToolChoice, baseline.ToolChoice)
+			}
+			if q.StructuredToolResults != baseline.StructuredToolResults {
+				t.Errorf("anthropic/%s: StructuredToolResults = %+v, want unchanged from claude-sonnet-4-5 baseline %+v", model, q.StructuredToolResults, baseline.StructuredToolResults)
+			}
+			if q.ParallelToolCalls != baseline.ParallelToolCalls {
+				t.Errorf("anthropic/%s: ParallelToolCalls = %+v, want unchanged from claude-sonnet-4-5 baseline %+v", model, q.ParallelToolCalls, baseline.ParallelToolCalls)
+			}
+			if q.ToolExamples != baseline.ToolExamples {
+				t.Errorf("anthropic/%s: ToolExamples = %+v, want unchanged from claude-sonnet-4-5 baseline %+v", model, q.ToolExamples, baseline.ToolExamples)
+			}
+		})
+	}
+}
+
 // TestStructuredToolResultRulesSetSupportedWhenAnyShape pins the structural
 // relationship the adapters depend on: any first-party rule that turns on a
 // structured wire-shape bool must also set Supported. An adapter checks

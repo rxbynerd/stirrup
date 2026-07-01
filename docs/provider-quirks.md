@@ -187,6 +187,7 @@ type ProviderBehaviourFlags struct {
     OpenAI          OpenAIBehaviourFlags
     Gemini          GeminiBehaviourFlags
     OpenAIResponses OpenAIResponsesBehaviourFlags
+    Anthropic       AnthropicBehaviourFlags
 }
 ```
 
@@ -212,7 +213,25 @@ type OpenAIResponsesBehaviourFlags struct {
     StoreMode      OpenAIResponsesStoreMode  // store_false (default): always emit explicit store:false
     InputItemShape OpenAIResponsesInputShape // typed_input_items (default): #172 + #199 discriminated union
 }
+
+type AnthropicBehaviourFlags struct {
+    OmitSamplingParams bool // suppress temperature (400 on non-default value for the newest Claude tier)
+}
 ```
+
+`AnthropicBehaviourFlags` mirrors `OpenAIBehaviourFlags.OmitSamplingParams`
+for the one Anthropic wire divergence the harness has needed so far: Claude
+Opus 4.7+, Claude Sonnet 5, and Claude Fable 5 / Mythos 5 return an HTTP 400
+on a non-default `temperature` rather than ignoring it, and the harness
+loop unconditionally resolves a non-nil default temperature
+(`core.defaultTemperature = 0.1`) for every provider call when
+`RunConfig.Temperature` is unset — so without this flag every request to
+one of those models 400s on its first turn. `buildAnthropicRequest` forces
+`anthropicRequest.Temperature` to `nil` when the flag is set, relying on
+the existing `omitempty` tag rather than a custom `MarshalJSON` (unlike
+`openaiRequest`, which needs one for unrelated token-field-selection
+reasons). `StreamParams` carries no `top_p`/`top_k` fields today; the flag
+will cover them too if those are added later.
 
 The typed per-adapter sub-struct is the design choice that replaces
 PR #196's original `StructuralFlags any`: it preserves compile-time
@@ -320,6 +339,18 @@ test catch malformed paths at registry-build time.
 | `gemini`            | `*`                | Gemini: off `streamFunctionCallArguments` (post-#191 default)        |
 | `gemini`            | `gemini-3*`        | Gemini 3: preserve `thoughtSignature` as a sibling of `functionCall` on each `parts[]` element (parse-side only) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
+| `anthropic`         | `claude-opus-4-7*` | Anthropic Claude Opus 4.7: omit sampling params (400 on non-default temperature/top_p/top_k) |
+| `anthropic`         | `claude-opus-4-8*` | Anthropic Claude Opus 4.8: omit sampling params (400 on non-default temperature/top_p/top_k) |
+| `anthropic`         | `claude-sonnet-5*` | Anthropic Claude Sonnet 5: omit sampling params (400 on non-default temperature/top_p/top_k) |
+| `anthropic`         | `claude-fable-5*`  | Anthropic Claude Fable 5: omit sampling params (400 on non-default temperature/top_p/top_k) |
+| `anthropic`         | `claude-mythos-5*` | Anthropic Claude Mythos 5: omit sampling params (same API surface as Fable 5; 400 on non-default temperature/top_p/top_k) |
+
+`claude-opus-4-6*`, `claude-sonnet-4-6*`, and `claude-haiku-4-5*` are
+deliberately unmatched — those models still accept a non-default
+temperature. `claude-mythos-preview` (the Mythos 5 predecessor) is also
+unmatched: its sampling-param behaviour is not confirmed against a live
+capture, so a rule is added once verified rather than assumed from the
+Fable 5 family resemblance.
 
 The `openai-responses / *` rule pins the Responses-specific behaviour
 flags (`OpenAIResponsesBehaviourFlags`) to their zero values so the
@@ -415,11 +446,11 @@ The factory composes both without either knowing about the other.
 |---|---|---|
 | `provider.compatProfile` on `ProviderConfig` | `RunConfig` string field | Closed enum. Only legal value in v1: `"zai-glm"`. Unknown values fail at startup via `ValidateRunConfig`. |
 | `stirrup providers quirks --provider X --model Y` | CLI subcommand | Prints resolved `ProviderQuirks` as JSON, plus `Description`, `LastVerified`, staleness flag of every contributing rule. Side-effect-free. |
-| `openai quirks resolved` / `gemini quirks resolved` slog DEBUG line (per-adapter prefix, identical body shape) | structured log | One line per Stream call, listing every contributing rule's Description in apply order. Last entry is the rule whose writes won on overlapping fields. Emitted even when no rule fired (rules:[]) so a missing line unambiguously means "the resolution did not run". Operators writing log filters should match the exact per-adapter prefix; a generic `"quirks resolved"` substring will not find either record. |
+| `openai quirks resolved` / `gemini quirks resolved` / `anthropic quirks resolved` slog DEBUG line (per-adapter prefix, identical body shape) | structured log | One line per Stream call, listing every contributing rule's Description in apply order. Last entry is the rule whose writes won on overlapping fields. Emitted even when no rule fired (rules:[]) so a missing line unambiguously means "the resolution did not run". Operators writing log filters should match the exact per-adapter prefix; a generic `"quirks resolved"` substring will not find every record. |
 | `provider.quirk.applied` OTel span attribute | trace attribute | Set on the active `provider.stream` span at the same point the slog DEBUG line is emitted. Carries the same `[]string` of rule Descriptions. Lets a trace-only consumer (Datadog, Honeycomb, Jaeger) see which rules fired without needing to correlate with a separate log sink. |
 | `quirks replay fields captured` slog DEBUG line | structured log | Per-stream summary of `{count, total_len}` per captured ReplayFields path, emitted on stream exit. Length-only — captured values themselves are not logged. |
 | `replay_fields_captured.count` / `replay_fields_captured.total_len` OTel span attributes | trace attributes | Set on the active `provider.stream` span on stream exit, in parallel with the slog DEBUG record above. Totals across every captured path; length-only invariant matches the slog surface. |
-| `openai quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
+| `openai quirks suppressed caller temperature` / `anthropic quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
 
 ### 5.1 Read-only registry
 

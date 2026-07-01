@@ -1,10 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -347,6 +349,224 @@ func TestAnthropicAdapter_TemperatureWireShape(t *testing.T) {
 			}
 			if tc.wantTempSubstring != "" && !strings.Contains(body, tc.wantTempSubstring) {
 				t.Errorf("missing %q in body: %s", tc.wantTempSubstring, body)
+			}
+		})
+	}
+}
+
+// TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels pins
+// the fix for the model families that reject a non-default temperature
+// outright (Claude Opus 4.7+, Sonnet 5, Fable 5 / Mythos 5 all return a 400
+// rather than ignoring the field). Even though the harness loop always
+// resolves a non-nil default temperature when RunConfig.Temperature is
+// unset (core.defaultTemperature), the wire body must omit "temperature"
+// entirely for these models. claude-sonnet-4-6 is the negative control: it
+// still accepts a non-default temperature, so the key must survive there.
+func TestAnthropicAdapter_TemperatureSuppressedForNoSamplingParamsModels(t *testing.T) {
+	cases := []struct {
+		model       string
+		wantOmitted bool
+	}{
+		{model: "claude-opus-4-7", wantOmitted: true},
+		{model: "claude-opus-4-8", wantOmitted: true},
+		{model: "claude-sonnet-5", wantOmitted: true},
+		{model: "claude-fable-5", wantOmitted: true},
+		{model: "claude-mythos-5", wantOmitted: true},
+		{model: "claude-sonnet-4-6", wantOmitted: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var rawBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rawBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+			}))
+			defer srv.Close()
+
+			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+			adapter.baseURL = srv.URL
+
+			// Deliberately non-nil, non-default: pins that suppression
+			// wins even when a caller (or the loop's own default) set an
+			// explicit temperature.
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{
+				Model:       tc.model,
+				MaxTokens:   1024,
+				Temperature: types.Float64Ptr(0.1),
+			})
+			if err != nil {
+				t.Fatalf("Stream() error: %v", err)
+			}
+			for range ch {
+			}
+
+			hasKey := strings.Contains(string(rawBody), `"temperature"`)
+			if tc.wantOmitted && hasKey {
+				t.Errorf("%s: body contains 'temperature' despite OmitSamplingParams suppression: %s", tc.model, rawBody)
+			}
+			if !tc.wantOmitted && !hasKey {
+				t.Errorf("%s: body missing 'temperature' (over-broad suppression?): %s", tc.model, rawBody)
+			}
+		})
+	}
+}
+
+// TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature
+// mirrors the OpenAI adapter's design-risk-2 coverage: when the quirk
+// suppresses a caller-supplied non-nil Temperature, the warn log must fire,
+// name the rule that caused the suppression, and never include the
+// suppressed value itself.
+func TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:       "claude-sonnet-5",
+		MaxTokens:   4096,
+		Temperature: types.Float64Ptr(0.5),
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "anthropic quirks suppressed caller temperature") {
+		t.Errorf("warn log message absent from output: %s", logOutput)
+	}
+	const wantRule = "Claude Sonnet 5"
+	if !strings.Contains(logOutput, wantRule) {
+		t.Errorf("warn log missing rule description substring %q: %s", wantRule, logOutput)
+	}
+	if strings.Contains(logOutput, "0.5") {
+		t.Errorf("warn log leaks the suppressed temperature value: %s", logOutput)
+	}
+}
+
+// TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset covers
+// the "double negative" the suppression logic must handle correctly:
+// a caller who never set Temperature at all, on a model in the omit
+// family. The wire body must still omit "temperature" (the loop's own
+// default-temperature resolution supplies a non-nil pointer in
+// production, but buildAnthropicRequest must not depend on that — a
+// direct nil is the base case), and — unlike
+// TestAnthropicAdapter_OmitSamplingParams_WarnsOnSuppressedTemperature —
+// the WARN log must NOT fire, since there is no caller-supplied value to
+// warn about suppressing (mirrors the `params.Temperature != nil` guard
+// on the log condition).
+func TestAnthropicAdapter_OmitSamplingParams_NoWarnWhenTemperatureUnset(t *testing.T) {
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+	adapter.Logger = logger
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:       "claude-sonnet-5",
+		MaxTokens:   4096,
+		Temperature: nil,
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range ch {
+	}
+
+	if strings.Contains(string(rawBody), `"temperature"`) {
+		t.Errorf("body contains 'temperature' for nil Temperature on an omit-family model: %s", rawBody)
+	}
+	if strings.Contains(buf.String(), "anthropic quirks suppressed caller temperature") {
+		t.Errorf("warn log fired despite no caller-supplied Temperature to suppress: %s", buf.String())
+	}
+}
+
+// TestAnthropicAdapter_DebugLogListsAppliedRules pins the per-Stream debug
+// line, mirroring TestOpenAIAdapter_DebugLogListsAppliedRules: the line
+// fires at the top of every Stream call and lists the descriptions of the
+// rules that contributed to the resolution. An empty rule list is still
+// logged (never happens for "anthropic" in practice, since the base "*"
+// tool-choice/structured-result/parallel-call rules always fire, but the
+// no-omission-rule case for claude-sonnet-4-6 is the useful negative here).
+func TestAnthropicAdapter_DebugLogListsAppliedRules(t *testing.T) {
+	cases := []struct {
+		name               string
+		model              string
+		wantRuleSubstrings []string
+	}{
+		{
+			name:               "sonnet-5 omission rule fires",
+			model:              "claude-sonnet-5",
+			wantRuleSubstrings: []string{"Claude Sonnet 5"},
+		},
+		{
+			name:               "sonnet-4-6 has no omission rule",
+			model:              "claude-sonnet-4-6",
+			wantRuleSubstrings: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+			}))
+			defer srv.Close()
+
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+			adapter.baseURL = srv.URL
+			adapter.Logger = logger
+
+			ch, err := adapter.Stream(context.Background(), types.StreamParams{
+				Model:     tc.model,
+				MaxTokens: 4096,
+				Messages: []types.Message{
+					{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+				},
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			for range ch {
+			}
+
+			logOutput := buf.String()
+			if !strings.Contains(logOutput, "anthropic quirks resolved") {
+				t.Errorf("debug log message absent: %s", logOutput)
+			}
+			for _, want := range tc.wantRuleSubstrings {
+				if !strings.Contains(logOutput, want) {
+					t.Errorf("debug log missing rule substring %q: %s", want, logOutput)
+				}
 			}
 		})
 	}
