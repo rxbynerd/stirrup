@@ -285,11 +285,17 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Outer verification loop.
 	outcome := "success"
 	verificationAttempts := 0
+	// finalAssistantText accumulates the last non-empty assistant text across
+	// every runInnerLoop invocation (verification retries re-enter the loop).
+	var finalAssistantText string
 
 	for verificationAttempts <= maxVerificationRetries {
 		// Run the inner agentic loop.
-		var innerOutcome string
-		messages, innerOutcome = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
+		var innerOutcome, innerFinalText string
+		messages, innerOutcome, innerFinalText = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
+		if innerFinalText != "" {
+			finalAssistantText = innerFinalText
+		}
 
 		if innerOutcome != "success" {
 			outcome = innerOutcome
@@ -455,6 +461,10 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if traceErr != nil {
 		return nil, fmt.Errorf("finish trace: %w", traceErr)
 	}
+	// Carry the run's last non-empty assistant text onto the trace so the
+	// resultSink can surface the run's answer. Left empty (and omitted from
+	// JSON) when no turn produced any text.
+	runTrace.FinalAssistantText = finalAssistantText
 
 	return runTrace, nil
 }
@@ -524,15 +534,20 @@ func (l *AgenticLoop) setRootCancelAttribute(cause error) {
 
 // runInnerLoop runs the agentic loop turns until the model says "done",
 // max turns is reached, budget is exceeded, or an error occurs.
-// Returns the updated messages and the outcome.
+// Returns the updated messages, the outcome, and the last non-empty
+// assistant text observed across the turns (empty when no turn produced
+// any text).
 func (l *AgenticLoop) runInnerLoop(
 	ctx context.Context,
 	config *types.RunConfig,
 	systemPrompt string,
 	messages []types.Message,
 	tokenTracker *TokenTracker,
-) ([]types.Message, string) {
+) ([]types.Message, string, string) {
 	var lastStopReason string
+	// finalAssistantText holds the last non-empty assistant text seen across
+	// all turns. Threaded onto RunTrace.FinalAssistantText at loop completion.
+	var finalAssistantText string
 	stall := &stallDetector{}
 
 	// Tool-choice escalation state (#230). priorToolCalls tracks whether
@@ -552,7 +567,7 @@ func (l *AgenticLoop) runInnerLoop(
 		// Check budget before each turn.
 		budgetCheck := tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
-			return messages, "budget_exceeded"
+			return messages, "budget_exceeded", finalAssistantText
 		}
 
 		// Check context cancellation. Return a sentinel outcome so the
@@ -561,7 +576,7 @@ func (l *AgenticLoop) runInnerLoop(
 		// context.Cause().
 		select {
 		case <-ctx.Done():
-			return messages, outcomeCtxDone
+			return messages, outcomeCtxDone, finalAssistantText
 		default:
 		}
 
@@ -604,7 +619,7 @@ func (l *AgenticLoop) runInnerLoop(
 				// action is to abort the run before the model sees
 				// the offending input.
 				if turn == 0 {
-					return messages, "guardrail_blocked"
+					return messages, "guardrail_blocked", finalAssistantText
 				}
 				// On later turns PreTurn deny scrubs the untrusted
 				// content rather than aborting: the just-arrived
@@ -663,9 +678,9 @@ func (l *AgenticLoop) runInnerLoop(
 			contextSpan.SetStatus(codes.Error, err.Error())
 			contextSpan.End()
 			if ctx.Err() != nil {
-				return messages, outcomeCtxDone
+				return messages, outcomeCtxDone, finalAssistantText
 			}
-			return messages, "error"
+			return messages, "error", finalAssistantText
 		}
 		// Publish the post-Prepare absolute token estimate so the
 		// ContextTokens observable gauge callback (registered in Run)
@@ -713,7 +728,7 @@ func (l *AgenticLoop) runInnerLoop(
 					Mode:       "",
 					Model:      selection.Model,
 				})
-				return messages, "error"
+				return messages, "error", finalAssistantText
 			}
 			selectedProvider = prov
 		}
@@ -726,7 +741,7 @@ func (l *AgenticLoop) runInnerLoop(
 				Mode:       "",
 				Model:      selection.Model,
 			})
-			return messages, "error"
+			return messages, "error", finalAssistantText
 		}
 		providerAttrs := l.metricAttrs(
 			attribute.String("provider.type", selection.Provider),
@@ -833,9 +848,9 @@ func (l *AgenticLoop) runInnerLoop(
 			// cancelled, surface that so the outer loop can classify the
 			// outcome as cancelled/timeout rather than a generic error.
 			if ctx.Err() != nil {
-				return messages, outcomeCtxDone
+				return messages, outcomeCtxDone, finalAssistantText
 			}
-			return messages, "error"
+			return messages, "error", finalAssistantText
 		}
 
 		// Consume stream events.
@@ -893,9 +908,9 @@ func (l *AgenticLoop) runInnerLoop(
 			// Distinguish stream-abort-due-to-ctx from other stream errors
 			// so the outer loop can classify the outcome correctly.
 			if ctx.Err() != nil {
-				return messages, outcomeCtxDone
+				return messages, outcomeCtxDone, finalAssistantText
 			}
-			return messages, "error"
+			return messages, "error", finalAssistantText
 		}
 		providerSpan.SetAttributes(
 			attribute.Int("tokens.output", sr.OutputTokens),
@@ -963,6 +978,14 @@ func (l *AgenticLoop) runInnerLoop(
 		// from the stream so the next request can round-trip it.
 		messages = appendAssistantContent(messages, sr.Blocks, sr.ReplayFields)
 
+		// Capture the assistant's text for this turn. The last non-empty
+		// value across all turns becomes RunTrace.FinalAssistantText; the
+		// end_turn path below reuses finalText for its PhasePostTurn guard.
+		finalText := lastAssistantText(sr.Blocks)
+		if finalText != "" {
+			finalAssistantText = finalText
+		}
+
 		// Extract tool calls.
 		toolCalls := collectToolCalls(sr.Blocks)
 
@@ -1012,7 +1035,6 @@ func (l *AgenticLoop) runInnerLoop(
 			// rewrap the child's output; for v1 we log the request and
 			// forward the response unchanged because rewriting the
 			// user-visible text would break tool-protocol expectations.
-			finalText := lastAssistantText(sr.Blocks)
 			if finalText != "" {
 				in := guard.Input{
 					Phase:   guard.PhasePostTurn,
@@ -1024,7 +1046,7 @@ func (l *AgenticLoop) runInnerLoop(
 				allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
 				if !allow {
-					return messages, "guardrail_blocked"
+					return messages, "guardrail_blocked", finalAssistantText
 				}
 				if spotlight {
 					// PostTurn spotlight is intentionally a log-only
@@ -1036,23 +1058,23 @@ func (l *AgenticLoop) runInnerLoop(
 					l.Logger.Info("postTurn guard requested spotlight; not rewriting in v1")
 				}
 			}
-			return messages, "success"
+			return messages, "success", finalAssistantText
 		}
 		if sr.StopReason != "tool_use" {
 			if sr.StopReason == "" {
 				l.Logger.Warn("provider returned empty stop reason", "turn", turn)
-				return messages, "error"
+				return messages, "error", finalAssistantText
 			}
 			// Non-tool-use, non-end-turn stop reasons still represent
 			// a completed exchange that replay/mining cares about.
 			l.Trace.RecordTurnRecord(turnRecord)
-			return messages, sr.StopReason
+			return messages, sr.StopReason, finalAssistantText
 		}
 		if len(toolCalls) == 0 {
 			// Provider declared tool_use but produced no tool blocks —
 			// degenerate but observable.
 			l.Trace.RecordTurnRecord(turnRecord)
-			return messages, "error"
+			return messages, "error", finalAssistantText
 		}
 
 		// Dispatch tool calls. Sync calls run inline in assistant-message
@@ -1074,14 +1096,14 @@ func (l *AgenticLoop) runInnerLoop(
 		// no-tool answer is a legitimate judgement and is left alone.
 		priorToolCalls += len(toolCalls)
 		if stallOutcome != "" {
-			return messages, stallOutcome
+			return messages, stallOutcome, finalAssistantText
 		}
 
 		// Re-check budget after tool results are appended. This prevents the
 		// next turn from sending an over-budget context to the provider.
 		budgetCheck = tokenTracker.CheckBudget(config.MaxTokenBudget)
 		if !budgetCheck.WithinBudget {
-			return messages, "budget_exceeded"
+			return messages, "budget_exceeded", finalAssistantText
 		}
 
 		// Git checkpoint after tool use.
@@ -1098,7 +1120,7 @@ func (l *AgenticLoop) runInnerLoop(
 	}
 
 	// Reached max turns.
-	return messages, "max_turns"
+	return messages, "max_turns", finalAssistantText
 }
 
 // applyEscalation performs the recovery the EscalationPolicy chose for a

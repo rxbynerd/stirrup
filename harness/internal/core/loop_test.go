@@ -287,6 +287,93 @@ func TestLoop_MaxTurns(t *testing.T) {
 	}
 }
 
+// TestLoop_FinalAssistantText_Populated pins the happy path: a run whose
+// final assistant turn carries text lands that text on
+// RunTrace.FinalAssistantText, from where buildRunResult maps it onto the
+// RunResult the resultSink emits.
+func TestLoop_FinalAssistantText_Populated(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "The answer "},
+			{Type: "text_delta", Text: "is 42."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	loop := buildTestLoop(prov)
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("expected outcome 'success', got %q", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != "The answer is 42." {
+		t.Errorf("FinalAssistantText = %q, want %q", runTrace.FinalAssistantText, "The answer is 42.")
+	}
+}
+
+// TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns pins that the loop
+// captures the last non-empty assistant text across every turn: a
+// tool-use turn (text, then a tool call) followed by a final text turn
+// leaves the final turn's text on the trace.
+func TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns(t *testing.T) {
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "text_delta", Text: "Let me check."},
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "All done."},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("expected outcome 'success', got %q", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != "All done." {
+		t.Errorf("FinalAssistantText = %q, want %q", runTrace.FinalAssistantText, "All done.")
+	}
+}
+
+// TestLoop_FinalAssistantText_EmptyWhenNoText pins the omit path: a run
+// that never produces an assistant text block (here, hitting max_turns
+// with tool-only turns) leaves FinalAssistantText empty so the omitempty
+// tag drops it from the emitted RunResult.
+func TestLoop_FinalAssistantText_EmptyWhenNoText(t *testing.T) {
+	prov := &infiniteToolCallProvider{}
+
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	config := buildTestConfig()
+	config.MaxTurns = 3
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "max_turns" {
+		t.Fatalf("expected outcome 'max_turns', got %q", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != "" {
+		t.Errorf("FinalAssistantText = %q, want empty", runTrace.FinalAssistantText)
+	}
+}
+
 func TestLoop_BudgetExceeded(t *testing.T) {
 	prov := &mockProvider{
 		events: []types.StreamEvent{
