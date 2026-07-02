@@ -70,3 +70,16 @@ type SystemInstructionsRecorder interface {
 type HookRecorder interface {
 	RecordHookExecution(exec types.HookExecution)
 }
+
+// FinalAssistantTextRecorder is an optional capability a TraceEmitter
+// can implement to receive the run's final assistant text just before
+// Finish. The agentic loop forwards the guard-approved, scrubbed text
+// via a type assertion — the same optional-capability pattern as
+// SystemInstructionsRecorder — so the emitter can stamp it onto the
+// RunTrace it builds and serialises inside Finish. A post-Finish
+// assignment on the returned struct would never reach the persisted
+// trace, because the concrete emitters marshal/write the RunTrace
+// before Finish returns.
+type FinalAssistantTextRecorder interface {
+	RecordFinalAssistantText(text string)
+}

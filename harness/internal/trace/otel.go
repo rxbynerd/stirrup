@@ -113,15 +113,16 @@ type OTelTraceEmitter struct {
 	// behaviour.
 	captureContent bool
 
-	mu                sync.Mutex
-	runID             string
-	config            *types.RunConfig
-	startedAt         time.Time
-	rootSpan          oteltrace.Span
-	rootCtx           context.Context
-	turns             []types.TurnTrace
-	toolCalls         []types.ToolCallTrace
-	permissionDenials int
+	mu                 sync.Mutex
+	runID              string
+	config             *types.RunConfig
+	startedAt          time.Time
+	rootSpan           oteltrace.Span
+	rootCtx            context.Context
+	turns              []types.TurnTrace
+	toolCalls          []types.ToolCallTrace
+	permissionDenials  int
+	finalAssistantText string
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised to the gen_ai.system_instructions attribute encoding
@@ -173,6 +174,7 @@ type OTelTraceEmitter struct {
 var (
 	_ TraceEmitter               = (*OTelTraceEmitter)(nil)
 	_ SystemInstructionsRecorder = (*OTelTraceEmitter)(nil)
+	_ FinalAssistantTextRecorder = (*OTelTraceEmitter)(nil)
 )
 
 // pendingTurnKey pairs a buffered turn summary with its later
@@ -395,6 +397,7 @@ func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.turns = nil
 	e.toolCalls = nil
 	e.permissionDenials = 0
+	e.finalAssistantText = ""
 	e.systemInstructionsJSON = ""
 	e.rootInputMessagesJSON = ""
 	e.rootOutputMessagesJSON = ""
@@ -710,6 +713,19 @@ func (e *OTelTraceEmitter) RecordSystemInstructions(system string) {
 	e.systemInstructionsJSON = genAISystemInstructionsJSON(security.Scrub(system))
 }
 
+// RecordFinalAssistantText stores the run's final assistant text so the
+// RunTrace aggregate returned by Finish carries it for the in-process
+// caller (harness factory → RunResult). Unlike RecordSystemInstructions,
+// this is not gated on captureContent: the value feeds the RunResult, not
+// a span attribute, so it is retained regardless of content capture. The
+// loop forwards a value already scrubbed and gated by the PhasePostTurn
+// guard.
+func (e *OTelTraceEmitter) RecordFinalAssistantText(text string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.finalAssistantText = text
+}
+
 // RecordToolCall creates a child span for a tool invocation.
 //
 // When content capture is on and the call carries a tool_use ID, the
@@ -904,15 +920,16 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	}
 
 	trace := &types.RunTrace{
-		ID:                e.runID,
-		Config:            redactedConfig,
-		StartedAt:         e.startedAt,
-		CompletedAt:       now,
-		Turns:             len(e.turns),
-		TokenUsage:        totalTokens,
-		ToolCalls:         summaries,
-		PermissionDenials: e.permissionDenials,
-		Outcome:           outcome,
+		ID:                 e.runID,
+		Config:             redactedConfig,
+		StartedAt:          e.startedAt,
+		CompletedAt:        now,
+		Turns:              len(e.turns),
+		TokenUsage:         totalTokens,
+		ToolCalls:          summaries,
+		PermissionDenials:  e.permissionDenials,
+		Outcome:            outcome,
+		FinalAssistantText: e.finalAssistantText,
 	}
 
 	return trace, nil

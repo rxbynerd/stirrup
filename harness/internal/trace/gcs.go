@@ -62,14 +62,17 @@ type GCSTraceEmitter struct {
 	httpClient      *http.Client
 	endpointBaseURL string // override for tests
 
-	mu                sync.Mutex
-	runID             string
-	config            *types.RunConfig
-	startedAt         time.Time
-	turns             []types.TurnTrace
-	toolCalls         []types.ToolCallTrace
-	permissionDenials int
+	mu                 sync.Mutex
+	runID              string
+	config             *types.RunConfig
+	startedAt          time.Time
+	turns              []types.TurnTrace
+	toolCalls          []types.ToolCallTrace
+	permissionDenials  int
+	finalAssistantText string
 }
+
+var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
 
 // GCSTraceEmitterOptions configures a GCSTraceEmitter. Bucket is
 // required; ObjectPrefix is optional. CredentialSource is the resolved
@@ -145,6 +148,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.turns = nil
 	e.toolCalls = nil
 	e.permissionDenials = 0
+	e.finalAssistantText = ""
 }
 
 // RecordTurn appends a turn trace.
@@ -175,6 +179,15 @@ func (e *GCSTraceEmitter) RecordPermissionDenial() {
 	e.permissionDenials++
 }
 
+// RecordFinalAssistantText stores the run's final assistant text so the
+// uploaded trace object carries it. The loop forwards a value already
+// scrubbed and gated by the PhasePostTurn guard.
+func (e *GCSTraceEmitter) RecordFinalAssistantText(text string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.finalAssistantText = text
+}
+
 // Finish builds the final RunTrace, marshals it as a single JSONL
 // line, and PUTs the bytes to gs://{bucket}/{objectPrefix}/{runID}.jsonl.
 // A run with zero turns still produces a single valid JSON line —
@@ -196,6 +209,7 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	turns := append([]types.TurnTrace(nil), e.turns...)
 	toolCalls := append([]types.ToolCallTrace(nil), e.toolCalls...)
 	permissionDenials := e.permissionDenials
+	finalAssistantText := e.finalAssistantText
 	e.mu.Unlock()
 
 	now := time.Now()
@@ -217,15 +231,16 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	}
 
 	trace := &types.RunTrace{
-		ID:                runID,
-		Config:            redactedConfig,
-		StartedAt:         startedAt,
-		CompletedAt:       now,
-		Turns:             len(turns),
-		TokenUsage:        totalTokens,
-		ToolCalls:         summaries,
-		PermissionDenials: permissionDenials,
-		Outcome:           outcome,
+		ID:                 runID,
+		Config:             redactedConfig,
+		StartedAt:          startedAt,
+		CompletedAt:        now,
+		Turns:              len(turns),
+		TokenUsage:         totalTokens,
+		ToolCalls:          summaries,
+		PermissionDenials:  permissionDenials,
+		Outcome:            outcome,
+		FinalAssistantText: finalAssistantText,
 	}
 
 	data, err := json.Marshal(trace)
