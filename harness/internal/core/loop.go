@@ -454,6 +454,25 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Stop heartbeat before finishing the trace.
 	stopHeartbeat()
 
+	// Scrub the run's last non-empty assistant text before it reaches any
+	// external surface. The PhasePostTurn guard that cleared this text is a
+	// sensitivity classifier, not a deterministic secret redactor: content
+	// that clears the guard can still carry a secret-shaped substring (e.g. a
+	// credential echoed back from a tool result). This is the single scrub
+	// site for the field — downstream of the guard gate — so both the
+	// returned RunResult and the persisted trace carry the scrubbed form.
+	// Mirrors the scrubbedErr treatment at the provider/guard call sites.
+	finalAssistantText = security.Scrub(finalAssistantText)
+
+	// Hand the scrubbed, guard-approved text to the emitter BEFORE Finish so
+	// the persisted trace (JSONL run_finished line, GCS trace object) carries
+	// it: the concrete emitters build and serialise the RunTrace inside
+	// Finish, so a post-Finish assignment on the returned struct would never
+	// reach disk. Same optional-capability pattern as RecordSystemInstructions.
+	if recorder, ok := l.Trace.(trace.FinalAssistantTextRecorder); ok {
+		recorder.RecordFinalAssistantText(finalAssistantText)
+	}
+
 	// Finish trace using the parent ctx — the trace exporter's ForceFlush
 	// should still have a usable deadline even if the run-scoped ctx is
 	// already cancelled.
@@ -461,10 +480,6 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if traceErr != nil {
 		return nil, fmt.Errorf("finish trace: %w", traceErr)
 	}
-	// Carry the run's last non-empty assistant text onto the trace so the
-	// resultSink can surface the run's answer. Left empty (and omitted from
-	// JSON) when no turn produced any text.
-	runTrace.FinalAssistantText = finalAssistantText
 
 	return runTrace, nil
 }
@@ -981,7 +996,18 @@ func (l *AgenticLoop) runInnerLoop(
 		// Capture the assistant's text for this turn. The last non-empty
 		// value across all turns becomes RunTrace.FinalAssistantText; the
 		// end_turn path below reuses finalText for its PhasePostTurn guard.
+		//
+		// priorFinalText snapshots the accumulator BEFORE this turn's
+		// commit. The PhasePostTurn guard on the end_turn path below runs
+		// AFTER the commit, so on a guard deny the run must return this
+		// prior value — never the just-committed, denied text. Returning
+		// the denied text would forward it through RunTrace/RunResult and
+		// out the resultSink, bypassing the guard's explicit "do not
+		// forward this content" decision. This is the one new forwarding
+		// channel the FinalAssistantText field adds, so the guard contract
+		// must hold on it.
 		finalText := lastAssistantText(sr.Blocks)
+		priorFinalText := finalAssistantText
 		if finalText != "" {
 			finalAssistantText = finalText
 		}
@@ -1046,7 +1072,9 @@ func (l *AgenticLoop) runInnerLoop(
 				allow, decision, spotlight := l.guardCheck(ctx, in, guardFailOpen(config))
 				l.ratchetRuleOfTwo(ctx, config, decision, turn)
 				if !allow {
-					return messages, "guardrail_blocked", finalAssistantText
+					// Return the prior (non-denied) accumulated text, not
+					// this turn's just-committed text — see priorFinalText.
+					return messages, "guardrail_blocked", priorFinalText
 				}
 				if spotlight {
 					// PostTurn spotlight is intentionally a log-only
