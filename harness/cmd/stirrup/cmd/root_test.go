@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -182,6 +183,46 @@ func TestBuildRunResult_NoVerificationResultsLeavesVerdictNil(t *testing.T) {
 	}
 	if got := buildRunResult(rt); got.VerifierVerdict != nil {
 		t.Errorf("VerifierVerdict = %+v, want nil", got.VerifierVerdict)
+	}
+}
+
+// TestBuildRunResult_FinalAssistantText pins the RunTrace →
+// RunResult mapping of the run's last assistant text: a populated
+// RunTrace.FinalAssistantText carries through verbatim, and an empty
+// one leaves RunResult.FinalAssistantText empty so the omitempty tag
+// drops it from the wire.
+func TestBuildRunResult_FinalAssistantText(t *testing.T) {
+	cases := []struct {
+		name     string
+		traceIn  string
+		wantText string
+	}{
+		{"populated", "the answer is 42", "the answer is 42"},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &types.RunTrace{
+				ID:                 "run-fat",
+				Outcome:            "success",
+				FinalAssistantText: tc.traceIn,
+			}
+			got := buildRunResult(rt)
+			if got.FinalAssistantText != tc.wantText {
+				t.Errorf("FinalAssistantText = %q, want %q", got.FinalAssistantText, tc.wantText)
+			}
+			encoded, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			hasField := strings.Contains(string(encoded), "finalAssistantText")
+			if tc.wantText == "" && hasField {
+				t.Errorf("empty FinalAssistantText should be omitted from JSON, got %s", encoded)
+			}
+			if tc.wantText != "" && !hasField {
+				t.Errorf("populated FinalAssistantText should be present in JSON, got %s", encoded)
+			}
+		})
 	}
 }
 
