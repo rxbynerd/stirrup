@@ -272,6 +272,117 @@ func TestOpenAIQuirks_DeepSeekV4Flash_SSEParse(t *testing.T) {
 	}
 }
 
+// TestOpenAIQuirks_Qwen36_SSEParse_TrailingUsage pins the streaming
+// output-token accounting fix. Qwen 3.6 via LM Studio (like OpenAI and
+// vLLM) reports usage only when stream_options.include_usage is set, and
+// delivers it in a trailing chunk whose choices array is EMPTY — arriving
+// after the finish_reason chunk that already produced message_complete.
+// The adapter must surface that count. The assertions aggregate across
+// every message_complete exactly as streamEventsToResult does (last
+// non-empty stop reason, last non-zero output tokens) so the test mirrors
+// the real consumer. It also pins the deliberate decision NOT to capture
+// Qwen's reasoning_content: unlike DeepSeek/GLM there is no replay rule,
+// so no ReplayFields state may leak onto the completed message.
+func TestOpenAIQuirks_Qwen36_SSEParse_TrailingUsage(t *testing.T) {
+	srv := sseStubServer(t, streamFixtureSSE(t, "testdata/quirks/openai-compatible/qwen3.6-27b/response.sse"))
+	defer srv.Close()
+
+	adapter := NewOpenAICompatibleAdapter(staticBearer("test-key"), srv.URL, OpenAIAuthConfig{}, RetryPolicy{})
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "qwen/qwen3.6-27b",
+		MaxTokens: 1024,
+		Messages: []types.Message{
+			{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var (
+		sawComplete  bool
+		stopReason   string
+		outputTokens int
+		replay       map[string]json.RawMessage
+		text         string
+	)
+	for _, ev := range drainStream(t, ch) {
+		switch ev.Type {
+		case "text_delta":
+			text += ev.Text
+		case "message_complete":
+			sawComplete = true
+			if ev.StopReason != "" {
+				stopReason = ev.StopReason
+			}
+			if ev.OutputTokens > 0 {
+				outputTokens = ev.OutputTokens
+			}
+			if len(ev.ReplayFields) > 0 {
+				replay = ev.ReplayFields
+			}
+		}
+	}
+	if !sawComplete {
+		t.Fatal("no message_complete event")
+	}
+	if want := mapFinishReason("stop"); stopReason != want {
+		t.Errorf("StopReason = %q, want %q", stopReason, want)
+	}
+	if outputTokens != 42 {
+		t.Errorf("OutputTokens = %d, want 42 (from the trailing choices-empty usage chunk)", outputTokens)
+	}
+	if replay != nil {
+		t.Errorf("Qwen 3.6 must not capture reasoning_content as ReplayFields, got %v", replay)
+	}
+	if text != "\n\nHello!" {
+		t.Errorf("content = %q, want %q (reasoning_content stays out of content)", text, "\n\nHello!")
+	}
+}
+
+// TestOpenAIQuirks_Qwen36_RequestShape pins that Qwen 3.6 needs no
+// wire-shape quirks: the request carries the modern max_completion_tokens
+// key (not legacy max_tokens), opts into streaming usage, and never
+// threads reasoning_content (no replay rule resolves for it). This is the
+// machine-checked form of the research conclusion that Qwen 3.6 is the
+// simplest of the reasoning families at the wire level.
+func TestOpenAIQuirks_Qwen36_RequestShape(t *testing.T) {
+	for _, model := range []string{"qwen/qwen3.6-27b", "qwen3.6-35b-a3b-mlx"} {
+		t.Run(model, func(t *testing.T) {
+			q := quirks.DefaultRegistry().Resolve("openai-compatible", model)
+			if len(q.ReplayFields) != 0 {
+				t.Fatalf("%s: expected no ReplayFields, got %v", model, q.ReplayFields)
+			}
+			if q.BehaviourFlags.OpenAI.OmitSamplingParams {
+				t.Errorf("%s: Qwen recommends sampling params; OmitSamplingParams must stay false", model)
+			}
+			params := quirksCanonicalParams(model)
+			req, err := buildOpenAIRequest(params, true, q, nil)
+			if err != nil {
+				t.Fatalf("build: %v", err)
+			}
+			body, err := json.Marshal(req)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			s := string(body)
+			if !strings.Contains(s, `"max_completion_tokens"`) {
+				t.Errorf("%s: body missing max_completion_tokens: %s", model, s)
+			}
+			if strings.Contains(s, `"max_tokens"`) {
+				t.Errorf("%s: body must not use legacy max_tokens: %s", model, s)
+			}
+			if !strings.Contains(s, `"stream_options":{"include_usage":true}`) {
+				t.Errorf("%s: streaming body must opt into usage reporting: %s", model, s)
+			}
+			if strings.Contains(s, "reasoning_content") {
+				t.Errorf("%s: body must not thread reasoning_content: %s", model, s)
+			}
+		})
+	}
+}
+
 // TestOpenAIQuirks_NoReplayRule_OmitsReplayState pins the negative half
 // of the threading contract: the same message history sent to a model
 // whose resolved quirks register no ReplayFields emits NOTHING extra —

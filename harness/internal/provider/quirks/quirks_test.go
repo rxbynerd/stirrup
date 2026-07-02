@@ -1028,20 +1028,31 @@ func TestDeepSeekV4GatewayPrefixResolution(t *testing.T) {
 			if q.BehaviourFlags.OpenAI.StrictMode {
 				t.Errorf("StrictMode = true, want false")
 			}
-			// Exactly one rule fires: the slash keeps every other
-			// openai-compatible glob (including the base "*" rules) from
-			// matching. This is the D10 ordering check the rule comment
-			// references — the globs are disjoint, so the longer gateway
-			// glob is the only contributor.
-			if len(applied) != 1 || !strings.Contains(applied[0].Description, "gateway prefix") {
+			// The DeepSeek-specific wire behaviour (replay, sampling,
+			// token key) comes solely from the gateway-prefix rule: the
+			// bare "*" reasoning/sampling globs do not cross the slash.
+			// Capabilities, however, now arrive from the "*/*" sibling
+			// rules added so vendor-prefixed ids advertise the same tool
+			// surface as bare ids — so more than one rule contributes.
+			gatewaySeen := false
+			for _, r := range applied {
+				if strings.Contains(r.Description, "gateway prefix") {
+					gatewaySeen = true
+				}
+			}
+			if !gatewaySeen {
 				descs := make([]string, 0, len(applied))
 				for _, r := range applied {
 					descs = append(descs, r.Description)
 				}
-				t.Errorf("applied rules = %v, want exactly the gateway-prefix rule", descs)
+				t.Errorf("applied rules = %v, want the gateway-prefix rule among them", descs)
 			}
-			if q.ToolChoice != (ToolChoiceCapability{}) {
-				t.Errorf("ToolChoice = %+v, want zero value (base * rule does not cross the slash)", q.ToolChoice)
+			// The "*/*" siblings restore the tool surface for the slash id.
+			if !q.ToolChoice.Supported {
+				t.Errorf("ToolChoice.Supported = false, want true (the */* sibling now covers vendor-prefixed ids)")
+			}
+			if !q.ParallelToolCalls.Supported {
+				t.Errorf("ParallelToolCalls.Supported = false, want true (the */* sibling now covers vendor-prefixed ids)")
 			}
 		})
 	}
@@ -1061,6 +1072,48 @@ func TestDeepSeekV4GatewayPrefixResolution(t *testing.T) {
 			if len(q.ReplayFields) != 0 {
 				t.Errorf("%s: ReplayFields = %v, want none", model, q.ReplayFields)
 			}
+		}
+	})
+}
+
+// TestVendorPrefixedCapabilityRules pins the "*/*" sibling rules that
+// advertise the openai-compatible tool surface for one level of vendor
+// prefix (qwen/..., acme/...), the form LM Studio and OpenRouter serve.
+// path.Match's "*" cannot cross "/", so without these siblings a
+// locally-hosted model would be silently denied native tool_choice and
+// parallel_tool_calls — the gap the DeepSeek gateway rule flagged as a
+// deferred decision.
+func TestVendorPrefixedCapabilityRules(t *testing.T) {
+	t.Run("vendor-prefixed ids gain the full tool surface", func(t *testing.T) {
+		for _, model := range []string{"qwen/qwen3.6-27b", "acme/foo-model"} {
+			q := DefaultRegistry().Resolve("openai-compatible", model)
+			if !q.ToolChoice.Supported {
+				t.Errorf("%s: ToolChoice.Supported = false, want true", model)
+			}
+			if !q.ParallelToolCalls.Supported {
+				t.Errorf("%s: ParallelToolCalls.Supported = false, want true", model)
+			}
+			if !q.ToolExamples.Supported {
+				t.Errorf("%s: ToolExamples.Supported = false, want true", model)
+			}
+		}
+	})
+
+	t.Run("bare ids are unchanged", func(t *testing.T) {
+		// The bare id continues to resolve via the "*" base rule; the
+		// "*/*" sibling must not regress it.
+		q := DefaultRegistry().Resolve("openai-compatible", "qwen3.6-35b-a3b-mlx")
+		if !q.ToolChoice.Supported || !q.ParallelToolCalls.Supported {
+			t.Errorf("bare id lost capabilities: %+v / %+v", q.ToolChoice, q.ParallelToolCalls)
+		}
+	})
+
+	t.Run("only one prefix level matches", func(t *testing.T) {
+		// "*/*" matches exactly one slash; deeper nesting is intentionally
+		// out of scope, so a/b/c stays at the zero (unsupported) value.
+		q := DefaultRegistry().Resolve("openai-compatible", "a/b/c")
+		if q.ToolChoice.Supported {
+			t.Errorf("a/b/c unexpectedly matched */*: ToolChoice = %+v", q.ToolChoice)
 		}
 	})
 }

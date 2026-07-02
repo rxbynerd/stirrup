@@ -223,6 +223,17 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 		"stream":   r.Stream,
 		tokenKey:   r.MaxTokens,
 	}
+	// Streaming responses carry no usage block unless the request opts in
+	// via stream_options.include_usage. Without it, OpenAI itself and
+	// every spec-compliant compatible server (LM Studio, vLLM, DeepSeek)
+	// stream only content/tool deltas and omit token counts, so output
+	// accounting resolves to zero. The usage rides in a trailing chunk
+	// with an empty choices array — see the SSE parse loop. Gated on
+	// Stream because the field is meaningless (and rejected by some
+	// servers) on a non-streaming request.
+	if r.Stream {
+		out["stream_options"] = map[string]any{"include_usage": true}
+	}
 	if len(r.Tools) > 0 {
 		out["tools"] = r.Tools
 	}
@@ -287,6 +298,10 @@ func (r *openaiRequest) UnmarshalJSON(data []byte) error {
 		}
 		delete(raw, "stream")
 	}
+	// stream_options is derived from Stream by MarshalJSON, not stored on
+	// the struct. Consume it so a Marshal→Unmarshal round-trip does not
+	// leak it into ExtraBodyFields (which would then collide on re-marshal).
+	delete(raw, "stream_options")
 	if v, ok := raw["temperature"]; ok {
 		var t float64
 		if err := json.Unmarshal(v, &t); err != nil {
@@ -559,6 +574,7 @@ var canonicalOpenAIFields = map[string]struct{}{
 	"top_logprobs":          {},
 	"logit_bias":            {},
 	"stream":                {},
+	"stream_options":        {},
 	"parallel_tool_calls":   {},
 }
 
@@ -1367,6 +1383,32 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	// message_complete event, so the bare-[DONE] fallback below knows
 	// whether the stream still owes one.
 	messageCompleted := false
+	// streamUsage holds the most recent usage block seen on any chunk.
+	// With stream_options.include_usage requested, compatible servers
+	// (LM Studio, vLLM, OpenAI) send token counts in a trailing chunk
+	// whose choices array is empty, arriving AFTER the finish_reason chunk
+	// that already produced message_complete; a few attach usage to the
+	// finish chunk instead. Captured here irrespective of position.
+	var streamUsage *openaiUsage
+	// outputTokensEmitted guards against double-counting: once any
+	// message_complete carries the output-token count, the trailing-usage
+	// flush is a no-op.
+	outputTokensEmitted := false
+	// flushTrailingUsage emits the captured output-token count as a
+	// usage-only message_complete. Empty StopReason and ReplayFields keep
+	// streamEventsToResult's last-write merge from clobbering the values
+	// the real completion event set earlier (the trailing usage chunk
+	// always follows it). Idempotent via outputTokensEmitted.
+	flushTrailingUsage := func() {
+		if streamUsage == nil || outputTokensEmitted {
+			return
+		}
+		emitEvent(types.StreamEvent{
+			Type:         "message_complete",
+			OutputTokens: streamUsage.CompletionTokens,
+		})
+		outputTokensEmitted = true
+	}
 	// Emit the per-stream ReplayFields summary on any exit path
 	// (normal end, early return on error, ctx cancel). Length-only
 	// reporting per design §5: avoid leaking captured content into
@@ -1434,6 +1476,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 					ReplayFields: flattenReplayCapture(replayFieldsCapture),
 				})
 			}
+			flushTrailingUsage()
 			return
 		}
 
@@ -1441,6 +1484,12 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("parse chunk: %w", err)})
 			return
+		}
+
+		// The usage block may ride on the finish chunk or on a trailing
+		// choices-empty chunk; capture it wherever it lands.
+		if chunk.Usage != nil {
+			streamUsage = chunk.Usage
 		}
 
 		for _, choice := range chunk.Choices {
@@ -1524,8 +1573,12 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 					// are never logged.
 					ReplayFields: flattenReplayCapture(replayFieldsCapture),
 				}
-				if chunk.Usage != nil {
-					ev.OutputTokens = chunk.Usage.CompletionTokens
+				// Attach usage only when it has already arrived (servers
+				// that put it on the finish chunk). LM Studio and OpenAI
+				// send it in a later chunk, handled by flushTrailingUsage.
+				if streamUsage != nil {
+					ev.OutputTokens = streamUsage.CompletionTokens
+					outputTokensEmitted = true
 				}
 				emitEvent(ev)
 				messageCompleted = true
@@ -1535,7 +1588,11 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 
 	if err := scanner.Err(); err != nil {
 		emitEvent(types.StreamEvent{Type: "error", Error: fmt.Errorf("read SSE stream: %w", err)})
+		return
 	}
+	// Stream ended without a [DONE] terminator (some servers just close
+	// the connection); surface any usage captured before the close.
+	flushTrailingUsage()
 }
 
 // composeOpenAIURL parses baseURL, appends path (using Path so existing
