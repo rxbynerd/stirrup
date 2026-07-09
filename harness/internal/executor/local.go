@@ -32,6 +32,13 @@ const (
 	maxTimeout = 30 * time.Minute
 
 	truncatedSuffix = "\n[output truncated at 1MB]"
+
+	// shortCommandKillGrace bounds exec.Cmd.WaitDelay: how long Wait()
+	// blocks on the stdout/stderr pipes after the process is killed on
+	// ctx cancellation, before forcibly closing them. Short — this is
+	// purely to unblock Wait() from an orphaned grandchild holding a
+	// pipe open, not a meaningful timeout in its own right.
+	shortCommandKillGrace = 500 * time.Millisecond
 )
 
 // SecurityEventEmitter is an optional interface for emitting structured security events.
@@ -220,6 +227,19 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Dir = e.workspace
 	cmd.Env = filteredCommandEnv()
+	// WaitDelay bounds how long Wait() blocks on the stdout/stderr
+	// pipes after the process is killed on ctx cancellation. Without
+	// it, a compound command ("cmd1; sleep N; cmd2") whose later stage
+	// forks a child that inherits the pipe file descriptors leaves
+	// that child as an orphan holding the pipe open after "sh" itself
+	// is SIGKILLed — Wait() then blocks for EOF until the orphan exits
+	// on its own, defeating prompt cancellation entirely (issue #461:
+	// this is what let a postRun hook's shell script outlive a SIGTERM
+	// by the length of its own sleep, discovered via manual E2E
+	// verification of the shutdown-signal fix). shortCommandKillGrace
+	// forcibly closes the pipes shortly after the kill signal so Wait()
+	// returns promptly regardless of what an orphaned grandchild does.
+	cmd.WaitDelay = shortCommandKillGrace
 
 	// Stream into capped writers so peak memory is bounded to ~maxOutputSize
 	// per stream rather than buffering all output. This mirrors
