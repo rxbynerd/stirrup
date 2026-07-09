@@ -625,12 +625,6 @@ func TestJSONLTraceEmitter_PartialStream(t *testing.T) {
 	}
 }
 
-// TestScrubRawJSON_WrapsWhenScrubBreaksValidity exercises the branch where the
-// scrubbed byte stream is no longer valid JSON. The "[REDACTED]" placeholder is
-// a bare token, so a secret that was sitting as an unquoted JSON value leaves
-// the document unparseable after replacement. scrubRawJSON must then re-wrap
-// the scrubbed text as a JSON string literal so the on-disk line stays valid,
-// rather than emitting raw broken JSON.
 // TestJSONLTraceEmitter_ImplementsHookRecorder is a compile-time
 // satisfaction guard for the optional-capability interface.
 func TestJSONLTraceEmitter_ImplementsHookRecorder(t *testing.T) {
@@ -748,6 +742,12 @@ func TestJSONLTraceEmitter_NoHooks_LeavesHookResultsEmpty(t *testing.T) {
 	}
 }
 
+// TestScrubRawJSON_WrapsWhenScrubBreaksValidity exercises the branch where the
+// scrubbed byte stream is no longer valid JSON. The "[REDACTED]" placeholder is
+// a bare token, so a secret that was sitting as an unquoted JSON value leaves
+// the document unparseable after replacement. scrubRawJSON must then re-wrap
+// the scrubbed text as a JSON string literal so the on-disk line stays valid,
+// rather than emitting raw broken JSON.
 func TestScrubRawJSON_WrapsWhenScrubBreaksValidity(t *testing.T) {
 	// secret:// matches the secret_ref pattern; sitting as an unquoted value it
 	// is replaced by the bare "[REDACTED]" token, breaking JSON validity.

@@ -19,17 +19,17 @@ type fakeExecCall struct {
 	timeout time.Duration
 }
 
-// fakeExecutor implements executor.Executor for hook.Runner unit tests.
+// mockExecutor implements executor.Executor for hook.Runner unit tests.
 // Only Exec and Capabilities are exercised by ExecRunner; the file-I/O
 // methods are unreachable from this package and simply error if called.
-type fakeExecutor struct {
+type mockExecutor struct {
 	caps     executor.ExecutorCapabilities
 	execFunc func(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error)
 	calls    []fakeExecCall
 }
 
-func newFakeExecutor() *fakeExecutor {
-	return &fakeExecutor{
+func newMockExecutor() *mockExecutor {
+	return &mockExecutor{
 		caps: executor.ExecutorCapabilities{
 			CanRead: true, CanWrite: true, CanExec: true, CanNetwork: true,
 			MaxTimeout: 30 * time.Minute,
@@ -37,27 +37,27 @@ func newFakeExecutor() *fakeExecutor {
 	}
 }
 
-func (f *fakeExecutor) ReadFile(context.Context, string) (string, error) {
-	return "", errors.New("fakeExecutor: ReadFile not implemented")
+func (f *mockExecutor) ReadFile(context.Context, string) (string, error) {
+	return "", errors.New("mockExecutor: ReadFile not implemented")
 }
 
-func (f *fakeExecutor) WriteFile(context.Context, string, string) error {
-	return errors.New("fakeExecutor: WriteFile not implemented")
+func (f *mockExecutor) WriteFile(context.Context, string, string) error {
+	return errors.New("mockExecutor: WriteFile not implemented")
 }
 
-func (f *fakeExecutor) ListDirectory(context.Context, string) ([]string, error) {
-	return nil, errors.New("fakeExecutor: ListDirectory not implemented")
+func (f *mockExecutor) ListDirectory(context.Context, string) ([]string, error) {
+	return nil, errors.New("mockExecutor: ListDirectory not implemented")
 }
 
-func (f *fakeExecutor) ResolvePath(relativePath string) (string, error) {
+func (f *mockExecutor) ResolvePath(relativePath string) (string, error) {
 	return relativePath, nil
 }
 
-func (f *fakeExecutor) Capabilities() executor.ExecutorCapabilities {
+func (f *mockExecutor) Capabilities() executor.ExecutorCapabilities {
 	return f.caps
 }
 
-func (f *fakeExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
+func (f *mockExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (*executor.ExecResult, error) {
 	f.calls = append(f.calls, fakeExecCall{command: command, timeout: timeout})
 	if f.execFunc != nil {
 		return f.execFunc(ctx, command, timeout)
@@ -75,7 +75,7 @@ func TestExecRunner_ImplementsRunner(t *testing.T) {
 }
 
 func TestExecRunner_RunPre_Ordering(t *testing.T) {
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	r := &ExecRunner{
 		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{
 			succeedingHook("first"), succeedingHook("second"), succeedingHook("third"),
@@ -110,7 +110,7 @@ func TestExecRunner_RunPre_Ordering(t *testing.T) {
 }
 
 func TestExecRunner_RunPre_FatalFailureSkipsRemaining(t *testing.T) {
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
 		if command == "false" {
 			return &executor.ExecResult{ExitCode: 1}, nil
@@ -154,7 +154,7 @@ func TestExecRunner_RunPre_FatalFailureSkipsRemaining(t *testing.T) {
 }
 
 func TestExecRunner_ContinueOnError_DispatchContinuesAndPhaseSucceeds(t *testing.T) {
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, command string, _ time.Duration) (*executor.ExecResult, error) {
 		if command == "false" {
 			return &executor.ExecResult{ExitCode: 1}, nil
@@ -185,7 +185,7 @@ func TestExecRunner_ContinueOnError_DispatchContinuesAndPhaseSucceeds(t *testing
 }
 
 func TestExecRunner_TimedOut(t *testing.T) {
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, timeout time.Duration) (*executor.ExecResult, error) {
 		return &executor.ExecResult{ExitCode: -1}, fmt.Errorf("command timed out after %s", timeout)
 	}
@@ -213,7 +213,7 @@ func TestExecRunner_DeadlineExceededTimedOut(t *testing.T) {
 	// k8s_execcore.go's Exec returns the context error verbatim rather
 	// than a formatted "timed out" string (see isTimeoutErr's doc
 	// comment) — pin that shape is also classified as TimedOut.
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
 		return nil, context.DeadlineExceeded
 	}
@@ -235,7 +235,7 @@ func TestExecRunner_TruncationAndScrub(t *testing.T) {
 	secret := "AKIAABCDEFGHIJKLMNOP" // matches the aws_access_key_id pattern
 	longOutput := strings.Repeat("x", maxOutputTailBytes*2) + secret
 
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.execFunc = func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
 		return &executor.ExecResult{ExitCode: 0, Stdout: longOutput}, nil
 	}
@@ -264,7 +264,7 @@ func TestExecRunner_TruncationAndScrub(t *testing.T) {
 // must be exactly the (scrubbed) stderr text, with no spurious leading
 // newline from the stdout/stderr join logic.
 func TestExecRunner_StderrOnlyOutput(t *testing.T) {
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.execFunc = func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
 		return &executor.ExecResult{ExitCode: 0, Stderr: "warning: something"}, nil
 	}
@@ -303,7 +303,7 @@ func TestExecRunner_RunPost_RunOnMatrix(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("runOn=%s/outcome=%s", tc.runOn, tc.outcome), func(t *testing.T) {
-			exec := newFakeExecutor()
+			exec := newMockExecutor()
 			r := &ExecRunner{
 				Hooks: &types.HooksConfig{PostRun: []types.HookConfig{{Name: "h", Command: "true", RunOn: tc.runOn}}},
 				Exec:  exec,
@@ -331,7 +331,7 @@ func TestExecRunner_RunPost_DeadCtx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.execFunc = func(ctx context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
 		return nil, ctx.Err()
 	}
@@ -358,7 +358,7 @@ func TestExecRunner_RunPost_BudgetExpiryMidHook(t *testing.T) {
 	defer cancel()
 	time.Sleep(5 * time.Millisecond) // guarantee the deadline has passed
 
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.execFunc = func(ctx context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
 		return nil, ctx.Err()
 	}
@@ -377,7 +377,7 @@ func TestExecRunner_RunPost_BudgetExpiryMidHook(t *testing.T) {
 }
 
 func TestExecRunner_CapabilityGuard_ClampsToMaxTimeout(t *testing.T) {
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	exec.caps.MaxTimeout = 10 * time.Second
 	r := &ExecRunner{
 		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{{Name: "h", Command: "true", TimeoutSeconds: 1800}}},
@@ -396,7 +396,7 @@ func TestExecRunner_CapabilityGuard_ClampsToMaxTimeout(t *testing.T) {
 }
 
 func TestExecRunner_EffectiveTimeoutDefaultsWhenUnset(t *testing.T) {
-	exec := newFakeExecutor()
+	exec := newMockExecutor()
 	r := &ExecRunner{
 		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{{Name: "h", Command: "true"}}},
 		Exec:  exec,
@@ -424,7 +424,7 @@ func TestExecRunner_NilExecutor(t *testing.T) {
 }
 
 func TestExecRunner_NilHooksConfig(t *testing.T) {
-	r := &ExecRunner{Exec: newFakeExecutor()}
+	r := &ExecRunner{Exec: newMockExecutor()}
 	preResults, preErr := r.RunPre(context.Background())
 	if preErr != nil || preResults != nil {
 		t.Errorf("RunPre() with nil Hooks = (%v, %v), want (nil, nil)", preResults, preErr)

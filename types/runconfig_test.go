@@ -7100,8 +7100,8 @@ func TestEffectiveHookTimeout(t *testing.T) {
 	}
 }
 
-// TestRedact_HooksPassThrough pins validation decision #9: hook commands
-// are operator config like VerifierConfig.Command/Prompt, so Redact()
+// TestRedact_HooksPassThrough pins that hook commands are operator
+// config like VerifierConfig.Command/Prompt, so Redact()
 // must leave HooksConfig completely untouched — there is nothing to
 // redact because validateHooksConfig structurally forbids "secret://"
 // in a hook Command.
