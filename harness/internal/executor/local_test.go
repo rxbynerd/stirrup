@@ -512,3 +512,16 @@ func TestCapabilities(t *testing.T) {
 		t.Errorf("MaxTimeout: got %v, want %v", caps.MaxTimeout, maxTimeout)
 	}
 }
+
+// TestMaxTimeout_Is30Minutes pins the literal cap value itself (issue
+// #461 raised it from 5 to 30 minutes so a cold `bundle install` in a
+// preRun hook has headroom). The other Capabilities() tests across
+// local/container/k8s only compare caps.MaxTimeout against this same
+// package-level maxTimeout constant, which would pass even if the raise
+// were silently reverted; this test is the actual regression tripwire
+// for the cap value.
+func TestMaxTimeout_Is30Minutes(t *testing.T) {
+	if maxTimeout != 30*time.Minute {
+		t.Errorf("maxTimeout = %v, want 30m (issue #461 raised the shared executor cap from 5m)", maxTimeout)
+	}
+}

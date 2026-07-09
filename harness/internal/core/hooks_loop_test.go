@@ -291,3 +291,45 @@ func TestLoop_Hooks_RecordedViaHookRecorder(t *testing.T) {
 type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// TestPostHookBudget pins postHookBudget's sizing directly: every
+// loop-level hooks test above drives it only through a nil
+// config.Hooks (the fakeHookRunner tests never set buildTestConfig's
+// Hooks field), which only exercises the "just the 30s margin" branch.
+// This pins the sum-of-effective-timeouts branch that actually sizes
+// the detached post-hook ctx.
+func TestPostHookBudget(t *testing.T) {
+	cases := []struct {
+		name  string
+		hooks *types.HooksConfig
+		want  time.Duration
+	}{
+		{"nil config", nil, 30 * time.Second},
+		{"empty config", &types.HooksConfig{}, 30 * time.Second},
+		{
+			"sums effective postRun timeouts plus margin",
+			&types.HooksConfig{PostRun: []types.HookConfig{
+				{Command: "true", TimeoutSeconds: 120},
+				{Command: "true", TimeoutSeconds: 60},
+			}},
+			(120 + 60 + 30) * time.Second,
+		},
+		{
+			"zero timeout resolves to default before summing",
+			&types.HooksConfig{PostRun: []types.HookConfig{{Command: "true"}}},
+			(time.Duration(types.DefaultHookTimeoutSeconds) + 30) * time.Second,
+		},
+		{
+			"preRun entries do not contribute",
+			&types.HooksConfig{PreRun: []types.HookConfig{{Command: "true", TimeoutSeconds: 900}}},
+			30 * time.Second,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := postHookBudget(tc.hooks); got != tc.want {
+				t.Errorf("postHookBudget(%+v) = %v, want %v", tc.hooks, got, tc.want)
+			}
+		})
+	}
+}

@@ -259,6 +259,32 @@ func TestExecRunner_TruncationAndScrub(t *testing.T) {
 	}
 }
 
+// TestExecRunner_StderrOnlyOutput pins scrubbedTail's stderr-only
+// branch: when a hook writes nothing to stdout, the recorded OutputTail
+// must be exactly the (scrubbed) stderr text, with no spurious leading
+// newline from the stdout/stderr join logic.
+func TestExecRunner_StderrOnlyOutput(t *testing.T) {
+	exec := newFakeExecutor()
+	exec.execFunc = func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+		return &executor.ExecResult{ExitCode: 0, Stderr: "warning: something"}, nil
+	}
+	r := &ExecRunner{
+		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{{Name: "stderr-only", Command: "true"}}},
+		Exec:  exec,
+	}
+
+	results, err := r.RunPre(context.Background())
+	if err != nil {
+		t.Fatalf("RunPre() error = %v, want nil", err)
+	}
+	if results[0].OutputTail != "warning: something" {
+		t.Errorf("OutputTail = %q, want %q (no leading newline for stderr-only output)", results[0].OutputTail, "warning: something")
+	}
+	if results[0].Truncated {
+		t.Error("Truncated = true, want false for short output")
+	}
+}
+
 func TestExecRunner_RunPost_RunOnMatrix(t *testing.T) {
 	cases := []struct {
 		runOn       string
