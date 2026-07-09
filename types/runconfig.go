@@ -219,6 +219,13 @@ type RunConfig struct {
 	// ToolChoiceEscalationConfig for the per-knob semantics and the
 	// mode-aware policy that decides when a no-tool answer is suspicious.
 	ToolChoiceEscalation *ToolChoiceEscalationConfig `json:"toolChoiceEscalation,omitempty"`
+
+	// Hooks configures operator-authored lifecycle hooks that run around
+	// the agentic session (#461): PreRun before the session starts (setup
+	// — clone, provision a runtime), PostRun after it ends (artifact
+	// submission, smoke tests). Nil means no hooks — a bare run is
+	// byte-for-byte unchanged. See HooksConfig for the full contract.
+	Hooks *HooksConfig `json:"hooks,omitempty"`
 }
 
 // ObservabilityConfig carries operator-supplied labels that are promoted to
@@ -1131,6 +1138,108 @@ func (rc *RunConfig) EffectiveToolChoiceEscalationMaxRetries() int {
 	return rc.ToolChoiceEscalation.MaxRetries
 }
 
+// HooksConfig configures operator-authored lifecycle hooks that run
+// around the agentic session (issue #461). PreRun executes after the
+// harness builds the system prompt and before GitStrategy.Setup — the
+// natural place to clone a repo or provision a runtime the deterministic
+// git strategy then assumes already exists; a fatal PreRun failure fails
+// the run with outcome "setup_failed" before any turn runs. PostRun
+// executes after GitStrategy.Finalise, once the run's outcome is known,
+// for artifact submission or smoke tests.
+//
+// Hook output is trace-only: it is recorded on types.HookExecution and
+// never enters the model's context. Hooks run through the same Executor
+// the agent's tools use, so they share the run's sandbox and network
+// egress posture — there is no separate credential or network surface to
+// configure.
+type HooksConfig struct {
+	// PreRun are hooks executed, in order, before the agentic session
+	// starts.
+	PreRun []HookConfig `json:"preRun,omitempty"`
+
+	// PostRun are hooks executed, in order, after the agentic session
+	// ends and GitStrategy.Finalise completes. Runs on every outcome by
+	// default; see HookConfig.RunOn to scope a hook to success or
+	// failure only.
+	PostRun []HookConfig `json:"postRun,omitempty"`
+}
+
+// HookConfig is a single operator-authored lifecycle hook: an ordered
+// shell command executed via "sh -c" through the run's Executor.
+type HookConfig struct {
+	// Type selects the hook kind. Empty defaults to "command" — the only
+	// value ValidateRunConfig accepts in v1. The field is present so a
+	// future typed step (e.g. a declarative git-clone source) can land
+	// additively without a schema break, matching the
+	// validateOptionalType convention used elsewhere in this file.
+	Type string `json:"type,omitempty"`
+
+	// Name is a short trace label (<=64 bytes, printable, no control
+	// characters). Purely descriptive — it never affects dispatch.
+	Name string `json:"name,omitempty"`
+
+	// Command is the shell command executed via "sh -c" through the
+	// run's Executor. Required, non-empty after TrimSpace, <=16KB. Must
+	// not contain a "secret://" reference: hook commands are operator
+	// config recorded verbatim in the trace — like
+	// VerifierConfig.Command — so embedding a secret reference here
+	// would defeat the SecretStore contract. Resolve credentials via
+	// control-plane runtime bindings instead (locked design decision,
+	// issue #461).
+	Command string `json:"command"`
+
+	// TimeoutSeconds bounds the hook's execution. Zero resolves to
+	// DefaultHookTimeoutSeconds via EffectiveHookTimeout; the hard
+	// ceiling is MaxHookTimeoutSeconds.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
+
+	// ContinueOnError, when true, downgrades a non-zero exit (or
+	// timeout) from a fatal phase failure to a recorded warning: the
+	// remaining hooks in the phase still run and the run's outcome is
+	// unaffected.
+	ContinueOnError bool `json:"continueOnError,omitempty"`
+
+	// RunOn filters a PostRun hook by the run's classified outcome.
+	// Valid values: "" / "always" (default — run regardless of
+	// outcome), "success" (only when the primary run succeeded),
+	// "failure" (only when it did not). Must be empty on a PreRun hook
+	// — the concept has no meaning before the session starts.
+	RunOn string `json:"runOn,omitempty"`
+}
+
+const (
+	// DefaultHookTimeoutSeconds is the timeout applied to a hook whose
+	// TimeoutSeconds is left at zero.
+	DefaultHookTimeoutSeconds = 300
+
+	// MaxHookTimeoutSeconds is the hard ceiling ValidateRunConfig
+	// enforces on HookConfig.TimeoutSeconds, and the bound used to cap
+	// the sum of PostRun timeouts (the detached post-hook budget the
+	// agentic loop grants after Git.Finalise).
+	MaxHookTimeoutSeconds = 1800
+
+	// maxHookCommandBytes bounds HookConfig.Command.
+	maxHookCommandBytes = 16 * 1024
+
+	// maxHookNameBytes bounds HookConfig.Name.
+	maxHookNameBytes = 64
+
+	// maxHooksPerPhase caps the number of hooks in PreRun or PostRun,
+	// independently.
+	maxHooksPerPhase = 32
+)
+
+// EffectiveHookTimeout resolves the timeout a hook.Runner should apply
+// for h. ValidateRunConfig has already bounded TimeoutSeconds to
+// [0, MaxHookTimeoutSeconds]; zero means "unset" and resolves to
+// DefaultHookTimeoutSeconds, any other value is returned verbatim.
+func EffectiveHookTimeout(h HookConfig) int {
+	if h.TimeoutSeconds == 0 {
+		return DefaultHookTimeoutSeconds
+	}
+	return h.TimeoutSeconds
+}
+
 // EditStrategyConfig selects the edit strategy implementation.
 type EditStrategyConfig struct {
 	Type           string   `json:"type"`                     // "whole-file" | "search-replace" | "udiff" | "multi"
@@ -2007,7 +2116,16 @@ func ValidateRunConfig(config *RunConfig) error {
 		errs = append(errs, fmt.Sprintf("mode %q requires a restrictive permission policy", config.Mode))
 	}
 
-	// Read-only modes must not enable write-capable tools
+	// Read-only modes must not enable write-capable tools.
+	//
+	// Lifecycle hooks (#461) are deliberately NOT covered by this
+	// invariant: it bounds the *agent's* tools — what the model can
+	// reach mid-conversation — not operator-authored, deterministic
+	// commands declared in reviewable RunConfig. Precedent already
+	// exists for exec outside the tool surface in read-only modes (the
+	// test-runner verifier's command, the deterministic git strategy's
+	// branch creation); a pre-run hook that clones a repo is exactly
+	// what a planning run needs to have something to read.
 	if readOnlyModes[config.Mode] {
 		if len(config.Tools.BuiltIn) == 0 {
 			errs = append(errs, fmt.Sprintf(
@@ -2077,6 +2195,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateObservabilityConfig(config.Observability, &errs)
 	validateToolDispatchConfig(config.ToolDispatch, &errs)
 	validateToolChoiceEscalationConfig(config.ToolChoiceEscalation, &errs)
+	validateHooksConfig(config, &errs)
 	validateBatchConfig(config, &errs)
 
 	if len(errs) > 0 {
@@ -2220,6 +2339,15 @@ func RuleOfTwoState(config *RunConfig) (holdsUntrusted, holdsSensitive, canCommE
 //
 // The three booleans are deliberately crude in v1 (per the issue
 // brief). They will be refined as we collect eval-suite signal.
+//
+// Lifecycle hooks (#461) do not participate in any of the three legs:
+// they add no agent-reachable capability (they run outside the
+// conversation entirely), their output is trace-only and never enters
+// the model's context (so a hook cannot smuggle sensitive data into a
+// turn), and they share the run's existing egress posture rather than
+// opening a new external-communication surface. HooksConfig is
+// intentionally absent from ruleOfTwoUntrustedInput / ruleOfTwoSensitiveData
+// / ruleOfTwoExternalComm below.
 func validateRuleOfTwo(config *RunConfig, errs *[]string) {
 	holdsUntrusted := ruleOfTwoUntrustedInput(config)
 	holdsSensitive := ruleOfTwoSensitiveData(config)
@@ -2535,6 +2663,132 @@ func validateToolChoiceEscalationConfig(cfg *ToolChoiceEscalationConfig, errs *[
 	}
 	if cfg.MaxRetries < 0 || cfg.MaxRetries > MaxToolChoiceEscalationMaxRetries {
 		*errs = append(*errs, fmt.Sprintf("toolChoiceEscalation.maxRetries must be 0 (use default) or between 1 and %d", MaxToolChoiceEscalationMaxRetries))
+	}
+}
+
+// validHookTypes is the closed set of HookConfig.Type values. Empty
+// defaults to "command"; v1 supports no other kind.
+var validHookTypes = map[string]bool{"": true, "command": true}
+
+// validHookRunOnValues is the closed set of HookConfig.RunOn values.
+var validHookRunOnValues = map[string]bool{"": true, "always": true, "success": true, "failure": true}
+
+// validateHooksConfig enforces the HooksConfig invariants (issue #461):
+//
+//   - Hooks require an exec-capable executor — the "api" executor is
+//     read-only (CanExec=false) and cannot run them. types cannot import
+//     the executor package's Capabilities, so this checks the static
+//     discriminator instead.
+//   - Every hook's Command is non-empty (after TrimSpace), bounded, and
+//     free of "secret://" references (see HookConfig.Command).
+//   - Type, TimeoutSeconds, Name, and the per-phase hook count are
+//     bounded to a closed set / hard ceiling.
+//   - RunOn is a closed set and rejected outright on a PreRun hook.
+//   - The sum of effective PostRun timeouts is bounded to
+//     MaxHookTimeoutSeconds — it sizes the detached post-hook budget the
+//     agentic loop grants after the run's own wall-clock timeout may
+//     have already expired.
+//   - A PreRun phase whose summed effective timeout exceeds the run's
+//     own wall-clock Timeout is a WARN, not a hard error: pre hooks run
+//     serially inside the same budget as the rest of the run, so this
+//     usually still succeeds but is very likely to blow the timeout.
+//
+// Read-only modes are deliberately NOT rejected here (see the comment at
+// the read-only tool-list invariant site above), and Rule-of-Two is
+// untouched (see validateRuleOfTwo's doc comment): hooks are operator-
+// authored and add no agent-reachable capability.
+func validateHooksConfig(config *RunConfig, errs *[]string) {
+	if config.Hooks == nil {
+		return
+	}
+	hooks := config.Hooks
+
+	if (len(hooks.PreRun) > 0 || len(hooks.PostRun) > 0) && config.Executor.Type == "api" {
+		*errs = append(*errs, "hooks require an exec-capable executor; executor.type \"api\" is read-only")
+	}
+
+	if len(hooks.PreRun) > maxHooksPerPhase {
+		*errs = append(*errs, fmt.Sprintf("hooks.preRun must have <= %d entries, got %d", maxHooksPerPhase, len(hooks.PreRun)))
+	}
+	if len(hooks.PostRun) > maxHooksPerPhase {
+		*errs = append(*errs, fmt.Sprintf("hooks.postRun must have <= %d entries, got %d", maxHooksPerPhase, len(hooks.PostRun)))
+	}
+
+	var preSum, postSum int
+	for i, h := range hooks.PreRun {
+		validateHookConfig(fmt.Sprintf("hooks.preRun[%d]", i), h, false, errs)
+		preSum += EffectiveHookTimeout(h)
+	}
+	for i, h := range hooks.PostRun {
+		validateHookConfig(fmt.Sprintf("hooks.postRun[%d]", i), h, true, errs)
+		postSum += EffectiveHookTimeout(h)
+	}
+
+	if postSum > MaxHookTimeoutSeconds {
+		*errs = append(*errs, fmt.Sprintf("sum of hooks.postRun effective timeouts must be <= %d seconds, got %d", MaxHookTimeoutSeconds, postSum))
+	}
+
+	if config.Timeout != nil && preSum > *config.Timeout {
+		// Layering note: same "types-side slog.Warn" mechanism as the
+		// batch maxTurns latency warning above (gh-134 precedent) —
+		// spec-faithful but leaves callers without a way to observe or
+		// suppress the warning short of manipulating slog.Default.
+		slog.Warn(
+			"sum of hooks.preRun effective timeouts exceeds the run's wall-clock timeout",
+			"preRunTimeoutSumSeconds", preSum,
+			"timeoutSeconds", *config.Timeout,
+		)
+	}
+}
+
+// validateHookConfig enforces the per-hook invariants shared by both
+// phases, plus the RunOn constraint that differs by phase (rejected
+// outright on a PreRun hook; a closed set on a PostRun hook).
+func validateHookConfig(path string, h HookConfig, isPostRun bool, errs *[]string) {
+	validateOptionalType(path, h.Type, validHookTypes, errs)
+
+	if strings.TrimSpace(h.Command) == "" {
+		*errs = append(*errs, fmt.Sprintf("%s.command is required", path))
+	} else if len(h.Command) > maxHookCommandBytes {
+		*errs = append(*errs, fmt.Sprintf("%s.command must be <= %d bytes, got %d", path, maxHookCommandBytes, len(h.Command)))
+	}
+	if strings.Contains(h.Command, "secret://") {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.command must not contain a \"secret://\" reference; resolve credentials via control-plane runtime bindings instead",
+			path))
+	}
+
+	if h.TimeoutSeconds < 0 || h.TimeoutSeconds > MaxHookTimeoutSeconds {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.timeoutSeconds must be 0 (use default) or between 1 and %d, got %d",
+			path, MaxHookTimeoutSeconds, h.TimeoutSeconds))
+	}
+
+	if len(h.Name) > maxHookNameBytes {
+		*errs = append(*errs, fmt.Sprintf("%s.name must be <= %d bytes, got %d", path, maxHookNameBytes, len(h.Name)))
+	} else if h.Name != "" {
+		if !utf8.ValidString(h.Name) {
+			*errs = append(*errs, fmt.Sprintf("%s.name must be valid UTF-8", path))
+		} else {
+			for i, r := range h.Name {
+				if !unicode.IsPrint(r) {
+					*errs = append(*errs, fmt.Sprintf("%s.name contains non-printable character at byte %d (U+%04X)", path, i, r))
+					break
+				}
+			}
+		}
+	}
+
+	if !isPostRun {
+		if h.RunOn != "" {
+			*errs = append(*errs, fmt.Sprintf("%s.runOn must be empty on a preRun hook", path))
+		}
+		return
+	}
+	if !validHookRunOnValues[h.RunOn] {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.runOn %q is not valid; must be one of \"\", \"always\", \"success\", \"failure\"",
+			path, h.RunOn))
 	}
 }
 

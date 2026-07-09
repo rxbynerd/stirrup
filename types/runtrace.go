@@ -29,7 +29,48 @@ type RunTrace struct {
 	ToolCalls           []ToolCallSummary    `json:"toolCalls"`
 	PermissionDenials   int                  `json:"permissionDenials,omitempty"`
 	VerificationResults []VerificationResult `json:"verificationResults"`
-	Outcome             string               `json:"outcome"` // "success" | "error" | "max_turns" | "verification_failed" | "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" | "cancelled" | "timeout" | "max_tokens"
+	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
+	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
+	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed".
+	// setup_failed and hook_failed (issue #461) report a fatal lifecycle-hook
+	// failure: setup_failed means a PreRun hook failed before the session
+	// started (zero turns ran); hook_failed means a PostRun hook failed after
+	// an otherwise-successful run (it never overrides a non-success outcome —
+	// the primary failure cause stays authoritative).
+	Outcome string `json:"outcome"`
+	// HookResults carries every lifecycle hook execution recorded during
+	// the run (issue #461), across both phases, in dispatch order. Empty
+	// when no hooks were configured. Populated by trace emitters that
+	// implement the optional trace.HookRecorder capability (today, the
+	// JSONL emitter).
+	HookResults []HookExecution `json:"hookResults,omitempty"`
+}
+
+// HookExecution records the outcome of a single lifecycle hook (issue
+// #461). Phase distinguishes "preRun" (before GitStrategy.Setup) from
+// "postRun" (after GitStrategy.Finalise); Index is the hook's position
+// within its phase's configured list (RunConfig.Hooks.PreRun /
+// .PostRun), so a trace consumer can correlate a result back to the
+// RunConfig entry that produced it even when Name is empty.
+//
+// OutputTail is the scrubbed (security.Scrub), tail-capped combined
+// stdout+stderr of the hook — trace-only, never surfaced to the model.
+// Truncated reports whether the persisted (scrubbed) output exceeded the
+// 4KB tail cap; truncation keeps the tail (not the head) because a
+// failing command's most useful diagnostic is usually printed last.
+type HookExecution struct {
+	Phase            string `json:"phase"` // "preRun" | "postRun"
+	Index            int    `json:"index"`
+	Name             string `json:"name,omitempty"`
+	Command          string `json:"command"`
+	ExitCode         int    `json:"exitCode"`
+	DurationMs       int64  `json:"durationMs"`
+	TimedOut         bool   `json:"timedOut,omitempty"`
+	Skipped          bool   `json:"skipped,omitempty"`
+	ContinuedOnError bool   `json:"continuedOnError,omitempty"`
+	Error            string `json:"error,omitempty"`
+	OutputTail       string `json:"outputTail,omitempty"`
+	Truncated        bool   `json:"truncated,omitempty"`
 }
 
 // ToolCallSummary records a single tool call's outcome for the trace.
