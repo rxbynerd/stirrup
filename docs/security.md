@@ -344,6 +344,19 @@ everything else in this document, and worth being explicit about:
   in control-plane runtime bindings (e.g. a pre-provisioned SSH agent
   or short-lived deploy token injected into the workspace before the
   hook runs), never in `RunConfig`.
+
+  This pattern moves the credential to a different trust boundary, not
+  out of the agent's reach: anything a hook leaves on disk as a side
+  effect — an SSH private key, a `.netrc`, a deploy token embedded in
+  `.git/config` — is readable by every agent tool for the remainder of
+  the run, `run_command` in particular, which is not confined to the
+  workspace-relative path containment `read_file` / `write_file`
+  enforce. "Trace-only output" above covers hook stdout/stderr, not
+  files a hook writes. Prefer a short-lived, narrowly-scoped credential
+  (so exposure is bounded even if the agent reads it) and have the
+  hook clean up the material before returning (e.g. `rm` the key,
+  `git config --unset` the embedded token) rather than relying on
+  workspace boundaries to hide it.
 - **Hooks do not interact with the Rule of Two.** The invariant bounds
   what the *agent* can simultaneously hold (untrusted input, sensitive
   data, external communication); hooks add none of those — they run
