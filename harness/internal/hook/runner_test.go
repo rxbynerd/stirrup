@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/types"
@@ -256,6 +257,49 @@ func TestExecRunner_TruncationAndScrub(t *testing.T) {
 	}
 	if strings.Contains(results[0].OutputTail, secret) {
 		t.Errorf("OutputTail leaked the unscrubbed secret: %q", results[0].OutputTail)
+	}
+}
+
+// TestExecRunner_TruncationTrimsUTF8RuneBoundary is a regression fixture
+// for a byte-index tail cut that landed mid-rune. "€" (U+20AC) encodes
+// as the 3-byte sequence E2 82 AC. combined = "€" + "\n" + 4093 "y"s has
+// length 3 + 1 + 4093 = maxOutputTailBytes+1, so the naive
+// len(scrubbed)-maxOutputTailBytes cut is exactly 1 — one byte into
+// "€" — leaving the bare continuation-byte pair (82 AC) at the start of
+// the slice before trimToRuneBoundary runs. Without the fix,
+// json.Marshal would silently substitute U+FFFD for that leading
+// partial rune when the trace is persisted.
+func TestExecRunner_TruncationTrimsUTF8RuneBoundary(t *testing.T) {
+	const euroSign = "€"
+	stderrFiller := strings.Repeat("y", maxOutputTailBytes-3)
+
+	exec := newMockExecutor()
+	exec.execFunc = func(context.Context, string, time.Duration) (*executor.ExecResult, error) {
+		return &executor.ExecResult{ExitCode: 0, Stdout: euroSign, Stderr: stderrFiller}, nil
+	}
+	r := &ExecRunner{
+		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{{Name: "utf8-boundary", Command: "true"}}},
+		Exec:  exec,
+	}
+
+	results, err := r.RunPre(context.Background())
+	if err != nil {
+		t.Fatalf("RunPre() error = %v, want nil", err)
+	}
+	tail := results[0].OutputTail
+
+	if !results[0].Truncated {
+		t.Fatal("Truncated = false, want true")
+	}
+	if !utf8.ValidString(tail) {
+		t.Fatalf("OutputTail is not valid UTF-8: %q", tail)
+	}
+	if strings.ContainsRune(tail, utf8.RuneError) {
+		t.Errorf("OutputTail contains U+FFFD (replacement character), want none introduced: %q", tail)
+	}
+	want := "\n" + stderrFiller
+	if tail != want {
+		t.Errorf("OutputTail = %q, want %q (the straddled euro sign's continuation bytes trimmed)", tail, want)
 	}
 }
 

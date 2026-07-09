@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -211,5 +212,23 @@ func scrubbedTail(stdout, stderr string) (tail string, truncated bool) {
 	if len(scrubbed) <= maxOutputTailBytes {
 		return scrubbed, false
 	}
-	return scrubbed[len(scrubbed)-maxOutputTailBytes:], true
+	// The byte-index cut below can land mid-rune when a multi-byte UTF-8
+	// character straddles the boundary; trimToRuneBoundary drops the
+	// resulting leading continuation bytes so OutputTail is always valid
+	// UTF-8 rather than json.Marshal silently substituting U+FFFD at the
+	// start of the persisted tail.
+	return trimToRuneBoundary(scrubbed[len(scrubbed)-maxOutputTailBytes:]), true
+}
+
+// trimToRuneBoundary drops any leading bytes of s that are UTF-8
+// continuation bytes (i.e. cannot start a rune), so a caller that
+// sliced s at an arbitrary byte offset gets back a string that starts
+// on a rune boundary. Bounded to at most utf8.UTFMax-1 bytes dropped —
+// the longest a valid rune's continuation-byte run can be.
+func trimToRuneBoundary(s string) string {
+	i := 0
+	for i < len(s) && i < utf8.UTFMax && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return s[i:]
 }
