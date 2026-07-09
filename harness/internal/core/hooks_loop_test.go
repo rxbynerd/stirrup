@@ -102,6 +102,53 @@ func TestLoop_Hooks_PreRunFatalFailure_SetsSetupFailedZeroTurns(t *testing.T) {
 	}
 }
 
+// TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent pins issue #461
+// finding #2: a fatal preRun hook failure — routed through
+// finishWithOutcome — must emit a terminal "done" HarnessEvent
+// (StopReason=outcome), not just the pre-existing "error" event.
+// Without this, a control plane watching for the documented terminal
+// "done" event (docs/deployment.md) never sees one for this outcome,
+// and the CLI entrypoints' RunResult/resultSink emission — gated on a
+// non-nil RunTrace, not on this event — was a separate but related gap
+// fixed alongside it (see cmd/harness.go, cmd/job.go).
+func TestLoop_Hooks_PreRunFatalFailure_EmitsDoneEvent(t *testing.T) {
+	loop := buildTestLoop(simpleSuccessProvider())
+	rec := &recordingTransport{}
+	loop.Transport = rec
+	hooks := &fakeHookRunner{preErr: errSentinelPreHookFailure}
+	loop.Hooks = hooks
+
+	config := buildTestConfig()
+	runTrace, err := loop.Run(context.Background(), config)
+	if err == nil {
+		t.Fatal("expected non-nil error from Run() on a fatal pre-run hook failure")
+	}
+	if runTrace.Outcome != "setup_failed" {
+		t.Fatalf("prerequisite: Outcome = %q, want setup_failed", runTrace.Outcome)
+	}
+
+	var sawError, sawDone bool
+	var doneStopReason string
+	for _, ev := range rec.events {
+		switch ev.Type {
+		case "error":
+			sawError = true
+		case "done":
+			sawDone = true
+			doneStopReason = ev.StopReason
+		}
+	}
+	if !sawError {
+		t.Error("expected an \"error\" event on the transport (pre-existing behaviour)")
+	}
+	if !sawDone {
+		t.Fatal("expected a \"done\" event on the transport, got none")
+	}
+	if doneStopReason != "setup_failed" {
+		t.Errorf("done event StopReason = %q, want setup_failed", doneStopReason)
+	}
+}
+
 // TestLoop_Hooks_PreRunFatalFailure_CtxDeadWinsOverSetupFailed pins that
 // a ctx already dead (deadline/cancel) at pre-hook failure time is
 // reported via classifyCtxOutcome, not the generic "setup_failed" — the

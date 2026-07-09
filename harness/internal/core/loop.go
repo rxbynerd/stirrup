@@ -1796,6 +1796,23 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 	}); emitErr != nil {
 		l.Logger.Warn("transport emit failed", "event", "error", "error", emitErr)
 	}
+	// Emit "done" with StopReason=outcome, matching the shape of the
+	// normal end-of-Run() emission (loop.go's Run(), immediately before
+	// stopHeartbeat) — this early-return path previously emitted only
+	// "error", so a control plane never saw the terminal "done" event
+	// documented as the definitive end-of-stream signal for a run this
+	// path terminates, and the CLI entrypoints' `if err != nil { return
+	// }` shortcut (see cmd/harness.go, cmd/job.go) meant an operator's
+	// preRun hook failure — outcome "setup_failed" — produced no
+	// structured RunResult at all despite a valid RunTrace existing.
+	// See finishWithOutcome's own doc comment and the cmd-layer fix
+	// this pairs with.
+	if emitErr := l.Transport.Emit(types.HarnessEvent{
+		Type:       "done",
+		StopReason: outcome,
+	}); emitErr != nil {
+		l.Logger.Warn("transport emit failed", "event", "done", "error", emitErr)
+	}
 	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
 	if traceErr != nil {
 		l.Logger.Warn("trace finish failed", "error", traceErr)
