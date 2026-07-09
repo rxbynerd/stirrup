@@ -623,6 +623,103 @@ did not resolve to a known tool under a non-default profile". The active
 `tools.profile` is recorded in the trace's attached `RunConfig`, so the
 two cases are distinguishable by reading it alongside the record.
 
+## Lifecycle hooks
+
+`hooks` configures operator-authored, deterministic shell commands that
+run around the agentic session (issue #461): `preRun` before the
+session starts, `postRun` after it ends. A hook is exec, not a tool —
+it runs through the same `Executor` the agent's tools use, and its
+output is trace-only and never enters the model's context.
+
+```json
+"hooks": {
+  "preRun":  [ { "type": "command", "name": "...", "command": "...", "timeoutSeconds": 300, "continueOnError": false } ],
+  "postRun": [ { "command": "...", "runOn": "always", "continueOnError": false } ]
+}
+```
+
+| Field | Meaning | Default / bound |
+|---|---|---|
+| `type` | Hook kind. Closed set. | `""` (defaults to `"command"`, the only value v1 accepts) |
+| `name` | Trace label. Purely descriptive. | `""`; ≤ 64 bytes, printable, no control characters |
+| `command` | Shell command run via `sh -c` through the run's `Executor`. Required. | ≤ 16 KB; rejected outright if it contains a `secret://` reference |
+| `timeoutSeconds` | Per-hook timeout. | `0` → 300 s; max 1800 s (30 minutes) |
+| `continueOnError` | A non-zero exit or timeout is recorded as a warning instead of failing the phase. | `false` |
+| `runOn` | `postRun` only: filters this hook by the run's outcome. Closed set: `""` / `"always"`, `"success"`, `"failure"`. Rejected outright on a `preRun` hook. | `""` (runs regardless of outcome) |
+
+Each phase is capped at 32 hooks. The sum of every `postRun` hook's
+effective timeout must not exceed 1800 s — it sizes the detached
+budget the loop grants `postRun` after the run's own wall-clock
+timeout may have already expired (see
+[`architecture.md`](architecture.md)). A `preRun` sum that exceeds the
+run's own `timeout` is a warning, not a validation error: `preRun`
+hooks run serially inside the same budget as the rest of the run, so
+this usually still succeeds but is very likely to blow the timeout.
+
+Credentials never belong in a hook `command` — `command` is operator
+config recorded verbatim in the trace, the same treatment
+`verifier.command` gets, so a `secret://` reference there would defeat
+the `SecretStore` contract. `ValidateRunConfig` rejects it structurally.
+Resolve clone/deploy credentials via control-plane runtime bindings
+instead.
+
+### Failure semantics
+
+| Situation | Outcome | Notes |
+|---|---|---|
+| A `preRun` hook without `continueOnError` fails or times out | `setup_failed` | The session never starts; zero turns run. `postRun` is skipped entirely — `Run()` returns before reaching it. |
+| The run's own context is already dead (timeout/cancel) when the `preRun` failure is observed | The ctx-cause outcome (`timeout` / `cancelled`), not `setup_failed` | The hook almost certainly failed *because* the deadline hit or a control-plane cancel arrived mid-exec — that is the more useful outcome to report. |
+| A `postRun` hook without `continueOnError` fails or times out, and the run would otherwise report `success` | `hook_failed` | Overrides `success` only. |
+| Same, but the run's outcome was already non-`success` (e.g. `max_turns`, `error`) | The original outcome, unchanged | A `postRun` failure never masks the primary failure cause; it is still visible in `RunTrace.HookResults` and `RunResult.hookFailures`. |
+| A hook with `continueOnError: true` fails or times out | The phase's outcome is unaffected | Recorded as a transport `warning` event and in `HookResults`; the remaining hooks in the phase still run. |
+
+`postRun` hooks run on every outcome by default (`runOn: ""` /
+`"always"`) — including `timeout` and `cancelled` — on a context
+detached from the run's own cancellation and deadline
+(`context.WithoutCancel`), so an artifact upload can still finish after
+wall-clock expiry. `runOn: "success"` / `"failure"` scope a hook to one
+branch. See [`security.md`](security.md) for the heartbeat caveat this
+detachment carries.
+
+Lifecycle hooks are **file / stdin / gRPC only** — there are no `--`
+flags to select or configure a hook, matching the composite-config
+convention already used for `tools.mcpServers` and multi-provider
+routing (see [Component-selection limits](#component-selection-limits)
+above). Set `hooks` in a `--config` file, over stdin, or in the
+`task_assignment` a control plane sends over gRPC.
+
+Hooks are allowed in every mode, including the read-only modes
+(`planning`, `review`, `research`, `toil`). The [read-only-modes
+invariant](#read-only-modes) bounds the *agent's* tools — what the
+model can reach mid-conversation — not operator-authored, deterministic
+commands declared in reviewable `RunConfig`. A `preRun` clone hook is
+exactly what a planning run needs to have something to read; precedent
+already exists for exec outside the tool surface in read-only modes
+(the test-runner verifier's command, the `deterministic` git strategy's
+branch creation).
+
+Hooks add no agent-reachable capability, so they play no part in the
+Rule of Two: their output never enters the model's context, and they
+share the run's existing egress posture rather than opening a new
+external-communication surface.
+
+A worked example — clone the repository and install dependencies
+before the session starts, submit an artifact after it ends:
+
+```json
+{
+  "hooks": {
+    "preRun": [
+      { "name": "clone", "command": "git clone https://github.com/example/repo.git .", "timeoutSeconds": 60 },
+      { "name": "bundle-install", "command": "bundle install", "timeoutSeconds": 900 }
+    ],
+    "postRun": [
+      { "name": "submit-artifact", "command": "curl -sf -X POST -T build/output.tar.gz https://artifacts.example.com/upload", "runOn": "success", "continueOnError": true }
+    ]
+  }
+}
+```
+
 ## Limits and budgets
 
 `ValidateRunConfig` enforces hard caps on values that could otherwise
@@ -636,6 +733,10 @@ be unbounded:
 | `maxTokenBudget` | 50 M |
 | `maxCostBudget` | $100 |
 | `temperature` | `0.0` ≤ `t` ≤ `2.0` |
+| `hooks.preRun` / `hooks.postRun` | 32 hooks per phase |
+| `hooks[].command` | 16 KB |
+| `hooks[].timeoutSeconds` | 1800 s (30 min) per hook |
+| sum of `hooks.postRun[].timeoutSeconds` | 1800 s (30 min) |
 
 Read-only modes additionally require the tool list to be set.
 

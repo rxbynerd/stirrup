@@ -127,6 +127,24 @@ the `Verifier` validates output. The `Transport` carries events to
 and from the control plane; the `TraceEmitter` records spans and
 metrics throughout.
 
+Lifecycle hooks (issue #461) run around this loop, not inside it. A
+configured `hook.Runner` (`hook.Noop` when the run has none) executes
+`preRun` hooks after `PromptBuilder` builds the system prompt and
+before `GitStrategy.Setup` — the deterministic git strategy assumes an
+existing checkout, so a clone hook has to create it first — under the
+run's own wall-clock context. `postRun` hooks execute after outcome
+classification and `GitStrategy.Finalise`, before the run reports
+`done`, on a context detached from the run's own cancellation and
+deadline (`context.WithoutCancel`) and bounded by the sum of the
+configured `postRun` timeouts plus a 30 s margin, so an artifact
+upload can still finish after the run's wall-clock timeout has
+expired. Hook output never enters the model's context; it is
+trace-only, recorded via the optional `trace.HookRecorder` capability
+the same way `trace.SystemInstructionsRecorder` is. Sub-agent loops
+always get `hook.Noop` — hooks are parent-run-only. Full schema,
+defaults, and failure-semantics reference: [`configuration.md`
+"Lifecycle hooks"](configuration.md#lifecycle-hooks).
+
 ## Modes
 
 Five run modes ship as partial `RunConfig` presets that select
@@ -226,10 +244,25 @@ are accessed. Three tiers ship, selected per-task:
   `/var/run/podman/podman.sock`.
 
 Filesystem executors enforce a 10 MB file size cap, a 1 MB command
-output cap, a 30 s default command timeout (5 min hard cap), and
-symlink-aware workspace containment. The container executor is
-hardened with `CapDrop: ALL`, `no-new-privileges`, and
-`NetworkMode: none` by default; API keys never enter the container.
+output cap, a 30 s default command timeout, and symlink-aware
+workspace containment. The container executor is hardened with
+`CapDrop: ALL`, `no-new-privileges`, and `NetworkMode: none` by
+default; API keys never enter the container.
+
+Two independent timeout ceilings apply to command execution, and they
+are deliberately decoupled. The shared `Executor.Exec` hard cap the
+`local`, `container`, `k8s`, and `k8s-sandbox` executors clamp
+against — 30 minutes as of issue #461, raised from 5 minutes so a
+`preRun` lifecycle hook can run a cold `bundle install` — bounds
+every real command execution uniformly. The agent-reachable
+`run_command` tool clamps independently at 300 s (5 minutes) inside
+`builtins/shell.go`, not derived from the executor constant, so
+raising the executor's ceiling for hooks does not hand the model a
+longer exec budget. The eval-only `ReplayExecutor` ignores its
+timeout argument entirely (it replays a recorded output instantly)
+and reports its own fixed 5-minute `Capabilities().MaxTimeout`,
+unaffected by the raised cap — see [Eval framework](#eval-framework)
+below for the resulting hooks-under-replay gap.
 
 The Engine API path was chosen deliberately: the official Docker Go
 SDK pulls in moby, containerd, and OCI specs, which conflicts with
@@ -610,6 +643,13 @@ deterministically:
   indexed by `(toolName, canonicalInput)`. Tracks writes for
   assertion via `Writes()`.
 
+Lifecycle hooks (issue #461) dispatch through `Executor.Exec` directly
+— outside the `(toolName, canonicalInput)` indexing `ReplayExecutor`
+looks up against — so a recorded-replay eval of a run that used hooks
+is undefined behaviour in v1: there is no recorded hook execution for
+`ReplayExecutor` to match against. Suites that need lifecycle hooks
+should use live evaluation until replay support lands as a follow-up.
+
 Suites are authored in HCLv2. The runner clones repos, invokes the
 harness binary, parses JSONL traces, and applies judges
 (`test-command`, `file-exists`, `file-contains`, `composite`). The
@@ -629,11 +669,14 @@ Full reference: [`eval.md`](eval.md).
 | `MaxCostBudget` | unset | $100 |
 | File read/write size | 10 MB | — |
 | Command output | 1 MB | — |
-| Command timeout | 30 s | 5 min |
+| Command timeout (`run_command` tool) | 30 s | 5 min |
+| `Executor.Exec` hard cap (`local`/`container`/`k8s`/`k8s-sandbox`) | 30 s | 30 min |
 | Web fetch response | 100 KB | — |
 | `temperature` | 0.1 | — |
 | `max_tokens` | 64 000 | — |
 | Default model | `claude-sonnet-4-6` | — |
+| Lifecycle hook timeout (`hooks[].timeoutSeconds`) | 300 s | 1800 s (30 min) |
+| Lifecycle hooks per phase (`hooks.preRun` / `hooks.postRun`) | — | 32 |
 
 The `temperature` default is resolved unconditionally for every
 provider call; it is not sent on the wire to Claude Opus 4.7+, Claude

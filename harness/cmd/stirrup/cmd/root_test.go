@@ -184,6 +184,36 @@ func TestBuildRunResult_NoVerificationResultsLeavesVerdictNil(t *testing.T) {
 	}
 }
 
+// TestBuildRunResult_HookFailuresCounted pins the issue #461 field: a
+// non-zero HookFailures count when the trace carries failed (but not
+// skipped) lifecycle hook executions, computed across both phases.
+func TestBuildRunResult_HookFailuresCounted(t *testing.T) {
+	rt := &types.RunTrace{
+		ID:      "run-hooks",
+		Outcome: "hook_failed",
+		HookResults: []types.HookExecution{
+			{Phase: "preRun", Index: 0, Command: "true"},                         // succeeded
+			{Phase: "postRun", Index: 0, Command: "false", Error: "exit code 1"}, // failed
+			{Phase: "postRun", Index: 1, Command: "true", Skipped: true},         // skipped, not a failure
+		},
+	}
+	got := buildRunResult(rt)
+	if got.HookFailures != 1 {
+		t.Errorf("HookFailures = %d, want 1 (skipped entries must not count)", got.HookFailures)
+	}
+}
+
+// TestBuildRunResult_NoHookResultsLeavesHookFailuresZero pins the
+// hookless-run default: an empty/nil HookResults must not panic and
+// must resolve HookFailures to zero.
+func TestBuildRunResult_NoHookResultsLeavesHookFailuresZero(t *testing.T) {
+	rt := &types.RunTrace{ID: "run-no-hooks", Outcome: "success"}
+	got := buildRunResult(rt)
+	if got.HookFailures != 0 {
+		t.Errorf("HookFailures = %d, want 0", got.HookFailures)
+	}
+}
+
 // TestExportWorkspace_NoopWhenEmpty pins the WorkspaceExportTo=="" path:
 // no exporter is constructed and no HTTP call is made. Tested by
 // asserting the factory closure is never invoked, so a regression that

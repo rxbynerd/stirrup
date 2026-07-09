@@ -104,6 +104,31 @@ func printRunSummary(runTrace *types.RunTrace) {
 	fmt.Fprintf(os.Stderr, "Tokens: %d in / %d out\n", runTrace.TokenUsage.Input, runTrace.TokenUsage.Output)
 	fmt.Fprintf(os.Stderr, "Tool calls: %d\n", len(runTrace.ToolCalls))
 	fmt.Fprintf(os.Stderr, "Duration: %s\n", runTrace.CompletedAt.Sub(runTrace.StartedAt).Round(time.Millisecond))
+	if len(runTrace.HookResults) > 0 {
+		ran, failed := hookSummaryCounts(runTrace.HookResults)
+		fmt.Fprintf(os.Stderr, "Hooks: %d run, %d failed\n", ran, failed)
+	}
+}
+
+// hookSummaryCounts reports how many lifecycle hooks (issue #461)
+// actually ran and how many of those failed, for printRunSummary and
+// buildRunResult. "Ran" excludes entries with Skipped=true — a hook
+// skipped by a postRun runOn filter or after a prior fatal failure in
+// the same phase never executed, so it should not count toward either
+// number. Skipped entries never set Error (see hook.ExecRunner), so
+// counting Error != "" alone is sufficient for "failed" without a
+// second Skipped check.
+func hookSummaryCounts(results []types.HookExecution) (ran, failed int) {
+	for _, r := range results {
+		if r.Skipped {
+			continue
+		}
+		ran++
+		if r.Error != "" {
+			failed++
+		}
+	}
+	return ran, failed
 }
 
 // buildRunResult constructs the small RunResult payload from the
@@ -148,6 +173,10 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 			Feedback: last.Feedback,
 		}
 	}
+	// HookFailures (issue #461): hookSummaryCounts is nil-safe (ranges
+	// over a nil/empty HookResults are no-ops), so this is always safe
+	// to compute and naturally resolves to 0 for a hookless run.
+	_, res.HookFailures = hookSummaryCounts(rt.HookResults)
 	return res
 }
 

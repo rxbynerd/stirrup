@@ -5943,6 +5943,42 @@ func TestPrintRunSummary_NilTraceDoesNotPanic(t *testing.T) {
 	}
 }
 
+// TestPrintRunSummary_HooksLinePrintedWhenPresent pins the issue #461
+// summary line: present and correctly counted when the trace carries
+// HookResults, counting only executed (non-Skipped) entries and only
+// those with a non-empty Error as failures.
+func TestPrintRunSummary_HooksLinePrintedWhenPresent(t *testing.T) {
+	rt := outputModeRunTrace()
+	rt.HookResults = []types.HookExecution{
+		{Phase: "preRun", Index: 0, Command: "true"},
+		{Phase: "postRun", Index: 0, Command: "false", Error: "exit code 1"},
+		{Phase: "postRun", Index: 1, Command: "true", Skipped: true},
+	}
+
+	stderrDone := captureStderr(t)
+	printRunSummary(rt)
+	stderr := stderrDone()
+
+	if !strings.Contains(stderr, "Hooks: 2 run, 1 failed") {
+		t.Errorf("stderr should report \"Hooks: 2 run, 1 failed\", got: %q", stderr)
+	}
+}
+
+// TestPrintRunSummary_HooksLineOmittedWhenAbsent pins that a hookless
+// run's summary carries no "Hooks:" line at all, preserving the
+// pre-#461 stderr shape byte-for-byte.
+func TestPrintRunSummary_HooksLineOmittedWhenAbsent(t *testing.T) {
+	rt := outputModeRunTrace()
+
+	stderrDone := captureStderr(t)
+	printRunSummary(rt)
+	stderr := stderrDone()
+
+	if strings.Contains(stderr, "Hooks:") {
+		t.Errorf("stderr should have no Hooks: line for a hookless run, got: %q", stderr)
+	}
+}
+
 // TestEmitRunOutput_CancelledContextStillEmits pins the M2 fix:
 // emitRunOutput must be reachable with a usable context even when the
 // run's primary context has already been cancelled. The synthesizer's

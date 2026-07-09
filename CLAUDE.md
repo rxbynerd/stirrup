@@ -135,6 +135,7 @@ Quick map for "I need to change X" lookups:
 | Provider behaviour or wire format | `harness/internal/provider/<name>.go` |
 | Tool definition or schema | `harness/internal/tool/builtins/<name>.go` |
 | Edit fallback logic | `harness/internal/edit/multi.go` |
+| Lifecycle hooks (pre/post-run exec, #461) | `harness/internal/hook/` (Runner/Noop/ExecRunner), loop wiring in `harness/internal/core/loop.go` (operator doc: `docs/configuration.md#lifecycle-hooks`) |
 | Permission gating logic | `harness/internal/permission/<type>.go` |
 | Cedar policy semantics | `harness/internal/permission/policyengine.go` |
 | Container runtime / network mode wiring | `harness/internal/executor/container*.go` |
