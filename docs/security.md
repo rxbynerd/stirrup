@@ -366,8 +366,8 @@ everything else in this document, and worth being explicit about:
 - **Read-only modes allow hooks.** The read-only invariant
   (`planning`, `review`, `research`, `toil` reject `write_file`,
   `run_command`, `edit_file`) bounds *agent-reachable* tools;
-  operator-authored, reviewable exec outside the tool surface already
-  has precedent there (the test-runner verifier's command, the
+  operator-authored, reviewable shell commands outside the tool surface
+  already have precedent there (the test-runner verifier's command, the
   `deterministic` git strategy). See [`configuration.md` "Lifecycle
   hooks"](configuration.md#lifecycle-hooks) for the full schema and
   failure semantics.

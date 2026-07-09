@@ -935,15 +935,15 @@ exist; they are not claimed to cover them.
   `no-secret-in-input.cedar` starter covers some more. Neither is
   exhaustive.
 - **Lifecycle hooks are outside Rings 3, 4, and 5.** `preRun` / `postRun`
-  hooks (issue #461) run operator-authored exec outside the model's
-  turn-by-turn control entirely: Cedar (Ring 3) never evaluates a hook
-  command, the Rule of Two (Ring 4) deliberately ignores `HooksConfig`
-  (hooks add no agent-reachable capability), and the code scanner
-  (Ring 5) never inspects a file a hook writes. Only Rings 1 and 2
-  apply — hooks dispatch through the run's own `Executor`, so they
+  hooks (issue #461) run operator-authored shell commands outside the
+  model's turn-by-turn control entirely: Cedar (Ring 3) never evaluates
+  a hook command, the Rule of Two (Ring 4) deliberately ignores
+  `HooksConfig` (hooks add no agent-reachable capability), and the code
+  scanner (Ring 5) never inspects a file a hook writes. Only Rings 1
+  and 2 apply — hooks dispatch through the run's own `Executor`, so they
   inherit the same container runtime class and egress posture as every
-  agent tool call. A Cedar deny-policy or a strict `permissionPolicy`
-  does not gate a hook the way it gates a tool call. See
+  agent tool call. Cedar deny-policies and strict `permissionPolicy`
+  do not gate hooks the way they gate tool calls. See
   [`security.md`](security.md#lifecycle-hooks) for the full trust-
   boundary writeup.
 
