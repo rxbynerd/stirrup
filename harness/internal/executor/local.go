@@ -14,10 +14,23 @@ import (
 )
 
 const (
-	maxFileSize     = 10 * 1024 * 1024 // 10 MB
-	maxOutputSize   = 1 * 1024 * 1024  // 1 MB
-	defaultTimeout  = 30 * time.Second
-	maxTimeout      = 5 * time.Minute
+	maxFileSize    = 10 * 1024 * 1024 // 10 MB
+	maxOutputSize  = 1 * 1024 * 1024  // 1 MB
+	defaultTimeout = 30 * time.Second
+
+	// maxTimeout is the hard cap every Executor.Exec implementation
+	// clamps its caller-supplied timeout to. Raised from 5 to 30 minutes
+	// for lifecycle hooks (#461): a cold `bundle install` / dependency
+	// restore in a preRun hook routinely exceeds 5 minutes. Safe to
+	// raise because the *agent-reachable* path (run_command, via
+	// builtins/shell.go's independent 300s clamp) is unaffected — that
+	// clamp is enforced at the tool layer, not derived from this
+	// constant, so raising it does not hand the model any more exec
+	// budget. The test-runner verifier (verifier/testrunner.go) also
+	// gets the extra headroom since it calls Exec directly with its own
+	// timeout, uncapped except by this constant.
+	maxTimeout = 30 * time.Minute
+
 	truncatedSuffix = "\n[output truncated at 1MB]"
 )
 
