@@ -23,6 +23,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -90,8 +91,15 @@ type AgenticLoop struct {
 	// ruleoftwo.NewNoop() when the run is unarmed so loop call sites
 	// stay unconditional; hand-assembled loops (tests, embedders) may
 	// leave it nil and the observe helpers no-op, mirroring GuardRail.
-	RuleOfTwo    ruleoftwo.Monitor
-	Escalation   EscalationPolicy // tool-choice missed-tool recovery (#230); nil = disabled
+	RuleOfTwo  ruleoftwo.Monitor
+	Escalation EscalationPolicy // tool-choice missed-tool recovery (#230); nil = disabled
+	// Hooks runs the run's configured lifecycle hooks (#461). Optional,
+	// like GuardRail/RuleOfTwo/Escalation: Run() nil-checks it before
+	// every call, so a hand-assembled loop (tests, embedders) that
+	// leaves it unset sees no behaviour change. The factory always
+	// injects a non-nil value (hook.Noop when the run has no
+	// HooksConfig, or is a sub-agent); *hook.ExecRunner otherwise.
+	Hooks        hook.Runner
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
 	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)

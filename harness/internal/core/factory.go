@@ -20,6 +20,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/mcp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
@@ -292,6 +293,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 11. Git strategy.
 	gs := buildGitStrategy(config.GitStrategy)
 
+	// 11b. Lifecycle hook runner (issue #461). Noop when the run has no
+	// HooksConfig so the loop's Hooks field is never a bare nil
+	// interface and a bare run pays no cost — the same pattern as
+	// GuardRail. Shares the run's Executor so hooks run inside the same
+	// sandbox and network egress posture as every agent tool call.
+	hooksRunner := buildHookRunner(config.Hooks, exec, logger)
+
 	// 13. OTel metrics.
 	var metrics *observability.Metrics
 	metricsEndpoint := config.TraceEmitter.MetricsEndpoint
@@ -558,6 +566,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		GuardRail:    gr,
 		RuleOfTwo:    rot,
 		Escalation:   escalation,
+		Hooks:        hooksRunner,
 		Transport:    tp,
 		Trace:        te,
 		Tracer:       tracer,
@@ -1625,6 +1634,19 @@ func buildGitStrategy(cfg types.GitStrategyConfig) git.GitStrategy {
 	default:
 		return git.NewNoneGitStrategy()
 	}
+}
+
+// buildHookRunner constructs the lifecycle hook runner (issue #461).
+// Returns hook.Noop when cfg is nil or configures no hooks in either
+// phase, so a bare run pays no cost and AgenticLoop.Hooks is never a
+// bare nil interface. exec is the run's own Executor — hooks run
+// through it so they share the run's sandbox and network egress posture
+// with every agent tool call.
+func buildHookRunner(cfg *types.HooksConfig, exec executor.Executor, logger *slog.Logger) hook.Runner {
+	if cfg == nil || (len(cfg.PreRun) == 0 && len(cfg.PostRun) == 0) {
+		return hook.NewNoop()
+	}
+	return &hook.ExecRunner{Hooks: cfg, Exec: exec, Logger: logger}
 }
 
 // resourceOptionsFromConfig assembles the OTel ResourceOptions for this run

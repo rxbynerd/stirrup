@@ -197,6 +197,36 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		recorder.RecordSystemInstructions(systemPrompt)
 	}
 
+	// Pre-run lifecycle hooks (issue #461): operator-authored setup
+	// (clone, provision a runtime) that must complete before
+	// Git.Setup — the deterministic git strategy assumes an existing
+	// checkout, so a clone hook has to create it first. Runs under
+	// runCtx: it counts against the run's wall-clock timeout and
+	// heartbeats are already flowing (started above). A nil Hooks (no
+	// HooksConfig, or a hand-assembled loop that left it unset) is a
+	// no-op, mirroring GuardRail/RuleOfTwo.
+	if l.Hooks != nil {
+		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks.preRun")
+		preResults, preErr := l.Hooks.RunPre(runCtx)
+		l.recordHookExecutions(preResults)
+		if preErr != nil {
+			preHookSpan.RecordError(preErr)
+			preHookSpan.SetStatus(codes.Error, preErr.Error())
+		}
+		preHookSpan.End()
+		if preErr != nil {
+			// A dead run ctx (timeout/cancel) wins over setup_failed:
+			// the hook almost certainly failed *because* the deadline
+			// hit or a control-plane cancel arrived mid-exec, and that
+			// is the more useful outcome to report.
+			outcome := "setup_failed"
+			if runCtx.Err() != nil {
+				outcome = classifyCtxOutcome(context.Cause(runCtx))
+			}
+			return l.finishWithOutcome(runCtx, outcome, fmt.Errorf("pre-run hooks: %w", preErr))
+		}
+	}
+
 	// Set up git workspace.
 	_, gitSetupSpan := l.Tracer.Start(l.traceCtx(runCtx), "git.setup")
 	if err := l.Git.Setup(runCtx, config.Executor.Workspace, config.RunID); err != nil {
@@ -345,6 +375,35 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 		})
 	}
 	finaliseSpan.End()
+
+	// Post-run lifecycle hooks (issue #461): artifact submission, smoke
+	// tests. Runs after outcome classification and Git.Finalise, before
+	// the "done" event, on a ctx detached from the run's wall-clock
+	// timeout/cancellation (context.WithoutCancel) so a hook that
+	// outlives the deadline (e.g. uploading a large artifact) can still
+	// finish; bounded by the sum of the configured postRun timeouts
+	// plus a 30s margin so a misbehaving hook cannot hang the process
+	// forever. Skipped entirely when the pre-run phase already failed —
+	// Run() returned above in that case, so this point is never
+	// reached. A fatal post-hook failure overrides outcome to
+	// "hook_failed" only when outcome was "success": the primary
+	// failure cause must never be masked, and it stays visible via
+	// HookResults / RunResult.HookFailures regardless.
+	if l.Hooks != nil {
+		postCtx, postCancel := context.WithTimeout(context.WithoutCancel(ctx), postHookBudget(config.Hooks))
+		_, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks.postRun")
+		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
+		l.recordHookExecutions(postResults)
+		if postErr != nil {
+			postHookSpan.RecordError(postErr)
+			postHookSpan.SetStatus(codes.Error, postErr.Error())
+		}
+		postHookSpan.End()
+		postCancel()
+		if postErr != nil && outcome == "success" {
+			outcome = "hook_failed"
+		}
+	}
 
 	l.Logger.Info("run finished", "outcome", outcome)
 
@@ -1639,15 +1698,82 @@ func lastAssistantText(blocks []types.ContentBlock) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// finishWithError records an error outcome and finishes the trace.
+// recordHookExecutions forwards each lifecycle hook result (issue #461)
+// to the trace emitter's optional HookRecorder capability and surfaces a
+// transport "warning" event for any hook that failed but was configured
+// with continueOnError: true — visible to the control plane even though
+// the failure never touches the run's outcome. Mirrors the
+// git.Finalise-failure -> "warning" event precedent elsewhere in Run().
+func (l *AgenticLoop) recordHookExecutions(execs []types.HookExecution) {
+	recorder, hasRecorder := l.Trace.(trace.HookRecorder)
+	for _, exec := range execs {
+		if hasRecorder {
+			recorder.RecordHookExecution(exec)
+		}
+		if !exec.ContinuedOnError {
+			continue
+		}
+		if err := l.Transport.Emit(types.HarnessEvent{
+			Type:    "warning",
+			Message: formatHookWarning(exec),
+		}); err != nil {
+			l.Logger.Warn("transport emit failed", "event", "warning", "error", err)
+		}
+	}
+}
+
+// formatHookWarning renders the transport "warning" message for a
+// continueOnError hook failure. The full Command is deliberately
+// omitted (it can be up to 16KB); Name identifies the hook when the
+// operator supplied one.
+func formatHookWarning(exec types.HookExecution) string {
+	label := fmt.Sprintf("%s hook %d", exec.Phase, exec.Index)
+	if exec.Name != "" {
+		label = fmt.Sprintf("%s (%s)", label, exec.Name)
+	}
+	if exec.Error == "" {
+		return label + " failed and continued"
+	}
+	return fmt.Sprintf("%s failed and continued: %s", label, exec.Error)
+}
+
+// postHookBudget returns the wall-clock budget granted to the detached
+// post-hook ctx (issue #461): the sum of every postRun hook's effective
+// timeout (the worst case where every hook actually runs to its own
+// timeout) plus a 30s margin, so artifact submission and smoke tests can
+// still complete even after the run's own wall-clock timeout has
+// expired. A nil or hookless config resolves to just the 30s margin so
+// the detached ctx is never unbounded. ValidateRunConfig bounds the sum
+// to types.MaxHookTimeoutSeconds, so this is bounded regardless of
+// operator input.
+func postHookBudget(hooks *types.HooksConfig) time.Duration {
+	sum := 0
+	if hooks != nil {
+		for _, h := range hooks.PostRun {
+			sum += types.EffectiveHookTimeout(h)
+		}
+	}
+	return time.Duration(sum)*time.Second + 30*time.Second
+}
+
+// finishWithError records an "error" outcome and finishes the trace.
 func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.RunTrace, error) {
+	return l.finishWithOutcome(ctx, "error", err)
+}
+
+// finishWithOutcome is finishWithError's generalisation (issue #461): it
+// records the given outcome — rather than always "error" — and finishes
+// the trace. Used by the preRun hook fatal-failure path, which reports
+// "setup_failed" (or a ctx-cause outcome if the run's own wall-clock
+// timeout/cancel raced the hook failure) instead of the generic "error".
+func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err error) (*types.RunTrace, error) {
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
 		Message: err.Error(),
 	}); emitErr != nil {
 		l.Logger.Warn("transport emit failed", "event", "error", "error", emitErr)
 	}
-	runTrace, traceErr := l.Trace.Finish(ctx, "error")
+	runTrace, traceErr := l.Trace.Finish(ctx, outcome)
 	if traceErr != nil {
 		l.Logger.Warn("trace finish failed", "error", traceErr)
 	}
