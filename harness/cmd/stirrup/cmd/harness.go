@@ -1989,15 +1989,31 @@ type runOptions struct {
 // RunConfig — ValidateRunConfig rejects nil Timeout, so the dereference
 // below is safe.
 func runWithConfig(config *types.RunConfig, opts runOptions) error {
+	// shutdownCtx carries only the process-level shutdown signal
+	// (SIGINT/SIGTERM), deliberately independent of ctx's run-deadline
+	// cancellation below. The agentic loop's detached postRun hook
+	// phase (issue #461) is built to survive ctx's own deadline but
+	// must still observe a genuine process shutdown promptly — see
+	// AgenticLoop.Shutdown and docs/cloud-run-jobs.md.
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*config.Timeout)*time.Second)
 	defer cancel()
-	setupSignalHandler(cancel)
+	setupSignalHandler(func() {
+		shutdownCancel()
+		cancel()
+	})
 
 	loop, err := core.BuildLoop(ctx, config)
 	if err != nil {
 		return fmt.Errorf("building harness: %w", err)
 	}
 	defer func() { _ = loop.Close() }()
+
+	loop.Shutdown = shutdownCtx
+	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
+	defer stopShutdownWatchdog()
 
 	runTrace, err := loop.Run(ctx, config)
 	if err != nil {

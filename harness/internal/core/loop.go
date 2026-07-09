@@ -389,8 +389,31 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// "hook_failed" only when outcome was "success": the primary
 	// failure cause must never be masked, and it stays visible via
 	// HookResults / RunResult.HookFailures regardless.
+	//
+	// context.WithoutCancel(ctx) detaches postCtx from the run's own
+	// wall-clock deadline / control-plane cancel ONLY — those are the
+	// signals a postRun hook is meant to survive. A genuine process
+	// shutdown (SIGTERM/SIGINT/pod deletion) must still cut it short:
+	// unconditionally surviving up to the full budget while the
+	// orchestrator's SIGKILL escalation counts down (10s on Cloud Run
+	// and `docker stop`, see docs/cloud-run-jobs.md) orphans the
+	// sandbox and drops the trace. l.Shutdown carries that distinct
+	// signal in from the cmd layer; racing postCancel against it keeps
+	// the loop itself free of any signal/env read (CLAUDE.md
+	// invariant) while still terminating promptly. Nil-safe: a
+	// hand-assembled loop (tests, embedders) with no Shutdown set
+	// keeps the budget-only behaviour.
 	if l.Hooks != nil {
 		postCtx, postCancel := context.WithTimeout(context.WithoutCancel(ctx), postHookBudget(config.Hooks))
+		if l.Shutdown != nil {
+			go func() {
+				select {
+				case <-l.Shutdown.Done():
+					postCancel()
+				case <-postCtx.Done():
+				}
+			}()
+		}
 		_, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks.postRun")
 		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
 		l.recordHookExecutions(postResults)

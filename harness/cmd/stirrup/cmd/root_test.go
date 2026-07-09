@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -211,6 +212,90 @@ func TestBuildRunResult_NoHookResultsLeavesHookFailuresZero(t *testing.T) {
 	got := buildRunResult(rt)
 	if got.HookFailures != 0 {
 		t.Errorf("HookFailures = %d, want 0", got.HookFailures)
+	}
+}
+
+// fakeCloser is an io.Closer test double that records whether/how many
+// times Close was called, for armShutdownWatchdog tests.
+type fakeCloser struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (f *fakeCloser) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return f.err
+}
+
+func (f *fakeCloser) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// TestArmShutdownWatchdog_ClosesAfterGraceWhenRunNeverReturns pins the
+// proactive-teardown path (issue #461 finding #1): if shutdownCtx fires
+// and the caller never calls stop() (simulating Run() still blocked
+// past the grace window — e.g. the orchestrator's SIGKILL is about to
+// land), the watchdog closes the loop on its own.
+func TestArmShutdownWatchdog_ClosesAfterGraceWhenRunNeverReturns(t *testing.T) {
+	closer := &fakeCloser{}
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
+
+	armShutdownWatchdog(shutdownCtx, closer, 10*time.Millisecond)
+	shutdownCancel()
+
+	deadline := time.After(1 * time.Second)
+	for closer.callCount() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("watchdog never closed the loop within the deadline")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if closer.callCount() != 1 {
+		t.Errorf("Close called %d times, want 1", closer.callCount())
+	}
+}
+
+// TestArmShutdownWatchdog_StopPreventsClose pins the normal-return path:
+// calling stop() before the grace window elapses (Run() returned
+// through the ordinary path) must prevent the watchdog from ever
+// calling Close — the caller's own `defer loop.Close()` owns teardown
+// in that case.
+func TestArmShutdownWatchdog_StopPreventsClose(t *testing.T) {
+	closer := &fakeCloser{}
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
+
+	stop := armShutdownWatchdog(shutdownCtx, closer, 20*time.Millisecond)
+	shutdownCancel()
+	stop()
+
+	time.Sleep(50 * time.Millisecond)
+	if closer.callCount() != 0 {
+		t.Errorf("Close called %d times, want 0 (stop() must prevent the proactive close)", closer.callCount())
+	}
+}
+
+// TestArmShutdownWatchdog_NoShutdownNeverCloses pins the no-signal path:
+// a watchdog whose shutdownCtx never fires must never close the loop,
+// regardless of how long it runs.
+func TestArmShutdownWatchdog_NoShutdownNeverCloses(t *testing.T) {
+	closer := &fakeCloser{}
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
+
+	stop := armShutdownWatchdog(shutdownCtx, closer, 5*time.Millisecond)
+	defer stop()
+
+	time.Sleep(30 * time.Millisecond)
+	if closer.callCount() != 0 {
+		t.Errorf("Close called %d times, want 0 (no shutdown signal was ever sent)", closer.callCount())
 	}
 }
 

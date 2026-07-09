@@ -34,6 +34,12 @@ type fakeHookRunner struct {
 	preCalls    int
 	postCalls   []string
 	postCtxErrs []error
+
+	// onPost, when set, is invoked synchronously at the start of
+	// RunPost with the ctx the loop handed in — used by tests that
+	// need to observe or block on that ctx (e.g. simulating an
+	// in-flight hook that only returns once its ctx is cancelled).
+	onPost func(ctx context.Context)
 }
 
 var _ hook.Runner = (*fakeHookRunner)(nil)
@@ -46,6 +52,9 @@ func (f *fakeHookRunner) RunPre(_ context.Context) ([]types.HookExecution, error
 func (f *fakeHookRunner) RunPost(ctx context.Context, outcome string) ([]types.HookExecution, error) {
 	f.postCalls = append(f.postCalls, outcome)
 	f.postCtxErrs = append(f.postCtxErrs, ctx.Err())
+	if f.onPost != nil {
+		f.onPost(ctx)
+	}
 	return f.postResults, f.postErr
 }
 
@@ -194,6 +203,66 @@ func TestLoop_Hooks_PostRunRunsOnTimeout(t *testing.T) {
 	}
 	if hooks.postCtxErrs[0] != nil {
 		t.Errorf("RunPost ctx.Err() = %v, want nil (the detached post-hook ctx must not inherit the expired run ctx)", hooks.postCtxErrs[0])
+	}
+}
+
+// TestLoop_Hooks_PostRunCutShortByShutdownSignal pins the SIGTERM/SIGINT
+// remediation (issue #461 finding #1): a detached postRun hook survives
+// the run's own wall-clock deadline/control-plane cancel (covered by
+// the timeout test above), but a distinct process-shutdown signal on
+// l.Shutdown must still cut it off well before its full configured
+// budget, rather than the hook running unconditionally for up to that
+// budget while an orchestrator's SIGKILL escalation counts down.
+func TestLoop_Hooks_PostRunCutShortByShutdownSignal(t *testing.T) {
+	loop := buildTestLoop(simpleSuccessProvider())
+
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	loop.Shutdown = shutdownCtx
+
+	hookCtxCancelled := make(chan struct{})
+	hooks := &fakeHookRunner{
+		onPost: func(ctx context.Context) {
+			// Simulate a long-running hook (e.g. an artifact upload)
+			// that only returns once its ctx is cancelled — exactly
+			// what a real Executor.Exec does via exec.CommandContext.
+			<-ctx.Done()
+			close(hookCtxCancelled)
+		},
+	}
+	loop.Hooks = hooks
+
+	config := buildTestConfig()
+	// A generous budget the hook would otherwise be entitled to run
+	// for; the shutdown signal must cut it short well before this
+	// elapses.
+	config.Hooks = &types.HooksConfig{PostRun: []types.HookConfig{
+		{Command: "true", TimeoutSeconds: 60},
+	}}
+
+	// Fire the shutdown signal shortly after Run() starts, simulating
+	// a SIGTERM arriving while the postRun hook is in flight.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		shutdownCancel()
+	}()
+
+	start := time.Now()
+	runTrace, err := loop.Run(context.Background(), config)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Errorf("Outcome = %q, want success", runTrace.Outcome)
+	}
+	select {
+	case <-hookCtxCancelled:
+	default:
+		t.Error("the in-flight hook's postCtx was never cancelled by the shutdown signal")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Run() took %v, want well under the 60s configured hook timeout (shutdown must cut postRun short)", elapsed)
 	}
 }
 

@@ -41,11 +41,24 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
 	}
 
+	// shutdownCtx carries only the process-level shutdown signal
+	// (SIGINT/SIGTERM/pod deletion), deliberately independent of ctx's
+	// lifecycle below. The agentic loop's detached postRun hook phase
+	// (issue #461) is built to survive ctx's own run-deadline/
+	// control-plane cancel but must still observe a genuine process
+	// shutdown promptly — see AgenticLoop.Shutdown and
+	// docs/cloud-run-jobs.md.
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
+
 	// Top-level context with signal handling. The timeout is applied later
 	// once we receive the RunConfig (which carries the wall-clock timeout).
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(cancel)
+	setupSignalHandler(func() {
+		shutdownCancel()
+		cancel()
+	})
 
 	// 1. Dial the control plane.
 	tp, err := transport.NewGRPCTransport(ctx, addr)
@@ -123,6 +136,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("building harness: %w", err)
 	}
 	defer func() { _ = loop.Close() }()
+
+	loop.Shutdown = shutdownCtx
+	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
+	defer stopShutdownWatchdog()
 
 	runTrace, err := loop.Run(ctx, config)
 	if err != nil {
