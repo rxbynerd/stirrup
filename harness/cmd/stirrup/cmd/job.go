@@ -141,9 +141,12 @@ func runJob(cmd *cobra.Command, args []string) error {
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 
-	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		return fmt.Errorf("running harness: %w", err)
+	runTrace, runErr := loop.Run(ctx, config)
+	if runTrace == nil {
+		// No trace was produced at all (e.g. the trace emitter itself
+		// failed inside finishWithOutcome/finishWithError) — there is
+		// nothing to emit.
+		return fmt.Errorf("running harness: %w", runErr)
 	}
 	printRunSummary(runTrace)
 	// resultSink emission mirrors the harness command path so a Cloud
@@ -157,6 +160,22 @@ func runJob(cmd *cobra.Command, args []string) error {
 	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
 	defer emitCancel()
 	emitRunResult(emitCtx, config, runTrace)
+
+	if runErr != nil {
+		// A RunTrace was produced even though Run() returned a fatal
+		// error: finishWithOutcome's early-return paths (build-system-
+		// prompt failure, git setup failure, and — issue #461 — a
+		// fatal preRun hook failure) return a valid trace, and now also
+		// emit the terminal "done" HarnessEvent (see loop.go), alongside
+		// a non-nil error. printRunSummary/emitRunResult above must
+		// still run for these — skipping them made the run's own
+		// structured outcome (and RunResult.HookFailures) unreachable
+		// on the most common trigger for setup_failed/hook_failed — but
+		// a failed run has nothing further to do, so still return the
+		// error here rather than continuing to workspace export /
+		// follow-up grace.
+		return fmt.Errorf("running harness: %w", runErr)
+	}
 
 	// Workspace export. The job entrypoint has no equivalent of the
 	// CLI's --export-workspace-required, so the control plane decides
