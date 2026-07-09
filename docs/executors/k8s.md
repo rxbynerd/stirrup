@@ -459,6 +459,30 @@ Two requirements are easy to miss:
   orchestrator Pod needs `runtimeClassName: gvisor` (which injects the pool
   toleration) or a dedicated untainted pool.
 
+**`terminationGracePeriodSeconds` on the orchestrator Pod.** Kubernetes
+sends SIGTERM to the orchestrator process on Pod deletion/eviction/scale-
+down, then SIGKILL after the grace period — 30 seconds by default when
+the field is unset. Stirrup's signal handler
+(`harness/cmd/stirrup/cmd/root.go::setupSignalHandler`) cancels the run
+context on SIGTERM, letting the trace emitter flush and
+`workspaceExportTo` upload before the kill. A run configuring `postRun`
+lifecycle hooks (issue #461) is a partial exception: those hooks
+deliberately run on a context detached from the run's own deadline/
+cancellation so an in-flight artifact upload can survive it, but the
+harness still observes SIGTERM directly on that detached context
+(`AgenticLoop.Shutdown`) and cuts a `postRun` hook short promptly rather
+than letting it run for its full configured budget (up to 1830s). A
+background watchdog additionally bounds executor teardown — deleting
+the sandbox Pod and its egress `NetworkPolicy` — to 5 seconds after
+SIGTERM even if `Run()` has not yet returned, so cleanup completes well
+inside the default 30-second grace window regardless of what an
+in-flight `postRun` hook is doing. Set `terminationGracePeriodSeconds`
+explicitly on the orchestrator Pod spec when running with long `postRun`
+hooks, sized for the run's own `timeout` plus normal shutdown overhead —
+the default 30 seconds is ample headroom over the harness's own 5-second
+proactive-teardown bound, but a cluster with a tighter eviction/
+preemption grace period should account for it.
+
 Provider auth is **orthogonal to sandbox egress**. The orchestrator's
 provider call (to Anthropic / Vertex / an OpenAI-compatible endpoint) is
 made from the orchestrator Pod, not the sandbox, so a sandbox
