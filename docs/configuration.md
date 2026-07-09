@@ -698,6 +698,15 @@ already exists for exec outside the tool surface in read-only modes
 (the test-runner verifier's command, the `deterministic` git strategy's
 branch creation).
 
+A hook is not restricted to read-only actions in any mode, including a
+read-only-named one: a `postRun` hook in a `planning`-mode run can
+`git push`, open a pull request, or otherwise mutate state outside the
+workspace, exactly as it could in `execution` mode. "Read-only mode"
+describes what the *model* can do through its tools, not a guarantee
+that the run as a whole has no side effects — a template author
+inheriting hooks into a `planning` config should not assume the run is
+side-effect-free on that basis alone.
+
 Hooks add no agent-reachable capability, so they play no part in the
 Rule of Two: their output never enters the model's context, and they
 share the run's existing egress posture rather than opening a new

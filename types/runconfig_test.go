@@ -6873,6 +6873,71 @@ func TestValidateRunConfig_Hooks_CommandRejectsSecretRef(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode pins the
+// read-only-mode carve-out for lifecycle hooks: the invariant bounds
+// only the model's tool surface, not operator-authored, deterministic
+// commands declared in reviewable RunConfig, so hooks — including a
+// postRun hook that writes (git push) — validate cleanly in every
+// read-only mode. A silent regression risk if the read-only check is
+// ever tightened without remembering the exception.
+func TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode(t *testing.T) {
+	readOnlyModes := []string{"planning", "review", "research", "toil"}
+	for _, mode := range readOnlyModes {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			c.Hooks = &HooksConfig{
+				PreRun:  []HookConfig{{Name: "clone", Command: "git clone https://example.com/repo ."}},
+				PostRun: []HookConfig{{Name: "push", Command: "git push", RunOn: "success"}},
+			}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Errorf("hooks in read-only mode %q must validate, got: %v", mode, err)
+			}
+		})
+	}
+}
+
+// TestRuleOfTwoState_HooksNeverAffectLegs pins that Hooks plays no part
+// in any of the three Rule-of-Two legs: RuleOfTwoState must report
+// identical flags for two configs differing only in Hooks being nil vs.
+// populated with a network-touching, dynamic-context-referencing hook.
+// The base config is deliberately built to already trip all three legs
+// (DynamicContext with Sensitive:true trips untrusted-input and
+// sensitive-data; web_fetch trips external-comm) so the comparison is
+// meaningful rather than trivially false==false. Correct today (none of
+// ruleOfTwoUntrustedInput/ruleOfTwoSensitiveData/ruleOfTwoExternalComm
+// reference config.Hooks) but unprotected against a future change that
+// accidentally wires a postRun hook's network call into the
+// external-communication leg.
+func TestRuleOfTwoState_HooksNeverAffectLegs(t *testing.T) {
+	base := validConfig()
+	base.DynamicContext = map[string]DynamicContextValue{
+		"issue": {Value: "untrusted issue body", Sensitive: true},
+	}
+	base.Tools = ToolsConfig{BuiltIn: []string{"web_fetch"}}
+
+	withHooks := *base
+	withHooks.Hooks = &HooksConfig{
+		PreRun: []HookConfig{{Command: "curl -X POST https://example.com/webhook"}},
+		PostRun: []HookConfig{
+			{Command: "curl -X POST https://example.com/artifact", RunOn: "success"},
+		},
+	}
+
+	baseUntrusted, baseSensitive, baseExternal := RuleOfTwoState(base)
+	if !baseUntrusted || !baseSensitive || !baseExternal {
+		t.Fatalf("prerequisite: base config must trip all three legs, got (%v, %v, %v)", baseUntrusted, baseSensitive, baseExternal)
+	}
+
+	hooksUntrusted, hooksSensitive, hooksExternal := RuleOfTwoState(&withHooks)
+	if hooksUntrusted != baseUntrusted || hooksSensitive != baseSensitive || hooksExternal != baseExternal {
+		t.Errorf("RuleOfTwoState changed when only Hooks was populated: base=(%v,%v,%v) withHooks=(%v,%v,%v)",
+			baseUntrusted, baseSensitive, baseExternal, hooksUntrusted, hooksSensitive, hooksExternal)
+	}
+}
+
 func TestValidateRunConfig_Hooks_TypeClosedSet(t *testing.T) {
 	t.Run("empty-accepted", func(t *testing.T) {
 		c := validConfig()
