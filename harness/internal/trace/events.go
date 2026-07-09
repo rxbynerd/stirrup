@@ -6,9 +6,11 @@
 // discriminator. A complete run produces:
 //
 //	{"kind":"run_started",      "schemaVersion":"1","runId":"...","config":{...redacted...},"startedAt":"..."}
+//	{"kind":"hook_record",      "hook":{"phase":"preRun","index":0,"command":"..."}}
 //	{"kind":"turn_record",      "turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...]}
 //	{"kind":"tool_call_record", "turn":1,"name":"read_file","input":{...},"output":"..."}
 //	...
+//	{"kind":"hook_record",      "hook":{"phase":"postRun","index":0,"command":"..."}}
 //	{"kind":"run_finished",     "trace":{...RunTrace summary...},"completedAt":"..."}
 //
 // turn_record carries the full transcript a sub-agent / replay path needs.
@@ -51,6 +53,12 @@ const (
 	// Carries the canonical RunTrace summary; backward-compatible with
 	// pre-streaming single-blob traces.
 	EventKindRunFinished EventKind = "run_finished"
+	// EventKindHookRecord captures one lifecycle hook's result (issue
+	// #461). Emitted as each PreRun/PostRun hook completes, in addition
+	// to the accumulated ToolCalls inside the embedded RunTrace at
+	// run_finished, so a live consumer sees each hook as soon as it
+	// lands (mirrors tool_call_record).
+	EventKindHookRecord EventKind = "hook_record"
 )
 
 // CurrentSchemaVersion is the streaming-trace schema version emitted in
@@ -79,6 +87,9 @@ type Event struct {
 	ModelOutput []types.ContentBlock   `json:"modelOutput,omitempty"`
 	ToolCalls   []types.ToolCallRecord `json:"toolCalls,omitempty"`
 	ToolCall    *types.ToolCallRecord  `json:"toolCall,omitempty"`
+
+	// Hook payload — populated for hook_record events.
+	Hook *types.HookExecution `json:"hook,omitempty"`
 
 	// Trace summary — populated for run_finished events. Embedding the
 	// full RunTrace here keeps the backward-compat reader's job trivial:

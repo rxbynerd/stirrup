@@ -45,6 +45,7 @@ type JSONLTraceEmitter struct {
 	turns             []types.TurnTrace
 	toolCalls         []types.ToolCallTrace
 	permissionDenials int
+	hookResults       []types.HookExecution
 }
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
@@ -91,6 +92,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.turns = nil
 	e.toolCalls = nil
 	e.permissionDenials = 0
+	e.hookResults = nil
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -185,6 +187,32 @@ func (e *JSONLTraceEmitter) RecordPermissionDenial() {
 	e.permissionDenials++
 }
 
+// RecordHookExecution appends a lifecycle hook result (issue #461) to
+// the in-memory accumulator AND streams an inline hook_record event,
+// mirroring RecordToolCall's tool_call_record. OutputTail and Error are
+// re-scrubbed here as defence-in-depth — the same posture RecordTurnRecord
+// applies to tool output — even though hook.ExecRunner already scrubs
+// OutputTail before returning the types.HookExecution; Command is
+// operator config (like VerifierConfig.Command) and is deliberately not
+// scrubbed, matching ValidateRunConfig's structural rejection of
+// "secret://" in a hook command.
+func (e *JSONLTraceEmitter) RecordHookExecution(exec types.HookExecution) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	scrubbed := exec
+	scrubbed.OutputTail = security.Scrub(exec.OutputTail)
+	scrubbed.Error = security.Scrub(exec.Error)
+
+	e.hookResults = append(e.hookResults, scrubbed)
+
+	ev := Event{
+		Kind: EventKindHookRecord,
+		Hook: &scrubbed,
+	}
+	_ = e.writeLineLocked(ev)
+}
+
 // Finish builds the canonical RunTrace summary, writes the
 // run_finished event, and returns the summary. A run with zero turns
 // still produces a valid run_finished line.
@@ -220,6 +248,7 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 		ToolCalls:         summaries,
 		PermissionDenials: e.permissionDenials,
 		Outcome:           outcome,
+		HookResults:       e.hookResults,
 	}
 
 	ev := Event{

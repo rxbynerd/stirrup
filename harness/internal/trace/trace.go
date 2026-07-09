@@ -55,3 +55,18 @@ type TraceEmitter interface {
 type SystemInstructionsRecorder interface {
 	RecordSystemInstructions(system string)
 }
+
+// HookRecorder is an optional capability a TraceEmitter can implement to
+// receive lifecycle hook results (issue #461) as they complete. The
+// agentic loop forwards each types.HookExecution via a type assertion
+// after hook.Runner.RunPre/RunPost returns — the same optional-
+// capability pattern as SystemInstructionsRecorder — so emitters that do
+// not record hook executions need no stub method.
+//
+// Today only the JSONL emitter implements it: it streams a hook_record
+// line per execution and folds the accumulated results into
+// RunTrace.HookResults at Finish, mirroring how RecordToolCall streams
+// tool_call_record lines and folds into RunTrace.ToolCalls.
+type HookRecorder interface {
+	RecordHookExecution(exec types.HookExecution)
+}
