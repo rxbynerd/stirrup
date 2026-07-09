@@ -6852,6 +6852,11 @@ func TestValidateRunConfig_Hooks_CommandRejectsSecretRef(t *testing.T) {
 		"secret://API_KEY",
 		"curl -H \"Authorization: Bearer $(cat secret://API_KEY)\"",
 		"echo secret://ANYWHERE_IN_STRING",
+		// Case-insensitive: a shell reads "secret://" and "SECRET://"
+		// identically, so the rejection must too.
+		"SECRET://API_KEY",
+		"Secret://API_KEY",
+		"echo sEcReT://mixed_case",
 	}
 	for _, cmd := range cases {
 		t.Run(cmd, func(t *testing.T) {

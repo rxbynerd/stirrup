@@ -2752,7 +2752,12 @@ func validateHookConfig(path string, h HookConfig, isPostRun bool, errs *[]strin
 	} else if len(h.Command) > maxHookCommandBytes {
 		*errs = append(*errs, fmt.Sprintf("%s.command must be <= %d bytes, got %d", path, maxHookCommandBytes, len(h.Command)))
 	}
-	if strings.Contains(h.Command, "secret://") {
+	// Case-insensitive: a shell reads "secret://..." and "SECRET://..."
+	// identically, and the doc contract ("structurally rejected") would
+	// be a lie if `SECRET://FOO` slipped through untouched into the
+	// trace unscrubbed (HookExecution.Command is deliberately not
+	// scrubbed, on the premise that this check is airtight).
+	if strings.Contains(strings.ToLower(h.Command), "secret://") {
 		*errs = append(*errs, fmt.Sprintf(
 			"%s.command must not contain a \"secret://\" reference; resolve credentials via control-plane runtime bindings instead",
 			path))
