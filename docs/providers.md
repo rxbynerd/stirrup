@@ -47,8 +47,8 @@ resolves credentials from the SDK default chain. Accepts an optional
 **File:** `harness/internal/provider/openai.go`
 
 OpenAI chat completions streaming. Works with OpenAI, LiteLLM, Azure
-OpenAI, vLLM, and Ollama via configurable `baseURL`. Key configuration
-knobs:
+OpenAI, vLLM, Ollama, and LM Studio via configurable `baseURL`. Key
+configuration knobs:
 
 - `provider.apiKeyHeader`: header name for the API key. Empty (default)
   sends `Authorization: Bearer`. Set to `api-key` for Azure OpenAI key
@@ -59,6 +59,52 @@ knobs:
 Azure Entra ID bearer tokens work with the default empty `apiKeyHeader`
 — the `Authorization: Bearer` header carries the Entra token normally.
 See `examples/runconfig/azure-openai.json`.
+
+### Local models via LM Studio (Qwen 3.6)
+
+LM Studio exposes the Chat Completions wire format at
+`http://<host>:1234/v1`, so a locally-hosted model runs through the
+stock adapter with `provider.type: "openai-compatible"` and
+`provider.baseUrl` pointed at the server. LM Studio ignores the API key
+but the adapter requires a non-empty credential, so supply any
+placeholder `apiKeyRef` (e.g. `secret://LMSTUDIO_API_KEY` with the env
+var set to any value). See
+[`examples/runconfig/qwen3.6-lmstudio.json`](../examples/runconfig/qwen3.6-lmstudio.json).
+
+Qwen 3.6 is a default-thinking model, and the integration was validated
+end-to-end against LM Studio. The operationally relevant behaviours:
+
+- **No wire-shape quirks are required.** Unlike DeepSeek v4 and Z.ai
+  GLM, Qwen 3.6 does not return HTTP 400 when prior-turn reasoning is
+  omitted, accepts the modern `max_completion_tokens` key, and welcomes
+  sampling parameters. It needs no `compatProfile` and no replay rule —
+  the chain-of-thought LM Studio surfaces in a `reasoning_content` field
+  is dropped between turns by design, matching Qwen's own template.
+- **Thinking is always on.** The `/no_think` directive and an
+  `enable_thinking` request parameter are not honoured through the plain
+  Chat Completions surface, so every turn spends reasoning tokens. The
+  default per-turn response budget is generous, so this is a latency and
+  cost consideration, not a correctness one.
+- **Set `temperature` to 0.6.** Qwen recommends 0.6 for thinking-mode
+  coding and warns against greedy decoding (`temperature: 0`), which can
+  trigger repetition. The harness default is 0.1; the example raises it.
+- **Raise the LM Studio context window, and keep `contextStrategy.maxTokens`
+  above the response reserve.** LM Studio loads models with a
+  conservative context window that is usually far below the model's
+  native ceiling. The harness reserves a fixed 64k tokens for the
+  response, so `contextStrategy.maxTokens` must comfortably exceed 64k —
+  set below it and the sliding window has negative room for the prompt,
+  truncates to the last two messages every turn, and the model returns a
+  malformed turn that surfaces as an `empty stop reason` error. Set
+  `contextStrategy.maxTokens` above 64k (the example uses 131072) and
+  configure the LM Studio context window to hold at least that much.
+  Small-context local deployments (≤64k) are a known limitation: the
+  fixed 64k reserve leaves them no usable prompt budget.
+- **Vendor-prefixed model ids.** LM Studio serves some models under
+  `vendor/model` ids (e.g. `qwen/qwen3.6-27b`). The quirks registry
+  advertises the openai-compatible tool surface for one level of prefix,
+  so native `tool_choice` and `parallel_tool_calls` work for these ids
+  just as they do for bare ids.
 
 ## OpenAI Responses API
 
