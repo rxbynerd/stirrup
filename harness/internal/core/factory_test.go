@@ -24,6 +24,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -875,6 +876,42 @@ func TestBuildGitStrategy_UnknownFallsBack(t *testing.T) {
 	}
 }
 
+// --- buildHookRunner (issue #461) ---
+
+func TestBuildHookRunner_NilConfigReturnsNoop(t *testing.T) {
+	r := buildHookRunner(nil, nil, nil)
+	if _, ok := r.(*hook.Noop); !ok {
+		t.Fatalf("expected hook.Noop for a nil HooksConfig, got %T", r)
+	}
+}
+
+func TestBuildHookRunner_EmptyConfigReturnsNoop(t *testing.T) {
+	r := buildHookRunner(&types.HooksConfig{}, nil, nil)
+	if _, ok := r.(*hook.Noop); !ok {
+		t.Fatalf("expected hook.Noop for an empty HooksConfig, got %T", r)
+	}
+}
+
+func TestBuildHookRunner_PreRunOnlyReturnsExecRunner(t *testing.T) {
+	cfg := &types.HooksConfig{PreRun: []types.HookConfig{{Command: "true"}}}
+	r := buildHookRunner(cfg, nil, nil)
+	execRunner, ok := r.(*hook.ExecRunner)
+	if !ok {
+		t.Fatalf("expected *hook.ExecRunner, got %T", r)
+	}
+	if execRunner.Hooks != cfg {
+		t.Error("ExecRunner.Hooks must be the same HooksConfig instance passed in")
+	}
+}
+
+func TestBuildHookRunner_PostRunOnlyReturnsExecRunner(t *testing.T) {
+	cfg := &types.HooksConfig{PostRun: []types.HookConfig{{Command: "true"}}}
+	r := buildHookRunner(cfg, nil, nil)
+	if _, ok := r.(*hook.ExecRunner); !ok {
+		t.Fatalf("expected *hook.ExecRunner, got %T", r)
+	}
+}
+
 // --- buildTraceEmitter ---
 
 func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
@@ -1500,6 +1537,12 @@ func TestBuildLoopWithTransport_MinimalValidConfig(t *testing.T) {
 	if loop.Git == nil {
 		t.Fatal("Git is nil")
 	}
+	if loop.Hooks == nil {
+		t.Fatal("Hooks is nil")
+	}
+	if _, ok := loop.Hooks.(*hook.Noop); !ok {
+		t.Errorf("expected hook.Noop for a config with no HooksConfig, got %T", loop.Hooks)
+	}
 	if loop.Transport == nil {
 		t.Fatal("Transport is nil")
 	}
@@ -1517,6 +1560,56 @@ func TestBuildLoopWithTransport_MinimalValidConfig(t *testing.T) {
 	}
 	if loop.Logger == nil {
 		t.Fatal("Logger is nil")
+	}
+}
+
+// TestBuildLoopWithTransport_HooksWiredAsExecRunner pins that a config
+// carrying a non-empty HooksConfig (issue #461) wires an *hook.ExecRunner
+// sharing the run's own Executor, rather than the Noop fallback.
+func TestBuildLoopWithTransport_HooksWiredAsExecRunner(t *testing.T) {
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	timeout := 30
+	config := &types.RunConfig{
+		RunID:            "factory-hooks-test",
+		Mode:             "execution",
+		Prompt:           "hello",
+		Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+		ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+		Hooks: &types.HooksConfig{
+			PreRun: []types.HookConfig{{Command: "true", TimeoutSeconds: 5}},
+		},
+	}
+
+	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err != nil {
+		t.Fatalf("BuildLoopWithTransport() error: %v", err)
+	}
+	defer func() { _ = loop.Close() }()
+
+	execRunner, ok := loop.Hooks.(*hook.ExecRunner)
+	if !ok {
+		t.Fatalf("expected *hook.ExecRunner, got %T", loop.Hooks)
+	}
+	if execRunner.Exec != loop.Executor {
+		t.Error("ExecRunner.Exec must be the run's own Executor")
+	}
+	if execRunner.Hooks != config.Hooks {
+		t.Error("ExecRunner.Hooks must be the config's own HooksConfig instance")
 	}
 }
 

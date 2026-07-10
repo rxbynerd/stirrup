@@ -407,6 +407,54 @@ func TestSpawnSubAgent_InheritsGuardRail(t *testing.T) {
 	}
 }
 
+// TestSpawnSubAgent_HooksNeverInvokedOnChild pins the inverse of
+// TestSpawnSubAgent_InheritsGuardRail: lifecycle hooks (issue #461) are
+// parent-run-only and must NOT propagate to a spawned sub-agent,
+// regardless of what the parent's AgenticLoop.Hooks or RunConfig.Hooks
+// carry. subagent.go enforces this two ways — childConfig.Hooks is
+// nilled out and the child AgenticLoop is unconditionally given
+// hook.NewNoop() — but SpawnSubAgent exposes neither the child loop nor
+// its resolved config, so there was previously no seam to catch a
+// regression (e.g. an accidental `Hooks: parent.Hooks` on the child
+// literal) without reading source. fakeHookRunner is observably
+// distinguishable from hook.Noop via its call counters; installing it
+// on the *parent* loop and asserting it is never invoked during the
+// child's own Run() proves the child's hook phase is genuinely inert,
+// not just nil-checked away.
+func TestSpawnSubAgent_HooksNeverInvokedOnChild(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Sub-agent output."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	parentLoop := buildSubAgentTestLoop(prov)
+	parentHooks := &fakeHookRunner{}
+	parentLoop.Hooks = parentHooks
+
+	parentConfig := buildTestConfig()
+	parentConfig.Hooks = &types.HooksConfig{
+		PreRun: []types.HookConfig{{Name: "clone", Command: "git clone . ."}},
+	}
+
+	result, err := SpawnSubAgent(context.Background(), parentLoop, parentConfig, SubAgentConfig{
+		Prompt: "Do a subtask",
+	})
+	if err != nil {
+		t.Fatalf("SpawnSubAgent() error: %v", err)
+	}
+	if result.Outcome != "success" {
+		t.Fatalf("prerequisite: expected outcome 'success', got %q", result.Outcome)
+	}
+	if parentHooks.preCalls != 0 {
+		t.Errorf("parent's hook.Runner.RunPre called %d times during sub-agent spawn, want 0", parentHooks.preCalls)
+	}
+	if len(parentHooks.postCalls) != 0 {
+		t.Errorf("parent's hook.Runner.RunPost called %d times during sub-agent spawn, want 0", len(parentHooks.postCalls))
+	}
+}
+
 func TestCaptureTransport_RecordsTextDeltas(t *testing.T) {
 	ct := newCaptureTransport()
 

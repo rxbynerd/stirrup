@@ -96,11 +96,19 @@ IMDS, GitHub Actions OIDC). See
 7. **Done.** A final `HarnessEvent{type:"done", stop_reason, trace}`
    carries the run metrics and the reason the loop ended
    (`end_turn`, `max_turns`, `timeout`, `stalled`, `tool_failures`,
-   `cancelled`, `budget_exceeded`). The nested `trace.outcome` is the
-   canonical terminal status for downstream analytics — the full
-   `RunTrace.Outcome` set, which adds `success`, `verification_failed`,
-   `verification_error`, and `max_tokens` on top of the loop's stop
-   reasons. `trace.stop_reason` mirrors it for backward compatibility.
+   `cancelled`, `budget_exceeded`, `error`, `setup_failed`,
+   `hook_failed`). `error`, `setup_failed`, and `hook_failed` are the
+   early-termination outcomes — a build-system-prompt failure, a
+   `GitStrategy.Setup` failure, or (issue #461) a fatal `preRun` /
+   `postRun` lifecycle hook failure — and, like every other outcome,
+   are always paired with a `done` event and a `RunResult` on the
+   configured `resultSink`, even though the harness process's own Go
+   error return is also non-nil for these. The nested `trace.outcome`
+   is the canonical terminal status for downstream analytics — the
+   full `RunTrace.Outcome` set, which adds `success`,
+   `verification_failed`, `verification_error`, and `max_tokens` on
+   top of the loop's stop reasons. `trace.stop_reason` mirrors it for
+   backward compatibility.
 8. **Follow-up grace** *(optional)*. If `STIRRUP_FOLLOWUP_GRACE > 0`,
    the stream stays open for that many seconds so the control plane
    can deliver `user_response` events that resume the loop.

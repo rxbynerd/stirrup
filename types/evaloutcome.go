@@ -40,11 +40,12 @@ const (
 
 	// EvalInconclusive indicates the run terminated without enough
 	// signal to call it. Limit-hit terminations (`max_turns`,
-	// `budget_exceeded`, `timeout`, `max_tokens`, `stalled`) and
-	// non-result terminations (`cancelled`, `verification_error`) all
-	// produce inconclusive: the harness ran out of room or was
-	// interrupted, so the run is neither a quality win nor a quality
-	// loss.
+	// `budget_exceeded`, `timeout`, `max_tokens`, `stalled`),
+	// non-result terminations (`cancelled`, `verification_error`), and
+	// lifecycle-hook infra failures (`setup_failed`, `hook_failed`,
+	// issue #461) all produce inconclusive: the harness ran out of
+	// room, was interrupted, or never got a fair shot at the task, so
+	// the run is neither a quality win nor a quality loss.
 	EvalInconclusive EvalOutcome = "inconclusive"
 )
 
@@ -66,6 +67,8 @@ const (
 //	stalled              | any           | any       | inconclusive
 //	cancelled            | any           | any       | inconclusive
 //	verification_error   | any           | any       | inconclusive
+//	setup_failed         | any           | any       | inconclusive
+//	hook_failed          | any           | any       | inconclusive
 //	(empty / unknown)    | any           | any       | inconclusive
 //
 // The success-without-verifier branch is the load-bearing call here.
@@ -83,7 +86,7 @@ func EvalOutcomeFor(t RunTrace) EvalOutcome {
 	case "verification_failed", "error", "tool_failures":
 		return EvalFailed
 	case "max_turns", "budget_exceeded", "timeout", "max_tokens", "stalled",
-		"cancelled", "verification_error":
+		"cancelled", "verification_error", "setup_failed", "hook_failed":
 		return EvalInconclusive
 	default:
 		// Unknown / empty outcomes default to inconclusive so a future

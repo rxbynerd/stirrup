@@ -33,6 +33,7 @@ stirrup/
       verifier/              # Verifier: none, test-runner, composite, llm-judge
       permission/            # PermissionPolicy: allow-all, deny-side-effects, ask-upstream, policy-engine (Cedar)
       git/                   # GitStrategy: none, deterministic
+      hook/                  # Lifecycle hooks: Runner, Noop, ExecRunner (pre/post-run exec, #461)
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
       guard/                 # GuardRail: none, granite-guardian, cloud-judge, composite, phase-gated
       trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
@@ -190,10 +191,14 @@ The `guard` package (`guard/`) provides an LLM-based safety classifier called at
 - `max_tokens: 64000`, `temperature: 0.1`
 - File size limit: 10MB (read/write)
 - Command output cap: 1MB
-- Command timeout: 30s default, 5min max
+- Command timeout: 30s default, 5min max (`run_command` tool clamp;
+  the shared `Executor.Exec` hard cap is 30min, raised for lifecycle
+  hooks — #461)
 - Follow-up grace cap: 3600s
 - Token budget cap: 50M
 - Cost budget cap: $100
+- Lifecycle hook timeout: 300s default, 1800s (30min) max per hook;
+  32 hooks max per phase
 
 ## Development
 

@@ -1062,3 +1062,107 @@ func TestRunTraceToProto_OutcomePopulated(t *testing.T) {
 		})
 	}
 }
+
+// TestRunConfigFromProto_HooksAbsentStaysNil pins the nil/absent case:
+// a TaskAssignment with no hooks sub-message must not synthesise a
+// non-nil types.HooksConfig (issue #461) — matching the GuardRail
+// nil-stays-nil precedent (TestRunConfigProtoRoundTrip_GuardRailNilStaysNil).
+func TestRunConfigFromProto_HooksAbsentStaysNil(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{})
+	if rc.Hooks != nil {
+		t.Errorf("Hooks should be nil when proto field absent; got %+v", rc.Hooks)
+	}
+}
+
+// TestRunConfigFromProto_HooksEmptyStaysNonNil pins the companion case:
+// an explicit-but-empty proto HooksConfig{} (e.g. a control plane that
+// always sets the sub-message) must translate to a non-nil, empty
+// types.HooksConfig — distinguishable from "field absent" the same way
+// ToolDispatch preserves the unset/explicit-zero distinction.
+func TestRunConfigFromProto_HooksEmptyStaysNonNil(t *testing.T) {
+	rc := runConfigFromProto(&pb.RunConfig{Hooks: &pb.HooksConfig{}})
+	if rc.Hooks == nil {
+		t.Fatal("Hooks should be non-nil for an explicit-but-empty proto sub-message")
+	}
+	if len(rc.Hooks.PreRun) != 0 || len(rc.Hooks.PostRun) != 0 {
+		t.Errorf("expected empty PreRun/PostRun, got %+v", rc.Hooks)
+	}
+}
+
+// TestRunConfigFromProto_HooksFieldsPreserved guards the translate hop
+// that copies every HookConfig field from the wire format into
+// types.HookConfig, across both phases (issue #461). Exercises the
+// actual Marshal -> Unmarshal wire path (not just an in-memory pointer
+// copy), matching the pattern
+// TestRunConfigFromProto_BatchProviderConfigPreserved established for
+// the analogous gh-95/gh-117/gh-118/gh-100 silent-drop failure class.
+func TestRunConfigFromProto_HooksFieldsPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		Hooks: &pb.HooksConfig{
+			PreRun: []*pb.HookConfig{
+				{Type: "command", Name: "clone", Command: "git clone . .", TimeoutSeconds: 120},
+			},
+			PostRun: []*pb.HookConfig{
+				{Command: "test -f marker", RunOn: "success", ContinueOnError: true},
+				{Command: "curl -X POST https://example.com", RunOn: "failure"},
+			},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rc := runConfigFromProto(&decoded)
+	if rc.Hooks == nil {
+		t.Fatal("Hooks dropped across the wire round-trip")
+	}
+	if len(rc.Hooks.PreRun) != 1 {
+		t.Fatalf("PreRun: got %d entries, want 1", len(rc.Hooks.PreRun))
+	}
+	pre := rc.Hooks.PreRun[0]
+	if pre.Type != "command" || pre.Name != "clone" || pre.Command != "git clone . ." || pre.TimeoutSeconds != 120 {
+		t.Errorf("PreRun[0] = %+v, want {command, clone, git clone . ., 120, false, \"\"}", pre)
+	}
+
+	if len(rc.Hooks.PostRun) != 2 {
+		t.Fatalf("PostRun: got %d entries, want 2", len(rc.Hooks.PostRun))
+	}
+	post0 := rc.Hooks.PostRun[0]
+	if post0.Command != "test -f marker" || post0.RunOn != "success" || !post0.ContinueOnError {
+		t.Errorf("PostRun[0] = %+v, want {test -f marker, success, true}", post0)
+	}
+	post1 := rc.Hooks.PostRun[1]
+	if post1.Command != "curl -X POST https://example.com" || post1.RunOn != "failure" || post1.ContinueOnError {
+		t.Errorf("PostRun[1] = %+v, want {curl -X POST https://example.com, failure, false}", post1)
+	}
+}
+
+// TestRunConfigFromProto_HooksNotAliased pins that mutating the source
+// *pb.RunConfig after translation does not reach the translated
+// types.RunConfig — hookConfigFromProto copies every field by value
+// (see its doc comment), so there is no proto-owned slice/map for this
+// hop to alias, unlike guardRailConfigFromProto's Stages/CustomCriteria.
+// This test would catch a future refactor that starts sharing the
+// proto's []*pb.HookConfig backing array instead of copying.
+func TestRunConfigFromProto_HooksNotAliased(t *testing.T) {
+	pc := &pb.RunConfig{
+		Hooks: &pb.HooksConfig{
+			PreRun: []*pb.HookConfig{{Command: "original"}},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	pc.Hooks.PreRun[0].Command = "mutated-after-translate"
+
+	if rc.Hooks.PreRun[0].Command != "original" {
+		t.Errorf("translated HookConfig aliases the proto's backing data: got %q, want %q",
+			rc.Hooks.PreRun[0].Command, "original")
+	}
+}

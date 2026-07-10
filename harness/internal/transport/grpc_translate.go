@@ -238,6 +238,10 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		// explicit ToolDispatchConfig{}.
 		rc.ToolDispatch = &types.ToolDispatchConfig{MaxParallel: int(pc.ToolDispatch.GetMaxParallel())}
 	}
+	if pc.Hooks != nil {
+		hooks := hooksConfigFromProto(pc.Hooks)
+		rc.Hooks = &hooks
+	}
 
 	rc.LogLevel = pc.LogLevel
 	rc.SystemPromptOverride = pc.SystemPromptOverride
@@ -452,6 +456,39 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		}
 	}
 	return ec
+}
+
+// hooksConfigFromProto translates a proto HooksConfig to the internal
+// types form (issue #461). Called only when pc.Hooks is non-nil; the
+// caller wraps the returned value in a fresh pointer so an absent proto
+// sub-message stays wire-distinguishable from an explicit-but-empty one.
+func hooksConfigFromProto(pc *pb.HooksConfig) types.HooksConfig {
+	hc := types.HooksConfig{}
+	for _, h := range pc.PreRun {
+		hc.PreRun = append(hc.PreRun, hookConfigFromProto(h))
+	}
+	for _, h := range pc.PostRun {
+		hc.PostRun = append(hc.PostRun, hookConfigFromProto(h))
+	}
+	return hc
+}
+
+// hookConfigFromProto translates a single proto HookConfig. Every field
+// is a scalar (string/int32/bool), so a plain value copy is aliasing-safe
+// — there is no proto-owned slice or map to defensively re-copy, unlike
+// guardRailConfigFromProto's Stages/CustomCriteria.
+func hookConfigFromProto(pc *pb.HookConfig) types.HookConfig {
+	if pc == nil {
+		return types.HookConfig{}
+	}
+	return types.HookConfig{
+		Type:            pc.Type,
+		Name:            pc.Name,
+		Command:         pc.Command,
+		TimeoutSeconds:  int(pc.TimeoutSeconds),
+		ContinueOnError: pc.ContinueOnError,
+		RunOn:           pc.RunOn,
+	}
 }
 
 func verifierConfigFromProto(pc *pb.VerifierConfig) types.VerifierConfig {

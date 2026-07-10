@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -104,6 +105,31 @@ func printRunSummary(runTrace *types.RunTrace) {
 	fmt.Fprintf(os.Stderr, "Tokens: %d in / %d out\n", runTrace.TokenUsage.Input, runTrace.TokenUsage.Output)
 	fmt.Fprintf(os.Stderr, "Tool calls: %d\n", len(runTrace.ToolCalls))
 	fmt.Fprintf(os.Stderr, "Duration: %s\n", runTrace.CompletedAt.Sub(runTrace.StartedAt).Round(time.Millisecond))
+	if len(runTrace.HookResults) > 0 {
+		ran, failed := hookSummaryCounts(runTrace.HookResults)
+		fmt.Fprintf(os.Stderr, "Hooks: %d run, %d failed\n", ran, failed)
+	}
+}
+
+// hookSummaryCounts reports how many lifecycle hooks (issue #461)
+// actually ran and how many of those failed, for printRunSummary and
+// buildRunResult. "Ran" excludes entries with Skipped=true — a hook
+// skipped by a postRun runOn filter or after a prior fatal failure in
+// the same phase never executed, so it should not count toward either
+// number. Skipped entries never set Error (see hook.ExecRunner), so
+// counting Error != "" alone is sufficient for "failed" without a
+// second Skipped check.
+func hookSummaryCounts(results []types.HookExecution) (ran, failed int) {
+	for _, r := range results {
+		if r.Skipped {
+			continue
+		}
+		ran++
+		if r.Error != "" {
+			failed++
+		}
+	}
+	return ran, failed
 }
 
 // buildRunResult constructs the small RunResult payload from the
@@ -148,6 +174,10 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 			Feedback: last.Feedback,
 		}
 	}
+	// HookFailures (issue #461): hookSummaryCounts is nil-safe (ranges
+	// over a nil/empty HookResults are no-ops), so this is always safe
+	// to compute and naturally resolves to 0 for a hookless run.
+	_, res.HookFailures = hookSummaryCounts(rt.HookResults)
 	return res
 }
 
@@ -325,4 +355,50 @@ func setupSignalHandler(cancel context.CancelFunc) {
 		fmt.Fprintln(os.Stderr, "\nReceived interrupt, shutting down...")
 		cancel()
 	}()
+}
+
+// shutdownCloseGrace bounds how long armShutdownWatchdog waits after a
+// process shutdown signal (SIGINT/SIGTERM/pod deletion) before
+// proactively closing the loop, even if Run() has not returned yet —
+// e.g. because a detached postRun lifecycle hook (issue #461) is still
+// winding down after its ctx was cancelled. Chosen comfortably under
+// the shortest documented orchestrator SIGKILL escalation (10s on
+// Cloud Run and `docker stop`; see docs/cloud-run-jobs.md) so the
+// executor's sandbox (container, or K8s Pod + egress NetworkPolicy)
+// has a real chance to be torn down before the process is killed
+// outright, which bypasses every deferred cleanup entirely.
+const shutdownCloseGrace = 5 * time.Second
+
+// armShutdownWatchdog starts a background goroutine that proactively
+// closes loop grace after shutdownCtx is done, unless the returned
+// stop function is called first (Run() already returned through the
+// normal path, so the caller's own `defer loop.Close()` handles
+// teardown). This exists because relying solely on `defer` is not
+// enough: if the orchestrator's SIGKILL escalation fires before Run()
+// returns — e.g. while a postRun hook is still being killed via ctx
+// cancellation, or a slow trace flush is in flight — the deferred
+// Close() never runs at all, orphaning the executor's sandbox.
+// Close() is safe to invoke more than once: every executor's Close()
+// is either explicitly idempotent (K8sExecutor: a NotFound pod delete
+// is treated as success) or a harmless no-op whose error the normal
+// `defer func() { _ = loop.Close() }()` already discards. Production
+// call sites pass shutdownCloseGrace; tests pass a short duration to
+// exercise the fire path without a real multi-second sleep.
+func armShutdownWatchdog(shutdownCtx context.Context, loop io.Closer, grace time.Duration) (stop func()) {
+	runDone := make(chan struct{})
+	go func() {
+		select {
+		case <-runDone:
+			return
+		case <-shutdownCtx.Done():
+		}
+		select {
+		case <-runDone:
+		case <-time.After(grace):
+			if err := loop.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: proactive shutdown close: %v\n", err)
+			}
+		}
+	}()
+	return func() { close(runDone) }
 }

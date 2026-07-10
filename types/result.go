@@ -68,6 +68,16 @@ type RunResult struct {
 	// Error carries a short human-readable reason when Outcome is not
 	// "success". Omitted on success.
 	Error string `json:"error,omitempty"`
+
+	// HookFailures is the count of lifecycle hook executions (issue
+	// #461) whose Error is non-empty, across both phases. Zero (the
+	// default) when no hooks were configured or every hook succeeded.
+	// A non-zero count is possible even when Outcome is "success": a
+	// continueOnError hook that failed does not override the outcome
+	// but is still counted here so a consumer scanning RunResult alone
+	// (without the full trace) can see that setup or teardown was not
+	// entirely clean.
+	HookFailures int `json:"hookFailures,omitempty"`
 }
 
 // VerifierResult is the verifier outcome carried on RunResult. It

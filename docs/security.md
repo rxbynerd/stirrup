@@ -310,6 +310,85 @@ turn budget executing the same destructive call until something
 else trips. The loop also surfaces a warning to the transport so
 the control plane can react.
 
+## Lifecycle hooks
+
+`hooks.preRun` / `hooks.postRun` (issue #461) run operator-authored
+shell commands around the agentic session — outside the model's
+turn-by-turn control entirely, not through the tool layer the rest of
+this document gates. That is a different trust boundary from
+everything else in this document, and worth being explicit about:
+
+- **Hook commands are operator config, not agent output.** They come
+  from `RunConfig` — a file, stdin, or the control plane's
+  `task_assignment` — the same trust level as `verifier.command` or
+  the `deterministic` git strategy's branch-naming logic. The model
+  never sees hook commands and cannot construct or influence one; the
+  per-tool-call gates (input validator, `PermissionPolicy`, `GuardRail`
+  pre-tool) do not apply because hooks never reach the tool dispatch
+  path.
+- **Hook output is trace-only.** `HookExecution.OutputTail` (scrubbed,
+  capped at 4 KB, tail not head) and `Error` are recorded for
+  operator/control-plane visibility and never appended to the model's
+  message history. A hook cannot smuggle content into the
+  conversation the way a tool result can.
+- **Hooks share the run's existing egress posture.** They dispatch
+  through the same `Executor` as every agent tool call, so a `preRun`
+  clone inherits the same network mode, allowlist, and egress proxy
+  the rest of the run uses — there is no separate hook-specific
+  network surface to configure or audit.
+- **`secret://` is structurally rejected in `command`.**
+  `ValidateRunConfig` rejects any hook `command` containing a
+  `secret://` reference before the harness boots, so a credential can
+  never be resolved and inlined into a hook's `sh -c` invocation the
+  way `apiKeyRef` is for a provider. Clone/deploy credentials belong
+  in control-plane runtime bindings (e.g. a pre-provisioned SSH agent
+  or short-lived deploy token injected into the workspace before the
+  hook runs), never in `RunConfig`.
+
+  This pattern moves the credential to a different trust boundary, not
+  out of the agent's reach: anything a hook leaves on disk as a side
+  effect — an SSH private key, a `.netrc`, a deploy token embedded in
+  `.git/config` — is readable by every agent tool for the remainder of
+  the run, `run_command` in particular, which is not confined to the
+  workspace-relative path containment `read_file` / `write_file`
+  enforce. "Trace-only output" above covers hook stdout/stderr, not
+  files a hook writes. Prefer a short-lived, narrowly-scoped credential
+  (so exposure is bounded even if the agent reads it) and have the
+  hook clean up the material before returning (e.g. `rm` the key,
+  `git config --unset` the embedded token) rather than relying on
+  workspace boundaries to hide it.
+- **Hooks do not interact with the Rule of Two.** The invariant bounds
+  what the *agent* can simultaneously hold (untrusted input, sensitive
+  data, external communication); hooks add none of those — they run
+  outside the conversation, their output is trace-only, and they share
+  rather than expand the run's egress posture. `HooksConfig` is
+  therefore absent from all three Rule-of-Two legs.
+- **Read-only modes allow hooks.** The read-only invariant
+  (`planning`, `review`, `research`, `toil` reject `write_file`,
+  `run_command`, `edit_file`) bounds *agent-reachable* tools;
+  operator-authored, reviewable shell commands outside the tool surface
+  already have precedent there (the test-runner verifier's command, the
+  `deterministic` git strategy). See [`configuration.md` "Lifecycle
+  hooks"](configuration.md#lifecycle-hooks) for the full schema and
+  failure semantics.
+
+**Heartbeat caveat:** the agentic loop's `heartbeat` transport event
+(every 30 s, see [`architecture.md`
+"Heartbeat and health probes"](architecture.md#heartbeat-and-health-probes))
+is emitted on `runCtx` — the run's own wall-clock-bounded context — and
+stops the instant that context is done, at the run's `timeout` deadline
+or a control-plane cancel. `postRun` hooks execute afterwards on a
+*detached* context (`context.WithoutCancel`) specifically so they can
+outlive that deadline. This means a run whose `postRun` hooks are still
+uploading an artifact after wall-clock expiry emits **no heartbeats**
+for up to the detached budget (sum of configured `postRun` timeouts
+plus a 30 s margin, capped at 1830 s). A control plane that treats a
+heartbeat gap as "orphaned and safe to reap" may kill the process
+mid-upload. Operators relying on heartbeat-based liveness for runs with
+`postRun` hooks should account for this gap in their reap timeout;
+re-arming heartbeats for the detached post-hook phase is tracked as a
+follow-up if this proves disruptive in practice.
+
 ## Where each control sits
 
 ```text
@@ -317,7 +396,14 @@ Controls layered from outside in:
 
   ── RunConfig load ────────────────────────────────────────
    ValidateRunConfig: bounded budgets, read-only invariants,
-   credential consistency, Cedar policy path checks.
+   credential consistency, Cedar policy path checks, hook
+   command bounds + secret:// rejection.
+
+  ── Pre-session (outside the turn loop) ───────────────────
+   preRun hooks: operator exec via the run's own Executor,
+   before GitStrategy.Setup. Trace-only output; never reaches
+   the model. Fatal failure -> outcome "setup_failed", zero
+   turns.
 
   ── Provider boundary ─────────────────────────────────────
    SecretStore + LogScrubber: secrets resolve lazily and never
@@ -347,6 +433,13 @@ Controls layered from outside in:
   ── Run lifetime ──────────────────────────────────────────
    Stall detection: bounded consecutive identical calls /
    failures.
+
+  ── Post-session (outside the turn loop) ──────────────────
+   postRun hooks: operator exec via the run's own Executor,
+   after GitStrategy.Finalise, on a detached context so
+   wall-clock expiry does not cut them off. Trace-only
+   output. Fatal failure overrides outcome to "hook_failed"
+   only when the run would otherwise report success.
 
   ── Persistence ──────────────────────────────────────────
    RunConfig.Redact(): strips secret refs from anything

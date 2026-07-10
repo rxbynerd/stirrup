@@ -625,6 +625,123 @@ func TestJSONLTraceEmitter_PartialStream(t *testing.T) {
 	}
 }
 
+// TestJSONLTraceEmitter_ImplementsHookRecorder is a compile-time
+// satisfaction guard for the optional-capability interface.
+func TestJSONLTraceEmitter_ImplementsHookRecorder(t *testing.T) {
+	var _ HookRecorder = (*JSONLTraceEmitter)(nil)
+}
+
+// TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates pins
+// the dual write RecordHookExecution performs: an inline hook_record
+// event per call (so a live consumer sees each hook as it lands,
+// mirroring tool_call_record) AND accumulation into RunTrace.HookResults
+// at Finish, in call order.
+func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+	emitter.Start("run-hooks", nil)
+
+	emitter.RecordHookExecution(types.HookExecution{
+		Phase: "preRun", Index: 0, Name: "clone", Command: "git clone . .", ExitCode: 0, DurationMs: 10,
+	})
+	emitter.RecordHookExecution(types.HookExecution{
+		Phase: "postRun", Index: 0, Name: "smoke-test", Command: "test -f marker", ExitCode: 0, DurationMs: 5,
+	})
+
+	trace, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	if len(trace.HookResults) != 2 {
+		t.Fatalf("HookResults: got %d entries, want 2", len(trace.HookResults))
+	}
+	if trace.HookResults[0].Phase != "preRun" || trace.HookResults[0].Name != "clone" {
+		t.Errorf("HookResults[0] = %+v, want preRun/clone", trace.HookResults[0])
+	}
+	if trace.HookResults[1].Phase != "postRun" || trace.HookResults[1].Name != "smoke-test" {
+		t.Errorf("HookResults[1] = %+v, want postRun/smoke-test", trace.HookResults[1])
+	}
+
+	events := readEvents(t, buf.Bytes())
+	var hookEvents []Event
+	for _, ev := range events {
+		if ev.Kind == EventKindHookRecord {
+			hookEvents = append(hookEvents, ev)
+		}
+	}
+	if len(hookEvents) != 2 {
+		t.Fatalf("hook_record events: got %d, want 2", len(hookEvents))
+	}
+	if hookEvents[0].Hook == nil || hookEvents[0].Hook.Name != "clone" {
+		t.Errorf("hook_record[0] = %+v, want name=clone", hookEvents[0].Hook)
+	}
+	if hookEvents[1].Hook == nil || hookEvents[1].Hook.Name != "smoke-test" {
+		t.Errorf("hook_record[1] = %+v, want name=smoke-test", hookEvents[1].Hook)
+	}
+}
+
+// TestJSONLTraceEmitter_RecordHookExecution_Scrubs pins the
+// defence-in-depth scrub RecordHookExecution applies to OutputTail and
+// Error: even though hook.ExecRunner already scrubs OutputTail before
+// constructing the types.HookExecution, the emitter re-scrubs both
+// fields before they reach disk, the same posture RecordTurnRecord
+// applies to tool output.
+func TestJSONLTraceEmitter_RecordHookExecution_Scrubs(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+	emitter.Start("run-hook-scrub", nil)
+
+	emitter.RecordHookExecution(types.HookExecution{
+		Phase:      "preRun",
+		Index:      0,
+		Command:    "curl -H \"Authorization: Bearer $TOKEN\"", // no secret-shaped literal
+		OutputTail: "response included sk-ant-api03-leak in the body",
+		Error:      "request failed, token sk-ant-api03-leak rejected",
+	})
+	trace, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	onDisk := buf.String()
+	if strings.Contains(onDisk, "sk-ant-api03-leak") {
+		t.Errorf("scrubber missed hook secret in on-disk trace:\n%s", onDisk)
+	}
+	if strings.Contains(trace.HookResults[0].OutputTail, "sk-ant-api03-leak") {
+		t.Errorf("HookResults[0].OutputTail not scrubbed: %q", trace.HookResults[0].OutputTail)
+	}
+	if strings.Contains(trace.HookResults[0].Error, "sk-ant-api03-leak") {
+		t.Errorf("HookResults[0].Error not scrubbed: %q", trace.HookResults[0].Error)
+	}
+	// Command is operator config (like VerifierConfig.Command) and is
+	// deliberately not scrubbed — ValidateRunConfig structurally
+	// rejects "secret://" in a hook command instead.
+	if trace.HookResults[0].Command == "" {
+		t.Error("Command must survive unscrubbed")
+	}
+}
+
+// TestJSONLTraceEmitter_NoHooks_LeavesHookResultsEmpty pins that a run
+// with no lifecycle hooks configured produces no hook_record events and
+// a nil/empty HookResults, so the byte-for-byte-unchanged guarantee for
+// a hookless run extends to the JSONL trace shape.
+func TestJSONLTraceEmitter_NoHooks_LeavesHookResultsEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	emitter := NewJSONLTraceEmitter(&buf)
+	emitter.Start("run-no-hooks", nil)
+	trace, err := emitter.Finish(context.Background(), "success")
+	if err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if len(trace.HookResults) != 0 {
+		t.Errorf("HookResults: got %d entries, want 0", len(trace.HookResults))
+	}
+	if strings.Contains(buf.String(), string(EventKindHookRecord)) {
+		t.Error("expected no hook_record events for a hookless run")
+	}
+}
+
 // TestScrubRawJSON_WrapsWhenScrubBreaksValidity exercises the branch where the
 // scrubbed byte stream is no longer valid JSON. The "[REDACTED]" placeholder is
 // a bare token, so a secret that was sitting as an unquoted JSON value leaves

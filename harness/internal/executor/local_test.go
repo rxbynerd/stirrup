@@ -253,6 +253,41 @@ func TestExec_Timeout(t *testing.T) {
 	}
 }
 
+// TestExec_KillsOrphanedGrandchildPromptly is a regression test for
+// issue #461's finding #1 remediation: a compound command
+// ("cmd1; sleep N; cmd2") runs its later stages as children the shell
+// forks and waits on, not an exec-replaced process. Without
+// cmd.WaitDelay, killing only the direct "sh" child on ctx cancellation
+// leaves the still-running "sleep" grandchild holding the stdout pipe
+// open, so Exec blocks until the grandchild exits on its own — the
+// exact bug a manual end-to-end SIGTERM test surfaced (a postRun hook
+// outlived its process-shutdown signal by the length of its own
+// sleep). A single-command "sleep N" (see TestExec_Timeout) does not
+// reproduce this: sh execs directly into it with no fork.
+func TestExec_KillsOrphanedGrandchildPromptly(t *testing.T) {
+	exec, _ := newTestExecutor(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err := exec.Exec(ctx, "echo start; sleep 30; echo finished", 60*time.Second)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error from the cancelled command")
+	}
+	// Bounded well under the 30s grandchild sleep; generous enough to
+	// be non-flaky (200ms cancel delay + shortCommandKillGrace + CI
+	// scheduling slack), but nowhere near the un-fixed ~30s.
+	if elapsed > 5*time.Second {
+		t.Errorf("Exec took %v after ctx cancellation, want well under 5s (orphaned grandchild must not block Wait())", elapsed)
+	}
+}
+
 func TestExec_MaxTimeoutCapped(t *testing.T) {
 	exec, _ := newTestExecutor(t)
 
@@ -510,5 +545,18 @@ func TestCapabilities(t *testing.T) {
 	}
 	if caps.MaxTimeout != maxTimeout {
 		t.Errorf("MaxTimeout: got %v, want %v", caps.MaxTimeout, maxTimeout)
+	}
+}
+
+// TestMaxTimeout_Is30Minutes pins the literal cap value itself (issue
+// #461 raised it from 5 to 30 minutes so a cold `bundle install` in a
+// preRun hook has headroom). The other Capabilities() tests across
+// local/container/k8s only compare caps.MaxTimeout against this same
+// package-level maxTimeout constant, which would pass even if the raise
+// were silently reverted; this test is the actual regression tripwire
+// for the cap value.
+func TestMaxTimeout_Is30Minutes(t *testing.T) {
+	if maxTimeout != 30*time.Minute {
+		t.Errorf("maxTimeout = %v, want 30m (issue #461 raised the shared executor cap from 5m)", maxTimeout)
 	}
 }

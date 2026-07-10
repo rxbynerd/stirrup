@@ -265,7 +265,20 @@ Salient points for stirrup:
 - **SIGTERM grace** is 10 seconds before SIGKILL. Stirrup's signal
   handler at `harness/cmd/stirrup/cmd/root.go::setupSignalHandler`
   cancels the run context on SIGTERM, which lets the trace emitter
-  flush and `workspaceExportTo` upload before the kill.
+  flush and `workspaceExportTo` upload before the kill. A run
+  configuring `postRun` lifecycle hooks (issue #461) is a partial
+  exception: those hooks deliberately run on a context detached from
+  the run's own deadline/cancellation so an in-flight artifact upload
+  can survive it, but the harness still observes SIGTERM directly on
+  that detached context (`AgenticLoop.Shutdown`) and cuts a `postRun`
+  hook short promptly rather than letting it run for its full
+  configured budget (up to 1830s). A background watchdog additionally
+  bounds executor teardown to 5 seconds after SIGTERM even if `Run()`
+  has not yet returned, so the container is stopped and removed well
+  inside the 10-second grace window regardless of what an in-flight
+  `postRun` hook is doing. Operators sizing a tighter task-level
+  timeout around a run with long `postRun` hooks should still budget
+  for the 10-second SIGTERM grace on top of the run's own `timeout`.
 - **Max task timeout** is 7 days (1 hour with GPU); see [Cloud Run
   quotas](https://cloud.google.com/run/quotas). The fixture's
   `timeout: 600` is well inside that envelope.

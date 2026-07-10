@@ -6768,3 +6768,473 @@ func TestValidateRunConfig_CompatProfile(t *testing.T) {
 		}
 	})
 }
+
+// --- HooksConfig (issue #461) ---
+
+func validHookConfig() HookConfig {
+	return HookConfig{Command: "echo ok"}
+}
+
+func TestValidateRunConfig_Hooks_NilIsValid(t *testing.T) {
+	c := validConfig()
+	c.Hooks = nil
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("nil Hooks must validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Hooks_MinimalAccepted(t *testing.T) {
+	c := validConfig()
+	c.Hooks = &HooksConfig{
+		PreRun:  []HookConfig{{Command: "git clone https://example.com/repo ."}},
+		PostRun: []HookConfig{{Command: "test -f marker", RunOn: "success"}},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("minimal valid HooksConfig must validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Hooks_RejectsAPIExecutorWithHooks(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "api"}
+	c.Hooks = &HooksConfig{PreRun: []HookConfig{validHookConfig()}}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("hooks with executor.type=api must fail validation")
+	}
+	if !strings.Contains(err.Error(), "exec-capable executor") {
+		t.Errorf("error must mention exec-capable executor, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Hooks_EmptyHooksConfigAllowsAPIExecutor(t *testing.T) {
+	// An explicit-but-empty HooksConfig{} (e.g. an unmarshalled wire
+	// payload with an empty "hooks" sub-message) schedules nothing, so
+	// it must not trip the exec-capable-executor requirement.
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "api"}
+	c.Hooks = &HooksConfig{}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("empty HooksConfig with executor.type=api must validate, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Hooks_CommandRequired(t *testing.T) {
+	for _, cmd := range []string{"", "   ", "\t\n"} {
+		t.Run(fmt.Sprintf("command=%q", cmd), func(t *testing.T) {
+			c := validConfig()
+			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: cmd}}}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatal("empty/whitespace command must fail validation")
+			}
+			if !strings.Contains(err.Error(), "hooks.preRun[0].command is required") {
+				t.Errorf("error must mention hooks.preRun[0].command is required, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_Hooks_CommandMaxLength(t *testing.T) {
+	c := validConfig()
+	c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: strings.Repeat("a", maxHookCommandBytes+1)}}}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("oversized command must fail validation")
+	}
+	if !strings.Contains(err.Error(), "hooks.preRun[0].command must be <=") {
+		t.Errorf("error must mention the command length bound, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Hooks_CommandRejectsSecretRef(t *testing.T) {
+	cases := []string{
+		"secret://API_KEY",
+		"curl -H \"Authorization: Bearer $(cat secret://API_KEY)\"",
+		"echo secret://ANYWHERE_IN_STRING",
+		// Case-insensitive: a shell reads "secret://" and "SECRET://"
+		// identically, so the rejection must too.
+		"SECRET://API_KEY",
+		"Secret://API_KEY",
+		"echo sEcReT://mixed_case",
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			c := validConfig()
+			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: cmd}}}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("command containing secret:// must fail validation: %q", cmd)
+			}
+			if !strings.Contains(err.Error(), "secret://") {
+				t.Errorf("error must mention secret://, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode pins the
+// read-only-mode carve-out for lifecycle hooks: the invariant bounds
+// only the model's tool surface, not operator-authored, deterministic
+// commands declared in reviewable RunConfig, so hooks — including a
+// postRun hook that writes (git push) — validate cleanly in every
+// read-only mode. A silent regression risk if the read-only check is
+// ever tightened without remembering the exception.
+func TestValidateRunConfig_Hooks_AcceptedInReadOnlyMode(t *testing.T) {
+	readOnlyModes := []string{"planning", "review", "research", "toil"}
+	for _, mode := range readOnlyModes {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: []string{"read_file"}}
+			c.Hooks = &HooksConfig{
+				PreRun:  []HookConfig{{Name: "clone", Command: "git clone https://example.com/repo ."}},
+				PostRun: []HookConfig{{Name: "push", Command: "git push", RunOn: "success"}},
+			}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Errorf("hooks in read-only mode %q must validate, got: %v", mode, err)
+			}
+		})
+	}
+}
+
+// TestRuleOfTwoState_HooksNeverAffectLegs pins that Hooks plays no part
+// in any of the three Rule-of-Two legs: RuleOfTwoState must report
+// identical flags for two configs differing only in Hooks being nil vs.
+// populated with a network-touching, dynamic-context-referencing hook.
+// The base config is deliberately built to already trip all three legs
+// (DynamicContext with Sensitive:true trips untrusted-input and
+// sensitive-data; web_fetch trips external-comm) so the comparison is
+// meaningful rather than trivially false==false. Correct today (none of
+// ruleOfTwoUntrustedInput/ruleOfTwoSensitiveData/ruleOfTwoExternalComm
+// reference config.Hooks) but unprotected against a future change that
+// accidentally wires a postRun hook's network call into the
+// external-communication leg.
+func TestRuleOfTwoState_HooksNeverAffectLegs(t *testing.T) {
+	base := validConfig()
+	base.DynamicContext = map[string]DynamicContextValue{
+		"issue": {Value: "untrusted issue body", Sensitive: true},
+	}
+	base.Tools = ToolsConfig{BuiltIn: []string{"web_fetch"}}
+
+	withHooks := *base
+	withHooks.Hooks = &HooksConfig{
+		PreRun: []HookConfig{{Command: "curl -X POST https://example.com/webhook"}},
+		PostRun: []HookConfig{
+			{Command: "curl -X POST https://example.com/artifact", RunOn: "success"},
+		},
+	}
+
+	baseUntrusted, baseSensitive, baseExternal := RuleOfTwoState(base)
+	if !baseUntrusted || !baseSensitive || !baseExternal {
+		t.Fatalf("prerequisite: base config must trip all three legs, got (%v, %v, %v)", baseUntrusted, baseSensitive, baseExternal)
+	}
+
+	hooksUntrusted, hooksSensitive, hooksExternal := RuleOfTwoState(&withHooks)
+	if hooksUntrusted != baseUntrusted || hooksSensitive != baseSensitive || hooksExternal != baseExternal {
+		t.Errorf("RuleOfTwoState changed when only Hooks was populated: base=(%v,%v,%v) withHooks=(%v,%v,%v)",
+			baseUntrusted, baseSensitive, baseExternal, hooksUntrusted, hooksSensitive, hooksExternal)
+	}
+}
+
+func TestValidateRunConfig_Hooks_TypeClosedSet(t *testing.T) {
+	t.Run("empty-accepted", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Type: "", Command: "true"}}}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("type=\"\" must validate, got: %v", err)
+		}
+	})
+	t.Run("command-accepted", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Type: "command", Command: "true"}}}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("type=command must validate, got: %v", err)
+		}
+	})
+	t.Run("unknown-rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Type: "gitSource", Command: "true"}}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("unknown hook type must fail validation")
+		}
+		if !strings.Contains(err.Error(), `unsupported hooks.preRun[0] type "gitSource"`) {
+			t.Errorf("error must name the offending type, got: %v", err)
+		}
+	})
+}
+
+func TestValidateRunConfig_Hooks_TimeoutBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		seconds int
+		wantErr bool
+	}{
+		{"zero_uses_default", 0, false},
+		{"one_second", 1, false},
+		{"max_1800", MaxHookTimeoutSeconds, false},
+		{"over_max_rejected", MaxHookTimeoutSeconds + 1, true},
+		{"negative_rejected", -1, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", TimeoutSeconds: tc.seconds}}}
+			err := ValidateRunConfig(c)
+			if tc.wantErr && err == nil {
+				t.Fatalf("timeoutSeconds=%d must fail validation", tc.seconds)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("timeoutSeconds=%d must validate, got: %v", tc.seconds, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_Hooks_NameBounds(t *testing.T) {
+	t.Run("within_bound_accepted", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", Name: strings.Repeat("a", maxHookNameBytes)}}}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("64-byte name must validate, got: %v", err)
+		}
+	})
+	t.Run("over_bound_rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", Name: strings.Repeat("a", maxHookNameBytes+1)}}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("65-byte name must fail validation")
+		}
+		if !strings.Contains(err.Error(), "hooks.preRun[0].name must be <=") {
+			t.Errorf("error must mention the name length bound, got: %v", err)
+		}
+	})
+	t.Run("control_byte_rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", Name: "clone\x00repo"}}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("control byte in name must fail validation")
+		}
+		if !strings.Contains(err.Error(), "non-printable character") {
+			t.Errorf("error must mention non-printable character, got: %v", err)
+		}
+	})
+}
+
+func TestValidateRunConfig_Hooks_RunOnPreRunRejected(t *testing.T) {
+	for _, runOn := range []string{"always", "success", "failure"} {
+		t.Run(runOn, func(t *testing.T) {
+			c := validConfig()
+			c.Hooks = &HooksConfig{PreRun: []HookConfig{{Command: "true", RunOn: runOn}}}
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("runOn=%q on a preRun hook must fail validation", runOn)
+			}
+			if !strings.Contains(err.Error(), "hooks.preRun[0].runOn must be empty on a preRun hook") {
+				t.Errorf("error must mention preRun runOn, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_Hooks_RunOnPostRunClosedSet(t *testing.T) {
+	t.Run("valid_values_accepted", func(t *testing.T) {
+		for _, runOn := range []string{"", "always", "success", "failure"} {
+			t.Run(runOn, func(t *testing.T) {
+				c := validConfig()
+				c.Hooks = &HooksConfig{PostRun: []HookConfig{{Command: "true", RunOn: runOn}}}
+				if err := ValidateRunConfig(c); err != nil {
+					t.Errorf("runOn=%q on a postRun hook must validate, got: %v", runOn, err)
+				}
+			})
+		}
+	})
+	t.Run("unknown_rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PostRun: []HookConfig{{Command: "true", RunOn: "sometimes"}}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("runOn=sometimes must fail validation")
+		}
+		if !strings.Contains(err.Error(), "hooks.postRun[0].runOn") {
+			t.Errorf("error must mention hooks.postRun[0].runOn, got: %v", err)
+		}
+	})
+}
+
+func TestValidateRunConfig_Hooks_MaxHooksPerPhase(t *testing.T) {
+	makeHooks := func(n int) []HookConfig {
+		hooks := make([]HookConfig, n)
+		for i := range hooks {
+			hooks[i] = HookConfig{Command: "true"}
+		}
+		return hooks
+	}
+	t.Run("at_limit_accepted", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PreRun: makeHooks(maxHooksPerPhase)}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Errorf("%d preRun hooks must validate, got: %v", maxHooksPerPhase, err)
+		}
+	})
+	t.Run("over_limit_rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PreRun: makeHooks(maxHooksPerPhase + 1)}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatalf("%d preRun hooks must fail validation", maxHooksPerPhase+1)
+		}
+		if !strings.Contains(err.Error(), "hooks.preRun must have <=") {
+			t.Errorf("error must mention the per-phase hook count bound, got: %v", err)
+		}
+	})
+	t.Run("postRun_bounded_independently", func(t *testing.T) {
+		c := validConfig()
+		c.Hooks = &HooksConfig{PostRun: makeHooks(maxHooksPerPhase + 1)}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("oversized postRun list must fail validation")
+		}
+		if !strings.Contains(err.Error(), "hooks.postRun must have <=") {
+			t.Errorf("error must mention hooks.postRun, got: %v", err)
+		}
+	})
+}
+
+func TestValidateRunConfig_Hooks_PostRunTimeoutSumBounded(t *testing.T) {
+	c := validConfig()
+	c.Hooks = &HooksConfig{
+		PostRun: []HookConfig{
+			{Command: "true", TimeoutSeconds: 1000},
+			{Command: "true", TimeoutSeconds: 900},
+		},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("postRun timeout sum > MaxHookTimeoutSeconds must fail validation")
+	}
+	if !strings.Contains(err.Error(), "sum of hooks.postRun effective timeouts") {
+		t.Errorf("error must mention the postRun timeout sum bound, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_Hooks_PostRunTimeoutSumAtBoundAccepted(t *testing.T) {
+	c := validConfig()
+	c.Hooks = &HooksConfig{
+		PostRun: []HookConfig{
+			{Command: "true", TimeoutSeconds: MaxHookTimeoutSeconds},
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("postRun timeout sum == MaxHookTimeoutSeconds must validate, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_Hooks_PreRunTimeoutSumWarnsOnly pins that a
+// preRun timeout sum exceeding the run's wall-clock Timeout is a
+// slog.Warn, not a hard validation error — the run is very likely to
+// blow the timeout, but that is a runtime concern, not a config-shape
+// error the harness should refuse to start.
+func TestValidateRunConfig_Hooks_PreRunTimeoutSumWarnsOnly(t *testing.T) {
+	c := validConfig()
+	timeout := 60
+	c.Timeout = &timeout
+	c.Hooks = &HooksConfig{
+		PreRun: []HookConfig{{Command: "true", TimeoutSeconds: 300}},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("preRun timeout sum > timeout must only warn, not fail validation: %v", err)
+	}
+}
+
+func TestEffectiveHookTimeout(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  HookConfig
+		want int
+	}{
+		{"zero_resolves_to_default", HookConfig{TimeoutSeconds: 0}, DefaultHookTimeoutSeconds},
+		{"explicit_value_verbatim", HookConfig{TimeoutSeconds: 120}, 120},
+		{"max_value_verbatim", HookConfig{TimeoutSeconds: MaxHookTimeoutSeconds}, MaxHookTimeoutSeconds},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EffectiveHookTimeout(tc.cfg); got != tc.want {
+				t.Errorf("EffectiveHookTimeout(%+v) = %d, want %d", tc.cfg, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRedact_HooksPassThrough pins that hook commands are operator
+// config like VerifierConfig.Command/Prompt, so Redact()
+// must leave HooksConfig completely untouched — there is nothing to
+// redact because validateHooksConfig structurally forbids "secret://"
+// in a hook Command.
+func TestRedact_HooksPassThrough(t *testing.T) {
+	rc := RunConfig{
+		Hooks: &HooksConfig{
+			PreRun: []HookConfig{
+				{Type: "command", Name: "clone", Command: "git clone https://example.com/repo .", TimeoutSeconds: 120},
+			},
+			PostRun: []HookConfig{
+				{Command: "curl -X POST https://example.com/artifacts", RunOn: "success", ContinueOnError: true},
+			},
+		},
+	}
+	redacted := rc.Redact()
+
+	if redacted.Hooks == nil {
+		t.Fatal("Redact must not drop Hooks")
+	}
+	if len(redacted.Hooks.PreRun) != 1 || redacted.Hooks.PreRun[0].Command != "git clone https://example.com/repo ." {
+		t.Errorf("PreRun must pass through unchanged, got: %+v", redacted.Hooks.PreRun)
+	}
+	if len(redacted.Hooks.PostRun) != 1 || redacted.Hooks.PostRun[0].Command != "curl -X POST https://example.com/artifacts" {
+		t.Errorf("PostRun must pass through unchanged, got: %+v", redacted.Hooks.PostRun)
+	}
+	if !redacted.Hooks.PostRun[0].ContinueOnError {
+		t.Error("ContinueOnError must pass through unchanged")
+	}
+}
+
+func TestHooksConfig_JSONRoundTrip(t *testing.T) {
+	rc := RunConfig{
+		Hooks: &HooksConfig{
+			PreRun:  []HookConfig{{Command: "true"}},
+			PostRun: []HookConfig{{Command: "true", RunOn: "failure"}},
+		},
+	}
+	data, err := json.Marshal(rc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got RunConfig
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Hooks == nil {
+		t.Fatal("Hooks must survive JSON round-trip as non-nil")
+	}
+	if len(got.Hooks.PreRun) != 1 || got.Hooks.PreRun[0].Command != "true" {
+		t.Errorf("PreRun round-trip: got %+v", got.Hooks.PreRun)
+	}
+	if len(got.Hooks.PostRun) != 1 || got.Hooks.PostRun[0].RunOn != "failure" {
+		t.Errorf("PostRun round-trip: got %+v", got.Hooks.PostRun)
+	}
+}
+
+func TestRunConfig_HooksOmittedWhenNil(t *testing.T) {
+	rc := RunConfig{}
+	data, err := json.Marshal(rc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"hooks"`) {
+		t.Errorf("expected no hooks key when Hooks is nil, got: %s", data)
+	}
+}

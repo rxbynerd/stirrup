@@ -462,10 +462,11 @@ func (w *writeCapBuffer) String() string { return w.buf.String() }
 // on a nil network.
 //
 // MaxTimeout deliberately mirrors container.go and local.go (maxTimeout =
-// 5 min). Returning 0 would silently disable timeout clamping in callers
-// that compare against MaxTimeout — and Exec clamps against it. The cap is
-// identical across executors so a caller written against the Executor
-// interface clamps uniformly regardless of which implementation is active.
+// 30 min, raised from 5 min for lifecycle hooks — #461). Returning 0 would
+// silently disable timeout clamping in callers that compare against
+// MaxTimeout — and Exec clamps against it. The cap is identical across
+// executors so a caller written against the Executor interface clamps
+// uniformly regardless of which implementation is active.
 func (e *podExecCore) Capabilities() ExecutorCapabilities {
 	canNetwork := e.network != nil && e.network.Mode != "none"
 	return ExecutorCapabilities{

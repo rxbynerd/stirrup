@@ -23,6 +23,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -90,8 +91,31 @@ type AgenticLoop struct {
 	// ruleoftwo.NewNoop() when the run is unarmed so loop call sites
 	// stay unconditional; hand-assembled loops (tests, embedders) may
 	// leave it nil and the observe helpers no-op, mirroring GuardRail.
-	RuleOfTwo    ruleoftwo.Monitor
-	Escalation   EscalationPolicy // tool-choice missed-tool recovery (#230); nil = disabled
+	RuleOfTwo  ruleoftwo.Monitor
+	Escalation EscalationPolicy // tool-choice missed-tool recovery (#230); nil = disabled
+	// Hooks runs the run's configured lifecycle hooks (#461). Optional,
+	// like GuardRail/RuleOfTwo/Escalation: Run() nil-checks it before
+	// every call, so a hand-assembled loop (tests, embedders) that
+	// leaves it unset sees no behaviour change. The factory always
+	// injects a non-nil value (hook.Noop when the run has no
+	// HooksConfig, or is a sub-agent); *hook.ExecRunner otherwise.
+	Hooks hook.Runner
+	// Shutdown, when non-nil, is a process-lifetime context that is
+	// done when the harness has received a process-level shutdown
+	// signal (SIGTERM/SIGINT/pod deletion) — deliberately independent
+	// of the ctx passed to Run(), which carries the run's own
+	// wall-clock deadline and control-plane "cancel" ControlEvent.
+	// The detached postRun hook phase (#461) races its bounded budget
+	// against Shutdown so it can survive a run-deadline/control-plane
+	// cancel (the documented intent) while still observing a genuine
+	// process shutdown promptly, rather than running unconditionally
+	// for up to its full budget while the orchestrator's SIGKILL
+	// escalation counts down. The cmd/factory layer constructs and
+	// injects this — the loop must not read signals or env directly
+	// (CLAUDE.md invariant). Nil-safe: a hand-assembled loop (tests,
+	// embedders) that leaves it unset sees the pre-remediation
+	// behaviour (postRun bounded only by its own budget).
+	Shutdown     context.Context
 	Transport    transport.Transport
 	Trace        trace.TraceEmitter
 	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)

@@ -1989,9 +1989,21 @@ type runOptions struct {
 // RunConfig — ValidateRunConfig rejects nil Timeout, so the dereference
 // below is safe.
 func runWithConfig(config *types.RunConfig, opts runOptions) error {
+	// shutdownCtx carries only the process-level shutdown signal
+	// (SIGINT/SIGTERM), deliberately independent of ctx's run-deadline
+	// cancellation below. The agentic loop's detached postRun hook
+	// phase (issue #461) is built to survive ctx's own deadline but
+	// must still observe a genuine process shutdown promptly — see
+	// AgenticLoop.Shutdown and docs/cloud-run-jobs.md.
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*config.Timeout)*time.Second)
 	defer cancel()
-	setupSignalHandler(cancel)
+	setupSignalHandler(func() {
+		shutdownCancel()
+		cancel()
+	})
 
 	loop, err := core.BuildLoop(ctx, config)
 	if err != nil {
@@ -1999,9 +2011,16 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	}
 	defer func() { _ = loop.Close() }()
 
-	runTrace, err := loop.Run(ctx, config)
-	if err != nil {
-		return fmt.Errorf("running harness: %w", err)
+	loop.Shutdown = shutdownCtx
+	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
+	defer stopShutdownWatchdog()
+
+	runTrace, runErr := loop.Run(ctx, config)
+	if runTrace == nil {
+		// No trace was produced at all (e.g. the trace emitter itself
+		// failed inside finishWithOutcome/finishWithError) — there is
+		// nothing to emit.
+		return fmt.Errorf("running harness: %w", runErr)
 	}
 
 	// emitRunOutput must not inherit ctx: by the time we reach here ctx
@@ -2016,6 +2035,21 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	emitCtx, emitCancel := context.WithTimeout(context.Background(), postRunEmitTimeout)
 	defer emitCancel()
 	emitRunOutput(emitCtx, config, runTrace, opts.outputMode)
+
+	if runErr != nil {
+		// A RunTrace was produced even though Run() returned a fatal
+		// error: finishWithOutcome's early-return paths (build-system-
+		// prompt failure, git setup failure, and — issue #461 — a
+		// fatal preRun hook failure) return a valid trace alongside a
+		// non-nil error. The RunResult/resultSink emission above must
+		// still run for these — skipping it made the run's own
+		// structured outcome (and RunResult.HookFailures) unreachable
+		// on the most common trigger for setup_failed/hook_failed —
+		// but a failed run has nothing further to do, so still return
+		// the error here rather than continuing to workspace export /
+		// follow-up grace.
+		return fmt.Errorf("running harness: %w", runErr)
+	}
 
 	// Workspace export (issue #164). Called after the trace and
 	// resultSink so a failed upload's slog warning lands after the

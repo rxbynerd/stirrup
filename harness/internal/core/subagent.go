@@ -11,6 +11,7 @@ import (
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
@@ -117,6 +118,12 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	childConfig.Mode = mode
 	childConfig.MaxTurns = maxTurns
 	childConfig.GitStrategy = types.GitStrategyConfig{Type: "none"}
+	// Lifecycle hooks are parent-run-only (#461): the child gets
+	// hook.Noop regardless of what childConfig.Hooks carries (see
+	// below), so clear the field here too — otherwise a persisted child
+	// trace would carry a HooksConfig the sub-agent never actually ran,
+	// misleading a trace consumer into thinking it did.
+	childConfig.Hooks = nil
 
 	// Permissions: when the parent is a Cedar policy-engine policy, the
 	// sub-agent gets its own clone with parentRunId populated. This is
@@ -150,12 +157,16 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		Verifier:    verifier.NewNoneVerifier(),
 		Permissions: childPermissions,
 		Git:         git.NewNoneGitStrategy(),
-		Transport:   captureTp,
-		Trace:       childTrace,
-		Tracer:      tracer,
-		Metrics:     parent.Metrics,
-		Logger:      parent.Logger,
-		Security:    parent.Security,
+		// Hooks are parent-run-only (#461): a sub-agent never runs
+		// lifecycle hooks, regardless of what the parent's RunConfig
+		// configured.
+		Hooks:     hook.NewNoop(),
+		Transport: captureTp,
+		Trace:     childTrace,
+		Tracer:    tracer,
+		Metrics:   parent.Metrics,
+		Logger:    parent.Logger,
+		Security:  parent.Security,
 		// Inherit the parent's GuardRail so spawned sub-agents are
 		// not a silent escape hatch around the configured guards.
 		// Without this, an indirect-injection payload could route

@@ -70,6 +70,14 @@ func TestEvalOutcomeFor(t *testing.T) {
 		{name: "cancelled", trace: RunTrace{Outcome: "cancelled"}, want: EvalInconclusive},
 		{name: "verification_error", trace: RunTrace{Outcome: "verification_error"}, want: EvalInconclusive},
 
+		// Lifecycle-hook infra failures (issue #461): a fatal preRun/postRun
+		// hook failure is an infra signal, not a quality verdict on the
+		// model's work — pinned explicitly (rather than relying on the
+		// unknown-outcome default below) so a future change to either
+		// bucket is caught by name.
+		{name: "setup_failed", trace: RunTrace{Outcome: "setup_failed"}, want: EvalInconclusive},
+		{name: "hook_failed", trace: RunTrace{Outcome: "hook_failed"}, want: EvalInconclusive},
+
 		// Unknown / empty outcomes fall through to inconclusive so a
 		// future outcome class added upstream cannot silently land in
 		// the wrong bucket.

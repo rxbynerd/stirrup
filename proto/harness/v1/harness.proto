@@ -440,6 +440,11 @@ message RunConfig {
   // harness default).
   optional double temperature = 31;
 
+  // Optional. Operator-authored lifecycle hooks that run before the
+  // agentic session starts and after it ends. See HooksConfig for the
+  // pre_run / post_run semantics.
+  HooksConfig hooks = 32;
+
 }
 
 // DynamicContextValue is a single dynamic-context value with metadata.
@@ -477,6 +482,63 @@ message ToolDispatchConfig {
   // sub-message) resolves to the default at the harness; values outside
   // [1, 16] are rejected by ValidateRunConfig.
   int32 max_parallel = 1;
+}
+
+// HooksConfig configures operator-authored lifecycle hooks that run
+// around the agentic session (issue #461): pre_run executes before the
+// session starts (after the harness builds the system prompt, before
+// GitStrategy.Setup); post_run executes after the session ends (after
+// GitStrategy.Finalise, before the run reports done). Hook output is
+// trace-only and never enters the model's context; hooks run through
+// the same Executor the agent's tools use and so share the run's
+// sandbox and network egress posture.
+message HooksConfig {
+  // Optional. Hooks executed, in order, before the agentic session
+  // starts. A fatal failure (a hook without continue_on_error exits
+  // non-zero or times out) fails the run with outcome "setup_failed"
+  // before any turn runs.
+  repeated HookConfig pre_run = 1;
+
+  // Optional. Hooks executed, in order, after the agentic session ends
+  // and GitStrategy.Finalise completes. Runs on every outcome by
+  // default; see HookConfig.run_on to scope a hook to success or
+  // failure only. A fatal failure overrides an otherwise-successful
+  // run's outcome to "hook_failed"; it never masks an existing
+  // non-success outcome.
+  repeated HookConfig post_run = 2;
+}
+
+// HookConfig is a single operator-authored lifecycle hook: an ordered
+// shell command executed via "sh -c" through the run's Executor.
+message HookConfig {
+  // Optional. The hook kind. Empty defaults to "command" — the only
+  // value accepted in v1. Present so a future typed step (e.g. a
+  // declarative git-clone source) can land additively.
+  string type = 1;
+
+  // Optional. A short trace label (<= 64 bytes, printable, no control
+  // characters). Purely descriptive.
+  string name = 2;
+
+  // Required. The shell command executed via "sh -c". Must not contain
+  // a "secret://" reference — hook commands are recorded verbatim in
+  // the trace like VerifierConfig.command, so credentials must come
+  // from control-plane runtime bindings instead. Max 16 KB.
+  string command = 3;
+
+  // Optional. Timeout in seconds for this hook. Zero resolves to the
+  // 300s harness default; max 1800 (30 minutes).
+  int32 timeout_seconds = 4;
+
+  // Optional. When true, a non-zero exit or timeout is recorded as a
+  // warning and does not fail the phase — the remaining hooks in the
+  // phase still run and the run's outcome is unaffected.
+  bool continue_on_error = 5;
+
+  // Optional. post_run only: filters this hook by the run's outcome.
+  // Valid values: "" / "always" (default), "success", "failure". Must
+  // be empty on a pre_run hook.
+  string run_on = 6;
 }
 
 // RuleOfTwoConfig carries the operator override for the Rule-of-Two
