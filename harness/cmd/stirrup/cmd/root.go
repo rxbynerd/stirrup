@@ -181,6 +181,51 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 	return res
 }
 
+// runSuccessOutcomes is the closed set of RunTrace.Outcome values that
+// count as a successful run for process exit-code purposes (issue
+// #101, v0.1 release blocker B4). "success" is the only member: every
+// other documented value on types.RunTrace.Outcome — "error",
+// "tool_failures", "verification_failed", "verification_error",
+// "max_turns", "max_tokens", "budget_exceeded", "stalled",
+// "cancelled", "timeout", "setup_failed", "hook_failed" — means the
+// run did not complete its task, whether via a hard failure, an
+// exhausted resource limit, or an interruption. docs/configuration.md
+// draws the same line ("a failed or cancelled run still exits
+// non-zero"); the Cloud Run / K8s Jobs failure-signalling story this
+// feeds needs the same binary classification so an orchestrator
+// retries or alerts on any run that was not a genuine success, not
+// only the ones that hit a hard error.
+//
+// Deliberately not reusing EvalOutcomeFor's passed/failed/inconclusive
+// split (types/evaloutcome.go): that taxonomy answers "was the change
+// any good", which folds limit-hit and cancelled runs into a distinct
+// "inconclusive" bucket so eval aggregates don't punish a run that
+// never got a fair shot. Process exit code answers a narrower
+// question — "did this invocation produce a usable result" — where
+// inconclusive and failed both mean no.
+var runSuccessOutcomes = map[string]bool{
+	"success": true,
+}
+
+// runOutcomeError reports whether rt's outcome falls outside
+// runSuccessOutcomes, returning a descriptive error if so. Called at
+// the tail of runWithConfig and runJob once every non-fatal post-run
+// step (result emission, workspace export, follow-up grace) has run,
+// so a non-success outcome always yields a non-zero process exit via
+// classifyExitCode's untyped-error default (exit 1) — the same code
+// docs/configuration.md documents for "a failed or cancelled run".
+//
+// A nil trace returns nil: both call sites already return a dedicated
+// error for runTrace == nil before reaching this check, so this branch
+// only exists as a defensive default against a future caller that
+// skips that guard.
+func runOutcomeError(rt *types.RunTrace) error {
+	if rt == nil || runSuccessOutcomes[rt.Outcome] {
+		return nil
+	}
+	return fmt.Errorf("run outcome %q is not success", rt.Outcome)
+}
+
 // newResultSink is the seam tests use to inject a stub ResultSink so
 // the forward-compatibility branches in emitRunOutput (non-stdout-json
 // sink paths under --output=json and --output=none) can be exercised

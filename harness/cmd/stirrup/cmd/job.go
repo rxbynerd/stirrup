@@ -209,5 +209,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 		core.RunFollowUpLoop(ctx, loop, config, graceSecs)
 	}
 
-	return nil
+	// A non-success outcome reached here (runErr == nil but, e.g.,
+	// Outcome == "error" from a provider failure, or "hook_failed" from
+	// a fatal postRun hook) must still fail the process — this is what
+	// a Cloud Run / K8s Jobs orchestrator observes to decide whether to
+	// retry or alert. See runOutcomeError in root.go.
+	return runOutcomeError(runTrace)
 }

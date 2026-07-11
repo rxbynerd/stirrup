@@ -2069,5 +2069,10 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > 0 {
 		core.RunFollowUpLoop(ctx, loop, config, *config.FollowUpGrace)
 	}
-	return nil
+	// A non-success outcome reached here (runErr == nil but, e.g.,
+	// Outcome == "error" from a provider failure, or "hook_failed" from
+	// a fatal postRun hook) must still fail the process — see
+	// runOutcomeError. The RunResult/stderr summary above already
+	// carries the real outcome; this only affects the exit code.
+	return runOutcomeError(runTrace)
 }
