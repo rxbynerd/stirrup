@@ -620,6 +620,189 @@ func TestContainerExecutor_Exec_CancelledContext_NotErrTimeout(t *testing.T) {
 	}
 }
 
+// --- S2: Docker API client / file-I/O timeout tests ---
+//
+// These exercise the fix for "execInContainer ignores its timeout
+// parameter" and "the Docker Engine API client has no explicit timeout": a
+// wedged daemon (accepts the connection, never responds) must not hang the
+// executor forever, on any call class, while a slow-but-legitimate
+// streaming exec must not be killed by a blanket short timeout. Each test
+// temporarily shrinks the relevant package-level timeout var so the
+// scenario completes in well under a second instead of the real 10-60s
+// production window.
+
+// withShortTimeout sets *knob to short for the duration of the test and
+// restores the original value via t.Cleanup, so package-level timeout vars
+// shared across the executor package tests are never left mutated for
+// unrelated tests.
+func withShortTimeout(t *testing.T, knob *time.Duration, short time.Duration) {
+	t.Helper()
+	orig := *knob
+	*knob = short
+	t.Cleanup(func() { *knob = orig })
+}
+
+// TestContainerAPIClient_ControlPlaneCall_BoundedWithoutCallerDeadline is
+// the S2 regression for control-plane calls (create/start/stop/ping/
+// exec-create/exec-inspect): a fake daemon that accepts the connection but
+// never responds must not hang the call forever even when the caller
+// supplies no context deadline of its own (context.Background()) — the
+// per-call containerControlPlaneTimeout must still bound it — and the
+// resulting error must classify via errors.Is(err, ErrTimeout), composing
+// with #489's sentinel rather than surfacing a bespoke "context deadline
+// exceeded" string.
+func TestContainerAPIClient_ControlPlaneCall_BoundedWithoutCallerDeadline(t *testing.T) {
+	withShortTimeout(t, &containerControlPlaneTimeout, 150*time.Millisecond)
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"GET /_ping": func(w http.ResponseWriter, r *http.Request) {
+			// Never write a response. The handler blocks on the server's
+			// request context, which is cancelled once our client gives up
+			// on its own deadline and the connection closes — so
+			// mockEngineServer's Close() doesn't hang waiting for this
+			// handler to return.
+			<-r.Context().Done()
+		},
+	})
+	defer cleanup()
+
+	client := newContainerAPIClient(sock)
+
+	start := time.Now()
+	err := client.ping(context.Background())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error from a daemon that never responds")
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("ping took %v with no caller-supplied deadline, want bounded by containerControlPlaneTimeout (~150ms)", elapsed)
+	}
+}
+
+// TestContainerAPIClient_ConnectionLevelHang_BoundedByResponseHeaderTimeout
+// proves the connection-level backstop independently of any per-call
+// context deadline: even if containerControlPlaneTimeout were much larger
+// than the time the daemon takes to (never) respond, the Transport's
+// ResponseHeaderTimeout still bounds the wait for headers. This is the
+// "half-open TCP / wedged daemon" case called out in the task — it is a
+// pure connection-level bound, so (unlike the context-deadline path above)
+// it is not required to classify via ErrTimeout.
+func TestContainerAPIClient_ConnectionLevelHang_BoundedByResponseHeaderTimeout(t *testing.T) {
+	withShortTimeout(t, &containerResponseHeaderTimeout, 150*time.Millisecond)
+	// Deliberately much larger than the header timeout above, so the
+	// ctx-deadline path this test is NOT exercising cannot be the thing
+	// that saves us.
+	withShortTimeout(t, &containerControlPlaneTimeout, 10*time.Second)
+
+	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+		"GET /_ping": func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+		},
+	})
+	defer cleanup()
+
+	client := newContainerAPIClient(sock)
+
+	start := time.Now()
+	err := client.ping(context.Background())
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error from a daemon that never responds")
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("ping took %v, want bounded by containerResponseHeaderTimeout (~150ms) despite a 10s control-plane ctx budget", elapsed)
+	}
+}
+
+// TestContainerExecutor_WriteFile_MkdirTimeout is the S2 regression for the
+// specific bug: execInContainer's timeout parameter was named `_` and
+// silently dropped, so WriteFile's "mkdir -p" call — which passes its own
+// 10s budget — actually ran under whatever deadline the caller's ctx
+// happened to carry (often none). With no caller deadline
+// (context.Background()) and a wedged daemon, this used to hang forever;
+// now containerMkdirTimeout (shrunk here for test speed) bounds it and the
+// error classifies via ErrTimeout.
+func TestContainerExecutor_WriteFile_MkdirTimeout(t *testing.T) {
+	withShortTimeout(t, &containerMkdirTimeout, 150*time.Millisecond)
+
+	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			// mkdir -p's exec-create call itself succeeds fast; only the
+			// stream never responds, matching a daemon wedged mid-command.
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "mkdir-exec-hang"})
+		},
+		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+		},
+	})
+	defer cleanup()
+
+	start := time.Now()
+	// No deadline at all on the caller's ctx — this is the exact gap S2
+	// closes: previously only execInContainer's ignored parameter stood
+	// between this call and an indefinite hang.
+	err := exec.WriteFile(context.Background(), "sub/dir/test.txt", "file content")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected an error from a daemon wedged mid-mkdir")
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("WriteFile took %v with no caller-supplied deadline, want bounded by containerMkdirTimeout (~150ms)", elapsed)
+	}
+}
+
+// TestContainerExecutor_Exec_SlowStreamNotKilledByControlPlaneTimeout
+// verifies the call-class distinction: a legitimate command whose output
+// trickles in past the (shrunk) control-plane window, but well within its
+// own configured command timeout, must complete successfully rather than
+// being killed by a blanket short timeout leaking into the streaming path.
+func TestContainerExecutor_Exec_SlowStreamNotKilledByControlPlaneTimeout(t *testing.T) {
+	withShortTimeout(t, &containerControlPlaneTimeout, 100*time.Millisecond)
+
+	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-slow-stream"})
+		},
+		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			writeDockerFrame(w, 1, []byte("part1\n"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			// Sleep past containerControlPlaneTimeout (100ms) but well
+			// within the command's own 2s timeout. startExec deliberately
+			// does not apply the control-plane window (see
+			// container_api.go), so this trickle must survive.
+			time.Sleep(300 * time.Millisecond)
+			writeDockerFrame(w, 1, []byte("part2\n"))
+		},
+		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
+		},
+	})
+	defer cleanup()
+
+	result, err := exec.Exec(context.Background(), "slow but legitimate command", 2*time.Second)
+	if err != nil {
+		t.Fatalf("Exec: %v, want the slow-but-legitimate stream to complete without error", err)
+	}
+	if !strings.Contains(result.Stdout, "part1") || !strings.Contains(result.Stdout, "part2") {
+		t.Errorf("stdout = %q, want both part1 and part2 (stream must survive the control-plane window elapsing mid-read)", result.Stdout)
+	}
+}
+
 func TestContainerExecutor_ListDirectory(t *testing.T) {
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
