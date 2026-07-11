@@ -88,18 +88,26 @@ end-to-end against LM Studio. The operationally relevant behaviours:
 - **Set `temperature` to 0.6.** Qwen recommends 0.6 for thinking-mode
   coding and warns against greedy decoding (`temperature: 0`), which can
   trigger repetition. The harness default is 0.1; the example raises it.
-- **Raise the LM Studio context window, and keep `contextStrategy.maxTokens`
-  above the response reserve.** LM Studio loads models with a
-  conservative context window that is usually far below the model's
-  native ceiling. The harness reserves a fixed 64k tokens for the
-  response, so `contextStrategy.maxTokens` must comfortably exceed 64k —
-  set below it and the sliding window has negative room for the prompt,
-  truncates to the last two messages every turn, and the model returns a
-  malformed turn that surfaces as an `empty stop reason` error. Set
-  `contextStrategy.maxTokens` above 64k (the example uses 131072) and
-  configure the LM Studio context window to hold at least that much.
-  Small-context local deployments (≤64k) are a known limitation: the
-  fixed 64k reserve leaves them no usable prompt budget.
+- **`contextStrategy.maxTokens` scales its response reserve to fit
+  small windows.** LM Studio loads models with a conservative context
+  window that is usually far below the model's native ceiling. Above
+  64k, the harness reserves a flat 64k tokens for the response, same as
+  always. At or below 64k, the reserve scales down to a quarter of
+  `contextStrategy.maxTokens` instead of staying flat — a fixed 64k
+  reserve on a small window used to leave negative room for the prompt,
+  truncating to the last two messages every turn and surfacing as an
+  `empty stop reason` error; the scaled reserve keeps a real, usable
+  prompt budget regardless of window size. The harness logs a WARN and
+  emits a transport `warning` event on the run's first turn whenever
+  this scaling kicks in, naming the configured `maxTokens` and the
+  resulting reserve, so a run against an unexpectedly small LM Studio
+  window is diagnosable rather than silent. Setting
+  `contextStrategy.maxTokens` well above 64k (the example uses 131072)
+  and configuring the LM Studio context window to hold at least that
+  much remains the best choice when the model's native context
+  supports it — a larger prompt budget is strictly more useful than a
+  scaled-down one — but is no longer required for small-context local
+  deployments to work.
 - **Vendor-prefixed model ids.** LM Studio serves some models under
   `vendor/model` ids (e.g. `qwen/qwen3.6-27b`). The quirks registry
   advertises the openai-compatible tool surface for one level of prefix,
