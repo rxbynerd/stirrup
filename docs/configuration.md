@@ -657,9 +657,11 @@ hooks run serially inside the same budget as the rest of the run, so
 this usually still succeeds but is very likely to blow the timeout.
 
 Credentials never belong in a hook `command` — `command` is operator
-config recorded verbatim in the trace, the same treatment
-`verifier.command` gets, so a `secret://` reference there would defeat
-the `SecretStore` contract. `ValidateRunConfig` rejects it structurally.
+config recorded in the trace, the same treatment `verifier.command`
+gets, so a `secret://` reference there would defeat the `SecretStore`
+contract. `ValidateRunConfig` rejects it structurally
+(case-insensitively), and the trace emitter also scrubs `command` for
+secret-shaped substrings before persistence as defence-in-depth.
 Resolve clone/deploy credentials via control-plane runtime bindings
 instead.
 

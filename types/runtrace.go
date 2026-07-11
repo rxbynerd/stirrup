@@ -58,6 +58,12 @@ type RunTrace struct {
 // Truncated reports whether the persisted (scrubbed) output exceeded the
 // 4KB tail cap; truncation keeps the tail (not the head) because a
 // failing command's most useful diagnostic is usually printed last.
+//
+// Command is also scrubbed (security.Scrub) by the trace emitter before
+// persistence, as defence-in-depth alongside ValidateRunConfig's
+// structural, case-insensitive rejection of a "secret://" reference in
+// a hook command — the trace must not depend solely on that guard being
+// airtight.
 type HookExecution struct {
 	Phase            string `json:"phase"` // "preRun" | "postRun"
 	Index            int    `json:"index"`

@@ -189,18 +189,22 @@ func (e *JSONLTraceEmitter) RecordPermissionDenial() {
 
 // RecordHookExecution appends a lifecycle hook result (issue #461) to
 // the in-memory accumulator AND streams an inline hook_record event,
-// mirroring RecordToolCall's tool_call_record. OutputTail and Error are
-// re-scrubbed here as defence-in-depth — the same posture RecordTurnRecord
-// applies to tool output — even though hook.ExecRunner already scrubs
-// OutputTail before returning the types.HookExecution; Command is
-// operator config (like VerifierConfig.Command) and is deliberately not
-// scrubbed, matching ValidateRunConfig's structural rejection of
-// "secret://" in a hook command.
+// mirroring RecordToolCall's tool_call_record. OutputTail, Error, and
+// Command are all re-scrubbed here as defence-in-depth — the same
+// posture RecordTurnRecord applies to tool output — even though
+// hook.ExecRunner already scrubs OutputTail before returning the
+// types.HookExecution and ValidateRunConfig structurally rejects a
+// "secret://" reference in Command before a hook is ever allowed to
+// run. Command is scrubbed too rather than trusted verbatim: the
+// persisted trace must not depend on that upstream guard being
+// airtight (e.g. a RunConfig assembled without going through
+// validation).
 func (e *JSONLTraceEmitter) RecordHookExecution(exec types.HookExecution) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	scrubbed := exec
+	scrubbed.Command = security.Scrub(exec.Command)
 	scrubbed.OutputTail = security.Scrub(exec.OutputTail)
 	scrubbed.Error = security.Scrub(exec.Error)
 
