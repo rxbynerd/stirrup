@@ -452,6 +452,25 @@ stdout. The default JSONL trace writes to a file (or to nothing when
 `STIRRUP_RESULT` line. A future JSONL emitter that writes to stdout
 would conflict with `--output=json`.
 
+### Workspace export
+
+At end-of-run the executor's workspace can be tarred, gzipped, and
+uploaded to a GCS URI — the result-collection surface for serverless
+targets with no persistent filesystem (see
+[`cloud-run-jobs.md`](cloud-run-jobs.md#shape-b-workspace-tarball-from-gcs)
+for the operator walkthrough).
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is supported in v1. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
+| `--export-workspace-required` | `false` | When set, a failed workspace export exits the run non-zero — suitable for jobs whose downstream automation depends on the artifact. When unset (default), upload failures are logged and the run's exit code is unchanged. CLI-behaviour flag only: it does not round-trip through `RunConfig`. |
+
+The export runs even when the run itself failed, so the workspace
+state stays inspectable after a non-zero exit. Uploads authenticate
+via the `gcp-workload-identity` credential source — the GCE/GKE
+metadata server that Cloud Run, GKE Workload Identity, and plain GCE
+VMs expose. There is no credential override for the exporter in v1.
+
 ### Dry-run
 
 The preflight flags. See [Dry-run preflight](#dry-run-preflight) for the
