@@ -348,6 +348,46 @@ func TestBuildEditStrategy_CustomFuzzyThreshold(t *testing.T) {
 	}
 }
 
+// TestBuildEditStrategy_OutOfRangeFuzzyThresholdClamped exercises the
+// defence-in-depth guard for callers that construct a RunConfig without
+// going through types.ValidateRunConfig (which otherwise rejects a
+// fuzzyThreshold <= 0). Before the guard, a zero-or-negative threshold
+// reached edit.NewUdiffStrategy unclamped and panicked on the first hunk
+// with no fuzzy match (harness/internal/edit/udiff.go's findFuzzyMatch
+// sentinel bestPos=-1 passed an unguarded `bestSim >= threshold` check and
+// then indexed a slice at -1). This drives Apply end-to-end with a diff
+// that cannot match anywhere in the file, so it would panic if the guard
+// were removed.
+func TestBuildEditStrategy_OutOfRangeFuzzyThresholdClamped(t *testing.T) {
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalExecutor: %v", err)
+	}
+	if err := exec.WriteFile(context.Background(), "file.txt", "aaaa\nbbbb\ncccc\n"); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	badThreshold := 0.0
+	es := buildEditStrategy(types.EditStrategyConfig{Type: "udiff", FuzzyThreshold: &badThreshold})
+
+	diff := "--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-zzzz\n+yyyy\n"
+	input, marshalErr := json.Marshal(struct {
+		Path string `json:"path"`
+		Diff string `json:"diff"`
+	}{Path: "file.txt", Diff: diff})
+	if marshalErr != nil {
+		t.Fatalf("marshal input: %v", marshalErr)
+	}
+
+	result, err := es.Apply(context.Background(), input, exec)
+	if err != nil {
+		t.Fatalf("Apply returned error (want a clean no-match result, not a panic-adjacent error): %v", err)
+	}
+	if result.Applied {
+		t.Fatalf("expected Applied=false (diff cannot match aaaa/bbbb/cccc), got Applied=true")
+	}
+}
+
 func TestBuildEditStrategy_UnknownFallsBack(t *testing.T) {
 	es := buildEditStrategy(types.EditStrategyConfig{Type: "nonexistent"})
 	if _, ok := es.(*edit.MultiStrategy); !ok {
