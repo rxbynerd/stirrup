@@ -42,11 +42,14 @@ type JSONLTraceEmitter struct {
 	// canonical RunTrace (token totals, tool call summaries, outcome)
 	// for the in-process caller (harness factory, eval runner) that
 	// reads it directly without re-parsing the file.
-	turns             []types.TurnTrace
-	toolCalls         []types.ToolCallTrace
-	permissionDenials int
-	hookResults       []types.HookExecution
+	turns              []types.TurnTrace
+	toolCalls          []types.ToolCallTrace
+	permissionDenials  int
+	hookResults        []types.HookExecution
+	finalAssistantText string
 }
+
+var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
@@ -93,6 +96,7 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.toolCalls = nil
 	e.permissionDenials = 0
 	e.hookResults = nil
+	e.finalAssistantText = ""
 
 	startedAt := e.startedAt
 	var redacted types.RunConfig
@@ -213,6 +217,15 @@ func (e *JSONLTraceEmitter) RecordHookExecution(exec types.HookExecution) {
 	_ = e.writeLineLocked(ev)
 }
 
+// RecordFinalAssistantText stores the run's final assistant text so the
+// run_finished event's embedded RunTrace carries it. The loop forwards a
+// value already scrubbed and gated by the PhasePostTurn guard.
+func (e *JSONLTraceEmitter) RecordFinalAssistantText(text string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.finalAssistantText = text
+}
+
 // Finish builds the canonical RunTrace summary, writes the
 // run_finished event, and returns the summary. A run with zero turns
 // still produces a valid run_finished line.
@@ -239,16 +252,17 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 	}
 
 	trace := &types.RunTrace{
-		ID:                e.runID,
-		Config:            redactedConfig,
-		StartedAt:         e.startedAt,
-		CompletedAt:       now,
-		Turns:             len(e.turns),
-		TokenUsage:        totalTokens,
-		ToolCalls:         summaries,
-		PermissionDenials: e.permissionDenials,
-		Outcome:           outcome,
-		HookResults:       e.hookResults,
+		ID:                 e.runID,
+		Config:             redactedConfig,
+		StartedAt:          e.startedAt,
+		CompletedAt:        now,
+		Turns:              len(e.turns),
+		TokenUsage:         totalTokens,
+		ToolCalls:          summaries,
+		PermissionDenials:  e.permissionDenials,
+		Outcome:            outcome,
+		FinalAssistantText: e.finalAssistantText,
+		HookResults:        e.hookResults,
 	}
 
 	ev := Event{

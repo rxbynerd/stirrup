@@ -38,6 +38,11 @@ type RunTrace struct {
 	// an otherwise-successful run (it never overrides a non-success outcome —
 	// the primary failure cause stays authoritative).
 	Outcome string `json:"outcome"`
+	// FinalAssistantText is the loop's last non-empty assistant text,
+	// concatenated across the text blocks of the final response and carried
+	// through to RunResult.FinalAssistantText. Omitted when the run produced
+	// no assistant turn (e.g. an early validation failure before any turn).
+	FinalAssistantText string `json:"finalAssistantText,omitempty"`
 	// HookResults carries every lifecycle hook execution recorded during
 	// the run (issue #461), across both phases, in dispatch order. Empty
 	// when no hooks were configured. Populated by trace emitters that

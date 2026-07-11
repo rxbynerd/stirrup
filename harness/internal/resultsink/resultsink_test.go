@@ -57,6 +57,49 @@ func TestStdoutJSONSink_EmitsSentinelAndJSON(t *testing.T) {
 	}
 }
 
+// TestStdoutJSONSink_FinalAssistantText pins the wire behaviour of the
+// run's last assistant text through the sink: a populated value both
+// appears in the emitted JSON and round-trips on decode, while an empty
+// value is dropped entirely by the omitempty tag so a run with no
+// assistant text emits no finalAssistantText key.
+func TestStdoutJSONSink_FinalAssistantText(t *testing.T) {
+	cases := []struct {
+		name    string
+		text    string
+		wantKey bool
+	}{
+		{"populated", "the answer is 42", true},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			sink := NewStdoutJSONSinkTo(&buf)
+			res := types.RunResult{
+				SchemaVersion:      1,
+				RunID:              "run-fat",
+				Outcome:            "success",
+				FinalAssistantText: tc.text,
+			}
+			if err := sink.Emit(context.Background(), res); err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(buf.String(), StdoutResultSentinel))
+			hasKey := strings.Contains(payload, "finalAssistantText")
+			if hasKey != tc.wantKey {
+				t.Errorf("finalAssistantText key present = %v, want %v\npayload=%q", hasKey, tc.wantKey, payload)
+			}
+			var decoded types.RunResult
+			if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+				t.Fatalf("unmarshal payload: %v\npayload=%q", err, payload)
+			}
+			if decoded.FinalAssistantText != tc.text {
+				t.Errorf("decoded FinalAssistantText = %q, want %q", decoded.FinalAssistantText, tc.text)
+			}
+		})
+	}
+}
+
 func TestNoneSink_NoOp(t *testing.T) {
 	sink := NoneSink{}
 	if err := sink.Emit(context.Background(), types.RunResult{}); err != nil {

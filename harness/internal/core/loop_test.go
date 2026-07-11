@@ -20,6 +20,7 @@ import (
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
+	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
@@ -284,6 +285,286 @@ func TestLoop_MaxTurns(t *testing.T) {
 
 	if runTrace.Outcome != "max_turns" {
 		t.Errorf("expected outcome 'max_turns', got %q", runTrace.Outcome)
+	}
+}
+
+// TestLoop_FinalAssistantText_Populated pins the happy path: a run whose
+// final assistant turn carries text lands that text on
+// RunTrace.FinalAssistantText, from where buildRunResult maps it onto the
+// RunResult the resultSink emits.
+func TestLoop_FinalAssistantText_Populated(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "The answer "},
+			{Type: "text_delta", Text: "is 42."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+
+	loop := buildTestLoop(prov)
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("expected outcome 'success', got %q", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != "The answer is 42." {
+		t.Errorf("FinalAssistantText = %q, want %q", runTrace.FinalAssistantText, "The answer is 42.")
+	}
+}
+
+// TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns pins that the loop
+// captures the last non-empty assistant text across every turn: a
+// tool-use turn (text, then a tool call) followed by a final text turn
+// leaves the final turn's text on the trace.
+func TestLoop_FinalAssistantText_LastNonEmptyAcrossTurns(t *testing.T) {
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "text_delta", Text: "Let me check."},
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "All done."},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("expected outcome 'success', got %q", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != "All done." {
+		t.Errorf("FinalAssistantText = %q, want %q", runTrace.FinalAssistantText, "All done.")
+	}
+}
+
+// TestLoop_FinalAssistantText_EmptyWhenNoText pins the omit path: a run
+// that never produces an assistant text block (here, hitting max_turns
+// with tool-only turns) leaves FinalAssistantText empty so the omitempty
+// tag drops it from the emitted RunResult.
+func TestLoop_FinalAssistantText_EmptyWhenNoText(t *testing.T) {
+	prov := &infiniteToolCallProvider{}
+
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	config := buildTestConfig()
+	config.MaxTurns = 3
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "max_turns" {
+		t.Fatalf("expected outcome 'max_turns', got %q", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != "" {
+		t.Errorf("FinalAssistantText = %q, want empty", runTrace.FinalAssistantText)
+	}
+}
+
+// TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText pins
+// the guard-ordering invariant: when the PhasePostTurn guard denies a
+// turn's final text, that denied text must not appear on
+// RunTrace.FinalAssistantText. With no prior approved turn the field is
+// empty — never the just-denied content, which would otherwise flow out
+// the resultSink and bypass the guard's "do not forward" decision.
+func TestLoop_FinalAssistantText_GuardrailBlockedDoesNotLeakDeniedText(t *testing.T) {
+	const deniedText = "The secret is ghp_shouldnotleak and here it is."
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: deniedText},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	loop := buildTestLoop(prov)
+	loop.GuardRail = &phaseAwareFakeGuard{
+		verdicts: map[guard.Phase]guard.Verdict{
+			guard.PhasePreTurn:  guard.VerdictAllow,
+			guard.PhasePostTurn: guard.VerdictDeny,
+		},
+	}
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "guardrail_blocked" {
+		t.Fatalf("outcome = %q, want guardrail_blocked", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != "" {
+		t.Errorf("FinalAssistantText = %q, want empty (denied turn's text must not leak)", runTrace.FinalAssistantText)
+	}
+}
+
+// TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText is
+// the two-turn variant of the guard-ordering invariant: turn 0 produces
+// text alongside a tool call (no PostTurn guard on a tool_use turn), turn
+// 1 produces a final answer the PostTurn guard denies. The run must
+// surface turn 0's prior, non-denied text — not turn 1's denied answer.
+func TestLoop_FinalAssistantText_GuardrailBlockedReturnsPriorApprovedText(t *testing.T) {
+	const priorText = "Prior non-denied answer."
+	const deniedText = "Denied final answer."
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "text_delta", Text: priorText},
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: deniedText},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.GuardRail = &phaseAwareFakeGuard{
+		verdicts: map[guard.Phase]guard.Verdict{
+			guard.PhasePreTurn:  guard.VerdictAllow,
+			guard.PhasePreTool:  guard.VerdictAllow,
+			guard.PhasePostTurn: guard.VerdictDeny,
+		},
+	}
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "guardrail_blocked" {
+		t.Fatalf("outcome = %q, want guardrail_blocked", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != priorText {
+		t.Errorf("FinalAssistantText = %q, want %q (prior non-denied turn's text)", runTrace.FinalAssistantText, priorText)
+	}
+	if strings.Contains(runTrace.FinalAssistantText, deniedText) {
+		t.Errorf("FinalAssistantText leaked denied turn's text: %q", runTrace.FinalAssistantText)
+	}
+}
+
+// TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn pins the
+// `if finalText != ""` protective path: a text-bearing tool_use turn
+// followed by a terminal turn carrying no text blocks must not blank out
+// the earlier turn's text. Distinct from LastNonEmptyAcrossTurns, which
+// covers a later non-empty turn overwriting an earlier one.
+func TestLoop_FinalAssistantText_NotClobberedByEmptyLaterTurn(t *testing.T) {
+	const text0 = "Here is the result."
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "text_delta", Text: text0},
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				// Terminal turn with no text blocks.
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if runTrace.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success", runTrace.Outcome)
+	}
+	if runTrace.FinalAssistantText != text0 {
+		t.Errorf("FinalAssistantText = %q, want %q (earlier text retained across empty end_turn)", runTrace.FinalAssistantText, text0)
+	}
+}
+
+// TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace proves the field
+// reaches the persisted trace, not merely the returned struct: it re-parses
+// the JSONL emitter's buffer and asserts the serialized run_finished event's
+// embedded RunTrace carries finalAssistantText.
+func TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace(t *testing.T) {
+	const answer = "The persisted answer."
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: answer},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	var buf bytes.Buffer
+	loop := buildTestLoop(prov)
+	loop.Trace = trace.NewJSONLTraceEmitter(&buf)
+	config := buildTestConfig()
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	var found bool
+	for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var ev trace.Event
+		if err := json.Unmarshal(line, &ev); err != nil {
+			t.Fatalf("unmarshal trace line: %v", err)
+		}
+		if ev.Kind != trace.EventKindRunFinished {
+			continue
+		}
+		found = true
+		if ev.Trace == nil {
+			t.Fatal("run_finished event carries nil Trace")
+		}
+		if ev.Trace.FinalAssistantText != answer {
+			t.Errorf("persisted FinalAssistantText = %q, want %q", ev.Trace.FinalAssistantText, answer)
+		}
+	}
+	if !found {
+		t.Fatal("no run_finished event found in JSONL output")
+	}
+}
+
+// TestLoop_FinalAssistantText_ScrubbedBeforePersist pins that the final
+// assistant text is passed through security.Scrub before it reaches the
+// trace/resultSink: a secret-shaped substring the PhasePostTurn guard
+// (a sensitivity classifier, not a deterministic redactor) let through
+// must be redacted.
+func TestLoop_FinalAssistantText_ScrubbedBeforePersist(t *testing.T) {
+	// ghp_ GitHub PAT shape is a known deterministic scrub pattern.
+	const secret = "ghp_0123456789abcdefghijABCDEFGHIJ0123"
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "Your token is " + secret + " keep it safe."},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	loop := buildTestLoop(prov)
+	config := buildTestConfig()
+
+	runTrace, err := loop.Run(context.Background(), config)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if strings.Contains(runTrace.FinalAssistantText, secret) || strings.Contains(runTrace.FinalAssistantText, "ghp_") {
+		t.Errorf("FinalAssistantText leaked raw secret: %q", runTrace.FinalAssistantText)
+	}
+	if !strings.Contains(runTrace.FinalAssistantText, "[REDACTED]") {
+		t.Errorf("FinalAssistantText = %q, want scrubbed [REDACTED] marker", runTrace.FinalAssistantText)
 	}
 }
 

@@ -136,12 +136,6 @@ func hookSummaryCounts(results []types.HookExecution) (ran, failed int) {
 // completed RunTrace. The mapping is straightforward; see
 // types/result.go for the schema's stability rules.
 //
-// FinalAssistantText is left empty for v1: the loop computes it (see
-// loop.go::lastAssistantText) but does not thread it onto RunTrace, and
-// the brief is explicit about keeping schema additions to Chunk A.
-// TODO(#164): expose the loop's last assistant text so the resultSink
-// can carry the run's *answer* as well as its bookkeeping.
-//
 // VerifierVerdict is populated from the most recent VerificationResult
 // when one exists. Treating an empty Feedback string as "no verifier
 // ran" would conflate "verifier passed silently" with "verifier was
@@ -160,12 +154,13 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 		return types.RunResult{SchemaVersion: 1, Outcome: "internal-error"}
 	}
 	res := types.RunResult{
-		SchemaVersion: 1,
-		RunID:         rt.ID,
-		Outcome:       rt.Outcome,
-		Turns:         rt.Turns,
-		TokenUsage:    rt.TokenUsage,
-		DurationMs:    rt.CompletedAt.Sub(rt.StartedAt).Milliseconds(),
+		SchemaVersion:      1,
+		RunID:              rt.ID,
+		Outcome:            rt.Outcome,
+		Turns:              rt.Turns,
+		TokenUsage:         rt.TokenUsage,
+		DurationMs:         rt.CompletedAt.Sub(rt.StartedAt).Milliseconds(),
+		FinalAssistantText: rt.FinalAssistantText,
 	}
 	if n := len(rt.VerificationResults); n > 0 {
 		last := rt.VerificationResults[n-1]
