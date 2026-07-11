@@ -69,6 +69,15 @@ const (
 	genAIToolCallIDKey        = "gen_ai.tool.call.id"
 	genAIToolCallArgumentsKey = "gen_ai.tool.call.arguments"
 	genAIToolCallResultKey    = "gen_ai.tool.call.result"
+
+	// Prompt-resolution attributes (#492), stirrup-specific (no GenAI
+	// counterpart). prompt.model is the model identity the system prompt
+	// templates rendered against — it differs from gen_ai.request.model
+	// when promptBuilder.promptModel pins a different prompt for a
+	// comparison run. prompt.tier is the guidance tier that identity
+	// selected ("frontier", "open-weight", or "default").
+	promptModelKey = "prompt.model"
+	promptTierKey  = "prompt.tier"
 )
 
 // genAIProviderName maps stirrup provider type strings to the OTel GenAI
@@ -174,6 +183,7 @@ type OTelTraceEmitter struct {
 var (
 	_ TraceEmitter               = (*OTelTraceEmitter)(nil)
 	_ SystemInstructionsRecorder = (*OTelTraceEmitter)(nil)
+	_ PromptResolutionRecorder   = (*OTelTraceEmitter)(nil)
 	_ FinalAssistantTextRecorder = (*OTelTraceEmitter)(nil)
 )
 
@@ -711,6 +721,23 @@ func (e *OTelTraceEmitter) RecordSystemInstructions(system string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.systemInstructionsJSON = genAISystemInstructionsJSON(security.Scrub(system))
+}
+
+// RecordPromptResolution sets the resolved prompt model and tier on the
+// root span (#492). Always-on, unlike RecordSystemInstructions: the
+// values are config metadata, not message content, and a prompt/model
+// comparison run (promptBuilder.promptModel differing from the wire
+// model) must be attributable from its trace alone.
+func (e *OTelTraceEmitter) RecordPromptResolution(model, tier string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.rootSpan == nil || !e.rootSpan.SpanContext().IsValid() {
+		return
+	}
+	e.rootSpan.SetAttributes(
+		attribute.String(promptModelKey, model),
+		attribute.String(promptTierKey, tier),
+	)
 }
 
 // RecordFinalAssistantText stores the run's final assistant text so the
