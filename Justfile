@@ -7,6 +7,13 @@ build:
 test:
     go test ./harness/... ./types/... ./eval/...
 
+# Race-detector pass over the goroutine-heavy packages (executor —
+# which includes egressproxy — provider, and core). CI runs this in
+# the Verify job; the full ./... sweep under -race is much slower, so
+# the recipe targets the packages where concurrency bugs actually live.
+test-race:
+    go test -race ./harness/internal/executor/... ./harness/internal/provider/... ./harness/internal/core/...
+
 lint:
     golangci-lint run ./harness/... ./types/... ./eval/...
 

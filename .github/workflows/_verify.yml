@@ -73,6 +73,15 @@ jobs:
         working-directory: eval
         run: go test ./...
 
+      # Race-detector pass over the goroutine-heavy packages (executor
+      # — which includes egressproxy — provider, and core). Scoped
+      # rather than ./... because the full sweep under -race is much
+      # slower for little extra concurrency coverage; the targeted set
+      # adds only a few seconds. Keep the package list in sync with
+      # the `test-race` recipe in the justfile.
+      - name: Run race detector on concurrency-heavy packages
+        run: go test -race ./harness/internal/executor/... ./harness/internal/provider/... ./harness/internal/core/...
+
       - name: Build stirrup binary
         working-directory: harness
         env:
