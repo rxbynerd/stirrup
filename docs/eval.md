@@ -441,6 +441,7 @@ tree gains a `run_config.redacted.json` per task. See
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
 | `--concurrency`  | `1`              | Number of tasks executed in parallel. Workers preserve suite order in `result.json`. Values larger than the task count cap at `len(tasks)`. Concurrent invocations talking to the same provider hit rate limits faster — pick a value that respects your provider account's per-minute caps. |
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`) and emit a synthetic result. |
+| `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
 
 Exit code is `0` regardless of pass rate — use `compare` to gate CI.
 
@@ -617,15 +618,21 @@ the framework as a gating job:
 
 - **`verify`** — `go test` across `types/`, `harness/`, and `eval/`,
   plus binary builds. Runs on every push and PR.
-- **`eval-gate`** — depends on `verify`. On `main` pushes it builds
-  the binaries, runs every suite in `eval/suites/`, compares each
-  result to the matching baseline in `eval/baselines/` via
-  `eval compare`, and uploads the result JSON as a build artifact.
+- **`eval-gate`** — depends on `verify`. On every push it builds
+  the binaries, runs each suite in `eval/suites/` that has a
+  matching baseline in `eval/baselines/` (unbaselined suites are
+  opt-in local runs), pins the model to Claude Haiku 4.5 via
+  `stirrup-eval run --model`, compares each result to its baseline
+  via `eval compare`, and uploads the result JSON as a build
+  artifact.
 - **`publish-container`** — depends on `verify`. On `main` pushes it
   publishes the harness Docker image to `ghcr.io/rxbynerd/stirrup`.
 
-A non-zero exit from `compare` (regressions present) fails the gate
-and blocks the container publish.
+A non-zero exit from `compare` (regressions present) fails the gate.
+At release time, `release.yml::eval-extended` re-runs the baselined
+suites against stronger models (Claude Sonnet 5 and Claude Opus 4.8)
+as a non-blocking-but-visible matrix: a regression turns the matrix
+cell red without holding the release.
 
 ---
 

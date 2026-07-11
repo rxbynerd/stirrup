@@ -34,9 +34,12 @@
 //     --output eval/results/dogfood-seed
 //
 // CI: invoked automatically by `.github/workflows/ci.yml::eval-gate`
-// on every push to main. ANTHROPIC_API_KEY must be set as a repo
-// secret for the harness to actually run; absent the key, the
-// eval-gate skips this suite without failing.
+// on every push, pinned to a cheap model (Claude Haiku 4.5 via
+// `stirrup-eval run --model`), and by
+// `.github/workflows/release.yml::eval-extended` on every release
+// tag against stronger models (Sonnet 5, Opus 4.8). Both surfaces
+// authenticate via Anthropic WIF; absent a usable credential the
+// jobs skip the live run without failing. See eval/suites/README.md.
 
 suite "dogfood-seed" {
   description = "Hand-curated starter suite for the v0.1 eval-gate (#13). Replaces with mined output once the dogfood recording loop is established."

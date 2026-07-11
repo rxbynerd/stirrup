@@ -57,11 +57,12 @@ buf generate
 buf lint
 ```
 
-CI runs the equivalent of `just test` + a full build via the reusable
-`_verify.yml` workflow on every push, plus an `eval-gate` job (eval
-suites against committed baselines) and a container publish on every
-merge to `main`. A failing `compare` exit blocks the publish. See
-[`.github/workflows/`](.github/workflows/) for the full pipeline.
+CI runs the equivalent of `just test` + `just test-race` + a full
+build via the reusable `_verify.yml` workflow on every push, plus an
+`eval-gate` job (baselined eval suites against committed baselines,
+pinned to a cheap model) on every push and a container publish on
+every merge to `main`. A failing `compare` exit fails the eval gate.
+See [`.github/workflows/`](.github/workflows/) for the full pipeline.
 
 ### gopls false positives
 
@@ -130,8 +131,8 @@ PR.
 - Reference any related issue in the PR description (`refs #42`,
   `closes #62`).
 - Run `just lint` and `just test` locally before pushing. The
-  `eval-gate` job will catch behavioural regressions on `main`, but
-  catching them pre-merge is cheaper.
+  `eval-gate` job catches behavioural regressions on every push, but
+  catching them locally is cheaper.
 - Keep PRs focused. The exception is the safety-ring style multi-step
   PR that ships an opt-in feature in one go — those are fine but
   benefit from clear sub-task labels in commit subjects.
