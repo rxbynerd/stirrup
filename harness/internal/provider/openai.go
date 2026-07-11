@@ -45,6 +45,14 @@ const (
 	openaiDefaultBaseURL   = "https://api.openai.com/v1"
 	openaiMaxToolInputSize = 10 * 1024 * 1024 // 10 MB cap on streamed tool argument JSON
 
+	// maxSSEScannerBuffer caps the per-line buffer for the openai and
+	// anthropic SSE scanners (bufio.Scanner's default is 64 KB). A single
+	// SSE line can legitimately exceed that — large reasoning_content or a
+	// big write_file tool-call args blob, worst on the local-model path —
+	// and without this the scanner errors and aborts the turn. 16 MiB
+	// matches geminiMaxScannerBuffer's precedent in gemini.go.
+	maxSSEScannerBuffer = 16 * 1024 * 1024
+
 	// maxReplayFieldBytes bounds the per-stream ReplayFields capture
 	// accumulator across all paths — 512 kB is generous for any real
 	// chain-of-thought field. Without a cap, a malicious or
@@ -1434,6 +1442,7 @@ func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Res
 	}()
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), maxSSEScannerBuffer)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
