@@ -28,6 +28,22 @@ const (
 	// maxTokenBudget is the maximum allowed token budget.
 	maxTokenBudget = 50_000_000
 
+	// minContextStrategyMaxTokens is the smallest ContextStrategyConfig.MaxTokens
+	// ValidateRunConfig accepts once the field is set; 0 keeps its
+	// "unset, use the harness default window" meaning and validates
+	// cleanly regardless. harness/internal/core scales its response
+	// reserve down proportionally for small budgets (issue #444), so
+	// almost any positive maxTokens is numerically workable — this floor
+	// exists only to reject values so small that no split of the budget
+	// could hold a system prompt, a tool definition list, and a single
+	// message. It is deliberately far below the old, since-removed hard
+	// floor of 64000 (the harness's flat response reserve): rejecting
+	// every maxTokens at or under that constant is the exact footgun
+	// #444 reports for small-context local models. It is also kept
+	// below the 1000-token fixtures used by existing config-plumbing
+	// tests that are not exercising real runs.
+	minContextStrategyMaxTokens = 512
+
 	// maxTemperature is the upper bound on RunConfig.Temperature.
 	// Chosen as the union of provider-side ranges: Anthropic accepts
 	// [0, 1], OpenAI and Gemini accept [0, 2]. Values inside the union
@@ -2086,6 +2102,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateOptionalType("modelRouter", config.ModelRouter.Type, validModelRouterTypes, &errs)
 	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
 	validateOptionalType("contextStrategy", config.ContextStrategy.Type, validContextStrategyTypes, &errs)
+	validateContextStrategyBudget(config.ContextStrategy, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
 	validateExecutorRegistryAllowlist(config.Executor, &errs)
 	validateExecutorRuntime(config.Executor, &errs)
@@ -2218,6 +2235,23 @@ func validateOptionalType(name, value string, valid map[string]bool, errs *[]str
 	}
 	if !valid[value] {
 		*errs = append(*errs, fmt.Sprintf("unsupported %s type %q", name, value))
+	}
+}
+
+// validateContextStrategyBudget rejects a ContextStrategyConfig.MaxTokens
+// value that cannot possibly work, while leaving every other positive
+// value — however small — to run: see minContextStrategyMaxTokens for
+// why a low floor, not a high one, is the correct fix for #444. Negative
+// values are always rejected; MaxTokens has no meaning below zero and
+// silently treating it as "unset" would mask a caller bug.
+func validateContextStrategyBudget(cfg ContextStrategyConfig, errs *[]string) {
+	switch {
+	case cfg.MaxTokens < 0:
+		*errs = append(*errs, fmt.Sprintf("contextStrategy.maxTokens must be >= 0, got %d", cfg.MaxTokens))
+	case cfg.MaxTokens > 0 && cfg.MaxTokens < minContextStrategyMaxTokens:
+		*errs = append(*errs, fmt.Sprintf(
+			"contextStrategy.maxTokens must be 0 (use the default context window) or >= %d, got %d",
+			minContextStrategyMaxTokens, cfg.MaxTokens))
 	}
 }
 

@@ -820,6 +820,48 @@ func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_ContextStrategyMaxTokens is the regression test
+// for #444: a hard floor at the harness's old flat response reserve
+// (64000) would reject exactly the small-context local-model configs
+// the issue is about, so the accepted range is deliberately wide —
+// only structurally-impossible budgets (negative, or too small to hold
+// a system prompt and a single message under any split) are rejected.
+func TestValidateRunConfig_ContextStrategyMaxTokens(t *testing.T) {
+	tests := []struct {
+		name      string
+		maxTokens int
+		wantErr   bool
+	}{
+		{"unset uses default window", 0, false},
+		{"negative rejected", -1, true},
+		{"one token rejected", 1, true},
+		{"just below floor rejected", minContextStrategyMaxTokens - 1, true},
+		{"floor boundary accepted", minContextStrategyMaxTokens, false},
+		// Matches the fixture value used by several harness/cmd/stirrup/cmd
+		// config-plumbing tests that are not exercising a real run — must
+		// stay accepted so this validation does not regress them.
+		{"small-context fixture value accepted", 1000, false},
+		{"small local-model window accepted", 32768, false},
+		{"default window accepted", 200000, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validConfig()
+			c.ContextStrategy = ContextStrategyConfig{Type: "sliding-window", MaxTokens: tt.maxTokens}
+			err := ValidateRunConfig(c)
+			if tt.wantErr && err == nil {
+				t.Fatalf("ValidateRunConfig(maxTokens=%d) = nil, want error", tt.maxTokens)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateRunConfig(maxTokens=%d) = %v, want nil", tt.maxTokens, err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "contextStrategy.maxTokens") {
+				t.Errorf("expected error to mention contextStrategy.maxTokens, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_TemperatureBounds(t *testing.T) {
 	// Out-of-range: negative.
 	c := validConfig()
