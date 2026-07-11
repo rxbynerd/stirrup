@@ -179,7 +179,7 @@ func TestHarnessCmd_BatchFlagHelpText(t *testing.T) {
 		"24h latency",
 		"transport=grpc",
 		"harnessSidePolling=true",
-		"docs/sandbox.md",
+		"docs/batch.md",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(usage, want) {

@@ -101,7 +101,7 @@ active and Rule of Two is enforced.
   //   - `allowInteractiveModes` opts in to batch with
   //     `mode: "planning"` / `mode: "review"`; `mode: "execution"`
   //     always rejects batch regardless of this flag.
-  // The full operator walkthrough lands in docs/sandbox.md (phase 3).
+  // The full operator walkthrough is docs/batch.md.
   // Batch on a named providers map entry is a hard error in v1; only
   // the top-level provider's batch block is consulted.
   "provider": {
