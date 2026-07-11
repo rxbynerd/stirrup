@@ -382,13 +382,13 @@ The exchange audience is set on the `tokenSource` (canonically
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--executor` | `local` | One of `local`, `container`, `k8s`, `api`. |
-| `--container-runtime` | (none) | Per-`executor` closed set. For `container` (host OCI runtime): `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`, `kata-clh` — must be registered with the host Docker/Podman daemon. For `k8s` (Pod `RuntimeClassName`): `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh` — note the name is `gvisor`, not `runsc`. Empty = engine default for `container`, cluster-default RuntimeClass for `k8s`. |
-| `--k8s-namespace` | (none) | Namespace for the `k8s` executor's sandbox Pod. Required when `--executor=k8s`. JSON path: `executor.k8sNamespace`. |
-| `--k8s-kubeconfig` | (none) | Path to a kubeconfig for the `k8s` executor. An explicit value wins even in-cluster; empty prefers in-cluster config, then `$KUBECONFIG`. JSON path: `executor.k8sKubeconfig`. |
-| `--k8s-node-selector` | (none) | Repeatable `key=value` `nodeSelector` constraining where the `k8s` Pod schedules (e.g. `--k8s-node-selector disktype=ssd`). JSON path: `executor.k8sNodeSelector`. |
-| `--k8s-service-account` | (none) | ServiceAccount name for the `k8s` Pod. Empty uses the namespace `default`. The token is never automounted regardless. JSON path: `executor.k8sServiceAccount`. |
-| `--k8s-egress-proxy-url` | (none) | URL the `k8s` sandbox Pod routes `HTTP_PROXY`/`HTTPS_PROXY` through. Required when `--executor=k8s` and the network mode is `allowlist`; rejected otherwise. JSON path: `executor.k8sEgressProxyUrl`. |
+| `--executor` | `local` | One of `local`, `container`, `k8s`, `k8s-sandbox`, `api`. `k8s-sandbox` is the [Agent Sandbox CRD variant](executors/k8s-agent-sandbox.md) of `k8s`. |
+| `--container-runtime` | (none) | Per-`executor` closed set. For `container` (host OCI runtime): `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`, `kata-clh` — must be registered with the host Docker/Podman daemon. For `k8s` (Pod `RuntimeClassName`): `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh` — note the name is `gvisor`, not `runsc`. `k8s-sandbox` is gVisor-only: empty or `gvisor`, any other value is rejected. Empty = engine default for `container`, cluster-default RuntimeClass for `k8s`. |
+| `--k8s-namespace` | (none) | Namespace for the `k8s` / `k8s-sandbox` sandbox Pod. Required when `--executor=k8s` or `--executor=k8s-sandbox`. JSON path: `executor.k8sNamespace`. |
+| `--k8s-kubeconfig` | (none) | Path to a kubeconfig for the `k8s` / `k8s-sandbox` executors. An explicit value wins even in-cluster; empty prefers in-cluster config, then `$KUBECONFIG`. JSON path: `executor.k8sKubeconfig`. |
+| `--k8s-node-selector` | (none) | Repeatable `key=value` `nodeSelector` constraining where the `k8s` / `k8s-sandbox` Pod schedules (e.g. `--k8s-node-selector disktype=ssd`). JSON path: `executor.k8sNodeSelector`. |
+| `--k8s-service-account` | (none) | ServiceAccount name for the `k8s` / `k8s-sandbox` Pod. Empty uses the namespace `default`. The token is never automounted regardless. JSON path: `executor.k8sServiceAccount`. |
+| `--k8s-egress-proxy-url` | (none) | URL the `k8s` / `k8s-sandbox` Pod routes `HTTP_PROXY`/`HTTPS_PROXY` through. Required when the executor is `k8s` or `k8s-sandbox` and the network mode is `allowlist`; rejected otherwise. JSON path: `executor.k8sEgressProxyUrl`. |
 | `--edit-strategy` | `multi` | One of `whole-file`, `search-replace`, `udiff`, `multi`. `composite` is reachable only via `--config`. |
 | `--verifier` | `none` | One of `none`, `test-runner`, `llm-judge`. `composite` is reachable only via `--config`. |
 | `--git-strategy` | `none` | One of `none`, `deterministic`. |
@@ -398,7 +398,10 @@ The exchange audience is set on the `tokenSource` (canonically
 
 See also: [`docs/executors/k8s.md`](executors/k8s.md) for the `k8s`
 executor's architecture, deployment recipes, egress model, and the full
-`executor.k8s*` field reference.
+`executor.k8s*` field reference, and
+[`docs/executors/k8s-agent-sandbox.md`](executors/k8s-agent-sandbox.md)
+for the `k8s-sandbox` deltas (Sandbox CRD provisioning, gVisor-only
+runtime, RBAC).
 
 ### Transport
 

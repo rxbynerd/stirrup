@@ -76,7 +76,7 @@ post-mortem replays or pinning a stable configuration. See
 
 ### Executors
 
-The agent runs inside one of four executors, selected with
+The agent runs inside one of five executors, selected with
 `--executor` / `executor.type`:
 
 | Executor | Boundary | Notes |
@@ -84,13 +84,14 @@ The agent runs inside one of four executors, selected with
 | `local` | none (host process) | Trusted local iteration. |
 | `container` | a Docker/Podman container | Single-host sandbox with an in-process egress proxy. |
 | `k8s` | a Pod on a Kubernetes cluster | Pod-per-run with a hardened `securityContext`, per-tenant RuntimeClass, and `NetworkPolicy` egress. See [`docs/executors/k8s.md`](docs/executors/k8s.md). |
+| `k8s-sandbox` | a Pod provisioned via the Agent Sandbox CRD | Variant of `k8s`: the GKE Agent Sandbox controller creates the Pod from an `agents.x-k8s.io` `Sandbox` resource; gVisor-only. See [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md). |
 | `api` | no shell (VCS-backed, read-only) | Reviews/plans against a Git host without a workspace. |
 
 The relevant executor flags are:
 
 | Flag | Notes |
 |---|---|
-| `--executor` | `local` (default), `container`, `k8s`, or `api`. |
+| `--executor` | `local` (default), `container`, `k8s`, `k8s-sandbox`, or `api`. |
 | `--image` | Sandbox container image (`container` / `k8s`). |
 | `--container-runtime` | OCI runtime (`container`) or Pod `RuntimeClassName` (`k8s`): `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `runc`. |
 | `--k8s-namespace` | Namespace for the `k8s` sandbox Pod (required for `k8s`). |
@@ -144,6 +145,7 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 | CLI flags, `RunConfig` precedence, examples | [`docs/configuration.md`](docs/configuration.md) |
 | Production deployment via `stirrup job` (K8s, gRPC) | [`docs/deployment.md`](docs/deployment.md) |
 | Kubernetes executor (Pod-per-run sandbox) | [`docs/executors/k8s.md`](docs/executors/k8s.md) |
+| Kubernetes Agent Sandbox executor (`k8s-sandbox`) | [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md) |
 | Running stirrup as a Google Cloud Run job | [`docs/cloud-run-jobs.md`](docs/cloud-run-jobs.md) |
 | Five safety rings (operator guide) | [`docs/safety-rings.md`](docs/safety-rings.md) |
 | In-harness security foundations | [`docs/security.md`](docs/security.md) |
