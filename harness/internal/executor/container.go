@@ -498,12 +498,29 @@ func (e *ContainerExecutor) Exec(ctx context.Context, command string, timeout ti
 	result, err := e.execInContainer(ctx, []string{"sh", "-c", command}, e.workspace, timeout)
 	if err != nil {
 		if ctx.Err() != nil {
-			return &ExecResult{ExitCode: -1}, fmt.Errorf("command timed out after %s", timeout)
+			// execInContainer returns whatever it managed to capture before
+			// the ctx ended (nil only if the command never started, e.g. the
+			// exec create/start call itself was cut off) — preserve it
+			// rather than discarding the partial output an operator needs
+			// most when triaging a stalled command (#473).
+			if result == nil {
+				result = &ExecResult{}
+			}
+			result.ExitCode = -1
+			return e.truncateAndReport(command, result), classifyExecCtxErr(ctx, timeout)
 		}
 		return nil, err
 	}
 
-	// Truncate output.
+	return e.truncateAndReport(command, result), nil
+}
+
+// truncateAndReport caps result's stdout/stderr at maxOutputSize and, when a
+// SecurityEventEmitter is wired, reports OutputTruncated using the
+// pre-truncation combined size. Shared by the success and timeout/cancel
+// paths of Exec so partial output captured before a ctx ending is truncated
+// and reported identically to a clean run's output.
+func (e *ContainerExecutor) truncateAndReport(command string, result *ExecResult) *ExecResult {
 	originalStdoutLen := len(result.Stdout)
 	originalStderrLen := len(result.Stderr)
 	result.Stdout = truncate(result.Stdout, maxOutputSize)
@@ -516,7 +533,7 @@ func (e *ContainerExecutor) Exec(ctx context.Context, command string, timeout ti
 		}
 	}
 
-	return result, nil
+	return result
 }
 
 // Capabilities returns the capabilities of the container executor.
@@ -531,7 +548,13 @@ func (e *ContainerExecutor) Capabilities() ExecutorCapabilities {
 }
 
 // execInContainer runs a command inside the container using the exec API.
-// It handles the full create → start → read output → inspect flow.
+// It handles the full create → start → read output → inspect flow. On a
+// failure partway through — most commonly the ctx ending (deadline or
+// cancellation) while demuxDockerStream is blocked reading the exec
+// stream — the returned *ExecResult still carries whatever stdout/stderr
+// was captured before the failure, rather than nil; only a failure before
+// any output could exist (create/start exec) returns a nil result. Exec
+// relies on this to preserve partial output on timeout (#473).
 func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, workdir string, _ time.Duration) (*ExecResult, error) {
 	execID, err := e.api.createExec(ctx, e.containerID, cmd, workdir)
 	if err != nil {
@@ -545,20 +568,18 @@ func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, w
 	defer func() { _ = stream.Close() }()
 
 	stdout, stderr, err := demuxDockerStream(stream)
+	result := &ExecResult{Stdout: stdout, Stderr: stderr}
 	if err != nil {
-		return nil, fmt.Errorf("read exec output: %w", err)
+		return result, fmt.Errorf("read exec output: %w", err)
 	}
 
 	exitCode, err := e.api.inspectExec(ctx, execID)
 	if err != nil {
-		return nil, fmt.Errorf("inspect exec: %w", err)
+		return result, fmt.Errorf("inspect exec: %w", err)
 	}
+	result.ExitCode = exitCode
 
-	return &ExecResult{
-		ExitCode: exitCode,
-		Stdout:   stdout,
-		Stderr:   stderr,
-	}, nil
+	return result, nil
 }
 
 // demuxDockerStream reads the Docker multiplexed stream format.

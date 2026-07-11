@@ -185,10 +185,15 @@ func TestExecRunner_ContinueOnError_DispatchContinuesAndPhaseSucceeds(t *testing
 	}
 }
 
+// TestExecRunner_TimedOut pins the genuine-deadline shape every executor
+// (local.go, container.go, k8s_execcore.go) now produces via the shared
+// classifyExecCtxErr helper: executor.ErrTimeout wrapped together with the
+// underlying context.DeadlineExceeded. isTimeoutErr must classify it as a
+// timeout via errors.Is, not by matching the formatted text (#468).
 func TestExecRunner_TimedOut(t *testing.T) {
 	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, timeout time.Duration) (*executor.ExecResult, error) {
-		return &executor.ExecResult{ExitCode: -1}, fmt.Errorf("command timed out after %s", timeout)
+		return &executor.ExecResult{ExitCode: -1}, fmt.Errorf("%w after %s: %w", executor.ErrTimeout, timeout, context.DeadlineExceeded)
 	}
 	r := &ExecRunner{
 		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{{Name: "slow", Command: "sleep 999", TimeoutSeconds: 1}}},
@@ -210,10 +215,14 @@ func TestExecRunner_TimedOut(t *testing.T) {
 	}
 }
 
+// TestExecRunner_DeadlineExceededTimedOut pins that a bare, unwrapped
+// context.DeadlineExceeded — not itself wrapping executor.ErrTimeout — is
+// NOT classified as a timeout. Every production executor now wraps
+// ErrTimeout on a genuine deadline (see TestExecRunner_TimedOut); a raw
+// context.DeadlineExceeded reaching the hook runner would mean some other
+// code path (or a future executor) bypassed that contract, and TimedOut
+// should reflect the sentinel, not a coincidentally-named stdlib error.
 func TestExecRunner_DeadlineExceededTimedOut(t *testing.T) {
-	// k8s_execcore.go's Exec returns the context error verbatim rather
-	// than a formatted "timed out" string (see isTimeoutErr's doc
-	// comment) — pin that shape is also classified as TimedOut.
 	exec := newMockExecutor()
 	exec.execFunc = func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
 		return nil, context.DeadlineExceeded
@@ -227,8 +236,44 @@ func TestExecRunner_DeadlineExceededTimedOut(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunPre() error = nil, want non-nil")
 	}
-	if !results[0].TimedOut {
-		t.Errorf("results[0].TimedOut = false, want true for context.DeadlineExceeded")
+	if results[0].TimedOut {
+		t.Errorf("results[0].TimedOut = true, want false: a bare context.DeadlineExceeded does not wrap executor.ErrTimeout")
+	}
+}
+
+// TestExecRunner_CancelledContext_NotTimedOut is the #469/#468 regression:
+// a hook killed by a parent-context cancellation (e.g. a SIGTERM-driven
+// shutdown or a control-plane cancel) must be recorded as a failure but
+// NOT as a timeout, and its error text must not claim the hook "timed
+// out" — that claim is both false and misleading to an operator triaging
+// the trace. This mirrors the error shape classifyExecCtxErr produces for
+// ctx.Err() == context.Canceled across local.go, container.go, and
+// k8s_execcore.go.
+func TestExecRunner_CancelledContext_NotTimedOut(t *testing.T) {
+	exec := newMockExecutor()
+	exec.execFunc = func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
+		return &executor.ExecResult{ExitCode: -1}, fmt.Errorf("command cancelled: %w", context.Canceled)
+	}
+	r := &ExecRunner{
+		Hooks: &types.HooksConfig{PreRun: []types.HookConfig{{Name: "slow", Command: "sleep 999", TimeoutSeconds: 120}}},
+		Exec:  exec,
+	}
+
+	results, err := r.RunPre(context.Background())
+	if err == nil {
+		t.Fatal("RunPre() error = nil, want non-nil for a cancelled fatal hook")
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].TimedOut {
+		t.Errorf("results[0].TimedOut = true, want false: a parent-context cancel is not a timeout")
+	}
+	if results[0].Error == "" {
+		t.Error("results[0].Error is empty, want the cancellation surfaced")
+	}
+	if strings.Contains(results[0].Error, "timed out") {
+		t.Errorf("results[0].Error = %q, must not claim the hook timed out (it was cancelled, not deadline-expired)", results[0].Error)
 	}
 }
 
@@ -391,19 +436,30 @@ func TestExecRunner_RunPost_DeadCtx(t *testing.T) {
 	if results[0].Error == "" {
 		t.Error("results[0].Error is empty, want the ctx-cancelled error surfaced")
 	}
+	// A plain cancel (not a deadline) must not be classified as a timeout
+	// — the #469/#468 regression this task fixes.
+	if results[0].TimedOut {
+		t.Error("results[0].TimedOut = true, want false: an explicitly cancelled ctx is not a timeout")
+	}
 }
 
 // TestExecRunner_RunPost_BudgetExpiryMidHook pins the detached-ctx
 // budget-expiry scenario: a deadline that expires while the hook is
 // still "running" (from the fake executor's perspective) must surface
-// as a TimedOut result, not hang RunPost.
+// as a TimedOut result, not hang RunPost. The mock wraps executor.ErrTimeout
+// the way a real executor's Exec would once its own context.WithTimeout
+// child inherits the expired parent deadline (ctx.Err() ==
+// context.DeadlineExceeded propagates through the child unchanged).
 func TestExecRunner_RunPost_BudgetExpiryMidHook(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()
 	time.Sleep(5 * time.Millisecond) // guarantee the deadline has passed
 
 	exec := newMockExecutor()
-	exec.execFunc = func(ctx context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
+	exec.execFunc = func(ctx context.Context, _ string, timeout time.Duration) (*executor.ExecResult, error) {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%w after %s: %w", executor.ErrTimeout, timeout, ctx.Err())
+		}
 		return nil, ctx.Err()
 	}
 	r := &ExecRunner{

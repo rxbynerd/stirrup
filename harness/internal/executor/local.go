@@ -269,9 +269,10 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 
 	if err != nil {
 		// Check context cancellation first — a killed process also produces
-		// an ExitError, but the root cause is the timeout.
+		// an ExitError, but the root cause is the ctx ending (deadline or
+		// cancellation; classifyExecCtxErr tells them apart).
 		if ctx.Err() != nil {
-			return result, fmt.Errorf("command timed out after %s", timeout)
+			return result, classifyExecCtxErr(ctx, timeout)
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -180,19 +179,18 @@ func hookLabel(h types.HookConfig) string {
 }
 
 // isTimeoutErr reports whether err represents a hook execution that was
-// killed by its timeout rather than failing on its own. Executor
-// implementations signal this differently: k8s_execcore.go returns the
-// context error verbatim (context.DeadlineExceeded), while local.go and
-// container.go wrap it in a formatted "command timed out after %s"
-// string with no %w. The substring check covers the latter shape.
+// killed by its timeout rather than failing on its own. Every executor
+// implementation (local.go, container.go, k8s_execcore.go — and, via its
+// embedded podExecCore, the k8s-sandbox executor) wraps executor.ErrTimeout
+// into the error it returns on a genuine deadline expiry, so a single
+// errors.Is check classifies all of them uniformly. This replaces a
+// substring match on the formatted error text, which coupled the hook
+// package to exact executor wording and — more seriously — misclassified
+// any other context cancellation (e.g. a SIGTERM-driven parent-context
+// cancel) as a timeout too, since local.go/container.go used to report
+// *every* ctx cancellation as "command timed out ..." (#468, #469).
 func isTimeoutErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	return strings.Contains(err.Error(), "timed out")
+	return errors.Is(err, executor.ErrTimeout)
 }
 
 // scrubbedTail returns the scrubbed (security.Scrub), 4KB-tail-capped

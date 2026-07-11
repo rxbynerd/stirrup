@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -530,6 +531,92 @@ func TestContainerExecutor_Exec_OutputTruncation(t *testing.T) {
 	}
 	if !strings.HasSuffix(result.Stdout, truncatedSuffix) {
 		t.Error("expected truncation suffix on large output")
+	}
+}
+
+// hangingExecStartHandler returns a "POST /exec/*/start" handler that
+// writes one stdout frame, flushes it, then blocks until the request's ctx
+// ends (the client cancels or its deadline elapses) — simulating a stalled
+// command whose exec stream never closes on its own. Used to exercise both
+// the timeout and cancellation paths of ContainerExecutor.Exec against a
+// command that is genuinely still running when the ctx ends.
+func hangingExecStartHandler(partialOutput string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		writeDockerFrame(w, 1, []byte(partialOutput))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}
+}
+
+// TestContainerExecutor_Exec_Timeout is the #469/#473 regression: a genuine
+// per-call deadline expiry must be classified via errors.Is(err, ErrTimeout)
+// (not a substring match — #468) and must preserve whatever stdout was
+// captured before the deadline hit, matching local.go's pre-existing
+// behaviour (container.go used to discard it entirely).
+func TestContainerExecutor_Exec_Timeout(t *testing.T) {
+	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-timeout"})
+		},
+		"POST /exec/*/start": hangingExecStartHandler("partial output\n"),
+	})
+	defer cleanup()
+
+	start := time.Now()
+	result, err := exec.Exec(context.Background(), "sleep 30", 200*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("Exec took %v after the 200ms deadline, want well under 5s", elapsed)
+	}
+	if result == nil || !strings.Contains(result.Stdout, "partial output") {
+		t.Errorf("result = %+v, want Stdout to preserve output captured before the timeout (#473)", result)
+	}
+}
+
+// TestContainerExecutor_Exec_CancelledContext_NotErrTimeout is the #469
+// regression on the container executor: a parent-context cancellation that
+// is not a deadline expiry must not be reported as (or satisfy
+// errors.Is against) ErrTimeout, even with a large configured timeout, and
+// partial output captured before the cancel must still be returned.
+func TestContainerExecutor_Exec_CancelledContext_NotErrTimeout(t *testing.T) {
+	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-cancel"})
+		},
+		"POST /exec/*/start": hangingExecStartHandler("partial output\n"),
+	})
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		cancel()
+	}()
+
+	result, err := exec.Exec(ctx, "sleep 30", 60*time.Second)
+	if err == nil {
+		t.Fatal("expected an error from the cancelled command")
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Errorf("err = %v, must not satisfy errors.Is(err, ErrTimeout): cancelled after 150ms, configured timeout was 60s", err)
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Errorf("err = %v, must not claim the command timed out", err)
+	}
+	if result == nil || !strings.Contains(result.Stdout, "partial output") {
+		t.Errorf("result = %+v, want Stdout to preserve output captured before the cancel (#473)", result)
 	}
 }
 
