@@ -442,6 +442,7 @@ tree gains a `run_config.redacted.json` per task. See
 | `--concurrency`  | `1`              | Number of tasks executed in parallel. Workers preserve suite order in `result.json`. Values larger than the task count cap at `len(tasks)`. Concurrent invocations talking to the same provider hit rate limits faster — pick a value that respects your provider account's per-minute caps. |
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`) and emit a synthetic result. |
 | `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
+| `--prompt-model` | empty            | Prompt model to render system prompts with, forwarded to each harness invocation as `--prompt-model`. The wire model is unchanged. See [Comparing prompts across models](#comparing-prompts-across-models). |
 
 Exit code is `0` regardless of pass rate — use `compare` to gate CI.
 
@@ -648,6 +649,27 @@ cell red without holding the release.
    the committed baseline. PRs that introduce regressions fail.
 4. When a behaviour change is intentional, regenerate the baseline
    and commit it as part of the PR.
+
+### Comparing prompts across models
+
+The shipped system prompts are templated per model
+([configuration.md — System prompt templating](configuration.md#system-prompt-templating)),
+so two runs with different `--model` values no longer share prompt
+content. `--prompt-model` restores a controlled comparison by pinning
+the prompt while varying the model (or vice versa):
+
+```sh
+# A/B: does the new model do better with its own prompt or the
+# claude-fable-5 prompt it was not tuned for?
+stirrup-eval run --suite eval/suites/dogfood-seed.hcl --model claude-fable-6
+stirrup-eval run --suite eval/suites/dogfood-seed.hcl --model claude-fable-6 --prompt-model claude-fable-5
+```
+
+Baselines are keyed on `(suiteId, taskId)` outcomes only, so prompt
+templating does not change baseline identity; regenerate a baseline
+only when task outcomes legitimately change. The resolved prompt model
+and tier are recorded on each run's root OTel span (`prompt.model`,
+`prompt.tier`) for after-the-fact attribution.
 
 ### Continuous quality monitoring
 

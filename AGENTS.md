@@ -24,7 +24,7 @@ stirrup/
       credential/            # Cross-cloud credential federation
       provider/              # ProviderAdapter: Anthropic, Bedrock, OpenAI-compatible, OpenAI Responses, Gemini (Vertex AI)
       router/                # ModelRouter: static, per-mode, dynamic
-      prompt/                # PromptBuilder: per-mode templates, composed fragments, overrides
+      prompt/                # PromptBuilder: per-mode text/template prompts (model tiers, #492), composed fragments, operator templates, overrides
       context/               # ContextStrategy: sliding window, summarise, offload-to-file
       tool/                  # ToolRegistry + built-in tools, including spawn_agent
       tool/toolname/         # Per-provider tool-name normalization + collision detection (#223)

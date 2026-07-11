@@ -133,6 +133,7 @@ Quick map for "I need to change X" lookups:
 | Want to change… | Look in… |
 |---|---|
 | Provider behaviour or wire format | `harness/internal/provider/<name>.go` |
+| System prompt content or model tiers (the `.md` files are Go text/templates) | `harness/internal/prompt/systemprompts/*.md`, `harness/internal/prompt/modeltier.go` (operator doc: `docs/configuration.md#system-prompt-templating`) |
 | Tool definition or schema | `harness/internal/tool/builtins/<name>.go` |
 | Edit fallback logic | `harness/internal/edit/multi.go` |
 | Lifecycle hooks (pre/post-run exec, #461) | `harness/internal/hook/` (Runner/Noop/ExecRunner), loop wiring in `harness/internal/core/loop.go` (operator doc: `docs/configuration.md#lifecycle-hooks`) |

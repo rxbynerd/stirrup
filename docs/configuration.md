@@ -281,6 +281,7 @@ reference.
 |---|---|---|
 | `--provider` | `anthropic` | One of `anthropic`, `bedrock`, `openai-compatible`, `openai-responses`, `gemini`. |
 | `--model` | `claude-sonnet-4-6` | Model id for the static / per-mode router. |
+| `--prompt-model` | (none) | Model identity the system prompt templates render against, without changing the wire model. Combine with `--model` to compare a prompt tuned for one model against another. Empty derives the prompt model from the effective model. JSON path: `promptBuilder.promptModel`. See [System prompt templating](#system-prompt-templating). |
 | `--api-key-ref` | `secret://ANTHROPIC_API_KEY` | A `secret://` reference. API keys never live in `RunConfig`. Ignored when `--provider=gemini` (Vertex uses GCP IAM). |
 | `--base-url` | (none) | Provider base URL. Required for Azure / gateway scenarios. |
 | `--api-key-header` | (none) | Header name. Empty = `Authorization: Bearer`; set to `api-key` for Azure key auth. |
@@ -611,6 +612,132 @@ The read-only modes differ from each other only in prompt template:
 `planning` for "describe and reason before acting" first-touch use,
 `review` for change-review tasks, `research` for investigation across
 a codebase or the web, and `toil` for structured-briefing workflows.
+
+## System prompt templating
+
+The shipped per-mode system prompts are Go
+[`text/template`](https://pkg.go.dev/text/template) documents rendered
+per run against a *prompt model* — a model identity that selects which
+guidance the prompt carries. Frontier-generation models degrade under
+prescriptive process scaffolding and receive lean behavioural
+additions; open-weight models receive exactly that scaffolding. A
+model matching neither set renders the unconditional base prompt, so
+an unrecognised or brand-new model always gets a functional prompt
+(fall-through is structural, not configured).
+
+### Prompt model resolution
+
+The prompt model resolves in order:
+
+1. `promptBuilder.promptModel` (`--prompt-model`) when set — the
+   explicit override for prompt/model comparison runs;
+2. otherwise the model the router serves for this run's mode: the
+   `modeModels[mode]` entry for a per-mode router, else
+   `modelRouter.model`;
+3. otherwise the harness default model.
+
+Dynamic routers may switch models between turns, but the prompt is
+rendered once per run against the router's default model: re-rendering
+per turn would invalidate provider prompt caches and change agent
+guidance mid-run.
+
+The resolved prompt model and its tier are recorded on the run's root
+OTel span as `prompt.model` and `prompt.tier` (always on — these are
+config metadata, not content), so comparison runs remain attributable
+from traces alone.
+
+### Tiers
+
+Tier membership is a pair of glob tables in
+`harness/internal/prompt/modeltier.go` — adding a new model to a tier
+is a one-line change there. Globs use `path.Match` with the same
+semantics as the provider-quirks registry (`*` does not cross `/`;
+gateway-prefixed IDs are matched by `*/`-prefixed variants).
+
+| Tier | Members (initial) | Guidance shape |
+|---|---|---|
+| `frontier` | `claude-fable-5*`, `claude-mythos-5*`, `claude-sonnet-5*`, `claude-opus-4-8*`, `gpt-5.5*`, `gpt-5.6*` | Lean behavioural additions: act when ready, scope discipline, evidence-grounded progress claims, outcome-first summaries. |
+| `open-weight` | `gemma*`, `glm-*`, `deepseek*`, `qwen*` | Explicit process scaffolding: read/edit/test loop, invoke-don't-describe, restated output formats and stopping conditions. |
+| `default` | everything else | Base prompt only — byte-identical to the pre-templating prompts. |
+
+Inspect any rendering offline (no provider call, no credentials):
+
+```sh
+stirrup prompt render --mode execution --prompt-model claude-fable-5
+stirrup prompt render --mode execution --prompt-model gemma-4 --template ./tuned.tmpl
+```
+
+The rendered preamble prints to stdout; the resolved tier prints to
+stderr. Structural sections the harness appends at run time (working
+directory, turn budget, workspace tree, git status, dynamic context)
+are omitted because they depend on a live workspace.
+
+### Operator templates and the override
+
+Three prompt-content surfaces exist, in precedence order:
+
+1. **`systemPromptOverride`** — a raw string used verbatim as the
+   preamble. Never template-parsed, so content containing `{{` (for
+   example a prompt compiled by an external prompt-management system)
+   passes through untouched.
+2. **`promptBuilder.template`** — an operator-supplied Go
+   text/template replacing the shipped mode prompt. It renders against
+   the same data surface as the shipped prompts, so model-conditional
+   content and `--prompt-model` comparison keep working for tuned
+   prompts. Syntax is checked by `ValidateRunConfig`; the template is
+   additionally trial-rendered at component construction so execution
+   errors fail before the run starts.
+3. **Shipped mode templates** — the default.
+
+In both 1 and 2 the structural sections (workspace path, turn budget,
+workspace tree, git status, dynamic context with `untrusted_context`
+wrapping) are still appended.
+
+Combining `systemPromptOverride` with either `promptBuilder.template`
+or `promptBuilder.promptModel` is rejected by validation rather than
+resolved by precedence: the override bypasses template rendering, and
+in an eval sweep the silent no-op would masquerade as a valid
+prompt/model comparison.
+
+Templates render against this data surface (methods are called
+without arguments):
+
+| Expression | Value |
+|---|---|
+| `.Model` | The resolved prompt model string. |
+| `.Mode` | The run mode. |
+| `.Tier` | `"frontier"`, `"open-weight"`, or `"default"`. |
+| `.ModelIs "glob" ...` | `true` when the prompt model matches any `path.Match` glob (a malformed glob is a non-match). |
+
+Template rendering is pure string work: the data surface exposes no
+filesystem, environment, or network reach.
+
+### Control-plane prompt management (Langfuse)
+
+An upstream control plane that manages prompts in an external system
+such as [Langfuse prompt management](https://langfuse.com/docs/prompt-management/get-started)
+has two integration paths:
+
+- **Compiled prompt → `systemPromptOverride`.** Fetch the prompt by
+  name/label, compile its `{{variable}}` placeholders with the
+  Langfuse SDK, and ship the resulting string. Per-model tuning
+  happens control-plane-side (e.g. one Langfuse label per model
+  family). Because the override is never template-parsed, leftover
+  mustache syntax cannot be misinterpreted — but an *uncompiled*
+  prompt pasted into `promptBuilder.template` fails validation
+  loudly, which is the intended guard against confusing the two
+  surfaces.
+- **Go template → `promptBuilder.template`.** Store a Go
+  text/template in the external system and ship it verbatim. The
+  harness renders it per run with the model-conditional surface
+  above, so one stored prompt can serve every model tier and
+  `--prompt-model` comparisons still work.
+
+Stirrup's OTel emitter stays vendor-neutral either way: prompt
+name/version linkage attributes specific to Langfuse are not emitted.
+Use `prompt.model` / `prompt.tier` (and `gen_ai.system_instructions`
+under `--otel-capture-content`) to correlate runs with prompt
+versions.
 
 ## Toolset profiles
 
