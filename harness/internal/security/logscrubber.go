@@ -46,7 +46,13 @@ var secretPatterns = []namedPattern{
 	{"basic_auth", regexp.MustCompile(`(?i)Basic\s+[A-Za-z0-9+/]+=*`)},
 	{"bearer_token", regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9._~+/=-]+`)},
 	{"pem_private_key", regexp.MustCompile(`-----BEGIN[\s\w]+KEY-----`)},
-	{"secret_ref", regexp.MustCompile(`secret://[^\s"']+`)},
+	// Case-insensitive: a shell resolves "secret://" and "SECRET://"
+	// identically, and this pattern is the last line of defence for a
+	// hook command whose case-insensitive ValidateRunConfig rejection
+	// was bypassed (e.g. RunConfig built without going through
+	// validation) — matching lowercase only would let a case-varied
+	// reference ride into a persisted trace unredacted.
+	{"secret_ref", regexp.MustCompile(`(?i)secret://[^\s"']+`)},
 	// api_key_header matches the literal "<header>: <value>" forms used
 	// for non-Bearer auth on Azure OpenAI and APIM-fronted gateways. These
 	// keys do not have a distinctive prefix (Azure keys are hex-y but

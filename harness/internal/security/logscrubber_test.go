@@ -1,6 +1,9 @@
 package security
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func slackTokenFixture() string {
 	return "xox" + "b-123456789012-123456789012-abcdefghijklmnopqrstuvwx"
@@ -20,6 +23,36 @@ func TestScrub_AnthropicKey(t *testing.T) {
 	want := "key is [REDACTED]"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestScrub_SecretRefCaseInsensitive pins that the secret_ref pattern
+// redacts a "secret://" reference regardless of scheme case, including
+// mid-string. This is the belt-and-braces counterpart to
+// ValidateRunConfig's case-insensitive hook-command rejection: a
+// case-varied reference must not survive Scrub either, since a trace
+// consumer (e.g. RecordHookExecution) relies on Scrub as a second line
+// of defence rather than trusting the upstream guard alone.
+func TestScrub_SecretRefCaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"uppercase_scheme", "SECRET://API_KEY"},
+		{"titlecase_scheme", "Secret://API_KEY"},
+		{"mixedcase_scheme", "sEcReT://mixed_case"},
+		{"mixedcase_scheme_embedded", "echo sEcReT://mixed_case"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Scrub(tc.input)
+			if strings.Contains(strings.ToLower(got), "secret://") {
+				t.Errorf("Scrub(%q) = %q, want the secret:// reference redacted", tc.input, got)
+			}
+			if !strings.Contains(got, "[REDACTED]") {
+				t.Errorf("Scrub(%q) = %q, want a [REDACTED] placeholder", tc.input, got)
+			}
+		})
 	}
 }
 

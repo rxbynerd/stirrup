@@ -2754,10 +2754,10 @@ func validateHookConfig(path string, h HookConfig, isPostRun bool, errs *[]strin
 		*errs = append(*errs, fmt.Sprintf("%s.command must be <= %d bytes, got %d", path, maxHookCommandBytes, len(h.Command)))
 	}
 	// Case-insensitive: a shell reads "secret://..." and "SECRET://..."
-	// identically, and the doc contract ("structurally rejected") would
-	// be a lie if `SECRET://FOO` slipped through untouched into the
-	// trace unscrubbed (HookExecution.Command is deliberately not
-	// scrubbed, on the premise that this check is airtight).
+	// identically, so the rejection must too. This is not the only line
+	// of defence — the trace emitter also re-scrubs HookExecution.Command
+	// (security.Scrub) before persistence — but a case-varied reference
+	// should never reach that point in the first place.
 	if strings.Contains(strings.ToLower(h.Command), "secret://") {
 		*errs = append(*errs, fmt.Sprintf(
 			"%s.command must not contain a \"secret://\" reference; resolve credentials via control-plane runtime bindings instead",

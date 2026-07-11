@@ -682,11 +682,13 @@ func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.
 }
 
 // TestJSONLTraceEmitter_RecordHookExecution_Scrubs pins the
-// defence-in-depth scrub RecordHookExecution applies to OutputTail and
-// Error: even though hook.ExecRunner already scrubs OutputTail before
-// constructing the types.HookExecution, the emitter re-scrubs both
-// fields before they reach disk, the same posture RecordTurnRecord
-// applies to tool output.
+// defence-in-depth scrub RecordHookExecution applies to Command,
+// OutputTail, and Error: even though hook.ExecRunner already scrubs
+// OutputTail before constructing the types.HookExecution and
+// ValidateRunConfig structurally rejects a "secret://" reference in
+// Command, the emitter re-scrubs all three fields before they reach
+// disk, the same posture RecordTurnRecord applies to tool output. A
+// Command with no secret-shaped literal survives intact.
 func TestJSONLTraceEmitter_RecordHookExecution_Scrubs(t *testing.T) {
 	var buf bytes.Buffer
 	emitter := NewJSONLTraceEmitter(&buf)
@@ -714,11 +716,54 @@ func TestJSONLTraceEmitter_RecordHookExecution_Scrubs(t *testing.T) {
 	if strings.Contains(trace.HookResults[0].Error, "sk-ant-api03-leak") {
 		t.Errorf("HookResults[0].Error not scrubbed: %q", trace.HookResults[0].Error)
 	}
-	// Command is operator config (like VerifierConfig.Command) and is
-	// deliberately not scrubbed — ValidateRunConfig structurally
-	// rejects "secret://" in a hook command instead.
-	if trace.HookResults[0].Command == "" {
-		t.Error("Command must survive unscrubbed")
+	wantCommand := "curl -H \"Authorization: Bearer $TOKEN\""
+	if trace.HookResults[0].Command != wantCommand {
+		t.Errorf("Command without a secret-shaped literal must survive intact: got %q, want %q",
+			trace.HookResults[0].Command, wantCommand)
+	}
+}
+
+// TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef
+// pins the belt-and-braces contract explicitly: even if a case-varied
+// "secret://" reference somehow reached RecordHookExecution — bypassing
+// ValidateRunConfig's case-insensitive rejection, e.g. a RunConfig
+// assembled programmatically without going through validation — the
+// trace emitter's own scrub still redacts it before it lands on disk or
+// in RunTrace.HookResults. The persisted trace must not depend solely
+// on the upstream guard being airtight.
+func TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef(t *testing.T) {
+	cases := []struct {
+		name    string
+		command string
+	}{
+		{"uppercase_scheme", "echo SECRET://API_KEY"},
+		{"titlecase_scheme", "echo Secret://API_KEY"},
+		{"mixedcase_scheme_embedded", "curl -H \"Authorization: Bearer $(cat sEcReT://mixed_case)\""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			emitter := NewJSONLTraceEmitter(&buf)
+			emitter.Start("run-hook-case-bypass", nil)
+
+			emitter.RecordHookExecution(types.HookExecution{
+				Phase:   "preRun",
+				Index:   0,
+				Command: tc.command,
+			})
+			trace, err := emitter.Finish(context.Background(), "success")
+			if err != nil {
+				t.Fatalf("Finish: %v", err)
+			}
+
+			onDisk := buf.String()
+			if strings.Contains(strings.ToLower(onDisk), "secret://") {
+				t.Errorf("scrubber missed case-varied secret:// reference in on-disk trace:\n%s", onDisk)
+			}
+			if strings.Contains(strings.ToLower(trace.HookResults[0].Command), "secret://") {
+				t.Errorf("HookResults[0].Command not scrubbed: %q", trace.HookResults[0].Command)
+			}
+		})
 	}
 }
 
