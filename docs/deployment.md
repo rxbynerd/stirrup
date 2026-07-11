@@ -214,11 +214,13 @@ The labels are injected via `-ldflags` against
 - **`verify`** — `go test` plus binary builds for the `types`,
   `harness`, and `eval` modules. Runs on every push and PR via the
   reusable `_verify.yml` workflow.
-- **`eval-gate`** — runs `eval/suites/` against `eval/baselines/` on
-  the `main` branch only, exits non-zero on regressions, uploads
-  results as artifacts. Blocks the publish step.
+- **`eval-gate`** — runs the baselined suites in `eval/suites/`
+  against `eval/baselines/` on every push, pinned to a cheap model
+  (Claude Haiku 4.5), exits non-zero on regressions, uploads
+  results as artifacts. A stronger-model sweep (Sonnet 5, Opus 4.8)
+  runs at release time via `release.yml::eval-extended`.
 - **`publish-container`** — builds and pushes the image to GHCR on
-  the `main` branch only, after `eval-gate` passes.
+  the `main` branch only, after `verify` passes.
 
 The Anthropic WIF smoke test (`smoke-anthropic.yml`) is a separate
 gated workflow that exercises the federation flow end-to-end.

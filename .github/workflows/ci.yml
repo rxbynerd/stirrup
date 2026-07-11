@@ -12,7 +12,20 @@ jobs:
     name: Eval Gate
     runs-on: ubuntu-latest
     needs: verify
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event_name == 'disabled'
+    # Runs on every push (this workflow's only trigger), on every
+    # branch: the gate is the cheap-model regression check for the
+    # baselined suites, so PR branches get the signal before merge
+    # rather than discovering a regression on main. It was disabled
+    # outright between b472687 and this job's re-enable; the model is
+    # pinned to Haiku 4.5 (EVAL_MODEL below) to keep per-push cost
+    # low — the stronger-model sweep lives in
+    # release.yml::eval-extended. Missing credentials (fork clones)
+    # skip gracefully via the check-creds step, and a refused
+    # credential exchange on a non-main ref (dependabot-actor pushes,
+    # branch refs the federation rule does not accept) skips via the
+    # preflight step — neither failure mode masquerades as an eval
+    # regression.
+    #
     # id-token: write is required for Anthropic Workload Identity
     # Federation: actions/checkout's runner exposes
     # ACTIONS_ID_TOKEN_REQUEST_URL / ACTIONS_ID_TOKEN_REQUEST_TOKEN
@@ -24,6 +37,16 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      # Cheap-model configuration for the per-push gate. Haiku 4.5
+      # keeps per-push token spend low; the gate's job is "did the
+      # harness regress on tasks it used to pass", not "measure the
+      # best model". The stronger-model sweep runs at release time
+      # (release.yml::eval-extended, Sonnet 5 + Opus 4.8). Forwarded
+      # to every harness invocation via stirrup-eval's --model flag,
+      # which overrides both the harness default and any suite-pinned
+      # model.
+      EVAL_MODEL: claude-haiku-4-5-20251001
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -87,6 +110,16 @@ jobs:
         shell: bash
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # The WIF federation rule pins assertion.repository on the
+          # Anthropic side, so an OIDC token minted for a fork is
+          # rejected at exchange time. Without this guard a fork
+          # running its own Actions would see
+          # ACTIONS_ID_TOKEN_REQUEST_URL set, pass the check below,
+          # and then fail every task with a buried auth error — the
+          # exact failure mode this step exists to prevent. A fork
+          # that configures its own ANTHROPIC_API_KEY secret still
+          # runs the gate via the static-key leg.
+          WIF_ELIGIBLE: ${{ github.repository == 'rxbynerd/stirrup' }}
         run: |
           # Check whether a real credential source is available.
           # GitHub Actions sets ACTIONS_ID_TOKEN_REQUEST_URL only when
@@ -95,15 +128,71 @@ jobs:
           # skip the run steps and emit a warning so the missing
           # credential is visible in the job log rather than buried as
           # per-task auth errors.
-          if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          if [ -n "${ANTHROPIC_API_KEY:-}" ] || { [ "${WIF_ELIGIBLE}" = "true" ] && [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; }; then
             echo "has_credentials=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_credentials=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No Anthropic credentials configured (neither ANTHROPIC_API_KEY nor ACTIONS_ID_TOKEN_REQUEST_URL). Skipping live eval runs."
+            echo "::warning::No usable Anthropic credentials (no ANTHROPIC_API_KEY; WIF requires this repository's federation rule). Skipping live eval runs."
+          fi
+
+      # Preflight the credential exchange before spending any eval
+      # time. check-creds only proves a credential SOURCE exists
+      # (static key, or the OIDC endpoint in this repository); the
+      # Anthropic-side federation rule can still refuse the exchange —
+      # it accepts main-ref OIDC tokens (smoke-anthropic.yml's history)
+      # but returned 401 for a branch-ref token in run 29168741554,
+      # where the refusal surfaced as five bogus "pass → fail
+      # regressions" from the compare step. The harness --dry-run
+      # preflight performs the real credential resolution (including
+      # the WIF exchange) and probes the models metadata endpoint; no
+      # completion tokens are spent, and its per-step report names the
+      # failing step in the job log.
+      #
+      # Failure semantics are ref-sensitive — deliberately NOT a
+      # blanket skip-on-failure, which would recreate the silent no-op
+      # this gate was just rescued from:
+      #   - On refs/heads/main a failed preflight FAILS the job with
+      #     an explicit "not an eval regression" error. Main is the
+      #     ref the rule is known to serve; a refusal there is an
+      #     infrastructure regression that must be red, never skipped.
+      #   - On any other ref a refused exchange skips the live run
+      #     with a warning naming the operator action, mirroring the
+      #     fork/no-credential skip. Widening the federation rule to
+      #     accept non-main refs is an Anthropic-console action, not a
+      #     repo change; once widened, branch pushes run the gate live
+      #     automatically with no workflow edit.
+      # Run failures and baseline regressions still fail the job on
+      # every ref — only a pre-run credential failure downgrades, and
+      # only off-main.
+      - name: Preflight Anthropic credential exchange
+        id: preflight
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          mkdir -p preflight-workspace
+          if ./stirrup harness --dry-run \
+              --model "$EVAL_MODEL" \
+              --workspace preflight-workspace \
+              --trace preflight-trace.jsonl \
+              --prompt "preflight" \
+              --anthropic-federation-rule-id fdrl_01QJMFE86qFDdWzQXEekhYjY \
+              --anthropic-organization-id 5848ccdc-495f-490b-9275-2caab9db344d \
+              --anthropic-service-account-id svac_01Tf7i7VwZm6WRAFjNAawPw9 \
+              --anthropic-from-github-actions; then
+            echo "exchange_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exchange_ok=false" >> "$GITHUB_OUTPUT"
+            if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+              echo "::error::Eval gate preflight failed on main: credential resolution or the provider probe failed (see the preflight report above). This is an infrastructure/credential failure, NOT an eval regression — do not regenerate baselines in response."
+              exit 1
+            fi
+            echo "::warning::Eval gate skipped on ${GITHUB_REF}: the Anthropic credential preflight failed (typically the WIF federation rule refusing a non-main-ref OIDC token — see the report above). This is NOT an eval regression. Operator action: widen federation rule fdrl_01QJMFE86qFDdWzQXEekhYjY in the Anthropic console to accept this repository's non-main refs; branch pushes then run the gate automatically."
           fi
 
       - name: Run eval suite
-        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true' && steps.preflight.outputs.exchange_ok == 'true'
         shell: bash
         env:
           # Forwarded for backwards compatibility: if a static key is
@@ -119,6 +208,17 @@ jobs:
           for suite in eval/suites/*.hcl; do
             name=$(basename "$suite")
             name="${name%.*}"
+            # Only baselined suites are gated. Unbaselined suites
+            # (guardrail needs a local vLLM endpoint; tooluse's
+            # no-credential gate is the in-process replay test — see
+            # eval/suites/README.md) are opt-in local runs: executing
+            # them here would spend tokens, produce failure noise, and
+            # enforce nothing, since the compare step below skips
+            # suites without a baseline anyway.
+            if [ ! -f "eval/baselines/${name}.json" ]; then
+              echo "Skipping ${name} — no baseline at eval/baselines/${name}.json (unbaselined suites are opt-in; see eval/suites/README.md)"
+              continue
+            fi
             # JUnit XML is an annotation/artifact only; the eval gate
             # is enforced by the `compare` step below.
             #
@@ -137,6 +237,7 @@ jobs:
             ./stirrup-eval run \
               --suite "$suite" \
               --harness "$GITHUB_WORKSPACE/stirrup" \
+              --model "$EVAL_MODEL" \
               --output "eval/results/${name}" \
               --junit "eval/results/${name}/junit.xml" \
               --anthropic-federation-rule-id fdrl_01QJMFE86qFDdWzQXEekhYjY \
@@ -146,12 +247,13 @@ jobs:
           done
 
       - name: Compare against baseline
-        # Gated on has_credentials in addition to has_suites: without
-        # credentials the Run eval suite step is skipped, so there is
-        # no result.json to compare. Without this guard the loop body
-        # would skip silently (nullglob), but the explicit gate makes
-        # the dependency between the two steps readable in the job log.
-        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        # Gated on has_credentials and exchange_ok in addition to
+        # has_suites: without them the Run eval suite step is skipped,
+        # so there is no result.json to compare. Without this guard
+        # the loop body would skip silently (nullglob), but the
+        # explicit gate makes the dependency between the steps
+        # readable in the job log.
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true' && steps.preflight.outputs.exchange_ok == 'true'
         shell: bash
         run: |
           shopt -s nullglob
@@ -173,9 +275,9 @@ jobs:
         # an unrelated failure (e.g. compare step regression exit, future
         # secondary-artifact steps). The eval-gate's pass/fail signal is
         # carried by the compare step's exit code, not artifact presence.
-        # Gated on has_credentials so a credentials-skipped run does not
-        # upload an empty artifact directory.
-        if: always() && steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        # Gated on has_credentials and exchange_ok so a skipped run
+        # does not upload an empty artifact directory.
+        if: always() && steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true' && steps.preflight.outputs.exchange_ok == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: eval-results

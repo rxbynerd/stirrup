@@ -18,6 +18,14 @@ name: Release
 #                         Currently WARN-only (not in `release.needs`);
 #                         see docs/container-publishing.md for promotion
 #                         path.
+#   eval-extended       → runs the baselined eval suites against the
+#                         stronger models (Sonnet 5, Opus 4.8) that the
+#                         per-push cheap gate (ci.yml::eval-gate, Haiku
+#                         4.5) deliberately skips. Non-blocking-but-
+#                         visible, same philosophy as vulnerability-gate:
+#                         not in `release.needs`, so a regression shows
+#                         up as a red job on the release run without
+#                         holding the release hostage.
 #   release             → aggregates SHA256SUMS and creates the GitHub Release
 
 on:
@@ -763,6 +771,201 @@ jobs:
       image_uri: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ needs.publish-sandbox-container.outputs.digest }}
       tag: ${{ needs.validate-tag.outputs.tag }}-sandbox
       mode: warn
+
+  # Extended eval sweep: the same baselined suites the per-push gate
+  # runs on Haiku 4.5 (ci.yml::eval-gate), re-run against the stronger
+  # models a release is expected to work well with. Intentionally NOT
+  # in `release.needs` — mirroring the vulnerability-gate's warn
+  # posture, the non-blocking stance is structural: a regression here
+  # paints the release run red (per-model matrix cell fails on the
+  # compare step's exit code) but never blocks the release itself.
+  # Promotion to blocking is a one-line change: add `eval-extended`
+  # to `release.needs`.
+  #
+  # Anthropic auth uses the same WIF identifiers as ci.yml::eval-gate.
+  # If the Anthropic-side federation rule ever constrains the OIDC
+  # ref claim to refs/heads/main, the exchange fails for tag refs and
+  # this job goes red without affecting the release — widen the rule
+  # in the Anthropic console rather than weakening this job.
+  eval-extended:
+    name: Extended Eval (${{ matrix.model }})
+    needs: [validate-tag, verify]
+    runs-on: ubuntu-latest
+    # Same repository guard as publish-container: forks cannot mint a
+    # WIF token this repo's federation rule accepts, so skip rather
+    # than fail confusingly.
+    if: github.repository == 'rxbynerd/stirrup'
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      # One red model must not cancel the other's signal — the point
+      # of the matrix is a per-model verdict.
+      fail-fast: false
+      matrix:
+        model:
+          - claude-sonnet-5
+          - claude-opus-4-8
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate-tag.outputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+          cache-dependency-path: |
+            harness/go.mod
+            types/go.mod
+            eval/go.mod
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        env:
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+          SHORT_SHA: ${{ steps.sha.outputs.short }}
+        run: |
+          set -euo pipefail
+          go build -trimpath \
+            -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${TAG} -X github.com/rxbynerd/stirrup/types/version.commit=${SHORT_SHA}" \
+            -o stirrup ./harness/cmd/stirrup
+          go build -trimpath \
+            -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${TAG} -X github.com/rxbynerd/stirrup/types/version.commit=${SHORT_SHA}" \
+            -o stirrup-eval ./eval/cmd/eval
+
+      # Mirrors ci.yml::eval-gate's guard pair (check-suites +
+      # check-creds) so the two eval surfaces degrade identically.
+      # The WIF-eligibility leg is implied by the job-level repository
+      # guard, so only OIDC availability is checked here.
+      - name: Check for baselined eval suites
+        id: check-suites
+        shell: bash
+        run: |
+          shopt -s nullglob
+          found=false
+          for suite in eval/suites/*.hcl; do
+            name=$(basename "$suite")
+            name="${name%.*}"
+            if [ -f "eval/baselines/${name}.json" ]; then
+              found=true
+              break
+            fi
+          done
+          if [ "$found" = "true" ]; then
+            echo "has_suites=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_suites=false" >> "$GITHUB_OUTPUT"
+            echo "No baselined eval suites found — skipping extended eval"
+          fi
+
+      - name: Check Anthropic credentials
+        id: check-creds
+        if: steps.check-suites.outputs.has_suites == 'true'
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "${ANTHROPIC_API_KEY:-}" ] || [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "has_credentials=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_credentials=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No Anthropic credentials available. Skipping extended eval runs."
+          fi
+
+      # Preflight the credential exchange so a WIF refusal for a tag
+      # ref surfaces as a named credential failure instead of a page
+      # of bogus per-task "regressions" (the failure mode observed in
+      # ci.yml run 29168741554 for a branch ref). Unlike the per-push
+      # gate's ref-sensitive skip, a failed preflight here FAILS the
+      # matrix cell outright: this job is already structurally
+      # non-blocking (not in release.needs), and a green-but-vacuous
+      # sweep on a release run would misread as "evals passed". If
+      # the federation rule refuses refs/tags/v* tokens, widen it in
+      # the Anthropic console — the error below says exactly that.
+      - name: Preflight Anthropic credential exchange
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_MODEL: ${{ matrix.model }}
+        run: |
+          mkdir -p preflight-workspace
+          if ! ./stirrup harness --dry-run \
+              --model "$EVAL_MODEL" \
+              --workspace preflight-workspace \
+              --trace preflight-trace.jsonl \
+              --prompt "preflight" \
+              --anthropic-federation-rule-id fdrl_01QJMFE86qFDdWzQXEekhYjY \
+              --anthropic-organization-id 5848ccdc-495f-490b-9275-2caab9db344d \
+              --anthropic-service-account-id svac_01Tf7i7VwZm6WRAFjNAawPw9 \
+              --anthropic-from-github-actions; then
+            echo "::error::Extended eval preflight failed for ${GITHUB_REF}: credential resolution or the provider probe failed (see the preflight report above). This is a credential/infrastructure failure, NOT an eval regression. If the WIF exchange refused a tag-ref OIDC token, widen federation rule fdrl_01QJMFE86qFDdWzQXEekhYjY in the Anthropic console to accept refs/tags/v*. The release itself is unaffected (this job is not in release.needs)."
+            exit 1
+          fi
+
+      - name: Run baselined eval suites
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_MODEL: ${{ matrix.model }}
+        run: |
+          shopt -s nullglob
+          mkdir -p eval/results
+          for suite in eval/suites/*.hcl; do
+            name=$(basename "$suite")
+            name="${name%.*}"
+            if [ ! -f "eval/baselines/${name}.json" ]; then
+              echo "Skipping ${name} — no baseline (unbaselined suites are opt-in; see eval/suites/README.md)"
+              continue
+            fi
+            ./stirrup-eval run \
+              --suite "$suite" \
+              --harness "$GITHUB_WORKSPACE/stirrup" \
+              --model "$EVAL_MODEL" \
+              --output "eval/results/${name}" \
+              --junit "eval/results/${name}/junit.xml" \
+              --anthropic-federation-rule-id fdrl_01QJMFE86qFDdWzQXEekhYjY \
+              --anthropic-organization-id 5848ccdc-495f-490b-9275-2caab9db344d \
+              --anthropic-service-account-id svac_01Tf7i7VwZm6WRAFjNAawPw9 \
+              --anthropic-from-github-actions
+          done
+
+      # The compare step's exit code is this job's verdict: a
+      # regression against the committed baseline turns the matrix
+      # cell red. The release proceeds regardless (see the job
+      # comment) — the red cell is the operator's cue to investigate
+      # before announcing the release.
+      - name: Compare against baseline
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for result_dir in eval/results/*/; do
+            name=$(basename "$result_dir")
+            result="${result_dir}result.json"
+            baseline="eval/baselines/${name}.json"
+            if [ -f "$baseline" ]; then
+              ./stirrup-eval compare \
+                --current "$result" \
+                --baseline "$baseline"
+            else
+              echo "No baseline found at $baseline — skipping comparison"
+            fi
+          done
+
+      - name: Upload eval results
+        if: always() && steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-results-extended-${{ matrix.model }}
+          path: eval/results/
+          retention-days: 30
 
   release:
     name: Publish Release
