@@ -3,6 +3,7 @@ package edit
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -294,7 +295,7 @@ func TestUdiffStrategy_FuzzyFailure_BelowThreshold(t *testing.T) {
 	if result.Applied {
 		t.Error("expected Applied=false when context lines are too different")
 	}
-	if !strings.Contains(result.Error, "could not find matching location") {
+	if !strings.Contains(result.Error, "no match within lines") {
 		t.Errorf("expected matching location error; got: %s", result.Error)
 	}
 
@@ -305,6 +306,271 @@ func TestUdiffStrategy_FuzzyFailure_BelowThreshold(t *testing.T) {
 	}
 	if content != original {
 		t.Errorf("file should not have been modified; got:\n%s", content)
+	}
+}
+
+// buildAnchorTestFile constructs a file with a whitespace-equal (but not
+// byte-exact) duplicate of a 3-line "line A / line B / line C" pattern near
+// the top, followed by fillerCount padding lines, optionally followed by
+// the true (also whitespace-drifted) target block. It returns the file
+// content and the 1-based line number of the true target's first line
+// (valid even when includeTarget is false, for pointing a hunk header at an
+// empty region).
+func buildAnchorTestFile(fillerCount int, includeTarget bool) (content string, targetLine int) {
+	var b strings.Builder
+	b.WriteString("func header() {\n")
+	b.WriteString("    line A\n") // early whitespace-equal duplicate: line 2
+	b.WriteString("    line B\n") // line 3
+	b.WriteString("    line C\n") // line 4
+	for i := 0; i < fillerCount; i++ {
+		fmt.Fprintf(&b, "    filler %d\n", i)
+	}
+	targetLine = 4 + fillerCount + 1
+	if includeTarget {
+		b.WriteString("\tline A\n")
+		b.WriteString("\tline B\n")
+		b.WriteString("\tline C\n")
+	}
+	b.WriteString("}\n")
+	return b.String(), targetLine
+}
+
+// TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock is the
+// regression test for the fallback-anchoring fix: the whitespace-
+// insensitive fallback used to scan from position 0 and apply the hunk to
+// the first whitespace-equal block it found, even when that block was far
+// from the hunk's declared line and an equally-plausible (also drifted)
+// match existed at the declared location. That silently corrupted the
+// wrong region of the file while still reporting Applied=true.
+func TestUdiffStrategy_AnchoredFallback_IgnoresEarlyDuplicateBlock(t *testing.T) {
+	dir := t.TempDir()
+	exec, err := executor.NewLocalExecutor(dir)
+	if err != nil {
+		t.Fatalf("NewLocalExecutor: %v", err)
+	}
+
+	original, targetLine := buildAnchorTestFile(60, true)
+	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
+	// Context/removed lines match both the early duplicate and the true
+	// target only after whitespace trimming (the file uses 4 spaces near
+	// the top and a tab at the true target; the diff itself carries neither
+	// indentation), so this can only apply via the whitespace-insensitive
+	// fallback.
+	diff := fmt.Sprintf(`--- a/file.txt
++++ b/file.txt
+@@ -%d,3 +%d,3 @@
+ line A
+-line B
++line B changed
+ line C`, targetLine, targetLine)
+
+	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
+	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	content, readErr := exec.ReadFile(context.Background(), "file.txt")
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+
+	// The early duplicate must never be touched, whether the fix landed the
+	// edit on the true target or failed closed.
+	if !strings.Contains(content, "    line A\n    line B\n    line C\n") {
+		t.Fatalf("early duplicate block was modified (silent wrong-region edit); got:\n%s", content)
+	}
+
+	if result.Applied {
+		if !strings.Contains(content, "\tline A\nline B changed\n\tline C\n") {
+			t.Errorf("expected the edit to land on the true target; got:\n%s", content)
+		}
+	} else if content != original {
+		t.Errorf("file should be unmodified when Applied=false; got:\n%s", content)
+	}
+}
+
+// TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds guards against
+// over-tightening the anchor: a hunk whose declared line number is off by a
+// few lines (typical when an earlier hunk in the same diff miscounts, or
+// the model is working from a slightly stale view of the file) must still
+// resolve via the whitespace-insensitive fallback as long as the true
+// target is within the search window.
+func TestUdiffStrategy_AnchoredFallback_SmallDriftStillSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	exec, err := executor.NewLocalExecutor(dir)
+	if err != nil {
+		t.Fatalf("NewLocalExecutor: %v", err)
+	}
+
+	// The real block sits 3 lines below where the hunk header claims it
+	// starts (line 1) — comfortably inside the anchoring window.
+	original := "\tpad 0\n\tpad 1\n\tpad 2\n\tline 1\n\tline 2\n\tline 3\n"
+	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
+	diff := `--- a/file.txt
++++ b/file.txt
+@@ -1,3 +1,3 @@
+   line 1
+-  line 2
++  line TWO
+   line 3`
+
+	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
+	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !result.Applied {
+		t.Fatalf("expected small line-number drift to still resolve; error: %s", result.Error)
+	}
+
+	content, err := exec.ReadFile(context.Background(), "file.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	expected := "\tpad 0\n\tpad 1\n\tpad 2\n\tline 1\n  line TWO\n\tline 3\n"
+	if content != expected {
+		t.Errorf("content:\ngot:  %q\nwant: %q", content, expected)
+	}
+}
+
+// TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed covers the
+// fail-closed side of the fix: when the only whitespace-equal match in the
+// file is far outside the hunk's declared region, and nothing plausible
+// exists near the declared line, the strategy must report Applied=false
+// with an actionable error rather than reaching past the window.
+func TestUdiffStrategy_AnchoredFallback_OutOfRegionMatchFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	exec, err := executor.NewLocalExecutor(dir)
+	if err != nil {
+		t.Fatalf("NewLocalExecutor: %v", err)
+	}
+
+	// No true target this time — the only whitespace-equal match is the
+	// early duplicate, well outside the window around the declared line.
+	original, targetLine := buildAnchorTestFile(60, false)
+	if err := exec.WriteFile(context.Background(), "file.txt", original); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
+	diff := fmt.Sprintf(`--- a/file.txt
++++ b/file.txt
+@@ -%d,3 +%d,3 @@
+ line A
+-line B
++line B changed
+ line C`, targetLine, targetLine)
+
+	input, _ := json.Marshal(map[string]string{"path": "file.txt", "diff": diff})
+	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if result.Applied {
+		t.Fatalf("expected Applied=false for an out-of-region-only match; got content modified")
+	}
+	if !strings.Contains(result.Error, "no match within lines") {
+		t.Errorf("expected an actionable window error; got: %s", result.Error)
+	}
+	if !strings.Contains(result.Error, fmt.Sprintf("declared start line %d", targetLine)) {
+		t.Errorf("expected the error to cite the declared start line; got: %s", result.Error)
+	}
+
+	content, err := exec.ReadFile(context.Background(), "file.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if content != original {
+		t.Errorf("file should be unmodified when Applied=false; got:\n%s", content)
+	}
+	// And, just as importantly, the early duplicate — the only match that
+	// exists anywhere in the file — must be untouched.
+	if !strings.Contains(content, "    line A\n    line B\n    line C\n") {
+		t.Errorf("early duplicate block was modified; got:\n%s", content)
+	}
+}
+
+// TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike is the
+// fuzzy-strategy counterpart to the whitespace-fallback regression above:
+// the fuzzy scan also used to run unbounded from position 0, so an early
+// block that merely resembles the pattern (rather than matching it after
+// whitespace trimming) could still win fuzzy scoring over the true,
+// drifted target.
+func TestUdiffStrategy_AnchoredFuzzyFallback_IgnoresEarlyLookalike(t *testing.T) {
+	dir := t.TempDir()
+	exec, err := executor.NewLocalExecutor(dir)
+	if err != nil {
+		t.Fatalf("NewLocalExecutor: %v", err)
+	}
+
+	// Both blocks are near-misses on the pattern's first context line, so
+	// neither is caught by the exact or whitespace-insensitive strategies —
+	// this can only resolve via fuzzy matching. The early block's line is a
+	// closer (higher-scoring) match than the true target's, so an unbounded
+	// scan that simply takes the best score in the file — rather than
+	// respecting the declared region — picks the early block.
+	var b strings.Builder
+	b.WriteString("function calculateTotal(items) {\n")
+	b.WriteString("  let totale = 0;\n") // 1-edit drift: higher fuzzy score
+	b.WriteString("  for (const item of items) {\n")
+	b.WriteString("    total += item.price;\n")
+	b.WriteString("  }\n")
+	const fillerCount = 60
+	for i := 0; i < fillerCount; i++ {
+		fmt.Fprintf(&b, "  // filler %d\n", i)
+	}
+	targetLine := 5 + fillerCount + 1
+	b.WriteString("  let totalzz = 0;\n") // 2-edit drift: lower fuzzy score
+	b.WriteString("  for (const item of items) {\n")
+	b.WriteString("    total += item.price;\n")
+	b.WriteString("  }\n")
+	b.WriteString("  return total;\n")
+	b.WriteString("}\n")
+	original := b.String()
+
+	if err := exec.WriteFile(context.Background(), "calc.js", original); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s := NewUdiffStrategy(defaultFuzzyThreshold)
+	diff := fmt.Sprintf(`--- a/calc.js
++++ b/calc.js
+@@ -%d,3 +%d,3 @@
+   let total = 0;
+-  for (const item of items) {
++  for (const entry of items) {
+     total += item.price;`, targetLine, targetLine)
+
+	input, _ := json.Marshal(map[string]string{"path": "calc.js", "diff": diff})
+	result, err := s.Apply(context.Background(), json.RawMessage(input), exec)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	content, readErr := exec.ReadFile(context.Background(), "calc.js")
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+
+	// The early block's own removed-line text ("item") must survive
+	// untouched; only the true target's copy may become "entry".
+	if !strings.Contains(content, "let totale = 0;\n  for (const item of items) {") {
+		t.Fatalf("early lookalike block was modified (silent wrong-region edit); got:\n%s", content)
+	}
+	if result.Applied && !strings.Contains(content, "for (const entry of items)") {
+		t.Errorf("expected the edit to land on the true target; got:\n%s", content)
+	}
+	if !result.Applied && content != original {
+		t.Errorf("file should be unmodified when Applied=false; got:\n%s", content)
 	}
 }
 
