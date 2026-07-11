@@ -563,6 +563,139 @@ jobs:
             --source "${SBOM_FILE}" \
             --uri "${IMAGE_URI}"
 
+  # Release-time publish of the sandbox image (Dockerfile.sandbox) —
+  # the `--image` the container/k8s/k8s-sandbox executors run agent
+  # workloads in. Mirrors publish-container's GHCR + GAR dual-publish,
+  # semver tagging, and SBOM posture; see the comments there for the
+  # action-pin provenance and the WIF/GAR authentication rationale.
+  # Deltas from publish-container: no VERSION/COMMIT build-args (the
+  # image contains no Go build), and the GAR image name is
+  # `${GAR_IMAGE}-sandbox` alongside the harness image in the same
+  # repository.
+  publish-sandbox-container:
+    name: Publish Sandbox Container
+    needs: [validate-tag, verify]
+    runs-on: ubuntu-latest
+    if: github.repository == 'rxbynerd/stirrup'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      digest: ${{ steps.docker-push.outputs.digest }}
+    env:
+      TAG: ${{ needs.validate-tag.outputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate-tag.outputs.tag }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Authenticate to Google Cloud (WIF + SA impersonation)
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GAR_PUBLISHER_SA }}
+          token_format: access_token
+
+      - name: Log in to Google Artifact Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ${{ vars.GAR_LOCATION }}-docker.pkg.dev
+          # GAR demands the literal string "oauth2accesstoken" as the
+          # username when the password is a short-lived access token —
+          # see publish-container above.
+          username: oauth2accesstoken
+          password: ${{ steps.gcp-auth.outputs.access_token }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        with:
+          images: |
+            ghcr.io/rxbynerd/stirrup-sandbox
+            ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(needs.validate-tag.outputs.tag, '-') }}
+
+      - name: Build and push sandbox image
+        id: docker-push
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile.sandbox
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          version: '>= 502.0.0'
+
+      # Image SBOMs matter more for the sandbox than for the distroless
+      # harness image: the Debian base is where the CVEs live. Same
+      # digest-form URI requirement and IAM posture as publish-container.
+      - name: Generate image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
+          format: spdx-json
+          output-file: stirrup-sandbox-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          github-token: ""
+
+      - name: Generate image CycloneDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
+          format: cyclonedx-json
+          output-file: stirrup-sandbox-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          github-token: ""
+
+      - name: Upload image SPDX SBOM to Artifact Analysis
+        env:
+          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
+          SBOM_FILE: stirrup-sandbox-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
+        run: |
+          set -euo pipefail
+          gcloud artifacts sbom load \
+            --source "${SBOM_FILE}" \
+            --uri "${IMAGE_URI}"
+
+      - name: Upload image CycloneDX SBOM to Artifact Analysis
+        env:
+          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
+          SBOM_FILE: stirrup-sandbox-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
+        run: |
+          set -euo pipefail
+          gcloud artifacts sbom load \
+            --source "${SBOM_FILE}" \
+            --uri "${IMAGE_URI}"
+
   # Phase 3 of issue #159: query Artifact Analysis for vulnerabilities
   # on the just-pushed image and emit a summary. CURRENT MODE IS WARN
   # — the gate never fails the workflow, regardless of how many
@@ -612,9 +745,28 @@ jobs:
       tag: ${{ needs.validate-tag.outputs.tag }}
       mode: warn
 
+  # Same warn-only gate for the sandbox image. The `-sandbox` suffix on
+  # the tag label keeps its tracking issues distinguishable from the
+  # harness image's, and means an operator setting
+  # vars.STIRRUP_RELEASE_VULN_OVERRIDE for the release tag bypasses only
+  # the harness gate — the sandbox gate needs its own suffixed override.
+  vulnerability-gate-sandbox:
+    name: Vulnerability gate — sandbox (warn mode)
+    needs: [validate-tag, publish-sandbox-container]
+    if: github.repository == 'rxbynerd/stirrup'
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    uses: ./.github/workflows/_vuln-scan.yml
+    with:
+      image_uri: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ needs.publish-sandbox-container.outputs.digest }}
+      tag: ${{ needs.validate-tag.outputs.tag }}-sandbox
+      mode: warn
+
   release:
     name: Publish Release
-    needs: [validate-tag, verify, build-binaries, sbom, changelog, publish-container]
+    needs: [validate-tag, verify, build-binaries, sbom, changelog, publish-container, publish-sandbox-container]
     runs-on: ubuntu-latest
     # Only the publish step needs write access to releases. Granting it at
     # the job level (rather than the workflow level) keeps the blast radius
