@@ -1380,7 +1380,7 @@ func TestContainerExecutor_HardeningProfile(t *testing.T) {
 }
 
 // TestContainerExecutor_RegistryAllowlist_Default verifies the built-in
-// allowlist: a Docker Hub official image (library/*) and a ghcr.io/stirrup
+// allowlist: a Docker Hub official image (library/*) and a ghcr.io/rxbynerd
 // image construct, while a third-party reference is rejected before any
 // container is created.
 func TestContainerExecutor_RegistryAllowlist_Default(t *testing.T) {
@@ -1406,7 +1406,10 @@ func TestContainerExecutor_RegistryAllowlist_Default(t *testing.T) {
 	allowed := []string{
 		"ubuntu:26.04",
 		"docker.io/library/alpine",
-		"ghcr.io/stirrup/base:latest",
+		"ghcr.io/rxbynerd/base:latest",
+		// The documented quick-start sandbox image (docs/executors/k8s.md,
+		// README.md) must construct under the default allowlist.
+		"ghcr.io/rxbynerd/stirrup-sandbox:latest",
 		// The Docker Hub pull aliases must fold to docker.io and match the
 		// default docker.io/library/* pattern, or operators hit a false deny.
 		"index.docker.io/library/ubuntu",
@@ -1426,7 +1429,14 @@ func TestContainerExecutor_RegistryAllowlist_Default(t *testing.T) {
 	}
 
 	createCalled = false
-	denied := []string{"evil.example.com/malware:latest", "docker.io/someuser/app", "ghcr.io/attacker/img"}
+	denied := []string{
+		"evil.example.com/malware:latest",
+		"docker.io/someuser/app",
+		"ghcr.io/attacker/img",
+		// ghcr.io/stirrup is not a namespace the project publishes under;
+		// confirms the default was not left admitting a dead org.
+		"ghcr.io/stirrup/base",
+	}
 	for _, img := range denied {
 		_, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
 			Image:      img,

@@ -247,7 +247,7 @@ The container executor applies these defaults regardless of what
   `network.mode == "allowlist"`, in which case the egress proxy
   enforces FQDN allowlisting on the way out)
 - A registry allowlist on `executor.image`. The default admits
-  only the project's own `ghcr.io/stirrup/*` images and Docker Hub
+  only the project's own `ghcr.io/rxbynerd/*` images and Docker Hub
   official `docker.io/library/*` images; any other reference is
   rejected before a container is created. Operators widen or
   replace the set via `executor.registryAllowlist` (a list of
@@ -255,12 +255,20 @@ The container executor applies these defaults regardless of what
   stripped, with the `index.docker.io` / `registry-1.docker.io`
   pull aliases folded to `docker.io`). Globs follow `path.Match`
   semantics, so `*` matches one path segment and does not cross
-  `/`: `ghcr.io/stirrup/*` admits `ghcr.io/stirrup/base` but not
-  `ghcr.io/stirrup/team/base` (use `ghcr.io/stirrup/*/*` for the
+  `/`: `ghcr.io/rxbynerd/*` admits `ghcr.io/rxbynerd/base` but not
+  `ghcr.io/rxbynerd/team/base` (use `ghcr.io/rxbynerd/*/*` for the
   deeper namespace). An explicit list *replaces* the default rather
   than extending it. Digest-pinned references (`@sha256:…`) are
   accepted and preferred; cryptographic verification of the digest
-  (cosign/Sigstore) is a deferred follow-up.
+  (cosign/Sigstore) is a deferred follow-up. This allowlist governs
+  only the container executor's own image pulls (via the Docker
+  Engine API); it is not consulted for the `k8s`/`k8s-sandbox`
+  executors, whose Pod image is scheduled by the cluster. A
+  deployment pulling container-executor images from Google Cloud
+  Artifact Registry (a `*.pkg.dev` host, including a GAR
+  remote/standard repository) must add that host to
+  `executor.registryAllowlist` explicitly — the default does not
+  admit any Artifact Registry host.
 - API keys and `secret://` references are resolved on the *host*
   before tool dispatch; they never enter the container's
   environment.

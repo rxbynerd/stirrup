@@ -13,7 +13,7 @@ import (
 // third-party reference is rejected by default so a misconfigured run cannot
 // silently pull an arbitrary image.
 var defaultRegistryAllowlist = []string{
-	"ghcr.io/stirrup/*",
+	"ghcr.io/rxbynerd/*",
 	"docker.io/library/*",
 }
 
@@ -30,7 +30,7 @@ func checkImageAllowed(image string, allowlist []string) error {
 
 	ref := normaliseImageRef(image)
 	// A normalised ref ending in "/" has an empty final path segment (e.g.
-	// "ghcr.io/stirrup/"), which "ghcr.io/stirrup/*" would match because the
+	// "ghcr.io/rxbynerd/"), which "ghcr.io/rxbynerd/*" would match because the
 	// glob "*" accepts the empty string. Reject it here with a clear message
 	// rather than handing a malformed reference to the engine to fail on.
 	if strings.HasSuffix(ref, "/") {
@@ -51,11 +51,11 @@ func checkImageAllowed(image string, allowlist []string) error {
 // normaliseImageRef expands a Docker image reference to its fully-qualified
 // "host/repository" form with the tag and digest removed, mirroring the
 // reference-resolution rules the engine applies:
-//   - "ubuntu"                 -> "docker.io/library/ubuntu"
-//   - "ubuntu:26.04"           -> "docker.io/library/ubuntu"
-//   - "myorg/app:tag"          -> "docker.io/myorg/app"
-//   - "ghcr.io/stirrup/base"   -> "ghcr.io/stirrup/base"
-//   - "host:5000/team/img@sha" -> "host:5000/team/img"
+//   - "ubuntu"                  -> "docker.io/library/ubuntu"
+//   - "ubuntu:26.04"            -> "docker.io/library/ubuntu"
+//   - "myorg/app:tag"           -> "docker.io/myorg/app"
+//   - "ghcr.io/rxbynerd/base"   -> "ghcr.io/rxbynerd/base"
+//   - "host:5000/team/img@sha"  -> "host:5000/team/img"
 //
 // A registry host is recognised by a "." or ":" in the first path segment, or
 // the literal "localhost"; otherwise the reference is treated as a Docker Hub
