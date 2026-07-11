@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,6 +251,47 @@ func TestExec_Timeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("unexpected error: %v", err)
+	}
+	// A genuine deadline expiry must satisfy errors.Is against the shared
+	// executor sentinel (#468: hook.isTimeoutErr keys off this instead of
+	// matching the formatted text).
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("err = %v, want errors.Is(err, ErrTimeout)", err)
+	}
+}
+
+// TestExec_CancelledContext_NotErrTimeout is the #469 regression: a
+// context cancellation that is NOT a deadline expiry (e.g. a SIGTERM-driven
+// parent-context cancel) must not be reported as a timeout, and it must not
+// satisfy errors.Is(err, ErrTimeout) — even though a large configured
+// timeout (60s) is in play, only 200ms actually elapsed. Output already
+// captured before the cancel must still be returned (matches local's
+// pre-existing partial-output behaviour; container.go and k8s_execcore.go
+// previously discarded it — see #473).
+func TestExec_CancelledContext_NotErrTimeout(t *testing.T) {
+	exec, _ := newTestExecutor(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	result, err := exec.Exec(ctx, "echo started; sleep 30", 60*time.Second)
+	if err == nil {
+		t.Fatal("expected an error from the cancelled command")
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Errorf("err = %v, must not satisfy errors.Is(err, ErrTimeout): the command was cancelled after 200ms, not deadline-expired after the configured 60s", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want errors.Is(err, context.Canceled)", err)
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Errorf("err = %v, must not claim the command timed out", err)
+	}
+	if result == nil || !strings.Contains(result.Stdout, "started") {
+		t.Errorf("result = %+v, want Stdout to preserve output captured before the cancel", result)
 	}
 }
 
