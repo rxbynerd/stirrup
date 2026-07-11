@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"text/template"
 	"unicode"
 	"unicode/utf8"
 )
@@ -165,6 +166,12 @@ type RunConfig struct {
 	// SystemPromptOverride, when set, is used as the complete system prompt
 	// preamble, bypassing prompt_builder mode selection. Workspace path,
 	// turn budget, and dynamic_context sections are still appended.
+	//
+	// The value is used verbatim and is never template-parsed, so prompts
+	// compiled by an external prompt-management system (e.g. Langfuse)
+	// pass through untouched even when they contain "{{" sequences.
+	// Mutually exclusive with promptBuilder.template and
+	// promptBuilder.promptModel — see ValidateRunConfig.
 	SystemPromptOverride string `json:"systemPromptOverride,omitempty"`
 
 	// RuleOfTwo carries the operator override for the "Agents Rule of
@@ -343,6 +350,48 @@ func (rc *RunConfig) EffectiveToolDispatchMaxParallel() int {
 		return DefaultToolDispatchMaxParallel
 	}
 	return rc.ToolDispatch.MaxParallel
+}
+
+// DefaultModel is the model the harness falls back to when neither the
+// config nor the CLI names one. The model-router factory and the CLI
+// --model flag default must agree with this value.
+const DefaultModel = "claude-sonnet-4-6"
+
+// EffectivePromptModel returns the model identity the system prompt
+// templates render against. Resolution order:
+//
+//  1. promptBuilder.promptModel — the explicit override for
+//     prompt/model comparison runs;
+//  2. the model that will actually serve this run's turns: for a
+//     per-mode router, the model part of modeModels[mode] (values are
+//     "provider/model"; a value without a slash is a bare model name),
+//     otherwise modelRouter.model;
+//  3. DefaultModel, mirroring the router factory's fallback so the
+//     rendered tier matches the model used on the wire.
+//
+// Dynamic routers may switch models between turns, but the prompt is
+// rendered once per run against the router's default model: re-rendering
+// per turn would invalidate provider prompt caches and change agent
+// guidance mid-run.
+func (rc *RunConfig) EffectivePromptModel() string {
+	if rc == nil {
+		return DefaultModel
+	}
+	if m := rc.PromptBuilder.PromptModel; m != "" {
+		return m
+	}
+	if rc.ModelRouter.Type == "per-mode" {
+		if spec, ok := rc.ModelRouter.ModeModels[rc.Mode]; ok && spec != "" {
+			if _, model, found := strings.Cut(spec, "/"); found {
+				return model
+			}
+			return spec
+		}
+	}
+	if rc.ModelRouter.Model != "" {
+		return rc.ModelRouter.Model
+	}
+	return DefaultModel
 }
 
 // RuleOfTwoConfig configures the Rule-of-Two structural invariant. The
@@ -965,8 +1014,29 @@ type ModelRouterConfig struct {
 
 // PromptBuilderConfig selects the prompt builder implementation.
 type PromptBuilderConfig struct {
-	Type     string `json:"type"`               // "default" | "custom"
-	Template string `json:"template,omitempty"` // for custom
+	Type string `json:"type"` // "default" | "composed"
+
+	// Template, when set, is an operator-supplied Go text/template that
+	// replaces the shipped mode prompt as the system prompt preamble.
+	// Structural fragments (workspace path, turn budget, workspace tree,
+	// git status, dynamic context) are still appended. The template
+	// renders against the same data surface as the shipped mode prompts
+	// (.Model, .Mode, .Tier, .ModelIs), so model-conditional content and
+	// the promptModel override keep working for tuned prompts. Syntax is
+	// checked in ValidateRunConfig; execution failures abort the run at
+	// component construction. Mutually exclusive with
+	// systemPromptOverride.
+	Template string `json:"template,omitempty"`
+
+	// PromptModel, when set, overrides the model identity used to render
+	// the system prompt templates without changing which model is called
+	// on the wire. This enables prompt/model comparisons: e.g. running
+	// the "claude-fable-5 prompt" against a newer model to isolate
+	// prompt-content effects from model effects. Empty (the default)
+	// derives the prompt model from the model router — see
+	// EffectivePromptModel. Mutually exclusive with systemPromptOverride,
+	// which bypasses template rendering entirely.
+	PromptModel string `json:"promptModel,omitempty"`
 }
 
 // ContextStrategyConfig selects the context strategy implementation.
@@ -2102,6 +2172,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateRequiredType("provider", config.Provider.Type, validProviderTypes, &errs)
 	validateOptionalType("modelRouter", config.ModelRouter.Type, validModelRouterTypes, &errs)
 	validateOptionalType("promptBuilder", config.PromptBuilder.Type, validPromptBuilderTypes, &errs)
+	validatePromptBuilderConfig(config, &errs)
 	validateOptionalType("contextStrategy", config.ContextStrategy.Type, validContextStrategyTypes, &errs)
 	validateContextStrategyBudget(config.ContextStrategy, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
@@ -2237,6 +2308,35 @@ func validateOptionalType(name, value string, valid map[string]bool, errs *[]str
 	}
 	if !valid[value] {
 		*errs = append(*errs, fmt.Sprintf("unsupported %s type %q", name, value))
+	}
+}
+
+// validatePromptBuilderConfig enforces the mutual exclusions between the
+// three prompt-content surfaces and syntax-checks operator templates.
+//
+// systemPromptOverride bypasses template rendering entirely, so combining
+// it with promptBuilder.template or promptBuilder.promptModel would
+// silently discard the latter — in an eval sweep that silent no-op would
+// masquerade as a valid prompt/model comparison, so both combinations are
+// rejected loudly instead of resolved by precedence.
+//
+// The template syntax check uses a bare text/template.Parse: the shipped
+// data surface is plain struct fields and methods, so no FuncMap is
+// needed, and a prompt containing external-system placeholders (e.g. an
+// uncompiled Langfuse "{{var}}") fails here rather than at run start.
+func validatePromptBuilderConfig(config *RunConfig, errs *[]string) {
+	if config.SystemPromptOverride != "" {
+		if config.PromptBuilder.Template != "" {
+			*errs = append(*errs, "systemPromptOverride and promptBuilder.template are mutually exclusive: the override would silently discard the template")
+		}
+		if config.PromptBuilder.PromptModel != "" {
+			*errs = append(*errs, "systemPromptOverride and promptBuilder.promptModel are mutually exclusive: the override bypasses template rendering, so the prompt model would have no effect")
+		}
+	}
+	if tmpl := config.PromptBuilder.Template; tmpl != "" {
+		if _, err := template.New("promptBuilder.template").Parse(tmpl); err != nil {
+			*errs = append(*errs, fmt.Sprintf("promptBuilder.template does not parse as a Go text/template: %v", err))
+		}
 	}
 }
 
