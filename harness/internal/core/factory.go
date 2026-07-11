@@ -1008,6 +1008,28 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "find_files") && caps.CanRead {
 		registry.Register(builtins.FindFilesTool(exec))
 	}
+	// The four git_* tools are read-only (WorkspaceMutating: false,
+	// RequiresApproval: false) and are part of DefaultReadOnlyBuiltInTools(),
+	// so they are gated on CanRead like the read-only tools above rather
+	// than CanExec like run_command below. Unlike grep_files/find_files
+	// they have no CanRead-only fallback: every call shells out via
+	// exec.Exec (builtins/git.go:runGit). On a CanRead-but-not-CanExec
+	// executor (e.g. api.APIExecutor backing a VcsBackend review run)
+	// they still register, but return a clear "git is not available"
+	// error at invocation instead of silently disappearing from a tool
+	// list the model was told to expect.
+	if toolEnabled(cfg.BuiltIn, "git_status") && caps.CanRead {
+		registry.Register(builtins.GitStatusTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "git_changed_files") && caps.CanRead {
+		registry.Register(builtins.GitChangedFilesTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "git_diff") && caps.CanRead {
+		registry.Register(builtins.GitDiffTool(exec))
+	}
+	if toolEnabled(cfg.BuiltIn, "git_show") && caps.CanRead {
+		registry.Register(builtins.GitShowTool(exec))
+	}
 	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
 		registry.Register(builtins.RunCommandTool(exec))
 	}

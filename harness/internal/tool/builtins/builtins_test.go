@@ -608,12 +608,12 @@ func TestRunCommandTool_EmptyCommand(t *testing.T) {
 	}
 }
 
-// --- RegisterBuiltins tests ---
+// --- registerAllForTest tests ---
 
-func TestRegisterBuiltins(t *testing.T) {
+func TestRegisterAllForTest(t *testing.T) {
 	mock := &mockExecutor{}
 	registry := tool.NewRegistry()
-	RegisterBuiltins(registry, mock)
+	registerAllForTest(registry, mock)
 
 	expectedTools := []string{
 		"read_file",
@@ -757,7 +757,7 @@ func extractJSONExample(desc string) (string, bool) {
 func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 	mock := &mockExecutor{}
 	registry := tool.NewRegistry()
-	RegisterBuiltins(registry, mock)
+	registerAllForTest(registry, mock)
 
 	for _, def := range registry.List() {
 		t.Run(def.Name, func(t *testing.T) {
@@ -796,7 +796,7 @@ func TestBuiltinDescriptions_EnrichedShape(t *testing.T) {
 // edit package (it is registered via the factory's strategy wrapper).
 func TestBuiltinInputExamples_MatchDescription(t *testing.T) {
 	mock := &mockExecutor{}
-	// Construct directly rather than via RegisterBuiltins so spawn_agent
+	// Construct directly rather than via registerAllForTest so spawn_agent
 	// (registered by the factory in production) is covered here too. The nil
 	// spawner is fine: only Definition() is exercised, not the handler.
 	tools := []*tool.Tool{
@@ -939,7 +939,7 @@ func TestExtractJSONExample(t *testing.T) {
 }
 
 // TestSpawnAgentTool_EnrichedShape applies the same description contract
-// to spawn_agent, which is wired separately from RegisterBuiltins (the
+// to spawn_agent, which is wired separately from registerAllForTest (the
 // factory injects a real spawner closure). A trivial spawner suffices
 // because only the static tool definition is under test.
 func TestSpawnAgentTool_EnrichedShape(t *testing.T) {

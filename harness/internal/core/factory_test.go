@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	osexec "os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -1349,6 +1350,94 @@ func TestApprovalRequiredToolSet(t *testing.T) {
 	// be removed.
 	if approval["spawn_agent"] {
 		t.Error("spawn_agent should not be in approvalRequiredToolSet — it is added post-loop-construction in BuildLoopWithTransport")
+	}
+}
+
+// --- git tool wiring (#448) ---
+
+// TestBuildToolRegistry_DefaultReadOnlyIncludesGitTools is the regression
+// test for #448: the git_* tools were listed in
+// types.DefaultReadOnlyBuiltInTools(), passed validBuiltInToolNames, and
+// were documented as default read-only tools, but buildToolRegistry — the
+// constructor the live agentic loop actually uses (see
+// BuildLoopWithTransport) — never registered them. The tool that DID wire
+// them (the old exported RegisterBuiltins, now the test-only
+// registerAllForTest in builtins/register_test.go) was reachable only from
+// tests, so the gap shipped silently. This test builds a registry the same
+// way applyModeDefaults(harness/cmd/stirrup/cmd/harness.go) configures a
+// bare read-only run — cfg.Tools.BuiltIn = DefaultReadOnlyBuiltInTools() —
+// and asserts all four git tools are present via the live constructor.
+func TestBuildToolRegistry_DefaultReadOnlyIncludesGitTools(t *testing.T) {
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	if err != nil {
+		t.Fatalf("new local executor: %v", err)
+	}
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{
+		BuiltIn: types.DefaultReadOnlyBuiltInTools(),
+	})
+
+	registered := make(map[string]bool)
+	for _, def := range registry.List() {
+		registered[def.Name] = true
+	}
+
+	for _, name := range []string{"git_status", "git_changed_files", "git_diff", "git_show"} {
+		if !registered[name] {
+			t.Errorf("buildToolRegistry did not register %q for a default read-only tool list", name)
+		}
+	}
+}
+
+// TestBuildToolRegistry_GitStatusExecutes proves a git tool resolved from
+// the live registry actually runs, not just that its name is listed — the
+// registration alone would still pass if the tool constructor were wired
+// with the wrong executor or gate. git_status is run against a real
+// temporary git repository via the same LocalExecutor production uses.
+func TestBuildToolRegistry_GitStatusExecutes(t *testing.T) {
+	if _, err := osexec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	dir = resolved
+
+	runGitCmd := func(args ...string) {
+		t.Helper()
+		c := osexec.Command("git", args...)
+		c.Dir = dir
+		c.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+		)
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGitCmd("init", "-q")
+	runGitCmd("config", "user.email", "test@example.com")
+	runGitCmd("config", "user.name", "test")
+
+	exec, err := executor.NewLocalExecutor(dir)
+	if err != nil {
+		t.Fatalf("new local executor: %v", err)
+	}
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{
+		BuiltIn: types.DefaultReadOnlyBuiltInTools(),
+	})
+
+	gitStatus := registry.Resolve("git_status")
+	if gitStatus == nil {
+		t.Fatal("git_status not resolvable from the live registry")
+	}
+	res, err := gitStatus.StructuredHandler(context.Background(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("git_status execution failed: %v", err)
+	}
+	if !strings.Contains(res.Text, "working tree clean") {
+		t.Errorf("expected a clean working tree report, got: %s", res.Text)
 	}
 }
 
