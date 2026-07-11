@@ -131,10 +131,16 @@ func (s *UdiffStrategy) Apply(ctx context.Context, input json.RawMessage, exec e
 			}, nil
 		}
 		if !applied {
+			oldContent := hunk.oldLines()
+			targetPos := hunk.oldStart - 1 + offset
+			lo, hi := hunkSearchWindow(targetPos, len(oldContent), len(lines))
 			return &EditResult{
 				Path:    params.Path,
 				Applied: false,
-				Error:   fmt.Sprintf("hunk %d: could not find matching location (tried exact, whitespace-insensitive, and fuzzy matching)", i+1),
+				Error: fmt.Sprintf(
+					"hunk %d: no match within lines %d-%d of the declared start line %d (tried exact, whitespace-insensitive, and fuzzy matching in that range); the file may have changed since the diff was generated — re-read it and regenerate the diff against its current content",
+					i+1, lo+1, hi+len(oldContent), hunk.oldStart,
+				),
 			}, nil
 		}
 		lines = newLines
@@ -395,8 +401,18 @@ func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []s
 		return true, result, newOffset, nil
 	}
 
-	// Exact match: search the entire file in case the offset is wrong.
-	for pos := 0; pos <= len(lines)-len(oldContent); pos++ {
+	// All remaining strategies are inexact scans over lines. Bound them to a
+	// window around the hunk's declared position (see hunkSearchWindow):
+	// unbounded scans take the first exact-after-drift, whitespace-equal, or
+	// best-fuzzy match anywhere in the file, which silently applies the hunk
+	// to an unrelated but coincidentally similar block when one exists
+	// earlier in the file. A wrong-region edit that still reports
+	// Applied=true is worse than failing closed.
+	lo, hi := hunkSearchWindow(targetPos, len(oldContent), len(lines))
+
+	// Exact match: search the declared region in case only the offset is
+	// wrong (e.g. an earlier hunk in the diff mis-declared its line count).
+	for pos := lo; pos <= hi; pos++ {
 		if pos == targetPos {
 			continue // already tried
 		}
@@ -411,7 +427,7 @@ func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []s
 	// Strategy 2: Whitespace-insensitive match.
 	// When matching inexactly, we preserve the original file's context lines
 	// and only substitute the added lines from the diff.
-	for pos := 0; pos <= len(lines)-len(oldContent); pos++ {
+	for pos := lo; pos <= hi; pos++ {
 		if matchWhitespaceInsensitive(lines, oldContent, pos) {
 			replacement := buildReplacement(h, lines, pos)
 			result := spliceLines(lines, pos, len(oldContent), replacement)
@@ -422,7 +438,7 @@ func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []s
 	}
 
 	// Strategy 3: Fuzzy match (Levenshtein-based).
-	bestPos, bestSim := findFuzzyMatch(lines, oldContent)
+	bestPos, bestSim := findFuzzyMatch(lines, oldContent, lo, hi)
 	if bestSim >= s.fuzzyThreshold {
 		replacement := buildReplacement(h, lines, bestPos)
 		result := spliceLines(lines, bestPos, len(oldContent), replacement)
@@ -432,6 +448,37 @@ func (s *UdiffStrategy) applyHunk(lines []string, h hunk, offset int) (bool, []s
 	}
 
 	return false, nil, 0, nil
+}
+
+// hunkWindowSlack is the fixed number of lines of tolerance added on either
+// side of a hunk's declared position when bounding the inexact fallback
+// scans. It absorbs the handful of lines of drift that come from an
+// earlier hunk in the same diff miscounting its line range, without being
+// wide enough to reach an unrelated block elsewhere in the file.
+const hunkWindowSlack = 20
+
+// hunkWindowMultiplier scales the search window with hunk size. A longer
+// hunk is a more specific pattern — matching it well requires more lines to
+// agree — so it can tolerate proportionally more positional drift without
+// materially increasing the risk of matching the wrong region.
+const hunkWindowMultiplier = 2
+
+// hunkSearchWindow returns the inclusive range [lo, hi] of starting
+// positions the whitespace-insensitive and fuzzy fallbacks (and the
+// exact-match re-scan) are allowed to search, centred on the hunk's
+// declared position (target) and clamped to valid positions within a file
+// of lineCount lines holding a pattern of patternLen lines.
+func hunkSearchWindow(target, patternLen, lineCount int) (lo, hi int) {
+	radius := hunkWindowSlack + hunkWindowMultiplier*patternLen
+	lo = target - radius
+	if lo < 0 {
+		lo = 0
+	}
+	hi = target + radius
+	if maxPos := lineCount - patternLen; hi > maxPos {
+		hi = maxPos
+	}
+	return lo, hi
 }
 
 // buildReplacement constructs the replacement lines for a hunk applied at the
@@ -489,9 +536,12 @@ func matchWhitespaceInsensitive(lines, pattern []string, pos int) bool {
 	return true
 }
 
-// findFuzzyMatch slides the pattern over the file lines and returns the position
-// with the highest average line-by-line similarity ratio.
-func findFuzzyMatch(lines, pattern []string) (bestPos int, bestSim float64) {
+// findFuzzyMatch slides the pattern over lines[lo:hi+len(pattern)] and
+// returns the position with the highest average line-by-line similarity
+// ratio. lo and hi bound the search to the hunk's declared region (see
+// hunkSearchWindow). If lo > hi (no valid position in range), it reports
+// no match.
+func findFuzzyMatch(lines, pattern []string, lo, hi int) (bestPos int, bestSim float64) {
 	if len(pattern) == 0 || len(lines) < len(pattern) {
 		return -1, 0
 	}
@@ -499,7 +549,7 @@ func findFuzzyMatch(lines, pattern []string) (bestPos int, bestSim float64) {
 	bestPos = -1
 	bestSim = 0
 
-	for pos := 0; pos <= len(lines)-len(pattern); pos++ {
+	for pos := lo; pos <= hi; pos++ {
 		sim := blockSimilarity(lines[pos:pos+len(pattern)], pattern)
 		if sim > bestSim {
 			bestSim = sim
