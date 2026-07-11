@@ -6,6 +6,20 @@ Registry (GAR). This document is the operator walkthrough for the
 GCP-side bootstrap, the GitHub-side configuration, and the verification
 steps that confirm the dual-publish is working.
 
+Two images ride the same pipeline:
+
+- **`stirrup`** (`./Dockerfile`) — the distroless harness image.
+- **`stirrup-sandbox`** (`./Dockerfile.sandbox`) — the Debian-based
+  sandbox image agent workloads run in. It ships the `/bin/sh`, `tar`,
+  `ls`, and `git` the container/k8s executors exec (see
+  [`executors/k8s.md`](executors/k8s.md)). Published to GHCR as
+  `ghcr.io/rxbynerd/stirrup-sandbox` with the same tag scheme, and to
+  GAR under the `${GAR_IMAGE}-sandbox` image name at release time.
+
+The registry, IAM, and gating walkthrough below is written against the
+harness image; everything applies to the sandbox image identically
+unless a difference is called out.
+
 The architectural sibling is [`credential-federation.md`](credential-federation.md);
 this doc covers a Workload Identity Federation deployment in the
 specific shape stirrup's CI workflow consumes.

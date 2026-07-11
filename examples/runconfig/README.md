@@ -142,7 +142,11 @@ active and Rule of Two is enforced.
   // applied regardless of what the file says.
   "executor": {
     "type": "container",
-    "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest",
+    // The default registry allowlist admits only ghcr.io/stirrup/*
+    // and docker.io/library/*; the project's images live under
+    // ghcr.io/rxbynerd/, so the allowlist must say so explicitly.
+    "registryAllowlist": ["ghcr.io/rxbynerd/*"],
     "runtime": "runsc",
     "network": { "mode": "none" },
     "resources": { "cpus": 2.0, "memoryMb": 2048, "diskMb": 8192, "pids": 256 }
