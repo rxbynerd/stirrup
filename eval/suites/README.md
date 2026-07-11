@@ -118,3 +118,15 @@ at judge-evaluation time. Without any usable credential (e.g. a
 fork without the federation rule or a static key), the eval jobs
 skip their live-run steps gracefully with a warning instead of
 failing.
+
+Both jobs run a `stirrup harness --dry-run` preflight before any
+task executes, performing the real credential exchange without
+spending completion tokens. The Anthropic-side federation rule
+constrains which OIDC refs it accepts: a refused exchange on a
+non-main ref skips the per-push gate with a warning (widening the
+rule in the Anthropic console enables live branch runs, no repo
+change needed), a refusal on `main` fails the gate as an
+infrastructure regression, and a refusal at release time fails the
+matrix cell. In every case the log names the credential failure
+explicitly — a wall of per-task "regressions" is never the correct
+reading of an auth problem.

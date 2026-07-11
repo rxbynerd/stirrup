@@ -877,6 +877,37 @@ jobs:
             echo "::warning::No Anthropic credentials available. Skipping extended eval runs."
           fi
 
+      # Preflight the credential exchange so a WIF refusal for a tag
+      # ref surfaces as a named credential failure instead of a page
+      # of bogus per-task "regressions" (the failure mode observed in
+      # ci.yml run 29168741554 for a branch ref). Unlike the per-push
+      # gate's ref-sensitive skip, a failed preflight here FAILS the
+      # matrix cell outright: this job is already structurally
+      # non-blocking (not in release.needs), and a green-but-vacuous
+      # sweep on a release run would misread as "evals passed". If
+      # the federation rule refuses refs/tags/v* tokens, widen it in
+      # the Anthropic console — the error below says exactly that.
+      - name: Preflight Anthropic credential exchange
+        if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_MODEL: ${{ matrix.model }}
+        run: |
+          mkdir -p preflight-workspace
+          if ! ./stirrup harness --dry-run \
+              --model "$EVAL_MODEL" \
+              --workspace preflight-workspace \
+              --trace preflight-trace.jsonl \
+              --prompt "preflight" \
+              --anthropic-federation-rule-id fdrl_01QJMFE86qFDdWzQXEekhYjY \
+              --anthropic-organization-id 5848ccdc-495f-490b-9275-2caab9db344d \
+              --anthropic-service-account-id svac_01Tf7i7VwZm6WRAFjNAawPw9 \
+              --anthropic-from-github-actions; then
+            echo "::error::Extended eval preflight failed for ${GITHUB_REF}: credential resolution or the provider probe failed (see the preflight report above). This is a credential/infrastructure failure, NOT an eval regression. If the WIF exchange refused a tag-ref OIDC token, widen federation rule fdrl_01QJMFE86qFDdWzQXEekhYjY in the Anthropic console to accept refs/tags/v*. The release itself is unaffected (this job is not in release.needs)."
+            exit 1
+          fi
+
       - name: Run baselined eval suites
         if: steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
         shell: bash
