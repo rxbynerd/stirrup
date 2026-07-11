@@ -56,6 +56,7 @@ type OpenAIResponsesAdapter struct {
 	queryParams  map[string]string
 	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
 	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	RetryPolicy  RetryPolicy            // optional, set by factory; zero value disables retry
 	Logger       *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
 	// Registry resolves per-(provider, model) quirks at the top of
 	// every Stream call. No rules target openai-responses in v1; the
@@ -870,7 +871,18 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	req.Header.Set("Accept", "text/event-stream")
 	setOpenAIAuthHeader(req, apiKey, o.apiKeyHeader)
 
-	resp, err := o.httpClient.Do(req)
+	// DoWithRetry retries only this pre-stream call (connection errors, or a
+	// 429/5xx on the initial response). It is never invoked again once the
+	// channel below is returned, so a failure after streaming has begun is
+	// never replayed — the same boundary the openai-compatible adapter
+	// relies on.
+	resp, err := DoWithRetry(ctx, o.httpClient, req, RetryOptions{
+		Policy:       o.RetryPolicy,
+		Logger:       o.Logger,
+		Metrics:      o.Metrics,
+		ProviderType: "openai-responses",
+		Model:        params.Model,
+	})
 	if err != nil {
 		o.recordLatency(ctx, start, metricAttrs)
 		// The composed URL carries o.baseURL and o.queryParams, either of

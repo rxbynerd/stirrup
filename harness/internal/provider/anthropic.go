@@ -55,13 +55,14 @@ const (
 
 // AnthropicAdapter implements ProviderAdapter for the Anthropic Messages API.
 type AnthropicAdapter struct {
-	bearer     credential.BearerTokenFunc
-	authMode   AuthMode
-	httpClient *http.Client
-	baseURL    string                 // overridable for testing
-	Tracer     oteltrace.Tracer       // optional, set by factory for span instrumentation
-	Metrics    *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
-	Logger     *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
+	bearer      credential.BearerTokenFunc
+	authMode    AuthMode
+	httpClient  *http.Client
+	baseURL     string                 // overridable for testing
+	Tracer      oteltrace.Tracer       // optional, set by factory for span instrumentation
+	Metrics     *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
+	RetryPolicy RetryPolicy            // optional, set by factory; zero value disables retry
+	Logger      *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
 
 	// Registry resolves per-(provider, model) quirks at the top of every
 	// Stream call. The constructor seeds it with quirks.DefaultRegistry()
@@ -567,7 +568,18 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	}
 	req.Header.Set("anthropic-version", anthropicAPIVersion)
 
-	resp, err := a.httpClient.Do(req)
+	// DoWithRetry retries only this pre-stream call (connection errors, or a
+	// 429/5xx on the initial response). It is never invoked again once the
+	// channel below is returned, so a failure after streaming has begun is
+	// never replayed — the same boundary the openai-compatible adapter
+	// relies on.
+	resp, err := DoWithRetry(ctx, a.httpClient, req, RetryOptions{
+		Policy:       a.RetryPolicy,
+		Logger:       a.Logger,
+		Metrics:      a.Metrics,
+		ProviderType: "anthropic",
+		Model:        params.Model,
+	})
 	if err != nil {
 		a.recordLatency(ctx, start, metricAttrs)
 		// a.baseURL is operator-configurable and may carry a credential in

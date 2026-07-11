@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	sdkretry "github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -55,7 +56,19 @@ type BedrockAdapter struct {
 // credProvider, when non-nil, is injected into the AWS config to override the
 // default credential chain — used for cross-cloud federation scenarios
 // (e.g. GKE Workload Identity → STS AssumeRoleWithWebIdentity).
-func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvider) (*BedrockAdapter, error) {
+//
+// retryPolicy carries the shared providerRetry knob (types.ProviderRetryConfig
+// via RetryPolicyFromConfig). Bedrock has no raw *http.Client seam the way
+// the net/http-based adapters do — ConverseStream goes through the AWS SDK's
+// own transport — so DoWithRetry cannot be reused here; instead MaxAttempts
+// and MaxDelay are mapped onto the SDK's own Standard retryer, which already
+// retries throttling/5xx with its own exponential-jitter backoff. This is
+// the only way the knob can reach Bedrock, and it deliberately does not try
+// to replicate DoWithRetry's Retry-After parsing or wall-clock budget, which
+// have no SDK equivalent. A MaxAttempts < 1 (retry disabled) swaps in
+// aws.NopRetryer so an explicit "no retries" policy is honoured rather than
+// silently falling back to the SDK's own default of 3 attempts.
+func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvider, retryPolicy RetryPolicy) (*BedrockAdapter, error) {
 	var opts []func(*config.LoadOptions) error
 	if region != "" {
 		opts = append(opts, config.WithRegion(region))
@@ -66,6 +79,17 @@ func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvi
 	if credProvider != nil {
 		opts = append(opts, config.WithCredentialsProvider(credProvider))
 	}
+	opts = append(opts, config.WithRetryer(func() aws.Retryer {
+		if retryPolicy.MaxAttempts < 1 {
+			return aws.NopRetryer{}
+		}
+		return sdkretry.NewStandard(func(o *sdkretry.StandardOptions) {
+			o.MaxAttempts = retryPolicy.MaxAttempts
+			if retryPolicy.MaxDelay > 0 {
+				o.Backoff = sdkretry.NewExponentialJitterBackoff(retryPolicy.MaxDelay)
+			}
+		})
+	}))
 
 	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
