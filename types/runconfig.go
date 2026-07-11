@@ -1024,16 +1024,17 @@ type ExecutorConfig struct {
 	// RegistryAllowlist constrains which container image references the
 	// container executor may run. Each entry is a path.Match glob over the
 	// normalised reference (registry host + repository path, tag/digest
-	// stripped) — e.g. "ghcr.io/stirrup/*" or "docker.io/library/*". An empty
-	// list lets the executor fall back to its built-in default (the project's
-	// own ghcr.io/stirrup images plus Docker Hub official "library/*"
-	// images). A reference matching no pattern is rejected before any
-	// container is created. Only meaningful for executor.type == "container".
+	// stripped) — e.g. "ghcr.io/rxbynerd/*" or "docker.io/library/*". An
+	// empty list lets the executor fall back to its built-in default (the
+	// project's own ghcr.io/rxbynerd images plus Docker Hub official
+	// "library/*" images). A reference matching no pattern is rejected
+	// before any container is created. Only meaningful for
+	// executor.type == "container".
 	//
 	// Globbing follows path.Match semantics: "*" matches within a single path
-	// segment and does NOT cross "/". So "ghcr.io/stirrup/*" matches
-	// "ghcr.io/stirrup/base" but not "ghcr.io/stirrup/team/base"; allow the
-	// deeper namespace with an explicit "ghcr.io/stirrup/*/*" entry.
+	// segment and does NOT cross "/". So "ghcr.io/rxbynerd/*" matches
+	// "ghcr.io/rxbynerd/base" but not "ghcr.io/rxbynerd/team/base"; allow the
+	// deeper namespace with an explicit "ghcr.io/rxbynerd/*/*" entry.
 	RegistryAllowlist []string `json:"registryAllowlist,omitempty"`
 
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
