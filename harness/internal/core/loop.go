@@ -61,8 +61,19 @@ const (
 	defaultMaxContextTokens = 200_000
 
 	// defaultReserveForResponse is the number of tokens reserved for the
-	// model's response within the context window.
+	// model's response within the context window, for any budget large
+	// enough to absorb it. See effectiveReserveForResponse for the
+	// small-budget case.
 	defaultReserveForResponse = 64_000
+
+	// smallContextReserveDivisor is the fraction of a small
+	// ContextStrategy.MaxTokens budget reserved for the model's response
+	// once the flat defaultReserveForResponse would consume the whole
+	// window (see effectiveReserveForResponse). Skewed toward history
+	// over completion length: an agentic coding turn's context is
+	// typically dominated by file contents and tool output, not the
+	// model's own response.
+	smallContextReserveDivisor = 4
 
 	// defaultTemperature is the sampling temperature applied to every
 	// provider call when RunConfig.Temperature is nil. A low value
@@ -101,6 +112,40 @@ const (
 	// wrapping each tool definition (type, function wrapper, field keys).
 	toolDefinitionOverheadTokens = 10
 )
+
+// effectiveReserveForResponse resolves the response-token reserve
+// subtracted from maxTokens before the context strategy packs message
+// history, and the max output tokens requested from the provider.
+//
+// Historically both call sites used the flat defaultReserveForResponse
+// (64k) unconditionally. For any config.ContextStrategy.MaxTokens at or
+// below that constant, `available := budget.MaxTokens -
+// budget.ReserveForResponse` (computed by every context strategy) goes
+// non-positive, and the strategy short-circuits to its
+// minimum-preserved-messages branch on every turn — silently dropping
+// the run's actual history, including the original user prompt on
+// turns after the first (#444). This is squarely in the small-context
+// local-model regime (LM Studio / Ollama commonly run 4k-32k windows).
+//
+// Below the flat-reserve threshold, scale the reserve down to a
+// quarter of maxTokens instead: the resulting budget is always
+// positive, and — because a quarter of even a very small window still
+// leaves the majority for history — the context strategy gets a real,
+// useful budget rather than a degenerate one. Configs whose maxTokens
+// is 0 (unset — the loop assumes defaultMaxContextTokens) or above
+// defaultReserveForResponse are untouched byte-for-byte, so this is
+// not a behaviour change for any config that did not already hit the
+// bug.
+func effectiveReserveForResponse(maxTokens int) int {
+	if maxTokens <= 0 || maxTokens > defaultReserveForResponse {
+		return defaultReserveForResponse
+	}
+	reserve := maxTokens / smallContextReserveDivisor
+	if reserve < 1 {
+		reserve = 1
+	}
+	return reserve
+}
 
 // Run executes the agentic loop:
 //
@@ -677,6 +722,25 @@ func (l *AgenticLoop) runInnerLoop(
 		if config.ContextStrategy.MaxTokens > 0 {
 			maxTokens = config.ContextStrategy.MaxTokens
 		}
+		responseReserve := effectiveReserveForResponse(maxTokens)
+		if turn == 0 && responseReserve < defaultReserveForResponse {
+			// One warning per run (turn 0 only): maxTokens is constant
+			// across turns, so re-emitting this every turn would just be
+			// noise. See effectiveReserveForResponse for why the reserve
+			// is scaled down instead of left at the flat default.
+			l.Logger.Warn("context response reserve scaled down for small context budget",
+				"maxTokens", maxTokens,
+				"reserve", responseReserve,
+				"defaultReserve", defaultReserveForResponse,
+			)
+			_ = l.Transport.Emit(types.HarnessEvent{
+				Type: "warning",
+				Message: fmt.Sprintf(
+					"contextStrategy.maxTokens=%d is at or below the default response reserve (%d); scaling the reserve down to %d tokens so history packing keeps a usable budget",
+					maxTokens, defaultReserveForResponse, responseReserve,
+				),
+			})
+		}
 		_, contextSpan := l.Tracer.Start(l.traceCtx(ctx), "context.prepare",
 			oteltrace.WithAttributes(
 				attribute.Int("messages.before", len(messages)),
@@ -686,7 +750,7 @@ func (l *AgenticLoop) runInnerLoop(
 		preparedMessages, err := l.Context.Prepare(ctx, messages, contextpkg.TokenBudget{
 			MaxTokens:          maxTokens,
 			CurrentTokens:      currentTokens,
-			ReserveForResponse: defaultReserveForResponse,
+			ReserveForResponse: responseReserve,
 		})
 		if err != nil {
 			contextSpan.RecordError(err)
@@ -797,7 +861,7 @@ func (l *AgenticLoop) runInnerLoop(
 			System:      systemPrompt,
 			Messages:    preparedMessages,
 			Tools:       l.Tools.List(),
-			MaxTokens:   defaultReserveForResponse,
+			MaxTokens:   responseReserve,
 			Temperature: temperature,
 			ToolChoice:  turnToolChoice,
 		})

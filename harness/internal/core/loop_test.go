@@ -1321,6 +1321,120 @@ func TestEstimateTokens_OverheadSignificance(t *testing.T) {
 	}
 }
 
+// TestEffectiveReserveForResponse pins the reserve-scaling boundary
+// introduced for #444: any maxTokens above defaultReserveForResponse
+// (including the unset/negative sentinels, which resolve through the
+// loop's own defaultMaxContextTokens fallback before reaching this
+// function) is untouched byte-for-byte, so this must never change
+// behaviour for a config that did not already hit the bug. At and below
+// the boundary the reserve scales down to smallContextReserveDivisor's
+// fraction of maxTokens, floored at 1 token so the provider is never
+// asked for a zero-token completion.
+func TestEffectiveReserveForResponse(t *testing.T) {
+	tests := []struct {
+		name      string
+		maxTokens int
+		want      int
+	}{
+		{"unset (zero) uses the flat default", 0, defaultReserveForResponse},
+		{"negative uses the flat default", -1, defaultReserveForResponse},
+		{"the assumed default window is untouched", defaultMaxContextTokens, defaultReserveForResponse},
+		{"just above the boundary is untouched", defaultReserveForResponse + 1, defaultReserveForResponse},
+		{"at the boundary scales down", defaultReserveForResponse, defaultReserveForResponse / smallContextReserveDivisor},
+		{"issue #444's own repro value", 32768, 32768 / smallContextReserveDivisor},
+		{"small local-model window", 8192, 8192 / smallContextReserveDivisor},
+		{"sub-divisor budget floors at 1 token, never 0", 2, 1},
+		{"single-token budget floors at 1 token", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveReserveForResponse(tt.maxTokens); got != tt.want {
+				t.Errorf("effectiveReserveForResponse(%d) = %d, want %d", tt.maxTokens, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoop_SmallContextBudgetScalesProviderMaxTokens asserts the other
+// half of #444's root cause: the provider Stream() request's MaxTokens
+// (max_completion_tokens on the wire) was hardwired to the flat
+// defaultReserveForResponse regardless of ContextStrategy.MaxTokens, so
+// a small-context server was always asked to generate up to 64k
+// completion tokens — a request its own window cannot honour. The
+// provider must now see the same scaled-down reserve the context
+// strategy uses.
+func TestLoop_SmallContextBudgetScalesProviderMaxTokens(t *testing.T) {
+	prov := &mockProvider{
+		events: []types.StreamEvent{
+			{Type: "text_delta", Text: "ok"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		},
+	}
+	loop := buildTestLoop(prov)
+
+	config := buildTestConfig()
+	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 32768}
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	want := 32768 / smallContextReserveDivisor
+	if prov.lastParams.MaxTokens != want {
+		t.Errorf("provider StreamParams.MaxTokens = %d, want %d (scaled reserve, not the flat %d default)",
+			prov.lastParams.MaxTokens, want, defaultReserveForResponse)
+	}
+}
+
+// TestLoop_SmallContextBudgetWarnsOnce asserts item 3 of #444's fix: an
+// operator running a small-context config gets an actionable warning
+// (slog + a transport "warning" event, mirroring the provider-error
+// surfacing added by "core: surface provider errors via slog and
+// transport warning") instead of the silent truncation the issue
+// reports. maxTokens is constant for the life of a run, so the warning
+// must fire exactly once — a per-turn repeat would just be noise.
+func TestLoop_SmallContextBudgetWarnsOnce(t *testing.T) {
+	var transportBuf, logBuf bytes.Buffer
+
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "Done!"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+	loop.Transport = transport.NewStdioTransport(&transportBuf, &bytes.Buffer{})
+	loop.Logger = slog.New(slog.NewJSONHandler(&logBuf, nil))
+
+	config := buildTestConfig()
+	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 32768}
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	const needle = "context response reserve scaled down"
+	if !strings.Contains(logBuf.String(), needle) {
+		t.Errorf("expected a slog warning about the scaled-down reserve; got:\n%s", logBuf.String())
+	}
+	if n := strings.Count(logBuf.String(), needle); n != 1 {
+		t.Errorf("expected exactly 1 reserve-scaling warning log line across the run's 2 turns, got %d:\n%s", n, logBuf.String())
+	}
+	if !strings.Contains(transportBuf.String(), `"type":"warning"`) {
+		t.Errorf("expected a warning event on the transport stream for a scaled-down reserve; got:\n%s", transportBuf.String())
+	}
+	if !strings.Contains(transportBuf.String(), "32768") {
+		t.Errorf("expected the transport warning to name the configured maxTokens; got:\n%s", transportBuf.String())
+	}
+}
+
 func TestBuildLoop_InvalidConfig(t *testing.T) {
 	config := buildTestConfig()
 	config.MaxTurns = 200 // exceeds the maximum of 100
@@ -1547,12 +1661,14 @@ func TestDispatchToolCall_EmitsPrototypePollutionBlocked(t *testing.T) {
 type recordingContextStrategy struct {
 	inner    contextpkg.ContextStrategy
 	loop     *AgenticLoop
+	inputs   []int   // number of messages passed in per Prepare invocation
 	prepared []int   // number of messages returned per Prepare invocation
 	atomics  []int64 // value of loop.lastContextTokens AFTER each Prepare
 }
 
 func (r *recordingContextStrategy) Prepare(ctx context.Context, messages []types.Message, budget contextpkg.TokenBudget) ([]types.Message, error) {
 	out, err := r.inner.Prepare(ctx, messages, budget)
+	r.inputs = append(r.inputs, len(messages))
 	r.prepared = append(r.prepared, len(out))
 	// The loop stores lastContextTokens *after* Prepare returns, so
 	// snapshot via a deferred read-back at the start of the NEXT
@@ -1588,11 +1704,17 @@ func (r *recordingContextStrategy) LastCompaction() *contextpkg.CompactionEvent 
 func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	// We need a multi-turn run where the OLDEST messages dominate the
 	// token count and get dropped by compaction. Strategy: a heavy user
-	// prompt followed by short assistant turns. With MaxTokens far
-	// below defaultReserveForResponse, the sliding-window strategy
-	// preserves only the last minPreservedMessages on every Prepare call
-	// where len(messages) > 2 — and after enough short turns the heavy
-	// prompt falls off the kept window, shrinking the absolute count.
+	// prompt followed by short assistant turns. MaxTokens (50) is small
+	// enough that even effectiveReserveForResponse's quartered reserve
+	// (12) leaves only a 38-token available budget — nowhere near
+	// enough to hold the ~2000-token heavy prompt — so the sliding-
+	// window strategy still preserves only the last minPreservedMessages
+	// on every Prepare call where len(messages) > 2, and after enough
+	// short turns the heavy prompt falls off the kept window, shrinking
+	// the absolute count. This exercises the strategy's genuinely-
+	// impossible-budget path (see TestLoop_SmallContextBudgetRetainsHistory
+	// below for the case #444 fixed: a small-but-workable budget that
+	// must NOT collapse to 2 messages).
 	prov := &multiCallProvider{
 		calls: [][]types.StreamEvent{
 			{
@@ -1630,9 +1752,13 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	// heavy prompt dominates the early absolute count and gets dropped
 	// by sliding-window compaction once it falls off the preserved tail.
 	config.Prompt = strings.Repeat("a", 8000) // ~2000 tokens worth of chars
-	// available = MaxTokens (50) - defaultReserveForResponse (64000) < 0.
-	// SlidingWindow returns the last minPreservedMessages (2) when
-	// available <= 0 and len(messages) > minPreservedMessages.
+	// effectiveReserveForResponse(50) = 50/4 = 12 (quartered, since 50 is
+	// far below defaultReserveForResponse). available = 50 - 12 = 38,
+	// still positive but far too small to hold the ~2000-token heavy
+	// prompt, so SlidingWindow still drops down to minPreservedMessages
+	// once len(messages) > minPreservedMessages — same observable
+	// behaviour as the pre-#444-fix flat reserve, because at this
+	// magnitude no split of the budget is workable.
 	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 50}
 
 	if _, err := loop.Run(context.Background(), config); err != nil {
@@ -1683,6 +1809,80 @@ func TestLoop_ContextTokensGaugeReflectsCompaction(t *testing.T) {
 	// preserves only 2 small messages out of the larger history).
 	if finalValue >= afterTurn0 {
 		t.Errorf("expected final gauge value < afterTurn0; got final=%d afterTurn0=%d", finalValue, afterTurn0)
+	}
+}
+
+// TestLoop_SmallContextBudgetRetainsHistory is the regression test for
+// #444: with the harness's old flat 64k response reserve, ANY
+// ContextStrategy.MaxTokens at or below 64000 drove the sliding-window
+// budget (MaxTokens - ReserveForResponse) non-positive, so every
+// Prepare call past the first collapsed to the last minPreservedMessages
+// (2) — silently dropping the original user prompt from turn 2 onward,
+// every turn, regardless of how much of the real budget was actually
+// unused. 32768 matches the issue's own small-local-model reproduction
+// (LM Studio / Ollama commonly run 4k-32k windows).
+//
+// With effectiveReserveForResponse scaling the reserve down to a
+// quarter of maxTokens (8192) instead of leaving it flat, available
+// (32768-8192 = 24576) comfortably holds this test's modest message
+// history, so the fix under test is that NOTHING gets dropped — the
+// same scenario that used to force every Prepare call down to 2
+// messages (see TestLoop_ContextTokensGaugeReflectsCompaction, which
+// pins the still-genuinely-impossible-budget case) must now return the
+// history unchanged.
+func TestLoop_SmallContextBudgetRetainsHistory(t *testing.T) {
+	prov := &multiCallProvider{
+		calls: [][]types.StreamEvent{
+			{
+				{Type: "text_delta", Text: "ok1"},
+				{Type: "tool_call", ID: "tc_1", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "ok2"},
+				{Type: "tool_call", ID: "tc_2", Name: "test_tool", Input: map[string]any{}},
+				{Type: "message_complete", StopReason: "tool_use"},
+			},
+			{
+				{Type: "text_delta", Text: "Done!"},
+				{Type: "message_complete", StopReason: "end_turn"},
+			},
+		},
+	}
+	loop := buildTestLoop(nil)
+	loop.Provider = prov
+
+	rec := &recordingContextStrategy{
+		inner: contextpkg.NewSlidingWindowStrategy(),
+		loop:  loop,
+	}
+	loop.Context = rec
+
+	config := buildTestConfig()
+	// Same heavy prompt as TestLoop_ContextTokensGaugeReflectsCompaction
+	// (~2000 tokens), but a realistic small-context-model window instead
+	// of a pathologically tiny one.
+	config.Prompt = strings.Repeat("a", 8000)
+	config.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 32768}
+
+	if _, err := loop.Run(context.Background(), config); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(rec.prepared) < 3 {
+		t.Fatalf("expected >= 3 Prepare invocations, got %v", rec.prepared)
+	}
+	t.Logf("input lengths: %v, prepared lengths: %v", rec.inputs, rec.prepared)
+
+	for i := range rec.prepared {
+		if rec.prepared[i] != rec.inputs[i] {
+			t.Errorf("Prepare call %d truncated history from %d to %d messages (full sequence in=%v out=%v); a small-but-workable context budget must not silently drop real history (#444)",
+				i, rec.inputs[i], rec.prepared[i], rec.inputs, rec.prepared)
+		}
+	}
+	last := rec.prepared[len(rec.prepared)-1]
+	if last <= 2 {
+		t.Fatalf("expected the final Prepare call to retain more than the minimum-preserved 2 messages, got %d (full sequence=%v)", last, rec.prepared)
 	}
 }
 
