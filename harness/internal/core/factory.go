@@ -96,7 +96,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	rtr := buildRouter(config.ModelRouter, config.Provider.Type)
 
 	// 2. Prompt builder.
-	pb := buildPromptBuilder(config.PromptBuilder, config.SystemPromptOverride)
+	pb, err := buildPromptBuilder(config)
+	if err != nil {
+		return nil, fmt.Errorf("build prompt builder: %w", err)
+	}
 
 	// 3. Executor (built early because context strategy may need it).
 	// Thread the security logger into the container executor so the
@@ -781,7 +784,7 @@ func buildRouter(cfg types.ModelRouterConfig, defaultProvider string) router.Mod
 		if defaultProvider == "" {
 			defaultProvider = "anthropic"
 		}
-		return router.NewStaticRouter(defaultProvider, "claude-sonnet-4-6")
+		return router.NewStaticRouter(defaultProvider, types.DefaultModel)
 	}
 }
 
@@ -798,7 +801,7 @@ func buildPerModeRouter(cfg types.ModelRouterConfig, fallbackProvider string) *r
 	}
 	defaultModel := cfg.Model
 	if defaultModel == "" {
-		defaultModel = "claude-sonnet-4-6"
+		defaultModel = types.DefaultModel
 	}
 	defaultSel := router.ModelSelection{Provider: defaultProvider, Model: defaultModel}
 
@@ -827,7 +830,7 @@ func buildDynamicRouter(cfg types.ModelRouterConfig, fallbackProvider string) *r
 	}
 	defaultModel := cfg.Model
 	if defaultModel == "" {
-		defaultModel = "claude-sonnet-4-6"
+		defaultModel = types.DefaultModel
 	}
 
 	cheapProvider := cfg.CheapProvider
@@ -845,7 +848,7 @@ func buildDynamicRouter(cfg types.ModelRouterConfig, fallbackProvider string) *r
 	}
 	expensiveModel := cfg.ExpensiveModel
 	if expensiveModel == "" {
-		expensiveModel = "claude-sonnet-4-6"
+		expensiveModel = types.DefaultModel
 	}
 
 	turnThreshold := cfg.ExpensiveTurnThreshold
@@ -873,19 +876,33 @@ func buildDynamicRouter(cfg types.ModelRouterConfig, fallbackProvider string) *r
 	})
 }
 
-func buildPromptBuilder(cfg types.PromptBuilderConfig, systemPromptOverride string) prompt.PromptBuilder {
-	if systemPromptOverride != "" {
-		return prompt.NewOverridePromptBuilder(systemPromptOverride)
+// buildPromptBuilder selects the prompt preamble source. Precedence:
+// systemPromptOverride (raw, never template-parsed), then an operator
+// template (promptBuilder.template), then the embedded mode templates.
+// ValidateRunConfig rejects the override combined with either template
+// field, so the precedence never silently discards operator input. The
+// operator template is trial-rendered against the run's resolved prompt
+// model and mode — the exact render the loop will perform — so template
+// execution errors fail at construction.
+func buildPromptBuilder(config *types.RunConfig) (prompt.PromptBuilder, error) {
+	if config.SystemPromptOverride != "" {
+		return prompt.NewOverridePromptBuilder(config.SystemPromptOverride), nil
 	}
-	switch cfg.Type {
+	if tmpl := config.PromptBuilder.Template; tmpl != "" {
+		return prompt.NewTemplatePromptBuilder(tmpl, prompt.TemplateData{
+			Model: config.EffectivePromptModel(),
+			Mode:  config.Mode,
+		})
+	}
+	switch config.PromptBuilder.Type {
 	case "composed":
 		return prompt.NewComposedPromptBuilder(
 			prompt.WithFragments(prompt.DefaultComposedFragments()...),
-		)
+		), nil
 	case "default", "":
-		return prompt.NewDefaultPromptBuilder()
+		return prompt.NewDefaultPromptBuilder(), nil
 	default:
-		return prompt.NewDefaultPromptBuilder()
+		return prompt.NewDefaultPromptBuilder(), nil
 	}
 }
 
