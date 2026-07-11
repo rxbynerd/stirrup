@@ -47,6 +47,22 @@ const (
 	hostGatewayHost = "host.docker.internal"
 )
 
+var (
+	// containerFileIOTimeout bounds a single ReadFile/WriteFile operation
+	// (archive transfer, plus WriteFile's mkdir -p). Mirrors
+	// k8sFileIOTimeout: file I/O has no caller-supplied timeout, and the
+	// Docker API client's transport has no blanket timeout of its own (see
+	// container_api.go), so without an explicit deadline here a wedged
+	// daemon would hang the calling goroutine indefinitely. A var (not
+	// const), like the timeouts in container_api.go, so tests can shrink
+	// it to exercise the timeout path quickly.
+	containerFileIOTimeout = 60 * time.Second
+	// containerMkdirTimeout bounds WriteFile's "mkdir -p" exec call
+	// specifically — snappier than the file-transfer budget above since it
+	// is a small, near-instant operation on a healthy daemon.
+	containerMkdirTimeout = 10 * time.Second
+)
+
 // ContainerExecutorConfig holds the configuration for creating a ContainerExecutor.
 type ContainerExecutorConfig struct {
 	Image      string
@@ -362,16 +378,22 @@ func (e *ContainerExecutor) ResolvePath(relativePath string) (string, error) {
 }
 
 // ReadFile reads a file from inside the container using the archive API.
-// The file must be within /workspace and no larger than 10 MB.
+// The file must be within /workspace and no larger than 10 MB. The whole
+// operation is bounded by containerFileIOTimeout (#S2): the archive
+// endpoints have no timeout of their own (see container_api.go), so a
+// wedged daemon would otherwise hang the calling goroutine indefinitely.
 func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (string, error) {
 	resolved, err := e.ResolvePath(filePath)
 	if err != nil {
 		return "", err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, containerFileIOTimeout)
+	defer cancel()
+
 	tarStream, err := e.api.getArchive(ctx, e.containerID, resolved)
 	if err != nil {
-		return "", fmt.Errorf("get archive: %w", err)
+		return "", classifyFileIOCtxErr(ctx, "get archive", err)
 	}
 	defer func() { _ = tarStream.Close() }()
 
@@ -381,7 +403,7 @@ func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (stri
 		return "", fmt.Errorf("file not found in archive: %s", filePath)
 	}
 	if err != nil {
-		return "", fmt.Errorf("read tar header: %w", err)
+		return "", classifyFileIOCtxErr(ctx, "read tar header", err)
 	}
 
 	if header.Typeflag == tar.TypeDir {
@@ -397,14 +419,30 @@ func (e *ContainerExecutor) ReadFile(ctx context.Context, filePath string) (stri
 
 	data, err := io.ReadAll(io.LimitReader(tr, maxFileSize+1))
 	if err != nil {
-		return "", fmt.Errorf("read file from tar: %w", err)
+		return "", classifyFileIOCtxErr(ctx, "read file from tar", err)
 	}
 	return string(data), nil
 }
 
-// WriteFile writes content to a file inside the container using the archive API.
-// Parent directories must already exist in the container, or the archive
-// extraction will create them. Content must not exceed 10 MB.
+// classifyFileIOCtxErr wraps a ReadFile/WriteFile failure through the
+// shared ErrTimeout sentinel when it happened because ctx's own
+// containerFileIOTimeout deadline elapsed (e.g. a wedged daemon mid-archive
+// transfer), rather than surfacing the raw transport/tar error — composing
+// with #489's classifyExecCtxErr instead of a bespoke error, so callers
+// matching on errors.Is(err, ErrTimeout) see this identically to an Exec
+// command timeout.
+func classifyFileIOCtxErr(ctx context.Context, verb string, err error) error {
+	if ctx.Err() != nil {
+		return classifyExecCtxErr(ctx, containerFileIOTimeout)
+	}
+	return fmt.Errorf("%s: %w", verb, err)
+}
+
+// WriteFile writes content to a file inside the container using the archive
+// API. Parent directories must already exist in the container, or the
+// archive extraction will create them. Content must not exceed 10 MB. The
+// whole operation (mkdir -p plus the archive upload) is bounded by
+// containerFileIOTimeout (#S2), for the same reason as ReadFile.
 func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, content string) error {
 	if len(content) > maxFileSize {
 		if e.Security != nil {
@@ -418,10 +456,13 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 		return err
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, containerFileIOTimeout)
+	defer cancel()
+
 	// Ensure parent directory exists inside the container.
 	dir := path.Dir(resolved)
 	if dir != e.workspace {
-		_, mkdirErr := e.execInContainer(ctx, []string{"mkdir", "-p", dir}, e.workspace, 10*time.Second)
+		_, mkdirErr := e.execInContainer(ctx, []string{"mkdir", "-p", dir}, e.workspace, containerMkdirTimeout)
 		if mkdirErr != nil {
 			return fmt.Errorf("create parent directory: %w", mkdirErr)
 		}
@@ -449,7 +490,7 @@ func (e *ContainerExecutor) WriteFile(ctx context.Context, filePath string, cont
 
 	// Upload to the parent directory so the file is placed correctly.
 	if err := e.api.putArchive(ctx, e.containerID, dir, &buf); err != nil {
-		return fmt.Errorf("put archive: %w", err)
+		return classifyFileIOCtxErr(ctx, "put archive", err)
 	}
 	return nil
 }
@@ -548,21 +589,44 @@ func (e *ContainerExecutor) Capabilities() ExecutorCapabilities {
 }
 
 // execInContainer runs a command inside the container using the exec API.
-// It handles the full create → start → read output → inspect flow. On a
-// failure partway through — most commonly the ctx ending (deadline or
+// It handles the full create → start → read output → inspect flow, bounding
+// the whole sequence by timeout (a context.WithTimeout child of ctx). Every
+// call site already computed a timeout value, but the parameter used to be
+// named `_` and silently dropped — so WriteFile's mkdir and ListDirectory's
+// ls ran under whatever deadline ctx happened to carry (often none), and a
+// wedged daemon on those paths could hang the caller indefinitely (#S2).
+// Exec() itself was unaffected by that specific bug (it already wraps ctx
+// with the same timeout before calling in), but the internal wrap here is
+// applied unconditionally for uniformity and because it is what non-Exec
+// callers rely on.
+//
+// On a failure partway through — most commonly the ctx ending (deadline or
 // cancellation) while demuxDockerStream is blocked reading the exec
 // stream — the returned *ExecResult still carries whatever stdout/stderr
 // was captured before the failure, rather than nil; only a failure before
 // any output could exist (create/start exec) returns a nil result. Exec
-// relies on this to preserve partial output on timeout (#473).
-func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, workdir string, _ time.Duration) (*ExecResult, error) {
+// relies on this to preserve partial output on timeout (#473). A ctx-expiry
+// failure is classified via classifyExecCtxErr so callers matching on
+// errors.Is(err, ErrTimeout) — including WriteFile's mkdir and
+// ListDirectory's ls, which previously had no such classification at all —
+// see this identically to a top-level Exec timeout.
+func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, workdir string, timeout time.Duration) (*ExecResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	execID, err := e.api.createExec(ctx, e.containerID, cmd, workdir)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, classifyExecCtxErr(ctx, timeout)
+		}
 		return nil, fmt.Errorf("create exec: %w", err)
 	}
 
 	stream, err := e.api.startExec(ctx, execID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, classifyExecCtxErr(ctx, timeout)
+		}
 		return nil, fmt.Errorf("start exec: %w", err)
 	}
 	defer func() { _ = stream.Close() }()
@@ -570,11 +634,17 @@ func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, w
 	stdout, stderr, err := demuxDockerStream(stream)
 	result := &ExecResult{Stdout: stdout, Stderr: stderr}
 	if err != nil {
+		if ctx.Err() != nil {
+			return result, classifyExecCtxErr(ctx, timeout)
+		}
 		return result, fmt.Errorf("read exec output: %w", err)
 	}
 
 	exitCode, err := e.api.inspectExec(ctx, execID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return result, classifyExecCtxErr(ctx, timeout)
+		}
 		return result, fmt.Errorf("inspect exec: %w", err)
 	}
 	result.ExitCode = exitCode

@@ -11,9 +11,34 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const apiVersion = "v1.47"
+
+var (
+	// containerDialTimeout bounds the initial Unix-socket connection. A var
+	// (not const) so tests can shrink it to exercise the timeout path
+	// without waiting out the real production window.
+	containerDialTimeout = 10 * time.Second
+	// containerResponseHeaderTimeout bounds only the wait for response
+	// headers, never the body — so it cannot kill a long-running exec
+	// output stream or a large archive transfer once headers have arrived
+	// (Docker sends both essentially immediately after accepting a
+	// request). It is the connection-level backstop that catches a daemon
+	// that accepts the connection but then never answers at all,
+	// independent of whether a per-call context deadline was set below.
+	containerResponseHeaderTimeout = 30 * time.Second
+	// containerControlPlaneTimeout bounds a single short Docker Engine API
+	// call — create/start/stop/remove/ping/exec-create/exec-inspect. It is
+	// deliberately NOT applied to startExec (exec output attach) or the
+	// archive endpoints (getArchive/putArchive): those are long-lived
+	// streaming calls bounded instead by the caller's own command/file-I/O
+	// deadline, so a legitimate slow-but-alive stream is never killed by
+	// this control-plane window. Mirrors k8sAPITimeout's role for the k8s
+	// executor's rest.Config.Timeout.
+	containerControlPlaneTimeout = 30 * time.Second
+)
 
 // containerAPIClient is a thin client for the Docker Engine API (also
 // compatible with Podman) that communicates over a Unix socket. It uses only
@@ -24,16 +49,43 @@ type containerAPIClient struct {
 }
 
 // newContainerAPIClient creates a client connected to the given Unix socket.
+//
+// The client deliberately has no blanket http.Client.Timeout: exec output
+// attach and archive (file) transfer are long-lived streaming reads that can
+// legitimately outlast any single short window, and a client-level Timeout
+// bounds the entire round trip including the body. Instead, every
+// control-plane method below applies its own context.WithTimeout, and
+// streaming calls are bounded by the caller's command/file-I/O deadline
+// (see container.go). The Transport's ResponseHeaderTimeout (and the
+// dialer's timeout) still give an explicit, connection-level bound — as the
+// project's HTTP-client invariant requires — for the case where a caller
+// forgets to supply one.
 func newContainerAPIClient(socketPath string) *containerAPIClient {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+			return (&net.Dialer{Timeout: containerDialTimeout}).DialContext(ctx, "unix", socketPath)
 		},
+		ResponseHeaderTimeout: containerResponseHeaderTimeout,
 	}
 	return &containerAPIClient{
 		client: &http.Client{Transport: transport},
 		host:   "unix://" + socketPath,
 	}
+}
+
+// classifyControlPlaneErr wraps a failed short Docker Engine API call
+// through the shared ErrTimeout sentinel when the failure happened because
+// ctx's own containerControlPlaneTimeout deadline elapsed — e.g. a daemon
+// that accepted the connection but never answered — rather than surfacing
+// the raw transport error. This composes with #489's classifyExecCtxErr
+// instead of inventing a parallel timeout-detection mechanism, so callers
+// matching on errors.Is(err, ErrTimeout) see this identically to a
+// command timeout.
+func classifyControlPlaneErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return classifyExecCtxErr(ctx, containerControlPlaneTimeout)
+	}
+	return err
 }
 
 // detectSocket probes for a container runtime socket in priority order:
@@ -155,6 +207,9 @@ type containerCreateResponse struct {
 }
 
 func (c *containerAPIClient) createContainer(ctx context.Context, cfg containerCreateRequest) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
+	defer cancel()
+
 	body, err := json.Marshal(cfg)
 	if err != nil {
 		return "", fmt.Errorf("marshal container config: %w", err)
@@ -168,7 +223,7 @@ func (c *containerAPIClient) createContainer(ctx context.Context, cfg containerC
 
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return "", err
+		return "", classifyControlPlaneErr(ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -185,13 +240,16 @@ func (c *containerAPIClient) createContainer(ctx context.Context, cfg containerC
 // unreachable or stopped daemon surfaces before the run commits to
 // creating a container.
 func (c *containerAPIClient) ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/_ping"), nil)
 	if err != nil {
 		return err
 	}
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return err
+		return classifyControlPlaneErr(ctx, err)
 	}
 	_ = resp.Body.Close()
 	return nil
@@ -206,13 +264,16 @@ func (c *containerAPIClient) ping(ctx context.Context) error {
 // itself. The image reference is path-escaped because it may contain a
 // registry host, a tag, or an "@sha256:" digest with reserved bytes.
 func (c *containerAPIClient) imageExistsLocally(ctx context.Context, image string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/images/"+url.PathEscape(image)+"/json"), nil)
 	if err != nil {
 		return false, err
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("docker API request GET /images/%q/json: %w", image, err)
+		return false, classifyControlPlaneErr(ctx, fmt.Errorf("docker API request GET /images/%q/json: %w", image, err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch {
@@ -231,19 +292,25 @@ func (c *containerAPIClient) imageExistsLocally(ctx context.Context, image strin
 }
 
 func (c *containerAPIClient) startContainer(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(fmt.Sprintf("/containers/%s/start", id)), nil)
 	if err != nil {
 		return err
 	}
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return err
+		return classifyControlPlaneErr(ctx, err)
 	}
 	_ = resp.Body.Close()
 	return nil
 }
 
 func (c *containerAPIClient) stopContainer(ctx context.Context, id string, timeout int) error {
+	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
+	defer cancel()
+
 	url := fmt.Sprintf("/containers/%s/stop?t=%d", id, timeout)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(url), nil)
 	if err != nil {
@@ -255,13 +322,16 @@ func (c *containerAPIClient) stopContainer(ctx context.Context, id string, timeo
 		if strings.Contains(err.Error(), "HTTP 304") {
 			return nil
 		}
-		return err
+		return classifyControlPlaneErr(ctx, err)
 	}
 	_ = resp.Body.Close()
 	return nil
 }
 
 func (c *containerAPIClient) removeContainer(ctx context.Context, id string, force bool) error {
+	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
+	defer cancel()
+
 	url := fmt.Sprintf("/containers/%s?force=%t", id, force)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.url(url), nil)
 	if err != nil {
@@ -269,7 +339,7 @@ func (c *containerAPIClient) removeContainer(ctx context.Context, id string, for
 	}
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return err
+		return classifyControlPlaneErr(ctx, err)
 	}
 	_ = resp.Body.Close()
 	return nil
@@ -288,7 +358,15 @@ type execCreateResponse struct {
 	ID string `json:"Id"`
 }
 
+// createExec is a short control-plane call — it registers the exec instance
+// but does not run it — so it gets containerControlPlaneTimeout rather than
+// the caller's (potentially much longer) command timeout. startExec is the
+// call that actually runs the command and streams output; that one is
+// bounded by the caller's timeout instead (see execInContainer).
 func (c *containerAPIClient) createExec(ctx context.Context, containerID string, cmd []string, workdir string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
+	defer cancel()
+
 	body, err := json.Marshal(execCreateRequest{
 		AttachStdout: true,
 		AttachStderr: true,
@@ -309,7 +387,7 @@ func (c *containerAPIClient) createExec(ctx context.Context, containerID string,
 
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return "", err
+		return "", classifyControlPlaneErr(ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -320,8 +398,14 @@ func (c *containerAPIClient) createExec(ctx context.Context, containerID string,
 	return result.ID, nil
 }
 
-// startExec starts an exec instance and returns the multiplexed output stream.
-// The caller must close the returned ReadCloser.
+// startExec starts an exec instance and returns the multiplexed output
+// stream. The caller must close the returned ReadCloser. Unlike the other
+// methods in this file, startExec deliberately does NOT apply
+// containerControlPlaneTimeout: it is the call that actually runs the
+// command and streams its output, so bounding it to the short control-plane
+// window would kill a legitimate long-running command almost immediately.
+// It relies entirely on ctx, which the caller (execInContainer) has already
+// bound to the command's own timeout.
 func (c *containerAPIClient) startExec(ctx context.Context, execID string) (io.ReadCloser, error) {
 	body := `{"Detach":false,"Tty":false}`
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -344,7 +428,14 @@ type execInspectResponse struct {
 	Running  bool `json:"Running"`
 }
 
+// inspectExec is a short metadata read (fetch the exit code after the
+// command has already finished streaming), so it gets the control-plane
+// timeout rather than whatever budget remained on the command's own
+// deadline.
 func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, containerControlPlaneTimeout)
+	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		c.url(fmt.Sprintf("/exec/%s/json", execID)),
 		nil)
@@ -354,7 +445,7 @@ func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (in
 
 	resp, err := c.doRequest(req)
 	if err != nil {
-		return -1, err
+		return -1, classifyControlPlaneErr(ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -367,7 +458,11 @@ func (c *containerAPIClient) inspectExec(ctx context.Context, execID string) (in
 
 // --- Archive (file transfer) ---
 
-// putArchive uploads a tar archive to a path inside the container.
+// putArchive uploads a tar archive to a path inside the container. Like
+// startExec, this is a long-lived streaming call (the archive body can be
+// up to maxFileSize) so it is bounded only by ctx — the caller
+// (ContainerExecutor.WriteFile) applies containerFileIOTimeout — not by
+// containerControlPlaneTimeout.
 func (c *containerAPIClient) putArchive(ctx context.Context, containerID, destPath string, tarReader io.Reader) error {
 	url := fmt.Sprintf("/containers/%s/archive?path=%s", containerID, url.QueryEscape(destPath))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.url(url), tarReader)
@@ -385,7 +480,8 @@ func (c *containerAPIClient) putArchive(ctx context.Context, containerID, destPa
 }
 
 // getArchive downloads a tar archive of a path from inside the container.
-// The caller must close the returned ReadCloser.
+// The caller must close the returned ReadCloser. Bounded by ctx only, same
+// rationale as putArchive.
 func (c *containerAPIClient) getArchive(ctx context.Context, containerID, srcPath string) (io.ReadCloser, error) {
 	url := fmt.Sprintf("/containers/%s/archive?path=%s", containerID, url.QueryEscape(srcPath))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url(url), nil)

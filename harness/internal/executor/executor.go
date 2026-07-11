@@ -18,6 +18,15 @@ import (
 // harness/internal/hook/runner.go) match on this sentinel instead of the
 // error's formatted text, so a wording change in one executor can't
 // silently break TimedOut classification downstream (#468).
+//
+// The container executor also routes its Docker Engine API deadlines
+// through this sentinel (#S2): the short control-plane calls
+// (create/start/stop/exec-create/exec-inspect) and the file I/O paths
+// (ReadFile/WriteFile) have no caller-supplied timeout of their own, so
+// they apply an internal one and classify a resulting ctx expiry the same
+// way, rather than inventing a second, parallel timeout-detection
+// mechanism — see container_api.go's classifyControlPlaneErr and
+// container.go's classifyFileIOCtxErr.
 var ErrTimeout = errors.New("command timed out")
 
 // classifyExecCtxErr builds the error an Executor's Exec method returns once
