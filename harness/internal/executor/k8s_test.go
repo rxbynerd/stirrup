@@ -226,22 +226,60 @@ func TestK8sExec_NonZeroExit(t *testing.T) {
 	}
 }
 
-// TestK8sExec_Timeout verifies that a command exceeding the timeout returns
-// the context deadline error (verbatim) at roughly the timeout boundary,
-// not after the full sleep.
+// TestK8sExec_Timeout verifies that a command exceeding the timeout is
+// reported via the shared executor.ErrTimeout sentinel (still wrapping the
+// underlying context.DeadlineExceeded, so errors.Is against either matches)
+// at roughly the timeout boundary, not after the full sleep. Also asserts
+// the partial output captured before the deadline is preserved (#473),
+// rather than the blank result the pre-fix k8s Exec returned.
 func TestK8sExec_Timeout(t *testing.T) {
 	exec := newTestK8sExecutor(t)
 	ctx := context.Background()
 
 	start := time.Now()
-	_, err := exec.Exec(ctx, "sleep 5", 1*time.Second)
+	result, err := exec.Exec(ctx, "echo partial; sleep 5", 1*time.Second)
 	elapsed := time.Since(start)
 
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("Exec: err = %v, want errors.Is(err, ErrTimeout)", err)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Exec: err = %v, want context.DeadlineExceeded", err)
+		t.Errorf("Exec: err = %v, want errors.Is(err, context.DeadlineExceeded)", err)
 	}
 	if elapsed > 3*time.Second {
 		t.Errorf("Exec took %s, expected ~1s (timeout not honoured)", elapsed)
+	}
+	if result == nil || !strings.Contains(result.Stdout, "partial") {
+		t.Errorf("result = %+v, want Stdout to preserve output captured before the timeout", result)
+	}
+}
+
+// TestK8sExec_Cancelled verifies that a parent-context cancellation (not a
+// deadline expiry) is reported distinctly from a timeout: it must satisfy
+// errors.Is(err, context.Canceled) but NOT errors.Is(err, ErrTimeout), even
+// though a large configured timeout is in play. This is the k8s-specific
+// facet of #469: the pre-fix Exec returned ctx.Err() verbatim on ANY ctx
+// ending, which happened to distinguish deadline from cancel correctly via
+// errors.Is(err, context.DeadlineExceeded) but discarded partial output
+// (#473) and gave hook.isTimeoutErr no shared sentinel to key off.
+func TestK8sExec_Cancelled(t *testing.T) {
+	exec := newTestK8sExecutor(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		cancel()
+	}()
+
+	result, err := exec.Exec(ctx, "echo partial; sleep 30", 60*time.Second)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Exec: err = %v, want errors.Is(err, context.Canceled)", err)
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Errorf("Exec: err = %v, must not satisfy errors.Is(err, ErrTimeout): cancelled after 500ms, configured timeout was 60s", err)
+	}
+	if result == nil || !strings.Contains(result.Stdout, "partial") {
+		t.Errorf("result = %+v, want Stdout to preserve output captured before the cancel (#473)", result)
 	}
 }
 

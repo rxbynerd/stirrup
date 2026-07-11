@@ -255,8 +255,12 @@ func (e *podExecCore) ListDirectory(ctx context.Context, dirPath string) ([]stri
 // Exec runs `command` via `/bin/sh -c` inside the agent container over the
 // pods/exec subresource. stdout and stderr are captured into separate
 // 10 MB-capped buffers. A zero timeout uses the default; timeouts are
-// clamped to MaxTimeout. On deadline the underlying context error is
-// returned verbatim. The exit code is extracted from the remotecommand
+// clamped to MaxTimeout. On deadline or cancellation, classifyExecCtxErr
+// distinguishes the two (errors.Is against executor.ErrTimeout for a
+// genuine deadline, plain context.Canceled otherwise) and whatever
+// stdout/stderr streamExec had already captured is preserved on the
+// returned result rather than discarded (#473) — mirroring local.go and
+// container.go. The exit code is extracted from the remotecommand
 // CodeExitError; a clean exit yields code 0.
 func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error) {
 	if timeout <= 0 {
@@ -275,8 +279,12 @@ func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Dur
 
 	err := e.streamExec(ctx, []string{"/bin/sh", "-c", command}, nil, &stdout, &stderr)
 
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, ctxErr
+	if ctx.Err() != nil {
+		return &ExecResult{
+			ExitCode: -1,
+			Stdout:   stdout.String(),
+			Stderr:   stderr.String(),
+		}, classifyExecCtxErr(ctx, timeout)
 	}
 	if stdout.exceeded || stderr.exceeded {
 		if e.Security != nil {
