@@ -136,7 +136,7 @@ type harnessCLIOptions struct {
 	// changing the wire model. Empty derives it from Model.
 	PromptModel string
 
-	Workspace string
+	Workspace     string
 	MaxTurns      int
 	Timeout       int
 	TracePath     string

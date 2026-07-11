@@ -95,7 +95,9 @@ func runPromptRenderWithIO(cmd *cobra.Command, stdout, stderr io.Writer) error {
 		}
 	}
 
-	fmt.Fprintf(stderr, "prompt model: %q, tier: %s\n", promptModel, prompt.TierFor(promptModel))
-	fmt.Fprintln(stdout, rendered)
+	_, _ = fmt.Fprintf(stderr, "prompt model: %q, tier: %s\n", promptModel, prompt.TierFor(promptModel))
+	if _, err := fmt.Fprintln(stdout, rendered); err != nil {
+		return fmt.Errorf("write rendered prompt: %w", err)
+	}
 	return nil
 }
