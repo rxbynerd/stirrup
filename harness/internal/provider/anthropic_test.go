@@ -93,6 +93,58 @@ func TestAnthropicAdapter_StreamTextDelta(t *testing.T) {
 	}
 }
 
+// TestAnthropicAdapter_LongSSELineRoundTrips guards against a regression to
+// bufio.Scanner's default 64 KB per-line budget: a single SSE data line
+// larger than that (long reasoning_content, or a large write_file
+// tool-call args delta) must round-trip as ordinary content instead of
+// aborting the scan with bufio.ErrTooLong. 200 KB is comfortably over the
+// old default and comfortably under the 16 MiB maxSSEScannerBuffer cap.
+func TestAnthropicAdapter_LongSSELineRoundTrips(t *testing.T) {
+	longText := strings.Repeat("a", 200*1024)
+	encoded, err := json.Marshal(longText)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	body := joinLines(
+		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`),
+		makeSSE("content_block_delta", fmt.Sprintf(`{"index":0,"delta":{"type":"text_delta","text":%s}}`, encoded)),
+		makeSSE("content_block_stop", `{"index":0}`),
+		makeSSE("message_delta", `{"delta":{"stop_reason":"end_turn"}}`),
+		makeSSE("message_stop", `{}`),
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d: %+v", len(events), events)
+	}
+	if events[0].Type != "text_delta" || len(events[0].Text) != len(longText) {
+		t.Errorf("event[0] = type %q text-len %d, want text_delta len %d", events[0].Type, len(events[0].Text), len(longText))
+	}
+	if events[1].Type != "message_complete" || events[1].StopReason != "end_turn" {
+		t.Errorf("event[1] = %+v, want message_complete/end_turn", events[1])
+	}
+}
+
 func TestAnthropicAdapter_StreamToolUse(t *testing.T) {
 	body := joinLines(
 		makeSSE("content_block_start", `{"index":0,"content_block":{"type":"tool_use","id":"toolu_123","name":"read_file"}}`),

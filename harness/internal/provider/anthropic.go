@@ -648,6 +648,7 @@ func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, 
 	blocks := make(map[int]*blockState)
 
 	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), maxSSEScannerBuffer)
 	var currentEvent string
 
 	for scanner.Scan() {
