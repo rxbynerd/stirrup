@@ -1,7 +1,7 @@
 {
-  "_comment_": "Real-harness baseline for dogfood-seed.hcl, generated from a live run (model claude-sonnet-4-6) on 2026-05-28; source runId eval-1779966552381. Records the expected-pass outcome per task. The eval-gate compare step gates on per-task outcome only (a baseline pass that becomes a current fail is a regression); traces, timings, and temp paths are intentionally omitted to keep the baseline deterministic. Regenerate by re-running the suite and re-minimising if task behaviour legitimately changes.",
+  "_comment_": "Real-harness baseline for dogfood-seed.hcl, generated from a live run (model claude-haiku-4-5-20251001, the CI eval-gate model) on 2026-07-11; source runId eval-1783804915791. Records the expected-pass outcome per task. The eval-gate compare step gates on per-task outcome only (a baseline pass that becomes a current fail is a regression); traces, timings, and temp paths are intentionally omitted to keep the baseline deterministic. Regenerate by re-running the suite with the gate's --model and re-minimising if task behaviour legitimately changes.",
   "suiteId": "dogfood-seed",
-  "runId": "baseline-live-eval-1779966552381",
+  "runId": "baseline-live-eval-1783804915791",
   "passRate": 1,
   "tasks": [
     {
