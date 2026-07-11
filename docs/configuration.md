@@ -267,6 +267,14 @@ reference.
 | `--temperature` | (unset → `0.1`) | Sampling temperature forwarded to the provider on every turn. Range `0.0`–`2.0` (the union of provider-side ranges; see [Limits and budgets](#limits-and-budgets)). Omit the flag to inherit the harness default; pass an explicit `0` for greedy decoding. The runtime distinguishes "flag absent" from `--temperature=0` via cobra's `Changed()` bit. |
 | `--log-level` | `info` | One of `debug`, `info`, `warn`, `error`. |
 
+### Loop behaviour
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--max-tool-parallel` | `0` | Maximum async tool calls dispatched concurrently in a single turn. Range `1`–`16` (hard ceiling enforced by `ValidateRunConfig`); `0` resolves to the library default of `4`. JSON path: `toolDispatch.maxParallel`. |
+| `--escalate-tool-choice` | `false` | Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (a stronger prompt where the provider does not support forcing). Off by default (issue #230). JSON path: `toolChoiceEscalation.enabled`. |
+| `--escalate-tool-choice-max-retries` | `0` | Maximum forced retries per inner-loop run. Range `1`–`3`; `0` resolves to the default of `1`. No effect unless `--escalate-tool-choice` is set. JSON path: `toolChoiceEscalation.maxRetries`. |
+
 ### Provider
 
 | Flag | Default | Notes |
@@ -382,23 +390,30 @@ The exchange audience is set on the `tokenSource` (canonically
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--executor` | `local` | One of `local`, `container`, `k8s`, `api`. |
-| `--container-runtime` | (none) | Per-`executor` closed set. For `container` (host OCI runtime): `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`, `kata-clh` — must be registered with the host Docker/Podman daemon. For `k8s` (Pod `RuntimeClassName`): `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh` — note the name is `gvisor`, not `runsc`. Empty = engine default for `container`, cluster-default RuntimeClass for `k8s`. |
-| `--k8s-namespace` | (none) | Namespace for the `k8s` executor's sandbox Pod. Required when `--executor=k8s`. JSON path: `executor.k8sNamespace`. |
-| `--k8s-kubeconfig` | (none) | Path to a kubeconfig for the `k8s` executor. An explicit value wins even in-cluster; empty prefers in-cluster config, then `$KUBECONFIG`. JSON path: `executor.k8sKubeconfig`. |
-| `--k8s-node-selector` | (none) | Repeatable `key=value` `nodeSelector` constraining where the `k8s` Pod schedules (e.g. `--k8s-node-selector disktype=ssd`). JSON path: `executor.k8sNodeSelector`. |
-| `--k8s-service-account` | (none) | ServiceAccount name for the `k8s` Pod. Empty uses the namespace `default`. The token is never automounted regardless. JSON path: `executor.k8sServiceAccount`. |
-| `--k8s-egress-proxy-url` | (none) | URL the `k8s` sandbox Pod routes `HTTP_PROXY`/`HTTPS_PROXY` through. Required when `--executor=k8s` and the network mode is `allowlist`; rejected otherwise. JSON path: `executor.k8sEgressProxyUrl`. |
+| `--executor` | `local` | One of `local`, `container`, `k8s`, `k8s-sandbox`, `api`. `k8s-sandbox` is the [Agent Sandbox CRD variant](executors/k8s-agent-sandbox.md) of `k8s`. |
+| `--container-runtime` | (none) | Per-`executor` closed set. For `container` (host OCI runtime): `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`, `kata-clh` — must be registered with the host Docker/Podman daemon. For `k8s` (Pod `RuntimeClassName`): `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh` — note the name is `gvisor`, not `runsc`. `k8s-sandbox` is gVisor-only: empty or `gvisor`, any other value is rejected. Empty = engine default for `container`, cluster-default RuntimeClass for `k8s`. |
+| `--k8s-namespace` | (none) | Namespace for the `k8s` / `k8s-sandbox` sandbox Pod. Required when `--executor=k8s` or `--executor=k8s-sandbox`. JSON path: `executor.k8sNamespace`. |
+| `--k8s-kubeconfig` | (none) | Path to a kubeconfig for the `k8s` / `k8s-sandbox` executors. An explicit value wins even in-cluster; empty prefers in-cluster config, then `$KUBECONFIG`. JSON path: `executor.k8sKubeconfig`. |
+| `--k8s-node-selector` | (none) | Repeatable `key=value` `nodeSelector` constraining where the `k8s` / `k8s-sandbox` Pod schedules (e.g. `--k8s-node-selector disktype=ssd`). JSON path: `executor.k8sNodeSelector`. |
+| `--k8s-service-account` | (none) | ServiceAccount name for the `k8s` / `k8s-sandbox` Pod. Empty uses the namespace `default`. The token is never automounted regardless. JSON path: `executor.k8sServiceAccount`. |
+| `--k8s-egress-proxy-url` | (none) | URL the `k8s` / `k8s-sandbox` Pod routes `HTTP_PROXY`/`HTTPS_PROXY` through. Required when the executor is `k8s` or `k8s-sandbox` and the network mode is `allowlist`; rejected otherwise. JSON path: `executor.k8sEgressProxyUrl`. |
 | `--edit-strategy` | `multi` | One of `whole-file`, `search-replace`, `udiff`, `multi`. `composite` is reachable only via `--config`. |
 | `--verifier` | `none` | One of `none`, `test-runner`, `llm-judge`. `composite` is reachable only via `--config`. |
 | `--git-strategy` | `none` | One of `none`, `deterministic`. |
 | `--permission-policy-file` | (none) | Path to a Cedar policy file. When set and the policy type is unset elsewhere, implies `permissionPolicy.type=policy-engine`. Starters live under [`examples/policies/`](../examples/policies/). |
 | `--code-scanner` | (none) | One of `none`, `patterns`, `semgrep`. `composite` is accepted only via `--config` (it requires `codeScanner.scanners`). Empty defers to the mode-aware default (`patterns` for execution, `none` for read-only modes). |
+| `--guardrail` | (none) | GuardRail classifier type: `none`, `granite-guardian`, `cloud-judge`, `composite`. `composite` requires `--config` (`guardRail.stages`). JSON path: `guardRail.type`. See [`guardrails.md`](guardrails.md). |
+| `--guardrail-endpoint` | (none) | Classifier endpoint URL for the `granite-guardian` or `cloud-judge` adapter (http/https; a path such as `/v1/chat/completions` is allowed). JSON path: `guardRail.endpoint`. |
+| `--guardrail-model` | (none) | Model identifier for the GuardRail classifier. Empty applies the adapter-defined default: `ibm-granite/granite-guardian-4.1-8b` for `granite-guardian`, `claude-haiku-4-5-20251001` for `cloud-judge`. The `cloud-judge` default is in Anthropic API format — when the primary provider is Bedrock, set the Bedrock-format ID (e.g. `us.anthropic.claude-haiku-4-5-20251001-v1:0`). JSON path: `guardRail.model`. |
+| `--guardrail-fail-open` | `false` | When set, classifier transport errors / timeouts produce an allow verdict plus a `guard_error` security event instead of blocking the run. Default is fail-closed. Top-level only — governs the whole guardrail tree. JSON path: `guardRail.failOpen`. See [`guardrails.md`](guardrails.md#fail-open-posture). |
 | `--tools-profile` | (none) | Model-facing toolset profile. Closed enum: `""`/`default` (no aliasing, internal tool names) or `coding-classic` (terse coding-CLI aliases). Changes only the names the model sees; dispatch identities and gating are unchanged. JSON path: `tools.profile`. See [Toolset profiles](#toolset-profiles). |
 
 See also: [`docs/executors/k8s.md`](executors/k8s.md) for the `k8s`
 executor's architecture, deployment recipes, egress model, and the full
-`executor.k8s*` field reference.
+`executor.k8s*` field reference, and
+[`docs/executors/k8s-agent-sandbox.md`](executors/k8s-agent-sandbox.md)
+for the `k8s-sandbox` deltas (Sandbox CRD provisioning, gVisor-only
+runtime, RBAC).
 
 ### Transport
 
@@ -448,6 +463,25 @@ stdout. The default JSONL trace writes to a file (or to nothing when
 `--trace` is unset), so the stdout channel stays reserved for the
 `STIRRUP_RESULT` line. A future JSONL emitter that writes to stdout
 would conflict with `--output=json`.
+
+### Workspace export
+
+At end-of-run the executor's workspace can be tarred, gzipped, and
+uploaded to a GCS URI — the result-collection surface for serverless
+targets with no persistent filesystem (see
+[`cloud-run-jobs.md`](cloud-run-jobs.md#shape-b-workspace-tarball-from-gcs)
+for the operator walkthrough).
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is supported in v1. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
+| `--export-workspace-required` | `false` | When set, a failed workspace export exits the run non-zero — suitable for jobs whose downstream automation depends on the artifact. When unset (default), upload failures are logged and the run's exit code is unchanged. CLI-behaviour flag only: it does not round-trip through `RunConfig`. |
+
+The export runs even when the run itself failed, so the workspace
+state stays inspectable after a non-zero exit. Uploads authenticate
+via the `gcp-workload-identity` credential source — the GCE/GKE
+metadata server that Cloud Run, GKE Workload Identity, and plain GCE
+VMs expose. There is no credential override for the exporter in v1.
 
 ### Dry-run
 
@@ -506,6 +540,7 @@ configuration space — the common cases. Anything below requires
 | `verifier` | `composite` (chains other verifiers). |
 | `permissionPolicy` | `policy-engine` requires `policyFile`; the optional `fallback` field defaults to `deny-side-effects` when unset. Chained policy engines are rejected. |
 | `codeScanner` | `composite` requires `codeScanner.scanners` (each entry from the non-composite set). |
+| `guardRail` | `composite` requires `guardRail.stages`. Per-phase restriction (`phases`), bespoke criteria, and the classifier timeout are file-only. |
 | `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
 | `tools.mcpServers` | Remote MCP server registration. |

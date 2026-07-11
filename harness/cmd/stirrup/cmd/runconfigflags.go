@@ -102,7 +102,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.Bool("escalate-tool-choice", false, "Recover from a first-turn no-tool answer on a workspace-dependent task by retrying with provider-native required tool choice (or a stronger prompt where unsupported). OFF by default. See issue #230.")
 	f.Int("escalate-tool-choice-max-retries", 0, "Maximum forced retries per inner-loop run when --escalate-tool-choice is set. Range: 1-3. 0 uses the default (1). No effect unless --escalate-tool-choice is set.")
 
-	f.Bool("batch", false, "Use async batch submission for provider turns (50% cost reduction, up to 24h latency). Requires transport=grpc or --config with harnessSidePolling=true for stdio. See docs/sandbox.md.")
+	f.Bool("batch", false, "Use async batch submission for provider turns (50% cost reduction, up to 24h latency). Requires transport=grpc or --config with harnessSidePolling=true for stdio. See docs/batch.md.")
 
 	addRunConfigFlagCompletions(cmd)
 }

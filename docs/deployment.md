@@ -44,6 +44,42 @@ shared filesystem with the control plane. The only inputs are the
 environment variables passed at Pod creation time and whatever the
 control plane sends over the bidi stream.
 
+## Transport security posture (v0.1)
+
+> **The gRPC transport is plaintext and unauthenticated.** The
+> harness dials the control plane with
+> `insecure.NewCredentials()`, and `TransportConfig` exposes only
+> `{type, address}` — there is no TLS, token, or mTLS knob on the
+> config surface in v0.1.
+
+v0.1 targets single-operator, self-hosted deployment. The design
+assumes a trusted network path between job Pods and the control
+plane; acceptable shapes are:
+
+- **Same host** — control plane and harness on one machine,
+  dialling over loopback.
+- **Private network** — a private VPC / cluster network where the
+  control-plane address is not reachable from untrusted networks.
+- **Mesh-provided mTLS** — a service mesh (Istio, Linkerd) that
+  transparently encrypts and authenticates Pod-to-Pod traffic
+  outside the harness process.
+
+Do not point `--transport-addr` / `CONTROL_PLANE_ADDR` across an
+untrusted network: everything on the stream — prompts, tool
+results, permission responses — would transit in cleartext, and
+any endpoint that can reach the harness's dial target could pose
+as the control plane. Secrets are less exposed than they appear
+(API keys travel as `secret://` references, never raw values, and
+the transport scrubs secret-shaped strings from outbound events),
+but the stream contents and the control channel itself are
+unprotected.
+
+Transport TLS configuration is planned post-v0.1. The internal
+transport constructor already accepts TLS credentials
+(`transport.WithTLSCredentials`); what is missing is the
+`RunConfig` / CLI surface to reach it, so today the option is
+available only to Go embedders wiring the transport directly.
+
 ## The `stirrup job` subcommand
 
 `stirrup job` is the K8s entrypoint. It takes no flags — everything
@@ -210,6 +246,10 @@ Before deploying:
 5. Enforce a `Job.spec.activeDeadlineSeconds` slightly larger than
    `RunConfig.timeout` so K8s reaps any stuck Pod even if the
    harness's own wall-clock timeout fails to fire.
+6. Confirm the network path between job Pods and the control plane
+   is trusted (private network or mesh mTLS) — the gRPC transport
+   itself is plaintext and unauthenticated in v0.1. See
+   [Transport security posture](#transport-security-posture-v01).
 
 ## Embedding the harness
 
