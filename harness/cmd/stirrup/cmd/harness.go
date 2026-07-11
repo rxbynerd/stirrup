@@ -128,9 +128,15 @@ type harnessCLIOptions struct {
 	// Closed set, validated by ValidateRunConfig. Empty by default, which
 	// is the identity presentation: a bare invocation presents tools under
 	// their internal names exactly as before.
-	ToolsProfile  string
-	Model         string
-	Workspace     string
+	ToolsProfile string
+	Model        string
+
+	// PromptModel pins the model identity the system prompt templates
+	// render against (promptBuilder.promptModel, issue #492) without
+	// changing the wire model. Empty derives it from Model.
+	PromptModel string
+
+	Workspace string
 	MaxTurns      int
 	Timeout       int
 	TracePath     string
@@ -421,7 +427,7 @@ func buildHarnessRunConfigCore(opts harnessCLIOptions) (*types.RunConfig, error)
 			Provider: opts.ProviderType,
 			Model:    opts.Model,
 		},
-		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default", PromptModel: opts.PromptModel},
 		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: 200000},
 		Executor: types.ExecutorConfig{
 			Type:              executorType,
@@ -954,6 +960,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 		// on the router (per-mode/dynamic) — for static routers this is
 		// where the active model lives.
 		cfg.ModelRouter.Model, _ = f.GetString("model")
+	}
+	if changed("prompt-model") {
+		cfg.PromptBuilder.PromptModel, _ = f.GetString("prompt-model")
 	}
 	if changed("api-key-ref") {
 		cfg.Provider.APIKeyRef, _ = f.GetString("api-key-ref")

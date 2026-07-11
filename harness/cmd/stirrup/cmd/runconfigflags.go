@@ -23,6 +23,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("config", "", "Path to a JSON RunConfig file (mirrors proto/harness/v1/harness.proto). Use \"-\" to read from stdin. Explicit flags still override individual fields; unset flags do not.")
 	f.StringP("mode", "m", "planning", "Run mode: execution, planning, review, research, toil. Default is the read-only `planning` mode (no edits, no shell, deny-side-effects policy); pass `--mode execution` for editable runs with shell access.")
 	f.String("model", "claude-sonnet-4-6", "Model to use (sets ModelRouter.Model; for dynamic/per-mode routers in --config files this only sets the default-model field, not the cheap/expensive override)")
+	f.String("prompt-model", "", "Render the shipped system prompt templates as if for this model (sets promptBuilder.promptModel). The model called on the wire is unchanged — combine with --model to compare a prompt tuned for one model against another. Empty derives the prompt model from --model.")
 	f.String("provider", "anthropic", "Provider type: anthropic, bedrock, gemini (Vertex AI), openai-compatible (Chat Completions), openai-responses (Responses API). The two OpenAI variants speak different wire formats and must be selected explicitly.")
 	f.String("api-key-ref", "secret://ANTHROPIC_API_KEY", "Secret reference for API key")
 	f.String("base-url", "", "API base URL for openai-compatible / openai-responses providers (e.g. https://<resource>.openai.azure.com/openai/v1)")
