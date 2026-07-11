@@ -364,6 +364,10 @@ message RunConfig {
   // Optional. When set, used as the complete system prompt preamble,
   // bypassing prompt_builder mode selection. Workspace path, turn budget,
   // and dynamic_context sections are still appended by the harness.
+  // The value is used verbatim and never template-parsed, so prompts
+  // compiled by an external prompt-management system (e.g. Langfuse)
+  // pass through untouched. Mutually exclusive with
+  // prompt_builder.template and prompt_builder.prompt_model.
   string system_prompt_override = 23;
 
   // Optional. Human-readable label attached to the run for reporting.
@@ -1218,12 +1222,25 @@ message PromptBuilderConfig {
   // Optional. The prompt builder implementation.
   // Valid values:
   //   "default"  — built-in per-mode templates (default).
-  //   "composed" — combines the default template with a custom suffix.
+  //   "composed" — fragment-based assembly of the same sections.
   string type = 1;
 
-  // For "composed": the custom template text appended to the default
-  // per-mode system prompt.
+  // Optional. An operator-supplied Go text/template that replaces the
+  // shipped mode prompt as the system prompt preamble. Structural
+  // sections (workspace path, turn budget, workspace tree, git status,
+  // dynamic context) are still appended. Renders against the same data
+  // surface as the shipped prompts (.Model, .Mode, .Tier, .ModelIs), so
+  // model-conditional content and prompt_model keep working for tuned
+  // prompts. Syntax-checked at config validation. Mutually exclusive
+  // with system_prompt_override.
   string template = 2;
+
+  // Optional. Overrides the model identity the system prompt templates
+  // render against, without changing which model is called on the wire.
+  // Enables prompt/model comparison runs (e.g. the "claude-fable-5
+  // prompt" against a newer model). Empty derives the prompt model from
+  // the model router. Mutually exclusive with system_prompt_override.
+  string prompt_model = 3;
 }
 
 // ContextStrategyConfig selects how message history is managed as the

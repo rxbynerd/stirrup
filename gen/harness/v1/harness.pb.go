@@ -564,6 +564,10 @@ type RunConfig struct {
 	// Optional. When set, used as the complete system prompt preamble,
 	// bypassing prompt_builder mode selection. Workspace path, turn budget,
 	// and dynamic_context sections are still appended by the harness.
+	// The value is used verbatim and never template-parsed, so prompts
+	// compiled by an external prompt-management system (e.g. Langfuse)
+	// pass through untouched. Mutually exclusive with
+	// prompt_builder.template and prompt_builder.prompt_model.
 	SystemPromptOverride string `protobuf:"bytes,23,opt,name=system_prompt_override,json=systemPromptOverride,proto3" json:"system_prompt_override,omitempty"`
 	// Optional. Human-readable label attached to the run for reporting.
 	// Surfaces in structured logs (sessionName), JSONL traces (config.sessionName),
@@ -2867,11 +2871,23 @@ type PromptBuilderConfig struct {
 	// Valid values:
 	//
 	//	"default"  — built-in per-mode templates (default).
-	//	"composed" — combines the default template with a custom suffix.
+	//	"composed" — fragment-based assembly of the same sections.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	// For "composed": the custom template text appended to the default
-	// per-mode system prompt.
-	Template      string `protobuf:"bytes,2,opt,name=template,proto3" json:"template,omitempty"`
+	// Optional. An operator-supplied Go text/template that replaces the
+	// shipped mode prompt as the system prompt preamble. Structural
+	// sections (workspace path, turn budget, workspace tree, git status,
+	// dynamic context) are still appended. Renders against the same data
+	// surface as the shipped prompts (.Model, .Mode, .Tier, .ModelIs), so
+	// model-conditional content and prompt_model keep working for tuned
+	// prompts. Syntax-checked at config validation. Mutually exclusive
+	// with system_prompt_override.
+	Template string `protobuf:"bytes,2,opt,name=template,proto3" json:"template,omitempty"`
+	// Optional. Overrides the model identity the system prompt templates
+	// render against, without changing which model is called on the wire.
+	// Enables prompt/model comparison runs (e.g. the "claude-fable-5
+	// prompt" against a newer model). Empty derives the prompt model from
+	// the model router. Mutually exclusive with system_prompt_override.
+	PromptModel   string `protobuf:"bytes,3,opt,name=prompt_model,json=promptModel,proto3" json:"prompt_model,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2916,6 +2932,13 @@ func (x *PromptBuilderConfig) GetType() string {
 func (x *PromptBuilderConfig) GetTemplate() string {
 	if x != nil {
 		return x.Template
+	}
+	return ""
+}
+
+func (x *PromptBuilderConfig) GetPromptModel() string {
+	if x != nil {
+		return x.PromptModel
 	}
 	return ""
 }
@@ -4210,10 +4233,11 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x12cheap_stop_reasons\x18\v \x03(\tR\x10cheapStopReasons\x1a=\n" +
 	"\x0fModeModelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"E\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"h\n" +
 	"\x13PromptBuilderConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1a\n" +
-	"\btemplate\x18\x02 \x01(\tR\btemplate\"J\n" +
+	"\btemplate\x18\x02 \x01(\tR\btemplate\x12!\n" +
+	"\fprompt_model\x18\x03 \x01(\tR\vpromptModel\"J\n" +
 	"\x15ContextStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1d\n" +
 	"\n" +
