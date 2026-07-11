@@ -57,6 +57,13 @@ type RunConfig struct {
 	// models at release) without editing suite files.
 	Model string
 
+	// PromptModel, when non-empty, is forwarded to every harness
+	// invocation as --prompt-model (#492). It pins the model identity
+	// the system prompt templates render against without changing the
+	// wire model, so a sweep can compare e.g. the "claude-fable-5
+	// prompt" on a newer model against that model's native prompt.
+	PromptModel string
+
 	// AnthropicWIF, when populated, instructs the runner to forward
 	// Anthropic Workload Identity Federation flags to every harness
 	// invocation. The four identifiers are non-secret per Anthropic's
@@ -474,6 +481,12 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// the operator-override semantic this field promises.
 	if cfg.Model != "" {
 		args = append(args, "--model", cfg.Model)
+	}
+
+	// Forward the prompt-model override with the same unconditional,
+	// Changed()-backed semantics as --model above.
+	if cfg.PromptModel != "" {
+		args = append(args, "--prompt-model", cfg.PromptModel)
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)

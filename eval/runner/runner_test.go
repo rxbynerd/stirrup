@@ -1187,3 +1187,124 @@ fi
 		t.Errorf("captured argv unexpectedly contains --model:\n%s", string(data))
 	}
 }
+
+// TestRunSuite_ForwardsPromptModelFlag pins that RunConfig.PromptModel
+// reaches the harness argv as --prompt-model (#492). Prompt/model
+// comparison sweeps rely on this; a silent drop would leave every run
+// rendering its native prompt while reporting a comparison.
+func TestRunSuite_ForwardsPromptModelFlag(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessDir := t.TempDir()
+	harnessPath := filepath.Join(harnessDir, "fake-harness")
+	argvCapture := filepath.Join(harnessDir, "argv.txt")
+
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a"; done > %q
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
+fi
+`, argvCapture)
+	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := types.EvalSuite{
+		ID: "prompt-model-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "prompt-model-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-prompt-model-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+		Model:       "claude-fable-6",
+		PromptModel: "claude-fable-5",
+	})
+	if err != nil {
+		t.Fatalf("RunSuite returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(argvCapture)
+	if err != nil {
+		t.Fatalf("reading captured argv: %v", err)
+	}
+	captured := string(data)
+	for _, frag := range []string{"--model", "claude-fable-6", "--prompt-model", "claude-fable-5"} {
+		if !strings.Contains(captured, frag+"\n") {
+			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
+		}
+	}
+}
+
+// An empty RunConfig.PromptModel must not emit --prompt-model at all,
+// mirroring TestRunSuite_NoModelFlagWhenUnset.
+func TestRunSuite_NoPromptModelFlagWhenUnset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessDir := t.TempDir()
+	harnessPath := filepath.Join(harnessDir, "fake-harness")
+	argvCapture := filepath.Join(harnessDir, "argv.txt")
+
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a"; done > %q
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
+fi
+`, argvCapture)
+	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := types.EvalSuite{
+		ID: "no-prompt-model-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "no-prompt-model-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-prompt-model-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+	})
+	if err != nil {
+		t.Fatalf("RunSuite returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(argvCapture)
+	if err != nil {
+		t.Fatalf("reading captured argv: %v", err)
+	}
+	if strings.Contains(string(data), "--prompt-model\n") {
+		t.Errorf("captured argv unexpectedly contains --prompt-model:\n%s", string(data))
+	}
+}

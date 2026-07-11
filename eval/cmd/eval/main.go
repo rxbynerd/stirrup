@@ -128,6 +128,7 @@ func cmdRun(args []string) {
 	junitPath := fs.String("junit", "", "Write JUnit XML to this path after result.json (default: disabled)")
 	acceptQuarantine := fs.Bool("accept-quarantine", false, "Permit execution of suites whose QuarantineFlags is non-empty. Without this flag, mined-from-production suites that carry classified content are refused. See #115.")
 	model := fs.String("model", "", "Model to run every task with (forwarded to each harness invocation as --model). Overrides the harness default and any model pinned by the suite's run_config block. Empty (the default) preserves existing behaviour.")
+	promptModel := fs.String("prompt-model", "", "Prompt model to render system prompts with (forwarded to each harness invocation as --prompt-model). The wire model is unchanged; combine with --model to compare a prompt tuned for one model against another. Empty (the default) derives the prompt model from the effective model.")
 	// Anthropic Workload Identity Federation flags. The runner forwards
 	// these verbatim to every `stirrup harness` invocation so the
 	// eval-gate CI job can authenticate via WIF instead of a static
@@ -178,6 +179,7 @@ func cmdRun(args []string) {
 		Concurrency: *concurrency,
 		DryRun:      *dryRun,
 		Model:       *model,
+		PromptModel: *promptModel,
 		AnthropicWIF: runner.AnthropicWIFConfig{
 			FederationRuleID:  *anthropicFederationRuleID,
 			OrganizationID:    *anthropicOrganizationID,

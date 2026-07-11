@@ -135,8 +135,9 @@ type modelRouterSpec struct {
 }
 
 type promptBuilderSpec struct {
-	Type     string `hcl:"type"`
-	Template string `hcl:"template,optional"`
+	Type        string `hcl:"type"`
+	Template    string `hcl:"template,optional"`
+	PromptModel string `hcl:"prompt_model,optional"`
 }
 
 type contextStrategySpec struct {
@@ -501,7 +502,7 @@ func modelRouterSpecToType(s *modelRouterSpec) types.ModelRouterConfig {
 }
 
 func promptBuilderSpecToType(s *promptBuilderSpec) types.PromptBuilderConfig {
-	return types.PromptBuilderConfig{Type: s.Type, Template: s.Template}
+	return types.PromptBuilderConfig{Type: s.Type, Template: s.Template, PromptModel: s.PromptModel}
 }
 
 func contextStrategySpecToType(s *contextStrategySpec) types.ContextStrategyConfig {
