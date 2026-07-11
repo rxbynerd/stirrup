@@ -1356,6 +1356,23 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 	if cfg.FuzzyThreshold != nil {
 		fuzzyThreshold = *cfg.FuzzyThreshold
 	}
+	// Same defence-in-depth rationale as the unknown-Type fallback below:
+	// types.ValidateRunConfig rejects fuzzyThreshold outside (0, 1], but a
+	// caller that bypasses validation (gRPC / embedders constructing a
+	// RunConfig directly) can still reach here with a value <= 0. That
+	// defeats the udiff fuzzy-match "no match found" sentinel check
+	// (harness/internal/edit/udiff.go: findFuzzyMatch's bestSim=0/bestPos=-1
+	// zero value passes an unguarded `>= 0` comparison) and panics on a
+	// negative slice index. Clamp to the documented default instead of
+	// letting a bad config take the run down mid-edit.
+	if fuzzyThreshold <= 0 || fuzzyThreshold > 1 {
+		slog.Default().Warn("edit strategy fuzzyThreshold out of range; falling back to default",
+			slog.Float64("attempted_fuzzy_threshold", fuzzyThreshold),
+			slog.Float64("selected_fuzzy_threshold", 0.80),
+			slog.String("hint", "route the RunConfig through types.ValidateRunConfig to reject out-of-range values"),
+		)
+		fuzzyThreshold = 0.80
+	}
 
 	switch cfg.Type {
 	case "whole-file":

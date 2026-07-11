@@ -2786,6 +2786,65 @@ func TestValidateRunConfig_EditStrategyExplicitPreserved(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_FuzzyThresholdBounds pins the previously-panicking
+// config (fuzzyThreshold <= 0) to a validation error instead of a runtime
+// crash. harness/internal/edit/udiff.go treats fuzzyThreshold as a
+// similarity ratio: applyHunk's fuzzy-match fallback compares the best
+// found similarity (0.0 when nothing matches, alongside a sentinel
+// position of -1) against the threshold with `>=`. A threshold <= 0 makes
+// that comparison trivially true even when no position actually matched,
+// so the strategy proceeds to splice at index -1 and panics. Legal range
+// is (0, 1]: the code's own doc comments describe the ratio as 0.0-1.0,
+// and 1.0 (exact matches only) is a legitimate, if extreme, configuration.
+func TestValidateRunConfig_FuzzyThresholdBounds(t *testing.T) {
+	// The exact previously-panicking shape from the defect report.
+	c := validConfig()
+	zero := 0.0
+	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &zero}
+	err := ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "fuzzyThreshold") {
+		t.Fatalf("expected fuzzyThreshold error for 0, got: %v", err)
+	}
+
+	neg := -0.5
+	c = validConfig()
+	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &neg}
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "fuzzyThreshold") {
+		t.Fatalf("expected fuzzyThreshold error for negative value, got: %v", err)
+	}
+
+	aboveMax := 1.01
+	c = validConfig()
+	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &aboveMax}
+	err = ValidateRunConfig(c)
+	if err == nil || !strings.Contains(err.Error(), "fuzzyThreshold") {
+		t.Fatalf("expected fuzzyThreshold error for value > 1, got: %v", err)
+	}
+
+	// Boundary and mid-range values must validate cleanly. 1.0 is the
+	// documented ceiling (exact-only fuzzy matches); 0.80 is the
+	// documented default; a value just above 0 is the open lower bound.
+	for _, v := range []float64{0.001, 0.5, 0.80, 1.0} {
+		t.Run(fmt.Sprintf("v=%v", v), func(t *testing.T) {
+			c := validConfig()
+			x := v
+			c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: &x}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("expected no error for fuzzyThreshold=%v, got: %v", v, err)
+			}
+		})
+	}
+
+	// Nil (unset) falls back to the harness default and must validate
+	// cleanly.
+	c = validConfig()
+	c.EditStrategy = EditStrategyConfig{Type: "udiff", FuzzyThreshold: nil}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected no error for nil fuzzyThreshold, got: %v", err)
+	}
+}
+
 // --- Rule of Two ---
 
 // boolRef is a tiny helper for the *bool fields that gate a Rule-of-Two

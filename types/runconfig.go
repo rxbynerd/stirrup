@@ -2110,6 +2110,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateK8sExecutor(config.Executor, &errs)
 	validateResourceLimits(config.Executor.Resources, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
+	validateEditStrategyFuzzyThreshold(config.EditStrategy, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
 	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
@@ -2634,6 +2635,23 @@ func applyCodeScannerDefault(config *RunConfig) {
 func applyEditStrategyDefault(config *RunConfig) {
 	if config.EditStrategy.Type == "" {
 		config.EditStrategy.Type = "multi"
+	}
+}
+
+// validateEditStrategyFuzzyThreshold bounds FuzzyThreshold to (0, 1]. The
+// udiff/multi strategies (harness/internal/edit) treat it as a similarity
+// ratio: a value <= 0 defeats the "no fuzzy match found" sentinel check in
+// applyHunk (findFuzzyMatch returns bestSim=0 with bestPos=-1 when nothing
+// matches, and 0 >= threshold is trivially true for threshold <= 0), which
+// then splices at index -1 and panics. Values > 1 are merely a similarity
+// ratio that can never be met, not a crash risk, but are still rejected as
+// a config error since they can never produce a fuzzy match.
+func validateEditStrategyFuzzyThreshold(cfg EditStrategyConfig, errs *[]string) {
+	if cfg.FuzzyThreshold == nil {
+		return
+	}
+	if t := *cfg.FuzzyThreshold; t <= 0 || t > 1 {
+		*errs = append(*errs, fmt.Sprintf("editStrategy.fuzzyThreshold must be > 0 and <= 1 (got %v)", t))
 	}
 }
 
