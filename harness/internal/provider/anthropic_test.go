@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -1133,5 +1135,142 @@ func TestAnthropic_ThoughtSignatureNotLeakedToAnthropicAPI(t *testing.T) {
 	}
 	if strings.Contains(bodyStr, sig) {
 		t.Errorf("Anthropic request body contains the signature value %q.\nbody = %s", sig, bodyStr)
+	}
+}
+
+// fastRetryPolicy returns a RetryPolicy with millisecond-scale delays so
+// retry tests run quickly without weakening the assertions (MaxAttempts,
+// MaxDelay, WallClockBudget still bound the loop the same way production
+// values would).
+func fastRetryPolicy() RetryPolicy {
+	return RetryPolicy{
+		MaxAttempts:     3,
+		InitialDelay:    time.Millisecond,
+		MaxDelay:        5 * time.Millisecond,
+		WallClockBudget: time.Second,
+	}
+}
+
+// TestAnthropicAdapter_RetriesOn429ThenSucceeds pins SF1 (v0.1 core review):
+// providerRetry is documented as harness-wide but was wired only into the
+// openai-compatible adapter. Anthropic is the default provider, so a single
+// 429 failing the turn outright was the highest-impact instance of the gap.
+func TestAnthropicAdapter_RetriesOn429ThenSucceeds(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("message_stop", `{}`))
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+	adapter.RetryPolicy = fastRetryPolicy()
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+	collectEvents(t, ch)
+
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("server attempts: got %d, want 2 (one 429, one success)", got)
+	}
+}
+
+// TestAnthropicAdapter_RetryDisabled_ExactlyOneAttempt asserts that a zero
+// RetryPolicy (the adapter's default when the factory does not set the
+// field, and what RetryPolicyFromConfig(nil) produces) makes exactly one
+// attempt — DoWithRetry's documented behaviour for a zero policy.
+func TestAnthropicAdapter_RetryDisabled_ExactlyOneAttempt(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+	// adapter.RetryPolicy left at its zero value.
+
+	_, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	})
+	if err == nil {
+		t.Fatal("expected an error for a persistent 429 with retry disabled")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("server attempts: got %d, want 1", got)
+	}
+}
+
+// TestAnthropicAdapter_StreamFailureAfterStartIsNotRetried asserts the
+// streaming-safety boundary: DoWithRetry governs only the pre-stream
+// request/response exchange. Once the server has returned 200 and the
+// adapter has begun handing events to the caller, a mid-stream transport
+// failure must surface as a terminal error event on the channel — never as
+// a second HTTP request. Retrying after bytes have already reached the
+// caller would risk duplicating partially-emitted output.
+//
+// The handler writes a 200 response with one SSE event, flushes it to the
+// wire, then hijacks and closes the raw connection — an abrupt mid-chunk
+// drop the chunked-transfer-encoding reader surfaces as a transport error,
+// exactly the class DoWithRetry would retry if it occurred before any
+// response had been received.
+func TestAnthropicAdapter_StreamFailureAfterStartIsNotRetried(t *testing.T) {
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, makeSSE("content_block_start", `{"index":0,"content_block":{"type":"text","text":""}}`))
+		_, _ = fmt.Fprint(w, makeSSE("content_block_delta", `{"index":0,"delta":{"type":"text_delta","text":"partial"}}`))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("ResponseWriter does not support Hijack")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer srv.Close()
+
+	adapter := NewAnthropicAdapter(staticBearer("test-key"), AuthModeAPIKey)
+	adapter.baseURL = srv.URL
+	adapter.RetryPolicy = fastRetryPolicy()
+
+	ch, err := adapter.Stream(context.Background(), types.StreamParams{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		t.Fatalf("Stream() error: %v", err)
+	}
+
+	events := collectEvents(t, ch)
+	if len(events) == 0 {
+		t.Fatal("expected at least the pre-drop text_delta event")
+	}
+	if last := events[len(events)-1]; last.Type != "error" {
+		t.Errorf("expected a terminal error event after the mid-stream drop, got %+v", last)
+	}
+
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("server attempts: got %d, want 1 — a mid-stream failure must not be retried", got)
 	}
 }

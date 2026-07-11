@@ -2205,6 +2205,95 @@ func TestBuildProvider_OpenAICompatibleWithRetryConfig(t *testing.T) {
 	}
 }
 
+// TestBuildProvider_AnthropicWithRetryConfig is the SF1 (v0.1 core review)
+// regression guard: providerRetry was documented as harness-wide but wired
+// only into openai-compatible, so the default provider (anthropic) silently
+// ignored the operator's retry knob. Mirrors
+// TestBuildProvider_OpenAICompatibleWithRetryConfig.
+func TestBuildProvider_AnthropicWithRetryConfig(t *testing.T) {
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://ANTHROPIC_API_KEY": "sk-ant-api03-fake"}}
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:      "anthropic",
+		APIKeyRef: "secret://ANTHROPIC_API_KEY",
+		Retry: &types.ProviderRetryConfig{
+			MaxAttempts:       5,
+			InitialDelayMs:    200,
+			MaxDelayMs:        10000,
+			WallClockBudgetMs: 60000,
+		},
+	}, secrets)
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	adapter, ok := prov.(*provider.AnthropicAdapter)
+	if !ok {
+		t.Fatalf("buildProvider type = %T, want *provider.AnthropicAdapter", prov)
+	}
+	if got, want := adapter.RetryPolicy.MaxAttempts, 5; got != want {
+		t.Errorf("RetryPolicy.MaxAttempts = %d, want %d", got, want)
+	}
+	if got, want := adapter.RetryPolicy.InitialDelay, 200*time.Millisecond; got != want {
+		t.Errorf("RetryPolicy.InitialDelay = %v, want %v", got, want)
+	}
+	if got, want := adapter.RetryPolicy.MaxDelay, 10*time.Second; got != want {
+		t.Errorf("RetryPolicy.MaxDelay = %v, want %v", got, want)
+	}
+	if got, want := adapter.RetryPolicy.WallClockBudget, 60*time.Second; got != want {
+		t.Errorf("RetryPolicy.WallClockBudget = %v, want %v", got, want)
+	}
+}
+
+// TestBuildProvider_GeminiWithRetryConfig and
+// TestBuildProvider_OpenAIResponsesWithRetryConfig extend the SF1 coverage
+// to the remaining two adapters that share the net/http + DoWithRetry
+// integration pattern.
+func TestBuildProvider_GeminiWithRetryConfig(t *testing.T) {
+	keyPath := writeFakeServiceAccountJSON(t, t.TempDir())
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", keyPath)
+
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:        "gemini",
+		GCPProject:  "test-project",
+		GCPLocation: "us-central1",
+		Retry: &types.ProviderRetryConfig{
+			MaxAttempts: 5,
+			MaxDelayMs:  10000,
+		},
+	}, &stubSecretStore{secrets: map[string]string{}})
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	adapter, ok := prov.(*provider.GeminiAdapter)
+	if !ok {
+		t.Fatalf("buildProvider type = %T, want *provider.GeminiAdapter", prov)
+	}
+	if got, want := adapter.RetryPolicy.MaxAttempts, 5; got != want {
+		t.Errorf("RetryPolicy.MaxAttempts = %d, want %d", got, want)
+	}
+}
+
+func TestBuildProvider_OpenAIResponsesWithRetryConfig(t *testing.T) {
+	secrets := &stubSecretStore{secrets: map[string]string{"secret://OPENAI_KEY": "sk-test"}}
+	prov, err := buildProvider(context.Background(), types.ProviderConfig{
+		Type:      "openai-responses",
+		APIKeyRef: "secret://OPENAI_KEY",
+		Retry: &types.ProviderRetryConfig{
+			MaxAttempts: 5,
+			MaxDelayMs:  10000,
+		},
+	}, secrets)
+	if err != nil {
+		t.Fatalf("buildProvider returned error: %v", err)
+	}
+	adapter, ok := prov.(*provider.OpenAIResponsesAdapter)
+	if !ok {
+		t.Fatalf("buildProvider type = %T, want *provider.OpenAIResponsesAdapter", prov)
+	}
+	if got, want := adapter.RetryPolicy.MaxAttempts, 5; got != want {
+		t.Errorf("RetryPolicy.MaxAttempts = %d, want %d", got, want)
+	}
+}
+
 // TestBuildProvider_OpenAICompatibleWithCompatProfile_ZAI pins the
 // factory's resolveCompatProfile dispatch for the openai-compatible
 // + CompatProfile="zai-glm" combination. Without this test the

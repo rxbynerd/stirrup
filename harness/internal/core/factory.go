@@ -684,6 +684,17 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		return nil, fmt.Errorf("resolve credentials: %w", err)
 	}
 
+	// ValidateRunConfig guarantees cfg.Retry is populated with the
+	// defaulted ProviderRetryConfig — RetryPolicyFromConfig handles a nil
+	// pointer defensively in case a non-CLI caller bypasses the validator.
+	// Computed once here so every adapter branch below wires the same
+	// operator-configured providerRetry knob through DoWithRetry (or, for
+	// bedrock, the closest SDK-native equivalent) — this is the single
+	// point where RunConfig's retry config becomes a provider-level
+	// RetryPolicy, so a new adapter type inherits the knob just by reading
+	// this value instead of re-deriving its own.
+	retry := provider.RetryPolicyFromConfig(cfg.Retry)
+
 	switch cfg.Type {
 	case "anthropic":
 		if cred.BearerToken == nil {
@@ -698,7 +709,9 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		if cfg.Credential != nil && cfg.Credential.Type == "anthropic-wif" {
 			authMode = provider.AuthModeBearer
 		}
-		return provider.NewAnthropicAdapter(cred.BearerToken, authMode), nil
+		adapter := provider.NewAnthropicAdapter(cred.BearerToken, authMode)
+		adapter.RetryPolicy = retry
+		return adapter, nil
 	case "openai-compatible":
 		if cred.BearerToken == nil {
 			return nil, fmt.Errorf("openai-compatible provider requires a bearer credential but the credential source produced none")
@@ -707,11 +720,6 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			APIKeyHeader: cfg.APIKeyHeader,
 			QueryParams:  cfg.QueryParams,
 		}
-		// ValidateRunConfig guarantees cfg.Retry is populated with the
-		// defaulted ProviderRetryConfig — RetryPolicyFromConfig handles a
-		// nil pointer defensively in case a non-CLI caller bypasses the
-		// validator.
-		retry := provider.RetryPolicyFromConfig(cfg.Retry)
 		adapter := provider.NewOpenAICompatibleAdapter(cred.BearerToken, cfg.BaseURL, auth, retry)
 		// Inject the compat rules into the adapter's registry when the
 		// operator selected a compatProfile. The default registry is
@@ -739,15 +747,19 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 			APIKeyHeader: cfg.APIKeyHeader,
 			QueryParams:  cfg.QueryParams,
 		}
-		return provider.NewOpenAIResponsesAdapter(cred.BearerToken, cfg.BaseURL, auth), nil
+		adapter := provider.NewOpenAIResponsesAdapter(cred.BearerToken, cfg.BaseURL, auth)
+		adapter.RetryPolicy = retry
+		return adapter, nil
 	case "bedrock":
-		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials)
+		return provider.NewBedrockAdapter(cfg.Region, cfg.Profile, cred.AWSCredentials, retry)
 	case "gemini":
 		if cred.BearerToken == nil {
 			return nil, fmt.Errorf("gemini provider requires GCP credentials but the credential source produced none")
 		}
 		// No compat profiles for Gemini in v1; registry defaults to DefaultRegistry().
-		return provider.NewGeminiAdapter(cred.BearerToken, cfg.GCPProject, cfg.GCPLocation, cfg.GeminiSafetySettings), nil
+		adapter := provider.NewGeminiAdapter(cred.BearerToken, cfg.GCPProject, cfg.GCPLocation, cfg.GeminiSafetySettings)
+		adapter.RetryPolicy = retry
+		return adapter, nil
 	default:
 		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses)", cfg.Type)
 	}

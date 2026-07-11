@@ -74,6 +74,10 @@ type GeminiAdapter struct {
 	Tracer  oteltrace.Tracer
 	Metrics *observability.Metrics
 
+	// RetryPolicy is field-injected by the factory; zero value disables
+	// retry (single attempt). Mirrors the OpenAICompatibleAdapter pattern.
+	RetryPolicy RetryPolicy
+
 	// Logger is field-injected by the factory; nil falls back to
 	// slog.Default(). Used for the per-Stream quirks debug log line.
 	Logger *slog.Logger
@@ -255,7 +259,18 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := g.httpClient.Do(req)
+	// DoWithRetry retries only this pre-stream call (connection errors, or a
+	// 429/5xx on the initial response). It is never invoked again once the
+	// channel below is returned, so a failure after streaming has begun is
+	// never replayed — the same boundary the openai-compatible adapter
+	// relies on.
+	resp, err := DoWithRetry(ctx, g.httpClient, req, RetryOptions{
+		Policy:       g.RetryPolicy,
+		Logger:       g.Logger,
+		Metrics:      g.Metrics,
+		ProviderType: "gemini",
+		Model:        params.Model,
+	})
 	if err != nil {
 		g.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("execute request: %w", err)

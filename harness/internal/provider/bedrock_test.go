@@ -833,3 +833,28 @@ func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
 		t.Errorf("provider_ttfb count = %d, want 1", got)
 	}
 }
+
+// TestNewBedrockAdapter_RetryPolicyWiring is SF1 coverage for the one
+// adapter that cannot reuse DoWithRetry: ConverseStream goes through the
+// AWS SDK's own transport, not a raw *http.Client, so the shared
+// RetryPolicy is mapped onto the SDK's own Standard retryer (or
+// aws.NopRetryer when retries are disabled) at construction time. This
+// only exercises that NewBedrockAdapter accepts the policy and returns a
+// usable adapter for both the enabled and disabled cases — the retryer
+// itself is internal to the AWS SDK client and not inspectable from here.
+func TestNewBedrockAdapter_RetryPolicyWiring(t *testing.T) {
+	for name, policy := range map[string]RetryPolicy{
+		"enabled":  {MaxAttempts: 5, InitialDelay: 200 * time.Millisecond, MaxDelay: 10 * time.Second},
+		"disabled": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			adapter, err := NewBedrockAdapter("", "", nil, policy)
+			if err != nil {
+				t.Fatalf("NewBedrockAdapter: %v", err)
+			}
+			if adapter == nil {
+				t.Fatal("NewBedrockAdapter returned a nil adapter with no error")
+			}
+		})
+	}
+}

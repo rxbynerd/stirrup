@@ -325,10 +325,16 @@ The wall-clock budget is bounded by the run's `--timeout`; setting
 `--provider-retry-wall-clock` higher than `--timeout` is valid but
 the effective ceiling becomes the remaining run timeout.
 
-Currently honoured only by the `openai-compatible` adapter; the
-`anthropic`, `bedrock`, `gemini`, and `openai-responses` adapters
-fall through unconditionally pending their own wire-ups (tracked in
-follow-up issues).
+Honoured by every adapter. `anthropic`, `gemini`, and
+`openai-responses` share the same `DoWithRetry` integration as
+`openai-compatible`: the resolved `RetryPolicy` governs only the
+pre-stream request/response exchange (connection errors, or a
+429/5xx on the initial response), never a failure after the stream
+has started yielding events. `bedrock` has no raw `*http.Client`
+seam — `ConverseStream` goes through the AWS SDK's own transport —
+so `maxAttempts` and `maxDelayMs` are mapped onto the SDK's Standard
+retryer instead; `initialDelayMs` and `wallClockBudgetMs` have no
+SDK-native equivalent and are not applied to `bedrock`.
 
 Defaults are tuned for the cost of one extra coding-loop turn rather
 than the OpenAI Python SDK's 8 s cap: a coding agent typically has
