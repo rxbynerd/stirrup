@@ -100,6 +100,20 @@ func (f *modeFragment) Render(_ context.Context, pc PromptContext) (string, erro
 	return "", fmt.Errorf("no text for mode %q and no default", pc.Mode)
 }
 
+// modeTemplateFragment renders the embedded mode prompt template for the
+// current mode against the prompt model (see RenderModePrompt).
+type modeTemplateFragment struct{}
+
+// ModeTemplateFragment returns a fragment that renders the embedded,
+// model-conditional system prompt template for the current mode.
+func ModeTemplateFragment() PromptFragment {
+	return &modeTemplateFragment{}
+}
+
+func (f *modeTemplateFragment) Render(_ context.Context, pc PromptContext) (string, error) {
+	return RenderModePrompt(pc.Mode, pc)
+}
+
 // dynamicContextFragment wraps the PromptContext's DynamicContext entries in
 // <untrusted_context> tags, matching the security convention used by
 // DefaultPromptBuilder.
@@ -235,7 +249,7 @@ func (f *gitStatusFragment) Render(ctx context.Context, pc PromptContext) (strin
 // DefaultPromptBuilder but with composable pieces.
 func DefaultComposedFragments() []PromptFragment {
 	return []PromptFragment{
-		ModeFragment(ModePrompts()),
+		ModeTemplateFragment(),
 		WorkspacePathFragment(),
 		TurnBudgetFragment(),
 		WorkspaceTreeFragment(),

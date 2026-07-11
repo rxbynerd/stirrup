@@ -6,9 +6,14 @@ import "context"
 
 // PromptContext provides the information a prompt builder needs.
 type PromptContext struct {
-	Mode           string
-	Workspace      string
-	MaxTurns       int
+	Mode      string
+	Workspace string
+	MaxTurns  int
+	// Model is the resolved prompt model (RunConfig.EffectivePromptModel):
+	// the model identity the system prompt templates render against. It may
+	// differ from the wire model when promptBuilder.promptModel is set for
+	// a prompt/model comparison run.
+	Model          string
 	DynamicContext map[string]string
 }
 

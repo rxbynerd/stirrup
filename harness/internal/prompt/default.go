@@ -20,13 +20,13 @@ func NewDefaultPromptBuilder() *DefaultPromptBuilder {
 
 // Build constructs the system prompt for the given context.
 func (b *DefaultPromptBuilder) Build(_ context.Context, pc PromptContext) (string, error) {
-	tmpl, ok := ModePrompts()[pc.Mode]
-	if !ok {
-		return "", fmt.Errorf("unknown mode: %q", pc.Mode)
+	preamble, err := RenderModePrompt(pc.Mode, pc)
+	if err != nil {
+		return "", err
 	}
 
 	var sb strings.Builder
-	sb.WriteString(tmpl)
+	sb.WriteString(preamble)
 
 	if pc.Workspace != "" {
 		fmt.Fprintf(&sb, "\n\nWorking directory: %s", pc.Workspace)
