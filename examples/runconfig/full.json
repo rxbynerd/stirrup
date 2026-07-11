@@ -39,7 +39,8 @@
   },
   "executor": {
     "type": "container",
-    "image": "ghcr.io/rxbynerd/stirrup:latest",
+    "image": "ghcr.io/rxbynerd/stirrup-sandbox:latest",
+    "registryAllowlist": ["ghcr.io/rxbynerd/*"],
     "runtime": "runsc",
     "network": {
       "mode": "none"
