@@ -48,6 +48,15 @@ type RunConfig struct {
 	// DryRun if true, validates the suite without executing tasks.
 	DryRun bool
 
+	// Model, when non-empty, is forwarded to every harness invocation
+	// as --model. The harness applies explicit flags on top of any
+	// --config document (Changed()-gated override), so this takes
+	// precedence over both the harness default model and a model pinned
+	// by the suite's run_config block. CI uses this to run the same
+	// suite against different models (cheap gate on push, stronger
+	// models at release) without editing suite files.
+	Model string
+
 	// AnthropicWIF, when populated, instructs the runner to forward
 	// Anthropic Workload Identity Federation flags to every harness
 	// invocation. The four identifiers are non-secret per Anthropic's
@@ -458,6 +467,14 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	// and a suite that bundles a RunConfig but no provider credential
 	// still needs WIF identifiers passed on the command line.
 	args = appendAnthropicWIFArgs(args, cfg.AnthropicWIF)
+
+	// Forward the model override unconditionally (not gated on
+	// configPath): the harness's flag resolution applies an explicitly
+	// passed --model on top of the --config document, which is exactly
+	// the operator-override semantic this field promises.
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)
 	cmd.Dir = workspaceDir

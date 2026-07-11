@@ -1064,3 +1064,126 @@ fi
 		}
 	}
 }
+
+// TestRunSuite_ForwardsModelFlag pins that RunConfig.Model reaches the
+// harness argv as --model. CI relies on this to run the same suite
+// against different models (cheap gate on push, stronger models at
+// release); a silent drop here would leave every gated run on the
+// harness default model with no visible failure.
+func TestRunSuite_ForwardsModelFlag(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessDir := t.TempDir()
+	harnessPath := filepath.Join(harnessDir, "fake-harness")
+	argvCapture := filepath.Join(harnessDir, "argv.txt")
+
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a"; done > %q
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
+fi
+`, argvCapture)
+	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := types.EvalSuite{
+		ID: "model-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "model-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-model-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+		Model:       "claude-haiku-4-5-20251001",
+	})
+	if err != nil {
+		t.Fatalf("RunSuite returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(argvCapture)
+	if err != nil {
+		t.Fatalf("reading captured argv: %v", err)
+	}
+	captured := string(data)
+	for _, frag := range []string{"--model", "claude-haiku-4-5-20251001"} {
+		if !strings.Contains(captured, frag+"\n") {
+			t.Errorf("captured argv missing %q\nfull capture:\n%s", frag, captured)
+		}
+	}
+}
+
+// TestRunSuite_NoModelFlagWhenUnset pins the legacy invocation shape:
+// an empty RunConfig.Model must not emit --model at all, so suites
+// keep resolving their model from the suite run_config or the harness
+// default exactly as before the flag existed.
+func TestRunSuite_NoModelFlagWhenUnset(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessDir := t.TempDir()
+	harnessPath := filepath.Join(harnessDir, "fake-harness")
+	argvCapture := filepath.Join(harnessDir, "argv.txt")
+
+	script := fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do printf '%%s\n' "$a"; done > %q
+TRACE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --trace) TRACE="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$TRACE" ]; then
+  echo '{"id":"run-1","turns":1,"cost":0.01,"outcome":"success"}' > "$TRACE"
+fi
+`, argvCapture)
+	if err := os.WriteFile(harnessPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	suite := types.EvalSuite{
+		ID: "no-model-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "no-model-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-model-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath: harnessPath,
+	})
+	if err != nil {
+		t.Fatalf("RunSuite returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(argvCapture)
+	if err != nil {
+		t.Fatalf("reading captured argv: %v", err)
+	}
+	if strings.Contains(string(data), "--model\n") {
+		t.Errorf("captured argv unexpectedly contains --model:\n%s", string(data))
+	}
+}
