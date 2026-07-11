@@ -38,7 +38,7 @@ Enabling guardrails is opt-in per run.
 
 The guard is a *probability reducer*, not an authoriser. A
 `VerdictAllow` from the guard does **not** override a deny from
-the [Cedar policy engine](safety-rings.md#ring-3--cedar-policy-engine-per-tool-call).
+the [Cedar policy engine](safety-rings.md#ring-3--cedar-policy-engine-per-call-authorization).
 The two questions are different:
 
 - **PermissionPolicy** asks: *is this tool call permitted to run?*
@@ -90,7 +90,7 @@ Pre-tool catches three things:
 2. **Coerced tool calls** — a prompt-injected model emits a
    syntactically valid call that semantically does the attacker's
    bidding. Note: deciding whether a syntactically valid call is
-   *safe* is the [PermissionPolicy](safety-rings.md#ring-3--cedar-policy-engine-per-tool-call)'s
+   *safe* is the [PermissionPolicy](safety-rings.md#ring-3--cedar-policy-engine-per-call-authorization)'s
    job, not the guard's. They overlap in practice; neither replaces
    the other.
 3. **Compromised gateway rewrites** — anything between the harness
