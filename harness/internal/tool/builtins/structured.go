@@ -24,12 +24,14 @@ const (
 )
 
 // commandResult is the structured payload for run_command. timedOut reports
-// whether the command was killed by its timeout; in the current executor
-// contract a timeout surfaces as a handler error before the structured payload
-// is built, so on the success path timedOut is always false and timeoutSeconds
-// records the bound that was in effect. The field is retained so a future
-// executor that returns partial output on timeout can populate it without a
-// schema change.
+// whether the command was killed by its timeout: every executor wraps
+// executor.ErrTimeout into the error it returns on a genuine deadline expiry
+// while still returning whatever partial stdout/stderr it captured (#489), so
+// RunCommandTool classifies that case via errors.Is and reports it as a soft
+// outcome — timedOut true, no handler error — rather than discarding the
+// output. exitCode is the executor's zero value (not a real exit status) when
+// timedOut is true, since the process never ran to completion. timeoutSeconds
+// records the bound that was in effect either way.
 type commandResult struct {
 	Stdout         string `json:"stdout"`
 	Stderr         string `json:"stderr"`

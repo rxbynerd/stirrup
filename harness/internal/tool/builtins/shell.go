@@ -3,6 +3,7 @@ package builtins
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -68,15 +69,27 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 
 			result, err := exec.Exec(ctx, params.Command, timeout)
 			if err != nil {
-				return tool.StructuredResult{}, err
+				if !errors.Is(err, executor.ErrTimeout) {
+					return tool.StructuredResult{}, err
+				}
+				// #489's executors return partial output alongside the
+				// wrapped ErrTimeout, so a genuine timeout is a soft
+				// outcome the model can act on (e.g. rerun with a longer
+				// timeout or narrow the command) rather than a hard tool
+				// error. result can in principle still be nil if the
+				// executor was cut off before producing one at all
+				// (e.g. a control-plane deadline before exec even
+				// started); handle that defensively instead of panicking.
+				if result == nil {
+					result = &executor.ExecResult{}
+				}
+				return timedOutRunCommandResult(result, timeoutSeconds)
 			}
 
 			structured, marshalErr := json.Marshal(commandResult{
-				Stdout:   result.Stdout,
-				Stderr:   result.Stderr,
-				ExitCode: result.ExitCode,
-				// A timeout surfaces as the err above, so a result reaching
-				// here always completed within the bound.
+				Stdout:         result.Stdout,
+				Stderr:         result.Stderr,
+				ExitCode:       result.ExitCode,
 				TimedOut:       false,
 				TimeoutSeconds: timeoutSeconds,
 			})
@@ -91,6 +104,37 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 			}, nil
 		},
 	}
+}
+
+// timedOutRunCommandResult builds the soft-outcome StructuredResult for a
+// run_command invocation killed by its timeout. result carries whatever
+// partial output the executor captured before the kill (result.ExitCode is
+// the executor's zero value, not a sentinel, since the process never ran to
+// completion — callers must not read it as a real exit status). The Text
+// fallback appends an unambiguous "[timed out after Ns]" marker after the
+// normal formatRunCommand rendering so a model reading only Text (not
+// Structured) can still distinguish a timeout from a clean exit; formatRunCommand
+// itself stays byte-identical to its pre-#231/#489 contract.
+func timedOutRunCommandResult(result *executor.ExecResult, timeoutSeconds int) (tool.StructuredResult, error) {
+	structured, marshalErr := json.Marshal(commandResult{
+		Stdout:         result.Stdout,
+		Stderr:         result.Stderr,
+		ExitCode:       result.ExitCode,
+		TimedOut:       true,
+		TimeoutSeconds: timeoutSeconds,
+	})
+	if marshalErr != nil {
+		return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
+	}
+
+	text := formatRunCommand(result.Stdout, result.Stderr, result.ExitCode)
+	text += fmt.Sprintf("\n[timed out after %ds]", timeoutSeconds)
+
+	return tool.StructuredResult{
+		Text:       text,
+		Structured: structured,
+		Kind:       kindCommandResult,
+	}, nil
 }
 
 // formatRunCommand renders the canonical text output for run_command:
