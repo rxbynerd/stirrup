@@ -485,14 +485,18 @@ func (s *Store) Read(ref string, offset, limit int64) (ReadResult, error) {
 }
 
 // RecordRead adds the exact model-visible read result to the access ledger.
-func (s *Store) RecordRead(readerToolUseID, ref string, result ReadResult, modelVisible string) error {
+// The archive member is scoped by the reader's run ID, matching every other
+// member path: the store is shared across a parent run and its subagents, so
+// a bare tool-use ID can collide across conversations and silently overwrite
+// a ledger file.
+func (s *Store) RecordRead(reader CallContext, ref string, result ReadResult, modelVisible string) error {
 	s.mu.Lock()
 	r, ok := s.refs[ref]
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("unknown command output reference")
 	}
-	member := filepath.ToSlash(filepath.Join("model-visible", encodedID(readerToolUseID), "chunk.txt"))
+	member := filepath.ToSlash(filepath.Join("model-visible", encodedID(reader.RunID+"-"+reader.ToolUseID), "chunk.txt"))
 	path := filepath.Join(s.root, filepath.FromSlash(member))
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		wrapped := fmt.Errorf("%w: write read ledger directory: %v", ErrCaptureIO, err)
@@ -506,7 +510,7 @@ func (s *Store) RecordRead(readerToolUseID, ref string, result ReadResult, model
 	}
 	sum := sha256.Sum256([]byte(modelVisible))
 	read := types.CommandOutputReadRecord{
-		ToolUseID: readerToolUseID, Reference: ref, Offset: result.Offset,
+		ToolUseID: reader.ToolUseID, Reference: ref, Offset: result.Offset,
 		EndOffset: result.End, EOF: result.EOF, ResultSHA256: hex.EncodeToString(sum[:]),
 		ArchiveMember: member,
 	}
