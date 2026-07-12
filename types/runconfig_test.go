@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -7337,5 +7338,82 @@ func TestRunConfig_HooksOmittedWhenNil(t *testing.T) {
 	}
 	if strings.Contains(string(data), `"hooks"`) {
 		t.Errorf("expected no hooks key when Hooks is nil, got: %s", data)
+	}
+}
+
+// debugStyleTokens are the substrings a "debug"/"trace-wire"-shaped
+// RunConfig field or JSON key would contain, in every casing convention
+// this codebase's json tags use (camelCase, per the RunConfig field
+// list) plus snake_case and kebab-case as a defensive catch-all against
+// a future field named more loosely. Checked case-insensitively.
+var debugStyleTokens = []string{"debug", "tracewire", "trace_wire", "trace-wire"}
+
+// TestRunConfig_DoesNotExposeDebugFields guards the CLI-only posture of
+// --debug and --trace-wire (issues #219, #220): a RunConfig — the one
+// wire shape a control-plane submission can construct — must never carry
+// a field that could request either behaviour. Both flags are registered
+// directly on harnessCmd.Flags() (see harness/cmd/stirrup/cmd/harness.go),
+// deliberately bypassing addRunConfigFlags/applyOverrides/BuildRunConfig,
+// so this test is a structural regression guard against a future edit
+// that adds a matching RunConfig field by mistake.
+//
+// Two independent checks: a reflect walk over every exported field name
+// in the RunConfig type graph (catches a field before it is ever
+// marshalled, including one added deep in a nested config struct), and a
+// JSON-marshal substring check over a representative populated instance
+// (catches a field whose json tag diverges from its Go name).
+func TestRunConfig_DoesNotExposeDebugFields(t *testing.T) {
+	visited := map[reflect.Type]bool{}
+	var walk func(t reflect.Type, path string)
+	walk = func(rt reflect.Type, path string) {
+		for rt.Kind() == reflect.Pointer || rt.Kind() == reflect.Slice || rt.Kind() == reflect.Array {
+			rt = rt.Elem()
+		}
+		if rt.Kind() == reflect.Map {
+			walk(rt.Key(), path+" (map key)")
+			walk(rt.Elem(), path+" (map value)")
+			return
+		}
+		if rt.Kind() != reflect.Struct {
+			return
+		}
+		if visited[rt] {
+			return
+		}
+		visited[rt] = true
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			if f.PkgPath != "" {
+				continue // unexported field: not part of the wire shape
+			}
+			fieldPath := path + "." + f.Name
+			lower := strings.ToLower(f.Name)
+			for _, tok := range debugStyleTokens {
+				if strings.Contains(lower, tok) {
+					t.Errorf("RunConfig field %s looks debug-related (%q); --debug/--trace-wire must stay CLI-only, never a RunConfig field", fieldPath, f.Name)
+				}
+			}
+			walk(f.Type, fieldPath)
+		}
+	}
+	walk(reflect.TypeOf(RunConfig{}), "RunConfig")
+
+	// Belt-and-braces: marshal a representative instance and check the
+	// wire JSON directly, in case a field's json tag were ever hand-set
+	// to something reflect-over-Go-names would miss.
+	rc := RunConfig{
+		Mode:     "execution",
+		Prompt:   "test",
+		Provider: ProviderConfig{Type: "anthropic"},
+	}
+	data, err := json.Marshal(rc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	lowerJSON := strings.ToLower(string(data))
+	for _, tok := range debugStyleTokens {
+		if strings.Contains(lowerJSON, `"`+tok) {
+			t.Errorf("marshalled RunConfig JSON contains a %q-shaped key: %s", tok, data)
+		}
 	}
 }
