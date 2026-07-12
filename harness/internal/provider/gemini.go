@@ -123,6 +123,15 @@ func NewGeminiAdapter(
 	}
 }
 
+// WireTap installs a WireTapTransport (issue #220) around the adapter's
+// HTTP transport, so every request/response this adapter sends is
+// dumped, UNREDACTED, to out. The sole caller is the factory's
+// buildProvider wiring, which only invokes this when --trace-wire was
+// set AND debugbuild.DebugBuildEnabled() — see docs/security.md#debug-builds.
+func (g *GeminiAdapter) WireTap(out io.Writer) {
+	g.httpClient.Transport = WireTapTransport(g.httpClient.Transport, out)
+}
+
 // buildURL renders the endpoint URL for one Stream call. baseURLOverride
 // short-circuits the host derivation when set (tests). For production
 // runs, "global" routes to aiplatform.googleapis.com; every other

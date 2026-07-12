@@ -124,7 +124,7 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 		Permissions: permission.NewAllowAll(),
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   rec,
-		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false),
 		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     observability.NewNoopMetrics(),
 		Logger:      slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),

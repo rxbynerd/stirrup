@@ -17,6 +17,7 @@ import (
 	flag "github.com/spf13/pflag"
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
+	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -807,7 +808,17 @@ to enable editing and shell access; the read-only modes (planning, review,
 research, toil) differ only in prompt template and ship as the safe-by-
 default first-touch posture.`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: runHarness,
+	// PreRunE (not a check inlined at the top of runHarness) so --debug
+	// and --trace-wire stay visible in --help and parse normally on
+	// every build, but a release binary refuses to proceed the moment
+	// either was explicitly set — before BuildRunConfig does any I/O or
+	// credential resolution. Using RunE for this instead would still work
+	// today, but PreRunE keeps the "reject before touching the config"
+	// contract explicit and separate from runHarness's own validation
+	// order (see the --output / BuildRunConfig / --dry-run sequencing
+	// comments there).
+	PreRunE: validateDebugBuildFlags,
+	RunE:    runHarness,
 }
 
 func init() {
@@ -831,6 +842,8 @@ func init() {
 	f.Bool("no-probe-executor", false, "With --dry-run, skip the container-engine probe (socket ping + image-present). The executor step reports skip; no engine is contacted. Meaningless without --dry-run (exit 4).")
 	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "With --dry-run, the total wall-clock budget for the preflight. Meaningless without --dry-run (exit 4).")
 	f.StringP("output", "o", "text", "Post-run summary format: text (default human-readable summary on stderr), json (structured RunResult JSON on stdout, suppresses stderr summary), none (suppresses both). When json is set together with resultSink.type=stdout-json the line is emitted once (the flag wins); pair json with a trace emitter that does not target stdout (the default jsonl file path is fine).")
+	f.Bool("debug", false, "Disable redaction/scrubbing of trace and recording output (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. CLI-only — never representable in a RunConfig, so a control-plane submission cannot request it. See docs/security.md#debug-builds.")
+	f.Bool("trace-wire", false, "Dump raw, unredacted provider wire request/response to stderr (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. Bedrock traffic is not tapped (AWS SDK, no raw *http.Client seam). CLI-only — never representable in a RunConfig. See docs/security.md#debug-builds.")
 
 	// --output-runconfig accepts a path or "-" for stdout. The .json
 	// hint nudges the shell toward the conventional extension; "-" is
@@ -843,6 +856,40 @@ func init() {
 	_ = harnessCmd.RegisterFlagCompletionFunc("output", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
 		return []string{"text", "json", "none"}, cobra.ShellCompDirectiveNoFileComp
 	})
+}
+
+// debugBuildOnlyFlags lists the flags that require a binary built with
+// -tags stirrupdebug (issues #219, #220). Kept as a table, mirroring
+// dryRunProbeGates below, so validateDebugBuildFlags's error names the
+// offending flag and a future debug-only flag is one append away.
+var debugBuildOnlyFlags = []string{
+	"debug",
+	"trace-wire",
+}
+
+// validateDebugBuildFlags hard-errors (exit 4, the usage class) when
+// --debug or --trace-wire was explicitly set on a release binary — one
+// built without -tags stirrupdebug. This is the CLI-layer half of the
+// load-bearing security property: a release build must be physically
+// incapable of disabling redaction or dumping unredacted wire traffic.
+// debugbuild.DebugBuildEnabled() is the compile-time source of truth;
+// this function only decides how loudly to fail when a caller asked for
+// debug-only behaviour a release binary cannot provide. The flags stay
+// registered (visible in --help, parse normally) on every build — only
+// this PreRunE gate differs by build.
+func validateDebugBuildFlags(cmd *cobra.Command, _ []string) error {
+	if debugbuild.DebugBuildEnabled() {
+		return nil
+	}
+	f := cmd.Flags()
+	for _, name := range debugBuildOnlyFlags {
+		if f.Changed(name) {
+			return usageError(fmt.Errorf(
+				"--%s requires a debug build; rebuild with: go build -tags stirrupdebug ./harness/cmd/stirrup",
+				name))
+		}
+	}
+	return nil
 }
 
 // validateOutputMode rejects any --output value outside the closed
@@ -1458,9 +1505,18 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	}
 
 	exportRequired, _ := f.GetBool("export-workspace-required")
+	// validateDebugBuildFlags (PreRunE) already rejected these on a
+	// release binary when explicitly set, so reading the raw bool here
+	// is safe: on a release build both are always false (rejected before
+	// this point if true), and on a debug build the flag's value is
+	// exactly what the operator asked for.
+	debugRedactionDisabled, _ := f.GetBool("debug")
+	wireTrace, _ := f.GetBool("trace-wire")
 	return runWithConfig(cfg, runOptions{
 		exportWorkspaceRequired: exportRequired,
 		outputMode:              outputMode,
+		debugRedactionDisabled:  debugRedactionDisabled,
+		wireTrace:               wireTrace,
 	})
 }
 
@@ -1979,9 +2035,18 @@ func applyOpenAIWIFOverrides(cmd *cobra.Command, cfg *types.RunConfig) error {
 // "json" emits a single STIRRUP_RESULT line on stdout, "none"
 // suppresses both. Threading them through here (rather than embedding
 // them on RunConfig) keeps the wire schema free of CLI-shaped knobs.
+//
+// debugRedactionDisabled and wireTrace carry --debug / --trace-wire
+// (issues #219, #220) — the same CLI-only, never-in-RunConfig posture as
+// outputMode above, but additionally gated: validateDebugBuildFlags
+// (PreRunE) already rejects a release binary before either field can be
+// true here, and core.BuildLoop re-checks debugbuild.DebugBuildEnabled()
+// again at the point of effect. See docs/security.md#debug-builds.
 type runOptions struct {
 	exportWorkspaceRequired bool
 	outputMode              string
+	debugRedactionDisabled  bool
+	wireTrace               bool
 }
 
 // runWithConfig is the shared run path for both --config and flag-only
@@ -1989,6 +2054,18 @@ type runOptions struct {
 // RunConfig — ValidateRunConfig rejects nil Timeout, so the dereference
 // below is safe.
 func runWithConfig(config *types.RunConfig, opts runOptions) error {
+	// A debug binary must never be mistaken for a release build. This
+	// notice fires on every run of a binary built with -tags
+	// stirrupdebug, regardless of whether --debug or --trace-wire were
+	// passed on this particular invocation — the tag alone is the signal
+	// operators need before trusting any output from this process.
+	if debugbuild.DebugBuildEnabled() {
+		fmt.Fprintln(os.Stderr, "stirrup: DEBUG BUILD — not for production use")
+		if opts.debugRedactionDisabled {
+			fmt.Fprintln(os.Stderr, "stirrup: --debug is active — trace/recording redaction is OFF")
+		}
+	}
+
 	// shutdownCtx carries only the process-level shutdown signal
 	// (SIGINT/SIGTERM), deliberately independent of ctx's run-deadline
 	// cancellation below. The agentic loop's detached postRun hook
@@ -2005,7 +2082,10 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		cancel()
 	})
 
-	loop, err := core.BuildLoop(ctx, config)
+	loop, err := core.BuildLoop(ctx, config,
+		core.WithDebugRedactionDisabled(opts.debugRedactionDisabled),
+		core.WithWireTrace(opts.wireTrace),
+	)
 	if err != nil {
 		return fmt.Errorf("building harness: %w", err)
 	}

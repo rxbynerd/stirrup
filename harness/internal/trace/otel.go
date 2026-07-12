@@ -17,7 +17,6 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
-	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
 )
@@ -112,6 +111,14 @@ type OTelTraceEmitter struct {
 	// emitter's span output is byte-identical to the pre-capture
 	// behaviour.
 	captureContent bool
+
+	// redactionDisabled is the --debug bit (issue #219), immutable after
+	// construction like captureContent. When true, RunConfig.Redact() and
+	// security.Scrub are both bypassed for this emitter — see
+	// JSONLTraceEmitter.redactionDisabled for the shared contract. Set
+	// only by the factory, and only when debugbuild.DebugBuildEnabled()
+	// is also true; see docs/security.md#debug-builds.
+	redactionDisabled bool
 
 	mu                 sync.Mutex
 	runID              string
@@ -238,7 +245,12 @@ type pendingToolCall struct {
 // captureContent opts the emitter into recording prompt/completion
 // content on turn spans (traceEmitter.captureContent). Default-off
 // upstream; see RecordTurnRecord for the scrubbing contract.
-func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts observability.ResourceOptions, captureContent bool) (*OTelTraceEmitter, error) {
+//
+// redactionDisabled is the --debug bit (issue #219); see the
+// OTelTraceEmitter.redactionDisabled field docstring. Production callers
+// pass the factory's already debugbuild-gated value; every other caller
+// (including every test) should pass false.
+func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers map[string]string, resourceOpts observability.ResourceOptions, captureContent, redactionDisabled bool) (*OTelTraceEmitter, error) {
 	exporter, err := buildOTLPTraceExporter(ctx, endpoint, protocol, headers)
 	if err != nil {
 		return nil, fmt.Errorf("create OTLP exporter: %w", err)
@@ -251,9 +263,10 @@ func NewOTelTraceEmitter(ctx context.Context, endpoint, protocol string, headers
 	tracer := tp.Tracer("stirrup-harness")
 
 	return &OTelTraceEmitter{
-		provider:       tp,
-		tracer:         tracer,
-		captureContent: captureContent,
+		provider:          tp,
+		tracer:            tracer,
+		captureContent:    captureContent,
+		redactionDisabled: redactionDisabled,
 	}, nil
 }
 
@@ -585,7 +598,7 @@ func (e *OTelTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 		return
 	}
 
-	scrubbed := scrubTurnRecord(turn)
+	scrubbed := scrubTurnRecord(turn, e.redactionDisabled)
 	content := &turnContent{
 		inputMessages: genAIInputMessagesJSON(scrubbed.ModelInput.Messages),
 	}
@@ -710,7 +723,7 @@ func (e *OTelTraceEmitter) RecordSystemInstructions(system string) {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.systemInstructionsJSON = genAISystemInstructionsJSON(security.Scrub(system))
+	e.systemInstructionsJSON = genAISystemInstructionsJSON(scrubOrPass(system, e.redactionDisabled))
 }
 
 // RecordFinalAssistantText stores the run's final assistant text so the
@@ -809,7 +822,7 @@ func (e *OTelTraceEmitter) emitToolSpanLocked(call types.ToolCallTrace, spanStar
 		// ErrorReason is scrubbed at dispatch time; the second pass here
 		// is the same defence-in-depth posture the JSONL emitter applies
 		// — span status strings bypass ScrubHandler.
-		desc := security.Scrub(call.ErrorReason)
+		desc := scrubOrPass(call.ErrorReason, e.redactionDisabled)
 		if desc == "" {
 			desc = "tool call failed"
 		}
@@ -916,7 +929,11 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 
 	var redactedConfig types.RunConfig
 	if e.config != nil {
-		redactedConfig = e.config.Redact()
+		if e.redactionDisabled {
+			redactedConfig = *e.config
+		} else {
+			redactedConfig = e.config.Redact()
+		}
 	}
 
 	trace := &types.RunTrace{

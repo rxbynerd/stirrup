@@ -115,7 +115,7 @@ func buildTestLoopWithSecurity(prov *mockProvider, securitySink io.Writer) *Agen
 		Permissions: permission.NewAllowAll(),
 		Git:         git.NewNoneGitStrategy(),
 		Transport:   transport.NewStdioTransport(&transportBuf, &bytes.Buffer{}),
-		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false),
 		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     observability.NewNoopMetrics(),
 		Security:    secLogger,
@@ -507,7 +507,7 @@ func TestLoop_FinalAssistantText_ReachesPersistedJSONLTrace(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	loop := buildTestLoop(prov)
-	loop.Trace = trace.NewJSONLTraceEmitter(&buf)
+	loop.Trace = trace.NewJSONLTraceEmitter(&buf, false)
 	config := buildTestConfig()
 
 	if _, err := loop.Run(context.Background(), config); err != nil {
@@ -1097,7 +1097,7 @@ func TestLoop_ProviderError_SurfacesViaTransport(t *testing.T) {
 				Permissions: permission.NewAllowAll(),
 				Git:         git.NewNoneGitStrategy(),
 				Transport:   transport.NewStdioTransport(&transportBuf, &bytes.Buffer{}),
-				Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+				Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false),
 				Tracer:      noop.NewTracerProvider().Tracer(""),
 				Metrics:     observability.NewNoopMetrics(),
 				Logger:      slog.New(slog.NewJSONHandler(&logBuf, nil)),

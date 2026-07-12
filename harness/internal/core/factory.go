@@ -16,6 +16,7 @@ import (
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/git"
@@ -44,14 +45,22 @@ import (
 // resolves secrets, and instantiates all components. This is the composition root.
 // Transport is built from config.Transport; use BuildLoopWithTransport to inject
 // a pre-established transport (e.g. from the K8s job entrypoint).
-func BuildLoop(ctx context.Context, config *types.RunConfig) (*AgenticLoop, error) {
-	return BuildLoopWithTransport(ctx, config, nil)
+//
+// opts carries CLI-only debug behaviour (--debug, --trace-wire; see
+// LoopOptions); production callers outside the CLI pass none.
+func BuildLoop(ctx context.Context, config *types.RunConfig, opts ...LoopOption) (*AgenticLoop, error) {
+	return BuildLoopWithTransport(ctx, config, nil, opts...)
 }
 
 // BuildLoopWithTransport is like BuildLoop but accepts an optional pre-built
 // Transport. When tp is non-nil it is used directly, skipping buildTransport.
 // This allows the K8s job binary to reuse its already-connected gRPC stream.
-func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport) (*AgenticLoop, error) {
+func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport, opts ...LoopOption) (*AgenticLoop, error) {
+	var loopOpts LoopOptions
+	for _, opt := range opts {
+		opt(&loopOpts)
+	}
+
 	var ownedClosers []io.Closer
 	emitReady := tp == nil
 	cleanup := func() {
@@ -245,7 +254,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// buildComponents threads it onto the component set. The nil sink means
 	// no per-component construction steps are emitted (those are a dry-run
 	// concern only).
-	components, err := buildComponents(ctx, config, secrets, secLogger, registry, tp, executorBuildResult{exec: exec}, resolvedHeaders, resourceOpts, nil)
+	components, err := buildComponents(ctx, config, secrets, secLogger, registry, tp, executorBuildResult{exec: exec}, resolvedHeaders, resourceOpts, nil, loopOpts.debugRedactionDisabled)
 	if err != nil {
 		cleanup()
 		// buildComponents already prefixes the failing component
@@ -385,6 +394,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		tracer = noop.NewTracerProvider().Tracer("")
 	}
 
+	// wireTraceActive is the --trace-wire bit (issue #220), re-gated here
+	// against debugbuild.DebugBuildEnabled() at the point of effect — the
+	// same defence-in-depth posture buildTraceEmitter applies to
+	// debugRedactionDisabled — so a release binary never installs a
+	// WireTapTransport regardless of what a caller passes to
+	// WithWireTrace. See docs/security.md#debug-builds.
+	wireTraceActive := loopOpts.wireTrace && debugbuild.DebugBuildEnabled()
+
 	// Set tracer + metrics on provider adapters for HTTP-level instrumentation.
 	for _, p := range providers {
 		switch pa := p.(type) {
@@ -392,22 +409,38 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			pa.Tracer = tracer
 			pa.Metrics = metrics
 			pa.Logger = logger
+			if wireTraceActive {
+				pa.WireTap(os.Stderr)
+			}
 		case *provider.OpenAICompatibleAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
 			pa.Logger = logger
+			if wireTraceActive {
+				pa.WireTap(os.Stderr)
+			}
 		case *provider.OpenAIResponsesAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
 			pa.Logger = logger
+			if wireTraceActive {
+				pa.WireTap(os.Stderr)
+			}
 		case *provider.BedrockAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
 			pa.Logger = logger
+			// Bedrock talks to AWS via the aws-sdk-go-v2 signer/transport,
+			// not a plain *http.Client seam — there is no Transport field
+			// to tap. --trace-wire silently has no effect on Bedrock
+			// traffic; see docs/security.md#debug-builds.
 		case *provider.GeminiAdapter:
 			pa.Tracer = tracer
 			pa.Metrics = metrics
 			pa.Logger = logger
+			if wireTraceActive {
+				pa.WireTap(os.Stderr)
+			}
 		}
 	}
 
@@ -1717,14 +1750,21 @@ func resourceOptionsFromConfig(cfg *types.RunConfig) observability.ResourceOptio
 	}
 }
 
-func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, headers map[string]string, resourceOpts observability.ResourceOptions) (trace.TraceEmitter, error) {
+// debugRedactionDisabled is the --debug bit (issue #219). It is re-gated
+// here — the single construction point for every emitter type — against
+// debugbuild.DebugBuildEnabled() before being threaded into any emitter
+// constructor, so a release binary (where DebugBuildEnabled always
+// returns false) constructs every emitter with redaction on regardless
+// of what a caller passes in. See docs/security.md#debug-builds.
+func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, headers map[string]string, resourceOpts observability.ResourceOptions, debugRedactionDisabled bool) (trace.TraceEmitter, error) {
+	effectiveRedactionDisabled := debugRedactionDisabled && debugbuild.DebugBuildEnabled()
 	switch cfg.Type {
 	case "otel":
 		endpoint := cfg.Endpoint
 		if endpoint == "" {
 			endpoint = "localhost:4317"
 		}
-		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts, cfg.CaptureContent)
+		return trace.NewOTelTraceEmitter(ctx, endpoint, cfg.Protocol, headers, resourceOpts, cfg.CaptureContent, effectiveRedactionDisabled)
 	case "gcs":
 		// CredentialConfig is optional — the documented default is
 		// gcp-workload-identity against the runtime's metadata server,
@@ -1736,9 +1776,10 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 			return nil, fmt.Errorf("gcs trace emitter credential: %w", err)
 		}
 		return trace.NewGCSTraceEmitter(ctx, trace.GCSTraceEmitterOptions{
-			Bucket:           cfg.Bucket,
-			ObjectPrefix:     cfg.ObjectPrefix,
-			CredentialSource: credSrc,
+			Bucket:            cfg.Bucket,
+			ObjectPrefix:      cfg.ObjectPrefix,
+			CredentialSource:  credSrc,
+			RedactionDisabled: effectiveRedactionDisabled,
 		})
 	case "jsonl", "":
 		var w io.Writer
@@ -1752,7 +1793,7 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, header
 			// Write to a discard buffer if no path specified.
 			w = &bytes.Buffer{}
 		}
-		return trace.NewJSONLTraceEmitter(w), nil
+		return trace.NewJSONLTraceEmitter(w, effectiveRedactionDisabled), nil
 	default:
 		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel, gcs)", cfg.Type)
 	}

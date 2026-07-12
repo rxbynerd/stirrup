@@ -67,7 +67,7 @@ func buildParallelDispatchLoop(t *testing.T, tr transport.Transport, tools ...*t
 		Permissions:  permission.NewAllowAll(),
 		Git:          git.NewNoneGitStrategy(),
 		Transport:    tr,
-		Trace:        tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Trace:        tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{}, false),
 		Tracer:       sdktrace.NewTracerProvider().Tracer(""),
 		TraceContext: context.Background(),
 		Metrics:      observability.NewNoopMetrics(),
