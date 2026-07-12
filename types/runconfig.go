@@ -1457,10 +1457,23 @@ type ToolsConfig struct {
 // limits: crossing one cancels the command and fails the run; output is never
 // silently truncated at these boundaries.
 type CommandOutputConfig struct {
+	// Enabled gates the capture pipeline as a whole. A pointer so unset is
+	// distinguishable from an explicit false (the RuleOfTwo.Enforce
+	// pattern): nil means enabled — capture is the default behaviour —
+	// while false reverts run_command to the legacy bounded-inline path,
+	// registers no read_command_output tool, and writes no archive.
+	Enabled *bool `json:"enabled,omitempty"`
+
 	InlineMaxBytes        int64 `json:"inlineMaxBytes,omitempty"`
 	PreviewBytesPerStream int64 `json:"previewBytesPerStream,omitempty"`
 	MaxBytesPerStream     int64 `json:"maxBytesPerStream,omitempty"`
 	MaxBytesPerRun        int64 `json:"maxBytesPerRun,omitempty"`
+}
+
+// CommandOutputCaptureEnabled reports whether run_command output capture is
+// active. Unset defaults to enabled.
+func (c ToolsConfig) CommandOutputCaptureEnabled() bool {
+	return c.CommandOutput.Enabled == nil || *c.CommandOutput.Enabled
 }
 
 const (
@@ -2186,7 +2199,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
 	validateMCPServers(config.Tools.MCPServers, &errs)
 	validateToolsProfile(config.Tools.Profile, &errs)
-	validateCommandOutputConfig(config.Tools.CommandOutput, &errs)
+	validateCommandOutputConfig(config.Tools, &errs)
 	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
 	if config.TraceEmitter.Archive != nil {
@@ -2289,7 +2302,8 @@ func ValidateRunConfig(config *RunConfig) error {
 	return nil
 }
 
-func validateCommandOutputConfig(cfg CommandOutputConfig, errs *[]string) {
+func validateCommandOutputConfig(tools ToolsConfig, errs *[]string) {
+	cfg := tools.CommandOutput
 	checks := []struct {
 		name  string
 		value int64
@@ -2308,12 +2322,20 @@ func validateCommandOutputConfig(cfg CommandOutputConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf("%s exceeds maximum of %d", check.name, check.max))
 		}
 	}
-	effective := (ToolsConfig{CommandOutput: cfg}).EffectiveCommandOutput()
+	effective := tools.EffectiveCommandOutput()
 	if effective.PreviewBytesPerStream > effective.MaxBytesPerStream {
 		*errs = append(*errs, "tools.commandOutput.previewBytesPerStream must not exceed maxBytesPerStream")
 	}
 	if effective.MaxBytesPerRun < effective.MaxBytesPerStream {
 		*errs = append(*errs, "tools.commandOutput.maxBytesPerRun must be at least maxBytesPerStream")
+	}
+	if !tools.CommandOutputCaptureEnabled() {
+		for _, name := range tools.BuiltIn {
+			if name == "read_command_output" {
+				*errs = append(*errs, "tools.builtIn includes read_command_output but tools.commandOutput.enabled is false")
+				break
+			}
+		}
 	}
 }
 

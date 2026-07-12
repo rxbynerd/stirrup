@@ -5442,6 +5442,30 @@ func TestCommandOutputConfigDefaultsAndHardCaps(t *testing.T) {
 	}
 }
 
+func TestCommandOutputCaptureEnabled(t *testing.T) {
+	if !(ToolsConfig{}).CommandOutputCaptureEnabled() {
+		t.Fatal("unset enabled must default to capture on")
+	}
+	on, off := true, false
+	if !(ToolsConfig{CommandOutput: CommandOutputConfig{Enabled: &on}}).CommandOutputCaptureEnabled() {
+		t.Fatal("explicit true must enable capture")
+	}
+	if (ToolsConfig{CommandOutput: CommandOutputConfig{Enabled: &off}}).CommandOutputCaptureEnabled() {
+		t.Fatal("explicit false must disable capture")
+	}
+
+	c := validConfig()
+	c.Tools.BuiltIn = []string{"run_command", "read_command_output"}
+	c.Tools.CommandOutput.Enabled = &off
+	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "read_command_output") {
+		t.Fatalf("expected contradiction error for reader without capture, got %v", err)
+	}
+	c.Tools.CommandOutput.Enabled = &on
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("reader with capture enabled should validate: %v", err)
+	}
+}
+
 func TestValidateRunConfig_TraceArchive(t *testing.T) {
 	c := validConfig()
 	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "local", FilePath: "/tmp/run.command-output.tar.gz"}
