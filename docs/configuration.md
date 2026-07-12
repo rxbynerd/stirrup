@@ -671,9 +671,17 @@ two cases are distinguishable by reading it alongside the record.
 `run_command` streams complete stdout and stderr into a run-scoped secure
 store. Output up to `tools.commandOutput.inlineMaxBytes` remains inline after
 secret scrubbing. Larger output returns scrubbed tails plus opaque
-`stirrup://command-output/...` references; the automatically registered,
-read-only `read_command_output` tool reads those references in 32 KiB pages
+`stirrup://command-output/...` references; the read-only
+`read_command_output` tool reads those references in 32 KiB pages
 (128 KiB maximum per call).
+
+`read_command_output` is `run_command`'s companion: it registers
+automatically whenever `run_command` registers with capture enabled — a
+spilled reference without its reader would be unusable, and `tools.builtIn`
+allowlists written before capture existed keep working unchanged. Listing
+`read_command_output` in `tools.builtIn` is only needed for standalone
+replay runs; listing it while `enabled` is `false` is rejected as
+contradictory at validation.
 
 ```json
 {
@@ -716,6 +724,11 @@ after whole-stream redaction; an unclean shutdown (crash, SIGKILL) can leave
 raw spool files in the OS temp directory until it is cleared. Archives
 contain scrubbed streams only, while raw byte counts and SHA-256 hashes
 remain as integrity metadata.
+
+The `eval/suites/command-output-ab-{on,off}.hcl` pair measures the
+pipeline's context-saving claim: identical tasks with capture forced to
+spill versus disabled, compared via `stirrup-eval compare` (mean tokens at
+equal-or-better pass rate). See [`eval/suites/README.md`](../eval/suites/README.md).
 Without an explicit destination, JSONL and GCS derive an adjacent archive;
 other emitters retain a local archive and report its absolute path in
 `RunResult.commandOutputArchive`.
