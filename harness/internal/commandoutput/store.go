@@ -1,6 +1,13 @@
 // Package commandoutput owns complete, scrubbed run_command output capture.
-// Raw bytes exist only in run-scoped spool files and are deleted immediately
-// after whole-stream redaction; durable archives contain scrubbed bytes only.
+//
+// Raw (unscrubbed) bytes are spooled to run-scoped 0600 files under a 0700
+// temp directory while a command streams, and each spool is deleted when its
+// command completes and whole-stream redaction has produced the scrubbed
+// canonical copy. Durable archives contain scrubbed bytes only. The raw
+// spool's lifetime therefore depends on clean completion: a crash or SIGKILL
+// mid-command can leave raw spool files in the OS temp directory until it is
+// cleared (scrub-on-write, which would remove the raw-bytes-at-rest window
+// entirely, is tracked as a follow-up).
 package commandoutput
 
 import (

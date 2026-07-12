@@ -710,8 +710,12 @@ a primary reason keeps that outcome. Under `"bestEffort"` later commands
 keep capturing, the run outcome is never overridden, and the failure stays
 visible in the archive manifest and per-command trace records.
 
-Raw bytes are deleted after whole-stream redaction; archives contain scrubbed
-streams, while raw byte counts and SHA-256 hashes remain as integrity metadata.
+Raw bytes are spooled to run-scoped files (0600, under a 0700 temporary
+directory) while a command streams and are deleted at command completion,
+after whole-stream redaction; an unclean shutdown (crash, SIGKILL) can leave
+raw spool files in the OS temp directory until it is cleared. Archives
+contain scrubbed streams only, while raw byte counts and SHA-256 hashes
+remain as integrity metadata.
 Without an explicit destination, JSONL and GCS derive an adjacent archive;
 other emitters retain a local archive and report its absolute path in
 `RunResult.commandOutputArchive`.
