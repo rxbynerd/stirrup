@@ -109,6 +109,9 @@ func printRunSummary(runTrace *types.RunTrace) {
 		ran, failed := hookSummaryCounts(runTrace.HookResults)
 		fmt.Fprintf(os.Stderr, "Hooks: %d run, %d failed\n", ran, failed)
 	}
+	if runTrace.CommandOutputArchive != "" {
+		fmt.Fprintf(os.Stderr, "Command output archive: %s\n", runTrace.CommandOutputArchive)
+	}
 }
 
 // hookSummaryCounts reports how many lifecycle hooks (issue #461)
@@ -171,6 +174,7 @@ func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.Ru
 		DurationMs:                  rt.CompletedAt.Sub(rt.StartedAt).Milliseconds(),
 		FinalAssistantText:          finalText,
 		FinalAssistantTextTruncated: truncated,
+		CommandOutputArchive:        rt.CommandOutputArchive,
 	}
 	if n := len(rt.VerificationResults); n > 0 {
 		last := rt.VerificationResults[n-1]
@@ -192,7 +196,8 @@ func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.Ru
 // other documented value on types.RunTrace.Outcome — "error",
 // "tool_failures", "verification_failed", "verification_error",
 // "max_turns", "max_tokens", "budget_exceeded", "stalled",
-// "cancelled", "timeout", "setup_failed", "hook_failed" — means the
+// "cancelled", "timeout", "setup_failed", "hook_failed",
+// "command_output_capture_failed", "trace_archive_failed" — means the
 // run did not complete its task, whether via a hard failure, an
 // exhausted resource limit, or an interruption. docs/configuration.md
 // draws the same line ("a failed or cancelled run still exits
