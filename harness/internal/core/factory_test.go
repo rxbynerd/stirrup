@@ -224,38 +224,89 @@ func TestBuildDynamicRouter_CustomThresholds(t *testing.T) {
 
 // --- buildPromptBuilder ---
 
+func mustBuildPromptBuilder(t *testing.T, config *types.RunConfig) prompt.PromptBuilder {
+	t.Helper()
+	pb, err := buildPromptBuilder(config)
+	if err != nil {
+		t.Fatalf("buildPromptBuilder: %v", err)
+	}
+	return pb
+}
+
 func TestBuildPromptBuilder_Default(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "default"}, "")
+	pb := mustBuildPromptBuilder(t, &types.RunConfig{PromptBuilder: types.PromptBuilderConfig{Type: "default"}})
 	if _, ok := pb.(*prompt.DefaultPromptBuilder); !ok {
 		t.Fatalf("expected DefaultPromptBuilder, got %T", pb)
 	}
 }
 
 func TestBuildPromptBuilder_Empty(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{}, "")
+	pb := mustBuildPromptBuilder(t, &types.RunConfig{})
 	if _, ok := pb.(*prompt.DefaultPromptBuilder); !ok {
 		t.Fatalf("expected DefaultPromptBuilder for empty type, got %T", pb)
 	}
 }
 
 func TestBuildPromptBuilder_Composed(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "composed"}, "")
+	pb := mustBuildPromptBuilder(t, &types.RunConfig{PromptBuilder: types.PromptBuilderConfig{Type: "composed"}})
 	if _, ok := pb.(*prompt.ComposedPromptBuilder); !ok {
 		t.Fatalf("expected ComposedPromptBuilder, got %T", pb)
 	}
 }
 
 func TestBuildPromptBuilder_UnknownFallsBackToDefault(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "nonexistent"}, "")
+	pb := mustBuildPromptBuilder(t, &types.RunConfig{PromptBuilder: types.PromptBuilderConfig{Type: "nonexistent"}})
 	if _, ok := pb.(*prompt.DefaultPromptBuilder); !ok {
 		t.Fatalf("expected DefaultPromptBuilder for unknown type, got %T", pb)
 	}
 }
 
 func TestBuildPromptBuilder_SystemPromptOverride(t *testing.T) {
-	pb := buildPromptBuilder(types.PromptBuilderConfig{Type: "default"}, "Custom system prompt")
+	pb := mustBuildPromptBuilder(t, &types.RunConfig{
+		PromptBuilder:        types.PromptBuilderConfig{Type: "default"},
+		SystemPromptOverride: "Custom system prompt",
+	})
 	if _, ok := pb.(*prompt.ComposedPromptBuilder); !ok {
 		t.Fatalf("expected ComposedPromptBuilder for override, got %T", pb)
+	}
+}
+
+func TestBuildPromptBuilder_OperatorTemplate(t *testing.T) {
+	pb := mustBuildPromptBuilder(t, &types.RunConfig{
+		Mode:          "execution",
+		PromptBuilder: types.PromptBuilderConfig{Template: `Tuned.{{if eq .Tier "frontier"}} Act when ready.{{end}}`},
+	})
+	if _, ok := pb.(*prompt.ComposedPromptBuilder); !ok {
+		t.Fatalf("expected ComposedPromptBuilder for operator template, got %T", pb)
+	}
+}
+
+// A template that parses but fails at execution (unknown field) must be
+// caught by the trial render at construction, not at run start.
+func TestBuildPromptBuilder_OperatorTemplateExecErrorFailsFast(t *testing.T) {
+	_, err := buildPromptBuilder(&types.RunConfig{
+		Mode:          "execution",
+		PromptBuilder: types.PromptBuilderConfig{Template: "hello {{.NoSuchField}}"},
+	})
+	if err == nil {
+		t.Fatal("expected error from trial render")
+	}
+}
+
+// The override wins over an operator template. ValidateRunConfig rejects
+// the combination, but the factory's precedence must still be safe if a
+// caller skips validation.
+func TestBuildPromptBuilder_OverrideWinsOverTemplate(t *testing.T) {
+	pb := mustBuildPromptBuilder(t, &types.RunConfig{
+		SystemPromptOverride: "Raw override with {{not a template}}",
+		PromptBuilder:        types.PromptBuilderConfig{Template: "Tuned."},
+	})
+	got, err := pb.Build(t.Context(), prompt.PromptContext{Mode: "execution"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "Raw override with {{not a template}}") {
+		t.Fatalf("override not used verbatim: %q", got)
 	}
 }
 

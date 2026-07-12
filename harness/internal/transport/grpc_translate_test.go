@@ -27,6 +27,32 @@ func TestRunConfigFromProto_SessionNamePropagates(t *testing.T) {
 	}
 }
 
+// TestRunConfigFromProto_PromptBuilderFieldsPreserved covers the prompt
+// templating surface (#492): a control plane that tunes prompts via
+// prompt_builder.template or pins a prompt model for comparison runs
+// must not have either silently dropped on the job path.
+func TestRunConfigFromProto_PromptBuilderFieldsPreserved(t *testing.T) {
+	pc := &pb.RunConfig{
+		PromptBuilder: &pb.PromptBuilderConfig{
+			Type:        "composed",
+			Template:    `Custom agent.{{if eq .Tier "frontier"}} Act when ready.{{end}}`,
+			PromptModel: "claude-fable-5",
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	if rc.PromptBuilder.Type != "composed" {
+		t.Errorf("PromptBuilder.Type not propagated: got %q", rc.PromptBuilder.Type)
+	}
+	if rc.PromptBuilder.Template != pc.PromptBuilder.Template {
+		t.Errorf("PromptBuilder.Template not propagated: got %q", rc.PromptBuilder.Template)
+	}
+	if rc.PromptBuilder.PromptModel != "claude-fable-5" {
+		t.Errorf("PromptBuilder.PromptModel not propagated: got %q", rc.PromptBuilder.PromptModel)
+	}
+}
+
 // TestRuleOfTwoProto_EmptyMessageDoesNotDisableEnforcement guards the
 // proto3 wire default for RuleOfTwoConfig.enforce. The field is declared
 // `optional bool` so an unset value is wire-distinguishable from an

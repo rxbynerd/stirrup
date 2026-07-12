@@ -748,3 +748,26 @@ func TestOTelTraceEmitter_ErrorStatus(t *testing.T) {
 		}
 	})
 }
+
+// RecordPromptResolution is config metadata, not content: the attributes
+// must land on the root span even with content capture off (the test
+// emitter's default), so a prompt/model comparison run is attributable
+// from any trace.
+func TestOTelTraceEmitter_RecordPromptResolution(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+	emitter.Start("run-prompt-res", nil)
+	emitter.RecordPromptResolution("claude-fable-5", "frontier")
+	if _, err := emitter.Finish(context.Background(), "success"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	root := findSpanByName(t, exporter.GetSpans(), "run")
+	assertAttribute(t, root, promptModelKey, "claude-fable-5")
+	assertAttribute(t, root, promptTierKey, "frontier")
+}
+
+// Calling the recorder before Start (no root span yet) must be a no-op,
+// not a panic.
+func TestOTelTraceEmitter_RecordPromptResolutionBeforeStart(t *testing.T) {
+	emitter, _ := newTestOTelEmitter()
+	emitter.RecordPromptResolution("claude-fable-5", "frontier")
+}

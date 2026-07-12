@@ -56,6 +56,19 @@ type SystemInstructionsRecorder interface {
 	RecordSystemInstructions(system string)
 }
 
+// PromptResolutionRecorder is an optional capability a TraceEmitter can
+// implement to receive the resolved prompt model and tier (#492): which
+// model identity the system prompt templates rendered against, and which
+// guidance tier that selected. The loop forwards both via a type
+// assertion after PromptBuilder.Build succeeds, mirroring
+// SystemInstructionsRecorder. Unlike system instructions this is config
+// metadata, not message content, so recording is not gated on content
+// capture — a prompt/model comparison run must be attributable from its
+// trace alone.
+type PromptResolutionRecorder interface {
+	RecordPromptResolution(model, tier string)
+}
+
 // HookRecorder is an optional capability a TraceEmitter can implement to
 // receive lifecycle hook results (issue #461) as they complete. The
 // agentic loop forwards each types.HookExecution via a type assertion

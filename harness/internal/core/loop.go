@@ -222,10 +222,12 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	l.observeSensitive(runCtx, config, "dynamic_context", 0, sortedContextValues(dynamicContext))
 
+	promptModel := config.EffectivePromptModel()
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
 		Mode:           config.Mode,
 		Workspace:      config.Executor.Workspace,
 		MaxTurns:       config.MaxTurns,
+		Model:          promptModel,
 		DynamicContext: dynamicContext,
 	})
 	if err != nil {
@@ -240,6 +242,14 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// owns the scrub-and-gate logic, so this is unconditional.
 	if recorder, ok := l.Trace.(trace.SystemInstructionsRecorder); ok {
 		recorder.RecordSystemInstructions(systemPrompt)
+	}
+
+	// Record which model identity the prompt rendered against and the
+	// guidance tier it selected (#492). Unlike system instructions this
+	// is config metadata, not content, so the emitter records it
+	// regardless of content capture.
+	if recorder, ok := l.Trace.(trace.PromptResolutionRecorder); ok {
+		recorder.RecordPromptResolution(promptModel, prompt.TierFor(promptModel))
 	}
 
 	// Pre-run lifecycle hooks (issue #461): operator-authored setup

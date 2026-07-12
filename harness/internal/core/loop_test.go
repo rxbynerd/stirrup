@@ -233,6 +233,42 @@ func TestLoop_SanitizesDynamicContextBeforePromptBuildAndEmitsEvents(t *testing.
 	}
 }
 
+// The loop must thread the resolved prompt model into PromptContext so
+// the mode templates render against it (#492): the promptModel override
+// when set, otherwise the router's model.
+func TestLoop_ThreadsPromptModelIntoPromptContext(t *testing.T) {
+	tests := []struct {
+		name        string
+		promptModel string
+		want        string
+	}{
+		{name: "router model by default", promptModel: "", want: "claude-sonnet-4-6"},
+		{name: "promptModel override wins", promptModel: "claude-fable-5", want: "claude-fable-5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prov := &mockProvider{
+				events: []types.StreamEvent{
+					{Type: "text_delta", Text: "Done"},
+					{Type: "message_complete", StopReason: "end_turn"},
+				},
+			}
+			loop := buildTestLoop(prov)
+			capturingPrompt := &capturingPromptBuilder{}
+			loop.Prompt = capturingPrompt
+			config := buildTestConfig()
+			config.PromptBuilder.PromptModel = tt.promptModel
+
+			if _, err := loop.Run(context.Background(), config); err != nil {
+				t.Fatalf("Run() error: %v", err)
+			}
+			if got := capturingPrompt.last.Model; got != tt.want {
+				t.Fatalf("PromptContext.Model = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoop_ToolUseAndContinue(t *testing.T) {
 	// First call: model requests a tool call.
 	// Second call: model provides final text.

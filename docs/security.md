@@ -110,6 +110,15 @@ The most security-relevant invariants:
 - **Path-only fields** (workspace, trace, policy file, semgrep
   config) are validated for traversal and absolute-path constraints
   appropriate to their use.
+- **Prompt templates** (`promptBuilder.template`) are syntax-checked
+  at validation and trial-rendered at component construction. The
+  template data surface is plain strings and pure matching methods —
+  no filesystem, environment, or network reach — so an
+  operator-supplied template is string interpolation only.
+  `systemPromptOverride` is never template-parsed. Combining the
+  override with `promptBuilder.template` or
+  `promptBuilder.promptModel` is rejected rather than resolved by
+  precedence.
 
 ## HTTP client hardening
 

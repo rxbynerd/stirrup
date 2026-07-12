@@ -120,8 +120,9 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	}
 	if pc.PromptBuilder != nil {
 		rc.PromptBuilder = types.PromptBuilderConfig{
-			Type:     pc.PromptBuilder.Type,
-			Template: pc.PromptBuilder.Template,
+			Type:        pc.PromptBuilder.Type,
+			Template:    pc.PromptBuilder.Template,
+			PromptModel: pc.PromptBuilder.PromptModel,
 		}
 	}
 	if pc.ContextStrategy != nil {

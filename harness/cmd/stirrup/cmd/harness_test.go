@@ -2248,6 +2248,40 @@ func TestApplyOverrides_FollowupGraceZeroClears(t *testing.T) {
 // override path must rely on flags.Changed() instead, or every run
 // that omits the flag silently rewrites a file-provided non-zero
 // value to greedy decoding.
+// --prompt-model must follow the Changed() discipline: a config file's
+// promptBuilder.promptModel survives when the flag is unset, and an
+// explicit flag overrides it (#492).
+func TestApplyOverrides_PromptModelChangedGated(t *testing.T) {
+	t.Run("unset leaves file value alone", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.PromptBuilder.PromptModel = "claude-fable-5"
+
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.PromptBuilder.PromptModel != "claude-fable-5" {
+			t.Errorf("unset --prompt-model must preserve file value, got %q", cfg.PromptBuilder.PromptModel)
+		}
+	})
+
+	t.Run("explicit flag overrides file value", func(t *testing.T) {
+		cmd := newTestHarnessCommand()
+		cfg := baseFileConfig()
+		cfg.PromptBuilder.PromptModel = "claude-fable-5"
+
+		if err := cmd.Flags().Set("prompt-model", "claude-fable-6"); err != nil {
+			t.Fatalf("set prompt-model: %v", err)
+		}
+		if err := applyOverrides(cmd, cfg, nil); err != nil {
+			t.Fatalf("applyOverrides: %v", err)
+		}
+		if cfg.PromptBuilder.PromptModel != "claude-fable-6" {
+			t.Errorf("--prompt-model override failed, got %q", cfg.PromptBuilder.PromptModel)
+		}
+	})
+}
+
 func TestApplyOverrides_TemperatureChangedDisambiguatesZero(t *testing.T) {
 	t.Run("unset leaves file value alone", func(t *testing.T) {
 		cmd := newTestHarnessCommand()

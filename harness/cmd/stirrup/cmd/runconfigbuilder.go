@@ -416,6 +416,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	mode, _ := f.GetString("mode")
 	sessionName, _ := f.GetString("name")
 	model, _ := f.GetString("model")
+	promptModel, _ := f.GetString("prompt-model")
 	providerType, _ := f.GetString("provider")
 	apiKeyRef, _ := f.GetString("api-key-ref")
 	baseURL, _ := f.GetString("base-url")
@@ -563,6 +564,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		AzureClientID:                azureClientID,
 		AzureScope:                   azureScope,
 		Model:                        model,
+		PromptModel:                  promptModel,
 		Workspace:                    workspace,
 		MaxTurns:                     maxTurns,
 		Timeout:                      timeout,
