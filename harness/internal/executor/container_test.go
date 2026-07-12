@@ -1679,3 +1679,85 @@ func (m *mockSecurityEmitter) OutputTruncated(_ string, _, _ int) {
 
 // Ensure that mockSecurityEmitter satisfies the interface.
 var _ SecurityEventEmitter = (*mockSecurityEmitter)(nil)
+
+// TestContainerExecutor_ExecStream verifies the streaming path demuxes
+// stdout and stderr frames into the caller's writers without the inline
+// 1 MiB cap, and carries the inspected exit code.
+func TestContainerExecutor_ExecStream(t *testing.T) {
+	big := strings.Repeat("B", maxOutputSize+1000)
+	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-stream"})
+		},
+		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			writeDockerFrame(w, 1, []byte(big))
+			writeDockerFrame(w, 2, []byte("warning\n"))
+		},
+		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 3})
+		},
+	})
+	defer cleanup()
+
+	var stdout, stderr bytes.Buffer
+	result, err := exec.ExecStream(context.Background(), "make noise", 10*time.Second, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("ExecStream: %v", err)
+	}
+	if result.ExitCode != 3 {
+		t.Errorf("exit code: got %d, want 3", result.ExitCode)
+	}
+	if stdout.Len() != len(big) {
+		t.Errorf("stdout bytes: got %d, want %d (stream path must not cap)", stdout.Len(), len(big))
+	}
+	if stderr.String() != "warning\n" {
+		t.Errorf("stderr: got %q", stderr.String())
+	}
+}
+
+// failAfterWriter accepts n bytes then fails every subsequent write,
+// mimicking a command-output spool writer that hit its capture limit.
+type failAfterWriter struct {
+	remaining int
+	err       error
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if len(p) <= w.remaining {
+		w.remaining -= len(p)
+		return len(p), nil
+	}
+	return 0, w.err
+}
+
+// TestContainerExecutor_ExecStream_WriterErrorAborts verifies a caller
+// writer failure (e.g. the spool's capture limit) surfaces as an error
+// instead of being swallowed.
+func TestContainerExecutor_ExecStream_WriterErrorAborts(t *testing.T) {
+	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "exec-abort"})
+		},
+		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			writeDockerFrame(w, 1, []byte(strings.Repeat("C", 4096)))
+			writeDockerFrame(w, 1, []byte(strings.Repeat("C", 4096)))
+		},
+		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
+		},
+	})
+	defer cleanup()
+
+	limitErr := errors.New("capture limit exceeded")
+	var stderr bytes.Buffer
+	_, err := exec.ExecStream(context.Background(), "make noise", 10*time.Second, &failAfterWriter{remaining: 4096, err: limitErr}, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "capture limit exceeded") {
+		t.Fatalf("expected writer failure to surface, got %v", err)
+	}
+}
