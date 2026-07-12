@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -301,6 +302,88 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	// At least one [REDACTED] marker proves the scrubber ran.
 	if !strings.Contains(on_disk, "[REDACTED]") {
 		t.Errorf("expected [REDACTED] placeholder in scrubbed trace, got:\n%s", on_disk)
+	}
+}
+
+// TestScrubTurnRecord_ToolCallRecord_FieldCompleteness guards
+// scrubTurnRecord's explicit field-by-field ToolCallRecord rebuild
+// (issue #423). Because the rebuild names each field individually
+// rather than copying the source struct wholesale, a future field
+// added to types.ToolCallRecord compiles cleanly but is silently
+// dropped from every persisted trace unless a matching copy line is
+// added here too — exactly what happened to InternalName and Kind.
+// This mirrors TestToolCallSummary_StructuralParityWithTrace in
+// types/runtrace_test.go, but checks values rather than shape: it
+// builds a ToolCallRecord with every field set to a distinct
+// non-zero value, runs it through scrubTurnRecord, and asserts every
+// field that scrubTurnRecord does not intentionally transform for
+// secret-scrubbing purposes (Input, Output, Structured) round-trips
+// unchanged.
+//
+// That round-trip check is only as strong as the `in` fixture below:
+// a new ToolCallRecord field left unset in `in` would compare
+// zero-to-zero and pass silently even if scrubTurnRecord never
+// copies it. So this test first asserts the fixture itself is
+// complete — every field of `in` must be non-zero — before trusting
+// the round-trip comparison. Together, the two checks force whoever
+// adds a field to types.ToolCallRecord to populate it here as well
+// as wire it into scrubTurnRecord, or watch this test fail.
+func TestScrubTurnRecord_ToolCallRecord_FieldCompleteness(t *testing.T) {
+	// scrubbedFields are intentionally transformed by scrubTurnRecord
+	// (secret-shaped content is redacted) and so are exempt from the
+	// verbatim round-trip check below; their scrubbing behaviour is
+	// covered separately by TestJSONLTraceEmitter_RecordTurnRecord_Scrubs
+	// and the other Scrubs* tests in this file.
+	scrubbedFields := map[string]bool{
+		"Input":      true,
+		"Output":     true,
+		"Structured": true,
+	}
+
+	in := types.ToolCallRecord{
+		ID:           "tool-call-id",
+		Name:         "run_command",
+		InternalName: "internal_run_command",
+		Input:        json.RawMessage(`{"cmd":"ls"}`),
+		Output:       "plain output text",
+		DurationMs:   1234,
+		Success:      true,
+		Structured:   json.RawMessage(`{"kind":"file_edit"}`),
+		Kind:         "file_edit",
+	}
+
+	rtIn := reflect.TypeOf(in)
+	inFixtureVal := reflect.ValueOf(in)
+	for i := 0; i < rtIn.NumField(); i++ {
+		if inFixtureVal.Field(i).IsZero() {
+			t.Fatalf("fixture field %q is zero — populate every field when adding one to ToolCallRecord, then update this test", rtIn.Field(i).Name)
+		}
+	}
+
+	turn := types.TurnRecord{Turn: 1, ToolCalls: []types.ToolCallRecord{in}}
+
+	out := scrubTurnRecord(turn)
+	if len(out.ToolCalls) != 1 {
+		t.Fatalf("scrubTurnRecord: got %d tool calls, want 1", len(out.ToolCalls))
+	}
+	got := out.ToolCalls[0]
+
+	inVal := reflect.ValueOf(in)
+	gotVal := reflect.ValueOf(got)
+	rt := reflect.TypeOf(in)
+	for i := 0; i < rt.NumField(); i++ {
+		name := rt.Field(i).Name
+		if scrubbedFields[name] {
+			if gotVal.Field(i).IsZero() {
+				t.Errorf("field %s: got zero value after scrubbing a non-empty input; scrubTurnRecord dropped it instead of scrubbing it", name)
+			}
+			continue
+		}
+		wantField := inVal.Field(i).Interface()
+		gotField := gotVal.Field(i).Interface()
+		if !reflect.DeepEqual(gotField, wantField) {
+			t.Errorf("field %s not copied verbatim by scrubTurnRecord: got %#v, want %#v", name, gotField, wantField)
+		}
 	}
 }
 
