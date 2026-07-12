@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -118,6 +119,35 @@ func TestStoreWholeStreamScrubArchiveAndLedger(t *testing.T) {
 	}
 	if strings.Contains(string(members["manifest.json"]), "sk-ant-") {
 		t.Fatal("secret leaked into manifest")
+	}
+}
+
+// TestStoreReferencePassesToolGuard pins the model-visible reference format
+// against the loop's tool guard: a reference embedding the base64url member
+// ID formed a >100-character base64-like run and tripped the encoded_payload
+// rule, so the model's first read_command_output call was denied.
+func TestStoreReferencePassesToolGuard(t *testing.T) {
+	store, err := New(Options{RunID: "run-1783849881112083000", Config: testConfig(), ArchivePath: filepath.Join(t.TempDir(), "ref.tar.gz")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run-1783849881112083000", ToolUseID: "toolu_01ErmGRT7vjR545VQFnHNFAx"}), cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Stdout().Write([]byte("output")); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := capture.Complete(Completion{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := captured.Record.Stdout.Reference
+	input, _ := json.Marshal(map[string]any{"ref": ref, "offset": 0, "limit": 32768})
+	if findings := security.GuardToolCall("read_command_output", false, input); len(findings) != 0 {
+		t.Fatalf("reference %q must pass the tool guard, got findings %+v", ref, findings)
 	}
 }
 
