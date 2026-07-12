@@ -90,7 +90,7 @@ suite "dogfood-seed" {
     repo        = ""
     ref         = ""
     mode        = "execution"
-    prompt      = "Create a Go module at module-root with a file `math.go` containing a function `Double(n int) int` that returns n*2, and a test file `math_test.go` with a single test case that verifies Double(7) returns 14. Initialise the module with `go mod init example.com/dogfood`. Make sure `go test ./...` passes."
+    prompt      = "Create a Go module in a new directory named `module-root/` with a file `math.go` containing a function `Double(n int) int` that returns n*2, and a test file `math_test.go` with a single test case that verifies Double(7) returns 14. Initialise the module with `go mod init example.com/dogfood`. Make sure `go test ./...` passes."
 
     judge {
       type    = "test-command"
