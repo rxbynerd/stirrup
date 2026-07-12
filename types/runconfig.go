@@ -2815,8 +2815,8 @@ func validateHooksConfig(config *RunConfig, errs *[]string) {
 	}
 	hooks := config.Hooks
 
-	if (len(hooks.PreRun) > 0 || len(hooks.PostRun) > 0) && config.Executor.Type == "api" {
-		*errs = append(*errs, "hooks require an exec-capable executor; executor.type \"api\" is read-only")
+	if (len(hooks.PreRun) > 0 || len(hooks.PostRun) > 0) && (config.Executor.Type == "api" || config.Executor.Type == "none") {
+		*errs = append(*errs, fmt.Sprintf("hooks require an exec-capable executor; executor.type %q has no exec capability", config.Executor.Type))
 	}
 
 	if len(hooks.PreRun) > maxHooksPerPhase {

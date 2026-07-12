@@ -6908,6 +6908,24 @@ func TestValidateRunConfig_Hooks_RejectsAPIExecutorWithHooks(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_Hooks_RejectsNoneExecutorWithHooks closes the same
+// exec-capability gap the api-executor check exists for: the none
+// executor (see harness/internal/executor/none.go) has CanExec=false just
+// like api, so hooks.preRun/postRun must be rejected for it too rather
+// than passing validation and failing mid-run.
+func TestValidateRunConfig_Hooks_RejectsNoneExecutorWithHooks(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "none"}
+	c.Hooks = &HooksConfig{PostRun: []HookConfig{validHookConfig()}}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("hooks with executor.type=none must fail validation")
+	}
+	if !strings.Contains(err.Error(), "exec-capable executor") {
+		t.Errorf("error must mention exec-capable executor, got: %v", err)
+	}
+}
+
 func TestValidateRunConfig_Hooks_EmptyHooksConfigAllowsAPIExecutor(t *testing.T) {
 	// An explicit-but-empty HooksConfig{} (e.g. an unmarshalled wire
 	// payload with an empty "hooks" sub-message) schedules nothing, so
