@@ -7339,3 +7339,134 @@ func TestRunConfig_HooksOmittedWhenNil(t *testing.T) {
 		t.Errorf("expected no hooks key when Hooks is nil, got: %s", data)
 	}
 }
+
+// --- executor.type="none" ---
+
+func TestValidateRunConfig_NoneExecutorAcceptedInExecutionMode(t *testing.T) {
+	c := validConfig()
+	c.Mode = "execution"
+	c.Executor = ExecutorConfig{Type: "none"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected none executor to validate in execution mode, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_NoneExecutorAcceptedInReadOnlyMode(t *testing.T) {
+	c := validConfig()
+	c.Mode = "planning"
+	c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+	c.Executor = ExecutorConfig{Type: "none"}
+	c.Tools = ToolsConfig{BuiltIn: []string{"web_fetch"}}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected none executor to validate in read-only mode, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_NoneExecutorRejectsWorkspaceExportTo(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "none", WorkspaceExportTo: "gs://bucket/path"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for workspaceExportTo with executor.type=none")
+	}
+	if !strings.Contains(err.Error(), `not valid for executor.type="none"`) {
+		t.Errorf("expected error to mention none executor, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_NoneExecutorFields exercises the per-field
+// rejection validateNoneExecutor enforces: every container/k8s/api-only
+// field on ExecutorConfig is rejected outright when Type == "none", since
+// the none executor has no execution surface to apply any of them to.
+func TestValidateRunConfig_NoneExecutorFields(t *testing.T) {
+	cases := []struct {
+		name string
+		exec ExecutorConfig
+	}{
+		{name: "workspace", exec: ExecutorConfig{Type: "none", Workspace: "/ws"}},
+		{name: "image", exec: ExecutorConfig{Type: "none", Image: "img"}},
+		{name: "vcsBackend", exec: ExecutorConfig{Type: "none", VcsBackend: &VcsBackendConfig{Type: "github", Repo: "owner/repo"}}},
+		{name: "network", exec: ExecutorConfig{Type: "none", Network: &NetworkConfig{Mode: "none"}}},
+		{name: "resources", exec: ExecutorConfig{Type: "none", Resources: &ResourceLimits{CPUs: 1}}},
+		{name: "runtime", exec: ExecutorConfig{Type: "none", Runtime: "runc"}},
+		{name: "registryAllowlist", exec: ExecutorConfig{Type: "none", RegistryAllowlist: []string{"ghcr.io/*"}}},
+		{name: "k8sNamespace", exec: ExecutorConfig{Type: "none", K8sNamespace: "ns"}},
+		{name: "k8sKubeconfig", exec: ExecutorConfig{Type: "none", K8sKubeconfig: "/home/u/.kube/config"}},
+		{name: "k8sNodeSelector", exec: ExecutorConfig{Type: "none", K8sNodeSelector: map[string]string{"disktype": "ssd"}}},
+		{name: "k8sServiceAccount", exec: ExecutorConfig{Type: "none", K8sServiceAccount: "agent-sa"}},
+		{name: "k8sEgressProxyUrl", exec: ExecutorConfig{Type: "none", K8sEgressProxyURL: "http://stirrup-egress-proxy.ns.svc:8080"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = tc.exec
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), `is not valid for executor.type="none"`) {
+				t.Errorf("expected none-executor field-rejection error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_NoneExecutorRejectsDeterministicGit(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "none"}
+	c.GitStrategy = GitStrategyConfig{Type: "deterministic"}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected error for gitStrategy=deterministic with executor.type=none")
+	}
+	if !strings.Contains(err.Error(), `gitStrategy.type="deterministic" is not valid with executor.type="none"`) {
+		t.Errorf("expected deterministic-git/none cross-field error, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_NoneExecutorAllowsNoneGitStrategy(t *testing.T) {
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "none"}
+	c.GitStrategy = GitStrategyConfig{Type: "none"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("expected gitStrategy=none with executor.type=none to validate, got: %v", err)
+	}
+}
+
+// TestValidateRunConfig_NoneExecutorBuiltInToolFailFast exercises
+// validateNoneExecutorTools: an explicit tools.builtIn entry that needs a
+// filesystem or shell capability is rejected at config-load time instead
+// of silently vanishing from the tool registry mid-run; web_fetch is not
+// capability-gated so it must stay accepted.
+func TestValidateRunConfig_NoneExecutorBuiltInToolFailFast(t *testing.T) {
+	cases := []struct {
+		tool    string
+		wantErr bool
+	}{
+		{tool: "run_command", wantErr: true},
+		{tool: "write_file", wantErr: true},
+		{tool: "read_file", wantErr: true},
+		{tool: "edit_file", wantErr: true},
+		{tool: "web_fetch", wantErr: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: "none"}
+			c.Tools = ToolsConfig{BuiltIn: []string{tc.tool}}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for tool %q", tc.tool)
+				}
+				if !strings.Contains(err.Error(), fmt.Sprintf("tools.builtIn entry %q requires an execution capability", tc.tool)) {
+					t.Errorf("expected capability fail-fast error, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("expected tool %q to validate cleanly, got: %v", tc.tool, err)
+			}
+		})
+	}
+}
