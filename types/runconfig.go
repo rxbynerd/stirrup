@@ -977,7 +977,7 @@ type ContextStrategyConfig struct {
 
 // ExecutorConfig selects the executor implementation.
 type ExecutorConfig struct {
-	Type       string            `json:"type"`                 // "api" | "local" | "container" | "k8s" | "k8s-sandbox"
+	Type       string            `json:"type"`                 // "api" | "local" | "container" | "k8s" | "k8s-sandbox" | "none"
 	VcsBackend *VcsBackendConfig `json:"vcsBackend,omitempty"` // type: "api"
 	Workspace  string            `json:"workspace,omitempty"`
 	Image      string            `json:"image,omitempty"`
@@ -1623,6 +1623,7 @@ var validExecutorTypes = map[string]bool{
 	"container":   true,
 	"k8s":         true,
 	"k8s-sandbox": true,
+	"none":        true,
 }
 
 // validContainerRuntimes is the closed set of OCI runtimes the container
@@ -2049,6 +2050,61 @@ var mutatingTools = map[string]bool{
 	"apply_diff":     true,
 }
 
+// readCapabilityBuiltInTools enumerates built-in tools that
+// buildToolRegistry (harness/internal/core/factory.go) only registers when
+// the executor's Capabilities().CanRead is true. Combined with
+// mutatingTools (CanWrite/CanExec-gated), this is every built-in tool that
+// needs a filesystem or shell capability — the set validateNoneExecutorTools
+// rejects outright for executor.type="none", which has no capability at
+// all. types cannot import harness/internal/core, so this is a
+// self-contained mirror, hand-kept in sync with buildToolRegistry.
+// web_fetch and spawn_agent are deliberately absent: factory.go registers
+// them without gating on Capabilities().
+var readCapabilityBuiltInTools = map[string]bool{
+	"read_file":         true,
+	"list_directory":    true,
+	"grep_files":        true,
+	"find_files":        true,
+	"git_status":        true,
+	"git_changed_files": true,
+	"git_diff":          true,
+	"git_show":          true,
+}
+
+// DefaultReadOnlyBuiltInToolsForExecutor returns the default built-in tool
+// list a caller (the CLI's applyModeDefaults) should inject for a
+// read-only mode when Tools.BuiltIn is unset, given the configured
+// executor.type. For every executor except "none" this is
+// DefaultReadOnlyBuiltInTools() unchanged.
+//
+// "none" (harness/internal/executor/none.go) has no filesystem or shell
+// capability at all, so the full read-only default would inject entries
+// validateNoneExecutorTools rejects — turning a mode-only invocation like
+// `--executor none` (mode defaults to "planning") into a config that fails
+// ValidateRunConfig out of the box, even though the operator never
+// explicitly asked for a filesystem tool. This filters
+// DefaultReadOnlyBuiltInTools() down to the capability-ungated subset
+// (web_fetch, spawn_agent today), reusing the exact same
+// readCapabilityBuiltInTools/mutatingTools sets validateNoneExecutorTools
+// checks against so a default can never drift out of sync with the
+// fail-fast it must not trip. An explicit operator-supplied Tools.BuiltIn
+// entry is untouched by this function and still fails validation via
+// validateNoneExecutorTools — only mode-injected defaults are filtered.
+func DefaultReadOnlyBuiltInToolsForExecutor(executorType string) []string {
+	defaults := DefaultReadOnlyBuiltInTools()
+	if executorType != "none" {
+		return defaults
+	}
+	filtered := make([]string, 0, len(defaults))
+	for _, name := range defaults {
+		if readCapabilityBuiltInTools[name] || mutatingTools[name] {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered
+}
+
 // ModePreset is a named set of RunConfig overrides.
 type ModePreset struct {
 	Name             string                 `json:"name"`
@@ -2108,12 +2164,14 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateExecutorRegistryAllowlist(config.Executor, &errs)
 	validateExecutorRuntime(config.Executor, &errs)
 	validateK8sExecutor(config.Executor, &errs)
+	validateNoneExecutor(config.Executor, &errs)
 	validateResourceLimits(config.Executor.Resources, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateEditStrategyFuzzyThreshold(config.EditStrategy, &errs)
 	validateOptionalType("permissionPolicy", config.PermissionPolicy.Type, validPermissionPolicyTypes, &errs)
 	validatePermissionPolicyFields(config.PermissionPolicy, &errs)
 	validateOptionalType("gitStrategy", config.GitStrategy.Type, validGitStrategyTypes, &errs)
+	validateGitStrategyExecutorCompat(config.GitStrategy.Type, config.Executor.Type, &errs)
 	validateOptionalType("transport", config.Transport.Type, validTransportTypes, &errs)
 	validateOptionalType("traceEmitter", config.TraceEmitter.Type, validTraceEmitterTypes, &errs)
 	validateTraceEmitterProtocolAndHeaders(&config.TraceEmitter, &errs)
@@ -2123,6 +2181,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateProviderConfigs(config, retryDefaulted, &errs)
 	validateAPIKeyRefs(config, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
+	validateNoneExecutorTools(config.Executor.Type, config.Tools.BuiltIn, &errs)
 	validateMCPServers(config.Tools.MCPServers, &errs)
 	validateToolsProfile(config.Tools.Profile, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
@@ -2756,8 +2815,8 @@ func validateHooksConfig(config *RunConfig, errs *[]string) {
 	}
 	hooks := config.Hooks
 
-	if (len(hooks.PreRun) > 0 || len(hooks.PostRun) > 0) && config.Executor.Type == "api" {
-		*errs = append(*errs, "hooks require an exec-capable executor; executor.type \"api\" is read-only")
+	if (len(hooks.PreRun) > 0 || len(hooks.PostRun) > 0) && (config.Executor.Type == "api" || config.Executor.Type == "none") {
+		*errs = append(*errs, fmt.Sprintf("hooks require an exec-capable executor; executor.type %q has no exec capability", config.Executor.Type))
 	}
 
 	if len(hooks.PreRun) > maxHooksPerPhase {
@@ -4628,21 +4687,25 @@ func validateResourceLimits(r *ResourceLimits, errs *[]string) {
 
 // validateExecutorWorkspaceExportTo enforces the URI shape on the
 // optional Executor.WorkspaceExportTo field and the cross-field
-// constraint that the api executor (read-only, no workspace) cannot
-// produce a workspace tarball.
+// constraint that the api and none executors (both read-only or
+// read-less, neither with a workspace) cannot produce a workspace
+// tarball.
 func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
 	if cfg.WorkspaceExportTo == "" {
 		return
 	}
-	// The api executor has no workspace to export. Rejecting here
-	// catches a config-typo before the run no-ops at end-of-run with
-	// a silent skip.
-	if cfg.Type == "api" {
-		*errs = append(*errs, "executor.workspaceExportTo is not valid for executor.type=\"api\" (api executor has no workspace)")
+	// Neither the api executor (read-only, backed by a VCS API) nor the
+	// none executor (no execution surface at all) has a workspace to
+	// export. Rejecting here catches a config-typo before the run
+	// no-ops at end-of-run with a silent skip.
+	if cfg.Type == "api" || cfg.Type == "none" {
+		*errs = append(*errs, fmt.Sprintf(
+			"executor.workspaceExportTo is not valid for executor.type=%q (%s executor has no workspace)",
+			cfg.Type, cfg.Type))
 		return
 	}
 	if cfg.Type == "" {
-		*errs = append(*errs, "executor.workspaceExportTo requires an explicit executor.type other than 'api'")
+		*errs = append(*errs, "executor.workspaceExportTo requires an explicit executor.type other than 'api' or 'none'")
 		return
 	}
 	// Only gs:// is accepted today. Future S3 / Azure Blob support
@@ -4688,6 +4751,77 @@ func validateExecutorRegistryAllowlist(cfg ExecutorConfig, errs *[]string) {
 		}
 		if _, err := path.Match(pattern, ""); err != nil {
 			*errs = append(*errs, fmt.Sprintf("executor.registryAllowlist pattern %q is not a valid glob: %v", pattern, err))
+		}
+	}
+}
+
+// validateNoneExecutor rejects every container/k8s/api-only field on
+// ExecutorConfig when Type == "none". The none executor
+// (harness/internal/executor/none.go) has no execution surface at all, so
+// accepting these fields would let an operator believe an image, network
+// policy, or resource limit is actually enforced when buildExecutor's
+// "none" case (harness/internal/core/factory.go) ignores every one of
+// them. Scoped to "none" only — the sibling validators above already
+// police these fields for "container" and the k8s family.
+//
+// Runtime and RegistryAllowlist are deliberately absent from this list:
+// validateExecutorRuntime and validateExecutorRegistryAllowlist already
+// reject both for any Type outside their own applicable set (which does
+// not include "none"), so adding them here would produce two error
+// strings for the same misconfiguration.
+func validateNoneExecutor(cfg ExecutorConfig, errs *[]string) {
+	if cfg.Type != "none" {
+		return
+	}
+	reject := func(field string, set bool) {
+		if set {
+			*errs = append(*errs, fmt.Sprintf(
+				"executor.%s is not valid for executor.type=\"none\" (the none executor has no execution surface)", field))
+		}
+	}
+	reject("workspace", cfg.Workspace != "")
+	reject("image", cfg.Image != "")
+	reject("vcsBackend", cfg.VcsBackend != nil)
+	reject("network", cfg.Network != nil)
+	reject("resources", cfg.Resources != nil)
+	reject("k8sNamespace", cfg.K8sNamespace != "")
+	reject("k8sKubeconfig", cfg.K8sKubeconfig != "")
+	reject("k8sNodeSelector", len(cfg.K8sNodeSelector) != 0)
+	reject("k8sServiceAccount", cfg.K8sServiceAccount != "")
+	reject("k8sEgressProxyUrl", cfg.K8sEgressProxyURL != "")
+}
+
+// validateGitStrategyExecutorCompat rejects gitStrategy.type="deterministic"
+// paired with executor.type="none". Deterministic git strategy commits into
+// the executor's workspace to produce stable, reproducible diffs; the none
+// executor provides no workspace at all (see validateNoneExecutor), so the
+// combination can never do anything useful and is rejected at config-load
+// time rather than failing confusingly mid-run.
+func validateGitStrategyExecutorCompat(gitStrategyType, executorType string, errs *[]string) {
+	if gitStrategyType == "deterministic" && executorType == "none" {
+		*errs = append(*errs, `gitStrategy.type="deterministic" is not valid with executor.type="none" (deterministic git requires a workspace the none executor does not provide)`)
+	}
+}
+
+// validateNoneExecutorTools fails fast when executor.type="none" and
+// tools.builtIn explicitly names a tool that needs a capability the none
+// executor lacks (Capabilities() reports CanRead/CanWrite/CanExec all
+// false — see executor/none.go). Without this check the tool would simply
+// vanish from the registry at runtime (buildToolRegistry in
+// harness/internal/core/factory.go gates every one of these on the
+// matching capability), leaving the model with a tool list that silently
+// diverges from what tools.builtIn promised. Scoped to "none" only: the
+// "api" executor's existing silent per-tool skip (it does have CanRead) is
+// unchanged.
+func validateNoneExecutorTools(executorType string, builtIns []string, errs *[]string) {
+	if executorType != "none" {
+		return
+	}
+	for _, name := range builtIns {
+		if readCapabilityBuiltInTools[name] || mutatingTools[name] {
+			*errs = append(*errs, fmt.Sprintf(
+				"tools.builtIn entry %q requires an execution capability the none executor lacks (executor.type=\"none\" registers no filesystem/shell tools)",
+				name))
 		}
 	}
 }

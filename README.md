@@ -76,7 +76,7 @@ post-mortem replays or pinning a stable configuration. See
 
 ### Executors
 
-The agent runs inside one of five executors, selected with
+The agent runs inside one of six executors, selected with
 `--executor` / `executor.type`:
 
 | Executor | Boundary | Notes |
@@ -86,12 +86,13 @@ The agent runs inside one of five executors, selected with
 | `k8s` | a Pod on a Kubernetes cluster | Pod-per-run with a hardened `securityContext`, per-tenant RuntimeClass, and `NetworkPolicy` egress. See [`docs/executors/k8s.md`](docs/executors/k8s.md). |
 | `k8s-sandbox` | a Pod provisioned via the Agent Sandbox CRD | Variant of `k8s`: the GKE Agent Sandbox controller creates the Pod from an `agents.x-k8s.io` `Sandbox` resource; gVisor-only. See [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md). |
 | `api` | no shell (VCS-backed, read-only) | Reviews/plans against a Git host without a workspace. |
+| `none` | no execution surface at all | No local filesystem or shell access, not even read-only. For MCP-only / server-side-tool runs. Not to be confused with `executor.network.mode: "none"` (deny-all egress on a filesystem-capable executor) — see [`docs/configuration.md`](docs/configuration.md#components). |
 
 The relevant executor flags are:
 
 | Flag | Notes |
 |---|---|
-| `--executor` | `local` (default), `container`, `k8s`, `k8s-sandbox`, or `api`. |
+| `--executor` | `local` (default), `container`, `k8s`, `k8s-sandbox`, `api`, or `none`. |
 | `--image` | Sandbox container image (`container` / `k8s`). |
 | `--container-runtime` | OCI runtime (`container`) or Pod `RuntimeClassName` (`k8s`): `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `runc`. |
 | `--k8s-namespace` | Namespace for the `k8s` sandbox Pod (required for `k8s`). |

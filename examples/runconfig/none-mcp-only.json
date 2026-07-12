@@ -1,0 +1,36 @@
+{
+  "runId": "none-mcp-only-example",
+  "mode": "planning",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "anthropic",
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6"
+  },
+  "promptBuilder": { "type": "default" },
+  "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
+  "executor": { "type": "none" },
+  "editStrategy": { "type": "multi" },
+  "verifier": { "type": "none" },
+  "permissionPolicy": { "type": "deny-side-effects" },
+  "gitStrategy": { "type": "none" },
+  "transport": { "type": "stdio" },
+  "traceEmitter": { "type": "jsonl" },
+  "tools": {
+    "builtIn": ["web_fetch"],
+    "mcpServers": [
+      {
+        "name": "example",
+        "uri": "https://example.com/mcp",
+        "apiKeyRef": "secret://EXAMPLE_MCP_KEY"
+      }
+    ]
+  },
+  "maxTurns": 20,
+  "timeout": 300,
+  "logLevel": "info"
+}

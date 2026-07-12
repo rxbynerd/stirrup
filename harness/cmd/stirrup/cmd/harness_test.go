@@ -282,6 +282,119 @@ func TestBuildHarnessRunConfig_FillsDefaultReadOnlyToolList(t *testing.T) {
 	}
 }
 
+// TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools
+// reproduces the boot-time defect coord-none found: the CLI defaults
+// --mode to "planning", so a bare `stirrup harness --executor none`
+// invocation goes through this exact path. Before the fix,
+// applyModeDefaults injected the full DefaultReadOnlyBuiltInTools()
+// (including read_file et al.), which the none-executor fail-fast then
+// rejected — making --executor none dead on arrival for every read-only
+// mode. It must resolve to exactly the capability-ungated subset instead,
+// and the result must pass ValidateRunConfig.
+func TestBuildHarnessRunConfig_NoneExecutorReadOnlyDefaultsToUngatedTools(t *testing.T) {
+	cfg, err := buildHarnessRunConfig(harnessCLIOptions{
+		RunID:         "test-run",
+		Mode:          "planning",
+		ExecutorType:  "none",
+		Prompt:        "test",
+		ProviderType:  "anthropic",
+		APIKeyRef:     "secret://ANTHROPIC_API_KEY",
+		Model:         "claude-sonnet-4-6",
+		MaxTurns:      20,
+		Timeout:       600,
+		TransportType: "stdio",
+		LogLevel:      "info",
+	})
+	if err != nil {
+		t.Fatalf("buildHarnessRunConfig: %v", err)
+	}
+
+	want := []string{"web_fetch", "spawn_agent"}
+	if len(cfg.Tools.BuiltIn) != len(want) {
+		t.Fatalf("expected default tool list %v, got %v", want, cfg.Tools.BuiltIn)
+	}
+	for i, name := range want {
+		if cfg.Tools.BuiltIn[i] != name {
+			t.Errorf("expected default tool list %v, got %v", want, cfg.Tools.BuiltIn)
+			break
+		}
+	}
+
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("mode-injected default should pass validation for executor.type=none, got: %v", err)
+	}
+}
+
+// TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools exercises
+// applyModeDefaults directly (rather than through buildHarnessRunConfig)
+// for both the flag path and the --config path (BuildRunConfig calls the
+// same function at runconfigbuilder.go's ResolveAll step), pinning the
+// exact tool list coord-none's fix must produce.
+func TestApplyModeDefaults_NoneExecutorPopulatesUngatedTools(t *testing.T) {
+	cfg := &types.RunConfig{
+		Mode:     "planning",
+		Executor: types.ExecutorConfig{Type: "none"},
+	}
+	applyModeDefaults(cfg)
+	want := []string{"web_fetch", "spawn_agent"}
+	if len(cfg.Tools.BuiltIn) != len(want) {
+		t.Fatalf("expected %v, got %v", want, cfg.Tools.BuiltIn)
+	}
+	for i, name := range want {
+		if cfg.Tools.BuiltIn[i] != name {
+			t.Errorf("expected %v, got %v", want, cfg.Tools.BuiltIn)
+			break
+		}
+	}
+}
+
+// TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty confirms
+// applyModeDefaults never applies the read-only default outside a
+// read-only mode, none executor or not — an empty Tools.BuiltIn in
+// execution mode means "all built-ins" and must stay empty.
+func TestApplyModeDefaults_ExecutionModeNoneExecutorLeavesToolsEmpty(t *testing.T) {
+	timeout := 600
+	cfg := &types.RunConfig{
+		Mode:     "execution",
+		Provider: types.ProviderConfig{Type: "anthropic"},
+		MaxTurns: 20,
+		Timeout:  &timeout,
+		Executor: types.ExecutorConfig{Type: "none"},
+	}
+	applyModeDefaults(cfg)
+	if len(cfg.Tools.BuiltIn) != 0 {
+		t.Errorf("expected no default tool list in execution mode, got %v", cfg.Tools.BuiltIn)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("execution mode + none executor + empty builtIn should validate, got: %v", err)
+	}
+}
+
+// TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected is the key
+// regression guard coord-none called out: the fix must filter only the
+// mode-INJECTED default, never an operator's EXPLICIT tools.builtIn
+// entry. planning + none + an explicit ["read_file"] must still fail
+// ValidateRunConfig's fail-fast exactly as before this fix.
+func TestApplyModeDefaults_NoneExecutorExplicitToolStillRejected(t *testing.T) {
+	cfg := &types.RunConfig{
+		Mode:             "planning",
+		Executor:         types.ExecutorConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "deny-side-effects"},
+		Tools:            types.ToolsConfig{BuiltIn: []string{"read_file"}},
+	}
+	applyModeDefaults(cfg)
+	if len(cfg.Tools.BuiltIn) != 1 || cfg.Tools.BuiltIn[0] != "read_file" {
+		t.Fatalf("explicit tool list should survive applyModeDefaults unchanged, got %v", cfg.Tools.BuiltIn)
+	}
+	err := types.ValidateRunConfig(cfg)
+	if err == nil {
+		t.Fatal("expected explicit read_file with executor.type=none to still fail validation")
+	}
+	if !strings.Contains(err.Error(), `tools.builtIn entry "read_file" requires an execution capability`) {
+		t.Errorf("expected none-executor fail-fast error, got: %v", err)
+	}
+}
+
 // TestApplyModeDefaults_RespectsExplicitTools is the inverse of the
 // fills-default test: when a caller (e.g. a config file or future flag)
 // supplies an explicit Tools.BuiltIn list, applyModeDefaults must NOT
@@ -1402,6 +1515,38 @@ func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
 	}
 	if cfg.Executor.Resources == nil || cfg.Executor.Resources.CPUs == 0 {
 		t.Errorf("example should set executor.resources.cpus")
+	}
+	if len(cfg.Tools.MCPServers) != 1 || cfg.Tools.MCPServers[0].Name == "" {
+		t.Errorf("example should configure exactly one named MCP server, got %+v", cfg.Tools.MCPServers)
+	}
+}
+
+// TestExampleNoneMCPOnlyJSONLoadsAndValidates pins the shipped
+// none-mcp-only.json fixture: the MCP-only, no-execution-surface use case
+// executor.type="none" exists for. It must round-trip through
+// loadRunConfigFile and pass ValidateRunConfig, and it demonstrates the
+// none executor paired with a read-only mode plus an MCP server and only
+// the (capability-ungated) web_fetch built-in tool.
+func TestExampleNoneMCPOnlyJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "none-mcp-only.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/none-mcp-only.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/none-mcp-only.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Executor.Type != "none" {
+		t.Errorf("example should demonstrate the none executor, got %q", cfg.Executor.Type)
+	}
+	if !types.IsReadOnlyMode(cfg.Mode) {
+		t.Errorf("example should demonstrate a read-only mode, got %q", cfg.Mode)
+	}
+	if len(cfg.Tools.BuiltIn) != 1 || cfg.Tools.BuiltIn[0] != "web_fetch" {
+		t.Errorf("example should enable only web_fetch, got %v", cfg.Tools.BuiltIn)
 	}
 	if len(cfg.Tools.MCPServers) != 1 || cfg.Tools.MCPServers[0].Name == "" {
 		t.Errorf("example should configure exactly one named MCP server, got %+v", cfg.Tools.MCPServers)

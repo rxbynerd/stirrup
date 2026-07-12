@@ -993,8 +993,10 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			return nil, fmt.Errorf("invalid repo format %q, expected 'owner/repo'", cfg.VcsBackend.Repo)
 		}
 		return executor.NewAPIExecutor(token, parts[0], parts[1], cfg.VcsBackend.Ref), nil
+	case "none":
+		return executor.NewNoneExecutor(), nil
 	default:
-		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, k8s, k8s-sandbox, api)", cfg.Type)
+		return nil, fmt.Errorf("unsupported executor type: %q (supported: local, container, k8s, k8s-sandbox, api, none)", cfg.Type)
 	}
 }
 

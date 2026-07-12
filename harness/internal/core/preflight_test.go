@@ -330,6 +330,38 @@ func TestPreflight_Executor_LocalUnaffectedBySkip(t *testing.T) {
 	}
 }
 
+// TestPreflight_Executor_None locks in the #447 conclusion that the none
+// executor needs no special-case arm in preflight.go: it flows through
+// the same generic construct-then-probe path as local/api.
+// preflightExecutorConstruct calls buildExecutor unconditionally (only
+// "container" is special-cased), so the "executor" step should report a
+// successful construction, and "executor-probe" should record a skip
+// since NoneExecutor implements no Probe.
+func TestPreflight_Executor_None(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Executor = types.ExecutorConfig{Type: "none"}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	if err != nil {
+		t.Fatalf("Preflight: %v", err)
+	}
+	st, ok := stepStatus(report, "executor")
+	if !ok || st != PreflightOK {
+		t.Errorf("executor step = %v (found=%v), want ok", st, ok)
+	}
+	if detail, _ := stepDetail(report, "executor"); !strings.Contains(detail, "none executor constructed") {
+		t.Errorf("executor step detail = %q, want it to report the none executor", detail)
+	}
+	probeSt, ok := stepStatus(report, "executor-probe")
+	if !ok || probeSt != PreflightSkip {
+		t.Errorf("executor-probe step = %v (found=%v), want skip (NoneExecutor has no Probe)", probeSt, ok)
+	}
+}
+
 func TestPreflight_Egress_Fail_MalformedAllowlist(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 	srv, _ := metadataOnlyServer(t)
