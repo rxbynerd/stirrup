@@ -214,7 +214,20 @@ type traceEmitterSpec struct {
 }
 
 type toolsSpec struct {
-	BuiltIn []string `hcl:"built_in,optional"`
+	BuiltIn       []string           `hcl:"built_in,optional"`
+	CommandOutput *commandOutputSpec `hcl:"command_output,block"`
+}
+
+// commandOutputSpec mirrors types.CommandOutputConfig so suites can A/B the
+// capture pipeline (enabled = false vs a low inline_max_bytes that forces
+// spilling) without a full run_config_file.
+type commandOutputSpec struct {
+	Enabled               *bool  `hcl:"enabled,optional"`
+	FailurePosture        string `hcl:"failure_posture,optional"`
+	InlineMaxBytes        int64  `hcl:"inline_max_bytes,optional"`
+	PreviewBytesPerStream int64  `hcl:"preview_bytes_per_stream,optional"`
+	MaxBytesPerStream     int64  `hcl:"max_bytes_per_stream,optional"`
+	MaxBytesPerRun        int64  `hcl:"max_bytes_per_run,optional"`
 }
 
 type ruleOfTwoSpec struct {
@@ -361,6 +374,16 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 	}
 	if s.Tools != nil {
 		out.Tools = types.ToolsConfig{BuiltIn: s.Tools.BuiltIn}
+		if co := s.Tools.CommandOutput; co != nil {
+			out.Tools.CommandOutput = types.CommandOutputConfig{
+				Enabled:               co.Enabled,
+				FailurePosture:        co.FailurePosture,
+				InlineMaxBytes:        co.InlineMaxBytes,
+				PreviewBytesPerStream: co.PreviewBytesPerStream,
+				MaxBytesPerStream:     co.MaxBytesPerStream,
+				MaxBytesPerRun:        co.MaxBytesPerRun,
+			}
+		}
 	}
 	if s.RuleOfTwo != nil {
 		out.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: s.RuleOfTwo.Enforce}
