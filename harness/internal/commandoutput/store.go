@@ -264,7 +264,11 @@ func (w *spoolWriter) Write(p []byte) (int, error) {
 	if streamExceeded || runExceeded {
 		err := fmt.Errorf("%w: per-stream=%d/%d run=%d/%d", ErrCaptureLimit,
 			w.count+int64(len(p)), w.limit, w.store.totalRaw+int64(len(p)), w.store.config.MaxBytesPerRun)
-		if w.store.fatalErr == nil {
+		// A limit breach always cancels the offending command, but only
+		// the strict posture poisons the store: under bestEffort later
+		// commands keep capturing (run-total accounting still applies —
+		// once totalRaw is at the cap every subsequent write breaches).
+		if w.store.config.FailurePosture != types.CommandOutputPostureBestEffort && w.store.fatalErr == nil {
 			w.store.fatalErr = err
 		}
 		w.store.mu.Unlock()
@@ -309,6 +313,12 @@ func (w *spoolWriter) close() error {
 func (w *spoolWriter) sum() string { return hex.EncodeToString(w.hash.Sum(nil)) }
 
 func (s *Store) fail(err error) {
+	// Pure limit breaches are per-command failures under bestEffort;
+	// storage (IO) failures poison the store in both postures.
+	if s.config.FailurePosture == types.CommandOutputPostureBestEffort &&
+		errors.Is(err, ErrCaptureLimit) && !errors.Is(err, ErrCaptureIO) {
+		return
+	}
 	s.mu.Lock()
 	if s.fatalErr == nil {
 		s.fatalErr = err
@@ -525,12 +535,17 @@ func (s *Store) Finalize(ctx context.Context) (string, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].record.ToolUseID < entries[j].record.ToolUseID })
 	commands := make([]types.CommandOutputRecord, 0, len(entries))
+	allComplete := true
 	for _, e := range entries {
 		e.mu.Lock()
 		commands = append(commands, e.record)
+		allComplete = allComplete && e.record.CaptureComplete
 		e.mu.Unlock()
 	}
-	m := manifest{SchemaVersion: 1, ArchiveID: s.archiveID, CreatedAt: time.Now(), Complete: fatal == nil, Commands: commands}
+	// Complete requires every capture to have finished cleanly, not just
+	// the absence of a store-fatal error: under bestEffort a limit breach
+	// fails only its own command and must still be visible here.
+	m := manifest{SchemaVersion: 1, ArchiveID: s.archiveID, CreatedAt: time.Now(), Complete: fatal == nil && allComplete, Commands: commands}
 	if fatal != nil {
 		m.Failure = security.Scrub(fatal.Error())
 	}
