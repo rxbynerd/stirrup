@@ -37,6 +37,7 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 			"Use this for build, test, format, lint, and other tooling invocations that have to actually run. " +
 			"Do not use for filesystem inspection that a dedicated tool covers — prefer read_file, list_directory, grep_files, find_files because they return structured, bounded output and do not need a shell. " +
 			"timeout is in seconds (default 30, max 300); the command is killed when the timeout elapses. " +
+			"On timeout this returns the partial stdout/stderr captured before the deadline plus a '[timed out after Ns]' marker, not a hard error, so act on the partial output or rerun with a longer timeout. " +
 			"Example: {\"command\": \"go test ./harness/internal/tool/...\", \"timeout\": 120}",
 		// #222 structured example, pinned to the description by TestBuiltinInputExamples_MatchDescription.
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"command": "go test ./harness/internal/tool/...", "timeout": 120}`)},
@@ -83,46 +84,33 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 				if result == nil {
 					result = &executor.ExecResult{}
 				}
-				return timedOutRunCommandResult(result, timeoutSeconds)
+				return buildCommandResult(result, timeoutSeconds, true)
 			}
 
-			structured, marshalErr := json.Marshal(commandResult{
-				Stdout:         result.Stdout,
-				Stderr:         result.Stderr,
-				ExitCode:       result.ExitCode,
-				TimedOut:       false,
-				TimeoutSeconds: timeoutSeconds,
-			})
-			if marshalErr != nil {
-				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
-			}
-
-			return tool.StructuredResult{
-				Text:       formatRunCommand(result.Stdout, result.Stderr, result.ExitCode),
-				Structured: structured,
-				Kind:       kindCommandResult,
-			}, nil
+			return buildCommandResult(result, timeoutSeconds, false)
 		},
 	}
 }
 
-// timedOutRunCommandResult builds the soft-outcome StructuredResult for a
-// run_command invocation killed by its timeout. result carries whatever
-// partial output the executor captured before the kill; result.ExitCode is
-// executor-dependent in this case (local.go leaves it 0, container.go and
-// k8s_execcore.go set -1) and never a meaningful status, since the process
-// never ran to completion — callers must gate on TimedOut and never read
-// ExitCode as a real exit status when it is true. The Text fallback appends
-// an unambiguous "[timed out after Ns]" marker after the normal
-// formatRunCommand rendering so a model reading only Text (not Structured)
-// can still distinguish a timeout from a clean exit; formatRunCommand itself
-// stays byte-identical to its pre-#231/#489 contract.
-func timedOutRunCommandResult(result *executor.ExecResult, timeoutSeconds int) (tool.StructuredResult, error) {
+// buildCommandResult builds the StructuredResult for a run_command
+// invocation, covering both the clean-exit and timed-out-soft-outcome cases
+// (timedOut). On timeout, result carries whatever partial output the
+// executor captured before the kill; result.ExitCode is executor-dependent
+// in that case (local.go leaves it 0, container.go and k8s_execcore.go set
+// -1) and never a meaningful status, since the process never ran to
+// completion — callers must gate on TimedOut and never read ExitCode as a
+// real exit status when it is true. The Text fallback appends an
+// unambiguous "[timed out after Ns]" marker after the normal
+// formatRunCommand rendering when timedOut, so a model reading only Text
+// (not Structured) can still distinguish a timeout from a clean exit;
+// formatRunCommand itself stays byte-identical to its pre-#231/#489
+// contract.
+func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, timedOut bool) (tool.StructuredResult, error) {
 	structured, marshalErr := json.Marshal(commandResult{
 		Stdout:         result.Stdout,
 		Stderr:         result.Stderr,
 		ExitCode:       result.ExitCode,
-		TimedOut:       true,
+		TimedOut:       timedOut,
 		TimeoutSeconds: timeoutSeconds,
 	})
 	if marshalErr != nil {
@@ -130,7 +118,9 @@ func timedOutRunCommandResult(result *executor.ExecResult, timeoutSeconds int) (
 	}
 
 	text := formatRunCommand(result.Stdout, result.Stderr, result.ExitCode)
-	text += fmt.Sprintf("\n[timed out after %ds]", timeoutSeconds)
+	if timedOut {
+		text += fmt.Sprintf("\n[timed out after %ds]", timeoutSeconds)
+	}
 
 	return tool.StructuredResult{
 		Text:       text,
