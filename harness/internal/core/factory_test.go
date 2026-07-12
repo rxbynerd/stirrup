@@ -1104,6 +1104,20 @@ func TestBuildExecutor_Container_MissingImage(t *testing.T) {
 	}
 }
 
+func TestBuildExecutor_None_ValidConfig(t *testing.T) {
+	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "none"}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := exec.(*executor.NoneExecutor); !ok {
+		t.Fatalf("expected NoneExecutor, got %T", exec)
+	}
+	caps := exec.Capabilities()
+	if caps.CanRead || caps.CanWrite || caps.CanExec || caps.CanNetwork {
+		t.Errorf("expected all capabilities false, got %+v", caps)
+	}
+}
+
 func TestBuildExecutor_UnsupportedType(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil, nil)
 	if err == nil {
@@ -1425,6 +1439,45 @@ func TestBuildToolRegistry_DefaultReadOnlyIncludesGitTools(t *testing.T) {
 		if !registered[name] {
 			t.Errorf("buildToolRegistry did not register %q for a default read-only tool list", name)
 		}
+	}
+}
+
+// TestBuildToolRegistry_NoneExecutorRegistersOnlyUngatedTools proves the
+// none executor's all-false Capabilities() flows through to
+// buildToolRegistry exactly like every other executor: every
+// capability-gated tool (read/write/exec) is silently dropped even when
+// named in tools.builtIn, while web_fetch — which factory.go registers
+// unconditionally — still registers. ValidateRunConfig's
+// validateNoneExecutorTools (types package) is what turns the read/write/
+// exec case into a config-load-time error for a real run; this test
+// exercises buildToolRegistry directly, bypassing that validator, to pin
+// the capability-gate behaviour it exists to fail fast on.
+func TestBuildToolRegistry_NoneExecutorRegistersOnlyUngatedTools(t *testing.T) {
+	exec := executor.NewNoneExecutor()
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{
+		BuiltIn: []string{
+			"read_file", "list_directory", "grep_files", "find_files",
+			"git_status", "git_changed_files", "git_diff", "git_show",
+			"run_command", "write_file", "web_fetch",
+		},
+	})
+
+	registered := make(map[string]bool)
+	for _, def := range registry.List() {
+		registered[def.Name] = true
+	}
+
+	for _, name := range []string{
+		"read_file", "list_directory", "grep_files", "find_files",
+		"git_status", "git_changed_files", "git_diff", "git_show",
+		"run_command", "write_file",
+	} {
+		if registered[name] {
+			t.Errorf("buildToolRegistry registered %q for the none executor, which has no capability to back it", name)
+		}
+	}
+	if !registered["web_fetch"] {
+		t.Error("buildToolRegistry did not register web_fetch for the none executor; web_fetch is not capability-gated")
 	}
 }
 
