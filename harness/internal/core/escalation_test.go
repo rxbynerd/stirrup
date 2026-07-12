@@ -131,7 +131,7 @@ func buildEscalationLoop(prov *sequencedProvider, policy EscalationPolicy) (*Age
 		Git:         git.NewNoneGitStrategy(),
 		Escalation:  policy,
 		Transport:   transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{}),
-		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}),
+		Trace:       trace.NewJSONLTraceEmitter(&bytes.Buffer{}, false),
 		Tracer:      noop.NewTracerProvider().Tracer(""),
 		Metrics:     metrics,
 		Logger:      slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil)),

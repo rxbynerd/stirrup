@@ -165,6 +165,12 @@ func (b *builtComponents) probeSteps() []probeComponentStep {
 // when a sink is present, records the failed step before returning — the
 // dry-run stops at the first construction error. Owned closers (trace
 // emitter) are NOT closed here — the caller owns the lifecycle.
+//
+// debugRedactionDisabled threads the --debug bit (issue #219) into the
+// constructed trace emitter. It is re-checked against
+// debugbuild.DebugBuildEnabled() inside buildTraceEmitter, so passing
+// true here has no effect in a release binary; Preflight always passes
+// false (a dry-run never disables redaction).
 func buildComponents(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -176,6 +182,7 @@ func buildComponents(
 	resolvedHeaders map[string]string,
 	resourceOpts observability.ResourceOptions,
 	sink *componentStepSink,
+	debugRedactionDisabled bool,
 ) (*builtComponents, error) {
 	// Error prefixes mirror BuildLoop's historical inline messages
 	// ("build providers", etc.) so the composition root's operator-facing
@@ -216,7 +223,7 @@ func buildComponents(
 		sink.ok("permission-policy", fmt.Sprintf("%s policy constructed", config.PermissionPolicy.Type))
 	}
 
-	te, err := buildTraceEmitter(ctx, config.TraceEmitter, resolvedHeaders, resourceOpts)
+	te, err := buildTraceEmitter(ctx, config.TraceEmitter, resolvedHeaders, resourceOpts, debugRedactionDisabled)
 	if err != nil {
 		if sink != nil {
 			sink.failStep("trace-emitter", err, traceHint(config.TraceEmitter.Type))
