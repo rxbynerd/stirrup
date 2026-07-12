@@ -19,7 +19,6 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
-	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -83,10 +82,11 @@ type OpenAICompatibleAdapter struct {
 	baseURL      string
 	apiKeyHeader string
 	queryParams  map[string]string
-	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
-	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
-	RetryPolicy  RetryPolicy            // optional, set by factory; zero value disables retry
-	Logger       *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
+
+	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
+	// Logger; see its doc comment for the field-by-field contract.
+	AdapterDeps
+
 	// Registry resolves per-(provider, model) wire-shape and behaviour
 	// overrides at the top of every Stream call. The constructor seeds
 	// this with quirks.DefaultRegistry() so callers that ignore the
@@ -138,7 +138,7 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 		baseURL:       baseURL,
 		apiKeyHeader:  auth.APIKeyHeader,
 		queryParams:   auth.QueryParams,
-		RetryPolicy:   retry,
+		AdapterDeps:   AdapterDeps{RetryPolicy: retry},
 		Registry:      quirks.DefaultRegistry(),
 		strictSchemas: newStrictSchemaCache(),
 	}
@@ -386,18 +386,6 @@ func openAIWireTokenKey(f quirks.OpenAITokenField) string {
 	return "max_completion_tokens"
 }
 
-// ruleDescriptions returns the Description field of each rule in the
-// supplied slice, preserving order. Returned as a non-nil empty slice
-// when the input is empty so the slog.Any attribute renders as `[]`
-// rather than `null` — easier to grep and parse downstream.
-func ruleDescriptions(rules []quirks.Rule) []string {
-	out := make([]string, 0, len(rules))
-	for _, r := range rules {
-		out = append(out, r.Description)
-	}
-	return out
-}
-
 // summarizeReplayCaptures sums per-path piece counts and the string-or-
 // JSON-encoded length of every captured value across the whole map. The
 // same length proxy logReplayFieldsCapture uses (raw string length for
@@ -431,9 +419,9 @@ func summarizeReplayCaptures(capture map[string][]any) (totalCount, totalLen int
 // not echo into any log sink. Operators get presence + size; the rule
 // fired observably without leaking the content.
 //
-// Shared by both adapters so the log shape stays uniform; the
-// helper lives in openai.go because that is where ruleDescriptions
-// already sits.
+// Shared by both adapters so the log shape stays uniform; the helper
+// lives in openai.go because that is its only non-test caller besides
+// gemini.go.
 func logReplayFieldsCapture(ctx context.Context, logger *slog.Logger, providerType, model string, capture map[string][]any) {
 	if logger == nil {
 		logger = slog.Default()

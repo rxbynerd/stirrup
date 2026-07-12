@@ -18,7 +18,6 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
-	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -69,18 +68,9 @@ type GeminiAdapter struct {
 	// "gemini-{streamN}-{partIdx}".
 	streamCounter atomic.Int64
 
-	// Tracer and Metrics are field-injected by the factory after
-	// construction. Both nil-safe at every call site.
-	Tracer  oteltrace.Tracer
-	Metrics *observability.Metrics
-
-	// RetryPolicy is field-injected by the factory; zero value disables
-	// retry (single attempt). Mirrors the OpenAICompatibleAdapter pattern.
-	RetryPolicy RetryPolicy
-
-	// Logger is field-injected by the factory; nil falls back to
-	// slog.Default(). Used for the per-Stream quirks debug log line.
-	Logger *slog.Logger
+	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
+	// Logger; see its doc comment for the field-by-field contract.
+	AdapterDeps
 
 	// Registry resolves per-(provider, model) wire-shape and behaviour
 	// overrides at the top of every Stream call. The constructor seeds
