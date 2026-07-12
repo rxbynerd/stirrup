@@ -114,6 +114,9 @@ func (r *ExecRunner) runOne(ctx context.Context, phase string, index int, h type
 
 	timeout := time.Duration(types.EffectiveHookTimeout(h)) * time.Second
 	if caps := r.Exec.Capabilities(); caps.MaxTimeout > 0 && timeout > caps.MaxTimeout {
+		r.logger().Warn("lifecycle hook timeout clamped to executor cap",
+			"phase", phase, "index", index, "name", h.Name,
+			"requestedTimeout", timeout, "executorMaxTimeout", caps.MaxTimeout)
 		timeout = caps.MaxTimeout
 	}
 
