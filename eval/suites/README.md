@@ -29,6 +29,8 @@ For the suite schema and the per-task contract see
 | `guardrail.hcl` | Hand-authored (#43) | Red-team suite for the GuardRail component. Requires a vLLM endpoint with Granite Guardian loaded. |
 | `openai-responses-empty-tool-output.hcl` | Hand-authored | Regression pin for a provider edge case. |
 | `tooluse.hcl` | Hand-authored (#233) | Tool-use reliability regression for the Wave 1-5 tool redesign. Judges check both workspace state and tool-call trace. See below for the no-credential gate. |
+| `ruleoftwo.hcl` | Hand-authored | Deterministic suite for [Ring 4's runtime sensitive-data classifier](../../docs/safety-rings.md#the-runtime-classifier) under the default enforcing `block-external` action: a secret in a tool result and a Luhn-valid PAN in the prompt each revoke egress; canonical AWS example keys must not over-block. No vLLM/guard dependency. |
+| `ruleoftwo-observe.hcl` | Hand-authored | Companion to `ruleoftwo.hcl` for the `ruleOfTwo.enforce: false` observe-only escape hatch (egress survives while detection still latches). A separate file because `LoadSuiteHCL` takes one suite per file and `rule_of_two` is not a per-task override. |
 
 ## Tool-use reliability suite (`tooluse.hcl`)
 
