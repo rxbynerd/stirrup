@@ -3921,9 +3921,19 @@ type MCPServerConfig struct {
 	Uri string `protobuf:"bytes,2,opt,name=uri,proto3" json:"uri,omitempty"`
 	// Optional. Secret reference for server authentication
 	// (e.g. "secret://MCP_API_KEY"). Sent as a Bearer token.
-	ApiKeyRef     string `protobuf:"bytes,3,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ApiKeyRef string `protobuf:"bytes,3,opt,name=api_key_ref,json=apiKeyRef,proto3" json:"api_key_ref,omitempty"`
+	// Optional. Allowlist restricting which advertised tools the harness
+	// registers from this server, matched case-sensitively against the
+	// server-reported (unprefixed) tool name. Empty/unset registers every
+	// advertised tool (backward-compatible historical behaviour).
+	AllowedTools []string `protobuf:"bytes,4,rep,name=allowed_tools,json=allowedTools,proto3" json:"allowed_tools,omitempty"`
+	// Optional. Pins the set of hostnames this server's URI may resolve to.
+	// When non-empty, the URI host must appear in this list (exact,
+	// case-insensitive match) in addition to passing the SSRF guard.
+	// Empty/unset applies no host pinning.
+	AllowedMcpHosts []string `protobuf:"bytes,5,rep,name=allowed_mcp_hosts,json=allowedMcpHosts,proto3" json:"allowed_mcp_hosts,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *MCPServerConfig) Reset() {
@@ -3975,6 +3985,20 @@ func (x *MCPServerConfig) GetApiKeyRef() string {
 		return x.ApiKeyRef
 	}
 	return ""
+}
+
+func (x *MCPServerConfig) GetAllowedTools() []string {
+	if x != nil {
+		return x.AllowedTools
+	}
+	return nil
+}
+
+func (x *MCPServerConfig) GetAllowedMcpHosts() []string {
+	if x != nil {
+		return x.AllowedMcpHosts
+	}
+	return nil
 }
 
 var File_harness_v1_harness_proto protoreflect.FileDescriptor
@@ -4284,11 +4308,13 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
-	"mcpServers\"W\n" +
+	"mcpServers\"\xa8\x01\n" +
 	"\x0fMCPServerConfig\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03uri\x18\x02 \x01(\tR\x03uri\x12\x1e\n" +
-	"\vapi_key_ref\x18\x03 \x01(\tR\tapiKeyRef2c\n" +
+	"\vapi_key_ref\x18\x03 \x01(\tR\tapiKeyRef\x12#\n" +
+	"\rallowed_tools\x18\x04 \x03(\tR\fallowedTools\x12*\n" +
+	"\x11allowed_mcp_hosts\x18\x05 \x03(\tR\x0fallowedMcpHosts2c\n" +
 	"\x0eHarnessService\x12Q\n" +
 	"\aRunTask\x12 .stirrup.harness.v1.HarnessEvent\x1a .stirrup.harness.v1.ControlEvent(\x010\x01B\xc6\x01\n" +
 	"\x16com.stirrup.harness.v1B\fHarnessProtoP\x01Z4github.com/rxbynerd/stirrup/gen/harness/v1;harnessv1\xa2\x02\x03SHX\xaa\x02\x12Stirrup.Harness.V1\xca\x02\x12Stirrup\\Harness\\V1\xe2\x02\x1eStirrup\\Harness\\V1\\GPBMetadata\xea\x02\x14Stirrup::Harness::V1b\x06proto3"
