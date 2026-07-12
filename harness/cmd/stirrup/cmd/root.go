@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
 	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
@@ -20,10 +21,14 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "stirrup",
-	Short:   "A coding agent harness",
-	Long:    "Stirrup is a coding agent harness with swappable components that can be composed via RunConfig.",
-	Version: version.Full(),
+	Use:   "stirrup",
+	Short: "A coding agent harness",
+	Long:  "Stirrup is a coding agent harness with swappable components that can be composed via RunConfig.",
+	// VersionSuffix is "+debug" on a binary built with -tags stirrupdebug
+	// and "" otherwise, so `stirrup --version` output is unchanged on a
+	// release build and unmistakable on a debug one. See
+	// docs/security.md#debug-builds.
+	Version: version.Full() + debugbuild.VersionSuffix(),
 	// Args is NoArgs so a mistyped subcommand (`stirrup harnes`) still
 	// errors via Cobra's unknown-command path rather than silently
 	// printing the orientation hint. A bare `stirrup` (no args, no
