@@ -144,6 +144,15 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 	}
 }
 
+// WireTap installs a WireTapTransport (issue #220) around the adapter's
+// HTTP transport, so every request/response this adapter sends is
+// dumped, UNREDACTED, to out. The sole caller is the factory's
+// buildProvider wiring, which only invokes this when --trace-wire was
+// set AND debugbuild.DebugBuildEnabled() — see docs/security.md#debug-builds.
+func (a *OpenAICompatibleAdapter) WireTap(out io.Writer) {
+	a.httpClient.Transport = WireTapTransport(a.httpClient.Transport, out)
+}
+
 // --- OpenAI wire format types ---
 
 // openaiRequest is the JSON body sent to the Chat Completions API.
