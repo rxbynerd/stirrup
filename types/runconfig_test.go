@@ -7358,6 +7358,50 @@ func TestRunConfig_HooksOmittedWhenNil(t *testing.T) {
 	}
 }
 
+// TestBuiltInToolCapabilitySets_CoverCanonicalList guards against drift
+// between the types-side capability mirrors (readCapabilityBuiltInTools,
+// mutatingTools — hand-kept mirrors of harness/internal/core/factory.go's
+// buildToolRegistry capability gates, since types cannot import
+// harness/internal) and validBuiltInToolNames, the canonical closed set
+// of built-in tool names accepted anywhere in tools.builtIn. If a future
+// built-in tool is added to validBuiltInToolNames without updating one of
+// these sets (or the known-ungated exception list below), it would
+// silently escape both validateNoneExecutorTools's fail-fast and
+// DefaultReadOnlyBuiltInToolsForExecutor's filter — reintroducing the
+// "tool vanishes from the registry / isn't rejected" class of bug #447
+// exists to prevent. The union of all three must equal
+// validBuiltInToolNames exactly: no tool omitted, no tool double-counted.
+func TestBuiltInToolCapabilitySets_CoverCanonicalList(t *testing.T) {
+	// Tools factory.go's buildToolRegistry registers without ever gating
+	// on the executor's Capabilities() — see readCapabilityBuiltInTools's
+	// doc comment. Kept in sync by hand alongside it.
+	ungated := map[string]bool{"web_fetch": true, "spawn_agent": true}
+
+	union := make(map[string]bool)
+	addAll := func(set map[string]bool) {
+		for name := range set {
+			if union[name] {
+				t.Errorf("tool %q appears in more than one of readCapabilityBuiltInTools/mutatingTools/the ungated list", name)
+			}
+			union[name] = true
+		}
+	}
+	addAll(readCapabilityBuiltInTools)
+	addAll(mutatingTools)
+	addAll(ungated)
+
+	for name := range validBuiltInToolNames {
+		if !union[name] {
+			t.Errorf("validBuiltInToolNames contains %q but none of readCapabilityBuiltInTools/mutatingTools/the ungated list accounts for it", name)
+		}
+	}
+	for name := range union {
+		if !validBuiltInToolNames[name] {
+			t.Errorf("capability sets contain %q, which is not in validBuiltInToolNames", name)
+		}
+	}
+}
+
 // TestDefaultReadOnlyBuiltInToolsForExecutor_None pins the exact
 // capability-ungated subset the "none" branch returns, and proves the
 // result passes ValidateRunConfig for every read-only mode paired with
@@ -7452,6 +7496,10 @@ func TestValidateRunConfig_NoneExecutorRejectsWorkspaceExportTo(t *testing.T) {
 // rejection validateNoneExecutor enforces: every container/k8s/api-only
 // field on ExecutorConfig is rejected outright when Type == "none", since
 // the none executor has no execution surface to apply any of them to.
+// Runtime and RegistryAllowlist are deliberately NOT in this table — they
+// are covered by TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce,
+// which pins that validateExecutorRuntime/validateExecutorRegistryAllowlist
+// (not validateNoneExecutor) reject them for "none", exactly once each.
 func TestValidateRunConfig_NoneExecutorFields(t *testing.T) {
 	cases := []struct {
 		name string
@@ -7462,8 +7510,6 @@ func TestValidateRunConfig_NoneExecutorFields(t *testing.T) {
 		{name: "vcsBackend", exec: ExecutorConfig{Type: "none", VcsBackend: &VcsBackendConfig{Type: "github", Repo: "owner/repo"}}},
 		{name: "network", exec: ExecutorConfig{Type: "none", Network: &NetworkConfig{Mode: "none"}}},
 		{name: "resources", exec: ExecutorConfig{Type: "none", Resources: &ResourceLimits{CPUs: 1}}},
-		{name: "runtime", exec: ExecutorConfig{Type: "none", Runtime: "runc"}},
-		{name: "registryAllowlist", exec: ExecutorConfig{Type: "none", RegistryAllowlist: []string{"ghcr.io/*"}}},
 		{name: "k8sNamespace", exec: ExecutorConfig{Type: "none", K8sNamespace: "ns"}},
 		{name: "k8sKubeconfig", exec: ExecutorConfig{Type: "none", K8sKubeconfig: "/home/u/.kube/config"}},
 		{name: "k8sNodeSelector", exec: ExecutorConfig{Type: "none", K8sNodeSelector: map[string]string{"disktype": "ssd"}}},
@@ -7478,11 +7524,52 @@ func TestValidateRunConfig_NoneExecutorFields(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error, got nil")
 			}
-			if !strings.Contains(err.Error(), `is not valid for executor.type="none"`) {
-				t.Errorf("expected none-executor field-rejection error, got: %v", err)
+			field := fmt.Sprintf("executor.%s is not valid for executor.type=\"none\"", tc.name)
+			if got := strings.Count(err.Error(), field); got != 1 {
+				t.Errorf("expected exactly one %q error, got %d in: %v", field, got, err)
 			}
 		})
 	}
+}
+
+// TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce
+// pins the N2 fix: Runtime and RegistryAllowlist are rejected for
+// executor.type="none" by the generic validateExecutorRuntime /
+// validateExecutorRegistryAllowlist validators (which already reject them
+// for any Type outside their own applicable set), not by
+// validateNoneExecutor — so setting either alongside executor.type="none"
+// must produce exactly one error string, not two.
+func TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce(t *testing.T) {
+	t.Run("runtime", func(t *testing.T) {
+		c := validConfig()
+		c.Executor = ExecutorConfig{Type: "none", Runtime: "runc"}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for runtime set with executor.type=none")
+		}
+		want := `executor.runtime is only valid when executor.type is "container", "k8s", or "k8s-sandbox"`
+		if got := strings.Count(err.Error(), want); got != 1 {
+			t.Errorf("expected exactly one %q error, got %d in: %v", want, got, err)
+		}
+		if strings.Contains(err.Error(), `executor.runtime is not valid for executor.type="none"`) {
+			t.Errorf("expected only the generic runtime error, not a duplicate none-specific one: %v", err)
+		}
+	})
+	t.Run("registryAllowlist", func(t *testing.T) {
+		c := validConfig()
+		c.Executor = ExecutorConfig{Type: "none", RegistryAllowlist: []string{"ghcr.io/*"}}
+		err := ValidateRunConfig(c)
+		if err == nil {
+			t.Fatal("expected error for registryAllowlist set with executor.type=none")
+		}
+		want := `executor.registryAllowlist is only valid when executor.type is "container"`
+		if got := strings.Count(err.Error(), want); got != 1 {
+			t.Errorf("expected exactly one %q error, got %d in: %v", want, got, err)
+		}
+		if strings.Contains(err.Error(), `executor.registryAllowlist is not valid for executor.type="none"`) {
+			t.Errorf("expected only the generic registryAllowlist error, not a duplicate none-specific one: %v", err)
+		}
+	})
 }
 
 func TestValidateRunConfig_NoneExecutorRejectsDeterministicGit(t *testing.T) {

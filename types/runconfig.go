@@ -4763,6 +4763,12 @@ func validateExecutorRegistryAllowlist(cfg ExecutorConfig, errs *[]string) {
 // "none" case (harness/internal/core/factory.go) ignores every one of
 // them. Scoped to "none" only — the sibling validators above already
 // police these fields for "container" and the k8s family.
+//
+// Runtime and RegistryAllowlist are deliberately absent from this list:
+// validateExecutorRuntime and validateExecutorRegistryAllowlist already
+// reject both for any Type outside their own applicable set (which does
+// not include "none"), so adding them here would produce two error
+// strings for the same misconfiguration.
 func validateNoneExecutor(cfg ExecutorConfig, errs *[]string) {
 	if cfg.Type != "none" {
 		return
@@ -4778,8 +4784,6 @@ func validateNoneExecutor(cfg ExecutorConfig, errs *[]string) {
 	reject("vcsBackend", cfg.VcsBackend != nil)
 	reject("network", cfg.Network != nil)
 	reject("resources", cfg.Resources != nil)
-	reject("runtime", cfg.Runtime != "")
-	reject("registryAllowlist", len(cfg.RegistryAllowlist) != 0)
 	reject("k8sNamespace", cfg.K8sNamespace != "")
 	reject("k8sKubeconfig", cfg.K8sKubeconfig != "")
 	reject("k8sNodeSelector", len(cfg.K8sNodeSelector) != 0)
