@@ -187,7 +187,7 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 // "tool_failures", "verification_failed", "verification_error",
 // "max_turns", "max_tokens", "budget_exceeded", "stalled",
 // "cancelled", "timeout", "setup_failed", "hook_failed",
-// "command_output_capture_failed", "trace_archive_failed" — means the
+// "command_output_capture_failed", "command_output_archive_failed" — means the
 // run did not complete its task, whether via a hard failure, an
 // exhausted resource limit, or an interruption. docs/configuration.md
 // draws the same line ("a failed or cancelled run still exits

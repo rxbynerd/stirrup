@@ -34,7 +34,7 @@ type RunResult struct {
 	// "stalled", "tool_failures", "timeout", "max_turns",
 	// "verification_failed", "verification_error", "budget_exceeded",
 	// "cancelled", "max_tokens", "command_output_capture_failed",
-	// "trace_archive_failed". The sentinel "internal-error" is
+	// "command_output_archive_failed". The sentinel "internal-error" is
 	// reserved for the case where the loop produced no RunTrace at all
 	// (e.g. a panic before the first turn); consumers should treat it
 	// as distinguishable from any RunTrace.Outcome value because no

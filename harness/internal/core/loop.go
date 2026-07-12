@@ -1968,7 +1968,7 @@ func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string)
 		return "command_output_capture_failed"
 	}
 	if err != nil {
-		return "trace_archive_failed"
+		return "command_output_archive_failed"
 	}
 	return outcome
 }
