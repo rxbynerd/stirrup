@@ -92,6 +92,37 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 		}
 	})
 
+	t.Run("bestEffort never claims the outcome", func(t *testing.T) {
+		parent := filepath.Join(t.TempDir(), "not-a-directory")
+		if err := os.WriteFile(parent, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := types.CommandOutputConfig{FailurePosture: types.CommandOutputPostureBestEffort, InlineMaxBytes: 10, PreviewBytesPerStream: 2, MaxBytesPerStream: 10, MaxBytesPerRun: 20}
+		store, err := commandoutput.New(commandoutput.Options{RunID: "run", Config: cfg, ArchivePath: filepath.Join(parent, "archive.tar.gz")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = capture.Stdout().Write([]byte("ok"))
+		captured, err := capture.Complete(commandoutput.Completion{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.RecordInitial(&captured.Record, "ok"); err != nil {
+			t.Fatal(err)
+		}
+		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{})
+		emitter.Start("run", &types.RunConfig{})
+		loop := &AgenticLoop{CommandOutput: store, OwnsCommandOutput: true, CommandOutputBestEffort: true, Trace: emitter, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		if got := loop.finalizeCommandOutput(context.Background(), "success"); got != "success" {
+			t.Fatalf("outcome=%q, want archive failure ignored under bestEffort", got)
+		}
+	})
+
 	t.Run("archive failure", func(t *testing.T) {
 		parent := filepath.Join(t.TempDir(), "not-a-directory")
 		if err := os.WriteFile(parent, []byte("x"), 0o600); err != nil {

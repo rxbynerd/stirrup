@@ -5466,6 +5466,24 @@ func TestCommandOutputCaptureEnabled(t *testing.T) {
 	}
 }
 
+func TestCommandOutputFailurePostureValidation(t *testing.T) {
+	if got := (ToolsConfig{}).EffectiveCommandOutput().FailurePosture; got != CommandOutputPostureStrict {
+		t.Fatalf("default posture=%q, want strict", got)
+	}
+	for _, valid := range []string{"", CommandOutputPostureStrict, CommandOutputPostureBestEffort} {
+		c := validConfig()
+		c.Tools.CommandOutput.FailurePosture = valid
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("posture %q should validate: %v", valid, err)
+		}
+	}
+	c := validConfig()
+	c.Tools.CommandOutput.FailurePosture = "lenient"
+	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "failurePosture") {
+		t.Fatalf("expected closed-set error, got %v", err)
+	}
+}
+
 func TestValidateRunConfig_TraceArchive(t *testing.T) {
 	c := validConfig()
 	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "local", FilePath: "/tmp/run.command-output.tar.gz"}

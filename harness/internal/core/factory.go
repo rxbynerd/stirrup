@@ -594,6 +594,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	if commandOutputStore != nil {
 		loop.CommandOutput = commandOutputStore
 		loop.OwnsCommandOutput = true
+		loop.CommandOutputBestEffort = config.Tools.EffectiveCommandOutput().FailurePosture == types.CommandOutputPostureBestEffort
 	}
 
 	// Register spawn_agent after loop construction. The tool needs a

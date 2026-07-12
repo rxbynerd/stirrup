@@ -206,6 +206,69 @@ func TestStoreLimitFailureIsStickyAndCancels(t *testing.T) {
 	}
 }
 
+func TestStoreBestEffortLimitBreachIsPerCommand(t *testing.T) {
+	cfg := testConfig()
+	cfg.FailurePosture = types.CommandOutputPostureBestEffort
+	cfg.MaxBytesPerStream = 4
+	cfg.MaxBytesPerRun = 16
+	archive := filepath.Join(t.TempDir(), "besteffort.tar.gz")
+	store, err := New(Options{RunID: "run-be", Config: cfg, ArchivePath: archive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run-be", ToolUseID: "cmd-1"}), cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Stdout().Write([]byte("12345")); err == nil {
+		t.Fatal("expected limit error")
+	}
+	if context.Cause(ctx) == nil {
+		t.Fatal("breaching command must still be cancelled")
+	}
+	if captured, err := capture.Complete(Completion{Cancelled: true, ExitCode: -1}); err == nil || captured.Record.CaptureComplete {
+		t.Fatalf("err=%v record=%+v", err, captured.Record)
+	}
+	if store.FatalError() != nil {
+		t.Fatalf("bestEffort limit breach must not poison the store: %v", store.FatalError())
+	}
+
+	ctx2, cancel2 := context.WithCancelCause(context.Background())
+	capture2, err := store.Begin(tool.WithCallContext(ctx2, tool.CallContext{RunID: "run-be", ToolUseID: "cmd-2"}), cancel2)
+	if err != nil {
+		t.Fatalf("next command must keep capturing under bestEffort: %v", err)
+	}
+	if _, err := capture2.Stdout().Write([]byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	captured2, err := capture2.Complete(Completion{})
+	if err != nil || !captured2.Record.CaptureComplete {
+		t.Fatalf("err=%v record=%+v", err, captured2.Record)
+	}
+	if err := store.RecordInitial(&captured2.Record, "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Finalize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	members := readArchive(t, archive)
+	var got manifest
+	if err := json.Unmarshal(members["manifest.json"], &got); err != nil {
+		t.Fatal(err)
+	}
+	// The breached capture must stay visible even though the store never
+	// went fatal.
+	if got.Complete {
+		t.Fatalf("manifest must not claim completeness with a breached capture: %+v", got)
+	}
+	if len(got.Commands) != 2 {
+		t.Fatalf("commands=%d", len(got.Commands))
+	}
+}
+
 func TestStoreLargeStreamArchiveReconstructsWithoutRetainingFullModelCopy(t *testing.T) {
 	cfg := testConfig()
 	cfg.InlineMaxBytes = 32

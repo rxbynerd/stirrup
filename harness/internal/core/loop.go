@@ -1941,12 +1941,17 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 	return runTrace, err
 }
 
+// commandOutputFinalizeBudget bounds end-of-run archive finalization: the
+// GCS uploader's HTTP client allows 5 minutes per attempt
+// (commandoutput/gcs.go), plus headroom for writing the tar.gz locally.
+const commandOutputFinalizeBudget = 6 * time.Minute
+
 func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string) string {
 	if l.CommandOutput == nil || !l.OwnsCommandOutput {
 		return outcome
 	}
 	captureFailed := l.CommandOutput.FatalError() != nil
-	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 6*time.Minute)
+	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandOutputFinalizeBudget)
 	defer cancel()
 	archive, err := l.CommandOutput.Finalize(finalizeCtx)
 	if archive != "" {
@@ -1956,6 +1961,12 @@ func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string)
 	}
 	if err != nil {
 		l.Logger.Error("command output archive finalization failed", "error", err, "archive", archive)
+	}
+	// Under the bestEffort posture failures are recorded (manifest,
+	// per-command records, the log line above) but never claim the run's
+	// outcome.
+	if l.CommandOutputBestEffort {
+		return outcome
 	}
 	// Like hook_failed, capture and archive failures only claim the outcome
 	// of an otherwise-successful run — the primary failure cause stays

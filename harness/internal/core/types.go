@@ -140,7 +140,11 @@ type AgenticLoop struct {
 	// with OwnsCommandOutput=false; only the owning loop finalizes.
 	CommandOutput     CommandOutputFinalizer
 	OwnsCommandOutput bool
-	ParentRunID       string
+	// CommandOutputBestEffort mirrors the resolved
+	// tools.commandOutput.failurePosture: false (the zero value) is the
+	// strict default, matching EffectiveCommandOutput.
+	CommandOutputBestEffort bool
+	ParentRunID             string
 	// MetricAttrs is a set of attributes prepended to every metric
 	// observation emitted from this loop. Empty for top-level runs;
 	// SpawnSubAgent populates it on child loops with subagent=true and

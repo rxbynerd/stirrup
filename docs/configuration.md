@@ -679,6 +679,8 @@ read-only `read_command_output` tool reads those references in 32 KiB pages
 {
   "tools": {
     "commandOutput": {
+      "enabled": true,
+      "failurePosture": "strict",
       "inlineMaxBytes": 32768,
       "previewBytesPerStream": 4096,
       "maxBytesPerStream": 52428800,
@@ -693,9 +695,22 @@ read-only `read_command_output` tool reads those references in 32 KiB pages
 }
 ```
 
-The stream and run maxima are compliance boundaries, not truncation limits.
-Crossing one cancels the command and prevents a successful run outcome. Raw
-bytes are deleted after whole-stream redaction; archives contain scrubbed
+Capture defaults to on; `"enabled": false` reverts `run_command` to the
+legacy bounded-inline behaviour, registers no `read_command_output` tool,
+and writes no archive — the lever for A/B comparison of the feature under
+`stirrup-eval`.
+
+The stream and run maxima are compliance boundaries, not truncation limits:
+crossing one always cancels the offending command. What happens next is the
+`failurePosture`. Under `"strict"` (the default) the store refuses further
+captures and an otherwise-successful run reports
+`command_output_capture_failed` (or `command_output_archive_failed` when the
+sidecar itself cannot be written or uploaded); a run that already failed for
+a primary reason keeps that outcome. Under `"bestEffort"` later commands
+keep capturing, the run outcome is never overridden, and the failure stays
+visible in the archive manifest and per-command trace records.
+
+Raw bytes are deleted after whole-stream redaction; archives contain scrubbed
 streams, while raw byte counts and SHA-256 hashes remain as integrity metadata.
 Without an explicit destination, JSONL and GCS derive an adjacent archive;
 other emitters retain a local archive and report its absolute path in

@@ -1464,11 +1464,27 @@ type CommandOutputConfig struct {
 	// registers no read_command_output tool, and writes no archive.
 	Enabled *bool `json:"enabled,omitempty"`
 
+	// FailurePosture selects how capture failures affect the run. "strict"
+	// (the default) treats the byte caps as compliance boundaries: a limit
+	// breach refuses further captures and an otherwise-successful run
+	// reports command_output_capture_failed / command_output_archive_failed.
+	// "bestEffort" still cancels the offending command at its cap — output
+	// is never silently truncated — but later commands keep capturing and
+	// the run outcome is never overridden; failures stay visible in the
+	// archive manifest and per-command records.
+	FailurePosture string `json:"failurePosture,omitempty"`
+
 	InlineMaxBytes        int64 `json:"inlineMaxBytes,omitempty"`
 	PreviewBytesPerStream int64 `json:"previewBytesPerStream,omitempty"`
 	MaxBytesPerStream     int64 `json:"maxBytesPerStream,omitempty"`
 	MaxBytesPerRun        int64 `json:"maxBytesPerRun,omitempty"`
 }
+
+// CommandOutput failure postures (CommandOutputConfig.FailurePosture).
+const (
+	CommandOutputPostureStrict     = "strict"
+	CommandOutputPostureBestEffort = "bestEffort"
+)
 
 // CommandOutputCaptureEnabled reports whether run_command output capture is
 // active. Unset defaults to enabled.
@@ -1501,6 +1517,9 @@ func (c ToolsConfig) EffectiveCommandOutput() CommandOutputConfig {
 	}
 	if out.MaxBytesPerRun == 0 {
 		out.MaxBytesPerRun = DefaultCommandOutputMaxBytesPerRun
+	}
+	if out.FailurePosture == "" {
+		out.FailurePosture = CommandOutputPostureStrict
 	}
 	return out
 }
@@ -2328,6 +2347,11 @@ func validateCommandOutputConfig(tools ToolsConfig, errs *[]string) {
 	}
 	if effective.MaxBytesPerRun < effective.MaxBytesPerStream {
 		*errs = append(*errs, "tools.commandOutput.maxBytesPerRun must be at least maxBytesPerStream")
+	}
+	switch cfg.FailurePosture {
+	case "", CommandOutputPostureStrict, CommandOutputPostureBestEffort:
+	default:
+		*errs = append(*errs, fmt.Sprintf("tools.commandOutput.failurePosture %q is invalid (valid: strict, bestEffort)", cfg.FailurePosture))
 	}
 	if !tools.CommandOutputCaptureEnabled() {
 		for _, name := range tools.BuiltIn {
