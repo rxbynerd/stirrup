@@ -80,7 +80,7 @@ func TestStoreWholeStreamScrubArchiveAndLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRead("reader-1", captured.Record.Stdout.Reference, read, "model-visible chunk"); err != nil {
+	if err := store.RecordRead(CallContext{RunID: "run-1", ToolUseID: "reader-1"}, captured.Record.Stdout.Reference, read, "model-visible chunk"); err != nil {
 		t.Fatal(err)
 	}
 	location, err := store.Finalize(context.Background())
@@ -117,6 +117,59 @@ func TestStoreWholeStreamScrubArchiveAndLedger(t *testing.T) {
 	}
 	if strings.Contains(string(members["manifest.json"]), "sk-ant-") {
 		t.Fatal("secret leaked into manifest")
+	}
+}
+
+func TestStoreRecordReadScopesLedgerMembersByRunID(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "ledger.tar.gz")
+	store, err := New(Options{RunID: "parent", Config: testConfig(), ArchivePath: archive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	capture, err := store.Begin(WithCallContext(ctx, CallContext{RunID: "parent", ToolUseID: "cmd-1"}), cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture.Stdout().Write([]byte("shared output")); err != nil {
+		t.Fatal(err)
+	}
+	captured, err := capture.Complete(Completion{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordInitial(&captured.Record, "initial"); err != nil {
+		t.Fatal(err)
+	}
+	read, err := store.Read(captured.Record.Stdout.Reference, 0, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := captured.Record.Stdout.Reference
+	// A parent run and a subagent share the store; providers can reuse short
+	// tool-use IDs across the two conversations, so identical tool-use IDs
+	// under different run IDs must produce distinct ledger members.
+	if err := store.RecordRead(CallContext{RunID: "parent", ToolUseID: "call_1"}, ref, read, "parent chunk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordRead(CallContext{RunID: "subagent", ToolUseID: "call_1"}, ref, read, "subagent chunk"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Finalize(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	members := readArchive(t, archive)
+	var got manifest
+	if err := json.Unmarshal(members["manifest.json"], &got); err != nil {
+		t.Fatal(err)
+	}
+	reads := got.Commands[0].Reads
+	if len(reads) != 2 || reads[0].ArchiveMember == reads[1].ArchiveMember {
+		t.Fatalf("reads=%+v", reads)
+	}
+	if string(members[reads[0].ArchiveMember]) != "parent chunk" || string(members[reads[1].ArchiveMember]) != "subagent chunk" {
+		t.Fatalf("ledger contents: %q / %q", members[reads[0].ArchiveMember], members[reads[1].ArchiveMember])
 	}
 }
 

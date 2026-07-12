@@ -241,7 +241,7 @@ func ReadCommandOutputTool(store *commandoutput.Store, execs ...executor.Executo
 			}
 			text := string(textBytes)
 			meta := commandoutput.CallContextFrom(ctx)
-			if err := store.RecordRead(meta.ToolUseID, params.Ref, read, text); err != nil {
+			if err := store.RecordRead(meta, params.Ref, read, text); err != nil {
 				return tool.StructuredResult{}, fmt.Errorf("record command output read: %w", err)
 			}
 			return tool.StructuredResult{Text: text, Structured: structured, Kind: kindCommandOutputChunk}, nil
