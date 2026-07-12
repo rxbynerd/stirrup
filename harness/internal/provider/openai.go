@@ -386,18 +386,6 @@ func openAIWireTokenKey(f quirks.OpenAITokenField) string {
 	return "max_completion_tokens"
 }
 
-// ruleDescriptions returns the Description field of each rule in the
-// supplied slice, preserving order. Returned as a non-nil empty slice
-// when the input is empty so the slog.Any attribute renders as `[]`
-// rather than `null` — easier to grep and parse downstream.
-func ruleDescriptions(rules []quirks.Rule) []string {
-	out := make([]string, 0, len(rules))
-	for _, r := range rules {
-		out = append(out, r.Description)
-	}
-	return out
-}
-
 // summarizeReplayCaptures sums per-path piece counts and the string-or-
 // JSON-encoded length of every captured value across the whole map. The
 // same length proxy logReplayFieldsCapture uses (raw string length for
@@ -431,9 +419,9 @@ func summarizeReplayCaptures(capture map[string][]any) (totalCount, totalLen int
 // not echo into any log sink. Operators get presence + size; the rule
 // fired observably without leaking the content.
 //
-// Shared by both adapters so the log shape stays uniform; the
-// helper lives in openai.go because that is where ruleDescriptions
-// already sits.
+// Shared by both adapters so the log shape stays uniform; the helper
+// lives in openai.go because that is its only non-test caller besides
+// gemini.go.
 func logReplayFieldsCapture(ctx context.Context, logger *slog.Logger, providerType, model string, capture map[string][]any) {
 	if logger == nil {
 		logger = slog.Default()
