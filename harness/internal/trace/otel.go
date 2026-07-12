@@ -113,16 +113,17 @@ type OTelTraceEmitter struct {
 	// behaviour.
 	captureContent bool
 
-	mu                 sync.Mutex
-	runID              string
-	config             *types.RunConfig
-	startedAt          time.Time
-	rootSpan           oteltrace.Span
-	rootCtx            context.Context
-	turns              []types.TurnTrace
-	toolCalls          []types.ToolCallTrace
-	permissionDenials  int
-	finalAssistantText string
+	mu                   sync.Mutex
+	runID                string
+	config               *types.RunConfig
+	startedAt            time.Time
+	rootSpan             oteltrace.Span
+	rootCtx              context.Context
+	turns                []types.TurnTrace
+	toolCalls            []types.ToolCallTrace
+	permissionDenials    int
+	finalAssistantText   string
+	commandOutputArchive string
 
 	// systemInstructionsJSON is the run's system prompt, scrubbed and
 	// pre-serialised to the gen_ai.system_instructions attribute encoding
@@ -172,9 +173,11 @@ type OTelTraceEmitter struct {
 // SystemInstructionsRecorder assertion, so losing the method would be
 // a silent regression rather than a build break without this.
 var (
-	_ TraceEmitter               = (*OTelTraceEmitter)(nil)
-	_ SystemInstructionsRecorder = (*OTelTraceEmitter)(nil)
-	_ FinalAssistantTextRecorder = (*OTelTraceEmitter)(nil)
+	_ TraceEmitter                 = (*OTelTraceEmitter)(nil)
+	_ SystemInstructionsRecorder   = (*OTelTraceEmitter)(nil)
+	_ FinalAssistantTextRecorder   = (*OTelTraceEmitter)(nil)
+	_ CommandOutputRecorder        = (*OTelTraceEmitter)(nil)
+	_ CommandOutputArchiveRecorder = (*OTelTraceEmitter)(nil)
 )
 
 // pendingTurnKey pairs a buffered turn summary with its later
@@ -726,6 +729,41 @@ func (e *OTelTraceEmitter) RecordFinalAssistantText(text string) {
 	e.finalAssistantText = text
 }
 
+func (e *OTelTraceEmitter) RecordCommandOutput(record types.CommandOutputRecord) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.rootCtx == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("command_output.archive_id", record.ArchiveID),
+		attribute.String("command_output.tool_use_id", record.ToolUseID),
+		attribute.Bool("command_output.capture_complete", record.CaptureComplete),
+		attribute.Int64("command_output.stdout.raw_bytes", record.Stdout.RawBytes),
+		attribute.Int64("command_output.stdout.scrubbed_bytes", record.Stdout.ScrubbedBytes),
+		attribute.String("command_output.stdout.raw_sha256", record.Stdout.RawSHA256),
+		attribute.String("command_output.stdout.scrubbed_sha256", record.Stdout.ScrubbedSHA256),
+		attribute.Int64("command_output.stderr.raw_bytes", record.Stderr.RawBytes),
+		attribute.Int64("command_output.stderr.scrubbed_bytes", record.Stderr.ScrubbedBytes),
+		attribute.String("command_output.stderr.raw_sha256", record.Stderr.RawSHA256),
+		attribute.String("command_output.stderr.scrubbed_sha256", record.Stderr.ScrubbedSHA256),
+	}
+	_, span := e.tracer.Start(e.rootCtx, "command_output", oteltrace.WithAttributes(attrs...))
+	if !record.CaptureComplete {
+		span.SetStatus(codes.Error, "command output capture incomplete")
+	}
+	span.End()
+}
+
+func (e *OTelTraceEmitter) RecordCommandOutputArchive(location string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.commandOutputArchive = location
+	if e.rootSpan != nil {
+		e.rootSpan.SetAttributes(attribute.String("command_output.archive_uri", location))
+	}
+}
+
 // RecordToolCall creates a child span for a tool invocation.
 //
 // When content capture is on and the call carries a tool_use ID, the
@@ -920,16 +958,17 @@ func (e *OTelTraceEmitter) Finish(ctx context.Context, outcome string) (*types.R
 	}
 
 	trace := &types.RunTrace{
-		ID:                 e.runID,
-		Config:             redactedConfig,
-		StartedAt:          e.startedAt,
-		CompletedAt:        now,
-		Turns:              len(e.turns),
-		TokenUsage:         totalTokens,
-		ToolCalls:          summaries,
-		PermissionDenials:  e.permissionDenials,
-		Outcome:            outcome,
-		FinalAssistantText: e.finalAssistantText,
+		ID:                   e.runID,
+		Config:               redactedConfig,
+		StartedAt:            e.startedAt,
+		CompletedAt:          now,
+		Turns:                len(e.turns),
+		TokenUsage:           totalTokens,
+		ToolCalls:            summaries,
+		PermissionDenials:    e.permissionDenials,
+		Outcome:              outcome,
+		FinalAssistantText:   e.finalAssistantText,
+		CommandOutputArchive: e.commandOutputArchive,
 	}
 
 	return trace, nil

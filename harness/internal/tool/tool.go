@@ -43,6 +43,10 @@ type StructuredResult struct {
 	Text       string
 	Structured json.RawMessage
 	Kind       string
+	// IsError lets a handler return useful structured/partial output while
+	// still marking the model-facing tool result as failed (for example a
+	// timed-out command with captured stdout/stderr).
+	IsError bool
 }
 
 // Tool represents a single tool that the model can invoke.

@@ -149,6 +149,66 @@ suite "s" {
 	}
 }
 
+func TestLoadSuiteHCL_ToolsCommandOutputBlock(t *testing.T) {
+	src := `
+suite "s" {
+  run_config {
+    mode = "execution"
+
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+
+    model_router {
+      type     = "static"
+      provider = "anthropic"
+      model    = "claude-haiku-4-5"
+    }
+
+    tools {
+      built_in = ["run_command", "read_file"]
+
+      command_output {
+        enabled          = false
+        failure_posture  = "bestEffort"
+        inline_max_bytes = 4096
+      }
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "runcfg-command-output.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	if err != nil {
+		t.Fatalf("LoadSuiteHCL: %v", err)
+	}
+	if got.RunConfig == nil {
+		t.Fatal("RunConfig should be non-nil")
+	}
+	enabled := false
+	wantTools := types.ToolsConfig{
+		BuiltIn: []string{"run_command", "read_file"},
+		CommandOutput: types.CommandOutputConfig{
+			Enabled:        &enabled,
+			FailurePosture: "bestEffort",
+			InlineMaxBytes: 4096,
+		},
+	}
+	if !reflect.DeepEqual(got.RunConfig.Tools, wantTools) {
+		t.Fatalf("Tools mismatch\n got:  %#v\n want: %#v", got.RunConfig.Tools, wantTools)
+	}
+}
+
 // TestLoadSuiteHCL_RunConfigMutuallyExclusive asserts that setting both
 // `run_config_file` and `run_config` on the same suite is a parse error
 // that names the suite ID and both offending field names — operators

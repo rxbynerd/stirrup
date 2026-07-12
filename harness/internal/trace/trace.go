@@ -83,3 +83,15 @@ type HookRecorder interface {
 type FinalAssistantTextRecorder interface {
 	RecordFinalAssistantText(text string)
 }
+
+// CommandOutputRecorder receives bounded metadata for complete command
+// captures. Full stream content remains in the sidecar archive.
+type CommandOutputRecorder interface {
+	RecordCommandOutput(types.CommandOutputRecord)
+}
+
+// CommandOutputArchiveRecorder attaches the finalized sidecar location to the
+// run summary and, for OTel, bounded root-span attributes.
+type CommandOutputArchiveRecorder interface {
+	RecordCommandOutputArchive(location string)
+}

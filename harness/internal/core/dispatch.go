@@ -16,6 +16,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -136,6 +137,9 @@ func (l *AgenticLoop) planAndDispatch(
 			),
 		)
 		toolSpanCtx := oteltrace.ContextWithSpan(ctx, toolSpan)
+		callMeta := tool.CallContextFrom(ctx)
+		callMeta.ToolUseID = call.ID
+		toolSpanCtx = tool.WithCallContext(toolSpanCtx, callMeta)
 		plan[i] = pendingCall{
 			call:      call,
 			span:      toolSpan,
@@ -373,6 +377,7 @@ func (l *AgenticLoop) planAndDispatch(
 			Success:      p.success,
 			Structured:   structuredForRecord,
 			Kind:         p.structured.kind,
+			IsError:      !p.success,
 		}
 
 		if err := l.Transport.Emit(types.HarnessEvent{

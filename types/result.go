@@ -33,7 +33,8 @@ type RunResult struct {
 	// Outcome mirrors RunTrace.Outcome — e.g. "success", "error",
 	// "stalled", "tool_failures", "timeout", "max_turns",
 	// "verification_failed", "verification_error", "budget_exceeded",
-	// "cancelled", "max_tokens". The sentinel "internal-error" is
+	// "cancelled", "max_tokens", "command_output_capture_failed",
+	// "command_output_archive_failed". The sentinel "internal-error" is
 	// reserved for the case where the loop produced no RunTrace at all
 	// (e.g. a panic before the first turn); consumers should treat it
 	// as distinguishable from any RunTrace.Outcome value because no
@@ -78,6 +79,10 @@ type RunResult struct {
 	// (without the full trace) can see that setup or teardown was not
 	// entirely clean.
 	HookFailures int `json:"hookFailures,omitempty"`
+
+	// CommandOutputArchive is the local path or durable URI of the compressed
+	// command-output compliance archive, when command output was captured.
+	CommandOutputArchive string `json:"commandOutputArchive,omitempty"`
 }
 
 // VerifierResult is the verifier outcome carried on RunResult. It

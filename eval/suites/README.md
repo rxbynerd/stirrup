@@ -25,6 +25,7 @@ For the suite schema and the per-task contract see
 
 | Suite | Source | Notes |
 |---|---|---|
+| `command-output-ab-{on,off}.hcl` | Hand-authored (PR #495) | A/B pair for the command-output capture pipeline: byte-identical tasks, differing only in `tools.command_output`. Run both arms, then `stirrup-eval compare -baseline <off>/result.json -current <on>/result.json` — the feature's context-saving claim holds iff the on arm lowers mean tokens at an equal-or-better pass rate. Opt-in, live-provider, no CI baseline. |
 | `dogfood-seed.hcl` | Hand-authored (#13) | Starter suite for the v0.1 eval-gate. Targets harness behaviours stirrup's maintainers actually rely on; judges are deterministic. Replace with the mined output once the dogfood recording loop is established. |
 | `guardrail.hcl` | Hand-authored (#43) | Red-team suite for the GuardRail component. Requires a vLLM endpoint with Granite Guardian loaded. |
 | `openai-responses-empty-tool-output.hcl` | Hand-authored | Regression pin for a provider edge case. |

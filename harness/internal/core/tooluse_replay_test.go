@@ -101,7 +101,7 @@ func runToolUseScenario(t *testing.T, sc toolUseScenario) (string, *types.RunTra
 		es = edit.NewWholeFileStrategy()
 	}
 
-	registry := buildToolRegistry(exec, es, types.ToolsConfig{})
+	registry := buildToolRegistry(exec, es, types.ToolsConfig{}, nil)
 	for _, et := range sc.extraTools {
 		registry.Register(et)
 	}

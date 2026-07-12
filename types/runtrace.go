@@ -31,12 +31,16 @@ type RunTrace struct {
 	VerificationResults []VerificationResult `json:"verificationResults"`
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
-	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed".
+	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
+	// "command_output_capture_failed" | "command_output_archive_failed".
 	// setup_failed and hook_failed (issue #461) report a fatal lifecycle-hook
 	// failure: setup_failed means a PreRun hook failed before the session
 	// started (zero turns ran); hook_failed means a PostRun hook failed after
 	// an otherwise-successful run (it never overrides a non-success outcome —
 	// the primary failure cause stays authoritative).
+	// command_output_capture_failed and command_output_archive_failed follow the same
+	// rule: they claim only an otherwise-successful run, and a capture
+	// failure outranks an archive failure when both occur.
 	Outcome string `json:"outcome"`
 	// FinalAssistantText is the loop's last non-empty assistant text,
 	// concatenated across the text blocks of the final response and carried
@@ -48,7 +52,56 @@ type RunTrace struct {
 	// when no hooks were configured. Populated by trace emitters that
 	// implement the optional trace.HookRecorder capability (today, the
 	// JSONL emitter).
-	HookResults []HookExecution `json:"hookResults,omitempty"`
+	HookResults          []HookExecution `json:"hookResults,omitempty"`
+	CommandOutputArchive string          `json:"commandOutputArchive,omitempty"`
+}
+
+// CommandOutputStreamRecord describes one complete command stream without
+// embedding its content in the trace.
+type CommandOutputStreamRecord struct {
+	RawBytes          int64    `json:"rawBytes"`
+	RawSHA256         string   `json:"rawSha256"`
+	ScrubbedBytes     int64    `json:"scrubbedBytes"`
+	ScrubbedSHA256    string   `json:"scrubbedSha256"`
+	ArchiveMember     string   `json:"archiveMember,omitempty"`
+	Reference         string   `json:"reference,omitempty"`
+	RedactionCount    int      `json:"redactionCount,omitempty"`
+	RedactionPatterns []string `json:"redactionPatterns,omitempty"`
+}
+
+// CommandOutputReadRecord identifies the exact scrubbed byte range returned
+// by a read_command_output call.
+type CommandOutputReadRecord struct {
+	ToolUseID     string `json:"toolUseId"`
+	Reference     string `json:"reference"`
+	Offset        int64  `json:"offset"`
+	EndOffset     int64  `json:"endOffset"`
+	EOF           bool   `json:"eof"`
+	ResultSHA256  string `json:"resultSha256"`
+	ArchiveMember string `json:"archiveMember,omitempty"`
+}
+
+// CommandOutputRecord is the bounded trace metadata for a run_command
+// capture. Full scrubbed bytes live only in the sidecar archive.
+type CommandOutputRecord struct {
+	ArchiveID                  string                    `json:"archiveId"`
+	RunID                      string                    `json:"runId"`
+	ParentRunID                string                    `json:"parentRunId,omitempty"`
+	Turn                       int                       `json:"turn,omitempty"`
+	ToolUseID                  string                    `json:"toolUseId"`
+	StartedAt                  time.Time                 `json:"startedAt"`
+	CompletedAt                time.Time                 `json:"completedAt"`
+	ExitCode                   int                       `json:"exitCode"`
+	TimedOut                   bool                      `json:"timedOut,omitempty"`
+	Cancelled                  bool                      `json:"cancelled,omitempty"`
+	CaptureComplete            bool                      `json:"captureComplete"`
+	CaptureError               string                    `json:"captureError,omitempty"`
+	Stdout                     CommandOutputStreamRecord `json:"stdout"`
+	Stderr                     CommandOutputStreamRecord `json:"stderr"`
+	InitialResultSHA256        string                    `json:"initialResultSha256,omitempty"`
+	InitialResultMember        string                    `json:"initialResultMember,omitempty"`
+	Reads                      []CommandOutputReadRecord `json:"reads,omitempty"`
+	LegacySingleRepresentation bool                      `json:"legacySingleRepresentation,omitempty"`
 }
 
 // HookExecution records the outcome of a single lifecycle hook (issue
@@ -267,14 +320,16 @@ type ToolCallRecord struct {
 	Success      bool            `json:"success"`
 	Structured   json.RawMessage `json:"structured,omitempty"`
 	Kind         string          `json:"kind,omitempty"`
+	IsError      bool            `json:"isError,omitempty"`
 }
 
 // RunRecording is a full recording of a run.
 type RunRecording struct {
-	RunID        string       `json:"runId"`
-	Config       RunConfig    `json:"config"`
-	Turns        []TurnRecord `json:"turns"`
-	FinalOutcome RunTrace     `json:"finalOutcome"`
+	RunID          string                `json:"runId"`
+	Config         RunConfig             `json:"config"`
+	Turns          []TurnRecord          `json:"turns"`
+	FinalOutcome   RunTrace              `json:"finalOutcome"`
+	CommandOutputs []CommandOutputRecord `json:"commandOutputs,omitempty"`
 }
 
 // BudgetCheck holds the result of a token budget check.

@@ -5430,6 +5430,82 @@ func TestValidateRunConfig_TraceEmitterGCS_Valid(t *testing.T) {
 	}
 }
 
+func TestCommandOutputConfigDefaultsAndHardCaps(t *testing.T) {
+	got := (ToolsConfig{}).EffectiveCommandOutput()
+	if got.InlineMaxBytes != 32<<10 || got.PreviewBytesPerStream != 4<<10 || got.MaxBytesPerStream != 50<<20 || got.MaxBytesPerRun != 500<<20 {
+		t.Fatalf("defaults=%+v", got)
+	}
+	c := validConfig()
+	c.Tools.CommandOutput.MaxBytesPerStream = MaxCommandOutputBytesPerStream + 1
+	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "maxBytesPerStream") {
+		t.Fatalf("expected stream hard-cap error, got %v", err)
+	}
+}
+
+func TestCommandOutputCaptureEnabled(t *testing.T) {
+	if !(ToolsConfig{}).CommandOutputCaptureEnabled() {
+		t.Fatal("unset enabled must default to capture on")
+	}
+	on, off := true, false
+	if !(ToolsConfig{CommandOutput: CommandOutputConfig{Enabled: &on}}).CommandOutputCaptureEnabled() {
+		t.Fatal("explicit true must enable capture")
+	}
+	if (ToolsConfig{CommandOutput: CommandOutputConfig{Enabled: &off}}).CommandOutputCaptureEnabled() {
+		t.Fatal("explicit false must disable capture")
+	}
+
+	c := validConfig()
+	c.Tools.BuiltIn = []string{"run_command", "read_command_output"}
+	c.Tools.CommandOutput.Enabled = &off
+	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "read_command_output") {
+		t.Fatalf("expected contradiction error for reader without capture, got %v", err)
+	}
+	c.Tools.CommandOutput.Enabled = &on
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("reader with capture enabled should validate: %v", err)
+	}
+}
+
+func TestCommandOutputFailurePostureValidation(t *testing.T) {
+	if got := (ToolsConfig{}).EffectiveCommandOutput().FailurePosture; got != CommandOutputPostureStrict {
+		t.Fatalf("default posture=%q, want strict", got)
+	}
+	for _, valid := range []string{"", CommandOutputPostureStrict, CommandOutputPostureBestEffort} {
+		c := validConfig()
+		c.Tools.CommandOutput.FailurePosture = valid
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("posture %q should validate: %v", valid, err)
+		}
+	}
+	c := validConfig()
+	c.Tools.CommandOutput.FailurePosture = "lenient"
+	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "failurePosture") {
+		t.Fatalf("expected closed-set error, got %v", err)
+	}
+}
+
+func TestValidateRunConfig_TraceArchive(t *testing.T) {
+	c := validConfig()
+	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "local", FilePath: "/tmp/run.command-output.tar.gz"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("valid local archive: %v", err)
+	}
+	c = validConfig()
+	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "gcs"}
+	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "archive.bucket") {
+		t.Fatalf("expected bucket error, got %v", err)
+	}
+
+	c = validConfig()
+	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "gcs", Bucket: "stirrup-archives", ObjectPrefix: "runs"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("valid gcs archive: %v", err)
+	}
+	if c.TraceEmitter.Archive.ObjectPrefix != "runs" {
+		t.Fatalf("validation mutated objectPrefix to %q; the uploader owns slash normalisation", c.TraceEmitter.Archive.ObjectPrefix)
+	}
+}
+
 func TestValidateRunConfig_TraceEmitterGCS_BucketRequired(t *testing.T) {
 	c := validConfig()
 	c.TraceEmitter = TraceEmitterConfig{Type: "gcs"}

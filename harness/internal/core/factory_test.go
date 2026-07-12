@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -710,7 +711,7 @@ func TestBuildPermissionPolicy_AllowAll(t *testing.T) {
 func TestBuildPermissionPolicy_DenySideEffects(t *testing.T) {
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
-	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{Type: "deny-side-effects"}, registry, nil)
 	if _, ok := pp.(*permission.DenySideEffects); !ok {
 		t.Fatalf("expected DenySideEffects, got %T", pp)
@@ -720,7 +721,7 @@ func TestBuildPermissionPolicy_DenySideEffects(t *testing.T) {
 func TestBuildPermissionPolicy_AskUpstream(t *testing.T) {
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true},
-	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 	pp := buildPermissionPolicyForTest(t, types.PermissionPolicyConfig{Type: "ask-upstream", Timeout: 60}, registry, tp)
 	if _, ok := pp.(*permission.AskUpstreamPolicy); !ok {
@@ -737,7 +738,7 @@ func TestBuildPermissionPolicy_AskUpstream(t *testing.T) {
 func TestBuildPermissionPolicy_UnknownTypeReturnsError(t *testing.T) {
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true},
-	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 	rc := &types.RunConfig{
 		PermissionPolicy: types.PermissionPolicyConfig{Type: "bogus"},
 	}
@@ -761,7 +762,7 @@ func TestBuildPermissionPolicy_PolicyEngine(t *testing.T) {
 	}
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
-	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 	rc := &types.RunConfig{
 		RunID: "test-run",
 		Mode:  "execution",
@@ -792,7 +793,7 @@ func TestBuildPermissionPolicy_PolicyEngineFallbackIsBuilt(t *testing.T) {
 	}
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
-	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 	tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
 	rc := &types.RunConfig{
 		RunID: "test-run",
@@ -855,7 +856,7 @@ func TestBuildPermissionPolicy_PolicyEngineFileReadOnce(t *testing.T) {
 
 	registry := buildToolRegistry(&registryExecutor{
 		caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true},
-	}, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	}, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 	rc := &types.RunConfig{
 		RunID: "test-run",
 		Mode:  "execution",
@@ -1342,7 +1343,7 @@ func TestEditToolEnabled_NoMatch(t *testing.T) {
 
 func TestMutatingToolSet(t *testing.T) {
 	exec, _ := executor.NewLocalExecutor(t.TempDir())
-	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 
 	mutating := mutatingToolSet(registry)
 
@@ -1367,7 +1368,7 @@ func TestMutatingToolSet(t *testing.T) {
 
 func TestApprovalRequiredToolSet(t *testing.T) {
 	exec, _ := executor.NewLocalExecutor(t.TempDir())
-	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 
 	approval := approvalRequiredToolSet(registry)
 
@@ -1414,7 +1415,7 @@ func TestBuildToolRegistry_DefaultReadOnlyIncludesGitTools(t *testing.T) {
 	}
 	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{
 		BuiltIn: types.DefaultReadOnlyBuiltInTools(),
-	})
+	}, nil)
 
 	registered := make(map[string]bool)
 	for _, def := range registry.List() {
@@ -1466,7 +1467,7 @@ func TestBuildToolRegistry_GitStatusExecutes(t *testing.T) {
 	}
 	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{
 		BuiltIn: types.DefaultReadOnlyBuiltInTools(),
-	})
+	}, nil)
 
 	gitStatus := registry.Resolve("git_status")
 	if gitStatus == nil {
@@ -3354,5 +3355,73 @@ func TestBuildLoopWithTransport_OpenAIResponsesAdapterHasLogger(t *testing.T) {
 	}
 	if adapter.Logger == nil {
 		t.Error("OpenAIResponsesAdapter.Logger is nil; factory should inject the ScrubHandler-backed logger so the quirks debug log and tool-choice downgrade warn keep run/trace correlation and scrubbing")
+	}
+}
+
+func TestBuildToolRegistry_CommandOutputCompanion(t *testing.T) {
+	store, err := commandoutput.New(commandoutput.Options{RunID: "registry-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	execAll := &registryExecutor{caps: executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true}}
+
+	cases := []struct {
+		name       string
+		builtIn    []string
+		store      *commandoutput.Store
+		wantRun    bool
+		wantReader bool
+	}{
+		{"default tools with store", nil, store, true, true},
+		{"default tools without store", nil, nil, true, false},
+		{"explicit run_command allowlist gains the companion reader", []string{"run_command"}, store, true, true},
+		{"standalone reader for replay", []string{"read_command_output"}, store, false, true},
+		{"reader listed without a store registers nothing", []string{"read_command_output"}, nil, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := buildToolRegistry(execAll, edit.NewWholeFileStrategy(), types.ToolsConfig{BuiltIn: tc.builtIn}, tc.store)
+			if got := registry.Resolve("run_command") != nil; got != tc.wantRun {
+				t.Errorf("run_command registered=%t, want %t", got, tc.wantRun)
+			}
+			if got := registry.Resolve("read_command_output") != nil; got != tc.wantReader {
+				t.Errorf("read_command_output registered=%t, want %t", got, tc.wantReader)
+			}
+		})
+	}
+}
+
+func TestBuildCommandOutputStore_Gating(t *testing.T) {
+	disabled := false
+	cases := []struct {
+		name    string
+		mutate  func(*types.RunConfig)
+		wantNil bool
+	}{
+		{"default builds a store", func(*types.RunConfig) {}, false},
+		{"enabled=false skips construction", func(c *types.RunConfig) { c.Tools.CommandOutput.Enabled = &disabled }, true},
+		{"tool list without command tools skips construction", func(c *types.RunConfig) {
+			c.Tools.BuiltIn = []string{"read_file", "grep_files"}
+		}, true},
+		{"explicit run_command builds a store", func(c *types.RunConfig) {
+			c.Tools.BuiltIn = []string{"run_command"}
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &types.RunConfig{RunID: "gating-test"}
+			tc.mutate(cfg)
+			store, err := buildCommandOutputStore(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if store != nil {
+				defer func() { _ = store.Close() }()
+			}
+			if gotNil := store == nil; gotNil != tc.wantNil {
+				t.Fatalf("store nil=%t, want %t", gotNil, tc.wantNil)
+			}
+		})
 	}
 }

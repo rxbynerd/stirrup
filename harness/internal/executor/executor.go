@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 )
 
@@ -75,4 +76,12 @@ type Executor interface {
 	Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error)
 	ResolvePath(relativePath string) (string, error)
 	Capabilities() ExecutorCapabilities
+}
+
+// StreamingExecutor is the optional full-output execution capability used by
+// run_command. Exec remains bounded for hooks, verifiers, git helpers, and
+// legacy callers; production executors implement this interface to stream
+// stdout/stderr directly into the harness-owned compliance store.
+type StreamingExecutor interface {
+	ExecStream(ctx context.Context, command string, timeout time.Duration, stdout, stderr io.Writer) (*ExecResult, error)
 }

@@ -550,6 +550,8 @@ configuration space — the common cases. Anything below requires
 | `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
 | `tools.mcpServers` | Remote MCP server registration. |
+| `tools.commandOutput` | Full-stream command capture limits and model preview thresholds. |
+| `traceEmitter.archive` | Explicit local or GCS destination for compressed command-output sidecars. |
 
 The CLI flags for each of these set the *type* selection only.
 
@@ -663,6 +665,73 @@ either "called by internal name under the default profile" or "the name
 did not resolve to a known tool under a non-default profile". The active
 `tools.profile` is recorded in the trace's attached `RunConfig`, so the
 two cases are distinguishable by reading it alongside the record.
+
+## Command output capture
+
+`run_command` streams complete stdout and stderr into a run-scoped secure
+store. Output up to `tools.commandOutput.inlineMaxBytes` remains inline after
+secret scrubbing. Larger output returns scrubbed tails plus opaque
+`stirrup://command-output/...` references; the read-only
+`read_command_output` tool reads those references in 32 KiB pages
+(128 KiB maximum per call).
+
+`read_command_output` is `run_command`'s companion: it registers
+automatically whenever `run_command` registers with capture enabled — a
+spilled reference without its reader would be unusable, and `tools.builtIn`
+allowlists written before capture existed keep working unchanged. Listing
+`read_command_output` in `tools.builtIn` is only needed for standalone
+replay runs; listing it while `enabled` is `false` is rejected as
+contradictory at validation.
+
+```json
+{
+  "tools": {
+    "commandOutput": {
+      "enabled": true,
+      "failurePosture": "strict",
+      "inlineMaxBytes": 32768,
+      "previewBytesPerStream": 4096,
+      "maxBytesPerStream": 52428800,
+      "maxBytesPerRun": 524288000
+    }
+  },
+  "traceEmitter": {
+    "type": "jsonl",
+    "filePath": "run.jsonl",
+    "archive": {"type": "local", "filePath": "run.command-output.tar.gz"}
+  }
+}
+```
+
+Capture defaults to on; `"enabled": false` reverts `run_command` to the
+legacy bounded-inline behaviour, registers no `read_command_output` tool,
+and writes no archive — the lever for A/B comparison of the feature under
+`stirrup-eval`.
+
+The stream and run maxima are compliance boundaries, not truncation limits:
+crossing one always cancels the offending command. What happens next is the
+`failurePosture`. Under `"strict"` (the default) the store refuses further
+captures and an otherwise-successful run reports
+`command_output_capture_failed` (or `command_output_archive_failed` when the
+sidecar itself cannot be written or uploaded); a run that already failed for
+a primary reason keeps that outcome. Under `"bestEffort"` later commands
+keep capturing, the run outcome is never overridden, and the failure stays
+visible in the archive manifest and per-command trace records.
+
+Raw bytes are spooled to run-scoped files (0600, under a 0700 temporary
+directory) while a command streams and are deleted at command completion,
+after whole-stream redaction; an unclean shutdown (crash, SIGKILL) can leave
+raw spool files in the OS temp directory until it is cleared. Archives
+contain scrubbed streams only, while raw byte counts and SHA-256 hashes
+remain as integrity metadata.
+
+The `eval/suites/command-output-ab-{on,off}.hcl` pair measures the
+pipeline's context-saving claim: identical tasks with capture forced to
+spill versus disabled, compared via `stirrup-eval compare` (mean tokens at
+equal-or-better pass rate). See [`eval/suites/README.md`](../eval/suites/README.md).
+Without an explicit destination, JSONL and GCS derive an adjacent archive;
+other emitters retain a local archive and report its absolute path in
+`RunResult.commandOutputArchive`.
 
 ## Lifecycle hooks
 

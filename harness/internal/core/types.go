@@ -54,6 +54,16 @@ const maxAsyncToolResultBytes = 1 << 20 // 1MB
 // maxAsyncToolResultBytes. The model and the trace see this marker.
 const asyncResultTruncationSuffix = "... [truncated by harness]"
 
+// CommandOutputFinalizer is the loop's complete usage surface of the
+// command output store (cf. batchModeAdapter): a sticky capture failure to
+// map into the run outcome, and end-of-run archive finalization. Keeping it
+// a loop-local interface preserves the loop-as-pure-interfaces invariant
+// (CLAUDE.md) while the factory wires the concrete store.
+type CommandOutputFinalizer interface {
+	FatalError() error
+	Finalize(ctx context.Context) (string, error)
+}
+
 // AgenticLoop drives the ReAct loop. All dependencies are injected as struct
 // fields — the loop has no imports from concrete implementations, no environment
 // variable reads, no direct file system access.
@@ -123,6 +133,18 @@ type AgenticLoop struct {
 	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
 	Security     *security.SecurityLogger // optional, for structured security event logging
 	Logger       *slog.Logger             // structured logger with secret scrubbing
+	// CommandOutput is the loop's view of the run-scoped command output
+	// store; the factory injects the concrete *commandoutput.Store (or
+	// leaves this nil when capture is disabled) so the loop stays a pure
+	// function of its interfaces. Sub-agents share the parent's value
+	// with OwnsCommandOutput=false; only the owning loop finalizes.
+	CommandOutput     CommandOutputFinalizer
+	OwnsCommandOutput bool
+	// CommandOutputBestEffort mirrors the resolved
+	// tools.commandOutput.failurePosture: false (the zero value) is the
+	// strict default, matching EffectiveCommandOutput.
+	CommandOutputBestEffort bool
+	ParentRunID             string
 	// MetricAttrs is a set of attributes prepended to every metric
 	// observation emitted from this loop. Empty for top-level runs;
 	// SpawnSubAgent populates it on child loops with subagent=true and
@@ -430,6 +452,9 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 		res, err := t.StructuredHandler(ctx, inputForCall)
 		if err != nil {
 			return "Tool error: " + err.Error(), false, observability.ToolFailureHandlerError, structuredOutput{}
+		}
+		if res.IsError {
+			return res.Text, false, observability.ToolFailureHandlerError, structuredOutput{payload: res.Structured, kind: res.Kind}
 		}
 		return res.Text, true, "", structuredOutput{payload: res.Structured, kind: res.Kind}
 	case t.Handler != nil:

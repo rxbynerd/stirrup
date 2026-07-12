@@ -14,6 +14,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
@@ -111,6 +112,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, closer)
 	}
 
+	commandOutputStore, err := buildCommandOutputStore(ctx, config)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("build command output store: %w", err)
+	}
+	if commandOutputStore != nil {
+		ownedClosers = append(ownedClosers, commandOutputStore)
+	}
+
 	// 4. Tool registry.
 	// The base edit strategy is constructed first, then optionally wrapped
 	// with a CodeScanner pass when one is configured. ValidateRunConfig
@@ -124,7 +134,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		cleanup()
 		return nil, fmt.Errorf("build code scanner: %w", err)
 	}
-	registry := buildToolRegistry(exec, es, config.Tools)
+	registry := buildToolRegistry(exec, es, config.Tools, commandOutputStore)
 
 	// resourceOpts captures the run-scoped OTel Resource attributes
 	// (deployment.environment, service.namespace, harness.run.mode) shared by
@@ -257,6 +267,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	providers := components.providers
 	pp := components.permissionPolicy
 	te := components.traceEmitter
+	if recorder, ok := te.(trace.CommandOutputRecorder); ok && commandOutputStore != nil {
+		commandOutputStore.SetRecorder(recorder)
+	}
 	if closer, ok := te.(io.Closer); ok {
 		ownedClosers = append(ownedClosers, closer)
 	}
@@ -575,6 +588,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		Logger:       logger,
 		emitReady:    emitReady,
 		ownedClosers: ownedClosers,
+	}
+	// Assigned only for a live store: a nil *commandoutput.Store stored in
+	// the CommandOutputFinalizer interface would defeat the loop's nil check.
+	if commandOutputStore != nil {
+		loop.CommandOutput = commandOutputStore
+		loop.OwnsCommandOutput = true
+		loop.CommandOutputBestEffort = config.Tools.EffectiveCommandOutput().FailurePosture == types.CommandOutputPostureBestEffort
 	}
 
 	// Register spawn_agent after loop construction. The tool needs a
@@ -998,7 +1018,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 	}
 }
 
-func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.ToolsConfig) *tool.Registry {
+func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.ToolsConfig, outputStore *commandoutput.Store) *tool.Registry {
 	registry := tool.NewRegistry()
 	caps := exec.Capabilities()
 	if toolEnabled(cfg.BuiltIn, "read_file") && caps.CanRead {
@@ -1042,8 +1062,21 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "git_show") && caps.CanRead {
 		registry.Register(builtins.GitShowTool(exec))
 	}
+	// read_command_output is run_command's companion: it registers
+	// automatically whenever run_command registers with a live capture
+	// store — a spilled reference without its reader is incoherent, and
+	// operator configs written before capture existed list run_command in
+	// explicit builtIn allowlists that would otherwise silently strand
+	// refs. Listing it in builtIn is only needed for the standalone
+	// (replay) case; ValidateRunConfig rejects listing it with capture
+	// disabled.
 	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
-		registry.Register(builtins.RunCommandTool(exec))
+		registry.Register(builtins.RunCommandToolWithStore(exec, outputStore, cfg.EffectiveCommandOutput()))
+		if outputStore != nil {
+			registry.Register(builtins.ReadCommandOutputTool(outputStore, exec))
+		}
+	} else if toolEnabled(cfg.BuiltIn, "read_command_output") && outputStore != nil {
+		registry.Register(builtins.ReadCommandOutputTool(outputStore, exec))
 	}
 	if toolEnabled(cfg.BuiltIn, "web_fetch") {
 		registry.Register(builtins.WebFetchTool())
@@ -1052,6 +1085,60 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 		registry.Register(editStrategyTool(es, exec))
 	}
 	return registry
+}
+
+var _ CommandOutputFinalizer = (*commandoutput.Store)(nil)
+
+// buildCommandOutputStore returns nil when capture is disabled or no
+// registered tool could feed the store — read-only modes exclude
+// run_command, and skipping construction also skips resolving GCS archive
+// credentials those runs would never use.
+func buildCommandOutputStore(ctx context.Context, config *types.RunConfig) (*commandoutput.Store, error) {
+	if !config.Tools.CommandOutputCaptureEnabled() {
+		return nil, nil
+	}
+	if !toolEnabled(config.Tools.BuiltIn, "run_command") && !toolEnabled(config.Tools.BuiltIn, "read_command_output") {
+		return nil, nil
+	}
+	archivePath := ""
+	var uploader commandoutput.Uploader
+	archiveCfg := config.TraceEmitter.Archive
+	if archiveCfg != nil && archiveCfg.Type == "local" {
+		archivePath = archiveCfg.FilePath
+	} else if archiveCfg == nil && (config.TraceEmitter.Type == "jsonl" || config.TraceEmitter.Type == "") && config.TraceEmitter.FilePath != "" {
+		archivePath = config.TraceEmitter.FilePath + ".command-output.tar.gz"
+	}
+
+	if (archiveCfg != nil && archiveCfg.Type == "gcs") || (archiveCfg == nil && config.TraceEmitter.Type == "gcs") {
+		bucket := config.TraceEmitter.Bucket
+		prefix := config.TraceEmitter.ObjectPrefix
+		credentialCfg := config.TraceEmitter.Credential
+		if archiveCfg != nil {
+			bucket = archiveCfg.Bucket
+			prefix = archiveCfg.ObjectPrefix
+			credentialCfg = archiveCfg.Credential
+		}
+		source, err := buildGCSTraceCredentialSource(credentialCfg)
+		if err != nil {
+			return nil, err
+		}
+		resolved, err := source.Resolve(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolve archive credential: %w", err)
+		}
+		if resolved == nil || resolved.BearerToken == nil {
+			return nil, fmt.Errorf("archive credential produced no bearer token")
+		}
+		uploader, err = commandoutput.NewGCSUploader(commandoutput.GCSUploaderOptions{
+			Bucket: bucket, ObjectPrefix: prefix, Bearer: resolved.BearerToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return commandoutput.New(commandoutput.Options{
+		RunID: config.RunID, Config: config.Tools.EffectiveCommandOutput(), ArchivePath: archivePath, Uploader: uploader,
+	})
 }
 
 func toolEnabled(enabled []string, name string) bool {

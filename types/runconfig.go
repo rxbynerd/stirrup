@@ -1368,6 +1368,23 @@ type TraceEmitterConfig struct {
 	// type=="otel"; rejected on the jsonl and gcs emitters like Protocol
 	// and Headers.
 	CaptureContent bool `json:"captureContent,omitempty"`
+
+	// Archive configures durable storage for command-output sidecars. When
+	// omitted, JSONL traces place the archive beside FilePath; GCS traces place
+	// it beside the trace object; all other configurations retain a local
+	// archive and expose its absolute path in RunResult.
+	Archive *TraceArchiveConfig `json:"archive,omitempty"`
+}
+
+// TraceArchiveConfig selects the destination for compressed command-output
+// sidecars. Type is "local" or "gcs". A local destination requires FilePath.
+// A GCS destination requires Bucket and may override ObjectPrefix/Credential.
+type TraceArchiveConfig struct {
+	Type         string            `json:"type"`
+	FilePath     string            `json:"filePath,omitempty"`
+	Bucket       string            `json:"bucket,omitempty"`
+	ObjectPrefix string            `json:"objectPrefix,omitempty"`
+	Credential   *CredentialConfig `json:"credential,omitempty"`
 }
 
 // ResultSinkConfig selects the result sink implementation. The
@@ -1430,6 +1447,81 @@ type ToolsConfig struct {
 	// identical to the pre-profile behaviour. Closed set, validated by
 	// ValidateRunConfig.
 	Profile string `json:"profile,omitempty"`
+
+	// CommandOutput controls compliant capture of run_command stdout/stderr.
+	// Zero values resolve to the documented defaults during validation.
+	CommandOutput CommandOutputConfig `json:"commandOutput,omitempty"`
+}
+
+// CommandOutputConfig bounds full command-output capture. These are audit
+// limits: crossing one cancels the command and fails the run; output is never
+// silently truncated at these boundaries.
+type CommandOutputConfig struct {
+	// Enabled gates the capture pipeline as a whole. A pointer so unset is
+	// distinguishable from an explicit false (the RuleOfTwo.Enforce
+	// pattern): nil means enabled — capture is the default behaviour —
+	// while false reverts run_command to the legacy bounded-inline path,
+	// registers no read_command_output tool, and writes no archive.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// FailurePosture selects how capture failures affect the run. "strict"
+	// (the default) treats the byte caps as compliance boundaries: a limit
+	// breach refuses further captures and an otherwise-successful run
+	// reports command_output_capture_failed / command_output_archive_failed.
+	// "bestEffort" still cancels the offending command at its cap — output
+	// is never silently truncated — but later commands keep capturing and
+	// the run outcome is never overridden; failures stay visible in the
+	// archive manifest and per-command records.
+	FailurePosture string `json:"failurePosture,omitempty"`
+
+	InlineMaxBytes        int64 `json:"inlineMaxBytes,omitempty"`
+	PreviewBytesPerStream int64 `json:"previewBytesPerStream,omitempty"`
+	MaxBytesPerStream     int64 `json:"maxBytesPerStream,omitempty"`
+	MaxBytesPerRun        int64 `json:"maxBytesPerRun,omitempty"`
+}
+
+// CommandOutput failure postures (CommandOutputConfig.FailurePosture).
+const (
+	CommandOutputPostureStrict     = "strict"
+	CommandOutputPostureBestEffort = "bestEffort"
+)
+
+// CommandOutputCaptureEnabled reports whether run_command output capture is
+// active. Unset defaults to enabled.
+func (c ToolsConfig) CommandOutputCaptureEnabled() bool {
+	return c.CommandOutput.Enabled == nil || *c.CommandOutput.Enabled
+}
+
+const (
+	DefaultCommandOutputInlineMaxBytes        int64 = 32 << 10
+	DefaultCommandOutputPreviewBytesPerStream int64 = 4 << 10
+	DefaultCommandOutputMaxBytesPerStream     int64 = 50 << 20
+	DefaultCommandOutputMaxBytesPerRun        int64 = 500 << 20
+	MaxCommandOutputBytesPerStream            int64 = 256 << 20
+	MaxCommandOutputBytesPerRun               int64 = 2 << 30
+)
+
+// EffectiveCommandOutput returns command-output settings with zero values
+// replaced by defaults. ValidateRunConfig rejects negative and over-hard-cap
+// values before runtime construction.
+func (c ToolsConfig) EffectiveCommandOutput() CommandOutputConfig {
+	out := c.CommandOutput
+	if out.InlineMaxBytes == 0 {
+		out.InlineMaxBytes = DefaultCommandOutputInlineMaxBytes
+	}
+	if out.PreviewBytesPerStream == 0 {
+		out.PreviewBytesPerStream = DefaultCommandOutputPreviewBytesPerStream
+	}
+	if out.MaxBytesPerStream == 0 {
+		out.MaxBytesPerStream = DefaultCommandOutputMaxBytesPerStream
+	}
+	if out.MaxBytesPerRun == 0 {
+		out.MaxBytesPerRun = DefaultCommandOutputMaxBytesPerRun
+	}
+	if out.FailurePosture == "" {
+		out.FailurePosture = CommandOutputPostureStrict
+	}
+	return out
 }
 
 // MCPServerConfig describes a single MCP server connection.
@@ -1974,21 +2066,22 @@ const (
 )
 
 var validBuiltInToolNames = map[string]bool{
-	"read_file":         true,
-	"write_file":        true,
-	"search_replace":    true,
-	"apply_diff":        true,
-	"edit_file":         true,
-	"list_directory":    true,
-	"grep_files":        true,
-	"find_files":        true,
-	"run_command":       true,
-	"web_fetch":         true,
-	"spawn_agent":       true,
-	"git_status":        true,
-	"git_changed_files": true,
-	"git_diff":          true,
-	"git_show":          true,
+	"read_file":           true,
+	"write_file":          true,
+	"search_replace":      true,
+	"apply_diff":          true,
+	"edit_file":           true,
+	"list_directory":      true,
+	"grep_files":          true,
+	"find_files":          true,
+	"run_command":         true,
+	"read_command_output": true,
+	"web_fetch":           true,
+	"spawn_agent":         true,
+	"git_status":          true,
+	"git_changed_files":   true,
+	"git_diff":            true,
+	"git_show":            true,
 }
 
 // validRunModes is the closed set of values accepted on RunConfig.Mode.
@@ -2125,7 +2218,12 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
 	validateMCPServers(config.Tools.MCPServers, &errs)
 	validateToolsProfile(config.Tools.Profile, &errs)
+	validateCommandOutputConfig(config.Tools, &errs)
+	validateTraceArchiveConfig(config.TraceEmitter.Archive, &errs)
 	validateCredentialConfig(config.Provider.Credential, "provider.credential", &errs)
+	if config.TraceEmitter.Archive != nil {
+		validateCredentialConfig(config.TraceEmitter.Archive.Credential, "traceEmitter.archive.credential", &errs)
+	}
 	for name, prov := range config.Providers {
 		validateCredentialConfig(prov.Credential, fmt.Sprintf("providers[%s].credential", name), &errs)
 	}
@@ -2221,6 +2319,82 @@ func ValidateRunConfig(config *RunConfig) error {
 		return fmt.Errorf("RunConfig validation failed: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func validateCommandOutputConfig(tools ToolsConfig, errs *[]string) {
+	cfg := tools.CommandOutput
+	checks := []struct {
+		name  string
+		value int64
+		max   int64
+	}{
+		{"tools.commandOutput.inlineMaxBytes", cfg.InlineMaxBytes, MaxCommandOutputBytesPerStream},
+		{"tools.commandOutput.previewBytesPerStream", cfg.PreviewBytesPerStream, MaxCommandOutputBytesPerStream},
+		{"tools.commandOutput.maxBytesPerStream", cfg.MaxBytesPerStream, MaxCommandOutputBytesPerStream},
+		{"tools.commandOutput.maxBytesPerRun", cfg.MaxBytesPerRun, MaxCommandOutputBytesPerRun},
+	}
+	for _, check := range checks {
+		if check.value < 0 {
+			*errs = append(*errs, check.name+" must not be negative")
+		}
+		if check.value > check.max {
+			*errs = append(*errs, fmt.Sprintf("%s exceeds maximum of %d", check.name, check.max))
+		}
+	}
+	effective := tools.EffectiveCommandOutput()
+	if effective.PreviewBytesPerStream > effective.MaxBytesPerStream {
+		*errs = append(*errs, "tools.commandOutput.previewBytesPerStream must not exceed maxBytesPerStream")
+	}
+	if effective.MaxBytesPerRun < effective.MaxBytesPerStream {
+		*errs = append(*errs, "tools.commandOutput.maxBytesPerRun must be at least maxBytesPerStream")
+	}
+	switch cfg.FailurePosture {
+	case "", CommandOutputPostureStrict, CommandOutputPostureBestEffort:
+	default:
+		*errs = append(*errs, fmt.Sprintf("tools.commandOutput.failurePosture %q is invalid (valid: strict, bestEffort)", cfg.FailurePosture))
+	}
+	if !tools.CommandOutputCaptureEnabled() {
+		for _, name := range tools.BuiltIn {
+			if name == "read_command_output" {
+				*errs = append(*errs, "tools.builtIn includes read_command_output but tools.commandOutput.enabled is false")
+				break
+			}
+		}
+	}
+}
+
+func validateTraceArchiveConfig(cfg *TraceArchiveConfig, errs *[]string) {
+	if cfg == nil {
+		return
+	}
+	switch cfg.Type {
+	case "local":
+		if cfg.FilePath == "" {
+			*errs = append(*errs, "traceEmitter.archive.filePath is required for local archives")
+		}
+		if cfg.Bucket != "" || cfg.ObjectPrefix != "" || cfg.Credential != nil {
+			*errs = append(*errs, "traceEmitter.archive GCS fields are only valid when type is gcs")
+		}
+	case "gcs":
+		if cfg.Bucket == "" {
+			*errs = append(*errs, "traceEmitter.archive.bucket is required for gcs archives")
+		} else if !gcsBucketNamePattern.MatchString(cfg.Bucket) {
+			*errs = append(*errs, fmt.Sprintf("traceEmitter.archive.bucket %q must match %s", cfg.Bucket, gcsBucketNamePattern.String()))
+		}
+		if cfg.FilePath != "" {
+			*errs = append(*errs, "traceEmitter.archive.filePath is only valid when type is local")
+		}
+		for _, seg := range strings.Split(strings.Trim(cfg.ObjectPrefix, "/"), "/") {
+			if seg == ".." {
+				*errs = append(*errs, "traceEmitter.archive.objectPrefix must not contain \"..\" path segments")
+				break
+			}
+		}
+	case "":
+		*errs = append(*errs, "traceEmitter.archive.type is required")
+	default:
+		*errs = append(*errs, fmt.Sprintf("traceEmitter.archive.type %q is invalid (valid: local, gcs)", cfg.Type))
+	}
 }
 
 func validateRequiredType(name, value string, valid map[string]bool, errs *[]string) {

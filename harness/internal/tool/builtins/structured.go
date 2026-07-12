@@ -13,14 +13,15 @@ package builtins
 // stable values rather than JSON-sniffing the payload, which would violate the
 // typed-not-`any` rule. Each StructuredHandler returns the matching kind.
 const (
-	kindCommandResult   = "command_result"
-	kindSearchResult    = "search_result"
-	kindFindResult      = "find_result"
-	kindFileExcerpt     = "file_excerpt"
-	kindGitStatus       = "git_status"
-	kindGitChangedFiles = "git_changed_files"
-	kindGitDiff         = "git_diff"
-	kindGitShow         = "git_show"
+	kindCommandResult      = "command_result"
+	kindSearchResult       = "search_result"
+	kindFindResult         = "find_result"
+	kindFileExcerpt        = "file_excerpt"
+	kindGitStatus          = "git_status"
+	kindGitChangedFiles    = "git_changed_files"
+	kindGitDiff            = "git_diff"
+	kindGitShow            = "git_show"
+	kindCommandOutputChunk = "command_output_chunk"
 )
 
 // commandResult is the structured payload for run_command. timedOut reports
@@ -31,11 +32,36 @@ const (
 // executor that returns partial output on timeout can populate it without a
 // schema change.
 type commandResult struct {
-	Stdout         string `json:"stdout"`
-	Stderr         string `json:"stderr"`
-	ExitCode       int    `json:"exit_code"`
-	TimedOut       bool   `json:"timed_out"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
+	Stdout              string `json:"stdout"`
+	Stderr              string `json:"stderr"`
+	ExitCode            int    `json:"exit_code"`
+	TimedOut            bool   `json:"timed_out"`
+	TimeoutSeconds      int    `json:"timeout_seconds"`
+	Spilled             bool   `json:"spilled,omitempty"`
+	CaptureComplete     bool   `json:"capture_complete"`
+	ArchiveID           string `json:"archive_id,omitempty"`
+	StdoutRef           string `json:"stdout_ref,omitempty"`
+	StderrRef           string `json:"stderr_ref,omitempty"`
+	StdoutRawBytes      int64  `json:"stdout_raw_bytes,omitempty"`
+	StderrRawBytes      int64  `json:"stderr_raw_bytes,omitempty"`
+	StdoutScrubbedBytes int64  `json:"stdout_scrubbed_bytes,omitempty"`
+	StderrScrubbedBytes int64  `json:"stderr_scrubbed_bytes,omitempty"`
+	StdoutSHA256        string `json:"stdout_sha256,omitempty"`
+	StderrSHA256        string `json:"stderr_sha256,omitempty"`
+}
+
+type commandOutputChunkResult struct {
+	Reference      string `json:"ref"`
+	Stream         string `json:"stream"`
+	Offset         int64  `json:"offset"`
+	EndOffset      int64  `json:"end_offset"`
+	EOF            bool   `json:"eof"`
+	Content        string `json:"content"`
+	RawBytes       int64  `json:"raw_bytes"`
+	RawSHA256      string `json:"raw_sha256"`
+	ScrubbedBytes  int64  `json:"scrubbed_bytes"`
+	ScrubbedSHA256 string `json:"scrubbed_sha256"`
+	RedactionCount int    `json:"redaction_count,omitempty"`
 }
 
 // searchMatch is a single hit from grep_files. Column is 1-indexed and present

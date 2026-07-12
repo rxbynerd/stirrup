@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -40,6 +41,9 @@ func NewReplayExecutor(workspace string, turns []types.TurnRecord) *ReplayExecut
 		for _, tc := range turn.ToolCalls {
 			key := recordingKey(tc.Name, tc.Input)
 			recordings[key] = tc
+			if tc.InternalName != "" && tc.InternalName != tc.Name {
+				recordings[recordingKey(tc.InternalName, tc.Input)] = tc
+			}
 		}
 	}
 	return &ReplayExecutor{
@@ -122,6 +126,25 @@ func (re *ReplayExecutor) Exec(_ context.Context, command string, _ time.Duratio
 		ExitCode: exitCode,
 		Stdout:   stdout,
 	}, nil
+}
+
+func (re *ReplayExecutor) ExecStream(ctx context.Context, command string, timeout time.Duration, stdout, stderr io.Writer) (*ExecResult, error) {
+	result, err := re.Exec(ctx, command, timeout)
+	if result != nil {
+		if _, writeErr := io.WriteString(stdout, result.Stdout); writeErr != nil {
+			return result, writeErr
+		}
+		if _, writeErr := io.WriteString(stderr, result.Stderr); writeErr != nil {
+			return result, writeErr
+		}
+	}
+	return result, err
+}
+
+// ReplayToolCall returns the exact recorded model-visible result for tool
+// replay, including structured payload and error state.
+func (re *ReplayExecutor) ReplayToolCall(name string, input json.RawMessage) (types.ToolCallRecord, bool) {
+	return re.lookup(name, input)
 }
 
 // ResolvePath returns the path joined with the workspace root.

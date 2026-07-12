@@ -18,6 +18,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
@@ -478,6 +479,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			outcome = "hook_failed"
 		}
 	}
+
+	outcome = l.finalizeCommandOutput(ctx, outcome)
 
 	l.Logger.Info("run finished", "outcome", outcome)
 
@@ -1178,7 +1181,10 @@ func (l *AgenticLoop) runInnerLoop(
 		// The router's provider/model selection is forwarded so per-call
 		// failure metrics (stirrup.harness.tool_failures) can be attributed
 		// back to the model that emitted the offending tool_use block.
-		toolResults, toolRecords, stallOutcome := l.planAndDispatch(ctx, config, toolCalls, stall, selection.Provider, selection.Model)
+		dispatchCtx := tool.WithCallContext(ctx, tool.CallContext{
+			RunID: config.RunID, ParentRunID: l.ParentRunID, Turn: turn + 1,
+		})
+		toolResults, toolRecords, stallOutcome := l.planAndDispatch(dispatchCtx, config, toolCalls, stall, selection.Provider, selection.Model)
 		turnRecord.ToolCalls = toolRecords
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
@@ -1904,6 +1910,7 @@ func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.Ru
 // "setup_failed" (or a ctx-cause outcome if the run's own wall-clock
 // timeout/cancel raced the hook failure) instead of the generic "error".
 func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err error) (*types.RunTrace, error) {
+	outcome = l.finalizeCommandOutput(ctx, outcome)
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
 		Message: err.Error(),
@@ -1932,4 +1939,47 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 		l.Logger.Warn("trace finish failed", "error", traceErr)
 	}
 	return runTrace, err
+}
+
+// commandOutputFinalizeBudget bounds end-of-run archive finalization: the
+// GCS uploader's HTTP client allows 5 minutes per attempt
+// (commandoutput/gcs.go), plus headroom for writing the tar.gz locally.
+const commandOutputFinalizeBudget = 6 * time.Minute
+
+func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string) string {
+	if l.CommandOutput == nil || !l.OwnsCommandOutput {
+		return outcome
+	}
+	captureFailed := l.CommandOutput.FatalError() != nil
+	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commandOutputFinalizeBudget)
+	defer cancel()
+	archive, err := l.CommandOutput.Finalize(finalizeCtx)
+	if archive != "" {
+		if recorder, ok := l.Trace.(trace.CommandOutputArchiveRecorder); ok {
+			recorder.RecordCommandOutputArchive(archive)
+		}
+	}
+	if err != nil {
+		l.Logger.Error("command output archive finalization failed", "error", err, "archive", archive)
+	}
+	// Under the bestEffort posture failures are recorded (manifest,
+	// per-command records, the log line above) but never claim the run's
+	// outcome.
+	if l.CommandOutputBestEffort {
+		return outcome
+	}
+	// Like hook_failed, capture and archive failures only claim the outcome
+	// of an otherwise-successful run — the primary failure cause stays
+	// authoritative. Capture failure outranks archive failure: the former
+	// lost command output, the latter only its durable copy.
+	if outcome != "success" {
+		return outcome
+	}
+	if captureFailed {
+		return "command_output_capture_failed"
+	}
+	if err != nil {
+		return "command_output_archive_failed"
+	}
+	return outcome
 }
