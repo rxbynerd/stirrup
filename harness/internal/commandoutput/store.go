@@ -378,7 +378,16 @@ func (c *Capture) canonicalize(stream string, w *spoolWriter) (string, string, t
 		return "", "", meta, fmt.Errorf("%w: write canonical %s: %v", ErrCaptureIO, stream, err)
 	}
 	sum := sha256.Sum256([]byte(scrubbed))
-	ref := fmt.Sprintf("stirrup://command-output/%s/%s/%s", c.store.archiveID, memberID, stream)
+	// The model-visible reference must stay short: the loop's tool guard
+	// rejects inputs containing base64-like runs longer than 100
+	// characters (security.GuardToolCall's encoded_payload rule), and a
+	// reference embedding archiveID plus the base64url member ID tripped
+	// it — the model's first read_command_output call was denied. A
+	// truncated digest of the store-unique entry key keeps the reference
+	// opaque, collision-safe within the run, and far under the guard's
+	// threshold; the refs map carries the actual file mapping.
+	refID := sha256.Sum256([]byte(c.entry.record.RunID + "\x00" + c.entry.record.ToolUseID))
+	ref := fmt.Sprintf("stirrup://command-output/%s/%s", hex.EncodeToString(refID[:8]), stream)
 	meta.ScrubbedBytes = int64(len(scrubbed))
 	meta.ScrubbedSHA256 = hex.EncodeToString(sum[:])
 	meta.ArchiveMember = member
