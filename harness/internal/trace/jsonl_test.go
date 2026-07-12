@@ -318,9 +318,16 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 // non-zero value, runs it through scrubTurnRecord, and asserts every
 // field that scrubTurnRecord does not intentionally transform for
 // secret-scrubbing purposes (Input, Output, Structured) round-trips
-// unchanged. A field left at its zero value in the output — because a
-// new field was added to the struct but never wired into the rebuild
-// loop — fails this test immediately.
+// unchanged.
+//
+// That round-trip check is only as strong as the `in` fixture below:
+// a new ToolCallRecord field left unset in `in` would compare
+// zero-to-zero and pass silently even if scrubTurnRecord never
+// copies it. So this test first asserts the fixture itself is
+// complete — every field of `in` must be non-zero — before trusting
+// the round-trip comparison. Together, the two checks force whoever
+// adds a field to types.ToolCallRecord to populate it here as well
+// as wire it into scrubTurnRecord, or watch this test fail.
 func TestScrubTurnRecord_ToolCallRecord_FieldCompleteness(t *testing.T) {
 	// scrubbedFields are intentionally transformed by scrubTurnRecord
 	// (secret-shaped content is redacted) and so are exempt from the
@@ -344,6 +351,15 @@ func TestScrubTurnRecord_ToolCallRecord_FieldCompleteness(t *testing.T) {
 		Structured:   json.RawMessage(`{"kind":"file_edit"}`),
 		Kind:         "file_edit",
 	}
+
+	rtIn := reflect.TypeOf(in)
+	inFixtureVal := reflect.ValueOf(in)
+	for i := 0; i < rtIn.NumField(); i++ {
+		if inFixtureVal.Field(i).IsZero() {
+			t.Fatalf("fixture field %q is zero — populate every field when adding one to ToolCallRecord, then update this test", rtIn.Field(i).Name)
+		}
+	}
+
 	turn := types.TurnRecord{Turn: 1, ToolCalls: []types.ToolCallRecord{in}}
 
 	out := scrubTurnRecord(turn)
