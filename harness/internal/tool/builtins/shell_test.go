@@ -91,17 +91,15 @@ func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 	if err := json.Unmarshal(got.Structured, &structured); err != nil {
 		t.Fatalf("unmarshal structured result: %v", err)
 	}
-	if !structured.TimedOut {
-		t.Errorf("structured.TimedOut = false, want true")
+	want := commandResult{
+		Stdout:         "partial stdout before kill\n",
+		Stderr:         "partial stderr before kill\n",
+		ExitCode:       0,
+		TimedOut:       true,
+		TimeoutSeconds: 5,
 	}
-	if structured.TimeoutSeconds != 5 {
-		t.Errorf("structured.TimeoutSeconds = %d, want 5", structured.TimeoutSeconds)
-	}
-	if structured.Stdout != "partial stdout before kill\n" {
-		t.Errorf("structured.Stdout = %q, want partial stdout preserved", structured.Stdout)
-	}
-	if structured.Stderr != "partial stderr before kill\n" {
-		t.Errorf("structured.Stderr = %q, want partial stderr preserved", structured.Stderr)
+	if structured != want {
+		t.Errorf("structured mismatch\n got: %+v\nwant: %+v", structured, want)
 	}
 
 	if !strings.Contains(got.Text, "partial stdout before kill") {

@@ -29,9 +29,11 @@ const (
 // while still returning whatever partial stdout/stderr it captured (#489), so
 // RunCommandTool classifies that case via errors.Is and reports it as a soft
 // outcome — timedOut true, no handler error — rather than discarding the
-// output. exitCode is the executor's zero value (not a real exit status) when
-// timedOut is true, since the process never ran to completion. timeoutSeconds
-// records the bound that was in effect either way.
+// output. exitCode is executor-dependent when timedOut is true (local.go
+// leaves it 0; container.go and k8s_execcore.go set -1), so it carries no
+// meaningful status in that case — callers must gate on timedOut and never
+// read exitCode as a real exit code when it is true. timeoutSeconds records
+// the bound that was in effect either way.
 type commandResult struct {
 	Stdout         string `json:"stdout"`
 	Stderr         string `json:"stderr"`

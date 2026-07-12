@@ -108,13 +108,15 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 
 // timedOutRunCommandResult builds the soft-outcome StructuredResult for a
 // run_command invocation killed by its timeout. result carries whatever
-// partial output the executor captured before the kill (result.ExitCode is
-// the executor's zero value, not a sentinel, since the process never ran to
-// completion — callers must not read it as a real exit status). The Text
-// fallback appends an unambiguous "[timed out after Ns]" marker after the
-// normal formatRunCommand rendering so a model reading only Text (not
-// Structured) can still distinguish a timeout from a clean exit; formatRunCommand
-// itself stays byte-identical to its pre-#231/#489 contract.
+// partial output the executor captured before the kill; result.ExitCode is
+// executor-dependent in this case (local.go leaves it 0, container.go and
+// k8s_execcore.go set -1) and never a meaningful status, since the process
+// never ran to completion — callers must gate on TimedOut and never read
+// ExitCode as a real exit status when it is true. The Text fallback appends
+// an unambiguous "[timed out after Ns]" marker after the normal
+// formatRunCommand rendering so a model reading only Text (not Structured)
+// can still distinguish a timeout from a clean exit; formatRunCommand itself
+// stays byte-identical to its pre-#231/#489 contract.
 func timedOutRunCommandResult(result *executor.ExecResult, timeoutSeconds int) (tool.StructuredResult, error) {
 	structured, marshalErr := json.Marshal(commandResult{
 		Stdout:         result.Stdout,
