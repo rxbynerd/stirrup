@@ -727,7 +727,7 @@ func demuxDockerStreamTo(r io.Reader, stdout, stderr io.Writer) error {
 		if frameSize > maxDockerFrameSize {
 			return fmt.Errorf("docker stream frame exceeds %d byte limit: %d", maxDockerFrameSize, frameSize)
 		}
-		var dst io.Writer = io.Discard
+		dst := io.Discard
 		switch header[0] {
 		case 1:
 			dst = stdout
