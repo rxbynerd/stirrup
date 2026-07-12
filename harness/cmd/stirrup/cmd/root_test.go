@@ -117,7 +117,7 @@ func (f fakeExporter) Export(_ context.Context, _, _ string) error { return f.er
 // Consumers parsing the stdout-json line distinguish a no-trace path
 // from an empty-Outcome run on this sentinel.
 func TestBuildRunResult_NilTrace(t *testing.T) {
-	got := buildRunResult(nil)
+	got := buildRunResult(nil, types.DefaultMaxFinalAssistantTextBytes)
 	if got.SchemaVersion != 1 {
 		t.Errorf("SchemaVersion = %d, want 1", got.SchemaVersion)
 	}
@@ -151,7 +151,7 @@ func TestBuildRunResult_WithVerificationResult(t *testing.T) {
 			{Passed: true, Feedback: "second pass green"},
 		},
 	}
-	got := buildRunResult(rt)
+	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
 	if got.Outcome != "success" {
 		t.Errorf("Outcome = %q, want success", got.Outcome)
 	}
@@ -181,7 +181,7 @@ func TestBuildRunResult_NoVerificationResultsLeavesVerdictNil(t *testing.T) {
 		ID:      "run-2",
 		Outcome: "success",
 	}
-	if got := buildRunResult(rt); got.VerifierVerdict != nil {
+	if got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes); got.VerifierVerdict != nil {
 		t.Errorf("VerifierVerdict = %+v, want nil", got.VerifierVerdict)
 	}
 }
@@ -207,9 +207,12 @@ func TestBuildRunResult_FinalAssistantText(t *testing.T) {
 				Outcome:            "success",
 				FinalAssistantText: tc.traceIn,
 			}
-			got := buildRunResult(rt)
+			got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
 			if got.FinalAssistantText != tc.wantText {
 				t.Errorf("FinalAssistantText = %q, want %q", got.FinalAssistantText, tc.wantText)
+			}
+			if got.FinalAssistantTextTruncated {
+				t.Errorf("FinalAssistantTextTruncated = true, want false: text is well under the default cap")
 			}
 			encoded, err := json.Marshal(got)
 			if err != nil {
@@ -222,7 +225,75 @@ func TestBuildRunResult_FinalAssistantText(t *testing.T) {
 			if tc.wantText != "" && !hasField {
 				t.Errorf("populated FinalAssistantText should be present in JSON, got %s", encoded)
 			}
+			if strings.Contains(string(encoded), "finalAssistantTextTruncated") {
+				t.Errorf("finalAssistantTextTruncated=false should be omitted from JSON, got %s", encoded)
+			}
 		})
+	}
+}
+
+// TestBuildRunResult_FinalAssistantTextCappedAndFlagged pins issue
+// #463: a RunTrace.FinalAssistantText longer than the resolved cap is
+// truncated on the RunResult copy, the truncation marker is appended,
+// and FinalAssistantTextTruncated is set — while rt itself (the
+// RunTrace the trace emitters read via RecordFinalAssistantText) is
+// left untouched by buildRunResult.
+func TestBuildRunResult_FinalAssistantTextCappedAndFlagged(t *testing.T) {
+	longText := strings.Repeat("a", 100)
+	rt := &types.RunTrace{
+		ID:                 "run-cap",
+		Outcome:            "success",
+		FinalAssistantText: longText,
+	}
+	const maxBytes = 10
+	got := buildRunResult(rt, maxBytes)
+
+	wantPrefix := strings.Repeat("a", maxBytes)
+	if !strings.HasPrefix(got.FinalAssistantText, wantPrefix) {
+		t.Errorf("FinalAssistantText = %q, want prefix %q", got.FinalAssistantText, wantPrefix)
+	}
+	if !strings.HasSuffix(got.FinalAssistantText, "[truncated by harness]") {
+		t.Errorf("FinalAssistantText = %q, want truncation marker suffix", got.FinalAssistantText)
+	}
+	if !got.FinalAssistantTextTruncated {
+		t.Error("FinalAssistantTextTruncated = false, want true")
+	}
+	if len(got.FinalAssistantText) <= maxBytes {
+		t.Errorf("capped FinalAssistantText len = %d, want > cap %d (marker must still be present)", len(got.FinalAssistantText), maxBytes)
+	}
+
+	// buildRunResult must not mutate the RunTrace it was given: trace
+	// emitters record the full text independently via
+	// RecordFinalAssistantText and must see the untruncated value.
+	if rt.FinalAssistantText != longText {
+		t.Errorf("rt.FinalAssistantText was mutated to %q, want untouched %q", rt.FinalAssistantText, longText)
+	}
+
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"finalAssistantTextTruncated":true`) {
+		t.Errorf("marshalled RunResult missing finalAssistantTextTruncated:true, got %s", encoded)
+	}
+}
+
+// TestBuildRunResult_FinalAssistantTextUnderCapUntouched pins the
+// non-truncation path with an explicit small cap: text at or under the
+// cap passes through unmodified and FinalAssistantTextTruncated stays
+// false.
+func TestBuildRunResult_FinalAssistantTextUnderCapUntouched(t *testing.T) {
+	rt := &types.RunTrace{
+		ID:                 "run-under-cap",
+		Outcome:            "success",
+		FinalAssistantText: "short answer",
+	}
+	got := buildRunResult(rt, 1024)
+	if got.FinalAssistantText != "short answer" {
+		t.Errorf("FinalAssistantText = %q, want unmodified %q", got.FinalAssistantText, "short answer")
+	}
+	if got.FinalAssistantTextTruncated {
+		t.Error("FinalAssistantTextTruncated = true, want false")
 	}
 }
 
@@ -239,7 +310,7 @@ func TestBuildRunResult_HookFailuresCounted(t *testing.T) {
 			{Phase: "postRun", Index: 1, Command: "true", Skipped: true},         // skipped, not a failure
 		},
 	}
-	got := buildRunResult(rt)
+	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
 	if got.HookFailures != 1 {
 		t.Errorf("HookFailures = %d, want 1 (skipped entries must not count)", got.HookFailures)
 	}
@@ -250,7 +321,7 @@ func TestBuildRunResult_HookFailuresCounted(t *testing.T) {
 // must resolve HookFailures to zero.
 func TestBuildRunResult_NoHookResultsLeavesHookFailuresZero(t *testing.T) {
 	rt := &types.RunTrace{ID: "run-no-hooks", Outcome: "success"}
-	got := buildRunResult(rt)
+	got := buildRunResult(rt, types.DefaultMaxFinalAssistantTextBytes)
 	if got.HookFailures != 0 {
 		t.Errorf("HookFailures = %d, want 0", got.HookFailures)
 	}

@@ -100,6 +100,51 @@ func TestStdoutJSONSink_FinalAssistantText(t *testing.T) {
 	}
 }
 
+// TestStdoutJSONSink_FinalAssistantTextTruncated pins the wire
+// behaviour of the issue #463 truncation flag through the sink: the
+// sink itself applies no cap (that happens upstream in buildRunResult)
+// — it simply serialises whatever RunResult it is given, so a
+// FinalAssistantTextTruncated=true round-trips through the emitted
+// JSON and a false value is omitted by the omitempty tag.
+func TestStdoutJSONSink_FinalAssistantTextTruncated(t *testing.T) {
+	cases := []struct {
+		name      string
+		truncated bool
+		wantKey   bool
+	}{
+		{"truncated", true, true},
+		{"not truncated", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			sink := NewStdoutJSONSinkTo(&buf)
+			res := types.RunResult{
+				SchemaVersion:               1,
+				RunID:                       "run-cap",
+				Outcome:                     "success",
+				FinalAssistantText:          "the answer is 42... [truncated by harness]",
+				FinalAssistantTextTruncated: tc.truncated,
+			}
+			if err := sink.Emit(context.Background(), res); err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			payload := strings.TrimSpace(strings.TrimPrefix(buf.String(), StdoutResultSentinel))
+			hasKey := strings.Contains(payload, "finalAssistantTextTruncated")
+			if hasKey != tc.wantKey {
+				t.Errorf("finalAssistantTextTruncated key present = %v, want %v\npayload=%q", hasKey, tc.wantKey, payload)
+			}
+			var decoded types.RunResult
+			if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+				t.Fatalf("unmarshal payload: %v\npayload=%q", err, payload)
+			}
+			if decoded.FinalAssistantTextTruncated != tc.truncated {
+				t.Errorf("decoded FinalAssistantTextTruncated = %v, want %v", decoded.FinalAssistantTextTruncated, tc.truncated)
+			}
+		})
+	}
+}
+
 func TestNoneSink_NoOp(t *testing.T) {
 	sink := NoneSink{}
 	if err := sink.Emit(context.Background(), types.RunResult{}); err != nil {

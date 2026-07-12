@@ -141,7 +141,15 @@ func hookSummaryCounts(results []types.HookExecution) (ran, failed int) {
 // ran" would conflate "verifier passed silently" with "verifier was
 // not configured"; the wire shape uses presence of the optional
 // VerifierResult pointer to disambiguate.
-func buildRunResult(rt *types.RunTrace) types.RunResult {
+//
+// maxFinalAssistantTextBytes caps FinalAssistantText on the returned
+// RunResult (issue #463) — resolve it via
+// (*types.ResultSinkConfig).ResolvedMaxFinalAssistantTextBytes before
+// calling. This bounds only the RunResult copy: rt.FinalAssistantText
+// itself is left untouched, and the trace emitters (which record the
+// full text independently via RecordFinalAssistantText) never see the
+// cap.
+func buildRunResult(rt *types.RunTrace, maxFinalAssistantTextBytes int) types.RunResult {
 	if rt == nil {
 		// A nil RunTrace means the loop produced no trace at all —
 		// every other code path returns a structurally valid one,
@@ -153,14 +161,16 @@ func buildRunResult(rt *types.RunTrace) types.RunResult {
 		// consumers detect the no-trace case explicitly.
 		return types.RunResult{SchemaVersion: 1, Outcome: "internal-error"}
 	}
+	finalText, truncated := types.CapFinalAssistantText(rt.FinalAssistantText, maxFinalAssistantTextBytes)
 	res := types.RunResult{
-		SchemaVersion:      1,
-		RunID:              rt.ID,
-		Outcome:            rt.Outcome,
-		Turns:              rt.Turns,
-		TokenUsage:         rt.TokenUsage,
-		DurationMs:         rt.CompletedAt.Sub(rt.StartedAt).Milliseconds(),
-		FinalAssistantText: rt.FinalAssistantText,
+		SchemaVersion:               1,
+		RunID:                       rt.ID,
+		Outcome:                     rt.Outcome,
+		Turns:                       rt.Turns,
+		TokenUsage:                  rt.TokenUsage,
+		DurationMs:                  rt.CompletedAt.Sub(rt.StartedAt).Milliseconds(),
+		FinalAssistantText:          finalText,
+		FinalAssistantTextTruncated: truncated,
 	}
 	if n := len(rt.VerificationResults); n > 0 {
 		last := rt.VerificationResults[n-1]
@@ -242,7 +252,7 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 		slog.Warn("build resultSink", "err", err)
 		return
 	}
-	if err := sink.Emit(ctx, buildRunResult(rt)); err != nil {
+	if err := sink.Emit(ctx, buildRunResult(rt, cfg.ResultSink.ResolvedMaxFinalAssistantTextBytes())); err != nil {
 		slog.Warn("emit resultSink", "err", err)
 	}
 }
@@ -295,7 +305,7 @@ func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 		// before delegating so emitRunResult does not produce a second
 		// line. Any non-stdout sink stays untouched (different channel).
 		stdoutSink := resultsink.NewStdoutJSONSink()
-		if err := stdoutSink.Emit(ctx, buildRunResult(rt)); err != nil {
+		if err := stdoutSink.Emit(ctx, buildRunResult(rt, cfg.ResultSink.ResolvedMaxFinalAssistantTextBytes())); err != nil {
 			slog.Warn("emit --output=json", "err", err)
 		}
 		if cfg.ResultSink == nil || cfg.ResultSink.Type == "stdout-json" {
