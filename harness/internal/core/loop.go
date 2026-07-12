@@ -15,6 +15,7 @@ import (
 
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/hook"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
@@ -285,7 +286,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// HooksConfig, or a hand-assembled loop that left it unset) is a
 	// no-op, mirroring GuardRail/RuleOfTwo.
 	if l.Hooks != nil {
-		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks.preRun")
+		_, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
 		preResults, preErr := l.Hooks.RunPre(runCtx)
 		l.recordHookExecutions(preResults)
 		if preErr != nil {
@@ -506,7 +507,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 				}
 			}()
 		}
-		_, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks.postRun")
+		_, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks."+hook.PhasePostRun)
 		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
 		l.recordHookExecutions(postResults)
 		if postErr != nil {

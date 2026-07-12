@@ -87,7 +87,7 @@ func (r *ExecRunner) run(ctx context.Context, phase string, hooks []types.HookCo
 		exec := r.runOne(ctx, phase, i, h)
 		results = append(results, exec)
 
-		if exec.Error != "" && !h.ContinueOnError {
+		if exec.Failed() && !h.ContinueOnError {
 			fatalErr = fmt.Errorf("%s hook %d (%s) failed: %s", phase, i, hookLabel(h), exec.Error)
 		}
 	}
@@ -114,6 +114,9 @@ func (r *ExecRunner) runOne(ctx context.Context, phase string, index int, h type
 
 	timeout := time.Duration(types.EffectiveHookTimeout(h)) * time.Second
 	if caps := r.Exec.Capabilities(); caps.MaxTimeout > 0 && timeout > caps.MaxTimeout {
+		r.logger().Warn("lifecycle hook timeout clamped to executor cap",
+			"phase", phase, "index", index, "name", h.Name,
+			"requestedTimeout", timeout, "executorMaxTimeout", caps.MaxTimeout)
 		timeout = caps.MaxTimeout
 	}
 

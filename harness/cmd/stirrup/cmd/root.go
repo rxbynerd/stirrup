@@ -117,15 +117,15 @@ func printRunSummary(runTrace *types.RunTrace) {
 // skipped by a postRun runOn filter or after a prior fatal failure in
 // the same phase never executed, so it should not count toward either
 // number. Skipped entries never set Error (see hook.ExecRunner), so
-// counting Error != "" alone is sufficient for "failed" without a
-// second Skipped check.
+// counting Failed() alone is sufficient for "failed" without a second
+// Skipped check.
 func hookSummaryCounts(results []types.HookExecution) (ran, failed int) {
 	for _, r := range results {
 		if r.Skipped {
 			continue
 		}
 		ran++
-		if r.Error != "" {
+		if r.Failed() {
 			failed++
 		}
 	}

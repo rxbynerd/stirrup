@@ -1719,6 +1719,35 @@ var validExecutorTypes = map[string]bool{
 	"none":        true,
 }
 
+// executorExecCapable records, per executor type, whether that executor
+// can run an exec (shell command) — the capability lifecycle hooks
+// require. types cannot import harness/internal/executor to ask a live
+// Executor's Capabilities(), so this table is the types-side mirror of
+// that single discriminator. "" (unset Executor.Type) is included and
+// mapped to the same capability as the factory's default executor
+// (local, exec-capable — see buildExecutor's `case "local", "":`), so an
+// unset type does not newly reject hooks.
+var executorExecCapable = map[string]bool{
+	"":            true,
+	"local":       true,
+	"container":   true,
+	"k8s":         true,
+	"k8s-sandbox": true,
+	"api":         false,
+	"none":        false,
+}
+
+// ExecutorCanExec reports whether executorType can execute hook
+// commands. This is the sanctioned check for hooks.preRun/postRun
+// eligibility (issue #475) — do not reintroduce a hardcoded
+// `== "api"` comparison. Any new executor type that cannot execute
+// commands (there is no "none" executor type today) must be added to
+// executorExecCapable, not just validExecutorTypes, or it will silently
+// pass hook validation and fail at runtime.
+func ExecutorCanExec(executorType string) bool {
+	return executorExecCapable[executorType]
+}
+
 // validContainerRuntimes is the closed set of OCI runtimes the container
 // executor may select. The empty string is accepted and means "use the
 // engine default" — the harness omits the Runtime field on the create
@@ -2923,9 +2952,9 @@ var validHookRunOnValues = map[string]bool{"": true, "always": true, "success": 
 // validateHooksConfig enforces the HooksConfig invariants (issue #461):
 //
 //   - Hooks require an exec-capable executor — the "api" executor is
-//     read-only (CanExec=false) and cannot run them. types cannot import
-//     the executor package's Capabilities, so this checks the static
-//     discriminator instead.
+//     read-only and cannot run them. types cannot import the executor
+//     package's live Capabilities(), so this checks ExecutorCanExec, the
+//     types-side mirror of that discriminator, instead.
 //   - Every hook's Command is non-empty (after TrimSpace), bounded, and
 //     free of "secret://" references (see HookConfig.Command).
 //   - Type, TimeoutSeconds, Name, and the per-phase hook count are
@@ -2950,8 +2979,8 @@ func validateHooksConfig(config *RunConfig, errs *[]string) {
 	}
 	hooks := config.Hooks
 
-	if (len(hooks.PreRun) > 0 || len(hooks.PostRun) > 0) && (config.Executor.Type == "api" || config.Executor.Type == "none") {
-		*errs = append(*errs, fmt.Sprintf("hooks require an exec-capable executor; executor.type %q has no exec capability", config.Executor.Type))
+	if (len(hooks.PreRun) > 0 || len(hooks.PostRun) > 0) && !ExecutorCanExec(config.Executor.Type) {
+		*errs = append(*errs, "hooks require an exec-capable executor; executor.type \"api\" & \"none\" are read-only")
 	}
 
 	if len(hooks.PreRun) > maxHooksPerPhase {
