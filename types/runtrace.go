@@ -32,13 +32,13 @@ type RunTrace struct {
 	// Outcome is "success" | "error" | "max_turns" | "verification_failed" |
 	// "verification_error" | "budget_exceeded" | "stalled" | "tool_failures" |
 	// "cancelled" | "timeout" | "max_tokens" | "setup_failed" | "hook_failed" |
-	// "command_output_capture_failed" | "trace_archive_failed".
+	// "command_output_capture_failed" | "command_output_archive_failed".
 	// setup_failed and hook_failed (issue #461) report a fatal lifecycle-hook
 	// failure: setup_failed means a PreRun hook failed before the session
 	// started (zero turns ran); hook_failed means a PostRun hook failed after
 	// an otherwise-successful run (it never overrides a non-success outcome —
 	// the primary failure cause stays authoritative).
-	// command_output_capture_failed and trace_archive_failed follow the same
+	// command_output_capture_failed and command_output_archive_failed follow the same
 	// rule: they claim only an otherwise-successful run, and a capture
 	// failure outranks an archive failure when both occur.
 	Outcome string `json:"outcome"`

@@ -117,7 +117,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 		emitter := tracepkg.NewJSONLTraceEmitter(&bytes.Buffer{})
 		emitter.Start("run", &types.RunConfig{})
 		loop := &AgenticLoop{CommandOutput: store, OwnsCommandOutput: true, Trace: emitter, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-		if got := loop.finalizeCommandOutput(context.Background(), "success"); got != "trace_archive_failed" {
+		if got := loop.finalizeCommandOutput(context.Background(), "success"); got != "command_output_archive_failed" {
 			t.Fatalf("outcome=%q", got)
 		}
 	})
