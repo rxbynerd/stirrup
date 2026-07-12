@@ -1166,3 +1166,106 @@ func TestRunConfigFromProto_HooksNotAliased(t *testing.T) {
 			rc.Hooks.PreRun[0].Command, "original")
 	}
 }
+
+// TestRunConfigFromProto_MCPTrustFieldsPreserved guards the gRPC / K8s job
+// path for the MCP trust fields added in #393 (AllowedTools,
+// AllowedMCPHosts). Without an explicit translation, toolsConfigFromProto
+// silently drops both fields, so a gRPC-submitted RunConfig would register
+// every advertised tool from an MCP server and apply no host pinning
+// regardless of what the caller specified. Marshal/Unmarshal through the
+// actual wire format (not just an in-memory pointer copy) so a future
+// field-number collision or renumbering on MCPServerConfig (fields 4/5)
+// shows up here rather than only at runtime.
+func TestRunConfigFromProto_MCPTrustFieldsPreserved(t *testing.T) {
+	original := &pb.RunConfig{
+		Tools: &pb.ToolsConfig{
+			McpServers: []*pb.MCPServerConfig{
+				{
+					Name:            "search",
+					Uri:             "https://mcp.example.com/v1",
+					AllowedTools:    []string{"lookup", "query"},
+					AllowedMcpHosts: []string{"mcp.example.com"},
+				},
+			},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rc := runConfigFromProto(&decoded)
+
+	if len(rc.Tools.MCPServers) != 1 {
+		t.Fatalf("MCPServers: got %d entries, want 1", len(rc.Tools.MCPServers))
+	}
+	srv := rc.Tools.MCPServers[0]
+
+	wantTools := []string{"lookup", "query"}
+	if len(srv.AllowedTools) != len(wantTools) {
+		t.Fatalf("AllowedTools: got %v, want %v", srv.AllowedTools, wantTools)
+	}
+	for i, want := range wantTools {
+		if srv.AllowedTools[i] != want {
+			t.Errorf("AllowedTools[%d]: got %q, want %q", i, srv.AllowedTools[i], want)
+		}
+	}
+
+	wantHosts := []string{"mcp.example.com"}
+	if len(srv.AllowedMCPHosts) != len(wantHosts) {
+		t.Fatalf("AllowedMCPHosts: got %v, want %v", srv.AllowedMCPHosts, wantHosts)
+	}
+	for i, want := range wantHosts {
+		if srv.AllowedMCPHosts[i] != want {
+			t.Errorf("AllowedMCPHosts[%d]: got %q, want %q", i, srv.AllowedMCPHosts[i], want)
+		}
+	}
+}
+
+// TestRunConfigFromProto_MCPTrustFieldsAbsentWhenNil documents the
+// backward-compatible default from #393: an MCP server config that omits
+// the trust fields entirely must translate to nil/empty slices on the
+// types side, not a spurious default allowlist or host pin. Round-tripped
+// through Marshal/Unmarshal for the same reason as the populated case
+// above — proto3 zero-value (absent repeated field) behaviour is only
+// truly exercised on the wire, not on an in-memory struct literal.
+func TestRunConfigFromProto_MCPTrustFieldsAbsentWhenNil(t *testing.T) {
+	original := &pb.RunConfig{
+		Tools: &pb.ToolsConfig{
+			McpServers: []*pb.MCPServerConfig{
+				{
+					Name: "search",
+					Uri:  "https://mcp.example.com/v1",
+				},
+			},
+		},
+	}
+
+	raw, err := proto.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded pb.RunConfig
+	if err := proto.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	rc := runConfigFromProto(&decoded)
+
+	if len(rc.Tools.MCPServers) != 1 {
+		t.Fatalf("MCPServers: got %d entries, want 1", len(rc.Tools.MCPServers))
+	}
+	srv := rc.Tools.MCPServers[0]
+
+	if len(srv.AllowedTools) != 0 {
+		t.Errorf("AllowedTools should be empty when proto field absent, got %v", srv.AllowedTools)
+	}
+	if len(srv.AllowedMCPHosts) != 0 {
+		t.Errorf("AllowedMCPHosts should be empty when proto field absent, got %v", srv.AllowedMCPHosts)
+	}
+}

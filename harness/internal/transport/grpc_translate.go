@@ -533,9 +533,11 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 	}
 	for _, srv := range pc.McpServers {
 		tc.MCPServers = append(tc.MCPServers, types.MCPServerConfig{
-			Name:      srv.Name,
-			URI:       srv.Uri,
-			APIKeyRef: srv.ApiKeyRef,
+			Name:            srv.Name,
+			URI:             srv.Uri,
+			APIKeyRef:       srv.ApiKeyRef,
+			AllowedTools:    srv.AllowedTools,
+			AllowedMCPHosts: srv.AllowedMcpHosts,
 		})
 	}
 	return tc

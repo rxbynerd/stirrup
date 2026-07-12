@@ -1579,4 +1579,16 @@ message MCPServerConfig {
   // Optional. Secret reference for server authentication
   // (e.g. "secret://MCP_API_KEY"). Sent as a Bearer token.
   string api_key_ref = 3;
+
+  // Optional. Allowlist restricting which advertised tools the harness
+  // registers from this server, matched case-sensitively against the
+  // server-reported (unprefixed) tool name. Empty/unset registers every
+  // advertised tool (backward-compatible historical behaviour).
+  repeated string allowed_tools = 4;
+
+  // Optional. Pins the set of hostnames this server's URI may resolve to.
+  // When non-empty, the URI host must appear in this list (exact,
+  // case-insensitive match) in addition to passing the SSRF guard.
+  // Empty/unset applies no host pinning.
+  repeated string allowed_mcp_hosts = 5;
 }
