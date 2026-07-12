@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -214,6 +215,26 @@ func (e *LocalExecutor) ListDirectory(ctx context.Context, path string) ([]strin
 // A zero timeout uses the default (30s). Output is truncated at 1 MB.
 // The process is killed if the context or timeout expires.
 func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.Duration) (*ExecResult, error) {
+	stdout := newCappedWriter(maxOutputSize)
+	stderr := newCappedWriter(maxOutputSize)
+	result, err := e.ExecStream(ctx, command, timeout, stdout, stderr)
+	if result == nil {
+		result = &ExecResult{}
+	}
+	result.Stdout = stdout.result()
+	result.Stderr = stderr.result()
+	if e.Security != nil {
+		combinedSize := stdout.seen() + stderr.seen()
+		if combinedSize > maxOutputSize {
+			e.Security.OutputTruncated(command, combinedSize, maxOutputSize)
+		}
+	}
+	return result, err
+}
+
+// ExecStream executes without applying the legacy output cap. Callers own the
+// writers and are responsible for bounding storage.
+func (e *LocalExecutor) ExecStream(ctx context.Context, command string, timeout time.Duration, stdout, stderr io.Writer) (*ExecResult, error) {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
@@ -241,31 +262,12 @@ func (e *LocalExecutor) Exec(ctx context.Context, command string, timeout time.D
 	// returns promptly regardless of what an orphaned grandchild does.
 	cmd.WaitDelay = shortCommandKillGrace
 
-	// Stream into capped writers so peak memory is bounded to ~maxOutputSize
-	// per stream rather than buffering all output. This mirrors
-	// ContainerExecutor.demuxDockerStream's drain-on-cap behaviour: bytes past
-	// the cap are accepted (so the process never blocks on a full pipe) but not
-	// retained. Each writer still counts every byte it sees, so the true
-	// pre-truncation size and trigger condition reported to OutputTruncated
-	// match the container path byte-for-byte.
-	stdout := newCappedWriter(maxOutputSize)
-	stderr := newCappedWriter(maxOutputSize)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
 	err := cmd.Run()
 
-	result := &ExecResult{
-		Stdout: stdout.result(),
-		Stderr: stderr.result(),
-	}
-
-	if e.Security != nil {
-		combinedSize := stdout.seen() + stderr.seen()
-		if combinedSize > maxOutputSize {
-			e.Security.OutputTruncated(command, combinedSize, maxOutputSize)
-		}
-	}
+	result := &ExecResult{}
 
 	if err != nil {
 		// Check context cancellation first — a killed process also produces

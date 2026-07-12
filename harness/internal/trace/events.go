@@ -58,7 +58,8 @@ const (
 	// to the accumulated ToolCalls inside the embedded RunTrace at
 	// run_finished, so a live consumer sees each hook as soon as it
 	// lands (mirrors tool_call_record).
-	EventKindHookRecord EventKind = "hook_record"
+	EventKindHookRecord          EventKind = "hook_record"
+	EventKindCommandOutputRecord EventKind = "command_output_record"
 )
 
 // CurrentSchemaVersion is the streaming-trace schema version emitted in
@@ -89,7 +90,8 @@ type Event struct {
 	ToolCall    *types.ToolCallRecord  `json:"toolCall,omitempty"`
 
 	// Hook payload — populated for hook_record events.
-	Hook *types.HookExecution `json:"hook,omitempty"`
+	Hook          *types.HookExecution       `json:"hook,omitempty"`
+	CommandOutput *types.CommandOutputRecord `json:"commandOutput,omitempty"`
 
 	// Trace summary — populated for run_finished events. Embedding the
 	// full RunTrace here keeps the backward-compat reader's job trivial:

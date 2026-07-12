@@ -312,6 +312,32 @@ func (e *podExecCore) Exec(ctx context.Context, command string, timeout time.Dur
 	}, nil
 }
 
+// ExecStream streams pod exec output directly to caller-owned writers without
+// the historical 10 MiB buffers used by Exec.
+func (e *podExecCore) ExecStream(ctx context.Context, command string, timeout time.Duration, stdout, stderr io.Writer) (*ExecResult, error) {
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	if timeout > maxTimeout {
+		timeout = maxTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	err := e.streamExec(ctx, []string{"/bin/sh", "-c", command}, nil, stdout, stderr)
+	if ctx.Err() != nil {
+		return &ExecResult{ExitCode: -1}, classifyExecCtxErr(ctx, timeout)
+	}
+	exitCode := 0
+	if err != nil {
+		code, ok := extractExitCode(err)
+		if !ok {
+			return &ExecResult{}, fmt.Errorf("exec: %w", err)
+		}
+		exitCode = code
+	}
+	return &ExecResult{ExitCode: exitCode}, nil
+}
+
 // streamExec builds and runs a pods/exec request against the agent
 // container, wiring the supplied stdin/stdout/stderr streams. It is the
 // single SPDY/remotecommand chokepoint shared by Exec and the tar-based

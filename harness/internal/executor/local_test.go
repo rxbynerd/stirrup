@@ -408,6 +408,24 @@ func TestExec_OutputStreamingBounded(t *testing.T) {
 	}
 }
 
+func TestExecStream_PreservesOutputBeyondLegacyCap(t *testing.T) {
+	exec, _ := newTestExecutor(t)
+	var stdout, stderr strings.Builder
+	result, err := exec.ExecStream(context.Background(), "yes x | head -c 2097152", 10*time.Second, &stdout, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code=%d", result.ExitCode)
+	}
+	if stdout.Len() != 2*1024*1024 {
+		t.Fatalf("stdout bytes=%d want %d", stdout.Len(), 2*1024*1024)
+	}
+	if strings.Contains(stdout.String(), truncatedSuffix) {
+		t.Fatal("streaming output was legacy-truncated")
+	}
+}
+
 // TestExec_OutputTruncated_CombinedAcrossStreams locks in the trigger
 // alignment: stdout and stderr each under the 1 MB cap but together over it
 // must fire OutputTruncated, matching the container path's combined-size

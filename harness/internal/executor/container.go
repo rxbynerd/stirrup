@@ -556,6 +556,28 @@ func (e *ContainerExecutor) Exec(ctx context.Context, command string, timeout ti
 	return e.truncateAndReport(command, result), nil
 }
 
+// ExecStream streams Docker multiplexed stdout/stderr directly to caller-owned
+// writers, bypassing the legacy 1 MiB Exec cap.
+func (e *ContainerExecutor) ExecStream(ctx context.Context, command string, timeout time.Duration, stdout, stderr io.Writer) (*ExecResult, error) {
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+	if timeout > maxTimeout {
+		timeout = maxTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result, err := e.execInContainerStream(ctx, []string{"sh", "-c", command}, e.workspace, timeout, stdout, stderr)
+	if result == nil {
+		result = &ExecResult{}
+	}
+	if err != nil && ctx.Err() != nil {
+		result.ExitCode = -1
+		return result, classifyExecCtxErr(ctx, timeout)
+	}
+	return result, err
+}
+
 // truncateAndReport caps result's stdout/stderr at maxOutputSize and, when a
 // SecurityEventEmitter is wired, reports OutputTruncated using the
 // pre-truncation combined size. Shared by the success and timeout/cancel
@@ -650,6 +672,72 @@ func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, w
 	result.ExitCode = exitCode
 
 	return result, nil
+}
+
+func (e *ContainerExecutor) execInContainerStream(ctx context.Context, cmd []string, workdir string, timeout time.Duration, stdout, stderr io.Writer) (*ExecResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	execID, err := e.api.createExec(ctx, e.containerID, cmd, workdir)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, classifyExecCtxErr(ctx, timeout)
+		}
+		return nil, fmt.Errorf("create exec: %w", err)
+	}
+	stream, err := e.api.startExec(ctx, execID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, classifyExecCtxErr(ctx, timeout)
+		}
+		return nil, fmt.Errorf("start exec: %w", err)
+	}
+	defer func() { _ = stream.Close() }()
+	result := &ExecResult{}
+	if err := demuxDockerStreamTo(stream, stdout, stderr); err != nil {
+		if ctx.Err() != nil {
+			return result, classifyExecCtxErr(ctx, timeout)
+		}
+		return result, fmt.Errorf("read exec output: %w", err)
+	}
+	exitCode, err := e.api.inspectExec(ctx, execID)
+	if err != nil {
+		if ctx.Err() != nil {
+			return result, classifyExecCtxErr(ctx, timeout)
+		}
+		return result, fmt.Errorf("inspect exec: %w", err)
+	}
+	result.ExitCode = exitCode
+	return result, nil
+}
+
+func demuxDockerStreamTo(r io.Reader, stdout, stderr io.Writer) error {
+	header := make([]byte, 8)
+	for {
+		_, err := io.ReadFull(r, header)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read stream header: %w", err)
+		}
+		frameSize := binary.BigEndian.Uint32(header[4:8])
+		if frameSize == 0 {
+			continue
+		}
+		if frameSize > maxDockerFrameSize {
+			return fmt.Errorf("docker stream frame exceeds %d byte limit: %d", maxDockerFrameSize, frameSize)
+		}
+		var dst io.Writer = io.Discard
+		switch header[0] {
+		case 1:
+			dst = stdout
+		case 2:
+			dst = stderr
+		}
+		if _, err := io.CopyN(dst, r, int64(frameSize)); err != nil {
+			return fmt.Errorf("read stream frame: %w", err)
+		}
+	}
 }
 
 // demuxDockerStream reads the Docker multiplexed stream format.

@@ -49,6 +49,14 @@ func ClassifyForQuarantine(recordings []RunRecording) []QuarantineFlag {
 // alone) exceeding limit bytes.
 func hasLargePayload(recordings []RunRecording, limit int) bool {
 	for _, rec := range recordings {
+		// Archive stream sizes are evaluated independently from transcript
+		// payload sizes: spilled sandbox output is intentionally absent from
+		// ToolCallRecord.Output, but remains relevant to quarantine policy.
+		for _, command := range rec.CommandOutputs {
+			if command.Stdout.ScrubbedBytes > int64(limit) || command.Stderr.ScrubbedBytes > int64(limit) {
+				return true
+			}
+		}
 		for _, turn := range rec.Turns {
 			turnSize := 0
 			for _, blk := range turn.ModelOutput {

@@ -93,3 +93,15 @@ func TestClassifyForQuarantine_LargeTurnAggregate(t *testing.T) {
 		t.Errorf("aggregate-large flags = %v, want [%s]", flags, QuarantineLargePayload)
 	}
 }
+
+func TestClassifyForQuarantine_LargeArchivedCommandStream(t *testing.T) {
+	recordings := []RunRecording{{
+		RunID:          "r1",
+		Turns:          []TurnRecord{{ToolCalls: []ToolCallRecord{{Name: "run_command", Output: "small preview"}}}},
+		CommandOutputs: []CommandOutputRecord{{Stdout: CommandOutputStreamRecord{ScrubbedBytes: DefaultLargePayloadBytes + 1}}},
+	}}
+	flags := ClassifyForQuarantine(recordings)
+	if len(flags) != 1 || flags[0] != QuarantineLargePayload {
+		t.Fatalf("flags=%v", flags)
+	}
+}

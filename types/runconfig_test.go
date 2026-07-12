@@ -5430,6 +5430,31 @@ func TestValidateRunConfig_TraceEmitterGCS_Valid(t *testing.T) {
 	}
 }
 
+func TestCommandOutputConfigDefaultsAndHardCaps(t *testing.T) {
+	got := (ToolsConfig{}).EffectiveCommandOutput()
+	if got.InlineMaxBytes != 32<<10 || got.PreviewBytesPerStream != 4<<10 || got.MaxBytesPerStream != 50<<20 || got.MaxBytesPerRun != 500<<20 {
+		t.Fatalf("defaults=%+v", got)
+	}
+	c := validConfig()
+	c.Tools.CommandOutput.MaxBytesPerStream = MaxCommandOutputBytesPerStream + 1
+	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "maxBytesPerStream") {
+		t.Fatalf("expected stream hard-cap error, got %v", err)
+	}
+}
+
+func TestValidateRunConfig_TraceArchive(t *testing.T) {
+	c := validConfig()
+	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "local", FilePath: "/tmp/run.command-output.tar.gz"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("valid local archive: %v", err)
+	}
+	c = validConfig()
+	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "gcs"}
+	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "archive.bucket") {
+		t.Fatalf("expected bucket error, got %v", err)
+	}
+}
+
 func TestValidateRunConfig_TraceEmitterGCS_BucketRequired(t *testing.T) {
 	c := validConfig()
 	c.TraceEmitter = TraceEmitterConfig{Type: "gcs"}

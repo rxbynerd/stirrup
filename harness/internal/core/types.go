@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -115,14 +116,17 @@ type AgenticLoop struct {
 	// (CLAUDE.md invariant). Nil-safe: a hand-assembled loop (tests,
 	// embedders) that leaves it unset sees the pre-remediation
 	// behaviour (postRun bounded only by its own budget).
-	Shutdown     context.Context
-	Transport    transport.Transport
-	Trace        trace.TraceEmitter
-	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
-	TraceContext context.Context          // context carrying the root span for child span parenting
-	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
-	Security     *security.SecurityLogger // optional, for structured security event logging
-	Logger       *slog.Logger             // structured logger with secret scrubbing
+	Shutdown          context.Context
+	Transport         transport.Transport
+	Trace             trace.TraceEmitter
+	Tracer            oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
+	TraceContext      context.Context          // context carrying the root span for child span parenting
+	Metrics           *observability.Metrics   // OTel metric instruments (noop when disabled)
+	Security          *security.SecurityLogger // optional, for structured security event logging
+	Logger            *slog.Logger             // structured logger with secret scrubbing
+	CommandOutput     *commandoutput.Store
+	OwnsCommandOutput bool
+	ParentRunID       string
 	// MetricAttrs is a set of attributes prepended to every metric
 	// observation emitted from this loop. Empty for top-level runs;
 	// SpawnSubAgent populates it on child loops with subagent=true and
@@ -430,6 +434,9 @@ func (l *AgenticLoop) dispatchToolCallCategorized(ctx context.Context, call type
 		res, err := t.StructuredHandler(ctx, inputForCall)
 		if err != nil {
 			return "Tool error: " + err.Error(), false, observability.ToolFailureHandlerError, structuredOutput{}
+		}
+		if res.IsError {
+			return res.Text, false, observability.ToolFailureHandlerError, structuredOutput{payload: res.Structured, kind: res.Kind}
 		}
 		return res.Text, true, "", structuredOutput{payload: res.Structured, kind: res.Kind}
 	case t.Handler != nil:

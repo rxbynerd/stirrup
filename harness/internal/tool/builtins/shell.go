@@ -3,12 +3,16 @@ package builtins
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // runCommandSchema is the JSON Schema for the run_command tool input.
@@ -30,6 +34,14 @@ var runCommandSchema = json.RawMessage(`{
 
 // RunCommandTool returns a tool that executes a shell command in the workspace.
 func RunCommandTool(exec executor.Executor) *tool.Tool {
+	return RunCommandToolWithStore(exec, nil, types.CommandOutputConfig{})
+}
+
+// RunCommandToolWithStore returns the compliance-capturing run_command tool.
+// A nil store preserves the legacy bounded path for embedders and unit-test
+// executors that do not expose streaming execution.
+func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store, cfg types.CommandOutputConfig) *tool.Tool {
+	cfg = (types.ToolsConfig{CommandOutput: cfg}).EffectiveCommandOutput()
 	return &tool.Tool{
 		Name: "run_command",
 		Description: "Execute a shell command in the workspace directory. Returns stdout, then a 'STDERR:' block when stderr is non-empty, then '[exit code: N]' when the command exited non-zero. " +
@@ -43,6 +55,13 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
+			if replay, ok := exec.(interface {
+				ReplayToolCall(string, json.RawMessage) (types.ToolCallRecord, bool)
+			}); ok {
+				if rec, found := replay.ReplayToolCall("run_command", input); found {
+					return tool.StructuredResult{Text: rec.Output, Structured: rec.Structured, Kind: rec.Kind, IsError: rec.IsError || !rec.Success}, nil
+				}
+			}
 			var params struct {
 				Command string `json:"command"`
 				Timeout *int   `json:"timeout"`
@@ -66,29 +85,166 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 			}
 			timeout := time.Duration(timeoutSeconds) * time.Second
 
-			result, err := exec.Exec(ctx, params.Command, timeout)
+			if store == nil {
+				result, err := exec.Exec(ctx, params.Command, timeout)
+				if err != nil {
+					return tool.StructuredResult{}, err
+				}
+				stdout, stderr := security.Scrub(result.Stdout), security.Scrub(result.Stderr)
+				structured, marshalErr := json.Marshal(commandResult{Stdout: stdout, Stderr: stderr, ExitCode: result.ExitCode, TimedOut: false, TimeoutSeconds: timeoutSeconds})
+				if marshalErr != nil {
+					return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
+				}
+				return tool.StructuredResult{Text: formatRunCommand(stdout, stderr, result.ExitCode), Structured: structured, Kind: kindCommandResult}, nil
+			}
+
+			streaming, ok := exec.(executor.StreamingExecutor)
+			if !ok {
+				return tool.StructuredResult{}, fmt.Errorf("executor does not support compliant command output streaming")
+			}
+			execCtx, cancel := context.WithCancelCause(ctx)
+			defer cancel(nil)
+			capture, err := store.Begin(ctx, cancel)
 			if err != nil {
 				return tool.StructuredResult{}, err
 			}
+			result, execErr := streaming.ExecStream(execCtx, params.Command, timeout, capture.Stdout(), capture.Stderr())
+			if result == nil {
+				result = &executor.ExecResult{ExitCode: -1}
+			}
+			timedOut := errors.Is(execErr, executor.ErrTimeout)
+			cause := context.Cause(execCtx)
+			cancelled := execErr != nil && !timedOut && execCtx.Err() != nil &&
+				!errors.Is(cause, commandoutput.ErrCaptureLimit) && !errors.Is(cause, commandoutput.ErrCaptureIO)
+			captured, captureErr := capture.Complete(commandoutput.Completion{ExitCode: result.ExitCode, TimedOut: timedOut, Cancelled: cancelled})
+			isError := execErr != nil || captureErr != nil
+			text, spilled := formatCapturedCommand(captured, cfg, timeoutSeconds)
+			if execErr != nil && !timedOut && cause != nil && !cancelled {
+				text += "\n[capture/command error: " + security.Scrub(execErr.Error()) + "]"
+			}
+			if err := store.RecordInitial(&captured.Record, text); err != nil {
+				return tool.StructuredResult{}, fmt.Errorf("record command model result: %w", err)
+			}
 
 			structured, marshalErr := json.Marshal(commandResult{
-				Stdout:   result.Stdout,
-				Stderr:   result.Stderr,
-				ExitCode: result.ExitCode,
-				// A timeout surfaces as the err above, so a result reaching
-				// here always completed within the bound.
-				TimedOut:       false,
+				Stdout:         previewForStructured(captured.Stdout, cfg, spilled),
+				Stderr:         previewForStructured(captured.Stderr, cfg, spilled),
+				ExitCode:       result.ExitCode,
+				TimedOut:       timedOut,
 				TimeoutSeconds: timeoutSeconds,
+				Spilled:        spilled, CaptureComplete: captured.Record.CaptureComplete,
+				ArchiveID: captured.Record.ArchiveID,
+				StdoutRef: captured.Record.Stdout.Reference, StderrRef: captured.Record.Stderr.Reference,
+				StdoutRawBytes: captured.Record.Stdout.RawBytes, StderrRawBytes: captured.Record.Stderr.RawBytes,
+				StdoutScrubbedBytes: captured.Record.Stdout.ScrubbedBytes, StderrScrubbedBytes: captured.Record.Stderr.ScrubbedBytes,
+				StdoutSHA256: captured.Record.Stdout.ScrubbedSHA256, StderrSHA256: captured.Record.Stderr.ScrubbedSHA256,
 			})
 			if marshalErr != nil {
 				return tool.StructuredResult{}, fmt.Errorf("marshal structured result: %w", marshalErr)
 			}
 
 			return tool.StructuredResult{
-				Text:       formatRunCommand(result.Stdout, result.Stderr, result.ExitCode),
+				Text:       text,
 				Structured: structured,
 				Kind:       kindCommandResult,
+				IsError:    isError,
 			}, nil
+		},
+	}
+}
+
+func formatCapturedCommand(c commandoutput.Captured, cfg types.CommandOutputConfig, timeoutSeconds int) (string, bool) {
+	combined := c.Record.Stdout.ScrubbedBytes + c.Record.Stderr.ScrubbedBytes
+	if combined <= cfg.InlineMaxBytes && c.Record.CaptureComplete {
+		return formatRunCommand(c.Stdout, c.Stderr, c.Record.ExitCode), false
+	}
+	var out strings.Builder
+	out.WriteString("[command output spilled to compliance archive]\n")
+	fmt.Fprintf(&out, "exit_code=%d timed_out=%t timeout_seconds=%d capture_complete=%t archive_id=%s\n",
+		c.Record.ExitCode, c.Record.TimedOut, timeoutSeconds, c.Record.CaptureComplete, c.Record.ArchiveID)
+	writeStreamPreview(&out, "stdout", c.Stdout, c.Record.Stdout, cfg.PreviewBytesPerStream)
+	writeStreamPreview(&out, "stderr", c.Stderr, c.Record.Stderr, cfg.PreviewBytesPerStream)
+	if c.Record.CaptureError != "" {
+		out.WriteString("capture_error=" + c.Record.CaptureError + "\n")
+	}
+	return strings.TrimSuffix(out.String(), "\n"), true
+}
+
+func writeStreamPreview(out *strings.Builder, name, content string, meta types.CommandOutputStreamRecord, preview int64) {
+	fmt.Fprintf(out, "%s raw_bytes=%d scrubbed_bytes=%d raw_sha256=%s scrubbed_sha256=%s\n", name, meta.RawBytes, meta.ScrubbedBytes, meta.RawSHA256, meta.ScrubbedSHA256)
+	fmt.Fprintf(out, "%s_ref=%s\n", name, meta.Reference)
+	tail := content
+	if int64(len(tail)) > preview {
+		tail = tail[len(tail)-int(preview):]
+	}
+	fmt.Fprintf(out, "%s_tail:\n%s\n", name, tail)
+}
+
+func previewForStructured(content string, cfg types.CommandOutputConfig, spilled bool) string {
+	if !spilled {
+		return content
+	}
+	if int64(len(content)) <= cfg.PreviewBytesPerStream {
+		return content
+	}
+	return content[len(content)-int(cfg.PreviewBytesPerStream):]
+}
+
+var readCommandOutputSchema = json.RawMessage(`{
+  "type":"object",
+  "properties":{
+    "ref":{"type":"string","pattern":"^stirrup://command-output/"},
+    "offset":{"type":"integer","minimum":0},
+    "limit":{"type":"integer","minimum":1,"maximum":131072}
+  },
+  "required":["ref"],
+  "additionalProperties":false
+}`)
+
+// ReadCommandOutputTool returns a read-only, approval-free paginator over
+// scrubbed command streams.
+func ReadCommandOutputTool(store *commandoutput.Store, execs ...executor.Executor) *tool.Tool {
+	return &tool.Tool{
+		Name:        "read_command_output",
+		Description: "Read a scrubbed byte range from an opaque stirrup://command-output reference returned by run_command. Defaults to 32 KiB and permits at most 128 KiB per call.",
+		InputSchema: readCommandOutputSchema,
+		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
+			if len(execs) > 0 {
+				if replay, ok := execs[0].(interface {
+					ReplayToolCall(string, json.RawMessage) (types.ToolCallRecord, bool)
+				}); ok {
+					if rec, found := replay.ReplayToolCall("read_command_output", input); found {
+						return tool.StructuredResult{Text: rec.Output, Structured: rec.Structured, Kind: rec.Kind, IsError: rec.IsError || !rec.Success}, nil
+					}
+				}
+			}
+			var params struct {
+				Ref    string `json:"ref"`
+				Offset int64  `json:"offset"`
+				Limit  int64  `json:"limit"`
+			}
+			if err := json.Unmarshal(input, &params); err != nil {
+				return tool.StructuredResult{}, fmt.Errorf("parse input: %w", err)
+			}
+			read, err := store.Read(params.Ref, params.Offset, params.Limit)
+			if err != nil {
+				return tool.StructuredResult{}, err
+			}
+			payload := commandOutputChunkResult{Reference: params.Ref, Stream: read.Stream, Offset: read.Offset, EndOffset: read.End, EOF: read.EOF, Content: string(read.Bytes), RawBytes: read.Content.RawBytes, RawSHA256: read.Content.RawSHA256, ScrubbedBytes: read.Content.ScrubbedBytes, ScrubbedSHA256: read.Content.ScrubbedSHA256, RedactionCount: read.Content.RedactionCount}
+			structured, err := json.Marshal(payload)
+			if err != nil {
+				return tool.StructuredResult{}, err
+			}
+			textBytes, err := json.Marshal(payload)
+			if err != nil {
+				return tool.StructuredResult{}, err
+			}
+			text := string(textBytes)
+			meta := commandoutput.CallContextFrom(ctx)
+			if err := store.RecordRead(meta.ToolUseID, params.Ref, read, text); err != nil {
+				return tool.StructuredResult{}, fmt.Errorf("record command output read: %w", err)
+			}
+			return tool.StructuredResult{Text: text, Structured: structured, Kind: kindCommandOutputChunk}, nil
 		},
 	}
 }

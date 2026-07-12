@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
+	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
@@ -478,6 +479,8 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 			outcome = "hook_failed"
 		}
 	}
+
+	outcome = l.finalizeCommandOutput(ctx, outcome)
 
 	l.Logger.Info("run finished", "outcome", outcome)
 
@@ -1178,7 +1181,10 @@ func (l *AgenticLoop) runInnerLoop(
 		// The router's provider/model selection is forwarded so per-call
 		// failure metrics (stirrup.harness.tool_failures) can be attributed
 		// back to the model that emitted the offending tool_use block.
-		toolResults, toolRecords, stallOutcome := l.planAndDispatch(ctx, config, toolCalls, stall, selection.Provider, selection.Model)
+		dispatchCtx := commandoutput.WithCallContext(ctx, commandoutput.CallContext{
+			RunID: config.RunID, ParentRunID: l.ParentRunID, Turn: turn + 1,
+		})
+		toolResults, toolRecords, stallOutcome := l.planAndDispatch(dispatchCtx, config, toolCalls, stall, selection.Provider, selection.Model)
 		turnRecord.ToolCalls = toolRecords
 		l.Trace.RecordTurnRecord(turnRecord)
 		messages = appendToolResults(messages, toolResults)
@@ -1904,6 +1910,7 @@ func (l *AgenticLoop) finishWithError(ctx context.Context, err error) (*types.Ru
 // "setup_failed" (or a ctx-cause outcome if the run's own wall-clock
 // timeout/cancel raced the hook failure) instead of the generic "error".
 func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err error) (*types.RunTrace, error) {
+	outcome = l.finalizeCommandOutput(ctx, outcome)
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",
 		Message: err.Error(),
@@ -1932,4 +1939,26 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, outcome string, err
 		l.Logger.Warn("trace finish failed", "error", traceErr)
 	}
 	return runTrace, err
+}
+
+func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string) string {
+	if l.CommandOutput == nil || !l.OwnsCommandOutput {
+		return outcome
+	}
+	if l.CommandOutput.FatalError() != nil {
+		outcome = "command_output_capture_failed"
+	}
+	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 6*time.Minute)
+	defer cancel()
+	archive, err := l.CommandOutput.Finalize(finalizeCtx)
+	if archive != "" {
+		if recorder, ok := l.Trace.(trace.CommandOutputArchiveRecorder); ok {
+			recorder.RecordCommandOutputArchive(archive)
+		}
+	}
+	if err != nil {
+		l.Logger.Error("command output archive finalization failed", "error", err, "archive", archive)
+		return "trace_archive_failed"
+	}
+	return outcome
 }

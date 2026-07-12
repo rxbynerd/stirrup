@@ -160,13 +160,16 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 		// Hooks are parent-run-only (#461): a sub-agent never runs
 		// lifecycle hooks, regardless of what the parent's RunConfig
 		// configured.
-		Hooks:     hook.NewNoop(),
-		Transport: captureTp,
-		Trace:     childTrace,
-		Tracer:    tracer,
-		Metrics:   parent.Metrics,
-		Logger:    parent.Logger,
-		Security:  parent.Security,
+		Hooks:             hook.NewNoop(),
+		Transport:         captureTp,
+		Trace:             childTrace,
+		Tracer:            tracer,
+		Metrics:           parent.Metrics,
+		Logger:            parent.Logger,
+		Security:          parent.Security,
+		CommandOutput:     parent.CommandOutput,
+		OwnsCommandOutput: false,
+		ParentRunID:       parentConfig.RunID,
 		// Inherit the parent's GuardRail so spawned sub-agents are
 		// not a silent escape hatch around the configured guards.
 		// Without this, an indirect-injection payload could route

@@ -668,7 +668,10 @@ Full reference: [`eval.md`](eval.md).
 | `MaxTokenBudget` | unset | 50 M |
 | `MaxCostBudget` | unset | $100 |
 | File read/write size | 10 MB | — |
-| Command output | 1 MB | — |
+| `Executor.Exec` output (hooks/verifiers/git helpers) | 1 MB | — |
+| `run_command` inline model output | 32 KiB combined | configurable |
+| `run_command` capture per stream | 50 MiB | 256 MiB |
+| `run_command` capture per run | 500 MiB | 2 GiB |
 | Command timeout (`run_command` tool) | 30 s | 5 min |
 | `Executor.Exec` hard cap (`local`/`container`/`k8s`/`k8s-sandbox`) | 30 s | 30 min |
 | Web fetch response | 100 KB | — |

@@ -45,6 +45,12 @@ type UploadOptions struct {
 	// not retain a reference after returning.
 	Body []byte
 
+	// BodyReader streams an object without materialising it in memory. When
+	// non-nil it takes precedence over Body and BodySize must contain the
+	// exact byte length so the request can set Content-Length.
+	BodyReader io.Reader
+	BodySize   int64
+
 	// ContentType is the Content-Type header sent with the upload.
 	// Defaults to application/octet-stream when empty.
 	ContentType string
@@ -108,13 +114,22 @@ func UploadObject(ctx context.Context, client *http.Client, opts UploadOptions) 
 		urlPathEscape(opts.Object),
 	)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(opts.Body))
+	var body io.Reader = bytes.NewReader(opts.Body)
+	contentLength := int64(len(opts.Body))
+	if opts.BodyReader != nil {
+		if opts.BodySize < 0 {
+			return fmt.Errorf("gcs: body size must not be negative")
+		}
+		body = opts.BodyReader
+		contentLength = opts.BodySize
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", contentType)
-	req.ContentLength = int64(len(opts.Body))
+	req.ContentLength = contentLength
 
 	resp, err := client.Do(req)
 	if err != nil {

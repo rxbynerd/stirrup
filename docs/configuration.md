@@ -550,6 +550,8 @@ configuration space — the common cases. Anything below requires
 | `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
 | `tools.mcpServers` | Remote MCP server registration. |
+| `tools.commandOutput` | Full-stream command capture limits and model preview thresholds. |
+| `traceEmitter.archive` | Explicit local or GCS destination for compressed command-output sidecars. |
 
 The CLI flags for each of these set the *type* selection only.
 
@@ -663,6 +665,41 @@ either "called by internal name under the default profile" or "the name
 did not resolve to a known tool under a non-default profile". The active
 `tools.profile` is recorded in the trace's attached `RunConfig`, so the
 two cases are distinguishable by reading it alongside the record.
+
+## Command output capture
+
+`run_command` streams complete stdout and stderr into a run-scoped secure
+store. Output up to `tools.commandOutput.inlineMaxBytes` remains inline after
+secret scrubbing. Larger output returns scrubbed tails plus opaque
+`stirrup://command-output/...` references; the automatically registered,
+read-only `read_command_output` tool reads those references in 32 KiB pages
+(128 KiB maximum per call).
+
+```json
+{
+  "tools": {
+    "commandOutput": {
+      "inlineMaxBytes": 32768,
+      "previewBytesPerStream": 4096,
+      "maxBytesPerStream": 52428800,
+      "maxBytesPerRun": 524288000
+    }
+  },
+  "traceEmitter": {
+    "type": "jsonl",
+    "filePath": "run.jsonl",
+    "archive": {"type": "local", "filePath": "run.command-output.tar.gz"}
+  }
+}
+```
+
+The stream and run maxima are compliance boundaries, not truncation limits.
+Crossing one cancels the command and prevents a successful run outcome. Raw
+bytes are deleted after whole-stream redaction; archives contain scrubbed
+streams, while raw byte counts and SHA-256 hashes remain as integrity metadata.
+Without an explicit destination, JSONL and GCS derive an adjacent archive;
+other emitters retain a local archive and report its absolute path in
+`RunResult.commandOutputArchive`.
 
 ## Lifecycle hooks
 

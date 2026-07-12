@@ -20,12 +20,16 @@ a `kind` discriminator. A complete run produces:
 {"kind":"run_started","schemaVersion":"1","runId":"...","config":{...redacted...},"startedAt":"..."}
 {"kind":"turn_record","turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...]}
 {"kind":"tool_call_record","turn":1,"name":"read_file","input":{...},"output":"..."}
+{"kind":"command_output_record","commandOutput":{"archiveId":"...","toolUseId":"...","stdout":{"rawBytes":123,"scrubbedBytes":111,"rawSha256":"...","scrubbedSha256":"..."}}}
 {"kind":"turn_record","turn":2,"modelInput":{...},"modelOutput":[...]}
 {"kind":"run_finished","trace":{...RunTrace summary...},"completedAt":"..."}
 ```
 
 `turn_record` carries the full transcript the model saw and produced
-that turn, including raw tool inputs and outputs. `tool_call_record`
+that turn, including the exact scrubbed tool results shown to it.
+`command_output_record` links a `run_command` call to bounded stream hashes,
+sizes, references, and its compressed sidecar archive without embedding full
+sandbox output in JSONL. `tool_call_record`
 is emitted in addition so a live consumer sees each call as soon as
 it lands. `run_finished` carries the same `RunTrace` summary the
 legacy single-blob format used; `stirrup trace show / stats / grep`
