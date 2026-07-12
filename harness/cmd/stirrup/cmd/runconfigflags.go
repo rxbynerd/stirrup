@@ -61,7 +61,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("prompt-file", "", "Path to a file whose contents become the prompt. Read from CWD when relative. Trailing newlines are trimmed; the file is capped at 10 MiB and must be non-empty. Lower precedence than --prompt and the positional argument; higher than STIRRUP_PROMPT.")
 	f.String("name", "", "Human-readable session label (metadata only, not injected into prompt)")
 
-	f.String("executor", "local", "Executor: local, container, k8s, k8s-sandbox, api")
+	f.String("executor", "local", "Executor: local, container, k8s, k8s-sandbox, api, none (none has no local filesystem or shell access — MCP-only / server-side-tool runs)")
 	f.String("edit-strategy", "", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config). Defaults to multi when unset.")
 	f.String("verifier", "none", "Verifier: none, test-runner, llm-judge (composite available only via --config)")
 	f.String("git-strategy", "none", "Git strategy: none, deterministic")
