@@ -228,7 +228,7 @@ Operator walkthroughs:
 ## Executor tiers
 
 The `Executor` interface abstracts where commands run and how files
-are accessed. Three tiers ship, selected per-task:
+are accessed. Four tiers ship, selected per-task:
 
 - **`api`** — read-only, backed by the GitHub Contents endpoint over
   stdlib `net/http`. `WriteFile` and `Exec` return errors; URL paths
@@ -242,6 +242,18 @@ are accessed. Three tiers ship, selected per-task:
   is `DOCKER_HOST` → `/var/run/docker.sock` →
   `$XDG_RUNTIME_DIR/podman/podman.sock` →
   `/var/run/podman/podman.sock`.
+- **`none`** — no execution surface at all: `ReadFile`, `WriteFile`,
+  `ListDirectory`, and `Exec` all return errors, and
+  `Capabilities()` reports every capability false. For MCP-only /
+  server-side-tool runs where the agent needs no local filesystem
+  or shell access. Not to be confused with
+  `executor.network.mode: "none"` (deny-all egress on a
+  filesystem-capable executor) — see the callout in
+  [`docs/configuration.md`](configuration.md#components).
+
+The `k8s` and `k8s-sandbox` executors run the agent in a Kubernetes
+sandbox Pod; see [`docs/executors/k8s.md`](executors/k8s.md) and
+[`docs/executors/k8s-agent-sandbox.md`](executors/k8s-agent-sandbox.md).
 
 Filesystem executors enforce a 10 MB file size cap, a 1 MB command
 output cap, a 30 s default command timeout, and symlink-aware

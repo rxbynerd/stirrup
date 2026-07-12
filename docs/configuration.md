@@ -396,7 +396,7 @@ The exchange audience is set on the `tokenSource` (canonically
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--executor` | `local` | One of `local`, `container`, `k8s`, `k8s-sandbox`, `api`. `k8s-sandbox` is the [Agent Sandbox CRD variant](executors/k8s-agent-sandbox.md) of `k8s`. |
+| `--executor` | `local` | One of `local`, `container`, `k8s`, `k8s-sandbox`, `api`, `none`. `k8s-sandbox` is the [Agent Sandbox CRD variant](executors/k8s-agent-sandbox.md) of `k8s`. `none` has no execution surface at all — no local filesystem or shell access — for MCP-only / server-side-tool runs. See the naming-collision note below. |
 | `--container-runtime` | (none) | Per-`executor` closed set. For `container` (host OCI runtime): `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`, `kata-clh` — must be registered with the host Docker/Podman daemon. For `k8s` (Pod `RuntimeClassName`): `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh` — note the name is `gvisor`, not `runsc`. `k8s-sandbox` is gVisor-only: empty or `gvisor`, any other value is rejected. Empty = engine default for `container`, cluster-default RuntimeClass for `k8s`. |
 | `--k8s-namespace` | (none) | Namespace for the `k8s` / `k8s-sandbox` sandbox Pod. Required when `--executor=k8s` or `--executor=k8s-sandbox`. JSON path: `executor.k8sNamespace`. |
 | `--k8s-kubeconfig` | (none) | Path to a kubeconfig for the `k8s` / `k8s-sandbox` executors. An explicit value wins even in-cluster; empty prefers in-cluster config, then `$KUBECONFIG`. JSON path: `executor.k8sKubeconfig`. |
@@ -420,6 +420,26 @@ executor's architecture, deployment recipes, egress model, and the full
 [`docs/executors/k8s-agent-sandbox.md`](executors/k8s-agent-sandbox.md)
 for the `k8s-sandbox` deltas (Sandbox CRD provisioning, gVisor-only
 runtime, RBAC).
+
+**`executor.type: "none"` vs. `executor.network.mode: "none"`.** These
+are two unrelated settings that happen to share a value:
+
+- `executor.type: "none"` selects the executor tier with no execution
+  surface at all — no `ReadFile`, `WriteFile`, `ListDirectory`, or
+  `Exec`. It is set via `--executor none`.
+- `executor.network.mode: "none"` is the deny-all egress setting on a
+  filesystem/shell-capable executor (`container`, `k8s`,
+  `k8s-sandbox`) — the executor still reads and writes a workspace
+  and runs commands, it just has no network route out. There is no
+  top-level `--network` flag; it is set only via `executor.network`
+  in a `--config` file (see `full.json` and `k8s-gvisor.json` under
+  [`examples/runconfig/`](../examples/runconfig/)).
+
+`executor.type: "none"` and `executor.network` are mutually
+irrelevant: the none executor rejects an explicit `executor.network`
+block outright (it has no network surface for a mode to constrain),
+and `executor.network.mode: "none"` is meaningless without a
+filesystem/shell executor to confine.
 
 ### Transport
 
