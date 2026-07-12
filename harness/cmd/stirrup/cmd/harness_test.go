@@ -605,6 +605,11 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("no-probe-egress", false, "")
 	f.Bool("no-probe-executor", false, "")
 	f.Duration("dry-run-timeout", core.DefaultPreflightTimeout, "")
+	// Debug-build-only flags (issues #219, #220). Mirrors the
+	// registration in harness.go init() so flag-combination tests can
+	// exercise validateDebugBuildFlags.
+	f.Bool("debug", false, "")
+	f.Bool("trace-wire", false, "")
 	return cmd
 }
 
