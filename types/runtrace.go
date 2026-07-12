@@ -70,10 +70,16 @@ type RunTrace struct {
 // a hook command — the trace must not depend solely on that guard being
 // airtight.
 type HookExecution struct {
-	Phase            string `json:"phase"` // "preRun" | "postRun"
-	Index            int    `json:"index"`
-	Name             string `json:"name,omitempty"`
-	Command          string `json:"command"`
+	Phase   string `json:"phase"` // "preRun" | "postRun"
+	Index   int    `json:"index"`
+	Name    string `json:"name,omitempty"`
+	Command string `json:"command"`
+	// ExitCode is the hook command's process exit code. Its zero value is
+	// ambiguous: 0 means either "the command exited successfully" or "no
+	// exit code was ever obtained" (e.g. an executor transport error
+	// before the process ran, or a Skipped entry). Consumers must not
+	// infer success from ExitCode == 0 — key off Error != "" instead, or
+	// call Failed().
 	ExitCode         int    `json:"exitCode"`
 	DurationMs       int64  `json:"durationMs"`
 	TimedOut         bool   `json:"timedOut,omitempty"`
@@ -82,6 +88,15 @@ type HookExecution struct {
 	Error            string `json:"error,omitempty"`
 	OutputTail       string `json:"outputTail,omitempty"`
 	Truncated        bool   `json:"truncated,omitempty"`
+}
+
+// Failed reports whether the hook execution failed. This is the
+// sanctioned failure check: prefer it over comparing ExitCode or Error
+// directly, since ExitCode's zero value is ambiguous (see the ExitCode
+// field doc) and Error is the only field that reliably distinguishes
+// "ran and failed" from "ran and succeeded" or "never ran".
+func (h HookExecution) Failed() bool {
+	return h.Error != ""
 }
 
 // ToolCallSummary records a single tool call's outcome for the trace.

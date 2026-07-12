@@ -87,7 +87,7 @@ func (r *ExecRunner) run(ctx context.Context, phase string, hooks []types.HookCo
 		exec := r.runOne(ctx, phase, i, h)
 		results = append(results, exec)
 
-		if exec.Error != "" && !h.ContinueOnError {
+		if exec.Failed() && !h.ContinueOnError {
 			fatalErr = fmt.Errorf("%s hook %d (%s) failed: %s", phase, i, hookLabel(h), exec.Error)
 		}
 	}
