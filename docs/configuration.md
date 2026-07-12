@@ -441,6 +441,12 @@ block outright (it has no network surface for a mode to constrain),
 and `executor.network.mode: "none"` is meaningless without a
 filesystem/shell executor to confine.
 
+Under `executor.type: "none"`, a read-only mode (`--mode`
+`planning`/`review`/`research`/`toil`) with no explicit
+`tools.builtIn` defaults to the non-filesystem built-in tools
+(`web_fetch`, `spawn_agent`) rather than the full read-only default —
+the none executor has no capability to back the rest.
+
 ### Transport
 
 | Flag | Default | Notes |

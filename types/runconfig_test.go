@@ -7340,6 +7340,62 @@ func TestRunConfig_HooksOmittedWhenNil(t *testing.T) {
 	}
 }
 
+// TestDefaultReadOnlyBuiltInToolsForExecutor_None pins the exact
+// capability-ungated subset the "none" branch returns, and proves the
+// result passes ValidateRunConfig for every read-only mode paired with
+// executor.type="none" — the scenario that was dead on arrival before
+// this filter existed (a bare `--executor none` invocation defaults to
+// mode "planning", and the unfiltered DefaultReadOnlyBuiltInTools()
+// tripped the none-executor fail-fast on its own mode-injected default).
+func TestDefaultReadOnlyBuiltInToolsForExecutor_None(t *testing.T) {
+	got := DefaultReadOnlyBuiltInToolsForExecutor("none")
+	want := []string{"web_fetch", "spawn_agent"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i, name := range want {
+		if got[i] != name {
+			t.Errorf("expected %v, got %v", want, got)
+			break
+		}
+	}
+
+	for mode := range readOnlyModes {
+		t.Run(mode, func(t *testing.T) {
+			c := validConfig()
+			c.Mode = mode
+			c.Executor = ExecutorConfig{Type: "none"}
+			c.PermissionPolicy = PermissionPolicyConfig{Type: "deny-side-effects"}
+			c.Tools = ToolsConfig{BuiltIn: DefaultReadOnlyBuiltInToolsForExecutor("none")}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("DefaultReadOnlyBuiltInToolsForExecutor(\"none\") should pass validation for mode %q, got: %v", mode, err)
+			}
+		})
+	}
+}
+
+// TestDefaultReadOnlyBuiltInToolsForExecutor_OtherTypesUnchanged pins
+// that every executor type besides "none" — including the empty string
+// (defaults to "local") — gets the unfiltered DefaultReadOnlyBuiltInTools()
+// list, so this helper only ever narrows behaviour for "none".
+func TestDefaultReadOnlyBuiltInToolsForExecutor_OtherTypesUnchanged(t *testing.T) {
+	for _, executorType := range []string{"", "local", "container", "k8s", "k8s-sandbox", "api"} {
+		t.Run(executorType, func(t *testing.T) {
+			got := DefaultReadOnlyBuiltInToolsForExecutor(executorType)
+			want := DefaultReadOnlyBuiltInTools()
+			if len(got) != len(want) {
+				t.Fatalf("expected unfiltered default list %v, got %v", want, got)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("expected unfiltered default list %v, got %v", want, got)
+					break
+				}
+			}
+		})
+	}
+}
+
 // --- executor.type="none" ---
 
 func TestValidateRunConfig_NoneExecutorAcceptedInExecutionMode(t *testing.T) {

@@ -2071,6 +2071,40 @@ var readCapabilityBuiltInTools = map[string]bool{
 	"git_show":          true,
 }
 
+// DefaultReadOnlyBuiltInToolsForExecutor returns the default built-in tool
+// list a caller (the CLI's applyModeDefaults) should inject for a
+// read-only mode when Tools.BuiltIn is unset, given the configured
+// executor.type. For every executor except "none" this is
+// DefaultReadOnlyBuiltInTools() unchanged.
+//
+// "none" (harness/internal/executor/none.go) has no filesystem or shell
+// capability at all, so the full read-only default would inject entries
+// validateNoneExecutorTools rejects — turning a mode-only invocation like
+// `--executor none` (mode defaults to "planning") into a config that fails
+// ValidateRunConfig out of the box, even though the operator never
+// explicitly asked for a filesystem tool. This filters
+// DefaultReadOnlyBuiltInTools() down to the capability-ungated subset
+// (web_fetch, spawn_agent today), reusing the exact same
+// readCapabilityBuiltInTools/mutatingTools sets validateNoneExecutorTools
+// checks against so a default can never drift out of sync with the
+// fail-fast it must not trip. An explicit operator-supplied Tools.BuiltIn
+// entry is untouched by this function and still fails validation via
+// validateNoneExecutorTools — only mode-injected defaults are filtered.
+func DefaultReadOnlyBuiltInToolsForExecutor(executorType string) []string {
+	defaults := DefaultReadOnlyBuiltInTools()
+	if executorType != "none" {
+		return defaults
+	}
+	filtered := make([]string, 0, len(defaults))
+	for _, name := range defaults {
+		if readCapabilityBuiltInTools[name] || mutatingTools[name] {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered
+}
+
 // ModePreset is a named set of RunConfig overrides.
 type ModePreset struct {
 	Name             string                 `json:"name"`

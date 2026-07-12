@@ -706,8 +706,16 @@ func applyModeDefaults(cfg *types.RunConfig) {
 		// passes: the validator rejects an empty list for read-only modes
 		// to force callers to opt specific tools in rather than accidentally
 		// inheriting the full set.
+		//
+		// The default is executor-aware: executor.type="none" has no
+		// filesystem/shell capability at all, so injecting the full
+		// DefaultReadOnlyBuiltInTools() would hand ValidateRunConfig's
+		// none-executor fail-fast a mode-generated (not operator-explicit)
+		// tool list to reject, making `--executor none` fail out of the box
+		// under the default "planning" mode. See
+		// DefaultReadOnlyBuiltInToolsForExecutor's doc comment.
 		if len(cfg.Tools.BuiltIn) == 0 {
-			cfg.Tools.BuiltIn = types.DefaultReadOnlyBuiltInTools()
+			cfg.Tools.BuiltIn = types.DefaultReadOnlyBuiltInToolsForExecutor(cfg.Executor.Type)
 		}
 	} else if cfg.PermissionPolicy.Type == "" {
 		cfg.PermissionPolicy = types.PermissionPolicyConfig{Type: "allow-all"}
