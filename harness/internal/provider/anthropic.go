@@ -376,7 +376,14 @@ func anthropicToolResultContent(b types.ContentBlock, cap quirks.StructuredToolR
 	// pre-#231 shape for empty-content results (which omitted the content key
 	// entirely). When Content is empty, fall through to the nil-return below
 	// regardless of the structured payload.
-	if cap.Supported && cap.ContentBlockArray && len(b.Structured) > 0 && b.Content != "" {
+	//
+	// When the structured envelope is byte-identical to the canonical text
+	// (read_command_output renders its JSON payload as both), the array form
+	// would put the same bytes on the wire twice — for a 128 KiB page that
+	// doubles a full turn's cost and can push a run over the model's context
+	// limit. Identical payloads collapse to the single string form below.
+	if cap.Supported && cap.ContentBlockArray && len(b.Structured) > 0 && b.Content != "" &&
+		string(b.Structured) != b.Content {
 		parts := []anthropicToolResultPart{
 			{Type: "text", Text: b.Content},
 			{Type: "text", Text: string(b.Structured)},
