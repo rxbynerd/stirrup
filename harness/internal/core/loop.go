@@ -1945,9 +1945,7 @@ func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string)
 	if l.CommandOutput == nil || !l.OwnsCommandOutput {
 		return outcome
 	}
-	if l.CommandOutput.FatalError() != nil {
-		outcome = "command_output_capture_failed"
-	}
+	captureFailed := l.CommandOutput.FatalError() != nil
 	finalizeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 6*time.Minute)
 	defer cancel()
 	archive, err := l.CommandOutput.Finalize(finalizeCtx)
@@ -1958,6 +1956,18 @@ func (l *AgenticLoop) finalizeCommandOutput(ctx context.Context, outcome string)
 	}
 	if err != nil {
 		l.Logger.Error("command output archive finalization failed", "error", err, "archive", archive)
+	}
+	// Like hook_failed, capture and archive failures only claim the outcome
+	// of an otherwise-successful run — the primary failure cause stays
+	// authoritative. Capture failure outranks archive failure: the former
+	// lost command output, the latter only its durable copy.
+	if outcome != "success" {
+		return outcome
+	}
+	if captureFailed {
+		return "command_output_capture_failed"
+	}
+	if err != nil {
 		return "trace_archive_failed"
 	}
 	return outcome

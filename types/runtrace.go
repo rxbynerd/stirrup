@@ -38,6 +38,9 @@ type RunTrace struct {
 	// started (zero turns ran); hook_failed means a PostRun hook failed after
 	// an otherwise-successful run (it never overrides a non-success outcome —
 	// the primary failure cause stays authoritative).
+	// command_output_capture_failed and trace_archive_failed follow the same
+	// rule: they claim only an otherwise-successful run, and a capture
+	// failure outranks an archive failure when both occur.
 	Outcome string `json:"outcome"`
 	// FinalAssistantText is the loop's last non-empty assistant text,
 	// concatenated across the text blocks of the final response and carried
