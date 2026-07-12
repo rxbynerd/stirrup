@@ -165,6 +165,28 @@ func TestAnthropicToolResultContent_EmptyContentCapabilityOn(t *testing.T) {
 	}
 }
 
+// TestAnthropicToolResultContent_IdenticalStructuredCollapses pins that a
+// tool result whose structured envelope is byte-identical to its canonical
+// text (read_command_output renders its JSON payload as both) is sent once
+// as the plain string form: the array form would put the same bytes on the
+// wire twice, doubling a large page's token cost.
+func TestAnthropicToolResultContent_IdenticalStructuredCollapses(t *testing.T) {
+	cap := quirks.StructuredToolResultCapability{Supported: true, ContentBlockArray: true}
+	payload := `{"reference":"stirrup://command-output/abc/stdout","content":"chunk bytes"}`
+	block := types.ContentBlock{
+		Type:       "tool_result",
+		ToolUseID:  "call_1",
+		Content:    payload,
+		Structured: json.RawMessage(payload),
+		Kind:       "command_output_chunk",
+	}
+	got := anthropicToolResultContent(block, cap)
+	want, _ := json.Marshal(payload)
+	if !bytes.Equal(got, want) {
+		t.Errorf("identical structured+text must collapse to the single string form\n got:  %s\n want: %s", got, want)
+	}
+}
+
 // TestGeminiStructuredToolResult_CapabilityOn pins that the Gemini builder
 // embeds the structured envelope under functionResponse.response.structured
 // (with kind) alongside the canonical content when the capability accepts it.
