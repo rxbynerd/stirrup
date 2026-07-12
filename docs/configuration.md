@@ -496,6 +496,30 @@ stdout. The default JSONL trace writes to a file (or to nothing when
 `STIRRUP_RESULT` line. A future JSONL emitter that writes to stdout
 would conflict with `--output=json`.
 
+`RunResult.FinalAssistantText` carries the loop's last assistant
+text onto the `STIRRUP_RESULT` line and any configured `resultSink`.
+An unbounded value here risks exceeding the per-entry size limit most
+log transports enforce (Cloud Logging's is roughly 256 KiB); a
+truncated log entry corrupts the trailing JSON and defeats a
+`grep | tail -n1`-style extraction of the line.
+
+`resultSink.maxFinalAssistantTextBytes` bounds the field. Zero or
+unset uses the default of 128 KiB — sized to leave headroom under a
+256 KiB entry ceiling once the rest of the `RunResult` envelope and
+JSON string escaping are accounted for. A positive value overrides
+the default; a negative value fails validation. The bound applies
+regardless of `resultSink.type`, including `none`: it protects the
+`RunResult` value itself, so an embedder reading `RunResult` directly
+gets the same guarantee as the `stdout-json` sink.
+
+Truncation is explicit, not silent. When the field is cut, the
+harness appends the marker `... [truncated by harness]` and sets
+`RunResult.FinalAssistantTextTruncated` to `true`. Truncation never
+splits a multi-byte UTF-8 rune, so the emitted JSON stays well-formed.
+The cap and the marker apply only to the `RunResult` copy of the
+text — the full, untruncated text is still recorded on the trace
+(JSONL / GCS / OTel) independently of `resultSink`.
+
 ### Workspace export
 
 At end-of-run the executor's workspace can be tarred, gzipped, and
