@@ -14,6 +14,58 @@
 // removing a field.
 package types
 
+import "unicode/utf8"
+
+// DefaultMaxFinalAssistantTextBytes bounds RunResult.FinalAssistantText
+// when a run does not set ResultSinkConfig.MaxFinalAssistantTextBytes
+// (or sets it to zero). Cloud Logging caps a single log entry at
+// roughly 256 KiB; the stdout-json result sink serialises the entire
+// RunResult envelope — not just this field — onto one STIRRUP_RESULT
+// line, and JSON string escaping can expand the text further, so
+// bounding this field to 128 KiB leaves headroom under the entry
+// ceiling for the rest of the envelope and any escaping overhead.
+const DefaultMaxFinalAssistantTextBytes = 1 << 17 // 128 KiB
+
+// finalAssistantTextTruncationMarker is appended to
+// RunResult.FinalAssistantText when CapFinalAssistantText truncates it.
+// Mirrors asyncResultTruncationSuffix in harness/internal/core/types.go
+// so both truncation surfaces read the same to an operator scanning
+// logs.
+const finalAssistantTextTruncationMarker = "... [truncated by harness]"
+
+// CapFinalAssistantText truncates s to at most maxBytes bytes of
+// pre-marker content and appends finalAssistantTextTruncationMarker
+// when truncation occurs. The returned capped string is therefore up
+// to len(finalAssistantTextTruncationMarker) bytes longer than
+// maxBytes. Exported so the RunResult builder (harness/cmd/stirrup/cmd,
+// outside this package) can apply the cap without duplicating the
+// rune-boundary logic.
+//
+// Truncation always lands on a UTF-8 rune boundary: FinalAssistantText
+// is model-produced text that must stay valid UTF-8 so the
+// STIRRUP_RESULT JSON line stays well-formed, so — unlike
+// extractAsyncToolResult's byte-boundary truncation of untrusted
+// control-plane content — this backs off to the start of the rune
+// straddling the cut rather than splitting it.
+//
+// maxBytes < 0 is treated as 0 rather than "no cap": callers resolve
+// the effective cap via ResultSinkConfig.ResolvedMaxFinalAssistantTextBytes
+// before calling this helper, so a negative value here should not
+// silently pass the string through unbounded.
+func CapFinalAssistantText(s string, maxBytes int) (capped string, truncated bool) {
+	if maxBytes < 0 {
+		maxBytes = 0
+	}
+	if len(s) <= maxBytes {
+		return s, false
+	}
+	end := maxBytes
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end] + finalAssistantTextTruncationMarker, true
+}
+
 // RunResult is the payload all resultSink adapters serialise at the end
 // of a run. Constructed from the existing RunTrace at end-of-run.
 //
@@ -57,6 +109,13 @@ type RunResult struct {
 	// failure). Callers that framed their prompt for JSON output parse
 	// this field; for free-form runs it is informational.
 	FinalAssistantText string `json:"finalAssistantText,omitempty"`
+
+	// FinalAssistantTextTruncated is true when FinalAssistantText was
+	// truncated to satisfy ResultSinkConfig.ResolvedMaxFinalAssistantTextBytes
+	// (issue #463). The full, untruncated text is still available on the
+	// trace via the trace emitter's RecordFinalAssistantText — this flag
+	// only describes the copy carried on this RunResult.
+	FinalAssistantTextTruncated bool `json:"finalAssistantTextTruncated,omitempty"`
 
 	// VerifierVerdict is the optional verifier outcome, present only
 	// when a verifier ran. Distinct from VerificationResult (the

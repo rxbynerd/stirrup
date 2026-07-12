@@ -5705,6 +5705,44 @@ func TestValidateRunConfig_ResultSink_InvalidType(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_ResultSink_MaxFinalAssistantTextBytes pins
+// issue #463's validation: zero (the "use the default" sentinel) and
+// any positive override pass, a negative value is rejected, and —
+// unlike Topic/Attributes — the field is accepted on every implemented
+// sink type because it bounds the RunResult field itself rather than a
+// per-adapter wire detail.
+func TestValidateRunConfig_ResultSink_MaxFinalAssistantTextBytes(t *testing.T) {
+	t.Run("zero is the default sentinel and passes", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: 0}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected zero MaxFinalAssistantTextBytes to pass, got: %v", err)
+		}
+	})
+	t.Run("positive override passes", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: 4096}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected positive MaxFinalAssistantTextBytes to pass, got: %v", err)
+		}
+	})
+	t.Run("negative is rejected", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "stdout-json", MaxFinalAssistantTextBytes: -1}
+		err := ValidateRunConfig(c)
+		if err == nil || !strings.Contains(err.Error(), "resultSink.maxFinalAssistantTextBytes must be non-negative") {
+			t.Errorf("expected maxFinalAssistantTextBytes-non-negative error, got: %v", err)
+		}
+	})
+	t.Run("positive override passes on type=none too", func(t *testing.T) {
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "none", MaxFinalAssistantTextBytes: 4096}
+		if err := ValidateRunConfig(c); err != nil {
+			t.Fatalf("expected MaxFinalAssistantTextBytes on type=none to pass (bounds RunResult, not a sink wire detail), got: %v", err)
+		}
+	})
+}
+
 // --- executor.workspaceExportTo ---
 
 func TestValidateRunConfig_WorkspaceExportTo_ValidGS(t *testing.T) {

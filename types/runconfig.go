@@ -1415,6 +1415,29 @@ type ResultSinkConfig struct {
 	// consulted. Carrying attributes on a non-"gcp-pubsub" type is
 	// rejected for the same reason as Topic.
 	Attributes map[string]string `json:"attributes,omitempty"`
+
+	// MaxFinalAssistantTextBytes bounds RunResult.FinalAssistantText
+	// (issue #463). Zero (the default) means
+	// DefaultMaxFinalAssistantTextBytes; use
+	// ResolvedMaxFinalAssistantTextBytes rather than reading this field
+	// directly. Unlike Topic/Attributes this is not gated to a single
+	// sink type: it bounds the RunResult field itself, so it applies
+	// regardless of which sink (or none) consumes the result — an
+	// embedder reading RunResult directly benefits from the same bound
+	// as the stdout-json sink.
+	MaxFinalAssistantTextBytes int `json:"maxFinalAssistantTextBytes,omitempty"`
+}
+
+// ResolvedMaxFinalAssistantTextBytes returns c.MaxFinalAssistantTextBytes,
+// or DefaultMaxFinalAssistantTextBytes when c is nil or the field is
+// unset (<= 0). Callers building a RunResult should use this instead of
+// reading MaxFinalAssistantTextBytes directly so a nil ResultSink (the
+// "no sink configured" case) still yields a sane cap.
+func (c *ResultSinkConfig) ResolvedMaxFinalAssistantTextBytes() int {
+	if c == nil || c.MaxFinalAssistantTextBytes <= 0 {
+		return DefaultMaxFinalAssistantTextBytes
+	}
+	return c.MaxFinalAssistantTextBytes
 }
 
 // ToolsConfig holds the tool configuration.
@@ -4502,6 +4525,13 @@ func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
 			"resultSink.attributes is only valid when type is \"gcp-pubsub\" (got type %q)",
 			cfg.Type,
 		))
+	}
+	// MaxFinalAssistantTextBytes bounds the RunResult field, not a
+	// per-adapter wire detail, so — unlike Topic/Attributes — it is not
+	// gated to a single sink type. Zero is allowed (means "use the
+	// default"); only a negative value is a config error.
+	if cfg.MaxFinalAssistantTextBytes < 0 {
+		*errs = append(*errs, "resultSink.maxFinalAssistantTextBytes must be non-negative")
 	}
 }
 
