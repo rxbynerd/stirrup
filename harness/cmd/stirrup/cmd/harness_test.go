@@ -1408,6 +1408,38 @@ func TestExampleFullJSONLoadsAndValidates(t *testing.T) {
 	}
 }
 
+// TestExampleNoneMCPOnlyJSONLoadsAndValidates pins the shipped
+// none-mcp-only.json fixture: the MCP-only, no-execution-surface use case
+// executor.type="none" exists for. It must round-trip through
+// loadRunConfigFile and pass ValidateRunConfig, and it demonstrates the
+// none executor paired with a read-only mode plus an MCP server and only
+// the (capability-ungated) web_fetch built-in tool.
+func TestExampleNoneMCPOnlyJSONLoadsAndValidates(t *testing.T) {
+	path := filepath.Join(repoRootForTests(t), "examples", "runconfig", "none-mcp-only.json")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("examples/runconfig/none-mcp-only.json not found at %q: %v", path, err)
+	}
+	cfg, err := loadRunConfigFile(path)
+	if err != nil {
+		t.Fatalf("loadRunConfigFile %q: %v", path, err)
+	}
+	if err := types.ValidateRunConfig(cfg); err != nil {
+		t.Fatalf("examples/runconfig/none-mcp-only.json fails ValidateRunConfig: %v", err)
+	}
+	if cfg.Executor.Type != "none" {
+		t.Errorf("example should demonstrate the none executor, got %q", cfg.Executor.Type)
+	}
+	if !types.IsReadOnlyMode(cfg.Mode) {
+		t.Errorf("example should demonstrate a read-only mode, got %q", cfg.Mode)
+	}
+	if len(cfg.Tools.BuiltIn) != 1 || cfg.Tools.BuiltIn[0] != "web_fetch" {
+		t.Errorf("example should enable only web_fetch, got %v", cfg.Tools.BuiltIn)
+	}
+	if len(cfg.Tools.MCPServers) != 1 || cfg.Tools.MCPServers[0].Name == "" {
+		t.Errorf("example should configure exactly one named MCP server, got %+v", cfg.Tools.MCPServers)
+	}
+}
+
 // TestExampleAzureOpenAIJSONLoadsAndValidates pins the shipped Azure
 // OpenAI fixture: the file must round-trip through loadRunConfigFile,
 // pass ValidateRunConfig, and demonstrate the three new fields populated
