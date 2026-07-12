@@ -171,7 +171,7 @@ func TestBuildToolRegistry_RespectsExecutorCapabilities(t *testing.T) {
 		},
 	}
 
-	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{})
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), types.ToolsConfig{}, nil)
 
 	if registry.Resolve("read_file") == nil {
 		t.Fatal("expected read_file to be registered")

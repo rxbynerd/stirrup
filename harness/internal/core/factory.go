@@ -117,7 +117,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		cleanup()
 		return nil, fmt.Errorf("build command output store: %w", err)
 	}
-	ownedClosers = append(ownedClosers, commandOutputStore)
+	if commandOutputStore != nil {
+		ownedClosers = append(ownedClosers, commandOutputStore)
+	}
 
 	// 4. Tool registry.
 	// The base edit strategy is constructed first, then optionally wrapped
@@ -265,7 +267,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	providers := components.providers
 	pp := components.permissionPolicy
 	te := components.traceEmitter
-	if recorder, ok := te.(trace.CommandOutputRecorder); ok {
+	if recorder, ok := te.(trace.CommandOutputRecorder); ok && commandOutputStore != nil {
 		commandOutputStore.SetRecorder(recorder)
 	}
 	if closer, ok := te.(io.Closer); ok {
@@ -563,31 +565,35 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	escalation := buildEscalationPolicy(config.EffectiveToolChoiceEscalationMaxRetries(), prov)
 
 	loop := &AgenticLoop{
-		Provider:          prov,
-		Providers:         providers,
-		Router:            rtr,
-		Prompt:            pb,
-		Context:           cs,
-		Tools:             registry,
-		Executor:          exec,
-		Edit:              es,
-		Verifier:          v,
-		Permissions:       pp,
-		Git:               gs,
-		GuardRail:         gr,
-		RuleOfTwo:         rot,
-		Escalation:        escalation,
-		Hooks:             hooksRunner,
-		Transport:         tp,
-		Trace:             te,
-		Tracer:            tracer,
-		Metrics:           metrics,
-		Security:          secLogger,
-		Logger:            logger,
-		CommandOutput:     commandOutputStore,
-		OwnsCommandOutput: true,
-		emitReady:         emitReady,
-		ownedClosers:      ownedClosers,
+		Provider:     prov,
+		Providers:    providers,
+		Router:       rtr,
+		Prompt:       pb,
+		Context:      cs,
+		Tools:        registry,
+		Executor:     exec,
+		Edit:         es,
+		Verifier:     v,
+		Permissions:  pp,
+		Git:          gs,
+		GuardRail:    gr,
+		RuleOfTwo:    rot,
+		Escalation:   escalation,
+		Hooks:        hooksRunner,
+		Transport:    tp,
+		Trace:        te,
+		Tracer:       tracer,
+		Metrics:      metrics,
+		Security:     secLogger,
+		Logger:       logger,
+		emitReady:    emitReady,
+		ownedClosers: ownedClosers,
+	}
+	// Assigned only for a live store: a nil *commandoutput.Store stored in
+	// the CommandOutputFinalizer interface would defeat the loop's nil check.
+	if commandOutputStore != nil {
+		loop.CommandOutput = commandOutputStore
+		loop.OwnsCommandOutput = true
 	}
 
 	// Register spawn_agent after loop construction. The tool needs a
@@ -1011,12 +1017,8 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 	}
 }
 
-func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.ToolsConfig, stores ...*commandoutput.Store) *tool.Registry {
+func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.ToolsConfig, outputStore *commandoutput.Store) *tool.Registry {
 	registry := tool.NewRegistry()
-	var outputStore *commandoutput.Store
-	if len(stores) > 0 {
-		outputStore = stores[0]
-	}
 	caps := exec.Capabilities()
 	if toolEnabled(cfg.BuiltIn, "read_file") && caps.CanRead {
 		registry.Register(builtins.ReadFileTool(exec))
@@ -1059,6 +1061,14 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	if toolEnabled(cfg.BuiltIn, "git_show") && caps.CanRead {
 		registry.Register(builtins.GitShowTool(exec))
 	}
+	// read_command_output is run_command's companion: it registers
+	// automatically whenever run_command registers with a live capture
+	// store — a spilled reference without its reader is incoherent, and
+	// operator configs written before capture existed list run_command in
+	// explicit builtIn allowlists that would otherwise silently strand
+	// refs. Listing it in builtIn is only needed for the standalone
+	// (replay) case; ValidateRunConfig rejects listing it with capture
+	// disabled.
 	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
 		registry.Register(builtins.RunCommandToolWithStore(exec, outputStore, cfg.EffectiveCommandOutput()))
 		if outputStore != nil {
@@ -1076,7 +1086,19 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	return registry
 }
 
+var _ CommandOutputFinalizer = (*commandoutput.Store)(nil)
+
+// buildCommandOutputStore returns nil when capture is disabled or no
+// registered tool could feed the store — read-only modes exclude
+// run_command, and skipping construction also skips resolving GCS archive
+// credentials those runs would never use.
 func buildCommandOutputStore(ctx context.Context, config *types.RunConfig) (*commandoutput.Store, error) {
+	if !config.Tools.CommandOutputCaptureEnabled() {
+		return nil, nil
+	}
+	if !toolEnabled(config.Tools.BuiltIn, "run_command") && !toolEnabled(config.Tools.BuiltIn, "read_command_output") {
+		return nil, nil
+	}
 	archivePath := ""
 	var uploader commandoutput.Uploader
 	archiveCfg := config.TraceEmitter.Archive

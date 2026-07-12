@@ -203,19 +203,17 @@ var readCommandOutputSchema = json.RawMessage(`{
 
 // ReadCommandOutputTool returns a read-only, approval-free paginator over
 // scrubbed command streams.
-func ReadCommandOutputTool(store *commandoutput.Store, execs ...executor.Executor) *tool.Tool {
+func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
 		Name:        "read_command_output",
 		Description: "Read a scrubbed byte range from an opaque stirrup://command-output reference returned by run_command. Defaults to 32 KiB and permits at most 128 KiB per call.",
 		InputSchema: readCommandOutputSchema,
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
-			if len(execs) > 0 {
-				if replay, ok := execs[0].(interface {
-					ReplayToolCall(string, json.RawMessage) (types.ToolCallRecord, bool)
-				}); ok {
-					if rec, found := replay.ReplayToolCall("read_command_output", input); found {
-						return tool.StructuredResult{Text: rec.Output, Structured: rec.Structured, Kind: rec.Kind, IsError: rec.IsError || !rec.Success}, nil
-					}
+			if replay, ok := exec.(interface {
+				ReplayToolCall(string, json.RawMessage) (types.ToolCallRecord, bool)
+			}); ok {
+				if rec, found := replay.ReplayToolCall("read_command_output", input); found {
+					return tool.StructuredResult{Text: rec.Output, Structured: rec.Structured, Kind: rec.Kind, IsError: rec.IsError || !rec.Success}, nil
 				}
 			}
 			var params struct {

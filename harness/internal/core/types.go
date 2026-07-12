@@ -18,7 +18,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/edit"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
@@ -54,6 +53,16 @@ const maxAsyncToolResultBytes = 1 << 20 // 1MB
 // asyncResultTruncationSuffix is appended when content exceeds
 // maxAsyncToolResultBytes. The model and the trace see this marker.
 const asyncResultTruncationSuffix = "... [truncated by harness]"
+
+// CommandOutputFinalizer is the loop's complete usage surface of the
+// command output store (cf. batchModeAdapter): a sticky capture failure to
+// map into the run outcome, and end-of-run archive finalization. Keeping it
+// a loop-local interface preserves the loop-as-pure-interfaces invariant
+// (CLAUDE.md) while the factory wires the concrete store.
+type CommandOutputFinalizer interface {
+	FatalError() error
+	Finalize(ctx context.Context) (string, error)
+}
 
 // AgenticLoop drives the ReAct loop. All dependencies are injected as struct
 // fields — the loop has no imports from concrete implementations, no environment
@@ -116,15 +125,20 @@ type AgenticLoop struct {
 	// (CLAUDE.md invariant). Nil-safe: a hand-assembled loop (tests,
 	// embedders) that leaves it unset sees the pre-remediation
 	// behaviour (postRun bounded only by its own budget).
-	Shutdown          context.Context
-	Transport         transport.Transport
-	Trace             trace.TraceEmitter
-	Tracer            oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
-	TraceContext      context.Context          // context carrying the root span for child span parenting
-	Metrics           *observability.Metrics   // OTel metric instruments (noop when disabled)
-	Security          *security.SecurityLogger // optional, for structured security event logging
-	Logger            *slog.Logger             // structured logger with secret scrubbing
-	CommandOutput     *commandoutput.Store
+	Shutdown     context.Context
+	Transport    transport.Transport
+	Trace        trace.TraceEmitter
+	Tracer       oteltrace.Tracer         // OTel tracer for loop-level spans (noop when not using OTel)
+	TraceContext context.Context          // context carrying the root span for child span parenting
+	Metrics      *observability.Metrics   // OTel metric instruments (noop when disabled)
+	Security     *security.SecurityLogger // optional, for structured security event logging
+	Logger       *slog.Logger             // structured logger with secret scrubbing
+	// CommandOutput is the loop's view of the run-scoped command output
+	// store; the factory injects the concrete *commandoutput.Store (or
+	// leaves this nil when capture is disabled) so the loop stays a pure
+	// function of its interfaces. Sub-agents share the parent's value
+	// with OwnsCommandOutput=false; only the owning loop finalizes.
+	CommandOutput     CommandOutputFinalizer
 	OwnsCommandOutput bool
 	ParentRunID       string
 	// MetricAttrs is a set of attributes prepended to every metric
