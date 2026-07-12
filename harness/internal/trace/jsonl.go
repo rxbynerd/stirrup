@@ -326,18 +326,20 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 	}
 	for i, tc := range t.ToolCalls {
 		out.ToolCalls[i] = types.ToolCallRecord{
-			ID:         tc.ID,
-			Name:       tc.Name,
-			Input:      scrubRawJSON(tc.Input),
-			Output:     security.Scrub(tc.Output),
-			DurationMs: tc.DurationMs,
-			Success:    tc.Success,
+			ID:           tc.ID,
+			Name:         tc.Name,
+			InternalName: tc.InternalName,
+			Input:        scrubRawJSON(tc.Input),
+			Output:       security.Scrub(tc.Output),
+			DurationMs:   tc.DurationMs,
+			Success:      tc.Success,
 			// The structured payload (issue #231) carries the same
 			// untrusted content as Output — a command transcript or file
 			// excerpt that can hold credentials — so it is scrubbed on the
 			// same footing. scrubRawJSON preserves a valid json.RawMessage
 			// shape on disk even when a secret straddles a JSON token.
 			Structured: scrubRawJSON(tc.Structured),
+			Kind:       tc.Kind,
 		}
 	}
 	return out
