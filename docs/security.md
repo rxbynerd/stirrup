@@ -127,6 +127,61 @@ response bodies are bounded with `io.LimitReader` to avoid
 unbounded memory consumption when a provider returns an unexpectedly
 large error payload.
 
+## Debug builds
+
+Diagnosing a redaction or provider-wire-format bug sometimes requires
+seeing exactly what left or arrived at the process, unredacted. The
+harness supports this through a compile-time-gated debug build rather
+than a runtime flag, so the capability cannot be requested against a
+release artifact.
+
+Debug behaviour is gated by the `stirrupdebug` Go build tag
+(`harness/internal/debugbuild.DebugBuildEnabled()`), built with:
+
+```sh
+go build -tags stirrupdebug ./harness/cmd/stirrup
+```
+
+Release artifacts — the `justfile`'s `build` recipe and
+[`release.yml`](../.github/workflows/release.yml) — never pass
+`-tags`, so every distributed binary has `DebugBuildEnabled()`
+hard-coded to `false` at compile time. A debug build's `--version`
+output carries a `+debug` suffix so it can never be mistaken for a
+release binary, and every run of a debug build prints a one-line
+stderr notice at startup.
+
+Two flags exist only on a debug build:
+
+| Flag | Effect |
+|---|---|
+| `--debug` | Disables `RunConfig.Redact()` and the trace emitter's `security.Scrub` content-scrub chain, so the persisted trace/recording carries unredacted secrets. |
+| `--trace-wire` | Installs a wire-tap `http.RoundTripper` on provider HTTP clients (Anthropic, OpenAI-compatible, OpenAI Responses, Gemini) that dumps every raw, unredacted request and response — including streaming SSE frames as they arrive — to stderr. Bedrock is not tapped: it talks to AWS via the `aws-sdk-go-v2` signer, which exposes no raw `*http.Client` seam. |
+
+Both flags are registered directly on the `harness` command's flag
+set, independent of `addRunConfigFlags` — they never enter
+`BuildRunConfig`, `applyOverrides`, or `types.RunConfig`, and
+`TestRunConfig_DoesNotExposeDebugFields` guards this structurally.
+They are CLI-only: no serialized `RunConfig` — including one
+submitted by a control plane — can request either behaviour.
+
+On a release binary, setting `--debug` or `--trace-wire` hard-errors
+(exit code 4, the usage class) before `BuildRunConfig` does any I/O
+or credential resolution:
+
+```
+--trace-wire requires a debug build; rebuild with: go build -tags stirrupdebug ./harness/cmd/stirrup
+```
+
+The behaviour is additionally gated at its point of effect —
+`buildTraceEmitter` for `--debug`, the provider-adapter wiring loop
+for `--trace-wire` — against `debugbuild.DebugBuildEnabled()`, not
+only against the flag value. A release binary is therefore
+physically incapable of disabling redaction or dumping unredacted
+wire traffic even via a hypothetical future code path that bypasses
+the CLI flag entirely. Neither `RunConfig.Redact()` nor
+`security.Scrub` is weakened to support this: the debug path bypasses
+them at trace-emitter construction time, not by altering what they do.
+
 ## SSRF protection (`web_fetch` and MCP)
 
 The `web_fetch` tool layers four checks before any HTTP request goes
