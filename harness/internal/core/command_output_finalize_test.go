@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	tracepkg "github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -22,7 +23,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancelCause(context.Background())
-		capture, err := store.Begin(commandoutput.WithCallContext(ctx, commandoutput.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
+		capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -46,7 +47,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancelCause(context.Background())
-		capture, err := store.Begin(commandoutput.WithCallContext(ctx, commandoutput.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
+		capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +75,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancelCause(context.Background())
-		capture, err := store.Begin(commandoutput.WithCallContext(ctx, commandoutput.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
+		capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +103,7 @@ func TestFinalizeCommandOutputFailClosedOutcomes(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancelCause(context.Background())
-		capture, err := store.Begin(commandoutput.WithCallContext(ctx, commandoutput.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
+		capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run", ToolUseID: "tool"}), cancel)
 		if err != nil {
 			t.Fatal(err)
 		}
