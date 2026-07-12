@@ -101,6 +101,7 @@ func (g *GRPCTransport) Emit(event types.HarnessEvent) error {
 	event.Text = g.scrubAndReport(event.Text, "transport.grpc.event.text")
 	event.Content = g.scrubAndReport(event.Content, "transport.grpc.event.content")
 	event.Message = g.scrubAndReport(event.Message, "transport.grpc.event.message")
+	event.Input = scrubEventInput(event.Input, g.scrubAndReport, "transport.grpc.event.input")
 
 	pe := harnessEventToProto(event)
 

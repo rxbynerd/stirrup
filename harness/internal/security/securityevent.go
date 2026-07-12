@@ -276,18 +276,18 @@ func (sl *SecurityLogger) SensitiveDataDetected(patterns []string, tier, source 
 // downstream tooling greps one identifier set; sensitiveData is always
 // true here — the transition is the event.
 //
-// scanning_suspended marks where soak telemetry ends: once the latch
-// trips, the monitor stops scanning, so warn-tier detections after
-// this event are deliberately dark. Hardcoded true while the skip is
-// unconditional; the enforcement wave's redact mode (which keeps
-// scanning post-latch) will parameterise it.
-func (sl *SecurityLogger) RuleOfTwoTriggered(untrustedInput, externalCommunication bool, action, source string) {
+// scanningSuspended marks where soak telemetry ends: for every action
+// except redact the monitor stops scanning once the latch trips, so
+// warn-tier detections after this event are deliberately dark. The
+// redact action keeps scanning (it rewrites spans on every later tool
+// result), so the caller passes false there.
+func (sl *SecurityLogger) RuleOfTwoTriggered(untrustedInput, externalCommunication bool, action, source string, scanningSuspended bool) {
 	sl.Emit("warn", "rule_of_two_triggered", map[string]any{
 		"untrustedInput":        untrustedInput,
 		"externalCommunication": externalCommunication,
 		"sensitiveData":         true,
 		"action":                action,
 		"source":                source,
-		"scanning_suspended":    true,
+		"scanning_suspended":    scanningSuspended,
 	})
 }

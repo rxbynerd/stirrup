@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
@@ -215,12 +217,34 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// Turn-0 Rule-of-Two scan: classify the operator prompt and the
 	// sanitized dynamic-context values before Prompt.Build so a
 	// latch-tier hit is recorded before the first provider call.
-	// Observe-only — redact-mode rewriting of dynamic context lands
-	// with enforcement in wave 4.
+	var turnZeroTransition bool
 	if config.Prompt != "" {
-		l.observeSensitive(runCtx, config, "prompt", 0, []string{config.Prompt})
+		if det := l.observeSensitive(runCtx, config, "prompt", 0, []string{config.Prompt}); det.Transition {
+			turnZeroTransition = true
+		}
 	}
-	l.observeSensitive(runCtx, config, "dynamic_context", 0, sortedContextValues(dynamicContext))
+	if det := l.observeSensitive(runCtx, config, "dynamic_context", 0, sortedContextValues(dynamicContext)); det.Transition {
+		turnZeroTransition = true
+	}
+
+	// Turn-0 enforcement, applied before Prompt.Build: redact rewrites
+	// the dynamic-context values the model will see (the operator's
+	// prompt latches but is never rewritten — changing the task
+	// statement changes run semantics); abort short-circuits the whole
+	// run before the first provider call. block-external / ask-upstream
+	// are enforced later, in the permission gate.
+	turnZeroAbort := false
+	switch l.ruleOfTwoAction() {
+	case "redact":
+		if n := l.redactDynamicContext(dynamicContext); n > 0 {
+			l.recordRuleOfTwoAction(runCtx, "redact")
+		}
+	case "abort":
+		if turnZeroTransition {
+			l.recordRuleOfTwoAction(runCtx, "abort")
+			turnZeroAbort = true
+		}
+	}
 
 	promptModel := config.EffectivePromptModel()
 	systemPrompt, err := l.Prompt.Build(runCtx, prompt.PromptContext{
@@ -337,14 +361,21 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	}
 	defer unregisterCtxTokens()
 
-	// Outer verification loop.
+	// Outer verification loop. A turn-0 Rule-of-Two abort skips it
+	// entirely: the latch tripped on the prompt / dynamic context
+	// before any provider call, so the run terminates with the
+	// rule_of_two_violation outcome through the same finish path as
+	// every other terminal outcome below.
 	outcome := "success"
 	verificationAttempts := 0
 	// finalAssistantText accumulates the last non-empty assistant text across
 	// every runInnerLoop invocation (verification retries re-enter the loop).
 	var finalAssistantText string
+	if turnZeroAbort {
+		outcome = "rule_of_two_violation"
+	}
 
-	for verificationAttempts <= maxVerificationRetries {
+	for !turnZeroAbort && verificationAttempts <= maxVerificationRetries {
 		// Run the inner agentic loop.
 		var innerOutcome, innerFinalText string
 		messages, innerOutcome, innerFinalText = l.runInnerLoop(runCtx, config, systemPrompt, messages, tokenTracker)
@@ -667,8 +698,22 @@ func (l *AgenticLoop) runInnerLoop(
 			// prompt and dynamic context, already observed in Run()
 			// under their own source labels — rescanning them here would
 			// double-emit warn-tier detections mislabelled "tool_result".
+			// The block-external / ask-upstream actions are enforced in
+			// the permission gate; abort and redact are loop-level and
+			// applied here from the Detection.
 			if turn > 0 {
-				l.observeSensitive(ctx, config, "tool_result", turn, chunks)
+				det := l.observeSensitive(ctx, config, "tool_result", turn, chunks)
+				switch l.ruleOfTwoAction() {
+				case "abort":
+					if det.Transition {
+						l.recordRuleOfTwoAction(ctx, "abort")
+						return messages, "rule_of_two_violation", finalAssistantText
+					}
+				case "redact":
+					if n := l.redactSensitiveSpans(messages, turn); n > 0 {
+						l.recordRuleOfTwoAction(ctx, "redact")
+					}
+				}
 			}
 			batched := batchUntrustedChunks(chunks)
 			in := guard.Input{
@@ -1563,16 +1608,18 @@ func (l *AgenticLoop) recordSpotlightApplied(ctx context.Context, phase guard.Ph
 }
 
 // observeSensitive runs the Rule-of-Two monitor over freshly-arrived
-// untrusted chunks and emits the observe-only telemetry: the
-// sensitive_scan_ms histogram on every scan, sensitive_data_detected +
+// untrusted chunks and emits its telemetry: the sensitive_scan_ms
+// histogram on every scan, sensitive_data_detected +
 // rule_of_two_detections on any finding, and the once-per-run
 // rule_of_two_triggered + transport warning at the latch transition.
-// Nothing here changes run behaviour — wave 3 ships dark; enforcement
-// consumers arrive in wave 4. A nil monitor (hand-assembled loops)
-// no-ops, mirroring guardCheck's nil-GuardRail branch.
-func (l *AgenticLoop) observeSensitive(ctx context.Context, config *types.RunConfig, source string, turn int, chunks []string) {
+// It only observes and records — the caller applies any enforcement
+// action (gate is in the permission layer; redact / abort are handled
+// at the call sites from the returned Detection). A nil monitor
+// (hand-assembled loops) no-ops, mirroring guardCheck's nil-GuardRail
+// branch.
+func (l *AgenticLoop) observeSensitive(ctx context.Context, config *types.RunConfig, source string, turn int, chunks []string) ruleoftwo.Detection {
 	if l.RuleOfTwo == nil || len(chunks) == 0 {
-		return
+		return ruleoftwo.Detection{}
 	}
 	start := time.Now()
 	det := l.RuleOfTwo.ObserveChunks(ctx, source, turn, chunks)
@@ -1586,7 +1633,7 @@ func (l *AgenticLoop) observeSensitive(ctx context.Context, config *types.RunCon
 		))
 	}
 	if len(det.Patterns) == 0 {
-		return
+		return det
 	}
 	action := l.RuleOfTwo.Action()
 	if l.Security != nil {
@@ -1604,6 +1651,30 @@ func (l *AgenticLoop) observeSensitive(ctx context.Context, config *types.RunCon
 	if det.Transition {
 		l.emitRuleOfTwoTriggered(config, source, action)
 	}
+	return det
+}
+
+// ruleOfTwoAction returns the monitor's effective on-detect action, or
+// "" when no monitor is wired. "warn" (observe-only) and "block-external"
+// / "ask-upstream" (handled in the permission gate) carry no loop-level
+// behaviour; only "redact" and "abort" are acted on at the scan sites.
+func (l *AgenticLoop) ruleOfTwoAction() string {
+	if l.RuleOfTwo == nil {
+		return ""
+	}
+	return l.RuleOfTwo.Action()
+}
+
+// recordRuleOfTwoAction increments stirrup.ruleoftwo.actions for one
+// applied enforcement action (a redacted chunk set, an abort). Gate
+// denials are recorded by the gate itself in the permission layer.
+func (l *AgenticLoop) recordRuleOfTwoAction(ctx context.Context, action string) {
+	if l.Metrics == nil {
+		return
+	}
+	l.Metrics.RuleOfTwoActions.Add(ctx, 1, l.metricAttrs(
+		attribute.String("action", action),
+	))
 }
 
 // ratchetRuleOfTwo forwards a guard decision's criterion to the
@@ -1645,15 +1716,23 @@ func (l *AgenticLoop) ratchetRuleOfTwo(ctx context.Context, config *types.RunCon
 // rule_of_two_triggered security event (key names mirror the run-start
 // audit events from emitRuleOfTwoEvents) and a one-time transport
 // warning so operators without a security-event pipeline still see the
-// posture change on the wire.
+// posture change on the wire. scanning_suspended is false only for the
+// redact action, which keeps scanning every later tool result.
 func (l *AgenticLoop) emitRuleOfTwoTriggered(config *types.RunConfig, source, action string) {
 	untrusted, _, external := types.RuleOfTwoState(config)
+	scanningSuspended := action != "redact"
 	if l.Security != nil {
-		l.Security.RuleOfTwoTriggered(untrusted, external, action, source)
+		l.Security.RuleOfTwoTriggered(untrusted, external, action, source, scanningSuspended)
+	}
+	var msg string
+	if l.RuleOfTwo != nil && l.RuleOfTwo.Enforcing() {
+		msg = fmt.Sprintf("rule of two: sensitive data detected (source %q); enforcing action %q", source, action)
+	} else {
+		msg = fmt.Sprintf("rule of two: sensitive data detected (source %q); action %q is observe-only", source, action)
 	}
 	_ = l.Transport.Emit(types.HarnessEvent{
 		Type:    "warning",
-		Message: fmt.Sprintf("rule of two: sensitive data detected (source %q); action %q is observe-only this release", source, action),
+		Message: msg,
 	})
 }
 
@@ -1806,6 +1885,82 @@ func replaceUntrustedChunks(messages []types.Message, turn int, placeholder stri
 			last.Content[i].Content = placeholder
 		}
 	}
+}
+
+// redactSensitiveSpans rewrites the latch-tier sensitive spans in every
+// just-arrived tool_result block of the last message, in BOTH the text
+// Content and the Structured payload — the Anthropic and Gemini
+// adapters both forward Structured to the model, so a scrub that
+// ignored it would leave an evasion seam (the wave-3 finding). Returns
+// the total number of spans replaced. Turn 0 is a no-op: its untrusted
+// content is the prompt and dynamic context, which Run() handles before
+// Prompt.Build (the prompt is never rewritten; dynamic context is
+// redacted in place). Modeled on replaceUntrustedChunks.
+func (l *AgenticLoop) redactSensitiveSpans(messages []types.Message, turn int) int {
+	if turn == 0 || len(messages) == 0 || l.RuleOfTwo == nil {
+		return 0
+	}
+	last := &messages[len(messages)-1]
+	if last.Role != "user" {
+		return 0
+	}
+	total := 0
+	for i := range last.Content {
+		if last.Content[i].Type != "tool_result" {
+			continue
+		}
+		if last.Content[i].Content != "" {
+			redacted, n := l.RuleOfTwo.Redact(last.Content[i].Content)
+			if n > 0 {
+				last.Content[i].Content = redacted
+				total += n
+			}
+		}
+		if len(last.Content[i].Structured) > 0 {
+			redacted, n := l.RuleOfTwo.Redact(string(last.Content[i].Structured))
+			if n > 0 {
+				// A placeholder inside a JSON string value keeps the
+				// document valid; a redaction that lands across JSON
+				// structure would not. Fall back to a whole-payload
+				// placeholder rather than emit malformed JSON to the
+				// provider.
+				if json.Valid([]byte(redacted)) {
+					last.Content[i].Structured = json.RawMessage(redacted)
+				} else {
+					// json.Marshal of a Go string always yields a valid
+					// JSON string regardless of the placeholder's
+					// contents; the error is unreachable for a string
+					// argument. This avoids relying on RedactionPlaceholder
+					// never acquiring a quote, backslash, or control char.
+					b, _ := json.Marshal(ruleoftwo.RedactionPlaceholder)
+					last.Content[i].Structured = json.RawMessage(b)
+				}
+				total += n
+			}
+		}
+	}
+	return total
+}
+
+// redactDynamicContext rewrites latch-tier sensitive spans in every
+// dynamic-context value in place, before Prompt.Build folds them into
+// the system prompt. Returns the number of spans replaced. The
+// operator's config.Prompt is deliberately NOT redacted: rewriting the
+// task statement would change run semantics, so the prompt only latches
+// (for audit and the gate) and is forwarded verbatim.
+func (l *AgenticLoop) redactDynamicContext(dynamicContext map[string]string) int {
+	if l.RuleOfTwo == nil {
+		return 0
+	}
+	total := 0
+	for k, v := range dynamicContext {
+		redacted, n := l.RuleOfTwo.Redact(v)
+		if n > 0 {
+			dynamicContext[k] = redacted
+			total += n
+		}
+	}
+	return total
 }
 
 // spotlightUntrustedChunks rewraps every tool_result block in the last

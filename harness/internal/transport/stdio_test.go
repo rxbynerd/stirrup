@@ -112,6 +112,73 @@ func TestStdioTransport_EmitScrubsSecrets(t *testing.T) {
 	}
 }
 
+// TestStdioTransport_EmitScrubsInput pins the Wave-4 fix: the
+// ask-upstream rule-of-two gate forwards a tool call's raw Input on a
+// permission_request event after the sensitive-data latch trips, so a
+// secret echoed into the call must not reach the control plane
+// unscrubbed.
+func TestStdioTransport_EmitScrubsInput(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewStdioTransport(&buf, strings.NewReader(""))
+
+	event := types.HarnessEvent{
+		Type:  "permission_request",
+		Name:  "run_command",
+		Input: json.RawMessage(`{"command":"echo AKIAQWERTYUIOPASDFGH"}`),
+	}
+	if err := tr.Emit(event); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "AKIAQWERTYUIOPASDFGH") {
+		t.Errorf("live-shaped AWS key was not scrubbed from event Input: %s", output)
+	}
+	if !strings.Contains(output, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] placeholder in scrubbed Input: %s", output)
+	}
+	// The scrubbed Input must remain valid JSON on the wire.
+	var got types.HarnessEvent
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &got); err != nil {
+		t.Fatalf("emitted line is not valid JSON: %v", err)
+	}
+	if !json.Valid(got.Input) {
+		t.Errorf("scrubbed Input is not valid JSON: %q", got.Input)
+	}
+}
+
+// TestStdioTransport_EmitScrubInvalidatedJSONFallback exercises the
+// fallback path: when scrubbing breaks the JSON structure, the Input is
+// replaced with a fixed placeholder rather than emitting malformed JSON.
+// The generic_hex_secret pattern's trailing optional-quote consumes the
+// JSON value's closing quote, so the [REDACTED] replacement leaves an
+// unterminated string — invalidating the document.
+func TestStdioTransport_EmitScrubInvalidatedJSONFallback(t *testing.T) {
+	var buf bytes.Buffer
+	tr := NewStdioTransport(&buf, strings.NewReader(""))
+
+	const hex = "0123456789abcdef0123456789abcdef" // 32 hex chars
+	raw := `{"note":"password=` + hex + `"}`
+	if err := tr.Emit(types.HarnessEvent{Type: "permission_request", Input: json.RawMessage(raw)}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	var got types.HarnessEvent
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("emitted line is not valid JSON: %v", err)
+	}
+	if !json.Valid(got.Input) {
+		t.Errorf("Input must be valid JSON even on the fallback path, got: %q", got.Input)
+	}
+	if strings.Contains(string(got.Input), hex) {
+		t.Errorf("secret survived the fallback: %q", got.Input)
+	}
+	if !strings.Contains(string(got.Input), "scrub-invalidated-json") {
+		t.Errorf("expected the scrub-invalidated-json placeholder, got: %q", got.Input)
+	}
+}
+
 func TestStdioTransport_Close(t *testing.T) {
 	tr := NewStdioTransport(&bytes.Buffer{}, strings.NewReader(""))
 	if err := tr.Close(); err != nil {

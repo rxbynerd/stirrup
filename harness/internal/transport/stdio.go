@@ -45,6 +45,7 @@ func (s *StdioTransport) Emit(event types.HarnessEvent) error {
 	event.Text = s.scrubAndReport(event.Text, "transport.stdio.event.text")
 	event.Content = s.scrubAndReport(event.Content, "transport.stdio.event.content")
 	event.Message = s.scrubAndReport(event.Message, "transport.stdio.event.message")
+	event.Input = scrubEventInput(event.Input, s.scrubAndReport, "transport.stdio.event.input")
 
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -57,6 +58,34 @@ func (s *StdioTransport) Emit(event types.HarnessEvent) error {
 	data = append(data, '\n')
 	_, err = s.writer.Write(data)
 	return err
+}
+
+// scrubInvalidatedJSONPlaceholder replaces an event Input whose JSON is no
+// longer valid after scrubbing. It is deliberately distinct from
+// ruleoftwo.RedactionPlaceholder so an operator can tell at a glance that
+// the redaction came from the transport's scrub-then-revalidate path rather
+// than the rule-of-two redact action.
+const scrubInvalidatedJSONPlaceholder = "[redacted:scrub-invalidated-json]"
+
+// scrubEventInput scrubs secret patterns from a HarnessEvent.Input
+// (json.RawMessage). The ask-upstream rule-of-two gate forwards a tool
+// call's raw input on a permission_request event, and that input can carry
+// the very secret that tripped the sensitive-data latch (an AWS key echoed
+// into a web_fetch URL or run_command argument). Scrubbing the string form
+// can in principle break the JSON (a redaction spanning a structural
+// boundary), so the result is revalidated and falls back to a fixed
+// placeholder rather than emit malformed JSON onto the wire. An empty input
+// is returned unchanged so the omitempty wire field stays absent.
+func scrubEventInput(input json.RawMessage, scrub func(value, location string) string, location string) json.RawMessage {
+	if len(input) == 0 {
+		return input
+	}
+	scrubbed := scrub(string(input), location)
+	if json.Valid([]byte(scrubbed)) {
+		return json.RawMessage(scrubbed)
+	}
+	b, _ := json.Marshal(scrubInvalidatedJSONPlaceholder)
+	return json.RawMessage(b)
 }
 
 // scrubAndReport scrubs s and, if any redaction happened, fires a

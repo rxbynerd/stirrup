@@ -85,12 +85,13 @@ type AgenticLoop struct {
 	Permissions permission.PermissionPolicy
 	Git         git.GitStrategy
 	GuardRail   guard.GuardRail
-	// RuleOfTwo is the Rule-of-Two runtime sensitive-data monitor
-	// (observe-only this wave: detections produce events and metrics,
-	// no enforcement consumer exists yet). The factory injects
-	// ruleoftwo.NewNoop() when the run is unarmed so loop call sites
-	// stay unconditional; hand-assembled loops (tests, embedders) may
-	// leave it nil and the observe helpers no-op, mirroring GuardRail.
+	// RuleOfTwo is the Rule-of-Two runtime sensitive-data monitor.
+	// Enforcement (block-external / ask-upstream via the permission
+	// gate, and the loop's redact / abort actions) keys on the monitor's
+	// run-scoped latch. The factory injects ruleoftwo.NewNoop() when the
+	// run is unarmed so loop call sites stay unconditional; hand-assembled
+	// loops (tests, embedders) may leave it nil and the observe helpers
+	// no-op, mirroring GuardRail.
 	RuleOfTwo  ruleoftwo.Monitor
 	Escalation EscalationPolicy // tool-choice missed-tool recovery (#230); nil = disabled
 	// Hooks runs the run's configured lifecycle hooks (#461). Optional,

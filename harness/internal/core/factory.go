@@ -287,10 +287,11 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 10b. Rule-of-Two runtime monitor, from the arming decision
 	// computed alongside the run-start audit events above. Noop when
-	// unarmed so the loop's call sites are unconditional. Observe-only
-	// this wave: enforcing/action flow into events only — no
-	// enforcement consumer exists until wave 4 lands the permission
-	// gate, redact, and abort paths.
+	// unarmed so the loop's call sites are unconditional. Enforcement
+	// is delivered by the permission gate wrapped below (block-external
+	// / ask-upstream) and the loop's redact / abort actions; escape
+	// hatches are ruleOfTwo.runtime.classifier "none" and
+	// ruleOfTwo.enforce: false.
 	rot := buildRuleOfTwoMonitor(ruleOfTwoArmingState)
 
 	// 11. Git strategy.
@@ -349,6 +350,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// (rather than step 7) so the metric-recorder wrapping centralised
 	// in buildVerifier sees a non-nil metrics on the only call site.
 	v = buildVerifier(config.Verifier, prov, metrics)
+
+	// Rule-of-Two enforcement gate, applied BEFORE the metrics wrapper
+	// so gate denials are recorded by stirrup.permission.decisions
+	// under the configured policy label (true attribution rides
+	// stirrup.ruleoftwo.actions, emitted by the gate itself). No-op
+	// unless the monitor is armed and enforcing with a gate-delivered
+	// action.
+	pp = wrapRuleOfTwoGate(pp, rot, ruleOfTwoArmingState, registry, config, tp, metrics)
 
 	// Wrap the previously-built permission policy with metrics so
 	// each Check call records stirrup.permission.decisions tagged
@@ -1146,9 +1155,9 @@ func editStrategyTool(es edit.EditStrategy, exec executor.Executor) *tool.Tool {
 // an LLM guard is expected to name when it spots sensitive content.
 var defaultRuleOfTwoGuardCriteria = []string{"sensitive_data", "pii"}
 
-// defaultRuleOfTwoAction is the documented onDetect default. Inert this
-// wave (no enforcement consumer); it flows into events so the soak
-// shows the action wave 4 will start applying.
+// defaultRuleOfTwoAction is the documented onDetect default, enforced
+// via the permission gate (block-external) when the arming matrix arms
+// the run.
 const defaultRuleOfTwoAction = "block-external"
 
 // ruleOfTwoArming is the factory's arming decision for the Rule-of-Two
@@ -1216,13 +1225,22 @@ func resolveRuleOfTwoArming(config *types.RunConfig) ruleOfTwoArming {
 			staticSensitive: s,
 		}
 	case classifier == "patterns":
+		// Explicit classifier:"patterns" with !u||!e is observe-only by
+		// construction (no enforcement consumer reads the latch here),
+		// so the monitor must NOT start pre-tripped even when the
+		// operator also declared sensitiveData: pre-tripping would skip
+		// every scan and yield zero detection telemetry — the opposite
+		// of what an operator who explicitly asked for pattern scanning
+		// wants. staticSensitive stays meaningful only on the enforcing
+		// u&&e path above, where a pre-tripped latch is the audited
+		// posture.
 		return ruleOfTwoArming{
 			armed:           true,
 			enforcing:       false,
 			action:          action,
 			criteria:        criteria,
 			classifier:      "patterns",
-			staticSensitive: s,
+			staticSensitive: false,
 		}
 	default:
 		return ruleOfTwoArming{}
@@ -1665,6 +1683,52 @@ func mutatingToolSet(registry *tool.Registry) map[string]bool {
 		}
 	}
 	return out
+}
+
+// externalCommToolSet returns the names of registered tools that can
+// move data outside the harness sandbox: run_command (shell egress),
+// web_fetch (arbitrary HTTP), and every MCP-imported tool (the remote
+// server receives each call's payload). The Rule-of-Two gate revokes
+// exactly this set once the sensitive-data latch trips. Keys are
+// internal tool IDs — the Presenter never rewrites dispatch names, so
+// toolset-profile aliases cannot bypass the set.
+func externalCommToolSet(registry *tool.Registry) map[string]bool {
+	out := make(map[string]bool)
+	for _, td := range registry.List() {
+		if td.Name == "run_command" || td.Name == "web_fetch" || strings.HasPrefix(td.Name, "mcp_") {
+			out[td.Name] = true
+		}
+	}
+	return out
+}
+
+// wrapRuleOfTwoGate installs the Rule-of-Two enforcement gate around
+// the permission policy when the runtime monitor is armed and
+// enforcing with a gate-delivered action. redact and abort are
+// loop-level actions with no permission-layer component, and
+// observe-only monitors ("warn") never gate — those return pp
+// unchanged. For onDetect=ask-upstream the AskUpstreamPolicy is
+// pre-built eagerly here, idle until the latch trips, so enforcement
+// time never constructs components; the validator already pinned
+// transport=grpc for that action.
+func wrapRuleOfTwoGate(pp permission.PermissionPolicy, monitor ruleoftwo.Monitor, arming ruleOfTwoArming, registry *tool.Registry, cfg *types.RunConfig, tp transport.Transport, metrics *observability.Metrics) permission.PermissionPolicy {
+	if !arming.armed || !arming.enforcing {
+		return pp
+	}
+	switch arming.action {
+	case "block-external":
+		return permission.NewRuleOfTwoGate(pp, monitor, externalCommToolSet(registry), nil, metrics)
+	case "ask-upstream":
+		// One external-comm set shared by the ask policy and the gate:
+		// both must cover the same tools, and a single allocation keeps
+		// them from silently diverging.
+		extSet := externalCommToolSet(registry)
+		timeout := time.Duration(cfg.PermissionPolicy.Timeout) * time.Second
+		ask := permission.NewAskUpstreamPolicy(tp, extSet, timeout)
+		return permission.NewRuleOfTwoGate(pp, monitor, extSet, ask, metrics)
+	default:
+		return pp
+	}
 }
 
 // approvalRequiredToolSet returns the names of registered tools that

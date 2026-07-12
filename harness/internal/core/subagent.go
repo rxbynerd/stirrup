@@ -125,15 +125,30 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	// misleading a trace consumer into thinking it did.
 	childConfig.Hooks = nil
 
-	// Permissions: when the parent is a Cedar policy-engine policy, the
-	// sub-agent gets its own clone with parentRunId populated. This is
-	// the only path that activates the subagent-capability-cap.cedar
-	// starter policy — without it, principal.parentRunId is absent and
-	// `has parentRunId` evaluates to false for every sub-agent run,
-	// silently negating the policy (M3).
+	// Permissions: when the innermost policy is a Cedar policy-engine
+	// policy, the sub-agent gets its own clone with parentRunId
+	// populated. This is the only path that activates the
+	// subagent-capability-cap.cedar starter policy — without it,
+	// principal.parentRunId is absent and `has parentRunId` evaluates
+	// to false for every sub-agent run, silently negating the policy
+	// (M3). The factory wraps the policy (Rule-of-Two gate, metric
+	// recorder), so the assertion goes through permission.Unwrap and
+	// the same wrapper chain is rebuilt around the clone — a direct
+	// type-assert would silently skip the clone under any wrapper, and
+	// substituting the bare clone would shed the gate, turning
+	// spawn_agent into a latch escape hatch.
 	childPermissions := parent.Permissions
-	if parentPolicyEngine, ok := parent.Permissions.(*permission.PolicyEnginePolicy); ok {
-		childPermissions = parentPolicyEngine.ForChildRun(childConfig.RunID)
+	if parentPolicyEngine, ok := permission.Unwrap(parent.Permissions).(*permission.PolicyEnginePolicy); ok {
+		clone := parentPolicyEngine.ForChildRun(childConfig.RunID)
+		if rewrapped, ok := permission.RewrapChain(parent.Permissions, clone); ok {
+			childPermissions = rewrapped
+		} else {
+			// A wrapper without Rewrap support: keep the parent's full
+			// chain (every wrapper intact) at the cost of the per-child
+			// Cedar identity, and surface the divergence — fail toward
+			// more enforcement, not less.
+			parent.Logger.Warn("permission chain not rewrappable; sub-agent keeps parent policy without per-child Cedar identity")
+		}
 	}
 
 	// Forwarding trace emitter: every Turn / ToolCall the child records
