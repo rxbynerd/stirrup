@@ -10,6 +10,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -25,7 +26,7 @@ func TestRunCommandInlineBoundaryAndSpillRead(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	run := RunCommandToolWithStore(exec, store, cfg)
-	ctx := commandoutput.WithCallContext(context.Background(), commandoutput.CallContext{RunID: "run", Turn: 1, ToolUseID: "inline"})
+	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", Turn: 1, ToolUseID: "inline"})
 	inline, err := run.StructuredHandler(ctx, json.RawMessage(`{"command":"printf 12345"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +35,7 @@ func TestRunCommandInlineBoundaryAndSpillRead(t *testing.T) {
 		t.Fatalf("inline=%q", inline.Text)
 	}
 
-	ctx = commandoutput.WithCallContext(context.Background(), commandoutput.CallContext{RunID: "run", Turn: 2, ToolUseID: "spill"})
+	ctx = tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", Turn: 2, ToolUseID: "spill"})
 	spilled, err := run.StructuredHandler(ctx, json.RawMessage(`{"command":"printf 123456; printf abcdef >&2"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +52,7 @@ func TestRunCommandInlineBoundaryAndSpillRead(t *testing.T) {
 	}
 
 	reader := ReadCommandOutputTool(store, exec)
-	readCtx := commandoutput.WithCallContext(context.Background(), commandoutput.CallContext{RunID: "run", Turn: 3, ToolUseID: "reader"})
+	readCtx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", Turn: 3, ToolUseID: "reader"})
 	input, _ := json.Marshal(map[string]any{"ref": result.StdoutRef, "offset": 1, "limit": 3})
 	chunk, err := reader.StructuredHandler(readCtx, input)
 	if err != nil {
@@ -80,7 +81,7 @@ func TestRunCommandTimeoutReturnsCapturedErrorResult(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	run := RunCommandToolWithStore(exec, store, cfg)
-	ctx := commandoutput.WithCallContext(context.Background(), commandoutput.CallContext{RunID: "run-timeout", ToolUseID: "timeout"})
+	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run-timeout", ToolUseID: "timeout"})
 	input := json.RawMessage([]byte("{\"command\":\"printf partial; sleep 5\",\"timeout\":1}"))
 	result, err := run.StructuredHandler(ctx, input)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -51,26 +52,6 @@ type Options struct {
 	Config      types.CommandOutputConfig
 	ArchivePath string
 	Uploader    Uploader
-}
-
-// CallContext is attached by the loop before a model-facing command tool is
-// invoked. It lets the store correlate bytes with transcript identifiers.
-type CallContext struct {
-	RunID       string
-	ParentRunID string
-	Turn        int
-	ToolUseID   string
-}
-
-type callContextKey struct{}
-
-func WithCallContext(ctx context.Context, meta CallContext) context.Context {
-	return context.WithValue(ctx, callContextKey{}, meta)
-}
-
-func CallContextFrom(ctx context.Context) CallContext {
-	meta, _ := ctx.Value(callContextKey{}).(CallContext)
-	return meta
 }
 
 // Store is shared by a parent run and all subagents.
@@ -221,7 +202,7 @@ func (s *Store) Begin(ctx context.Context, cancel context.CancelCauseFunc) (*Cap
 		return nil, fmt.Errorf("command output store is failed: %w", err)
 	}
 	s.mu.Unlock()
-	meta := CallContextFrom(ctx)
+	meta := tool.CallContextFrom(ctx)
 	if meta.ToolUseID == "" {
 		meta.ToolUseID = fmt.Sprintf("command-%d", time.Now().UnixNano())
 	}
@@ -489,7 +470,7 @@ func (s *Store) Read(ref string, offset, limit int64) (ReadResult, error) {
 // member path: the store is shared across a parent run and its subagents, so
 // a bare tool-use ID can collide across conversations and silently overwrite
 // a ledger file.
-func (s *Store) RecordRead(reader CallContext, ref string, result ReadResult, modelVisible string) error {
+func (s *Store) RecordRead(reader tool.CallContext, ref string, result ReadResult, modelVisible string) error {
 	s.mu.Lock()
 	r, ok := s.refs[ref]
 	s.mu.Unlock()

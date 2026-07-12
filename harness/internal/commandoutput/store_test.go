@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -40,7 +41,7 @@ func TestStoreWholeStreamScrubArchiveAndLedger(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancelCause(context.Background())
-	capture, err := store.Begin(WithCallContext(ctx, CallContext{RunID: "run-1", Turn: 2, ToolUseID: "tool-1"}), cancel)
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run-1", Turn: 2, ToolUseID: "tool-1"}), cancel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,7 @@ func TestStoreWholeStreamScrubArchiveAndLedger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRead(CallContext{RunID: "run-1", ToolUseID: "reader-1"}, captured.Record.Stdout.Reference, read, "model-visible chunk"); err != nil {
+	if err := store.RecordRead(tool.CallContext{RunID: "run-1", ToolUseID: "reader-1"}, captured.Record.Stdout.Reference, read, "model-visible chunk"); err != nil {
 		t.Fatal(err)
 	}
 	location, err := store.Finalize(context.Background())
@@ -128,7 +129,7 @@ func TestStoreRecordReadScopesLedgerMembersByRunID(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	ctx, cancel := context.WithCancelCause(context.Background())
-	capture, err := store.Begin(WithCallContext(ctx, CallContext{RunID: "parent", ToolUseID: "cmd-1"}), cancel)
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "parent", ToolUseID: "cmd-1"}), cancel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,10 +151,10 @@ func TestStoreRecordReadScopesLedgerMembersByRunID(t *testing.T) {
 	// A parent run and a subagent share the store; providers can reuse short
 	// tool-use IDs across the two conversations, so identical tool-use IDs
 	// under different run IDs must produce distinct ledger members.
-	if err := store.RecordRead(CallContext{RunID: "parent", ToolUseID: "call_1"}, ref, read, "parent chunk"); err != nil {
+	if err := store.RecordRead(tool.CallContext{RunID: "parent", ToolUseID: "call_1"}, ref, read, "parent chunk"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordRead(CallContext{RunID: "subagent", ToolUseID: "call_1"}, ref, read, "subagent chunk"); err != nil {
+	if err := store.RecordRead(tool.CallContext{RunID: "subagent", ToolUseID: "call_1"}, ref, read, "subagent chunk"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Finalize(context.Background()); err != nil {
@@ -183,7 +184,7 @@ func TestStoreLimitFailureIsStickyAndCancels(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 	ctx, cancel := context.WithCancelCause(context.Background())
-	capture, err := store.Begin(WithCallContext(ctx, CallContext{RunID: "run-limit", ToolUseID: "tool-limit"}), cancel)
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "run-limit", ToolUseID: "tool-limit"}), cancel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +217,7 @@ func TestStoreLargeStreamArchiveReconstructsWithoutRetainingFullModelCopy(t *tes
 	}
 	defer func() { _ = store.Close() }()
 	ctx, cancel := context.WithCancelCause(context.Background())
-	capture, err := store.Begin(WithCallContext(ctx, CallContext{RunID: "large", ToolUseID: "tool"}), cancel)
+	capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "large", ToolUseID: "tool"}), cancel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +252,7 @@ func TestStoreDiskAndUploadFailuresFailClosed(t *testing.T) {
 		}
 		defer func() { _ = store.Close() }()
 		ctx, cancel := context.WithCancelCause(context.Background())
-		capture, err := store.Begin(WithCallContext(ctx, CallContext{RunID: "disk", ToolUseID: "tool"}), cancel)
+		capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "disk", ToolUseID: "tool"}), cancel)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -274,7 +275,7 @@ func TestStoreDiskAndUploadFailuresFailClosed(t *testing.T) {
 		}
 		defer func() { _ = store.Close() }()
 		ctx, cancel := context.WithCancelCause(context.Background())
-		capture, err := store.Begin(WithCallContext(ctx, CallContext{RunID: "upload", ToolUseID: "tool"}), cancel)
+		capture, err := store.Begin(tool.WithCallContext(ctx, tool.CallContext{RunID: "upload", ToolUseID: "tool"}), cancel)
 		if err != nil {
 			t.Fatal(err)
 		}

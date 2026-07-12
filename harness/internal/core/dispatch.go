@@ -13,10 +13,10 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -137,9 +137,9 @@ func (l *AgenticLoop) planAndDispatch(
 			),
 		)
 		toolSpanCtx := oteltrace.ContextWithSpan(ctx, toolSpan)
-		callMeta := commandoutput.CallContextFrom(ctx)
+		callMeta := tool.CallContextFrom(ctx)
 		callMeta.ToolUseID = call.ID
-		toolSpanCtx = commandoutput.WithCallContext(toolSpanCtx, callMeta)
+		toolSpanCtx = tool.WithCallContext(toolSpanCtx, callMeta)
 		plan[i] = pendingCall{
 			call:      call,
 			span:      toolSpan,

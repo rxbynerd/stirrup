@@ -12,13 +12,13 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
-	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	contextpkg "github.com/rxbynerd/stirrup/harness/internal/context"
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
@@ -1181,7 +1181,7 @@ func (l *AgenticLoop) runInnerLoop(
 		// The router's provider/model selection is forwarded so per-call
 		// failure metrics (stirrup.harness.tool_failures) can be attributed
 		// back to the model that emitted the offending tool_use block.
-		dispatchCtx := commandoutput.WithCallContext(ctx, commandoutput.CallContext{
+		dispatchCtx := tool.WithCallContext(ctx, tool.CallContext{
 			RunID: config.RunID, ParentRunID: l.ParentRunID, Turn: turn + 1,
 		})
 		toolResults, toolRecords, stallOutcome := l.planAndDispatch(dispatchCtx, config, toolCalls, stall, selection.Provider, selection.Model)
