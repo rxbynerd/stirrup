@@ -62,6 +62,12 @@ type GCSTraceEmitter struct {
 	httpClient      *http.Client
 	endpointBaseURL string // override for tests
 
+	// redactionDisabled is the --debug bit (issue #219); see
+	// JSONLTraceEmitter.redactionDisabled for the shared contract. Set
+	// only by the factory, and only when debugbuild.DebugBuildEnabled()
+	// is also true; see docs/security.md#debug-builds.
+	redactionDisabled bool
+
 	mu                 sync.Mutex
 	runID              string
 	config             *types.RunConfig
@@ -92,6 +98,12 @@ type GCSTraceEmitterOptions struct {
 	// gcs.DefaultEndpointBaseURL. Tests set this to point at an
 	// httptest.NewServer; production callers leave it empty.
 	EndpointBaseURL string
+
+	// RedactionDisabled is the --debug bit (issue #219); see
+	// GCSTraceEmitter.redactionDisabled. Production callers pass the
+	// factory's already debugbuild-gated value; every other caller
+	// (including every test) should leave this false.
+	RedactionDisabled bool
 }
 
 // NewGCSTraceEmitter validates the options and constructs an emitter.
@@ -127,11 +139,12 @@ func NewGCSTraceEmitter(ctx context.Context, opts GCSTraceEmitterOptions) (*GCST
 	}
 
 	return &GCSTraceEmitter{
-		bucket:          opts.Bucket,
-		objectPrefix:    opts.ObjectPrefix,
-		bearer:          resolved.BearerToken,
-		httpClient:      client,
-		endpointBaseURL: opts.EndpointBaseURL,
+		bucket:            opts.Bucket,
+		objectPrefix:      opts.ObjectPrefix,
+		bearer:            resolved.BearerToken,
+		httpClient:        client,
+		endpointBaseURL:   opts.EndpointBaseURL,
+		redactionDisabled: opts.RedactionDisabled,
 	}, nil
 }
 
@@ -227,7 +240,11 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 
 	var redactedConfig types.RunConfig
 	if cfg != nil {
-		redactedConfig = cfg.Redact()
+		if e.redactionDisabled {
+			redactedConfig = *cfg
+		} else {
+			redactedConfig = cfg.Redact()
+		}
 	}
 
 	trace := &types.RunTrace{

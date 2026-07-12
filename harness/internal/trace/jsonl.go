@@ -32,6 +32,15 @@ type JSONLTraceEmitter struct {
 	writer io.Writer
 	closer io.Closer
 
+	// redactionDisabled is the --debug bit (issue #219), immutable after
+	// construction like OTelTraceEmitter.captureContent. When true, every
+	// scrub/redact call this emitter would otherwise make is bypassed —
+	// RunConfig.Redact() and security.Scrub are both skipped in favour of
+	// the raw value — so the persisted trace carries unredacted secrets.
+	// Set only by the factory, and only when debugbuild.DebugBuildEnabled()
+	// is also true; see docs/security.md#debug-builds.
+	redactionDisabled bool
+
 	mu        sync.Mutex
 	runID     string
 	config    *types.RunConfig
@@ -53,8 +62,13 @@ var _ FinalAssistantTextRecorder = (*JSONLTraceEmitter)(nil)
 
 // NewJSONLTraceEmitter creates a streaming trace emitter that writes to w.
 // If w implements io.Closer, Close on the emitter closes it.
-func NewJSONLTraceEmitter(w io.Writer) *JSONLTraceEmitter {
-	emitter := &JSONLTraceEmitter{writer: w}
+//
+// redactionDisabled is the --debug bit (issue #219); see the field
+// docstring. Production callers pass the factory's already debugbuild-
+// gated value; every other caller (including every test) should pass
+// false.
+func NewJSONLTraceEmitter(w io.Writer, redactionDisabled bool) *JSONLTraceEmitter {
+	emitter := &JSONLTraceEmitter{writer: w, redactionDisabled: redactionDisabled}
 	if closer, ok := w.(io.Closer); ok {
 		emitter.closer = closer
 	}
@@ -84,7 +98,9 @@ func (e *JSONLTraceEmitter) writeLineLocked(ev Event) error {
 
 // Start initialises the trace and writes the run_started event. The
 // config is redacted via RunConfig.Redact() so secret references never
-// appear on disk even if a future config field exposes a raw value.
+// appear on disk even if a future config field exposes a raw value —
+// unless redactionDisabled (--debug) is set, in which case the raw,
+// unredacted config is written verbatim.
 func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -101,7 +117,11 @@ func (e *JSONLTraceEmitter) Start(runID string, config *types.RunConfig) {
 	startedAt := e.startedAt
 	var redacted types.RunConfig
 	if config != nil {
-		redacted = config.Redact()
+		if e.redactionDisabled {
+			redacted = *config
+		} else {
+			redacted = config.Redact()
+		}
 	}
 	ev := Event{
 		Kind:          EventKindRunStarted,
@@ -138,7 +158,7 @@ func (e *JSONLTraceEmitter) RecordTurnRecord(turn types.TurnRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	scrubbed := scrubTurnRecord(turn)
+	scrubbed := scrubTurnRecord(turn, e.redactionDisabled)
 	ev := Event{
 		Kind:        EventKindTurnRecord,
 		Turn:        scrubbed.Turn,
@@ -208,9 +228,9 @@ func (e *JSONLTraceEmitter) RecordHookExecution(exec types.HookExecution) {
 	defer e.mu.Unlock()
 
 	scrubbed := exec
-	scrubbed.Command = security.Scrub(exec.Command)
-	scrubbed.OutputTail = security.Scrub(exec.OutputTail)
-	scrubbed.Error = security.Scrub(exec.Error)
+	scrubbed.Command = scrubOrPass(exec.Command, e.redactionDisabled)
+	scrubbed.OutputTail = scrubOrPass(exec.OutputTail, e.redactionDisabled)
+	scrubbed.Error = scrubOrPass(exec.Error, e.redactionDisabled)
 
 	e.hookResults = append(e.hookResults, scrubbed)
 
@@ -252,7 +272,11 @@ func (e *JSONLTraceEmitter) Finish(_ context.Context, outcome string) (*types.Ru
 
 	var redactedConfig types.RunConfig
 	if e.config != nil {
-		redactedConfig = e.config.Redact()
+		if e.redactionDisabled {
+			redactedConfig = *e.config
+		} else {
+			redactedConfig = e.config.Redact()
+		}
 	}
 
 	trace := &types.RunTrace{
@@ -315,11 +339,18 @@ func (e *JSONLTraceEmitter) Close() error {
 //
 // ContentBlock.ThoughtSignature is not scrubbed but dropped entirely —
 // it is provider-opaque and must not be persisted; see scrubContentBlocks.
-func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
+//
+// redactionDisabled is the --debug bit: when true, every security.Scrub
+// call below is bypassed in favour of the raw value (via scrubOrPass /
+// scrubRawJSON's own redactionDisabled parameter). ThoughtSignature
+// dropping is NOT gated by it — that drop is a provider-opaque-state
+// invariant unrelated to secret redaction, not a debug-disableable
+// scrub — so a debug build still never persists it.
+func scrubTurnRecord(t types.TurnRecord, redactionDisabled bool) types.TurnRecord {
 	out := types.TurnRecord{
 		Turn:        t.Turn,
-		ModelInput:  scrubModelInput(t.ModelInput),
-		ModelOutput: scrubContentBlocks(t.ModelOutput),
+		ModelInput:  scrubModelInput(t.ModelInput, redactionDisabled),
+		ModelOutput: scrubContentBlocks(t.ModelOutput, redactionDisabled),
 		ToolCalls:   make([]types.ToolCallRecord, len(t.ToolCalls)),
 		RunID:       t.RunID,
 		ParentRunID: t.ParentRunID,
@@ -328,8 +359,8 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 		out.ToolCalls[i] = types.ToolCallRecord{
 			ID:         tc.ID,
 			Name:       tc.Name,
-			Input:      scrubRawJSON(tc.Input),
-			Output:     security.Scrub(tc.Output),
+			Input:      scrubRawJSON(tc.Input, redactionDisabled),
+			Output:     scrubOrPass(tc.Output, redactionDisabled),
 			DurationMs: tc.DurationMs,
 			Success:    tc.Success,
 			// The structured payload (issue #231) carries the same
@@ -337,7 +368,7 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 			// excerpt that can hold credentials — so it is scrubbed on the
 			// same footing. scrubRawJSON preserves a valid json.RawMessage
 			// shape on disk even when a secret straddles a JSON token.
-			Structured: scrubRawJSON(tc.Structured),
+			Structured: scrubRawJSON(tc.Structured, redactionDisabled),
 		}
 	}
 	return out
@@ -354,7 +385,7 @@ func scrubTurnRecord(t types.TurnRecord) types.TurnRecord {
 // in types/messages.go), and the scrubber cannot inspect an opaque
 // value. The explicit field list below is the drop mechanism — a future
 // edit that copies the source Message wholesale would regress this.
-func scrubModelInput(in types.ModelInput) types.ModelInput {
+func scrubModelInput(in types.ModelInput, redactionDisabled bool) types.ModelInput {
 	out := types.ModelInput{
 		Model:    in.Model,
 		Tools:    in.Tools,
@@ -364,7 +395,7 @@ func scrubModelInput(in types.ModelInput) types.ModelInput {
 		out.Messages[i] = types.Message{
 			Role:      m.Role,
 			Synthetic: m.Synthetic,
-			Content:   scrubContentBlocks(m.Content),
+			Content:   scrubContentBlocks(m.Content, redactionDisabled),
 		}
 	}
 	return out
@@ -382,7 +413,7 @@ func scrubModelInput(in types.ModelInput) types.ModelInput {
 // scrub in scrubTurnRecord; both surfaces are scrubbed because the same
 // payload reaches the trace via two routes (the turn record AND the next
 // turn's model input message history).
-func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
+func scrubContentBlocks(blocks []types.ContentBlock, redactionDisabled bool) []types.ContentBlock {
 	if blocks == nil {
 		return nil
 	}
@@ -395,10 +426,12 @@ func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 		// the field contract in types/messages.go. It is opaque by
 		// definition, so the scrubber cannot inspect it; the persisted
 		// copy drops it outright. The live blocks the loop holds are
-		// untouched.
+		// untouched. Dropped unconditionally — not gated by
+		// redactionDisabled — because this is a provider-opacity
+		// invariant, not a secret-redaction one.
 		nb.ThoughtSignature = ""
 		if nb.Text != "" {
-			nb.Text = security.Scrub(nb.Text)
+			nb.Text = scrubOrPass(nb.Text, redactionDisabled)
 		}
 		// Content is the tool_result text rendering — command output,
 		// file excerpts, MCP server responses — exactly the untrusted
@@ -407,13 +440,13 @@ func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 		// scrub test (#413): this field previously reached the
 		// defence-in-depth layer unscrubbed.
 		if nb.Content != "" {
-			nb.Content = security.Scrub(nb.Content)
+			nb.Content = scrubOrPass(nb.Content, redactionDisabled)
 		}
 		if len(nb.Input) > 0 {
-			nb.Input = scrubRawJSON(nb.Input)
+			nb.Input = scrubRawJSON(nb.Input, redactionDisabled)
 		}
 		if len(nb.Structured) > 0 {
-			nb.Structured = scrubRawJSON(nb.Structured)
+			nb.Structured = scrubRawJSON(nb.Structured, redactionDisabled)
 		}
 		out[i] = nb
 	}
@@ -434,8 +467,13 @@ func scrubContentBlocks(blocks []types.ContentBlock) []types.ContentBlock {
 // U+2028/U+2029 as \uXXXX sequences in the raw byte stream, which can cause a
 // secret regex anchored on those characters to miss. Do not pipe HTMLEscape
 // output through this function.
-func scrubRawJSON(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
+//
+// redactionDisabled short-circuits to the raw payload untouched — the
+// --debug bypass. It is checked here (not just by the caller) so every
+// call site gets the bypass uniformly rather than trusting each caller
+// to guard it.
+func scrubRawJSON(raw json.RawMessage, redactionDisabled bool) json.RawMessage {
+	if redactionDisabled || len(raw) == 0 {
 		return raw
 	}
 	scrubbed := security.Scrub(string(raw))
@@ -459,4 +497,16 @@ func scrubRawJSON(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return json.RawMessage(wrapped)
+}
+
+// scrubOrPass returns security.Scrub(s), or s verbatim when
+// redactionDisabled is true (the --debug bypass, issue #219). Centralises
+// the bypass so every scrub call site in this package — and in otel.go,
+// which shares the same redactionDisabled contract — reads identically
+// rather than hand-rolling the conditional at each site.
+func scrubOrPass(s string, redactionDisabled bool) string {
+	if redactionDisabled {
+		return s
+	}
+	return security.Scrub(s)
 }

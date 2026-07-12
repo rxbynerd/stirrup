@@ -53,7 +53,7 @@ func pickEvent(t *testing.T, events []Event, kind EventKind) Event {
 
 func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	timeout := 300
 	config := &types.RunConfig{
@@ -178,7 +178,7 @@ func TestJSONLTraceEmitter_FullLifecycle(t *testing.T) {
 // downstream analysis.
 func TestJSONLTraceEmitter_SessionNameRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	timeout := 60
 	config := &types.RunConfig{
@@ -212,7 +212,7 @@ func TestJSONLTraceEmitter_SessionNameRoundTrip(t *testing.T) {
 
 func TestJSONLTraceEmitter_EmptyRun(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	emitter.Start("run-empty", nil)
 
@@ -254,7 +254,7 @@ func TestJSONLTraceEmitter_EmptyRun(t *testing.T) {
 // leaves a scrubbed event on disk.
 func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	emitter.Start("run-scrub", nil)
 	emitter.RecordTurnRecord(types.TurnRecord{
@@ -313,7 +313,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_Scrubs(t *testing.T) {
 // route of the next turn.
 func TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	const signature = "opaque-thought-signature-blob-do-not-persist"
 	emitter.Start("run-thought-signature", nil)
@@ -356,7 +356,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsThoughtSignature(t *testing.T) 
 // the persisted message history outright.
 func TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	const replayValue = "opaque-reasoning-content-do-not-persist"
 	emitter.Start("run-replay-fields", nil)
@@ -398,7 +398,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_DropsMessageReplayFields(t *testing.
 // found unscrubbed while building the OTel content-capture path (#413).
 func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	emitter.Start("run-scrub-tool-result", nil)
 	emitter.RecordTurnRecord(types.TurnRecord{
@@ -438,7 +438,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsToolResultContent(t *testing.T
 // ToolCallRecord.Structured must never reach disk with a secret in the clear.
 func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	emitter.Start("run-scrub-structured", nil)
 	emitter.RecordTurnRecord(types.TurnRecord{
@@ -490,7 +490,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsStructured(t *testing.T) {
 // Structured payload must not reach disk in the clear.
 func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	emitter.Start("run-scrub-cb-structured", nil)
 	emitter.RecordTurnRecord(types.TurnRecord{
@@ -539,7 +539,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_ScrubsContentBlockStructured(t *test
 // user content (#340).
 func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	emitter.Start("run-synthetic", nil)
 	emitter.RecordTurnRecord(types.TurnRecord{
@@ -600,7 +600,7 @@ func TestJSONLTraceEmitter_RecordTurnRecord_PreservesSynthetic(t *testing.T) {
 // by the kernel for sub-PIPE_BUF writes.
 func TestJSONLTraceEmitter_PartialStream(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 
 	emitter.Start("run-partial", nil)
 	emitter.RecordTurnRecord(types.TurnRecord{
@@ -638,7 +638,7 @@ func TestJSONLTraceEmitter_ImplementsHookRecorder(t *testing.T) {
 // at Finish, in call order.
 func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-hooks", nil)
 
 	emitter.RecordHookExecution(types.HookExecution{
@@ -691,7 +691,7 @@ func TestJSONLTraceEmitter_RecordHookExecution_StreamsAndAccumulates(t *testing.
 // Command with no secret-shaped literal survives intact.
 func TestJSONLTraceEmitter_RecordHookExecution_Scrubs(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-hook-scrub", nil)
 
 	emitter.RecordHookExecution(types.HookExecution{
@@ -743,7 +743,7 @@ func TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef(t *test
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			emitter := NewJSONLTraceEmitter(&buf)
+			emitter := NewJSONLTraceEmitter(&buf, false)
 			emitter.Start("run-hook-case-bypass", nil)
 
 			emitter.RecordHookExecution(types.HookExecution{
@@ -773,7 +773,7 @@ func TestJSONLTraceEmitter_RecordHookExecution_ScrubsCaseVariedSecretRef(t *test
 // a hookless run extends to the JSONL trace shape.
 func TestJSONLTraceEmitter_NoHooks_LeavesHookResultsEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	emitter := NewJSONLTraceEmitter(&buf)
+	emitter := NewJSONLTraceEmitter(&buf, false)
 	emitter.Start("run-no-hooks", nil)
 	trace, err := emitter.Finish(context.Background(), "success")
 	if err != nil {
@@ -797,7 +797,7 @@ func TestScrubRawJSON_WrapsWhenScrubBreaksValidity(t *testing.T) {
 	// secret:// matches the secret_ref pattern; sitting as an unquoted value it
 	// is replaced by the bare "[REDACTED]" token, breaking JSON validity.
 	in := json.RawMessage(`{"a":secret://leaked}`)
-	out := scrubRawJSON(in)
+	out := scrubRawJSON(in, false)
 
 	if !json.Valid(out) {
 		t.Fatalf("scrubRawJSON output is not valid JSON: %s", out)
@@ -822,7 +822,7 @@ func TestScrubRawJSON_WrapsWhenScrubBreaksValidity(t *testing.T) {
 // JSON without the string-wrap fallback.
 func TestScrubRawJSON_PreservesValidJSON(t *testing.T) {
 	in := json.RawMessage(`{"token":"ghp_deadbeefcafef00d"}`)
-	out := scrubRawJSON(in)
+	out := scrubRawJSON(in, false)
 
 	if !json.Valid(out) {
 		t.Fatalf("scrubRawJSON output is not valid JSON: %s", out)
