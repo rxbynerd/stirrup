@@ -55,12 +55,8 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 		WorkspaceMutating: true,
 		RequiresApproval:  true,
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
-			if replay, ok := exec.(interface {
-				ReplayToolCall(string, json.RawMessage) (types.ToolCallRecord, bool)
-			}); ok {
-				if rec, found := replay.ReplayToolCall("run_command", input); found {
-					return tool.StructuredResult{Text: rec.Output, Structured: rec.Structured, Kind: rec.Kind, IsError: rec.IsError || !rec.Success}, nil
-				}
+			if res, found := replayResult(exec, "run_command", input); found {
+				return res, nil
 			}
 			var params struct {
 				Command string `json:"command"`
@@ -190,31 +186,47 @@ func previewForStructured(content string, cfg types.CommandOutputConfig, spilled
 	return content[len(content)-int(cfg.PreviewBytesPerStream):]
 }
 
-var readCommandOutputSchema = json.RawMessage(`{
+var readCommandOutputSchema = json.RawMessage(fmt.Sprintf(`{
   "type":"object",
   "properties":{
     "ref":{"type":"string","pattern":"^stirrup://command-output/"},
     "offset":{"type":"integer","minimum":0},
-    "limit":{"type":"integer","minimum":1,"maximum":131072}
+    "limit":{"type":"integer","minimum":1,"maximum":%d}
   },
   "required":["ref"],
   "additionalProperties":false
-}`)
+}`, commandoutput.ReadMaxBytes))
+
+// replayResult short-circuits a tool handler to the exact recorded
+// model-visible result when the executor is a replay executor. Both
+// run_command and read_command_output use it so replayed runs stay
+// byte-identical to the recording.
+func replayResult(exec executor.Executor, name string, input json.RawMessage) (tool.StructuredResult, bool) {
+	replay, ok := exec.(interface {
+		ReplayToolCall(string, json.RawMessage) (types.ToolCallRecord, bool)
+	})
+	if !ok {
+		return tool.StructuredResult{}, false
+	}
+	rec, found := replay.ReplayToolCall(name, input)
+	if !found {
+		return tool.StructuredResult{}, false
+	}
+	return tool.StructuredResult{Text: rec.Output, Structured: rec.Structured, Kind: rec.Kind, IsError: rec.IsError || !rec.Success}, true
+}
 
 // ReadCommandOutputTool returns a read-only, approval-free paginator over
 // scrubbed command streams.
 func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *tool.Tool {
 	return &tool.Tool{
-		Name:        "read_command_output",
-		Description: "Read a scrubbed byte range from an opaque stirrup://command-output reference returned by run_command. Defaults to 32 KiB and permits at most 128 KiB per call.",
+		Name: "read_command_output",
+		Description: fmt.Sprintf(
+			"Read a scrubbed byte range from an opaque stirrup://command-output reference returned by run_command. Defaults to %d KiB and permits at most %d KiB per call.",
+			commandoutput.ReadDefaultBytes>>10, commandoutput.ReadMaxBytes>>10),
 		InputSchema: readCommandOutputSchema,
 		StructuredHandler: func(ctx context.Context, input json.RawMessage) (tool.StructuredResult, error) {
-			if replay, ok := exec.(interface {
-				ReplayToolCall(string, json.RawMessage) (types.ToolCallRecord, bool)
-			}); ok {
-				if rec, found := replay.ReplayToolCall("read_command_output", input); found {
-					return tool.StructuredResult{Text: rec.Output, Structured: rec.Structured, Kind: rec.Kind, IsError: rec.IsError || !rec.Success}, nil
-				}
+			if res, found := replayResult(exec, "read_command_output", input); found {
+				return res, nil
 			}
 			var params struct {
 				Ref    string `json:"ref"`
@@ -233,11 +245,7 @@ func ReadCommandOutputTool(store *commandoutput.Store, exec executor.Executor) *
 			if err != nil {
 				return tool.StructuredResult{}, err
 			}
-			textBytes, err := json.Marshal(payload)
-			if err != nil {
-				return tool.StructuredResult{}, err
-			}
-			text := string(textBytes)
+			text := string(structured)
 			meta := tool.CallContextFrom(ctx)
 			if err := store.RecordRead(meta, params.Ref, read, text); err != nil {
 				return tool.StructuredResult{}, fmt.Errorf("record command output read: %w", err)
