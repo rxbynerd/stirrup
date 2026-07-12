@@ -18,7 +18,6 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
-	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
@@ -54,10 +53,11 @@ type OpenAIResponsesAdapter struct {
 	baseURL      string
 	apiKeyHeader string
 	queryParams  map[string]string
-	Tracer       oteltrace.Tracer       // optional, set by factory for span instrumentation
-	Metrics      *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
-	RetryPolicy  RetryPolicy            // optional, set by factory; zero value disables retry
-	Logger       *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
+
+	// AdapterDeps carries the factory-injected Tracer/Metrics/RetryPolicy/
+	// Logger; see its doc comment for the field-by-field contract.
+	AdapterDeps
+
 	// Registry resolves per-(provider, model) quirks at the top of
 	// every Stream call. No rules target openai-responses in v1; the
 	// field exists so the integration point is in place when a
