@@ -2344,9 +2344,6 @@ func validateTraceArchiveConfig(cfg *TraceArchiveConfig, errs *[]string) {
 				break
 			}
 		}
-		if cfg.ObjectPrefix != "" && !strings.HasSuffix(cfg.ObjectPrefix, "/") {
-			cfg.ObjectPrefix += "/"
-		}
 	case "":
 		*errs = append(*errs, "traceEmitter.archive.type is required")
 	default:

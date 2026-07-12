@@ -5453,6 +5453,15 @@ func TestValidateRunConfig_TraceArchive(t *testing.T) {
 	if err := ValidateRunConfig(c); err == nil || !strings.Contains(err.Error(), "archive.bucket") {
 		t.Fatalf("expected bucket error, got %v", err)
 	}
+
+	c = validConfig()
+	c.TraceEmitter.Archive = &TraceArchiveConfig{Type: "gcs", Bucket: "stirrup-archives", ObjectPrefix: "runs"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("valid gcs archive: %v", err)
+	}
+	if c.TraceEmitter.Archive.ObjectPrefix != "runs" {
+		t.Fatalf("validation mutated objectPrefix to %q; the uploader owns slash normalisation", c.TraceEmitter.Archive.ObjectPrefix)
+	}
 }
 
 func TestValidateRunConfig_TraceEmitterGCS_BucketRequired(t *testing.T) {
