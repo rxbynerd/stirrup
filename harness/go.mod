@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.30
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.29
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.55.1
-	github.com/aws/aws-sdk-go-v2/service/ssm v1.71.1
+	github.com/aws/aws-sdk-go-v2/service/ssm v1.72.0
 	github.com/aws/aws-sdk-go-v2/service/sts v1.44.1
 	github.com/cedar-policy/cedar-go v1.8.0
 	github.com/rxbynerd/stirrup/gen v0.0.0
