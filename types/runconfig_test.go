@@ -7414,6 +7414,55 @@ func TestRedact_HooksPassThrough(t *testing.T) {
 	}
 }
 
+// TestRedact_SandboxIdentityAndGitProxyPassThrough pins the issue #516
+// invariant that the sandbox identity token itself never enters
+// RunConfig: every field on SandboxIdentityConfig and GitProxyConfig is
+// non-secret operator configuration (there is no "secret://"-style
+// reference in either block for Redact to strip), so Redact() must leave
+// both blocks byte-for-byte unchanged.
+func TestRedact_SandboxIdentityAndGitProxyPassThrough(t *testing.T) {
+	rc := RunConfig{
+		Executor: ExecutorConfig{
+			SandboxIdentity: &SandboxIdentityConfig{
+				Source:   "control-plane",
+				Audience: "https://haybale.internal",
+				EnvVar:   "HAYBALE_TOKEN",
+			},
+			GitProxy: &GitProxyConfig{
+				URL:         "http://haybale.internal:8466",
+				Hosts:       []string{"github.com"},
+				RewriteSsh:  true,
+				TokenEnvVar: "HAYBALE_TOKEN",
+			},
+		},
+	}
+	redacted := rc.Redact()
+
+	if redacted.Executor.SandboxIdentity == nil {
+		t.Fatal("Redact must not drop SandboxIdentity")
+	}
+	if *redacted.Executor.SandboxIdentity != *rc.Executor.SandboxIdentity {
+		t.Errorf("SandboxIdentity must pass through unchanged, got: %+v, want: %+v",
+			redacted.Executor.SandboxIdentity, rc.Executor.SandboxIdentity)
+	}
+
+	if redacted.Executor.GitProxy == nil {
+		t.Fatal("Redact must not drop GitProxy")
+	}
+	if redacted.Executor.GitProxy.URL != rc.Executor.GitProxy.URL {
+		t.Errorf("GitProxy.URL = %q, want unchanged %q", redacted.Executor.GitProxy.URL, rc.Executor.GitProxy.URL)
+	}
+	if redacted.Executor.GitProxy.RewriteSsh != rc.Executor.GitProxy.RewriteSsh {
+		t.Error("GitProxy.RewriteSsh must pass through unchanged")
+	}
+	if redacted.Executor.GitProxy.TokenEnvVar != rc.Executor.GitProxy.TokenEnvVar {
+		t.Errorf("GitProxy.TokenEnvVar = %q, want unchanged %q", redacted.Executor.GitProxy.TokenEnvVar, rc.Executor.GitProxy.TokenEnvVar)
+	}
+	if len(redacted.Executor.GitProxy.Hosts) != 1 || redacted.Executor.GitProxy.Hosts[0] != "github.com" {
+		t.Errorf("GitProxy.Hosts must pass through unchanged, got: %v", redacted.Executor.GitProxy.Hosts)
+	}
+}
+
 func TestHooksConfig_JSONRoundTrip(t *testing.T) {
 	rc := RunConfig{
 		Hooks: &HooksConfig{
@@ -7720,6 +7769,312 @@ func TestValidateRunConfig_NoneExecutorBuiltInToolFailFast(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("expected tool %q to validate cleanly, got: %v", tc.tool, err)
+			}
+		})
+	}
+}
+
+// --- SandboxIdentityConfig / GitProxyConfig (issue #516 Part B) ---
+
+// sandboxIdentityValidConfig returns the minimal RunConfig the
+// sandboxIdentity/gitProxy validation rules validate cleanly against:
+// container executor, grpc transport, a matching envVar pair. Individual
+// tests perturb one field at a time.
+func sandboxIdentityValidConfig() *RunConfig {
+	c := validConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	c.Executor = ExecutorConfig{
+		Type: "container",
+		SandboxIdentity: &SandboxIdentityConfig{
+			Source:   "control-plane",
+			Audience: "https://haybale.internal",
+			EnvVar:   "HAYBALE_TOKEN",
+		},
+		GitProxy: &GitProxyConfig{
+			URL:         "http://haybale.internal:8466",
+			Hosts:       []string{"github.com"},
+			RewriteSsh:  true,
+			TokenEnvVar: "HAYBALE_TOKEN",
+		},
+	}
+	return c
+}
+
+// TestValidateRunConfig_SandboxIdentityDefaultConfigStillValid pins the
+// "defaulting-layer trap" the issue brief calls out explicitly: a bare
+// RunConfig has neither SandboxIdentity nor GitProxy set, so none of the
+// new rules may fire regardless of Transport or Executor.Type, and no
+// default-injection layer may populate the blocks.
+func TestValidateRunConfig_SandboxIdentityDefaultConfigStillValid(t *testing.T) {
+	c := validConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	c.Executor = ExecutorConfig{Type: "container"}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("default container+grpc config with no sandboxIdentity/gitProxy must validate cleanly, got: %v", err)
+	}
+	if c.Executor.SandboxIdentity != nil {
+		t.Error("ValidateRunConfig must not inject a SandboxIdentity block")
+	}
+	if c.Executor.GitProxy != nil {
+		t.Error("ValidateRunConfig must not inject a GitProxy block")
+	}
+
+	// Also confirm the plain default RunConfig (stdio transport, unset
+	// executor.type) still validates cleanly — the rules must never
+	// fire purely on the absence of an explicit transport/executor.
+	if err := ValidateRunConfig(validConfig()); err != nil {
+		t.Fatalf("bare default config must validate cleanly, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_SandboxIdentityRequiresGRPC(t *testing.T) {
+	cases := []struct {
+		name      string
+		transport string
+		wantErr   bool
+	}{
+		{"grpc_passes", "grpc", false},
+		{"stdio_fails", "stdio", true},
+		{"empty_transport_fails", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := sandboxIdentityValidConfig()
+			c.Transport = TransportConfig{Type: tc.transport}
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for sandboxIdentity with transport %q, got nil", tc.transport)
+				}
+				if !strings.Contains(err.Error(), "requires transport=grpc") {
+					t.Errorf("expected error to mention requires transport=grpc, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("sandboxIdentity with grpc transport should pass, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_SandboxIdentityRequiresGRPC_GitProxyOnly confirms
+// the grpc-only rule fires from a GitProxy block alone (no
+// SandboxIdentity) — the issue brief calls this out explicitly as "(or
+// gitProxy)". GitProxy without SandboxIdentity also trips its own
+// cross-field rule, so this only checks the transport error is present.
+func TestValidateRunConfig_SandboxIdentityRequiresGRPC_GitProxyOnly(t *testing.T) {
+	c := validConfig()
+	c.Transport = TransportConfig{Type: "stdio"}
+	c.Executor = ExecutorConfig{
+		Type:     "container",
+		GitProxy: &GitProxyConfig{URL: "http://haybale.internal:8466", TokenEnvVar: "HAYBALE_TOKEN"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected rejection for gitProxy with stdio transport, got nil")
+	}
+	if !strings.Contains(err.Error(), "requires transport=grpc") {
+		t.Errorf("expected error to mention requires transport=grpc, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_SandboxIdentityExecutorTypeGating(t *testing.T) {
+	cases := []struct {
+		name     string
+		executor ExecutorConfig
+		wantErr  bool
+	}{
+		{
+			name:     "container_passes",
+			executor: ExecutorConfig{Type: "container"},
+			wantErr:  false,
+		},
+		{
+			name: "k8s_passes",
+			executor: ExecutorConfig{
+				Type:         "k8s",
+				Image:        "ghcr.io/rxbynerd/stirrup:latest",
+				K8sNamespace: "default",
+				Network:      &NetworkConfig{Mode: "none"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "k8s_sandbox_passes",
+			executor: ExecutorConfig{
+				Type:         "k8s-sandbox",
+				Image:        "ghcr.io/rxbynerd/stirrup:latest",
+				K8sNamespace: "default",
+				Network:      &NetworkConfig{Mode: "none"},
+			},
+			wantErr: false,
+		},
+		{
+			name:     "local_deferred_fails",
+			executor: ExecutorConfig{Type: "local"},
+			wantErr:  true,
+		},
+		{
+			name:     "unset_type_fails",
+			executor: ExecutorConfig{},
+			wantErr:  true,
+		},
+		{
+			name:     "api_fails",
+			executor: ExecutorConfig{Type: "api", VcsBackend: &VcsBackendConfig{Type: "github", Repo: "rxbynerd/stirrup"}},
+			wantErr:  true,
+		},
+		{
+			name:     "none_fails",
+			executor: ExecutorConfig{Type: "none"},
+			wantErr:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Transport = TransportConfig{Type: "grpc"}
+			tc.executor.SandboxIdentity = &SandboxIdentityConfig{Source: "control-plane", EnvVar: "HAYBALE_TOKEN"}
+			tc.executor.GitProxy = &GitProxyConfig{URL: "http://haybale.internal:8466", TokenEnvVar: "HAYBALE_TOKEN"}
+			c.Executor = tc.executor
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for executor.type %q, got nil", tc.executor.Type)
+				}
+				if !strings.Contains(err.Error(), "is only valid for executor.type \"container\", \"k8s\", or \"k8s-sandbox\"") {
+					t.Errorf("expected executor-type gating error, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("executor.type %q should pass, got: %v", tc.executor.Type, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_SandboxIdentitySourceClosedSet(t *testing.T) {
+	cases := []struct {
+		name    string
+		source  string
+		wantErr bool
+	}{
+		{"control_plane_passes", "control-plane", false},
+		{"empty_fails", "", true},
+		{"unknown_fails", "self-signed", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := sandboxIdentityValidConfig()
+			c.Executor.SandboxIdentity.Source = tc.source
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for source %q, got nil", tc.source)
+				}
+				if !strings.Contains(err.Error(), "unsupported executor.sandboxIdentity.source") {
+					t.Errorf("expected unsupported-source error, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("source %q should pass, got: %v", tc.source, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_GitProxyRequiresSandboxIdentity pins the
+// cross-field decision documented on GitProxyConfig: v1's only token
+// source is control-plane issuance via SandboxIdentity, so a GitProxy
+// block with no SandboxIdentity references an env var that would never
+// be populated. Treated as a configuration error, not a silent no-op.
+func TestValidateRunConfig_GitProxyRequiresSandboxIdentity(t *testing.T) {
+	c := validConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	c.Executor = ExecutorConfig{
+		Type:     "container",
+		GitProxy: &GitProxyConfig{URL: "http://haybale.internal:8466", TokenEnvVar: "HAYBALE_TOKEN"},
+	}
+	err := ValidateRunConfig(c)
+	if err == nil {
+		t.Fatal("expected rejection for gitProxy without sandboxIdentity, got nil")
+	}
+	if !strings.Contains(err.Error(), "executor.gitProxy requires executor.sandboxIdentity to be set") {
+		t.Errorf("expected gitProxy-requires-sandboxIdentity error, got: %v", err)
+	}
+}
+
+func TestValidateRunConfig_GitProxyTokenEnvVarConsistency(t *testing.T) {
+	cases := []struct {
+		name        string
+		identityEnv string
+		gitProxyEnv string
+		wantErr     bool
+	}{
+		{"explicit_match", "HAYBALE_TOKEN", "HAYBALE_TOKEN", false},
+		{"both_default_match", "", "", false},
+		{"identity_explicit_gitproxy_default_mismatch", "CUSTOM_TOKEN", "", true},
+		{"explicit_mismatch", "HAYBALE_TOKEN", "OTHER_TOKEN", true},
+		{"identity_default_gitproxy_explicit_match", "", "HAYBALE_TOKEN", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := sandboxIdentityValidConfig()
+			c.Executor.SandboxIdentity.EnvVar = tc.identityEnv
+			c.Executor.GitProxy.TokenEnvVar = tc.gitProxyEnv
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for identityEnv=%q gitProxyEnv=%q, got nil", tc.identityEnv, tc.gitProxyEnv)
+				}
+				if !strings.Contains(err.Error(), "must match the effective executor.sandboxIdentity.envVar") {
+					t.Errorf("expected envVar-consistency error, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("identityEnv=%q gitProxyEnv=%q should pass, got: %v", tc.identityEnv, tc.gitProxyEnv, err)
+			}
+		})
+	}
+}
+
+func TestValidateRunConfig_GitProxyAllowlistWarning(t *testing.T) {
+	const wantMsg = "executor.gitProxy.url host:port is not present in executor.network.allowlist"
+	cases := []struct {
+		name      string
+		mode      string
+		allowlist []string
+		wantWarn  bool
+	}{
+		{"exact_hostport_present_no_warn", "allowlist", []string{"haybale.internal:8466"}, false},
+		{"missing_from_allowlist_warns", "allowlist", []string{"other.example.com:8466"}, true},
+		{"empty_allowlist_warns", "allowlist", nil, true},
+		{"none_mode_no_warn", "none", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			originalLogger := slog.Default()
+			t.Cleanup(func() { slog.SetDefault(originalLogger) })
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+			c := sandboxIdentityValidConfig()
+			c.Executor.Network = &NetworkConfig{Mode: tc.mode, Allowlist: tc.allowlist}
+			if err := ValidateRunConfig(c); err != nil {
+				t.Fatalf("allowlist warning path must not produce a hard error, got: %v", err)
+			}
+
+			logs := logBuf.String()
+			if tc.wantWarn {
+				if !strings.Contains(logs, "level=WARN") || !strings.Contains(logs, wantMsg) {
+					t.Errorf("expected allowlist-gap warning, got: %s", logs)
+				}
+			} else if strings.Contains(logs, wantMsg) {
+				t.Errorf("did not expect allowlist-gap warning, got: %s", logs)
 			}
 		})
 	}
