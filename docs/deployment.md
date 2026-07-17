@@ -250,13 +250,13 @@ posture is that the control plane issues `exp` covering the run's
 configured wall-clock budget (plus slack), and narrows blast radius
 through per-token scope claims and proxy-side policy instead of a
 short lifetime. The optional `sandbox_token_response.expires_at`
-field (Unix seconds) is designed to let the harness compare the
-token's actual expiry against the run's budget and emit a
-scrub-safe warning when the token is shorter-lived than the run — a
-signal that the run may fail partway through with authentication
-errors rather than a stirrup-side bug. That comparison is not yet
-wired: this PR is wire/types-only, and the check lands with the
-token-exchange helper (issue #516 Part C).
+field (Unix seconds) lets the harness compare the token's actual
+expiry against the run's budget and emit a scrub-safe warning when
+the token is shorter-lived than the run — a signal that the run may
+fail partway through with authentication errors rather than a
+stirrup-side bug. The harness performs that comparison
+(`sandboxidentity.WarnIfExpiresBeforeBudget`) immediately after a
+successful token exchange, before the sandbox is created.
 
 ## Container image
 
