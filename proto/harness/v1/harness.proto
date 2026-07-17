@@ -103,12 +103,26 @@ service HarnessService {
 //     (Best-effort signal; the control plane should call the provider's
 //     batch-cancel endpoint. The harness does not retry or block on a
 //     response — cancellation is fire-and-forget.)
+//
+//   "sandbox_token_request"
+//     - request_id: unique ID for this request; the control plane must echo it
+//                   back in the corresponding sandbox_token_response ControlEvent.
+//     - audience:   the intended JWT `aud` claim for the sandbox identity
+//                   token (e.g. "https://haybale.internal"). Informational —
+//                   the control plane may override it.
+//     Sent once per run, after task_assignment and before the sandbox is
+//     created, when the run wants a sandbox identity token. Deliberately
+//     carries no harness-asserted identity field: the control plane derives
+//     the run identity from the authenticated stream the task was assigned
+//     on, never from the request body. The harness blocks on the matching
+//     sandbox_token_response under a fail-closed 60s timeout; a timeout
+//     aborts the run before any sandbox is created.
 message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "tool_call", "tool_result", "done", "error",
   //              "warning", "heartbeat", "ready", "permission_request",
   //              "tool_result_request", "batch_submission", "batch_waiting",
-  //              "batch_cancel_request".
+  //              "batch_cancel_request", "sandbox_token_request".
   string type = 1;
 
   // Incremental text fragment from the model. Set on "text_delta" events.
@@ -154,6 +168,11 @@ message HarnessEvent {
   // Build version of the harness binary. Set on "ready" events. The control
   // plane may use this to verify compatibility before sending a task.
   string harness_version = 13;
+
+  // The intended JWT `aud` claim for the sandbox identity token. Set on
+  // "sandbox_token_request" events. Informational to the control plane,
+  // which may override it when minting the token.
+  string audience = 14;
 }
 
 // ControlEvent is sent from the control plane to the harness.
@@ -202,11 +221,26 @@ message HarnessEvent {
 //     - content:    JSON-encoded BatchResult payload (response or err).
 //     - is_error:   true for non-success result types (batch_expired,
 //                   batch_cancelled, invalid_request_error, server_error).
+//
+//   "sandbox_token_response"
+//     - request_id:  must match the request_id from the corresponding
+//                    sandbox_token_request HarnessEvent.
+//     - token:       the signed JWT sandbox identity token. SENSITIVE:
+//                    never logged, traced, or persisted to RunConfig —
+//                    treated as opaque secret material for the run's
+//                    lifetime.
+//     - expires_at:  optional Unix-seconds expiry of token, so the harness
+//                    can warn (scrub-safe) when it is shorter than the
+//                    run's configured wall-clock budget.
+//     - is_error:    when true, the control plane could not issue a token;
+//                    reason carries a human-readable explanation. The
+//                    harness treats this the same as a timeout — the run
+//                    aborts before the sandbox is created.
 message ControlEvent {
   // Required. The event type discriminator.
   // Valid values: "task_assignment", "user_response", "cancel",
   //              "permission_response", "tool_result_response",
-  //              "batch_result".
+  //              "batch_result", "sandbox_token_response".
   string type = 1;
 
   // The run configuration. Set on "task_assignment" events only. This is the
@@ -225,8 +259,10 @@ message ControlEvent {
   // True = allow the tool call to proceed. False = deny.
   OptionalBool allowed = 5;
 
-  // Human-readable explanation for a denial. Set on "permission_response"
-  // events when allowed is false. Passed to the model as context.
+  // Human-readable explanation. Set on "permission_response" events when
+  // allowed is false (passed to the model as context), and on
+  // "sandbox_token_response" events when is_error is true (why the control
+  // plane could not issue a token).
   string reason = 6;
 
   // Async tool result payload. Set on "tool_result_response" events. Delivered
@@ -234,9 +270,24 @@ message ControlEvent {
   string content = 7;
 
   // When true on a "tool_result_response", the loop marks the resulting
-  // ToolResult as an error so the model sees it as a tool failure. Wrapped
-  // to distinguish unset from explicit-false (proto3 scalar default).
+  // ToolResult as an error so the model sees it as a tool failure. When true
+  // on a "sandbox_token_response", the control plane could not issue a
+  // token; reason carries the explanation and token / expires_at are unset.
+  // Wrapped to distinguish unset from explicit-false (proto3 scalar
+  // default).
   OptionalBool is_error = 8;
+
+  // The signed JWT sandbox identity token. Set on "sandbox_token_response"
+  // events when is_error is false. SENSITIVE: never logged, traced, or
+  // persisted to RunConfig — the harness treats this as opaque secret
+  // material for the run's lifetime.
+  string token = 9;
+
+  // Optional. Unix-seconds expiry of token. Set on "sandbox_token_response"
+  // events. Declared `optional` so unset is wire-distinguishable from an
+  // explicit 0 (epoch), letting the harness tell "the control plane did not
+  // report an expiry" from "the token expires at the epoch".
+  optional int64 expires_at = 10;
 }
 
 // OptionalBool wraps a boolean so we can distinguish "not set" from "false"
