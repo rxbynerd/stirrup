@@ -322,6 +322,13 @@ func Float64Ptr(v float64) *float64 {
 //     cancels or its wall-clock cap fires and the operator opted into
 //     CancelBundleOnRunCancel; RequestID echoes the submission so the
 //     control plane can cancel the matching provider-side batch entry.
+//   - "sandbox_token_request" — emitted once per run, after task_assignment
+//     and before the sandbox is created, when the run wants a sandbox
+//     identity token (e.g. to authenticate a git proxy such as Haybale).
+//     RequestID correlates with the incoming "sandbox_token_response"
+//     ControlEvent; Audience carries the intended JWT `aud` claim.
+//     Deliberately carries no harness-asserted identity field — the
+//     control plane derives run identity from the authenticated stream.
 type HarnessEvent struct {
 	Type           string          `json:"type"`
 	Text           string          `json:"text,omitempty"`
@@ -333,9 +340,10 @@ type HarnessEvent struct {
 	StopReason     string          `json:"stopReason,omitempty"`
 	Message        string          `json:"message,omitempty"`
 	Trace          *RunTrace       `json:"trace,omitempty"`
-	RequestID      string          `json:"requestId,omitempty"`      // correlates permission/tool-result requests with their responses
+	RequestID      string          `json:"requestId,omitempty"`      // correlates permission/tool-result/sandbox-token requests with their responses
 	ToolName       string          `json:"toolName,omitempty"`       // tool name on permission_request and tool_result_request
 	HarnessVersion string          `json:"harnessVersion,omitempty"` // harness build version (set on "ready" events)
+	Audience       string          `json:"audience,omitempty"`       // intended JWT aud claim (sandbox_token_request only); informational, the control plane may override it
 }
 
 // ControlEvent is an event received from the control plane.
@@ -354,15 +362,37 @@ type HarnessEvent struct {
 //     RequestID echoes the originating submission; Content carries the JSON
 //     BatchResult (provider response on success, BatchResultError on failure)
 //     consumed by harness/internal/provider.decodeBatchResult.
+//   - "sandbox_token_response" — completes a "sandbox_token_request"
+//     HarnessEvent. RequestID echoes the originating request; Token carries
+//     the signed JWT sandbox identity token (SENSITIVE — never logged,
+//     traced, transcribed, or written to RunConfig); ExpiresAt optionally
+//     carries the token's Unix-seconds expiry so the harness can warn when
+//     it is shorter than the run's configured wall-clock budget. IsError,
+//     when true, means the control plane could not issue a token — Reason
+//     carries why, and the harness treats it like a timeout: the run aborts
+//     before the sandbox is created.
 type ControlEvent struct {
 	Type         string     `json:"type"`
 	Task         *RunConfig `json:"task,omitempty"`
 	UserResponse string     `json:"userResponse,omitempty"`
 	RequestID    string     `json:"requestId,omitempty"` // correlates response with the originating request
 	Allowed      *bool      `json:"allowed,omitempty"`   // permission decision (permission_response only)
-	Reason       string     `json:"reason,omitempty"`    // explanation for denial (permission_response only)
+	Reason       string     `json:"reason,omitempty"`    // explanation for denial (permission_response) or issuance failure (sandbox_token_response)
 	Content      string     `json:"content,omitempty"`   // async tool result payload (tool_result_response only)
-	IsError      *bool      `json:"isError,omitempty"`   // mark async tool result as an error (tool_result_response only)
+	IsError      *bool      `json:"isError,omitempty"`   // mark async tool result as an error (tool_result_response), or a token issuance failure (sandbox_token_response)
+
+	// Token is the signed JWT sandbox identity token (sandbox_token_response
+	// only, when IsError is not true). SENSITIVE: the harness must never
+	// log, trace, transcribe, or write this to RunConfig — treat it as
+	// opaque secret material scoped to the run's lifetime. The oidc_jwt
+	// log-scrubber pattern (harness/internal/security/logscrubber.go) is a
+	// backstop only; code on this path must not rely on it deliberately.
+	Token string `json:"token,omitempty"`
+
+	// ExpiresAt is the optional Unix-seconds expiry of Token
+	// (sandbox_token_response only). A nil value means the control plane
+	// did not report an expiry.
+	ExpiresAt *int64 `json:"expiresAt,omitempty"`
 }
 
 // HarnessLifecycleEvent represents lifecycle signals sent on the transport.

@@ -21,6 +21,7 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 		RequestId:      e.RequestID,
 		ToolName:       e.ToolName,
 		HarnessVersion: e.HarnessVersion,
+		Audience:       e.Audience,
 	}
 
 	if e.Trace != nil {
@@ -39,6 +40,7 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 		RequestID:    pe.RequestId,
 		Reason:       pe.Reason,
 		Content:      pe.Content,
+		Token:        pe.Token,
 	}
 
 	if pe.Allowed != nil {
@@ -49,6 +51,11 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 	if pe.IsError != nil {
 		v := pe.IsError.Value
 		e.IsError = &v
+	}
+
+	if pe.ExpiresAt != nil {
+		v := *pe.ExpiresAt
+		e.ExpiresAt = &v
 	}
 
 	if pe.Task != nil {
