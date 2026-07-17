@@ -74,7 +74,10 @@ func TestComposeEnv_GitCredentialHelper_StubHaybale(t *testing.T) {
 		URL:   server.URL,
 		Hosts: []string{"github.com"},
 	}
-	env := ComposeEnv("HAYBALE_TOKEN", wantToken, gp)
+	env, err := ComposeEnv("HAYBALE_TOKEN", wantToken, gp)
+	if err != nil {
+		t.Fatalf("ComposeEnv() error: %v", err)
+	}
 
 	path, ok := os.LookupEnv("PATH")
 	if !ok {

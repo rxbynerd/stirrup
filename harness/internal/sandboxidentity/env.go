@@ -2,6 +2,7 @@ package sandboxidentity
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -25,6 +26,29 @@ type EnvVar struct {
 // haybale strips the username and authenticates solely on the password.
 const credentialHelperTemplate = `!f() { echo username=x-access-token; echo "password=$%s"; }; f`
 
+// posixEnvVarNamePattern duplicates types.posixEnvVarNamePattern. ComposeEnv
+// interpolates envVar unescaped into credentialHelperTemplate's shell
+// string, so this package must not rely solely on
+// types.ValidateRunConfig having already run before it reaches this
+// function — a future refactor that reorders validation, or a new caller
+// that bypasses it, must not reopen the shell-injection shape. Duplicating
+// the character class across the types/harness boundary mirrors the
+// existing gitProxyAllowlistDefaultPort precedent in types/runconfig.go.
+var posixEnvVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// reservedEnvVarNames are the egress-proxy variables the container and k8s
+// executors set unconditionally in "allowlist" network mode (see
+// proxyEnvFor in harness/internal/executor/k8s_netpol.go and the
+// equivalent literal block in container.go — both only ever set the
+// upper-case forms). A sandbox identity envVar colliding with one of these
+// would silently append after, and likely override, the proxy URL rather
+// than failing validation up front.
+var reservedEnvVarNames = map[string]bool{
+	"HTTP_PROXY":  true,
+	"HTTPS_PROXY": true,
+	"NO_PROXY":    true,
+}
+
 // ComposeEnv builds the ordered sandbox environment variables that carry a
 // sandbox identity token (and, when gp is non-nil, the non-secret git
 // configuration that routes git operations through a proxy such as
@@ -47,10 +71,22 @@ const credentialHelperTemplate = `!f() { echo username=x-access-token; echo "pas
 // multi-valued config the way repeated lines in a config file would. A
 // single credential.<gp.URL>/.helper entry follows every host's insteadOf
 // rules — one proxy authenticates every rewritten host.
-func ComposeEnv(envVar, token string, gp *types.GitProxyConfig) []EnvVar {
+//
+// Returns an error, composing nothing, when envVar fails the
+// posixEnvVarNamePattern check or collides with a reservedEnvVarNames entry
+// — defense in depth so this function's safety does not rest entirely on
+// its caller (types.ValidateRunConfig) having already run.
+func ComposeEnv(envVar, token string, gp *types.GitProxyConfig) ([]EnvVar, error) {
+	if !posixEnvVarNamePattern.MatchString(envVar) {
+		return nil, fmt.Errorf("sandboxidentity: envVar %q is not a valid POSIX environment variable name", envVar)
+	}
+	if reservedEnvVarNames[envVar] {
+		return nil, fmt.Errorf("sandboxidentity: envVar %q collides with a reserved egress-proxy environment variable", envVar)
+	}
+
 	out := []EnvVar{{Name: envVar, Value: token}}
 	if gp == nil {
-		return out
+		return out, nil
 	}
 
 	var keys, values []string
@@ -75,5 +111,5 @@ func ComposeEnv(envVar, token string, gp *types.GitProxyConfig) []EnvVar {
 			EnvVar{Name: fmt.Sprintf("GIT_CONFIG_VALUE_%d", i), Value: values[i]},
 		)
 	}
-	return out
+	return out, nil
 }

@@ -133,7 +133,10 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			sandboxidentity.WarnIfExpiresBeforeBudget(result.ExpiresAt, *config.Timeout, time.Now())
 		}
 
-		composed := sandboxidentity.ComposeEnv(si.EffectiveEnvVar(), result.Token, config.Executor.GitProxy)
+		composed, composeErr := sandboxidentity.ComposeEnv(si.EffectiveEnvVar(), result.Token, config.Executor.GitProxy)
+		if composeErr != nil {
+			return nil, fmt.Errorf("executor.sandboxIdentity: %w", composeErr)
+		}
 		sandboxExtraEnv = make([]executor.EnvPair, len(composed))
 		for i, e := range composed {
 			sandboxExtraEnv[i] = executor.EnvPair{Name: e.Name, Value: e.Value}
