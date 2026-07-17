@@ -11,9 +11,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/rxbynerd/stirrup/harness/internal/sandboxidentity"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+func boolPtr(b bool) *bool { return &b }
 
 // fakeControlPlaneTransport is a minimal transport.Transport fake standing
 // in for the control plane's gRPC stream. It auto-responds to a
@@ -31,20 +35,36 @@ type fakeControlPlaneTransport struct {
 
 	respondToken     string
 	respondExpiresAt *int64
+
+	// respondIsError/respondReason, when respondIsError is true, deliver a
+	// control-plane decline instead of a success response (B-INT case a).
+	respondIsError bool
+	respondReason  string
+	// noRespond, when true, never delivers a response at all — the fake
+	// control plane emits no sandbox_token_response, simulating a hung or
+	// unreachable control plane so the caller's ctx/timeout is what ends
+	// the wait (B-INT case b).
+	noRespond bool
 }
 
 func (f *fakeControlPlaneTransport) Emit(event types.HarnessEvent) error {
 	f.mu.Lock()
 	f.emitted = append(f.emitted, event)
+	noRespond := f.noRespond
 	f.mu.Unlock()
 
-	if event.Type == "sandbox_token_request" {
-		f.deliver(types.ControlEvent{
+	if event.Type == "sandbox_token_request" && !noRespond {
+		resp := types.ControlEvent{
 			Type:      "sandbox_token_response",
 			RequestID: event.RequestID,
 			Token:     f.respondToken,
 			ExpiresAt: f.respondExpiresAt,
-		})
+		}
+		if f.respondIsError {
+			resp.IsError = boolPtr(true)
+			resp.Reason = f.respondReason
+		}
+		f.deliver(resp)
 	}
 	return nil
 }
@@ -97,6 +117,7 @@ func fakeDockerEngine(t *testing.T) (socketPath string, createBody *containerCre
 
 		switch {
 		case r.Method == http.MethodPost && apiPath == "/containers/create":
+			capture.recordCreateCall()
 			_ = json.NewDecoder(r.Body).Decode(capture)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"Id":"test-container-id"}`))
@@ -122,9 +143,15 @@ func fakeDockerEngine(t *testing.T) (socketPath string, createBody *containerCre
 }
 
 // containerCreateCapture decodes only the fields this test needs from the
-// Docker Engine API's POST /containers/create request body.
+// Docker Engine API's POST /containers/create request body. createCalls
+// (guarded by mu, since the fake server's handler runs on its own
+// goroutine) counts how many times /containers/create was hit — the
+// fail-closed integration tests (B-INT) assert this stays zero.
 type containerCreateCapture struct {
 	Env []string `json:"Env"`
+
+	mu          sync.Mutex
+	createCalls int
 }
 
 func (c *containerCreateCapture) envMap() map[string]string {
@@ -136,6 +163,18 @@ func (c *containerCreateCapture) envMap() map[string]string {
 		}
 	}
 	return out
+}
+
+func (c *containerCreateCapture) recordCreateCall() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.createCalls++
+}
+
+func (c *containerCreateCapture) createCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.createCalls
 }
 
 // TestBuildLoopWithTransport_SandboxIdentity_ContainerEnvWiring is the
@@ -297,5 +336,133 @@ func TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed(t *testi
 	}
 	if !strings.Contains(err.Error(), "sandboxIdentity") {
 		t.Errorf("error should reference sandboxIdentity, got: %v", err)
+	}
+}
+
+// sandboxIdentityFailClosedConfig builds the shared RunConfig for the B-INT
+// fail-closed integration tests below: a container executor (so
+// fakeDockerEngine can observe whether /containers/create was ever hit) with
+// executor.sandboxIdentity configured and no gitProxy (irrelevant to these
+// failure modes, all of which abort before ComposeEnv runs). The provider
+// BaseURL is a closed local port — never dialed, since every case here fails
+// before the loop is otherwise assembled — mirroring
+// TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed above.
+func sandboxIdentityFailClosedConfig(t *testing.T, runID string) *types.RunConfig {
+	t.Helper()
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	timeout := 30
+	return &types.RunConfig{
+		RunID:           runID,
+		Mode:            "execution",
+		Prompt:          "hello",
+		Provider:        types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: "http://127.0.0.1:1"},
+		ModelRouter:     types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+		PromptBuilder:   types.PromptBuilderConfig{Type: "default"},
+		ContextStrategy: types.ContextStrategyConfig{Type: "sliding-window"},
+		Executor: types.ExecutorConfig{
+			Type:      "container",
+			Image:     "ubuntu:26.04",
+			Workspace: t.TempDir(),
+			Network:   &types.NetworkConfig{Mode: "none"},
+			SandboxIdentity: &types.SandboxIdentityConfig{
+				Source:   "control-plane",
+				Audience: "https://haybale.internal",
+				EnvVar:   "HAYBALE_TOKEN",
+			},
+		},
+		EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+		Verifier:         types.VerifierConfig{Type: "none"},
+		PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+		GitStrategy:      types.GitStrategyConfig{Type: "none"},
+		Transport:        types.TransportConfig{Type: "grpc"},
+		TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+		RuleOfTwo:        disableRuleOfTwo(),
+		MaxTurns:         2,
+		Timeout:          &timeout,
+	}
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate is
+// B-INT case (a): the control plane responds with IsError: true. A unit
+// test on sandboxidentity.Exchange already proves Exchange itself fails
+// closed on a decline; this test proves the *factory* honours that error
+// before reaching the executor layer — a regression that swapped step
+// order, dropped the error check, or logged-and-continued would pass every
+// other currently committed test but must fail this one, because the fake
+// Docker Engine below would then observe a real /containers/create call.
+func TestBuildLoopWithTransport_SandboxIdentity_DeclineNoContainerCreate(t *testing.T) {
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	tp := &fakeControlPlaneTransport{respondIsError: true, respondReason: "no issuer configured"}
+	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-decline-test")
+
+	_, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err == nil {
+		t.Fatal("expected an error when the control plane declines the sandbox identity exchange")
+	}
+	if !strings.Contains(err.Error(), "declined") {
+		t.Errorf("error should name the decline failure mode, got: %v", err)
+	}
+	if got := capture.createCallCount(); got != 0 {
+		t.Errorf("fake Docker Engine recorded %d /containers/create call(s), want 0 (sandbox must not be created before a declined exchange)", got)
+	}
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_TimeoutNoContainerCreate is
+// B-INT case (b): the control plane never responds. BuildLoopWithTransport
+// is invoked with a short-lived ctx (rather than waiting out
+// sandboxidentity.DefaultTimeout's 60s) so the ctx branch of Exchange's
+// underlying transport.Correlator.Await ends the wait quickly; the failure
+// mode under test — cancellation/timeout aborting before sandbox creation —
+// is the same one a real control-plane outage or network partition would
+// trigger via the 60s default.
+func TestBuildLoopWithTransport_SandboxIdentity_TimeoutNoContainerCreate(t *testing.T) {
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	tp := &fakeControlPlaneTransport{noRespond: true}
+	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-timeout-test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err := BuildLoopWithTransport(ctx, config, tp)
+	if err == nil {
+		t.Fatal("expected an error when the control plane never responds")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("error should name the cancellation/timeout failure mode, got: %v", err)
+	}
+	if got := capture.createCallCount(); got != 0 {
+		t.Errorf("fake Docker Engine recorded %d /containers/create call(s), want 0 (sandbox must not be created before a timed-out exchange)", got)
+	}
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenNoContainerCreate
+// is B-INT case (c): the control plane responds successfully, but with a
+// token exceeding sandboxidentity.MaxTokenBytes. Exchange treats this as a
+// hard failure (never truncated-and-used); this test proves the factory
+// aborts before sandbox creation rather than passing the oversized token
+// through.
+func TestBuildLoopWithTransport_SandboxIdentity_OversizeTokenNoContainerCreate(t *testing.T) {
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	tp := &fakeControlPlaneTransport{respondToken: strings.Repeat("a", sandboxidentity.MaxTokenBytes+1)}
+	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-oversize-test")
+
+	_, err := BuildLoopWithTransport(context.Background(), config, tp)
+	if err == nil {
+		t.Fatal("expected an error for an oversized sandbox identity token")
+	}
+	if !strings.Contains(err.Error(), "byte cap") {
+		t.Errorf("error should name the oversize failure mode, got: %v", err)
+	}
+	if got := capture.createCallCount(); got != 0 {
+		t.Errorf("fake Docker Engine recorded %d /containers/create call(s), want 0 (sandbox must not be created before an oversize-token failure)", got)
 	}
 }
