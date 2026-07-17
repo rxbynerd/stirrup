@@ -659,9 +659,11 @@ credential:
   or `pods`/`list` in the namespace — a materially weaker bar than
   `secrets`/`get` — can read the live token with `kubectl get pod -o
   yaml`. The reference RBAC ([`rbac.yaml`](../../examples/k8s/rbac.yaml))
-  already grants the orchestrator those verbs for its own lifecycle
-  management; the residual risk is any *other* principal in the
-  namespace that also holds them.
+  already grants the orchestrator `pods`/`get` for its own lifecycle
+  management — not `pods`/`list`, which the manifest withholds; the
+  residual risk is any *other* principal in the namespace that holds
+  either verb, and granting `pods`/`list` beyond what the reference
+  manifest does would broaden that exposure further.
 - **It lands in etcd in plaintext** absent cluster-wide encryption at
   rest for Pod specs, and in API audit logs if request/response body
   logging is enabled for the `pods` resource.
