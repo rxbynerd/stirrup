@@ -1068,7 +1068,7 @@ func TestBuildExecutor_Local(t *testing.T) {
 	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:      "local",
 		Workspace: workspace,
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1080,7 +1080,7 @@ func TestBuildExecutor_Local(t *testing.T) {
 func TestBuildExecutor_EmptyTypeDefaultsToLocal(t *testing.T) {
 	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Workspace: t.TempDir(),
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1090,7 +1090,7 @@ func TestBuildExecutor_EmptyTypeDefaultsToLocal(t *testing.T) {
 }
 
 func TestBuildExecutor_LocalDefaultsWorkspaceToCwd(t *testing.T) {
-	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "local"}, nil, nil)
+	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "local"}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1100,7 +1100,7 @@ func TestBuildExecutor_LocalDefaultsWorkspaceToCwd(t *testing.T) {
 }
 
 func TestBuildExecutor_API_MissingVcsBackend(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "api"}, nil, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "api"}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for api without vcsBackend")
 	}
@@ -1118,7 +1118,7 @@ func TestBuildExecutor_API_BadRepoFormat(t *testing.T) {
 			Repo:      "invalid-no-slash",
 			Ref:       "main",
 		},
-	}, secrets, nil)
+	}, secrets, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for bad repo format")
 	}
@@ -1136,7 +1136,7 @@ func TestBuildExecutor_API_ValidConfig(t *testing.T) {
 			Repo:      "owner/repo",
 			Ref:       "main",
 		},
-	}, secrets, nil)
+	}, secrets, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1146,7 +1146,7 @@ func TestBuildExecutor_API_ValidConfig(t *testing.T) {
 }
 
 func TestBuildExecutor_Container_MissingImage(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "container"}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for container without image")
 	}
@@ -1156,7 +1156,7 @@ func TestBuildExecutor_Container_MissingImage(t *testing.T) {
 }
 
 func TestBuildExecutor_None_ValidConfig(t *testing.T) {
-	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "none"}, nil, nil)
+	exec, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "none"}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1170,7 +1170,7 @@ func TestBuildExecutor_None_ValidConfig(t *testing.T) {
 }
 
 func TestBuildExecutor_UnsupportedType(t *testing.T) {
-	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil, nil)
+	_, err := buildExecutor(context.Background(), types.ExecutorConfig{Type: "microvm"}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -1183,7 +1183,7 @@ func TestBuildExecutor_K8s_MissingImage(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:         "k8s",
 		K8sNamespace: "default",
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for k8s without image")
 	}
@@ -1196,7 +1196,7 @@ func TestBuildExecutor_K8s_MissingNamespace(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:  "k8s",
 		Image: "busybox",
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for k8s without namespace")
 	}
@@ -1217,7 +1217,7 @@ func TestBuildExecutor_K8s_TakesK8sPath(t *testing.T) {
 		Image:         "busybox",
 		K8sNamespace:  "default",
 		K8sKubeconfig: filepath.Join(t.TempDir(), "does-not-exist.kubeconfig"),
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil {
 		// A success would mean a cluster was reachable; that is fine but not
 		// the cluster-free case this test targets.
@@ -1232,7 +1232,7 @@ func TestBuildExecutor_K8sSandbox_MissingImage(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:         "k8s-sandbox",
 		K8sNamespace: "default",
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for k8s-sandbox without image")
 	}
@@ -1245,7 +1245,7 @@ func TestBuildExecutor_K8sSandbox_MissingNamespace(t *testing.T) {
 	_, err := buildExecutor(context.Background(), types.ExecutorConfig{
 		Type:  "k8s-sandbox",
 		Image: "busybox",
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for k8s-sandbox without namespace")
 	}
@@ -1268,7 +1268,7 @@ func TestBuildExecutor_K8sSandbox_TakesAgentSandboxPath(t *testing.T) {
 		K8sNamespace:  "default",
 		Network:       &types.NetworkConfig{Mode: "none"},
 		K8sKubeconfig: filepath.Join(t.TempDir(), "does-not-exist.kubeconfig"),
-	}, nil, nil)
+	}, nil, nil, nil)
 	if err == nil {
 		// A success would mean a cluster was reachable; that is fine but not
 		// the cluster-free case this test targets.

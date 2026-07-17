@@ -30,6 +30,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
+	"github.com/rxbynerd/stirrup/harness/internal/sandboxidentity"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/security/codescanner"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
@@ -101,12 +102,50 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		return nil, fmt.Errorf("build prompt builder: %w", err)
 	}
 
+	// 2b. Sandbox identity token exchange (issue #516 Part A) and sandbox
+	// env composition (issue #516 Part B), when
+	// config.Executor.SandboxIdentity is configured. Runs before
+	// buildExecutor (step 3): the composed env — which carries the secret
+	// token — is passed into the executor's construction so a sandbox
+	// never comes up without it, and a failed/declined/timed-out exchange
+	// aborts the run before any sandbox is created (fail-closed).
+	var sandboxExtraEnv []executor.EnvPair
+	if si := config.Executor.SandboxIdentity; si != nil {
+		// tp is the transport this function was invoked with (the stirrup
+		// job control-plane entrypoint pre-establishes it). A nil tp means
+		// BuildLoopWithTransport would build its own transport later, at
+		// step 6 — after the executor. Sandbox identity issuance is only
+		// supported against a caller-supplied transport, since the token
+		// exchange must complete before the executor is built.
+		// ValidateRunConfig's transport=grpc check does not catch a nil tp
+		// here (a bare BuildLoop(ctx, config) call with
+		// transport.type=grpc still reaches this branch with tp==nil), so
+		// this is a defensive, not redundant, guard.
+		if tp == nil {
+			return nil, fmt.Errorf("executor.sandboxIdentity requires a pre-established transport (only supported via the control-plane job entrypoint, e.g. \"stirrup job\")")
+		}
+
+		result, exchErr := sandboxidentity.Exchange(ctx, tp, si.Audience, 0)
+		if exchErr != nil {
+			return nil, fmt.Errorf("executor.sandboxIdentity: %w", exchErr)
+		}
+		if config.Timeout != nil {
+			sandboxidentity.WarnIfExpiresBeforeBudget(result.ExpiresAt, *config.Timeout, time.Now())
+		}
+
+		composed := sandboxidentity.ComposeEnv(si.EffectiveEnvVar(), result.Token, config.Executor.GitProxy)
+		sandboxExtraEnv = make([]executor.EnvPair, len(composed))
+		for i, e := range composed {
+			sandboxExtraEnv[i] = executor.EnvPair{Name: e.Name, Value: e.Value}
+		}
+	}
+
 	// 3. Executor (built early because context strategy may need it).
 	// Thread the security logger into the container executor so the
 	// in-process egress proxy (started when network.mode == "allowlist")
 	// can emit egress_allowed / egress_blocked events through the same
 	// SecurityLogger used for path/file events.
-	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger)
+	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv)
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -943,7 +982,13 @@ func buildContextStrategy(cfg types.ContextStrategyConfig, prov provider.Provide
 	}
 }
 
-func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger) (executor.Executor, error) {
+// buildExecutor constructs the run's executor. extraEnv carries the
+// composed sandbox identity / git-proxy environment (issue #516) computed
+// by the caller before this function runs; it is only honoured by the
+// container and k8s/k8s-sandbox cases — ValidateRunConfig restricts
+// ExecutorConfig.SandboxIdentity/GitProxy to those executor types, so
+// extraEnv is empty for every other case by construction.
+func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger, extraEnv []executor.EnvPair) (executor.Executor, error) {
 	switch cfg.Type {
 	case "local", "":
 		workspace := cfg.Workspace
@@ -975,6 +1020,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			Runtime:           cfg.Runtime,
 			RegistryAllowlist: cfg.RegistryAllowlist,
 			EgressSecurity:    secLogger,
+			ExtraEnv:          extraEnv,
 		})
 	case "k8s", "k8s-sandbox":
 		// ValidateRunConfig already enforces Image and K8sNamespace for the
@@ -1001,6 +1047,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			Network:            cfg.Network,
 			EgressProxyURL:     cfg.K8sEgressProxyURL,
 			Security:           secLogger,
+			ExtraEnv:           extraEnv,
 		}
 		if cfg.Type == "k8s-sandbox" {
 			return executor.NewAgentSandboxExecutor(ctx, k8sCfg)
