@@ -702,6 +702,30 @@ The local executor refuses `network.mode: allowlist` at construction
 time. Egress controls require a sandbox boundary, and the local
 executor is one. Use `executor.type: container` for allowlist mode.
 
+### Git-proxy identity binding (haybale)
+
+Issue #516's sandbox identity token wiring (`executor.sandboxIdentity`
+/ `executor.gitProxy`, see [`configuration.md`'s "Sandbox identity and
+git-proxy
+wiring"](configuration.md#sandbox-identity-and-git-proxy-wiring))
+routes private-repository git operations through a git-credential
+proxy such as [haybale](https://github.com/rxbynerd/haybale) rather
+than through `github.com` directly. Operators add the proxy's
+`host:port` to the run's `network.allowlist` — the port explicit when
+it is not 443, per the FQDN matching rule above — and deliberately
+leave `github.com` off, so the proxy is the sandbox's only route to
+GitHub content for that run.
+
+This is ordinary Ring 2 configuration, not a new enforcement
+mechanism: it inherits the [cooperation
+model](#cooperation-model--important-caveat) caveat as-is. A
+well-behaved `git` client honouring `HTTP_PROXY`/`HTTPS_PROXY` is fully
+covered; a sandbox process that dials out on a raw socket bypasses the
+proxy the same way it would bypass any other allowlist entry. See
+haybale's own
+[`docs/stirrup-integration.md`](https://github.com/rxbynerd/haybale/blob/main/docs/stirrup-integration.md)
+("Deployment") for the deployment-side detail.
+
 ## Ring 5 — Code scanner (post-edit content check)
 
 ### What it does
