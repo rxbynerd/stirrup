@@ -1022,11 +1022,11 @@ request these fields configure.
 |---|---|---|
 | `sandboxIdentity.source` | Token issuer. Closed set. | Required; only `"control-plane"` is supported |
 | `sandboxIdentity.audience` | Intended JWT `aud` claim. Informational — the control plane may override it. | `""` |
-| `sandboxIdentity.envVar` | Sandbox environment variable the token is injected as. | `""` → `HAYBALE_TOKEN` |
-| `gitProxy.url` | The proxy's base URL, e.g. `http://haybale.internal:8466`. | Required when `gitProxy` is set |
-| `gitProxy.hosts` | Git hosts to rewrite through the proxy, e.g. `["github.com"]`. | `[]` |
+| `sandboxIdentity.envVar` | Sandbox environment variable the token is injected as. | `""` → `HAYBALE_TOKEN`; non-empty values must match `^[A-Za-z_][A-Za-z0-9_]*$` |
+| `gitProxy.url` | The proxy's base URL, e.g. `http://haybale.internal:8466`. | Required when `gitProxy` is set; must be an absolute `http`/`https` URL with a host |
+| `gitProxy.hosts` | Git hosts to rewrite through the proxy, e.g. `["github.com"]`. | Required (at least one host) when `gitProxy` is set |
 | `gitProxy.rewriteSsh` | Also rewrite the `git@<host>:` and `ssh://git@<host>/` URL forms, not just `https://<host>/`. | `false` |
-| `gitProxy.tokenEnvVar` | Environment variable the composed git-credential helper reads the token from. Must resolve to the same value as `sandboxIdentity.envVar` (both apply the same `HAYBALE_TOKEN` default when empty). | `""` → `HAYBALE_TOKEN` |
+| `gitProxy.tokenEnvVar` | Environment variable the composed git-credential helper reads the token from. Must resolve to the same value as `sandboxIdentity.envVar` (both apply the same `HAYBALE_TOKEN` default when empty). | `""` → `HAYBALE_TOKEN`; non-empty values must match `^[A-Za-z_][A-Za-z0-9_]*$` |
 
 Both blocks are optional and pointer-typed: a `RunConfig` with neither
 set validates exactly as it did before this feature existed,
@@ -1056,6 +1056,21 @@ below are gated on anything but the blocks' own presence.
   `HAYBALE_TOKEN` default when left empty, so two unset fields match
   by default; an explicit value on one side with no matching
   explicit value on the other is a mismatch and a validation error.
+- **`gitProxy.url` is required and must be a well-formed endpoint.**
+  An empty `gitProxy.url` is a validation error, and a non-empty one
+  must parse as an absolute URL with scheme `http` or `https` and a
+  non-empty host — the same shape check `guardRail.endpoint` applies.
+- **`gitProxy.hosts` must name at least one host.** `hosts` is what
+  drives how many proxy rewrite rules get composed; an empty list
+  would let the block validate cleanly while silently routing
+  nothing through the proxy, so it is a validation error.
+- **`sandboxIdentity.envVar` and `gitProxy.tokenEnvVar` must be legal
+  POSIX environment variable names when non-empty.** Both names are
+  interpolated into a shell credential-helper string when the sandbox
+  git configuration is composed, so each must match
+  `^[A-Za-z_][A-Za-z0-9_]*$`. This is a charset check only — it does
+  not block semantically sensitive but syntactically valid names such
+  as `PATH`.
 
 Operators using `executor.network.mode: "allowlist"` should add the
 proxy's `host:port` to `executor.network.allowlist` (as in the
@@ -1067,7 +1082,9 @@ error) when `gitProxy.url`'s `host:port` is absent from the
 allowlist in `allowlist` mode; the check is a plain exact-match
 against `gitProxy.url`, so an allowlist entry that only covers the
 proxy host via a wildcard (`*.internal:8466`) may still trigger a
-spurious warning even though the sandbox has a working route.
+spurious warning even though the sandbox has a working route — the
+common case being a proxy already covered by a wildcard-subdomain
+allowlist entry, where the warning is expected and can be ignored.
 
 ## Limits and budgets
 

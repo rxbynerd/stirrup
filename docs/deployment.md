@@ -133,7 +133,11 @@ IMDS, GitHub Actions OIDC). See
    for up to 60 seconds on the matching `sandbox_token_response` —
    before any sandbox is created. See [Sandbox identity token
    issuance](#sandbox-identity-token-issuance-control-plane-implementers)
-   below for the full contract.
+   below for the full contract, and [configuration.md's "Sandbox
+   identity and git-proxy
+   wiring"](configuration.md#sandbox-identity-and-git-proxy-wiring)
+   for the `executor.sandboxIdentity` / `executor.gitProxy`
+   `RunConfig` fields that request it.
 6. **Build and run.** Once the `RunConfig` arrives, the wall-clock
    timeout is applied to the context, the agentic loop is built via
    `core.BuildLoopWithTransport` reusing the existing gRPC transport,
