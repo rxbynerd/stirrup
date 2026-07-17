@@ -109,6 +109,11 @@ type K8sExecutorConfig struct {
 	// reach the same monitoring surface as the container and local
 	// executors. The factory (issue #16) passes the run's emitter through.
 	Security SecurityEventEmitter
+	// ExtraEnv is appended to the sandbox container's environment after
+	// the HTTP(S)_PROXY/NO_PROXY entries (proxyEnv). Populated by the
+	// factory from a sandbox identity token exchange (issue #516) when
+	// ExecutorConfig.SandboxIdentity is configured; empty otherwise.
+	ExtraEnv []EnvPair
 }
 
 // K8sExecutor implements Executor by running operations inside a sandbox
@@ -190,7 +195,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 			Namespace: cfg.Namespace,
 			Labels:    podLabels(podName),
 		},
-		Spec: buildSandboxPodSpec(cfg, proxyEnv),
+		Spec: buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv),
 	}
 
 	// Install the egress NetworkPolicy BEFORE creating the Pod. The Pod name
@@ -246,11 +251,22 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 }
 
 // buildSandboxPodSpec builds the hardened agent Pod spec shared by the k8s and
-// k8s-sandbox executors. proxyEnv is the already-computed HTTP(S)_PROXY env.
-func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar) corev1.PodSpec {
+// k8s-sandbox executors. proxyEnv is the already-computed HTTP(S)_PROXY env;
+// extraEnv is appended after it (issue #516 — a sandbox identity token and,
+// when configured, the git-proxy GIT_CONFIG_* pairs).
+func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraEnv []EnvPair) corev1.PodSpec {
 	serviceAccount := cfg.ServiceAccountName
 	if serviceAccount == "" {
 		serviceAccount = "default"
+	}
+
+	env := proxyEnv
+	if len(extraEnv) > 0 {
+		env = make([]corev1.EnvVar, 0, len(proxyEnv)+len(extraEnv))
+		env = append(env, proxyEnv...)
+		for _, e := range extraEnv {
+			env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
+		}
 	}
 
 	return corev1.PodSpec{
@@ -294,7 +310,7 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar) corev1
 				Image:        cfg.Image,
 				Command:      []string{"/bin/sh", "-c", "sleep infinity"},
 				WorkingDir:   k8sWorkspace,
-				Env:          proxyEnv,
+				Env:          env,
 				Resources:    resourcesToPodResources(cfg.Resources),
 				VolumeMounts: []corev1.VolumeMount{{Name: k8sWorkspaceVolume, MountPath: k8sWorkspace}},
 				SecurityContext: &corev1.SecurityContext{

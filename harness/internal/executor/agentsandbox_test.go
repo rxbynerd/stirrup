@@ -26,7 +26,7 @@ func baseSandboxCfg() K8sExecutorConfig {
 func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 	t.Run("forces gvisor even when runtime was empty", func(t *testing.T) {
 		cfg := baseSandboxCfg() // Runtime unset → buildSandboxPodSpec leaves RuntimeClassName nil
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		if spec.RuntimeClassName != nil {
 			t.Fatalf("precondition: base spec RuntimeClassName = %v, want nil", spec.RuntimeClassName)
 		}
@@ -38,7 +38,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 
 	t.Run("fills default cpu+mem limits and requests when resources nil", func(t *testing.T) {
 		cfg := baseSandboxCfg()
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		// Precondition: no resources pinned (cfg.Resources nil).
 		if len(spec.Containers[0].Resources.Limits) != 0 {
 			t.Fatalf("precondition: base container has limits %v, want none", spec.Containers[0].Resources.Limits)
@@ -67,7 +67,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 	t.Run("preserves caller-set resources", func(t *testing.T) {
 		cfg := baseSandboxCfg()
 		cfg.Resources = &types.ResourceLimits{CPUs: 2, MemoryMB: 1024}
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		// Precondition: the caller's values are already on the base spec via
 		// resourcesToPodResources.
 		wantCPU := resource.MustParse("2")
@@ -93,7 +93,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 		// admission policy requires BOTH cpu and memory limits.
 		cfg := baseSandboxCfg()
 		cfg.Resources = &types.ResourceLimits{MemoryMB: 1024}
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		applyAgentSandboxAdmissionDeltas(&spec)
 
 		res := spec.Containers[0].Resources
@@ -112,7 +112,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 	t.Run("merges nodeSelector with a pre-existing entry", func(t *testing.T) {
 		cfg := baseSandboxCfg()
 		cfg.NodeSelector = map[string]string{"disktype": "ssd"}
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 		applyAgentSandboxAdmissionDeltas(&spec)
 
 		if spec.NodeSelector[gkeSandboxRuntimeKey] != gkeSandboxRuntimeValue {
@@ -125,7 +125,7 @@ func TestApplyAgentSandboxAdmissionDeltas(t *testing.T) {
 
 	t.Run("adds the gvisor toleration and is idempotent", func(t *testing.T) {
 		cfg := baseSandboxCfg()
-		spec := buildSandboxPodSpec(cfg, nil)
+		spec := buildSandboxPodSpec(cfg, nil, nil)
 
 		applyAgentSandboxAdmissionDeltas(&spec)
 		applyAgentSandboxAdmissionDeltas(&spec) // second call must not duplicate
@@ -152,7 +152,7 @@ func TestBuildSandboxObject(t *testing.T) {
 	const ns, name = "default", "stirrup-abc123"
 
 	cfg := baseSandboxCfg()
-	spec := buildSandboxPodSpec(cfg, nil)
+	spec := buildSandboxPodSpec(cfg, nil, nil)
 	applyAgentSandboxAdmissionDeltas(&spec)
 
 	before := time.Now()

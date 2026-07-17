@@ -86,6 +86,12 @@ type ContainerExecutorConfig struct {
 	// per-request egress_allowed / egress_blocked events flow through the
 	// same SecurityLogger the executor uses for path/file events.
 	EgressSecurity egressproxy.SecurityEventEmitter
+	// ExtraEnv is appended to the container's environment after the
+	// HTTP(S)_PROXY/NO_PROXY entries (when Network.Mode == "allowlist"),
+	// regardless of network mode. Populated by the factory from a
+	// sandbox identity token exchange (issue #516) when
+	// ExecutorConfig.SandboxIdentity is configured; empty otherwise.
+	ExtraEnv []EnvPair
 }
 
 // ContainerExecutor implements Executor by running operations inside a
@@ -259,6 +265,10 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		// only the proxy's listen address; that drop is privilege-sensitive
 		// and not portable to macOS Docker Desktop. Tracked separately so
 		// this v1 ships with the limitation honestly documented.
+	}
+
+	for _, e := range cfg.ExtraEnv {
+		env = append(env, e.Name+"="+e.Value)
 	}
 
 	if cfg.Resources != nil {

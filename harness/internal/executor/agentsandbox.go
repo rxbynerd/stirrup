@@ -263,7 +263,7 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 		return nil, fmt.Errorf("generate sandbox name: %w", err)
 	}
 
-	spec := buildSandboxPodSpec(cfg, proxyEnv)
+	spec := buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv)
 	applyAgentSandboxAdmissionDeltas(&spec)
 
 	// Install the egress NetworkPolicy BEFORE creating the Sandbox, for the same
