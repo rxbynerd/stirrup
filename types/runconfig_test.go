@@ -7827,6 +7827,26 @@ func TestValidateRunConfig_SandboxIdentityDefaultConfigStillValid(t *testing.T) 
 	}
 }
 
+// TestValidateRunConfig_SandboxIdentityAloneStillValid pins the
+// simplest legal shape: SandboxIdentity set, GitProxy nil.
+// validateSandboxIdentity does not require GitProxy, so this must
+// validate cleanly — the missing counterpart to
+// TestValidateRunConfig_SandboxIdentityDefaultConfigStillValid, which
+// only proves the bare-default (neither block set) case.
+func TestValidateRunConfig_SandboxIdentityAloneStillValid(t *testing.T) {
+	c := validConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	c.Executor = ExecutorConfig{
+		Type: "container",
+		SandboxIdentity: &SandboxIdentityConfig{
+			Source: "control-plane",
+		},
+	}
+	if err := ValidateRunConfig(c); err != nil {
+		t.Fatalf("sandboxIdentity alone (no gitProxy) must validate cleanly, got: %v", err)
+	}
+}
+
 func TestValidateRunConfig_SandboxIdentityRequiresGRPC(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -7936,7 +7956,7 @@ func TestValidateRunConfig_SandboxIdentityExecutorTypeGating(t *testing.T) {
 			c := validConfig()
 			c.Transport = TransportConfig{Type: "grpc"}
 			tc.executor.SandboxIdentity = &SandboxIdentityConfig{Source: "control-plane", EnvVar: "HAYBALE_TOKEN"}
-			tc.executor.GitProxy = &GitProxyConfig{URL: "http://haybale.internal:8466", TokenEnvVar: "HAYBALE_TOKEN"}
+			tc.executor.GitProxy = &GitProxyConfig{URL: "http://haybale.internal:8466", Hosts: []string{"github.com"}, TokenEnvVar: "HAYBALE_TOKEN"}
 			c.Executor = tc.executor
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
@@ -7981,6 +8001,48 @@ func TestValidateRunConfig_SandboxIdentitySourceClosedSet(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("source %q should pass, got: %v", tc.source, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_SandboxIdentityEnvVarShape pins the
+// injection-shape guard on SandboxIdentityConfig.EnvVar: PR C
+// interpolates the name (not the token value) into a double-quoted
+// shell credential-helper string, so a non-empty EnvVar must match
+// posixEnvVarNamePattern. This is a charset check only — it does not
+// deny semantically-risky-but-valid names like PATH.
+func TestValidateRunConfig_SandboxIdentityEnvVarShape(t *testing.T) {
+	cases := []struct {
+		name    string
+		envVar  string
+		wantErr bool
+	}{
+		{"valid", "HAYBALE_TOKEN", false},
+		{"empty_uses_default", "", false},
+		{"space", "HAYBALE TOKEN", true},
+		{"equals_sign", "TOKEN=x", true},
+		{"leading_digit", "1TOKEN", true},
+		{"shell_metacharacter", `HAYBALE"; rm -rf /; echo "`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := sandboxIdentityValidConfig()
+			c.Executor.GitProxy = nil
+			c.Executor.SandboxIdentity.EnvVar = tc.envVar
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for envVar %q, got nil", tc.envVar)
+				}
+				if !strings.Contains(err.Error(), "executor.sandboxIdentity.envVar") ||
+					!strings.Contains(err.Error(), "must be a valid POSIX environment variable name") {
+					t.Errorf("expected POSIX envVar shape error, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("envVar %q should pass, got: %v", tc.envVar, err)
 			}
 		})
 	}
@@ -8042,18 +8104,138 @@ func TestValidateRunConfig_GitProxyTokenEnvVarConsistency(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_GitProxyURLValidation pins the requirement,
+// documented but previously unvalidated, that gitProxy.url is required
+// and must be an absolute http(s) URL with a host — mirrors
+// validateGuardRailEndpoint's shape check on GuardRailConfig.Endpoint.
+func TestValidateRunConfig_GitProxyURLValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		wantErr string // substring; empty means the URL should pass
+	}{
+		{"empty_url_required", "", "executor.gitProxy.url is required when executor.gitProxy is set"},
+		{"malformed_no_scheme_or_host", "not-a-url", "must use scheme http or https"},
+		{"malformed_missing_protocol_scheme", "://bad", "must be a valid URL"},
+		{"non_http_scheme", "ftp://host:21", "must use scheme http or https"},
+		{"valid_url", "http://haybale.internal:8466", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := sandboxIdentityValidConfig()
+			c.Executor.GitProxy.URL = tc.url
+			err := ValidateRunConfig(c)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("url %q should pass, got: %v", tc.url, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected rejection for url %q, got nil", tc.url)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected error to mention %q, got: %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_GitProxyTokenEnvVarShape pins the
+// injection-shape guard on GitProxyConfig.TokenEnvVar — the
+// gitProxy.tokenEnvVar equivalent of
+// TestValidateRunConfig_SandboxIdentityEnvVarShape.
+func TestValidateRunConfig_GitProxyTokenEnvVarShape(t *testing.T) {
+	cases := []struct {
+		name        string
+		tokenEnvVar string
+		wantErr     bool
+	}{
+		{"valid", "HAYBALE_TOKEN", false},
+		{"empty_uses_default", "", false},
+		{"space", "HAYBALE TOKEN", true},
+		{"equals_sign", "TOKEN=x", true},
+		{"leading_digit", "1TOKEN", true},
+		{"shell_metacharacter", `HAYBALE"; rm -rf /; echo "`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := sandboxIdentityValidConfig()
+			c.Executor.GitProxy.TokenEnvVar = tc.tokenEnvVar
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected rejection for tokenEnvVar %q, got nil", tc.tokenEnvVar)
+				}
+				if !strings.Contains(err.Error(), "executor.gitProxy.tokenEnvVar") ||
+					!strings.Contains(err.Error(), "must be a valid POSIX environment variable name") {
+					t.Errorf("expected POSIX tokenEnvVar shape error, got: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("tokenEnvVar %q should pass, got: %v", tc.tokenEnvVar, err)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_GitProxyHostsRequired pins the requirement that
+// a configured gitProxy block names at least one host to rewrite —
+// Hosts is what drives how many proxy rewrite rules get composed, so an
+// empty list would leave the block validating cleanly while silently
+// doing nothing.
+func TestValidateRunConfig_GitProxyHostsRequired(t *testing.T) {
+	cases := []struct {
+		name  string
+		hosts []string
+	}{
+		{"nil_hosts", nil},
+		{"empty_hosts", []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := sandboxIdentityValidConfig()
+			c.Executor.GitProxy.Hosts = tc.hosts
+			err := ValidateRunConfig(c)
+			if err == nil {
+				t.Fatalf("expected rejection for hosts %v, got nil", tc.hosts)
+			}
+			if !strings.Contains(err.Error(), "executor.gitProxy.hosts must contain at least one host when executor.gitProxy is set") {
+				t.Errorf("expected gitProxy.hosts-required error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRunConfig_GitProxyAllowlistWarning(t *testing.T) {
 	const wantMsg = "executor.gitProxy.url host:port is not present in executor.network.allowlist"
 	cases := []struct {
 		name      string
 		mode      string
 		allowlist []string
-		wantWarn  bool
+		// url overrides sandboxIdentityValidConfig's default gitProxy.url
+		// ("http://haybale.internal:8466") when non-empty, to exercise
+		// warnGitProxyAllowlistGap's port-defaulting branches.
+		url      string
+		wantWarn bool
 	}{
-		{"exact_hostport_present_no_warn", "allowlist", []string{"haybale.internal:8466"}, false},
-		{"missing_from_allowlist_warns", "allowlist", []string{"other.example.com:8466"}, true},
-		{"empty_allowlist_warns", "allowlist", nil, true},
-		{"none_mode_no_warn", "none", nil, false},
+		{"exact_hostport_present_no_warn", "allowlist", []string{"haybale.internal:8466"}, "", false},
+		{"missing_from_allowlist_warns", "allowlist", []string{"other.example.com:8466"}, "", true},
+		{"empty_allowlist_warns", "allowlist", nil, "", true},
+		{"none_mode_no_warn", "none", nil, "", false},
+		// (a) no explicit port on an http:// URL hits the implicit
+		// port-80 default (types/runconfig.go's "case u.Scheme ==
+		// http" branch); the allowlist entry matches that default
+		// exactly, so no warning.
+		{"http_no_port_defaults_to_80_no_warn", "allowlist", []string{"haybale.internal:80"}, "http://haybale.internal", false},
+		// (b) no explicit port on an https:// URL falls through to the
+		// gitProxyAllowlistDefaultPort (443) default; a bare-hostname
+		// allowlist entry (no ":port" suffix) matches it via the
+		// "convenience match" shortcut the GitProxyConfig.URL doc
+		// comment describes, so no warning even though the entry has
+		// no explicit port.
+		{"default_port_bare_host_allowlist_shortcut_no_warn", "allowlist", []string{"haybale.internal"}, "https://haybale.internal", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -8063,6 +8245,9 @@ func TestValidateRunConfig_GitProxyAllowlistWarning(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 			c := sandboxIdentityValidConfig()
+			if tc.url != "" {
+				c.Executor.GitProxy.URL = tc.url
+			}
 			c.Executor.Network = &NetworkConfig{Mode: tc.mode, Allowlist: tc.allowlist}
 			if err := ValidateRunConfig(c); err != nil {
 				t.Fatalf("allowlist warning path must not produce a hard error, got: %v", err)
@@ -8077,5 +8262,109 @@ func TestValidateRunConfig_GitProxyAllowlistWarning(t *testing.T) {
 				t.Errorf("did not expect allowlist-gap warning, got: %s", logs)
 			}
 		})
+	}
+}
+
+// TestSandboxIdentityAndGitProxyConfig_JSONRoundTrip mirrors
+// TestHooksConfig_JSONRoundTrip: pins that every field on
+// SandboxIdentityConfig and GitProxyConfig survives a JSON round trip
+// unchanged when populated.
+func TestSandboxIdentityAndGitProxyConfig_JSONRoundTrip(t *testing.T) {
+	rc := RunConfig{
+		Executor: ExecutorConfig{
+			SandboxIdentity: &SandboxIdentityConfig{
+				Source:   "control-plane",
+				Audience: "https://haybale.internal",
+				EnvVar:   "HAYBALE_TOKEN",
+			},
+			GitProxy: &GitProxyConfig{
+				URL:         "http://haybale.internal:8466",
+				Hosts:       []string{"github.com"},
+				RewriteSsh:  true,
+				TokenEnvVar: "HAYBALE_TOKEN",
+			},
+		},
+	}
+	data, err := json.Marshal(rc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got RunConfig
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Executor.SandboxIdentity == nil || *got.Executor.SandboxIdentity != *rc.Executor.SandboxIdentity {
+		t.Errorf("SandboxIdentity round-trip: got %+v, want %+v", got.Executor.SandboxIdentity, rc.Executor.SandboxIdentity)
+	}
+	if got.Executor.GitProxy == nil {
+		t.Fatal("GitProxy must survive JSON round-trip as non-nil")
+	}
+	if got.Executor.GitProxy.URL != rc.Executor.GitProxy.URL ||
+		len(got.Executor.GitProxy.Hosts) != 1 || got.Executor.GitProxy.Hosts[0] != "github.com" ||
+		got.Executor.GitProxy.RewriteSsh != rc.Executor.GitProxy.RewriteSsh ||
+		got.Executor.GitProxy.TokenEnvVar != rc.Executor.GitProxy.TokenEnvVar {
+		t.Errorf("GitProxy round-trip: got %+v, want %+v", got.Executor.GitProxy, rc.Executor.GitProxy)
+	}
+}
+
+// TestRunConfig_SandboxIdentityGitProxyOmitEmptyFields mirrors
+// TestRunConfig_HooksOmittedWhenNil: pins the omitempty JSON tags on
+// SandboxIdentityConfig.Audience/EnvVar and
+// GitProxyConfig.Hosts/RewriteSsh/TokenEnvVar (omitted when left at
+// their zero value), and confirms Source and URL — which carry no
+// omitempty tag — instead round-trip as present, empty-string keys.
+func TestRunConfig_SandboxIdentityGitProxyOmitEmptyFields(t *testing.T) {
+	rc := RunConfig{
+		Executor: ExecutorConfig{
+			SandboxIdentity: &SandboxIdentityConfig{},
+			GitProxy:        &GitProxyConfig{},
+		},
+	}
+	data, err := json.Marshal(rc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(data)
+	for _, absentKey := range []string{`"audience"`, `"envVar"`, `"hosts"`, `"rewriteSsh"`, `"tokenEnvVar"`} {
+		if strings.Contains(s, absentKey) {
+			t.Errorf("expected no %s key when unset, got: %s", absentKey, s)
+		}
+	}
+	if !strings.Contains(s, `"source":""`) {
+		t.Errorf("expected source key present as empty string, got: %s", s)
+	}
+	if !strings.Contains(s, `"url":""`) {
+		t.Errorf("expected url key present as empty string, got: %s", s)
+	}
+
+	var got RunConfig
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Executor.SandboxIdentity == nil || got.Executor.SandboxIdentity.Source != "" {
+		t.Errorf("expected SandboxIdentity.Source to round-trip as empty string, got: %+v", got.Executor.SandboxIdentity)
+	}
+	if got.Executor.GitProxy == nil || got.Executor.GitProxy.URL != "" {
+		t.Errorf("expected GitProxy.URL to round-trip as empty string, got: %+v", got.Executor.GitProxy)
+	}
+}
+
+// TestSandboxIdentityConfig_EffectiveEnvVar_NilReceiver pins the
+// documented contract on EffectiveEnvVar: "a nil cfg returns the
+// default so callers need not nil-check first."
+func TestSandboxIdentityConfig_EffectiveEnvVar_NilReceiver(t *testing.T) {
+	var cfg *SandboxIdentityConfig
+	if got := cfg.EffectiveEnvVar(); got != DefaultSandboxIdentityEnvVar {
+		t.Errorf("nil *SandboxIdentityConfig.EffectiveEnvVar() = %q, want %q", got, DefaultSandboxIdentityEnvVar)
+	}
+}
+
+// TestGitProxyConfig_EffectiveTokenEnvVar_NilReceiver pins the
+// documented contract on EffectiveTokenEnvVar: "a nil cfg returns the
+// default so callers need not nil-check first."
+func TestGitProxyConfig_EffectiveTokenEnvVar_NilReceiver(t *testing.T) {
+	var cfg *GitProxyConfig
+	if got := cfg.EffectiveTokenEnvVar(); got != DefaultSandboxIdentityEnvVar {
+		t.Errorf("nil *GitProxyConfig.EffectiveTokenEnvVar() = %q, want %q", got, DefaultSandboxIdentityEnvVar)
 	}
 }

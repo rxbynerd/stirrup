@@ -4961,6 +4961,16 @@ var sandboxIdentityCapableExecutors = map[string]bool{
 	"k8s-sandbox": true,
 }
 
+// posixEnvVarNamePattern bounds SandboxIdentityConfig.EnvVar and
+// GitProxyConfig.TokenEnvVar to legal POSIX environment variable names.
+// PR C's env-composition interpolates the *name* (not the token value)
+// into a double-quoted shell credential-helper string; this is an
+// injection-shape guard only — it deliberately does not deny
+// semantically-risky-but-syntactically-valid names like PATH or
+// LD_PRELOAD, matching observabilityLabelPattern's precedent of a plain
+// charset check rather than a semantic denylist.
+var posixEnvVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // validateSandboxIdentity enforces the cross-field invariants on
 // ExecutorConfig.SandboxIdentity and .GitProxy (issue #516 Part B). Both
 // blocks are pointers and every rule below is strictly gated on their
@@ -4988,12 +4998,36 @@ func validateSandboxIdentity(config *RunConfig, errs *[]string) {
 			config.Executor.Type))
 	}
 
-	if si != nil && !validSandboxIdentitySources[si.Source] {
-		*errs = append(*errs, fmt.Sprintf(
-			"unsupported executor.sandboxIdentity.source %q; only \"control-plane\" is supported", si.Source))
+	if si != nil {
+		if !validSandboxIdentitySources[si.Source] {
+			*errs = append(*errs, fmt.Sprintf(
+				"unsupported executor.sandboxIdentity.source %q; only \"control-plane\" is supported", si.Source))
+		}
+		if si.EnvVar != "" && !posixEnvVarNamePattern.MatchString(si.EnvVar) {
+			*errs = append(*errs, fmt.Sprintf(
+				"executor.sandboxIdentity.envVar %q must be a valid POSIX environment variable name", si.EnvVar))
+		}
 	}
 
 	if gp != nil {
+		// gitProxy.url is required and, when present, must be an
+		// absolute http(s) URL with a host — mirrors
+		// validateGuardRailEndpoint's shape check on GuardRailConfig.Endpoint.
+		if gp.URL == "" {
+			*errs = append(*errs, "executor.gitProxy.url is required when executor.gitProxy is set")
+		} else {
+			validateGuardRailEndpoint(gp.URL, "executor.gitProxy.url", errs)
+		}
+
+		if len(gp.Hosts) == 0 {
+			*errs = append(*errs, "executor.gitProxy.hosts must contain at least one host when executor.gitProxy is set")
+		}
+
+		if gp.TokenEnvVar != "" && !posixEnvVarNamePattern.MatchString(gp.TokenEnvVar) {
+			*errs = append(*errs, fmt.Sprintf(
+				"executor.gitProxy.tokenEnvVar %q must be a valid POSIX environment variable name", gp.TokenEnvVar))
+		}
+
 		if si == nil {
 			// v1's only token source is control-plane issuance via
 			// sandboxIdentity (see SandboxIdentityConfig doc comment): a
@@ -5044,7 +5078,11 @@ func warnGitProxyAllowlistGap(config *RunConfig) {
 	if err != nil || u.Hostname() == "" {
 		return
 	}
-	host := strings.ToLower(u.Hostname())
+	// TrimSuffix matches egressproxy.canonicaliseHost's trailing-dot
+	// handling: "haybale.internal." and "haybale.internal" are the same
+	// FQDN (RFC 1034 §3.1), so a trailing dot in gitProxy.url must not
+	// produce a spurious warning against a dot-free allowlist entry.
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	port := gitProxyAllowlistDefaultPort
 	switch {
 	case u.Port() != "":
