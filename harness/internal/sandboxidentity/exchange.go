@@ -93,6 +93,11 @@ func extractTokenResponse(event types.ControlEvent) (string, any) {
 // audience is the intended JWT "aud" claim (RunConfig
 // executor.sandboxIdentity.audience); it is informational to the control
 // plane, which may override it.
+//
+// Exchange mints a fresh transport.Correlator per call rather than reusing
+// one across calls, so at most one Exchange should be in flight per t at a
+// time (matched today: the sole call site, factory.go's
+// BuildLoopWithTransport, invokes Exchange at most once per Transport).
 func Exchange(ctx context.Context, t Transport, audience string, timeout time.Duration) (Result, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout

@@ -125,6 +125,36 @@ func TestExchange_Timeout(t *testing.T) {
 	}
 }
 
+// TestExchange_DefaultTimeoutWhenZero verifies the timeout<=0 → DefaultTimeout
+// fallback — the shape factory.go uses in production
+// (sandboxidentity.Exchange(ctx, tp, si.Audience, 0)) — actually takes
+// effect rather than firing a zero-duration timer. Mirrors
+// transport.TestCorrelator_DefaultTimeoutWhenZero's technique: we cannot
+// wait out the full 60s default, so cancel via ctx after a short delay and
+// assert the call did not return near-instantly.
+func TestExchange_DefaultTimeoutWhenZero(t *testing.T) {
+	mt := &mockTransport{} // never responds
+
+	ctx, cancel := context.WithCancel(context.Background())
+	start := time.Now()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	result, err := Exchange(ctx, mt, "aud", 0)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected an error from the cancelled context")
+	}
+	if result.Token != "" {
+		t.Errorf("expected empty token, got %q", result.Token)
+	}
+	if elapsed < 15*time.Millisecond {
+		t.Errorf("returned too quickly (%s) — a zero timeout may have fired immediately instead of falling back to DefaultTimeout", elapsed)
+	}
+}
+
 // TestExchange_ContextCancelled asserts cancellation also fails closed.
 func TestExchange_ContextCancelled(t *testing.T) {
 	mt := &mockTransport{}
