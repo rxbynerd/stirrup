@@ -226,6 +226,12 @@ The Agent Sandbox *controller's* own cluster RBAC (to manage Pods on the
 orchestrator's behalf) is installed with the controller and is out of
 scope — that Role covers only the orchestrator.
 
+The [sandbox identity token exposure note](k8s.md#sandbox-identity-token-exposure)
+applies identically here — `buildSandboxPodSpec` is shared between the
+`k8s` and `k8s-sandbox` executors, so a `sandboxIdentity`-configured run's
+token lands in the Pod env the same way regardless of which executor
+created the Pod.
+
 ## Configuration
 
 The `k8s-sandbox` executor is selected by `--executor k8s-sandbox` /

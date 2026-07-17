@@ -416,10 +416,11 @@ binding named above, scoped to cloning and pushing private
 repositories. The control plane issues a short-lived **sandbox
 identity token** — a signed JWT — to the harness over the existing
 gRPC control stream, fail-closed with a 60-second wait and a 16 KiB
-cap on the returned token (`sandboxidentity.MaxTokenBytes`): a control
-plane that is slow, silent, or declines to issue aborts the run before
-any sandbox is created, rather than leaving a partially-provisioned,
-tokenless sandbox behind. The harness then injects the token, plus
+cap on the returned token (`sandboxidentity.MaxTokenBytes`): the
+harness aborts the run before any sandbox is created if the control
+plane is slow, silent, or declines to issue a token, rather than
+leaving a partially-provisioned, tokenless sandbox behind. The
+harness then injects the token, plus
 non-secret `GIT_CONFIG_*` environment variables that rewrite `git`
 remote URLs, into the sandbox environment at creation time.
 
@@ -436,6 +437,13 @@ credential. The token itself never touches trace, transcript, or log
 output: the sandbox-identity exchange code path never logs, traces, or
 persists it, independent of the `oidc_jwt` `LogScrubber` pattern above
 that would otherwise backstop an accidental leak.
+
+This invariant concerns stirrup's own trace, transcript, and log
+surfaces. On the `k8s`/`k8s-sandbox` executors the token is delivered
+as a plaintext Pod env var rather than a `Secret`; see
+[`k8s.md`'s exposure note](executors/k8s.md#sandbox-identity-token-exposure)
+for the RBAC/etcd delta this implies and the scoping operators should
+apply.
 
 See [`deployment.md`'s "Sandbox identity token
 issuance"](deployment.md#sandbox-identity-token-issuance-control-plane-implementers)
