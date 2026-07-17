@@ -74,9 +74,10 @@ results, permission responses — would transit in cleartext, and
 any endpoint that can reach the harness's dial target could pose
 as the control plane. Secrets are less exposed than they appear
 (API keys travel as `secret://` references, never raw values, and
-the transport scrubs secret-shaped strings from outbound events),
-but the stream contents and the control channel itself are
-unprotected.
+the transport scrubs secret-shaped strings from outbound events) —
+except the sandbox identity token (`ControlEvent.token`), which is
+the raw signed JWT itself and receives no such protection — but the
+stream contents and the control channel itself are unprotected.
 
 Transport TLS configuration is planned post-v0.1. The internal
 transport constructor already accepts TLS credentials
@@ -191,6 +192,20 @@ stream used for everything else.
   staying silent — the harness treats a missing or late response the
   same way it treats an explicit error.
 
+**Transport trust boundary.** Unlike API keys, `token` is not a
+`secret://` reference — it is the raw signed JWT, and it rides the
+same plaintext-by-default `RunTask` stream as every other event (see
+[Transport security posture](#transport-security-posture-v01)).
+Requesting a sandbox identity token therefore requires, at minimum,
+the same-host / private-network / mesh-mTLS posture described there:
+the token is long-lived (see Token lifetime, below) and unencrypted
+by default, so it is a materially higher-value credential than the
+rest of the stream. Do not opt a run into the sandbox identity token
+flow across an untrusted network until transport TLS — the internal
+transport already accepts `transport.WithTLSCredentials`, but there
+is no `RunConfig` / CLI surface to reach it yet — is wired to a
+config surface.
+
 A control plane implementing this contract must:
 
 1. Mint a JWT per the consuming proxy's identity contract — for
@@ -205,6 +220,16 @@ A control plane implementing this contract must:
 3. Scope the `sub` claim to `run-<RunID>` (the `RunConfig.run_id` of
    the run being serviced), so the proxy's audit log correlates with
    stirrup's own tracing.
+4. Validate `audience` against its own configured audience list
+   before minting — the harness sends `audience` as a hint, not an
+   authorization; a control plane that mints against an unvalidated
+   value has no assurance the resulting token is scoped to a
+   consumer it actually intends to trust.
+5. Provision the per-run scope — e.g. a `policy.yaml`-style rule
+   confining `run-<RunID>` to exactly the repos and verbs the run
+   needs — before or as part of issuing the token. This is a
+   provisioning prerequisite the control plane or operator handles;
+   it is not part of the wire exchange itself.
 
 **Fail-closed wait.** The harness blocks on the matching
 `sandbox_token_response` for up to 60 seconds — the same default as
@@ -221,11 +246,13 @@ posture is that the control plane issues `exp` covering the run's
 configured wall-clock budget (plus slack), and narrows blast radius
 through per-token scope claims and proxy-side policy instead of a
 short lifetime. The optional `sandbox_token_response.expires_at`
-field (Unix seconds) lets the harness compare the token's actual
-expiry against the run's budget and emit a scrub-safe warning when
-the token is shorter-lived than the run — a signal that the run may
-fail partway through with authentication errors rather than a
-stirrup-side bug.
+field (Unix seconds) is designed to let the harness compare the
+token's actual expiry against the run's budget and emit a
+scrub-safe warning when the token is shorter-lived than the run — a
+signal that the run may fail partway through with authentication
+errors rather than a stirrup-side bug. That comparison is not yet
+wired: this PR is wire/types-only, and the check lands with the
+token-exchange helper (issue #516 Part C).
 
 ## Container image
 
