@@ -20,6 +20,10 @@ sequenceDiagram
     H->>CP: HarnessEvent{type:"ready", harness_version}
     H->>H: Write /tmp/healthy (liveness probe)
     CP->>H: ControlEvent{type:"task_assignment", task: RunConfig}
+    opt Sandbox identity token requested
+        H->>CP: sandbox_token_request
+        CP-->>H: sandbox_token_response
+    end
     H->>H: Build AgenticLoop with the supplied RunConfig
     loop For each turn
         H->>CP: heartbeat (every 30s)
@@ -121,15 +125,23 @@ IMDS, GitHub Actions OIDC). See
    with a 5-minute timeout. A `cancel` event received before
    assignment is honoured: the harness exits cleanly without
    running anything.
-5. **Build and run.** Once the `RunConfig` arrives, the wall-clock
+5. **Sandbox identity token** *(optional)*. When the run wants a
+   sandbox identity token (e.g. to authenticate a git proxy such as
+   Haybale), the harness sends a
+   `HarnessEvent{type:"sandbox_token_request"}` and blocks, fail-closed,
+   for up to 60 seconds on the matching `sandbox_token_response` —
+   before any sandbox is created. See [Sandbox identity token
+   issuance](#sandbox-identity-token-issuance-control-plane-implementers)
+   below for the full contract.
+6. **Build and run.** Once the `RunConfig` arrives, the wall-clock
    timeout is applied to the context, the agentic loop is built via
    `core.BuildLoopWithTransport` reusing the existing gRPC transport,
    and execution begins.
-6. **Stream events.** Throughout the run the harness emits
+7. **Stream events.** Throughout the run the harness emits
    `text_delta`, `tool_call`, `tool_result`, `heartbeat` (every 30
    s), and — depending on the permission policy — `permission_request`
    events. Async tools may emit `tool_result_request`.
-7. **Done.** A final `HarnessEvent{type:"done", stop_reason, trace}`
+8. **Done.** A final `HarnessEvent{type:"done", stop_reason, trace}`
    carries the run metrics and the reason the loop ended
    (`end_turn`, `max_turns`, `timeout`, `stalled`, `tool_failures`,
    `cancelled`, `budget_exceeded`, `error`, `setup_failed`,
@@ -145,15 +157,75 @@ IMDS, GitHub Actions OIDC). See
    `verification_failed`, `verification_error`, and `max_tokens` on
    top of the loop's stop reasons. `trace.stop_reason` mirrors it for
    backward compatibility.
-8. **Follow-up grace** *(optional)*. If `STIRRUP_FOLLOWUP_GRACE > 0`,
+9. **Follow-up grace** *(optional)*. If `STIRRUP_FOLLOWUP_GRACE > 0`,
    the stream stays open for that many seconds so the control plane
    can deliver `user_response` events that resume the loop.
-9. **Exit.** The liveness probe file is removed; the process exits 0
-   on success or non-zero on transport / build / runtime failure.
+10. **Exit.** The liveness probe file is removed; the process exits 0
+    on success or non-zero on transport / build / runtime failure.
 
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —
 that is the source of truth for the wire contract.
+
+### Sandbox identity token issuance (control-plane implementers)
+
+Some sandbox executors need a short-lived credential to authenticate
+outbound git operations through a proxy such as
+[Haybale](https://github.com/rxbynerd/haybale). The harness never
+holds a signing key or a long-lived credential itself; it requests a
+token from the control plane once per run, over the same `RunTask`
+stream used for everything else.
+
+- **`sandbox_token_request`** (`HarnessEvent`) — sent once per run,
+  after `task_assignment` and before the sandbox is created. Carries
+  `request_id` (correlation) and `audience`, the intended JWT `aud`
+  claim (e.g. `https://haybale.internal`). The event deliberately
+  carries no harness-asserted identity field: the control plane
+  derives the run identity from the authenticated stream the task was
+  assigned on, not from anything in the request body.
+- **`sandbox_token_response`** (`ControlEvent`) — echoes `request_id`
+  and carries `token`, the signed JWT. `token` is sensitive: the
+  harness never logs, traces, or persists it, and it never enters
+  `RunConfig`. A control plane that cannot issue a token responds
+  with `is_error: true` and a human-readable `reason` rather than
+  staying silent — the harness treats a missing or late response the
+  same way it treats an explicit error.
+
+A control plane implementing this contract must:
+
+1. Mint a JWT per the consuming proxy's identity contract — for
+   Haybale, its [`docs/jwt-identity.md`](https://github.com/rxbynerd/haybale/blob/main/docs/jwt-identity.md).
+   The mechanism is generic ("sandbox identity token"), not
+   Haybale-specific: other consumers (artifact registries, package
+   proxies) can reuse the same exchange with their own token
+   contract.
+2. Sign with its own key and publish the corresponding JWKS at the
+   URL the consuming proxy is configured to fetch from. Stirrup never
+   holds a signing key.
+3. Scope the `sub` claim to `run-<RunID>` (the `RunConfig.run_id` of
+   the run being serviced), so the proxy's audit log correlates with
+   stirrup's own tracing.
+
+**Fail-closed wait.** The harness blocks on the matching
+`sandbox_token_response` for up to 60 seconds — the same default as
+the `ask-upstream` permission-response timeout. A response that
+arrives late, or not at all, aborts the run before the sandbox is
+created; the run ends with `done{stop_reason:"error"}` rather than
+leaving a partially-provisioned, tokenless sandbox behind.
+
+**Token lifetime.** Haybale recommends an `exp` of 15 minutes or
+less, but the token is baked into the sandbox environment once, at
+creation time, and in-sandbox refresh is out of scope for now (it
+requires a bootstrap-auth channel that does not exist yet). The v1
+posture is that the control plane issues `exp` covering the run's
+configured wall-clock budget (plus slack), and narrows blast radius
+through per-token scope claims and proxy-side policy instead of a
+short lifetime. The optional `sandbox_token_response.expires_at`
+field (Unix seconds) lets the harness compare the token's actual
+expiry against the run's budget and emit a scrub-safe warning when
+the token is shorter-lived than the run — a signal that the run may
+fail partway through with authentication errors rather than a
+stirrup-side bug.
 
 ## Container image
 
